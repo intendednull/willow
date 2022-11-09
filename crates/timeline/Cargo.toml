@@ -1,0 +1,15 @@
+[package]
+name = "timeline"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+identity = { path = "../identity" }
+
+chrono = { version = "0.4", features = ["wasmbind", "serde"] }
+yew = { git = "https://github.com/yewstack/yew.git", features = ["csr"] }
+yewdux = { git = "https://github.com/intendednull/yewdux.git" }
+yewdux-input = { git = "https://github.com/intendednull/yewdux.git" }
+uuid = { version = "1.2", features = ["v4"] }

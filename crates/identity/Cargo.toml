@@ -1,0 +1,13 @@
+[package]
+name = "identity"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+transport = { path = "../transport" }
+
+libp2p = { version = "0.44.0", default-features = false, features = ["wasm-bindgen", "serde", "libp2p-identify"]}
+serde = { version = "1.0.124", features = ["rc"] }
+thiserror = "1.0.30"
