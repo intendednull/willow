@@ -1,5 +1,6 @@
 use std::{collections::HashMap, rc::Rc};
 
+use anyhow::ensure;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use yewdux::prelude::*;
@@ -12,16 +13,18 @@ pub struct Timelines {
 }
 
 impl Timelines {
-    fn post(&mut self, id: &PeerId, mut post: Post) {
+    fn create_post(&mut self, id: &PeerId, mut post: Post) -> anyhow::Result<()> {
         // Ensure the author is who they say they are.
-        post.author = id.clone();
+        ensure!(post.author == id.clone());
 
         let timeline = self.get_mut(id);
-
         // Ensure it's impossible to overwrite existing posts.
-        if !timeline.history.contains_key(&post.id) {
-            timeline.history.insert(post.id.clone(), post);
-        }
+        ensure!(!timeline.history.contains_key(&post.id));
+        // Add new post
+        post.timestamp = Utc::now();
+        timeline.history.insert(post.id.clone(), post);
+
+        Ok(())
     }
 
     fn get_mut(&mut self, id: &PeerId) -> &mut Timeline {
@@ -62,7 +65,7 @@ impl Post {
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum Action {
-    Post(PeerId, Post),
+    CreatePost(PeerId, Post),
 }
 
 impl Reducer<Timelines> for Action {
@@ -70,7 +73,9 @@ impl Reducer<Timelines> for Action {
         let state = Rc::make_mut(&mut timelines);
 
         match self {
-            Action::Post(id, post) => state.post(&id, post),
+            Action::CreatePost(id, post) => {
+                state.create_post(&id, post).ok();
+            }
         }
 
         timelines
@@ -87,32 +92,37 @@ mod tests {
     fn post_assures_author_id() {
         let peer1 = Identity::new().as_peer();
         let peer2 = Identity::new().as_peer();
-        let action = Action::Post(peer2.clone(), Post::new(peer1, "".into()));
+        let action = Action::CreatePost(peer2.clone(), Post::new(peer1, "".into()));
 
         let timelines = action.apply(Rc::new(Default::default()));
 
-        let post = timelines
-            .inner
-            .get(&peer2)
-            .unwrap()
-            .history
-            .values()
-            .next()
-            .unwrap();
+        let tl = timelines.inner.get(&peer2);
 
-        assert_eq!(post.author, peer2);
+        assert!(tl.is_none());
     }
 
     #[test]
     fn post_does_not_overwrite() {
         let id = Identity::new().as_peer();
 
-        let t1 = Action::Post(id.clone(), Post::new(id.clone(), "".into()))
-            .apply(Rc::new(Default::default()));
-        let t2 = Action::Post(id.clone(), Post::new(id.clone(), "some new data".into()))
-            .apply(t1.clone());
+        let mut post = Post::new(id.clone(), "".into());
+        let t1 = Action::CreatePost(id.clone(), post.clone()).apply(Rc::new(Default::default()));
+        post.content = "some new data".into();
+        let t2 = Action::CreatePost(id, post).apply(t1.clone());
 
-        let p1 = t1
+        assert_eq!(t1, t2);
+    }
+
+    #[test]
+    fn post_timestamp_is_updated() {
+        let id = Identity::new().as_peer();
+
+        let mut post = Post::new(id.clone(), "".into());
+        let t1 = Utc::now() - chrono::Duration::days(1);
+        post.timestamp = t1;
+        let timeline = Action::CreatePost(id.clone(), post).apply(Rc::new(Default::default()));
+
+        let t2 = timeline
             .inner
             .get(&id)
             .unwrap()
@@ -120,19 +130,9 @@ mod tests {
             .values()
             .next()
             .unwrap()
-            .content
-            .clone();
-        let p2 = t2
-            .inner
-            .get(&id)
-            .unwrap()
-            .history
-            .values()
-            .next()
-            .unwrap()
-            .content
-            .clone();
+            .timestamp;
 
-        assert_eq!(p1, p2);
+        assert_ne!(t2, t1);
+        // assert_eq!(t2, Utc::now());
     }
 }
