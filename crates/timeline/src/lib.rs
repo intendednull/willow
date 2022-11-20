@@ -13,10 +13,15 @@ pub struct Timelines {
 
 impl Timelines {
     fn post(&mut self, id: &PeerId, mut post: Post) {
+        // Ensure the author is who they say they are.
         post.author = id.clone();
 
         let timeline = self.get_mut(id);
-        timeline.history.insert(post.id.clone(), post);
+
+        // Ensure it's impossible to overwrite existing posts.
+        if !timeline.history.contains_key(&post.id) {
+            timeline.history.insert(post.id.clone(), post);
+        }
     }
 
     fn get_mut(&mut self, id: &PeerId) -> &mut Timeline {
@@ -96,5 +101,38 @@ mod tests {
             .unwrap();
 
         assert_eq!(post.author, peer2);
+    }
+
+    #[test]
+    fn post_does_not_overwrite() {
+        let id = Identity::new().as_peer();
+
+        let t1 = Action::Post(id.clone(), Post::new(id.clone(), "".into()))
+            .apply(Rc::new(Default::default()));
+        let t2 = Action::Post(id.clone(), Post::new(id.clone(), "some new data".into()))
+            .apply(t1.clone());
+
+        let p1 = t1
+            .inner
+            .get(&id)
+            .unwrap()
+            .history
+            .values()
+            .next()
+            .unwrap()
+            .content
+            .clone();
+        let p2 = t2
+            .inner
+            .get(&id)
+            .unwrap()
+            .history
+            .values()
+            .next()
+            .unwrap()
+            .content
+            .clone();
+
+        assert_eq!(p1, p2);
     }
 }
