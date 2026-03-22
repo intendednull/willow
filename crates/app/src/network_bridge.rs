@@ -22,9 +22,6 @@ use willow_identity::Identity;
 pub struct LocalIdentity(pub Identity);
 
 /// Bevy resource for receiving network events on the main thread.
-///
-/// Wrapped in `Arc<Mutex<>>` to satisfy Bevy's `Send + Sync` requirement on
-/// resources. The mutex is only locked briefly each frame to drain events.
 #[derive(Resource, Clone)]
 pub struct NetworkEventReceiver(pub Arc<Mutex<std_mpsc::Receiver<NetworkBridgeEvent>>>);
 
@@ -33,7 +30,7 @@ pub struct NetworkEventReceiver(pub Arc<Mutex<std_mpsc::Receiver<NetworkBridgeEv
 pub struct NetworkCommandSender(pub std_mpsc::Sender<NetworkBridgeCommand>);
 
 /// Events flowing from the network into Bevy.
-#[derive(Debug, Clone, Event)]
+#[derive(Debug, Clone, Message)]
 pub enum NetworkBridgeEvent {
     /// A chat message arrived on a topic.
     MessageReceived {
@@ -84,7 +81,7 @@ impl Plugin for NetworkPlugin {
         app.insert_resource(LocalIdentity(identity))
             .insert_resource(NetworkEventReceiver(Arc::new(Mutex::new(event_rx))))
             .insert_resource(NetworkCommandSender(cmd_tx))
-            .add_event::<NetworkBridgeEvent>()
+            .add_message::<NetworkBridgeEvent>()
             .add_systems(Update, poll_network_events);
     }
 }
@@ -92,11 +89,11 @@ impl Plugin for NetworkPlugin {
 /// System that drains the network event channel each frame.
 fn poll_network_events(
     receiver: Res<NetworkEventReceiver>,
-    mut events: EventWriter<NetworkBridgeEvent>,
+    mut messages: MessageWriter<NetworkBridgeEvent>,
 ) {
     let Ok(rx) = receiver.0.lock() else { return };
     while let Ok(event) = rx.try_recv() {
-        events.send(event);
+        messages.write(event);
     }
 }
 

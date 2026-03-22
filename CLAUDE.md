@@ -23,7 +23,7 @@ crates/
 # Check everything compiles
 cargo check
 
-# Run all tests (60 tests across all crates)
+# Run all tests
 cargo test
 
 # Run tests for a specific crate
@@ -31,7 +31,13 @@ cargo test -p willow-messaging
 
 # Build the desktop app (requires desktop environment with GPU)
 cargo build -p willow-app
+
+# Formatting and linting (must pass with zero warnings)
+cargo fmt --check
+cargo clippy -- -D warnings
 ```
+
+**All code must pass `cargo fmt` and `cargo clippy -- -D warnings` with zero warnings before being committed.**
 
 ### System Dependencies (for Bevy app)
 

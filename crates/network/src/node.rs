@@ -6,9 +6,8 @@
 
 use anyhow::{Context, Result};
 use libp2p::{
-    gossipsub, identify, kad, mdns, noise,
-    swarm::SwarmEvent,
-    tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
+    gossipsub, identify, kad, mdns, noise, swarm::SwarmEvent, tcp, yamux, Multiaddr, PeerId, Swarm,
+    SwarmBuilder,
 };
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -105,14 +104,13 @@ impl NetworkNode {
 
         // Bootstrap Kademlia if we have known peers.
         for (peer, addr) in &config.bootstrap_peers {
-            swarm.behaviour_mut().kademlia.add_address(peer, addr.clone());
-        }
-        if !config.bootstrap_peers.is_empty() {
             swarm
                 .behaviour_mut()
                 .kademlia
-                .bootstrap()
-                .ok();
+                .add_address(peer, addr.clone());
+        }
+        if !config.bootstrap_peers.is_empty() {
+            swarm.behaviour_mut().kademlia.bootstrap().ok();
         }
 
         let (command_tx, command_rx) = mpsc::unbounded_channel();
@@ -212,11 +210,8 @@ fn build_swarm(
             let kademlia = kad::Behaviour::new(peer_id, kad::store::MemoryStore::new(peer_id));
 
             // mDNS
-            let mdns = mdns::tokio::Behaviour::new(
-                mdns::Config::default(),
-                peer_id,
-            )
-            .expect("valid mdns behaviour");
+            let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)
+                .expect("valid mdns behaviour");
 
             // Identify
             let identify = identify::Behaviour::new(identify::Config::new(

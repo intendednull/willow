@@ -118,11 +118,7 @@ impl MessageStore for InMemoryStore {
     fn list_channel(&self, channel_id: &ChannelId) -> Vec<&Message> {
         self.channel_index
             .get(channel_id)
-            .map(|ids| {
-                ids.iter()
-                    .filter_map(|id| self.messages.get(id))
-                    .collect()
-            })
+            .map(|ids| ids.iter().filter_map(|id| self.messages.get(id)).collect())
             .unwrap_or_default()
     }
 

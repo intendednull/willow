@@ -41,19 +41,7 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # Game engine / UI
-# NOTE: On a full desktop, re-enable "x11", "wayland", and "bevy_winit".
-# These are disabled here because CI/headless environments lack the system
-# libraries (libwayland-dev, libxkbcommon-dev, etc.).
-bevy = { version = "0.14", default-features = false, features = [
-    "bevy_asset",
-    "bevy_core_pipeline",
-    "bevy_render",
-    "bevy_sprite",
-    "bevy_text",
-    "bevy_ui",
-    "default_font",
-    "multi_threaded",
-] }
+bevy = "0.18"
 
 # Logging
 tracing = "0.1"

@@ -129,9 +129,7 @@ impl Default for Identity {
 
 impl std::fmt::Debug for Identity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("Identity")
-            .field(&self.peer_id())
-            .finish()
+        f.debug_tuple("Identity").field(&self.peer_id()).finish()
     }
 }
 

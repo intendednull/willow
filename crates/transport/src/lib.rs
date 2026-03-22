@@ -171,7 +171,9 @@ pub fn pack_envelope<T: Serialize>(
 ///
 /// Returns an error if the bytes are malformed, the protocol version is
 /// unsupported, or the inner payload can't be deserialized into `T`.
-pub fn unpack_envelope<T: DeserializeOwned>(data: &[u8]) -> Result<(T, MessageType), TransportError> {
+pub fn unpack_envelope<T: DeserializeOwned>(
+    data: &[u8],
+) -> Result<(T, MessageType), TransportError> {
     let envelope: Envelope = unpack(data)?;
     envelope.validate_version()?;
     let payload: T = unpack(&envelope.payload)?;

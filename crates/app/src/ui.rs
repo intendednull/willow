@@ -1,208 +1,229 @@
 //! # UI Module
 //!
 //! Top-level Bevy UI layout for the Willow chat client.
-//!
-//! ## Layout (Bevy 0.14)
-//!
-//! ```text
-//! ┌──────────┬──────────────────────────────────┐
-//! │          │  #general                         │
-//! │ Servers  │                                   │
-//! │          │  Alice: hey everyone!             │
-//! │ ──────── │  Bob: what's up?                  │
-//! │ #general │                                   │
-//! │ #random  │                                   │
-//! │ #voice   │                                   │
-//! │          │ ┌──────────────────────────────┐  │
-//! │          │ │ Type a message...            │  │
-//! │          │ └──────────────────────────────┘  │
-//! └──────────┴──────────────────────────────────┘
-//! ```
 
+use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
 
-use crate::network_bridge::{LocalIdentity, NetworkBridgeEvent};
+use crate::network_bridge::{LocalIdentity, NetworkBridgeEvent, NetworkCommandSender};
+use willow_messaging::hlc::HLC;
+use willow_messaging::{Content, Message};
+use willow_transport::{pack_envelope, unpack_envelope, MessageType};
+
+/// The gossipsub topic names for each channel.
+const CHANNELS: &[&str] = &["general", "random", "voice"];
 
 /// Plugin for all UI systems and resources.
 pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(ChatState::default())
+        app.insert_resource(ChatState::new())
+            .insert_resource(InputState::default())
             .add_systems(Startup, setup_ui)
-            .add_systems(Update, (handle_network_events, update_peer_count));
+            // Split into two add_systems calls to stay within the 8-tuple limit.
+            .add_systems(
+                Update,
+                (
+                    handle_keyboard_input,
+                    send_message,
+                    handle_network_events,
+                    handle_channel_click,
+                    sync_message_list,
+                ),
+            )
+            .add_systems(
+                Update,
+                (
+                    sync_input_text,
+                    update_peer_count,
+                    update_channel_header,
+                    update_channel_highlights,
+                ),
+            );
     }
 }
 
 // ───── Resources ─────────────────────────────────────────────────────────────
 
-/// Holds the current chat state visible to the UI.
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct ChatState {
-    /// Messages in the currently active channel.
     pub messages: Vec<ChatMessage>,
-    /// Name of the current channel.
     pub current_channel: String,
-    /// Connected peers.
     pub peers: Vec<String>,
+    pub hlc: HLC,
+    messages_dirty: bool,
 }
 
-/// A rendered chat message.
+impl ChatState {
+    fn new() -> Self {
+        Self {
+            messages: Vec::new(),
+            current_channel: CHANNELS[0].to_string(),
+            peers: Vec::new(),
+            hlc: HLC::new(),
+            messages_dirty: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
+    pub channel: String,
     pub author: String,
     pub body: String,
+    pub is_local: bool,
+}
+
+#[derive(Resource, Default)]
+struct InputState {
+    text: String,
+    send_requested: bool,
 }
 
 // ───── Components ────────────────────────────────────────────────────────────
 
-/// Marker for the message list container.
 #[derive(Component)]
 struct MessageList;
 
-/// Marker for the channel name header.
 #[derive(Component)]
 struct ChannelHeader;
 
-/// Marker for the peer count display.
 #[derive(Component)]
 struct PeerCount;
 
+#[derive(Component)]
+struct InputText;
+
+#[derive(Component)]
+struct ChannelButton(String);
+
+// ───── Helpers ──────────────────────────────────────────────────────────────
+
+fn truncate_peer_id(s: &str) -> String {
+    if s.len() > 12 {
+        format!("{}...", &s[..12])
+    } else {
+        s.to_string()
+    }
+}
+
 // ───── Systems ───────────────────────────────────────────────────────────────
 
-/// Build the initial UI layout.
-fn setup_ui(mut commands: Commands, identity: Res<LocalIdentity>) {
-    // Camera
-    commands.spawn(Camera2dBundle::default());
+fn setup_ui(
+    mut commands: Commands,
+    identity: Res<LocalIdentity>,
+    net_cmd: Res<NetworkCommandSender>,
+) {
+    commands.spawn(Camera2d);
 
-    let peer_id_str = format!("{}", identity.0.peer_id());
-    let peer_display = if peer_id_str.len() > 12 {
-        format!("{}...", &peer_id_str[..12])
-    } else {
-        peer_id_str
-    };
+    let peer_display = truncate_peer_id(&identity.0.peer_id().to_string());
 
-    // Root container — fills the window, horizontal flex.
+    for ch in CHANNELS {
+        let _ = net_cmd
+            .0
+            .send(crate::network_bridge::NetworkBridgeCommand::Subscribe(
+                ch.to_string(),
+            ));
+    }
+
+    // Root container
     commands
-        .spawn(NodeBundle {
-            style: Style {
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                flex_direction: FlexDirection::Row,
-                ..default()
-            },
+        .spawn(Node {
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            flex_direction: FlexDirection::Row,
             ..default()
         })
         .with_children(|root| {
             // ── Left sidebar ──
-            root.spawn(NodeBundle {
-                style: Style {
+            root.spawn((
+                Node {
                     width: Val::Px(220.0),
                     height: Val::Percent(100.0),
                     flex_direction: FlexDirection::Column,
                     padding: UiRect::all(Val::Px(12.0)),
                     ..default()
                 },
-                background_color: Color::srgb(0.15, 0.15, 0.18).into(),
-                ..default()
-            })
+                BackgroundColor(Color::srgb(0.15, 0.15, 0.18)),
+            ))
             .with_children(|sidebar| {
-                // App title.
-                sidebar.spawn(TextBundle::from_section(
-                    "Willow",
-                    TextStyle {
-                        font_size: 24.0,
-                        color: Color::srgb(0.9, 0.9, 0.9),
-                        ..default()
-                    },
+                sidebar.spawn((
+                    Text::new("Willow"),
+                    TextFont::from_font_size(24.0),
+                    TextColor(Color::srgb(0.9, 0.9, 0.9)),
                 ));
 
-                // Peer ID.
-                sidebar.spawn(TextBundle::from_section(
-                    format!("You: {peer_display}"),
-                    TextStyle {
-                        font_size: 11.0,
-                        color: Color::srgb(0.5, 0.5, 0.5),
-                        ..default()
-                    },
+                sidebar.spawn((
+                    Text::new(format!("You: {peer_display}")),
+                    TextFont::from_font_size(11.0),
+                    TextColor(Color::srgb(0.5, 0.5, 0.5)),
                 ));
 
-                // Spacer.
-                sidebar.spawn(NodeBundle {
-                    style: Style {
-                        height: Val::Px(20.0),
-                        ..default()
-                    },
+                sidebar.spawn(Node {
+                    height: Val::Px(20.0),
                     ..default()
                 });
 
-                // Channel list header.
-                sidebar.spawn(TextBundle::from_section(
-                    "CHANNELS",
-                    TextStyle {
-                        font_size: 11.0,
-                        color: Color::srgb(0.5, 0.5, 0.55),
-                        ..default()
-                    },
+                sidebar.spawn((
+                    Text::new("CHANNELS"),
+                    TextFont::from_font_size(11.0),
+                    TextColor(Color::srgb(0.5, 0.5, 0.55)),
                 ));
 
-                // Channel entries.
-                for name in ["# general", "# random", "# voice"] {
-                    sidebar.spawn(TextBundle {
-                        text: Text::from_section(
-                            name,
-                            TextStyle {
-                                font_size: 15.0,
-                                color: Color::srgb(0.7, 0.7, 0.7),
+                for name in CHANNELS {
+                    sidebar
+                        .spawn((
+                            Button,
+                            Node {
+                                margin: UiRect::top(Val::Px(4.0)),
+                                padding: UiRect::new(
+                                    Val::Px(8.0),
+                                    Val::Px(8.0),
+                                    Val::Px(4.0),
+                                    Val::Px(4.0),
+                                ),
                                 ..default()
                             },
-                        ),
-                        style: Style {
-                            margin: UiRect::top(Val::Px(6.0)),
-                            ..default()
-                        },
-                        ..default()
-                    });
+                            BackgroundColor(Color::NONE),
+                            ChannelButton(name.to_string()),
+                        ))
+                        .with_children(|btn| {
+                            btn.spawn((
+                                Text::new(format!("# {name}")),
+                                TextFont::from_font_size(15.0),
+                                TextColor(Color::srgb(0.7, 0.7, 0.7)),
+                            ));
+                        });
                 }
 
-                // Flexible spacer.
-                sidebar.spawn(NodeBundle {
-                    style: Style {
-                        flex_grow: 1.0,
-                        ..default()
-                    },
+                sidebar.spawn(Node {
+                    flex_grow: 1.0,
                     ..default()
                 });
 
-                // Peer count.
                 sidebar.spawn((
-                    TextBundle::from_section(
-                        "0 peers connected",
-                        TextStyle {
-                            font_size: 11.0,
-                            color: Color::srgb(0.4, 0.8, 0.4),
-                            ..default()
-                        },
-                    ),
+                    Text::new("0 peers connected"),
+                    TextFont::from_font_size(11.0),
+                    TextColor(Color::srgb(0.4, 0.8, 0.4)),
                     PeerCount,
                 ));
             });
 
             // ── Main content area ──
-            root.spawn(NodeBundle {
-                style: Style {
+            root.spawn((
+                Node {
                     flex_grow: 1.0,
                     height: Val::Percent(100.0),
                     flex_direction: FlexDirection::Column,
                     ..default()
                 },
-                background_color: Color::srgb(0.2, 0.2, 0.22).into(),
-                ..default()
-            })
+                BackgroundColor(Color::srgb(0.2, 0.2, 0.22)),
+            ))
             .with_children(|main| {
-                // Channel header bar.
-                main.spawn(NodeBundle {
-                    style: Style {
+                // Channel header bar
+                main.spawn((
+                    Node {
                         width: Val::Percent(100.0),
                         height: Val::Px(48.0),
                         padding: UiRect::horizontal(Val::Px(16.0)),
@@ -210,81 +231,58 @@ fn setup_ui(mut commands: Commands, identity: Res<LocalIdentity>) {
                         border: UiRect::bottom(Val::Px(1.0)),
                         ..default()
                     },
-                    border_color: Color::srgb(0.15, 0.15, 0.18).into(),
-                    ..default()
-                })
+                    BorderColor::all(Color::srgb(0.15, 0.15, 0.18)),
+                ))
                 .with_children(|header| {
                     header.spawn((
-                        TextBundle::from_section(
-                            "# general",
-                            TextStyle {
-                                font_size: 18.0,
-                                color: Color::srgb(0.9, 0.9, 0.9),
-                                ..default()
-                            },
-                        ),
+                        Text::new(format!("# {}", CHANNELS[0])),
+                        TextFont::from_font_size(18.0),
+                        TextColor(Color::srgb(0.9, 0.9, 0.9)),
                         ChannelHeader,
                     ));
                 });
 
-                // Message area.
+                // Message area
                 main.spawn((
-                    NodeBundle {
-                        style: Style {
-                            flex_grow: 1.0,
-                            width: Val::Percent(100.0),
-                            flex_direction: FlexDirection::Column,
-                            padding: UiRect::all(Val::Px(16.0)),
-                            overflow: Overflow::clip_y(),
-                            ..default()
-                        },
+                    Node {
+                        flex_grow: 1.0,
+                        width: Val::Percent(100.0),
+                        flex_direction: FlexDirection::ColumnReverse,
+                        padding: UiRect::all(Val::Px(16.0)),
+                        overflow: Overflow::clip_y(),
                         ..default()
                     },
                     MessageList,
-                ))
-                .with_children(|messages| {
-                    messages.spawn(TextBundle::from_section(
-                        "Welcome to Willow! This is a P2P chat — no servers, no middlemen.",
-                        TextStyle {
-                            font_size: 14.0,
-                            color: Color::srgb(0.5, 0.5, 0.55),
-                            ..default()
-                        },
-                    ));
-                });
+                ));
 
-                // Input area.
-                main.spawn(NodeBundle {
-                    style: Style {
+                // Input area
+                main.spawn((
+                    Node {
                         width: Val::Percent(100.0),
-                        height: Val::Px(56.0),
+                        min_height: Val::Px(56.0),
                         padding: UiRect::all(Val::Px(12.0)),
                         ..default()
                     },
-                    background_color: Color::srgb(0.17, 0.17, 0.19).into(),
-                    ..default()
-                })
+                    BackgroundColor(Color::srgb(0.17, 0.17, 0.19)),
+                ))
                 .with_children(|input_area| {
                     input_area
-                        .spawn(NodeBundle {
-                            style: Style {
+                        .spawn((
+                            Node {
                                 width: Val::Percent(100.0),
-                                height: Val::Percent(100.0),
+                                min_height: Val::Px(32.0),
                                 padding: UiRect::horizontal(Val::Px(12.0)),
                                 align_items: AlignItems::Center,
                                 ..default()
                             },
-                            background_color: Color::srgb(0.25, 0.25, 0.28).into(),
-                            ..default()
-                        })
+                            BackgroundColor(Color::srgb(0.25, 0.25, 0.28)),
+                        ))
                         .with_children(|input| {
-                            input.spawn(TextBundle::from_section(
-                                "Type a message... (input coming soon)",
-                                TextStyle {
-                                    font_size: 14.0,
-                                    color: Color::srgb(0.45, 0.45, 0.48),
-                                    ..default()
-                                },
+                            input.spawn((
+                                Text::new("Type a message..."),
+                                TextFont::from_font_size(14.0),
+                                TextColor(Color::srgb(0.45, 0.45, 0.48)),
+                                InputText,
                             ));
                         });
                 });
@@ -292,28 +290,102 @@ fn setup_ui(mut commands: Commands, identity: Res<LocalIdentity>) {
         });
 }
 
-/// Process incoming network events and update the chat state.
+fn handle_keyboard_input(
+    mut key_events: MessageReader<KeyboardInput>,
+    mut input: ResMut<InputState>,
+) {
+    for event in key_events.read() {
+        if !event.state.is_pressed() {
+            continue;
+        }
+        match event.key_code {
+            KeyCode::Enter => {
+                if !input.text.is_empty() {
+                    input.send_requested = true;
+                }
+            }
+            KeyCode::Backspace => {
+                input.text.pop();
+            }
+            _ => {
+                if let Some(ref s) = event.text {
+                    for c in s.chars() {
+                        if !c.is_control() {
+                            input.text.push(c);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn send_message(
+    mut input: ResMut<InputState>,
+    mut state: ResMut<ChatState>,
+    identity: Res<LocalIdentity>,
+    net_cmd: Res<NetworkCommandSender>,
+) {
+    if !input.send_requested {
+        return;
+    }
+    input.send_requested = false;
+
+    let body = input.text.drain(..).collect::<String>();
+    if body.is_empty() {
+        return;
+    }
+
+    let channel = state.current_channel.clone();
+    let peer_id = identity.0.peer_id();
+
+    let channel_id = willow_messaging::ChannelId::new();
+    let msg = Message::text(channel_id, peer_id.clone(), &body, &mut state.hlc);
+
+    if let Ok(data) = pack_envelope(MessageType::Chat, &msg) {
+        let _ = net_cmd
+            .0
+            .send(crate::network_bridge::NetworkBridgeCommand::Publish {
+                topic: channel.clone(),
+                data,
+            });
+    }
+
+    state.messages.push(ChatMessage {
+        channel,
+        author: truncate_peer_id(&peer_id.to_string()),
+        body,
+        is_local: true,
+    });
+    state.messages_dirty = true;
+}
+
 fn handle_network_events(
-    mut events: EventReader<NetworkBridgeEvent>,
+    mut reader: MessageReader<NetworkBridgeEvent>,
     mut state: ResMut<ChatState>,
 ) {
-    for event in events.read() {
+    for event in reader.read() {
         match event {
-            NetworkBridgeEvent::MessageReceived { data, source, .. } => {
-                if let Ok(body) = String::from_utf8(data.clone()) {
-                    state.messages.push(ChatMessage {
-                        author: source
+            NetworkBridgeEvent::MessageReceived {
+                topic,
+                data,
+                source,
+            } => {
+                if let Ok((msg, MessageType::Chat)) = unpack_envelope::<Message>(data) {
+                    if let Content::Text { ref body } = msg.content {
+                        let author = source
                             .as_ref()
-                            .map(|s| {
-                                if s.len() > 12 {
-                                    format!("{}...", &s[..12])
-                                } else {
-                                    s.clone()
-                                }
-                            })
-                            .unwrap_or_else(|| "unknown".into()),
-                        body,
-                    });
+                            .map(|s| truncate_peer_id(s))
+                            .unwrap_or_else(|| "unknown".into());
+                        state.messages.push(ChatMessage {
+                            channel: topic.clone(),
+                            author,
+                            body: body.clone(),
+                            is_local: false,
+                        });
+                        state.messages_dirty = true;
+                        state.hlc.receive(msg.hlc);
+                    }
                 }
             }
             NetworkBridgeEvent::PeerConnected(peer) => {
@@ -324,17 +396,145 @@ fn handle_network_events(
             NetworkBridgeEvent::PeerDisconnected(peer) => {
                 state.peers.retain(|p| p != peer);
             }
-            _ => {}
+            NetworkBridgeEvent::Listening(addr) => {
+                info!("Listening on {addr}");
+            }
         }
     }
 }
 
-/// Update the peer count label when state changes.
+fn handle_channel_click(
+    interaction_query: Query<(&Interaction, &ChannelButton), Changed<Interaction>>,
+    mut state: ResMut<ChatState>,
+) {
+    for (interaction, button) in &interaction_query {
+        if *interaction == Interaction::Pressed && state.current_channel != button.0 {
+            state.current_channel = button.0.clone();
+            state.messages_dirty = true;
+        }
+    }
+}
+
+fn sync_message_list(
+    mut commands: Commands,
+    mut state: ResMut<ChatState>,
+    list_query: Query<Entity, With<MessageList>>,
+) {
+    if !state.messages_dirty {
+        return;
+    }
+    state.messages_dirty = false;
+
+    let Ok(list_entity) = list_query.single() else {
+        return;
+    };
+
+    commands.entity(list_entity).detach_all_children();
+
+    let current = &state.current_channel;
+    let visible: Vec<_> = state
+        .messages
+        .iter()
+        .filter(|m| m.channel == *current)
+        .collect();
+
+    if visible.is_empty() {
+        commands.entity(list_entity).with_children(|parent| {
+            parent.spawn((
+                Text::new(format!(
+                    "Welcome to #{}! This is a P2P chat — no servers, no middlemen.",
+                    current
+                )),
+                TextFont::from_font_size(14.0),
+                TextColor(Color::srgb(0.5, 0.5, 0.55)),
+            ));
+        });
+        return;
+    }
+
+    commands.entity(list_entity).with_children(|parent| {
+        for msg in &visible {
+            let author_color = if msg.is_local {
+                Color::srgb(0.5, 0.7, 1.0)
+            } else {
+                Color::srgb(0.9, 0.7, 0.4)
+            };
+
+            parent
+                .spawn(Node {
+                    margin: UiRect::bottom(Val::Px(4.0)),
+                    ..default()
+                })
+                .with_children(|row| {
+                    row.spawn((
+                        Text::new(format!("{}: ", msg.author)),
+                        TextFont::from_font_size(14.0),
+                        TextColor(author_color),
+                    ))
+                    .with_child((
+                        TextSpan::new(&msg.body),
+                        TextFont::from_font_size(14.0),
+                        TextColor(Color::srgb(0.85, 0.85, 0.85)),
+                    ));
+                });
+        }
+    });
+}
+
+fn sync_input_text(
+    input: Res<InputState>,
+    mut query: Query<(&mut Text, &mut TextColor), With<InputText>>,
+) {
+    if !input.is_changed() {
+        return;
+    }
+    for (mut text, mut color) in &mut query {
+        if input.text.is_empty() {
+            **text = "Type a message...".to_string();
+            *color = TextColor(Color::srgb(0.45, 0.45, 0.48));
+        } else {
+            **text = input.text.clone();
+            *color = TextColor(Color::srgb(0.9, 0.9, 0.9));
+        }
+    }
+}
+
 fn update_peer_count(state: Res<ChatState>, mut query: Query<&mut Text, With<PeerCount>>) {
     if !state.is_changed() {
         return;
     }
     for mut text in &mut query {
-        text.sections[0].value = format!("{} peer(s) connected", state.peers.len());
+        **text = format!("{} peer(s) connected", state.peers.len());
+    }
+}
+
+fn update_channel_header(state: Res<ChatState>, mut query: Query<&mut Text, With<ChannelHeader>>) {
+    if !state.is_changed() {
+        return;
+    }
+    for mut text in &mut query {
+        **text = format!("# {}", state.current_channel);
+    }
+}
+
+fn update_channel_highlights(
+    state: Res<ChatState>,
+    query: Query<(&ChannelButton, &Children)>,
+    mut text_query: Query<&mut TextColor>,
+) {
+    if !state.is_changed() {
+        return;
+    }
+    for (button, children) in &query {
+        let is_active = button.0 == state.current_channel;
+        for child in children.iter() {
+            if let Ok(mut color) = text_query.get_mut(child) {
+                *color = if is_active {
+                    TextColor(Color::WHITE)
+                } else {
+                    TextColor(Color::srgb(0.7, 0.7, 0.7))
+                };
+            }
+        }
     }
 }
