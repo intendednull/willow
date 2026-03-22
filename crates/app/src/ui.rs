@@ -363,13 +363,16 @@ pub(crate) fn send_message(
         }
     }
 
-    if let Ok(data) = pack_envelope(MessageType::Chat, &msg) {
-        let _ = net_cmd
-            .0
-            .send(crate::network_bridge::NetworkBridgeCommand::Publish {
-                topic: channel.clone(),
-                data,
-            });
+    if let Ok(envelope_data) = pack_envelope(MessageType::Chat, &msg) {
+        // Sign the envelope with our Ed25519 key for author verification.
+        if let Ok(signed_data) = willow_identity::pack(&envelope_data, &identity.0) {
+            let _ = net_cmd
+                .0
+                .send(crate::network_bridge::NetworkBridgeCommand::Publish {
+                    topic: channel.clone(),
+                    data: signed_data,
+                });
+        }
     }
 
     state.messages.push(ChatMessage {
@@ -391,11 +394,19 @@ pub(crate) fn handle_network_events(
             NetworkBridgeEvent::MessageReceived {
                 topic,
                 data,
-                source,
+                source: _,
             } => {
-                let Ok((msg, MessageType::Chat)) = unpack_envelope::<Message>(data) else {
+                // Verify Ed25519 signature and extract the signed envelope bytes.
+                let Ok((envelope_data, signer)) = willow_identity::unpack::<Vec<u8>>(data) else {
+                    continue; // invalid or missing signature
+                };
+
+                let Ok((msg, MessageType::Chat)) = unpack_envelope::<Message>(&envelope_data)
+                else {
                     continue;
                 };
+
+                let _ = &signer; // verified author PeerId
 
                 // Decrypt if encrypted, pass through if cleartext.
                 let content = match &msg.content {
@@ -412,10 +423,7 @@ pub(crate) fn handle_network_events(
                 };
 
                 if let Content::Text { ref body } = content {
-                    let author = source
-                        .as_ref()
-                        .map(|s| truncate_peer_id(s))
-                        .unwrap_or_else(|| "unknown".into());
+                    let author = truncate_peer_id(&signer.to_string());
                     state.messages.push(ChatMessage {
                         channel: topic.clone(),
                         author,

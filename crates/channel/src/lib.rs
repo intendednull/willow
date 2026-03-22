@@ -288,7 +288,10 @@ impl Member {
 // ───── Invite ────────────────────────────────────────────────────────────────
 
 /// A signed token granting the bearer permission to join a server.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// When created with [`Server::create_invite_for`], the invite includes
+/// encrypted channel keys so the new member can decrypt messages.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Invite {
     /// Unique ID.
     pub id: InviteId,
@@ -304,6 +307,10 @@ pub struct Invite {
     pub max_uses: Option<u32>,
     /// How many times this invite has been used.
     pub uses: u32,
+    /// Encrypted channel keys for the recipient. Each entry wraps a
+    /// channel's symmetric key using the recipient's X25519 public key.
+    #[serde(default)]
+    pub encrypted_keys: Vec<(ChannelId, willow_crypto::EncryptedChannelKey)>,
 }
 
 impl Invite {
@@ -346,6 +353,11 @@ pub struct Server {
     roles: HashMap<RoleId, Role>,
     members: HashMap<PeerId, Member>,
     invites: HashMap<InviteId, Invite>,
+
+    /// Per-channel symmetric encryption keys. Not serialized — keys are
+    /// distributed via invites and stored locally.
+    #[serde(skip)]
+    channel_keys: HashMap<ChannelId, willow_crypto::ChannelKey>,
 }
 
 impl Server {
@@ -364,6 +376,7 @@ impl Server {
             roles: HashMap::new(),
             members,
             invites: HashMap::new(),
+            channel_keys: HashMap::new(),
         }
     }
 
@@ -417,7 +430,8 @@ impl Server {
 
     // ── Mutations ────────────────────────────────────────────────────────
 
-    /// Create a new channel in this server.
+    /// Create a new channel in this server. Generates and stores a
+    /// symmetric encryption key for the channel.
     pub fn create_channel(
         &mut self,
         name: impl Into<String>,
@@ -425,15 +439,26 @@ impl Server {
     ) -> Result<ChannelId, ChannelError> {
         let name = name.into();
 
-        // Prevent duplicate channel names.
         if self.channels.values().any(|ch| ch.name == name) {
             return Err(ChannelError::DuplicateChannelName(name));
         }
 
         let channel = Channel::new(name, kind);
         let id = channel.id.clone();
+        self.channel_keys
+            .insert(id.clone(), willow_crypto::generate_channel_key());
         self.channels.insert(id.clone(), channel);
         Ok(id)
+    }
+
+    /// Get the encryption key for a channel.
+    pub fn channel_key(&self, id: &ChannelId) -> Option<&willow_crypto::ChannelKey> {
+        self.channel_keys.get(id)
+    }
+
+    /// Store a channel key (e.g. after decrypting from an invite).
+    pub fn set_channel_key(&mut self, id: ChannelId, key: willow_crypto::ChannelKey) {
+        self.channel_keys.insert(id, key);
     }
 
     /// Delete a channel by ID.
@@ -488,7 +513,7 @@ impl Server {
             .ok_or_else(|| ChannelError::NotAMember(peer.clone()))
     }
 
-    /// Create a new invite for this server.
+    /// Create an invite without encrypted keys (for backwards compat / tests).
     pub fn create_invite(
         &mut self,
         created_by: PeerId,
@@ -507,11 +532,56 @@ impl Server {
             expires_at,
             max_uses,
             uses: 0,
+            encrypted_keys: Vec::new(),
         };
 
         let id = invite.id.clone();
         self.invites.insert(id.clone(), invite);
         Ok(id)
+    }
+
+    /// Create an invite with encrypted channel keys for a specific recipient.
+    ///
+    /// The `recipient_ed25519_public` is the recipient's 32-byte Ed25519
+    /// public key. Each channel's symmetric key is encrypted using ephemeral
+    /// X25519 DH so only the intended recipient can decrypt.
+    pub fn create_invite_for(
+        &mut self,
+        created_by: PeerId,
+        recipient_ed25519_public: &[u8; 32],
+        expires_at: Option<DateTime<Utc>>,
+        max_uses: Option<u32>,
+    ) -> Result<InviteId, ChannelError> {
+        if !self.is_member(&created_by) {
+            return Err(ChannelError::NotAMember(created_by));
+        }
+
+        let mut encrypted_keys = Vec::new();
+        for (channel_id, key) in &self.channel_keys {
+            if let Ok(enc) = willow_crypto::encrypt_channel_key_for(key, recipient_ed25519_public) {
+                encrypted_keys.push((channel_id.clone(), enc));
+            }
+        }
+
+        let invite = Invite {
+            id: InviteId::new(),
+            server_id: self.id.clone(),
+            created_by,
+            created_at: Utc::now(),
+            expires_at,
+            max_uses,
+            uses: 0,
+            encrypted_keys,
+        };
+
+        let id = invite.id.clone();
+        self.invites.insert(id.clone(), invite);
+        Ok(id)
+    }
+
+    /// Get an invite by ID.
+    pub fn invite(&self, id: &InviteId) -> Option<&Invite> {
+        self.invites.get(id)
     }
 
     /// Use an invite to add a new member.
@@ -722,5 +792,40 @@ mod tests {
 
         assert_eq!(decoded.name, server.name);
         assert_eq!(decoded.channels().len(), 1);
+    }
+
+    #[test]
+    fn create_channel_generates_key() {
+        let (_, mut server) = owner_and_server();
+        let ch_id = server.create_channel("secret", ChannelKind::Text).unwrap();
+        assert!(server.channel_key(&ch_id).is_some());
+    }
+
+    #[test]
+    fn invite_with_encrypted_keys_round_trip() {
+        let (owner, mut server) = owner_and_server();
+        let ch_id = server.create_channel("general", ChannelKind::Text).unwrap();
+
+        let newcomer = Identity::generate();
+        let ed_kp = newcomer.keypair().clone().try_into_ed25519().unwrap();
+        let full = ed_kp.to_bytes();
+        let mut pub_bytes = [0u8; 32];
+        pub_bytes.copy_from_slice(&full[32..]);
+
+        let invite_id = server
+            .create_invite_for(owner, &pub_bytes, None, Some(1))
+            .unwrap();
+
+        let invite = server.invite(&invite_id).unwrap();
+        assert_eq!(invite.encrypted_keys.len(), 1);
+        assert_eq!(invite.encrypted_keys[0].0, ch_id);
+
+        // Newcomer can decrypt the channel key.
+        let decrypted =
+            willow_crypto::decrypt_channel_key(&invite.encrypted_keys[0].1, &newcomer).unwrap();
+
+        // Verify it matches the original.
+        let original = server.channel_key(&ch_id).unwrap();
+        assert_eq!(decrypted.as_bytes(), original.as_bytes());
     }
 }

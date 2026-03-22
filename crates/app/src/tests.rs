@@ -45,6 +45,12 @@ fn test_app() -> (App, std_mpsc::Receiver<NetworkBridgeCommand>) {
     (app, cmd_rx)
 }
 
+/// Create a signed envelope from a message and identity.
+fn sign_envelope(msg: &Message, identity: &Identity) -> Vec<u8> {
+    let envelope_data = pack_envelope(MessageType::Chat, msg).unwrap();
+    willow_identity::pack(&envelope_data, identity).unwrap()
+}
+
 fn send_key(app: &mut App, key_code: KeyCode, text: Option<&str>) {
     let text = text.map(|s| s.into());
     app.world_mut().write_message(KeyboardInput {
@@ -160,8 +166,10 @@ fn sent_message_is_valid_envelope() {
 
     let cmd = cmd_rx.try_recv().unwrap();
     if let NetworkBridgeCommand::Publish { data, .. } = cmd {
-        let (msg, msg_type) =
-            willow_transport::unpack_envelope::<Message>(&data).expect("valid envelope");
+        // Verify signature first, then unpack envelope.
+        let (envelope_data, _signer) =
+            willow_identity::unpack::<Vec<u8>>(&data).expect("valid signature");
+        let (msg, msg_type) = unpack_envelope::<Message>(&envelope_data).expect("valid envelope");
         assert_eq!(msg_type, MessageType::Chat);
         assert!(matches!(msg.content, Content::Text { ref body } if body == "x"));
     } else {
@@ -184,7 +192,7 @@ fn incoming_chat_message_added_to_state() {
         "hello from remote",
         &mut hlc,
     );
-    let data = pack_envelope(MessageType::Chat, &msg).unwrap();
+    let data = sign_envelope(&msg, &remote);
 
     app.world_mut()
         .write_message(NetworkBridgeEvent::MessageReceived {
@@ -210,7 +218,7 @@ fn incoming_message_updates_hlc() {
     let mut hlc = HLC::new();
     let msg = Message::text(ChannelId::new(), remote.peer_id(), "sync clock", &mut hlc);
     let remote_hlc = msg.hlc;
-    let data = pack_envelope(MessageType::Chat, &msg).unwrap();
+    let data = sign_envelope(&msg, &remote);
 
     app.world_mut()
         .write_message(NetworkBridgeEvent::MessageReceived {
@@ -222,7 +230,6 @@ fn incoming_message_updates_hlc() {
     app.update();
 
     let state = app.world().resource::<ChatState>();
-    // Our HLC should have advanced past the remote timestamp.
     assert!(state.hlc.latest() > remote_hlc);
 }
 
@@ -343,7 +350,9 @@ fn send_message_encrypts_content_when_key_present() {
 
     let cmd = cmd_rx.try_recv().expect("expected publish");
     if let NetworkBridgeCommand::Publish { data, .. } = cmd {
-        let (msg, _) = unpack_envelope::<Message>(&data).expect("valid envelope");
+        let (envelope_data, _) =
+            willow_identity::unpack::<Vec<u8>>(&data).expect("valid signature");
+        let (msg, _) = unpack_envelope::<Message>(&envelope_data).expect("valid envelope");
         assert!(
             matches!(msg.content, Content::Encrypted(_)),
             "content should be encrypted when key is present"
@@ -356,7 +365,6 @@ fn send_message_encrypts_content_when_key_present() {
 #[test]
 fn send_message_plaintext_when_no_key() {
     let (mut app, cmd_rx) = test_app();
-    // No key installed — message should be plaintext.
 
     send_key(&mut app, KeyCode::KeyX, Some("x"));
     app.update();
@@ -366,7 +374,9 @@ fn send_message_plaintext_when_no_key() {
 
     let cmd = cmd_rx.try_recv().expect("expected publish");
     if let NetworkBridgeCommand::Publish { data, .. } = cmd {
-        let (msg, _) = unpack_envelope::<Message>(&data).expect("valid envelope");
+        let (envelope_data, _) =
+            willow_identity::unpack::<Vec<u8>>(&data).expect("valid signature");
+        let (msg, _) = unpack_envelope::<Message>(&envelope_data).expect("valid envelope");
         assert!(
             matches!(msg.content, Content::Text { .. }),
             "content should be plaintext when no key"
@@ -395,7 +405,7 @@ fn receive_encrypted_message_decrypts() {
     let sealed = seal_content(&plaintext_content, &key, 0).unwrap();
     let mut msg = Message::text(ChannelId::new(), remote.peer_id(), "placeholder", &mut hlc);
     msg.content = Content::Encrypted(sealed);
-    let data = pack_envelope(MessageType::Chat, &msg).unwrap();
+    let data = sign_envelope(&msg, &remote);
 
     app.world_mut()
         .write_message(NetworkBridgeEvent::MessageReceived {
@@ -433,7 +443,7 @@ fn receive_encrypted_message_wrong_key_ignored() {
     .unwrap();
     let mut msg = Message::text(ChannelId::new(), remote.peer_id(), "x", &mut hlc);
     msg.content = Content::Encrypted(sealed);
-    let data = pack_envelope(MessageType::Chat, &msg).unwrap();
+    let data = sign_envelope(&msg, &remote);
 
     app.world_mut()
         .write_message(NetworkBridgeEvent::MessageReceived {
@@ -469,7 +479,7 @@ fn receive_unencrypted_message_still_works() {
         "plaintext msg",
         &mut hlc,
     );
-    let data = pack_envelope(MessageType::Chat, &msg).unwrap();
+    let data = sign_envelope(&msg, &remote);
 
     app.world_mut()
         .write_message(NetworkBridgeEvent::MessageReceived {
@@ -482,4 +492,29 @@ fn receive_unencrypted_message_still_works() {
     let state = app.world().resource::<ChatState>();
     assert_eq!(state.messages.len(), 1);
     assert_eq!(state.messages[0].body, "plaintext msg");
+}
+
+#[test]
+fn unsigned_message_is_rejected() {
+    let (mut app, _rx) = test_app();
+
+    let remote = Identity::generate();
+    let mut hlc = HLC::new();
+    let msg = Message::text(ChannelId::new(), remote.peer_id(), "no sig", &mut hlc);
+    // Send raw envelope without signing.
+    let data = pack_envelope(MessageType::Chat, &msg).unwrap();
+
+    app.world_mut()
+        .write_message(NetworkBridgeEvent::MessageReceived {
+            topic: "general".into(),
+            data,
+            source: Some(remote.peer_id().to_string()),
+        });
+    app.update();
+
+    let state = app.world().resource::<ChatState>();
+    assert!(
+        state.messages.is_empty(),
+        "unsigned messages should be rejected"
+    );
 }

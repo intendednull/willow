@@ -205,3 +205,93 @@ async fn channels_are_isolated() {
 
     assert!(result.is_err(), "A should not receive messages on 'beta'");
 }
+
+#[tokio::test]
+async fn signed_and_encrypted_message_round_trip() {
+    let id_a = Identity::generate();
+    let id_b = Identity::generate();
+
+    let (node_a, mut events_a) = start_node(&id_a).await;
+    let (node_b, mut events_b) = start_node(&id_b).await;
+    connect_nodes(&node_a, &mut events_a, &node_b, &mut events_b).await;
+
+    let topic = "encrypted-signed-test";
+    node_a.subscribe(topic).expect("sub a");
+    node_b.subscribe(topic).expect("sub b");
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    // Shared channel key.
+    let channel_key = willow_crypto::generate_channel_key();
+
+    // A creates, encrypts, and signs a message.
+    let mut hlc = HLC::new();
+    let msg = Message::text(ChannelId::new(), id_a.peer_id(), "top secret!", &mut hlc);
+    let sealed = willow_crypto::seal_content(&msg.content, &channel_key, 0).expect("seal");
+    let mut encrypted_msg = msg.clone();
+    encrypted_msg.content = Content::Encrypted(sealed);
+
+    let envelope_bytes = pack_envelope(MessageType::Chat, &encrypted_msg).expect("pack");
+    let signed_bytes = willow_identity::pack(&envelope_bytes, &id_a).expect("sign");
+
+    node_a.publish(topic, signed_bytes).expect("publish");
+
+    // B receives, verifies signature, unpacks envelope, decrypts content.
+    let (_topic, data) = wait_for_message(&mut events_b).await;
+
+    let (envelope_data, signer) =
+        willow_identity::unpack::<Vec<u8>>(&data).expect("verify signature");
+    assert_eq!(signer, id_a.peer_id());
+
+    let (decoded, msg_type) = unpack_envelope::<Message>(&envelope_data).expect("unpack envelope");
+    assert_eq!(msg_type, MessageType::Chat);
+
+    let content = match &decoded.content {
+        Content::Encrypted(sealed) => {
+            willow_crypto::open_content(sealed, &channel_key).expect("decrypt")
+        }
+        other => other.clone(),
+    };
+    assert!(matches!(content, Content::Text { ref body } if body == "top secret!"));
+}
+
+#[tokio::test]
+async fn encrypted_message_unreadable_without_key() {
+    let id_a = Identity::generate();
+    let id_b = Identity::generate();
+
+    let (node_a, mut events_a) = start_node(&id_a).await;
+    let (node_b, mut events_b) = start_node(&id_b).await;
+    connect_nodes(&node_a, &mut events_a, &node_b, &mut events_b).await;
+
+    let topic = "no-key-test";
+    node_a.subscribe(topic).expect("sub a");
+    node_b.subscribe(topic).expect("sub b");
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    let channel_key = willow_crypto::generate_channel_key();
+    let wrong_key = willow_crypto::generate_channel_key();
+
+    let mut hlc = HLC::new();
+    let msg = Message::text(ChannelId::new(), id_a.peer_id(), "secret", &mut hlc);
+    let sealed = willow_crypto::seal_content(&msg.content, &channel_key, 0).expect("seal");
+    let mut encrypted_msg = msg;
+    encrypted_msg.content = Content::Encrypted(sealed);
+
+    let envelope_bytes = pack_envelope(MessageType::Chat, &encrypted_msg).expect("pack");
+    let signed_bytes = willow_identity::pack(&envelope_bytes, &id_a).expect("sign");
+
+    node_a.publish(topic, signed_bytes).expect("publish");
+
+    // B receives the message but cannot decrypt with the wrong key.
+    let (_topic, data) = wait_for_message(&mut events_b).await;
+
+    let (envelope_data, _) = willow_identity::unpack::<Vec<u8>>(&data).expect("signature valid");
+    let (decoded, _) = unpack_envelope::<Message>(&envelope_data).expect("envelope valid");
+
+    if let Content::Encrypted(sealed) = &decoded.content {
+        let result = willow_crypto::open_content(sealed, &wrong_key);
+        assert!(result.is_err(), "decryption with wrong key should fail");
+    } else {
+        panic!("expected encrypted content");
+    }
+}

@@ -23,6 +23,10 @@ A native desktop app where you and your friends can:
 │              Application Layer                   │
 │   willow-channel │ willow-messaging              │
 ├─────────────────────────────────────────────────┤
+│              Crypto Layer                        │
+│   willow-crypto (ChaCha20-Poly1305, X25519)      │
+│   Content encryption │ Key exchange │ Signing     │
+├─────────────────────────────────────────────────┤
 │              Media Layer (future)                │
 │   WebRTC voice/video │ File chunking             │
 ├─────────────────────────────────────────────────┤
@@ -40,12 +44,13 @@ A native desktop app where you and your friends can:
 
 | Crate | Purpose | Status |
 |-------|---------|--------|
-| `willow-transport` | Binary serialization, protocol versioning, message framing | ✅ Done |
-| `willow-identity` | Ed25519 keypairs, signed messages, user profiles | ✅ Done |
-| `willow-messaging` | Chat messages, HLC ordering, message store | ✅ Done |
-| `willow-channel` | Servers, channels, roles, permissions, invites | ✅ Done |
-| `willow-network` | libp2p networking (GossipSub, Kademlia, mDNS, Relay) | ✅ Done |
-| `willow-app` | Bevy-based native desktop UI | ✅ Scaffold done |
+| `willow-transport` | Binary serialization, protocol versioning, message framing | Done |
+| `willow-identity` | Ed25519 keypairs, signed messages, user profiles | Done |
+| `willow-messaging` | Chat messages, HLC ordering, message store, SealedContent | Done |
+| `willow-crypto` | E2E encryption (ChaCha20-Poly1305), X25519 key exchange | Done |
+| `willow-channel` | Servers, channels, roles, permissions, invites with encrypted keys | Done |
+| `willow-network` | libp2p networking (GossipSub, Kademlia, mDNS, Relay) | Done |
+| `willow-app` | Bevy-based native desktop UI with encrypted chat | Done |
 
 ## Roadmap
 
@@ -55,25 +60,48 @@ A native desktop app where you and your friends can:
 - [x] Message model with Hybrid Logical Clock ordering
 - [x] Channel/server/role/permission model
 - [x] libp2p networking with GossipSub, Kademlia, mDNS
-- [x] Bevy app scaffold with sidebar + chat layout
 
-### Phase 2 — Working Chat
-- [ ] Wire up network ↔ messaging: publish/receive messages over GossipSub
-- [ ] Text input in Bevy UI (keyboard capture, text editing)
-- [ ] Message rendering (scrollable list, timestamps, author names)
-- [ ] Channel switching in the sidebar
+### Phase 2 — Working Chat (COMPLETE)
+- [x] Wire up network <> messaging: publish/receive messages over GossipSub
+- [x] Text input in Bevy UI (keyboard capture)
+- [x] Message rendering (scrollable list, author names)
+- [x] Channel switching in the sidebar
+- [x] Bevy 0.18 upgrade with modern component-based API
+- [x] Headless UI testing with MinimalPlugins
+- [x] Full integration tests with real libp2p network nodes
+
+### Phase 3 — E2E Encryption (COMPLETE)
+- [x] `willow-crypto` crate: ChaCha20-Poly1305 content encryption
+- [x] Per-channel symmetric keys with `ChannelKey` type
+- [x] X25519 key exchange (Ed25519 → X25519 conversion)
+- [x] Encrypted key distribution via invite system
+- [x] Message-level Ed25519 signatures (author verification)
+- [x] `Content::Encrypted(SealedContent)` variant with `key_epoch`
+- [x] Transparent encrypt-on-send, decrypt-on-receive pipeline
+- [x] Backwards compatibility: unsigned/unencrypted messages still accepted
+- [x] Integration tests: encrypted+signed round-trip over real network
+
+### Phase 4 — Forward Secrecy & Key Rotation
+- [ ] Evaluate p2panda-encryption or Decentralized MLS (DMLS)
+- [ ] Key rotation on member removal (re-key channel)
+- [ ] Per-message forward secrecy (Double Ratchet or DCGKA)
+- [ ] DM encryption (1:1 via X25519 DH)
+
+### Phase 5 — Persistence & Profiles
 - [ ] Server creation and invite flow in the UI
 - [ ] Persist messages to disk (SQLite or sled)
+- [ ] Secure local key storage
 - [ ] Profile editing (display name, avatar)
+- [ ] Encrypted metadata (topic obfuscation)
 
-### Phase 3 — File Sharing
+### Phase 6 — File Sharing
 - [ ] `willow-files` crate — content-addressed chunked file storage
 - [ ] File transfer protocol over libp2p streams
 - [ ] Drag-and-drop file upload in Bevy
 - [ ] Inline image/video previews
 - [ ] Peers seed files they've downloaded (BitTorrent-style)
 
-### Phase 4 — Voice & Video
+### Phase 7 — Voice & Video
 - [ ] `willow-media` crate — WebRTC-like media transport
 - [ ] Voice channels with Opus audio
 - [ ] Video with VP8/VP9
@@ -81,13 +109,12 @@ A native desktop app where you and your friends can:
 - [ ] Mesh topology for small groups (≤8 peers)
 - [ ] Push-to-talk and voice activity detection
 
-### Phase 5 — Polish
+### Phase 8 — Polish
 - [ ] Custom emoji (shared as files, referenced by shortcode)
 - [ ] Emoji reactions on messages
 - [ ] Message search
 - [ ] Notification system
 - [ ] Themes and UI customization
-- [ ] End-to-end encryption with per-channel group keys
 - [ ] Optional relay node for offline message delivery
 
 ## Key Technical Decisions
@@ -95,13 +122,14 @@ A native desktop app where you and your friends can:
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Language | Rust | Memory safety, performance, async ecosystem |
-| UI Framework | Bevy | GPU-accelerated, ECS state management, native + WASM |
+| UI Framework | Bevy 0.18 | GPU-accelerated, ECS state management, native + WASM |
 | Networking | libp2p | Battle-tested P2P stack, NAT traversal, encryption |
 | Async Runtime | tokio | Standard for Rust async, full-featured |
 | Message Ordering | Hybrid Logical Clocks | Consistent ordering without central coordination |
-| State Sync | CRDTs (future) | Convergent state across disconnected peers |
+| Encryption | ChaCha20-Poly1305 + X25519 | AEAD symmetric encryption + DH key exchange |
+| Key Distribution | X25519 via invites | No central key server needed |
+| Signing | Ed25519 | Fast signing, small keys, message authenticity |
 | Serialization | bincode | Fast, compact binary format |
-| Crypto | Ed25519 | Fast signing, small keys, well-audited |
 
 ## Honest Tradeoffs
 
@@ -113,3 +141,6 @@ A native desktop app where you and your friends can:
   need an SFU, which reintroduces a server.
 - **Bevy UI** — powerful but immature for traditional GUI. Text input, scroll
   views, and accessibility need custom work.
+- **No forward secrecy yet** — Phase 3 uses static per-channel keys. A
+  compromised key exposes all past messages on that channel. Phase 4 adds
+  key ratcheting for per-message forward secrecy.
