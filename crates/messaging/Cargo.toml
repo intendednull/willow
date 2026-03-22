@@ -1,17 +1,18 @@
 [package]
-name = "willow-identity"
+name = "willow-messaging"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
-description = "Cryptographic identity, message signing, and user profiles for Willow"
+description = "Chat messages, reactions, threads, and Hybrid Logical Clock ordering for Willow"
 
 [dependencies]
+willow-identity = { path = "../identity" }
 willow-transport = { path = "../transport" }
 
-libp2p = { workspace = true }
 serde = { workspace = true }
-thiserror = { workspace = true }
 chrono = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

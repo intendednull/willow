@@ -1,103 +1,338 @@
-use std::rc::Rc;
+//! # Willow Identity
+//!
+//! Cryptographic identity management for the Willow P2P network.
+//!
+//! Every participant in a Willow network has an [`Identity`] — an Ed25519
+//! keypair that uniquely identifies them and lets them sign messages so that
+//! other peers can verify authenticity.
+//!
+//! ## Key concepts
+//!
+//! - **[`Identity`]** — your secret keypair. Never leaves the local machine.
+//! - **[`PeerId`]** — a public identifier derived from the keypair. Safe to
+//!   share with anyone.
+//! - **[`UserProfile`]** — display name, avatar, status, etc. Attached to a
+//!   `PeerId`.
+//! - **[`SignedPayload`]** / [`pack`] / [`unpack`] — sign arbitrary data so
+//!   that recipients can verify the sender.
+//!
+//! ## Examples
+//!
+//! ```
+//! use willow_identity::{Identity, pack, unpack};
+//!
+//! let alice = Identity::generate();
+//! let data = String::from("hello from alice");
+//! let signed = pack(&data, &alice).unwrap();
+//!
+//! let (msg, peer_id) = unpack::<String>(&signed).unwrap();
+//! assert_eq!(msg, "hello from alice");
+//! assert_eq!(peer_id, alice.peer_id());
+//! ```
 
+use std::sync::Arc;
+
+use chrono::{DateTime, Utc};
 use libp2p::identity::{Keypair, PublicKey};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    #[error("Serde error")]
-    Serde,
-    #[error("Invalid signature")]
+// ───── Errors ────────────────────────────────────────────────────────────────
+
+/// Errors produced by identity operations.
+#[derive(Debug, thiserror::Error)]
+pub enum IdentityError {
+    /// Serialization or deserialization failed.
+    #[error("serialization failed: {0}")]
+    Serde(String),
+
+    /// A cryptographic signature did not verify.
+    #[error("invalid signature")]
     InvalidSignature,
-    #[error("Unable to sign payload")]
-    SignError,
-    #[error("Unable to decode public key")]
-    PublicKey,
+
+    /// The private key could not produce a signature.
+    #[error("signing failed: {0}")]
+    SignError(String),
+
+    /// A public key could not be decoded from its wire format.
+    #[error("failed to decode public key: {0}")]
+    PublicKeyDecode(String),
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash)]
-pub struct PeerId(Rc<libp2p::PeerId>);
+// ───── PeerId ────────────────────────────────────────────────────────────────
 
-#[derive(Clone)]
-pub struct Identity(Rc<Keypair>);
-impl Identity {
-    pub fn as_peer(&self) -> PeerId {
-        PeerId(self.0.public().to_peer_id().into())
+/// A globally unique, cryptographically derived peer identifier.
+///
+/// Wraps [`libp2p::PeerId`] in an `Arc` so it can be cheaply cloned and shared
+/// across async tasks. Implements `Serialize` / `Deserialize` for wire
+/// transport.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash)]
+pub struct PeerId(Arc<libp2p::PeerId>);
+
+impl PeerId {
+    /// Return a reference to the inner [`libp2p::PeerId`].
+    pub fn inner(&self) -> &libp2p::PeerId {
+        &self.0
     }
 }
 
+impl std::fmt::Display for PeerId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<libp2p::PeerId> for PeerId {
+    fn from(id: libp2p::PeerId) -> Self {
+        Self(Arc::new(id))
+    }
+}
+
+// ───── Identity ──────────────────────────────────────────────────────────────
+
+/// A local cryptographic identity backed by an Ed25519 keypair.
+///
+/// This is the "secret" side of your presence on the network — it lets you
+/// sign messages to prove they came from you.
+///
+/// `Identity` is cheap to clone (the keypair lives behind an [`Arc`]) and is
+/// `Send + Sync` so it can be shared across tokio tasks.
+#[derive(Clone)]
+pub struct Identity(Arc<Keypair>);
+
 impl Identity {
-    pub fn new() -> Self {
-        Self(Keypair::generate_ed25519().into())
+    /// Generate a fresh random Ed25519 identity.
+    pub fn generate() -> Self {
+        Self(Arc::new(Keypair::generate_ed25519()))
+    }
+
+    /// Derive the public [`PeerId`] for this identity.
+    pub fn peer_id(&self) -> PeerId {
+        PeerId::from(self.0.public().to_peer_id())
+    }
+
+    /// Access the underlying [`Keypair`] (e.g. for configuring libp2p).
+    pub fn keypair(&self) -> &Keypair {
+        &self.0
+    }
+
+    /// Access the public key.
+    pub fn public_key(&self) -> PublicKey {
+        self.0.public()
     }
 }
 
 impl Default for Identity {
     fn default() -> Self {
-        Self::new()
+        Self::generate()
     }
 }
 
-#[derive(Serialize, Deserialize)]
-struct OpaquePublicKey(Vec<u8>);
-#[derive(Serialize, Deserialize)]
-pub struct Signature(Vec<u8>);
-
-#[derive(Serialize, Deserialize)]
-struct Message {
-    public_key: OpaquePublicKey,
-    signature: Signature,
-    payload: Vec<u8>,
+impl std::fmt::Debug for Identity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Identity")
+            .field(&self.peer_id())
+            .finish()
+    }
 }
 
-impl Message {
-    fn verify(&self) -> Result<libp2p::PeerId, Error> {
-        let public_key =
-            PublicKey::from_protobuf_encoding(&self.public_key.0).map_err(|_| Error::PublicKey)?;
+// ───── User profile ──────────────────────────────────────────────────────────
 
-        let verified = public_key.verify(&self.payload, &self.signature.0);
-        if verified {
-            Ok(public_key.to_peer_id())
-        } else {
-            Err(Error::InvalidSignature)
+/// A human-readable profile attached to a [`PeerId`].
+///
+/// Profiles are gossiped across the network so that peers can show display
+/// names and avatars instead of raw peer IDs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserProfile {
+    /// The peer this profile belongs to.
+    pub peer_id: PeerId,
+    /// Display name shown in the UI.
+    pub display_name: String,
+    /// Optional avatar (URL or content-addressed hash).
+    pub avatar: Option<String>,
+    /// Free-text status line (e.g. "Away", "In a meeting").
+    pub status: Option<String>,
+    /// Short bio.
+    pub bio: Option<String>,
+    /// When this profile was last updated.
+    pub updated_at: DateTime<Utc>,
+}
+
+impl UserProfile {
+    /// Create a minimal profile with just a display name.
+    pub fn new(peer_id: PeerId, display_name: impl Into<String>) -> Self {
+        Self {
+            peer_id,
+            display_name: display_name.into(),
+            avatar: None,
+            status: None,
+            bio: None,
+            updated_at: Utc::now(),
         }
     }
 }
 
-pub fn pack<T: Serialize>(payload: &T, identity: Identity) -> Result<Vec<u8>, Error> {
-    let payload = transport::pack(payload).map_err(|_| Error::Serde)?;
-    let signature = Signature(identity.0.sign(&payload).map_err(|_| Error::Serde)?);
-    let public_key = OpaquePublicKey(identity.0.public().to_protobuf_encoding());
+// ───── Signed message envelope ───────────────────────────────────────────────
 
-    transport::pack(&Message {
-        public_key,
+/// Internal wire format for a signed payload.
+#[derive(Serialize, Deserialize)]
+struct SignedMessage {
+    /// The signer's public key in protobuf encoding.
+    public_key: Vec<u8>,
+    /// Ed25519 signature over `payload`.
+    signature: Vec<u8>,
+    /// The serialized inner data.
+    payload: Vec<u8>,
+}
+
+impl SignedMessage {
+    /// Verify the signature and return the signer's [`libp2p::PeerId`].
+    fn verify(&self) -> Result<libp2p::PeerId, IdentityError> {
+        let public_key = PublicKey::try_decode_protobuf(&self.public_key)
+            .map_err(|e| IdentityError::PublicKeyDecode(e.to_string()))?;
+
+        if public_key.verify(&self.payload, &self.signature) {
+            Ok(public_key.to_peer_id())
+        } else {
+            Err(IdentityError::InvalidSignature)
+        }
+    }
+}
+
+// ───── Public API ────────────────────────────────────────────────────────────
+
+/// Sign and serialize `payload` using the given [`Identity`].
+///
+/// The returned bytes contain the serialized data, the Ed25519 signature, and
+/// the signer's public key — everything a recipient needs to verify
+/// authenticity via [`unpack`].
+///
+/// # Errors
+///
+/// Returns [`IdentityError::Serde`] if serialization fails, or
+/// [`IdentityError::SignError`] if the keypair cannot produce a signature.
+pub fn pack<T: Serialize>(payload: &T, identity: &Identity) -> Result<Vec<u8>, IdentityError> {
+    let payload_bytes =
+        willow_transport::pack(payload).map_err(|e| IdentityError::Serde(e.to_string()))?;
+
+    let signature = identity
+        .0
+        .sign(&payload_bytes)
+        .map_err(|e| IdentityError::SignError(e.to_string()))?;
+
+    let message = SignedMessage {
+        public_key: identity.public_key().encode_protobuf(),
         signature,
-        payload,
-    })
-    .map_err(|_| Error::Serde)
+        payload: payload_bytes,
+    };
+
+    willow_transport::pack(&message).map_err(|e| IdentityError::Serde(e.to_string()))
 }
 
-pub fn unpack<T: DeserializeOwned>(payload: &[u8]) -> Result<(T, PeerId), Error> {
-    let message: Message = transport::unpack(payload).map_err(|_| Error::Serde)?;
-    let peer_id = message.verify()?;
-    let payload = transport::unpack(&message.payload).map_err(|_| Error::Serde)?;
+/// Verify the signature on `data` and deserialize the inner payload.
+///
+/// Returns both the deserialized value and the [`PeerId`] of the signer, so
+/// the caller can check *who* sent the message.
+///
+/// # Errors
+///
+/// Returns an error if the bytes are malformed, the signature is invalid, or
+/// the inner payload can't be deserialized into `T`.
+pub fn unpack<T: DeserializeOwned>(data: &[u8]) -> Result<(T, PeerId), IdentityError> {
+    let message: SignedMessage =
+        willow_transport::unpack(data).map_err(|e| IdentityError::Serde(e.to_string()))?;
 
-    Ok((payload, PeerId(peer_id.into())))
+    let libp2p_peer = message.verify()?;
+    let payload: T = willow_transport::unpack(&message.payload)
+        .map_err(|e| IdentityError::Serde(e.to_string()))?;
+
+    Ok((payload, PeerId::from(libp2p_peer)))
 }
+
+// ───── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn pack_and_unpack_works() {
-        let identity = Identity::new();
-        let payload = 1;
+    fn generate_identity_is_unique() {
+        let a = Identity::generate();
+        let b = Identity::generate();
+        assert_ne!(a.peer_id(), b.peer_id());
+    }
 
-        let data = pack(&payload, identity.clone()).unwrap();
-        let (result, peer) = unpack::<i32>(&data).unwrap();
+    #[test]
+    fn peer_id_round_trip_serde() {
+        let id = Identity::generate().peer_id();
+        let bytes = willow_transport::pack(&id).unwrap();
+        let decoded: PeerId = willow_transport::unpack(&bytes).unwrap();
+        assert_eq!(decoded, id);
+    }
 
-        assert!(peer.0.is_public_key(&identity.0.public()).unwrap());
-        assert_eq!(result, payload)
+    #[test]
+    fn pack_and_unpack_verifies_signature() {
+        let alice = Identity::generate();
+        let payload = "hello from alice";
+
+        let data = pack(&payload, &alice).unwrap();
+        let (msg, peer) = unpack::<String>(&data).unwrap();
+
+        assert_eq!(msg, payload);
+        assert_eq!(peer, alice.peer_id());
+    }
+
+    #[test]
+    fn tampered_payload_fails_verification() {
+        let alice = Identity::generate();
+        let data = pack(&"original", &alice).unwrap();
+
+        // Flip a byte near the end (inside the payload region).
+        let mut tampered = data.clone();
+        let len = tampered.len();
+        tampered[len - 2] ^= 0xFF;
+
+        // Should fail to deserialize or verify.
+        let result = unpack::<String>(&tampered);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn user_profile_new() {
+        let peer = Identity::generate().peer_id();
+        let profile = UserProfile::new(peer.clone(), "Alice");
+
+        assert_eq!(profile.peer_id, peer);
+        assert_eq!(profile.display_name, "Alice");
+        assert!(profile.avatar.is_none());
+        assert!(profile.status.is_none());
+        assert!(profile.bio.is_none());
+    }
+
+    #[test]
+    fn user_profile_serde_round_trip() {
+        let peer = Identity::generate().peer_id();
+        let mut profile = UserProfile::new(peer, "Bob");
+        profile.status = Some("Online".into());
+        profile.bio = Some("Just a test user".into());
+
+        let bytes = willow_transport::pack(&profile).unwrap();
+        let decoded: UserProfile = willow_transport::unpack(&bytes).unwrap();
+
+        assert_eq!(decoded, profile);
+    }
+
+    #[test]
+    fn identity_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Identity>();
+        assert_send_sync::<PeerId>();
+    }
+
+    #[test]
+    fn peer_id_display() {
+        let peer = Identity::generate().peer_id();
+        let display = format!("{peer}");
+        // libp2p PeerIds are base58 encoded, typically starting with "12D3"
+        assert!(!display.is_empty());
     }
 }

@@ -1,0 +1,106 @@
+# CLAUDE.md — Willow Development Guide
+
+## Project Overview
+
+Willow is a P2P Discord replacement built in Rust. It uses libp2p for
+networking, Bevy for the desktop UI, and Ed25519 cryptography for identity.
+
+## Repository Structure
+
+```
+crates/
+├── transport/   — Binary serialization & protocol framing (willow-transport)
+├── identity/    — Ed25519 identity, message signing, profiles (willow-identity)
+├── messaging/   — Chat messages, HLC ordering, message store (willow-messaging)
+├── channel/     — Servers, channels, roles, permissions (willow-channel)
+├── network/     — libp2p P2P networking layer (willow-network)
+└── app/         — Bevy desktop UI application (willow-app)
+```
+
+## Build & Test
+
+```bash
+# Check everything compiles
+cargo check
+
+# Run all tests (60 tests across all crates)
+cargo test
+
+# Run tests for a specific crate
+cargo test -p willow-messaging
+
+# Build the desktop app (requires desktop environment with GPU)
+cargo build -p willow-app
+```
+
+### System Dependencies (for Bevy app)
+
+On a full desktop Linux system, you'll need:
+```bash
+sudo apt install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+```
+
+The library crates (transport, identity, messaging, channel, network) compile
+without any system dependencies.
+
+## Code Conventions
+
+- **Crate naming**: `willow-<name>` in Cargo.toml, `willow_<name>` in code
+- **Thread safety**: Use `Arc` (not `Rc`) everywhere — all types must be `Send + Sync`
+- **Error handling**: `thiserror` for library error types, `anyhow` for application code
+- **Documentation**: Every public type and function has a doc comment. Module-level `//!` docs explain the purpose and provide examples.
+- **Testing**: Every crate has unit tests. Use `#[cfg(test)] mod tests` at the bottom of each file.
+- **Serialization**: All wire types derive `Serialize + Deserialize`. Round-trip tests validate compatibility.
+
+## Architecture Notes
+
+### Dependency Graph
+
+```
+willow-app → willow-network → willow-identity → willow-transport
+           → willow-channel → willow-identity
+           → willow-messaging → willow-identity
+```
+
+### Async / Sync Boundary
+
+- **Network layer**: Fully async (tokio). Runs on a background thread.
+- **Bevy app**: Synchronous ECS. Communicates with the network via `std::sync::mpsc` channels.
+- **Bridge**: `network_bridge.rs` in the app crate converts between the two worlds.
+
+### Message Flow
+
+1. User types in Bevy UI → `NetworkBridgeCommand::Publish`
+2. Bridge sends to tokio task → `NetworkNode::publish()`
+3. libp2p GossipSub floods to subscribed peers
+4. Remote peer receives → `NetworkEvent::Message`
+5. Bridge forwards to Bevy → `NetworkBridgeEvent::MessageReceived`
+6. Bevy system updates `ChatState` resource → UI re-renders
+
+### Hybrid Logical Clocks (HLC)
+
+Messages are ordered using HLCs (`willow-messaging/src/hlc.rs`). Every node
+maintains an `HLC` instance. Call `hlc.now()` for local events and
+`hlc.receive(remote_ts)` when processing remote messages. This ensures
+consistent ordering even when system clocks drift.
+
+## Common Tasks
+
+### Adding a new message type
+
+1. Add a variant to `Content` in `crates/messaging/src/lib.rs`
+2. Add a constructor method on `Message`
+3. Add tests
+4. Handle the new variant in the app's network event handler
+
+### Adding a new permission
+
+1. Add a variant to `Permission` in `crates/channel/src/lib.rs`
+2. Check it in the relevant server methods
+3. Add tests
+
+### Adding a new libp2p protocol
+
+1. Add the protocol to `WillowBehaviour` in `crates/network/src/behaviour.rs`
+2. Handle its events in `run_swarm()` in `crates/network/src/node.rs`
+3. Expose relevant commands/events through `NetworkNode` and `NetworkEvent`

@@ -1,0 +1,20 @@
+[package]
+name = "willow-app"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Bevy-based desktop UI for the Willow P2P chat application"
+
+[dependencies]
+willow-identity = { path = "../identity" }
+willow-messaging = { path = "../messaging" }
+willow-channel = { path = "../channel" }
+willow-network = { path = "../network" }
+willow-transport = { path = "../transport" }
+
+bevy = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
