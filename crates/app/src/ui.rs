@@ -52,11 +52,11 @@ pub struct ChatState {
     pub current_channel: String,
     pub peers: Vec<String>,
     pub hlc: HLC,
-    messages_dirty: bool,
+    pub(crate) messages_dirty: bool,
 }
 
 impl ChatState {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             messages: Vec::new(),
             current_channel: CHANNELS[0].to_string(),
@@ -76,9 +76,9 @@ pub struct ChatMessage {
 }
 
 #[derive(Resource, Default)]
-struct InputState {
-    text: String,
-    send_requested: bool,
+pub(crate) struct InputState {
+    pub(crate) text: String,
+    pub(crate) send_requested: bool,
 }
 
 // ───── Components ────────────────────────────────────────────────────────────
@@ -290,7 +290,7 @@ fn setup_ui(
         });
 }
 
-fn handle_keyboard_input(
+pub(crate) fn handle_keyboard_input(
     mut key_events: MessageReader<KeyboardInput>,
     mut input: ResMut<InputState>,
 ) {
@@ -320,7 +320,7 @@ fn handle_keyboard_input(
     }
 }
 
-fn send_message(
+pub(crate) fn send_message(
     mut input: ResMut<InputState>,
     mut state: ResMut<ChatState>,
     identity: Res<LocalIdentity>,
@@ -360,7 +360,7 @@ fn send_message(
     state.messages_dirty = true;
 }
 
-fn handle_network_events(
+pub(crate) fn handle_network_events(
     mut reader: MessageReader<NetworkBridgeEvent>,
     mut state: ResMut<ChatState>,
 ) {

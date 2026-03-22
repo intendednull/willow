@@ -37,7 +37,25 @@ cargo fmt --check
 cargo clippy -- -D warnings
 ```
 
-**All code must pass `cargo fmt` and `cargo clippy -- -D warnings` with zero warnings before being committed.**
+**All code must pass `cargo fmt`, `cargo clippy -- -D warnings`, and `cargo test` with zero warnings before being committed.**
+
+### Headless UI Testing
+
+The Bevy app is tested programmatically using headless `MinimalPlugins` — no
+window or GPU required. Tests live in `crates/app/src/tests.rs` and cover
+keyboard input, message sending, network event handling, and serialization.
+
+To add a new UI test:
+
+1. Use `test_app()` to get a headless `App` and a network command receiver.
+2. Inject input via `send_key()` or write messages directly with
+   `app.world_mut().write_message(...)`.
+3. Call `app.update()` to run one frame of systems.
+4. Assert on `ChatState`, `InputState`, or the network command receiver.
+
+Note: `handle_keyboard_input` and `send_message` run in the same `Update`
+schedule but as separate systems. Setting `send_requested = true` takes effect
+on the *next* `app.update()` call.
 
 ### System Dependencies (for Bevy app)
 
