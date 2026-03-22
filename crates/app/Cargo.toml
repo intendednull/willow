@@ -11,6 +11,7 @@ willow-messaging = { path = "../messaging" }
 willow-channel = { path = "../channel" }
 willow-network = { path = "../network" }
 willow-transport = { path = "../transport" }
+willow-crypto = { path = "../crypto" }
 
 bevy = { workspace = true }
 tokio = { workspace = true }

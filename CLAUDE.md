@@ -12,6 +12,7 @@ crates/
 ├── transport/   — Binary serialization & protocol framing (willow-transport)
 ├── identity/    — Ed25519 identity, message signing, profiles (willow-identity)
 ├── messaging/   — Chat messages, HLC ordering, message store (willow-messaging)
+├── crypto/      — E2E encryption: ChaCha20-Poly1305, X25519 key exchange (willow-crypto)
 ├── channel/     — Servers, channels, roles, permissions (willow-channel)
 ├── network/     — libp2p P2P networking layer (willow-network)
 └── app/         — Bevy desktop UI application (willow-app)
@@ -81,9 +82,11 @@ without any system dependencies.
 ### Dependency Graph
 
 ```
-willow-app → willow-network → willow-identity → willow-transport
-           → willow-channel → willow-identity
+willow-app → willow-crypto   → willow-identity → willow-transport
+           → willow-network  → willow-identity
+           → willow-channel  → willow-identity
            → willow-messaging → willow-identity
+                              (defines SealedContent used by willow-crypto)
 ```
 
 ### Async / Sync Boundary
@@ -94,12 +97,15 @@ willow-app → willow-network → willow-identity → willow-transport
 
 ### Message Flow
 
-1. User types in Bevy UI → `NetworkBridgeCommand::Publish`
-2. Bridge sends to tokio task → `NetworkNode::publish()`
-3. libp2p GossipSub floods to subscribed peers
-4. Remote peer receives → `NetworkEvent::Message`
-5. Bridge forwards to Bevy → `NetworkBridgeEvent::MessageReceived`
-6. Bevy system updates `ChatState` resource → UI re-renders
+1. User types in Bevy UI → `Message::text()` creates cleartext message
+2. If channel key exists → `seal_content()` encrypts Content → `Content::Encrypted`
+3. `pack_envelope()` serializes → `NetworkBridgeCommand::Publish`
+4. Bridge sends to tokio task → `NetworkNode::publish()`
+5. libp2p GossipSub floods to subscribed peers
+6. Remote peer receives → `NetworkEvent::Message`
+7. Bridge forwards to Bevy → `NetworkBridgeEvent::MessageReceived`
+8. `unpack_envelope()` → if `Content::Encrypted`, `open_content()` decrypts
+9. Bevy system updates `ChatState` resource → UI re-renders
 
 ### Hybrid Logical Clocks (HLC)
 

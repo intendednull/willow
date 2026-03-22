@@ -7484,6 +7484,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "willow-channel",
+ "willow-crypto",
  "willow-identity",
  "willow-messaging",
  "willow-network",
@@ -7501,6 +7502,23 @@ dependencies = [
  "uuid",
  "willow-identity",
  "willow-transport",
+]
+
+[[package]]
+name = "willow-crypto"
+version = "0.1.0"
+dependencies = [
+ "chacha20poly1305",
+ "curve25519-dalek",
+ "hkdf",
+ "rand 0.8.5",
+ "serde",
+ "sha2",
+ "thiserror 1.0.69",
+ "willow-identity",
+ "willow-messaging",
+ "willow-transport",
+ "x25519-dalek",
 ]
 
 [[package]]

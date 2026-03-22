@@ -144,6 +144,26 @@ pub enum Content {
         /// Human-readable description of the event.
         description: String,
     },
+
+    /// Encrypted content. The plaintext [`Content`] was serialized and
+    /// encrypted with the channel's symmetric key. Only channel members
+    /// with the key can decrypt this.
+    Encrypted(SealedContent),
+}
+
+/// The encrypted form of a [`Content`] value.
+///
+/// Produced by encrypting a serialized `Content` with ChaCha20-Poly1305.
+/// The `key_epoch` field enables key rotation without breaking in-flight
+/// messages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SealedContent {
+    /// ChaCha20-Poly1305 ciphertext (content bytes + 16-byte auth tag).
+    pub ciphertext: Vec<u8>,
+    /// 96-bit random nonce.
+    pub nonce: [u8; 12],
+    /// Which generation of the channel key was used.
+    pub key_epoch: u32,
 }
 
 // ───── Message ───────────────────────────────────────────────────────────────

@@ -5,9 +5,12 @@
 use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
 
+use std::collections::HashMap;
+
 use crate::network_bridge::{LocalIdentity, NetworkBridgeEvent, NetworkCommandSender};
+use willow_crypto::ChannelKey;
 use willow_messaging::hlc::HLC;
-use willow_messaging::{Content, Message};
+use willow_messaging::{ChannelId, Content, Message};
 use willow_transport::{pack_envelope, unpack_envelope, MessageType};
 
 /// The gossipsub topic names for each channel.
@@ -20,6 +23,7 @@ impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(ChatState::new())
             .insert_resource(InputState::default())
+            .insert_resource(ChannelKeyStore::default())
             .add_systems(Startup, setup_ui)
             // Split into two add_systems calls to stay within the 8-tuple limit.
             .add_systems(
@@ -79,6 +83,15 @@ pub struct ChatMessage {
 pub(crate) struct InputState {
     pub(crate) text: String,
     pub(crate) send_requested: bool,
+}
+
+/// Per-channel symmetric encryption keys.
+///
+/// Populated when creating/joining a server. Messages are encrypted before
+/// sending and decrypted on receipt using the channel's key.
+#[derive(Resource, Default)]
+pub(crate) struct ChannelKeyStore {
+    pub(crate) keys: HashMap<String, ChannelKey>,
 }
 
 // ───── Components ────────────────────────────────────────────────────────────
@@ -325,6 +338,7 @@ pub(crate) fn send_message(
     mut state: ResMut<ChatState>,
     identity: Res<LocalIdentity>,
     net_cmd: Res<NetworkCommandSender>,
+    key_store: Res<ChannelKeyStore>,
 ) {
     if !input.send_requested {
         return;
@@ -339,8 +353,15 @@ pub(crate) fn send_message(
     let channel = state.current_channel.clone();
     let peer_id = identity.0.peer_id();
 
-    let channel_id = willow_messaging::ChannelId::new();
-    let msg = Message::text(channel_id, peer_id.clone(), &body, &mut state.hlc);
+    let channel_id = ChannelId::new();
+    let mut msg = Message::text(channel_id, peer_id.clone(), &body, &mut state.hlc);
+
+    // Encrypt content if we have a key for this channel.
+    if let Some(key) = key_store.keys.get(&channel) {
+        if let Ok(sealed) = willow_crypto::seal_content(&msg.content, key, 0) {
+            msg.content = Content::Encrypted(sealed);
+        }
+    }
 
     if let Ok(data) = pack_envelope(MessageType::Chat, &msg) {
         let _ = net_cmd
@@ -363,6 +384,7 @@ pub(crate) fn send_message(
 pub(crate) fn handle_network_events(
     mut reader: MessageReader<NetworkBridgeEvent>,
     mut state: ResMut<ChatState>,
+    key_store: Res<ChannelKeyStore>,
 ) {
     for event in reader.read() {
         match event {
@@ -371,21 +393,37 @@ pub(crate) fn handle_network_events(
                 data,
                 source,
             } => {
-                if let Ok((msg, MessageType::Chat)) = unpack_envelope::<Message>(data) {
-                    if let Content::Text { ref body } = msg.content {
-                        let author = source
-                            .as_ref()
-                            .map(|s| truncate_peer_id(s))
-                            .unwrap_or_else(|| "unknown".into());
-                        state.messages.push(ChatMessage {
-                            channel: topic.clone(),
-                            author,
-                            body: body.clone(),
-                            is_local: false,
-                        });
-                        state.messages_dirty = true;
-                        state.hlc.receive(msg.hlc);
+                let Ok((msg, MessageType::Chat)) = unpack_envelope::<Message>(data) else {
+                    continue;
+                };
+
+                // Decrypt if encrypted, pass through if cleartext.
+                let content = match &msg.content {
+                    Content::Encrypted(sealed) => {
+                        let Some(key) = key_store.keys.get(topic) else {
+                            continue; // no key for this channel
+                        };
+                        match willow_crypto::open_content(sealed, key) {
+                            Ok(c) => c,
+                            Err(_) => continue, // decryption failed
+                        }
                     }
+                    other => other.clone(),
+                };
+
+                if let Content::Text { ref body } = content {
+                    let author = source
+                        .as_ref()
+                        .map(|s| truncate_peer_id(s))
+                        .unwrap_or_else(|| "unknown".into());
+                    state.messages.push(ChatMessage {
+                        channel: topic.clone(),
+                        author,
+                        body: body.clone(),
+                        is_local: false,
+                    });
+                    state.messages_dirty = true;
+                    state.hlc.receive(msg.hlc);
                 }
             }
             NetworkBridgeEvent::PeerConnected(peer) => {
