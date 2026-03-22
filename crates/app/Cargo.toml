@@ -12,6 +12,7 @@ willow-channel = { path = "../channel" }
 willow-network = { path = "../network" }
 willow-transport = { path = "../transport" }
 willow-crypto = { path = "../crypto" }
+willow-files = { path = "../files" }
 
 bevy = { workspace = true }
 anyhow = { workspace = true }

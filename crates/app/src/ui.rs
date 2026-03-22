@@ -1028,6 +1028,27 @@ pub(crate) fn handle_network_events(
             NetworkBridgeEvent::Listening(addr) => {
                 info!("Listening on {addr}");
             }
+            NetworkBridgeEvent::FileAnnounced {
+                filename,
+                size,
+                from,
+                topic,
+                ..
+            } => {
+                let author = profiles.display_name(from);
+                let size_kb = size / 1024;
+                let body = format!("[shared file: {filename} ({size_kb} KB)]");
+                state.messages.push(ChatMessage {
+                    topic: topic.clone(),
+                    author,
+                    body,
+                    is_local: false,
+                });
+                state.messages_dirty = true;
+            }
+            NetworkBridgeEvent::FileDownloaded { filename, .. } => {
+                info!("file downloaded: {filename}");
+            }
         }
     }
 }

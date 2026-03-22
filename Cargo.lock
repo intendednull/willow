@@ -7904,6 +7904,7 @@ dependencies = [
  "web-sys",
  "willow-channel",
  "willow-crypto",
+ "willow-files",
  "willow-identity",
  "willow-messaging",
  "willow-network",

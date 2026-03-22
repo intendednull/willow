@@ -38,13 +38,37 @@ pub enum NetworkBridgeEvent {
     PeerConnected(String),
     PeerDisconnected(String),
     Listening(String),
+    /// A file was announced by a peer (manifest received via gossipsub).
+    FileAnnounced {
+        filename: String,
+        mime_type: String,
+        size: u64,
+        file_hash: String,
+        from: String,
+        topic: String,
+    },
+    /// A file download completed.
+    FileDownloaded {
+        filename: String,
+        file_hash: String,
+    },
 }
 
 /// Commands flowing from Bevy to the network.
 #[derive(Debug, Clone)]
 pub enum NetworkBridgeCommand {
     Subscribe(String),
-    Publish { topic: String, data: Vec<u8> },
+    Publish {
+        topic: String,
+        data: Vec<u8>,
+    },
+    /// Share a file: split, store chunks, broadcast manifest on the given topic.
+    ShareFile {
+        topic: String,
+        filename: String,
+        mime_type: String,
+        data: Vec<u8>,
+    },
 }
 
 /// Message to trigger network connection with an optional relay address.
@@ -197,34 +221,65 @@ async fn run_network(
     cmd_rx: std_mpsc::Receiver<NetworkBridgeCommand>,
     config: willow_network::NetworkConfig,
 ) -> anyhow::Result<()> {
-    use willow_network::{NetworkEvent, NetworkNode};
+    use willow_network::{file_transfer::ChunkResponse, NetworkEvent, NetworkNode};
 
     let (node, mut events) = NetworkNode::start(identity, config).await?;
+    let mut file_mgr = crate::file_manager::FileManager::new();
 
     loop {
         tokio::select! {
             event = events.recv() => {
                 let Some(event) = event else { break };
-                let bridge_event = match event {
+                match event {
                     NetworkEvent::Message { topic, data, source } => {
-                        NetworkBridgeEvent::MessageReceived {
-                            topic,
-                            data,
-                            source: source.map(|p| p.to_string()),
+                        // Check if this is a file manifest (MessageType::File).
+                        if let Ok((manifest, willow_transport::MessageType::File)) =
+                            willow_transport::unpack_envelope::<willow_files::FileManifest>(&data)
+                        {
+                            let from = source.map(|p| p.to_string()).unwrap_or_default();
+                            file_mgr.register_manifest(manifest.clone());
+                            let _ = event_tx.send(NetworkBridgeEvent::FileAnnounced {
+                                filename: manifest.filename.clone(),
+                                mime_type: manifest.mime_type.clone(),
+                                size: manifest.total_size,
+                                file_hash: manifest.file_hash.to_hex(),
+                                from,
+                                topic: topic.clone(),
+                            });
+                        } else {
+                            let _ = event_tx.send(NetworkBridgeEvent::MessageReceived {
+                                topic,
+                                data,
+                                source: source.map(|p| p.to_string()),
+                            });
                         }
                     }
                     NetworkEvent::PeerConnected(peer) => {
-                        NetworkBridgeEvent::PeerConnected(peer.to_string())
+                        let _ = event_tx.send(NetworkBridgeEvent::PeerConnected(peer.to_string()));
                     }
                     NetworkEvent::PeerDisconnected(peer) => {
-                        NetworkBridgeEvent::PeerDisconnected(peer.to_string())
+                        let _ = event_tx.send(NetworkBridgeEvent::PeerDisconnected(peer.to_string()));
                     }
                     NetworkEvent::Listening(addr) => {
-                        NetworkBridgeEvent::Listening(addr.to_string())
+                        let _ = event_tx.send(NetworkBridgeEvent::Listening(addr.to_string()));
                     }
-                    _ => continue,
-                };
-                let _ = event_tx.send(bridge_event);
+                    NetworkEvent::ChunkRequested { channel, hash, .. } => {
+                        // Auto-respond with chunk data if we have it.
+                        let response = if let Some(data) = file_mgr.get_chunk(&hash) {
+                            ChunkResponse::Found { hash, data: data.to_vec() }
+                        } else {
+                            ChunkResponse::NotFound { hash }
+                        };
+                        let _ = node.respond_chunk(channel, response);
+                    }
+                    NetworkEvent::ChunkReceived {
+                        response: ChunkResponse::Found { hash, data },
+                        ..
+                    } => {
+                        file_mgr.add_chunk(hash, data);
+                    }
+                    _ => {}
+                }
             }
 
             _ = tokio::time::sleep(std::time::Duration::from_millis(16)) => {
@@ -235,6 +290,13 @@ async fn run_network(
                         }
                         NetworkBridgeCommand::Publish { topic, data } => {
                             node.publish(&topic, data)?;
+                        }
+                        NetworkBridgeCommand::ShareFile { topic, filename, mime_type, data } => {
+                            if let Some((manifest, envelope)) = file_mgr.share_file(&data, filename.clone(), mime_type) {
+                                // Broadcast manifest via gossipsub.
+                                node.publish(&topic, envelope)?;
+                                info!(file = %filename, hash = %manifest.file_hash, "shared file");
+                            }
                         }
                     }
                 }
@@ -273,31 +335,31 @@ async fn run_network_wasm(
     use willow_network::{NetworkEvent, NetworkNode};
 
     let (node, mut events) = NetworkNode::start(identity, config).await?;
+    let mut file_mgr = crate::file_manager::FileManager::new();
 
     loop {
         futures::select! {
             event = events.next() => {
                 let Some(event) = event else { break };
-                let bridge_event = match event {
+                match event {
                     NetworkEvent::Message { topic, data, source } => {
-                        NetworkBridgeEvent::MessageReceived {
+                        let _ = event_tx.send(NetworkBridgeEvent::MessageReceived {
                             topic,
                             data,
                             source: source.map(|p| p.to_string()),
-                        }
+                        });
                     }
                     NetworkEvent::PeerConnected(peer) => {
-                        NetworkBridgeEvent::PeerConnected(peer.to_string())
+                        let _ = event_tx.send(NetworkBridgeEvent::PeerConnected(peer.to_string()));
                     }
                     NetworkEvent::PeerDisconnected(peer) => {
-                        NetworkBridgeEvent::PeerDisconnected(peer.to_string())
+                        let _ = event_tx.send(NetworkBridgeEvent::PeerDisconnected(peer.to_string()));
                     }
                     NetworkEvent::Listening(addr) => {
-                        NetworkBridgeEvent::Listening(addr.to_string())
+                        let _ = event_tx.send(NetworkBridgeEvent::Listening(addr.to_string()));
                     }
-                    _ => continue,
-                };
-                let _ = event_tx.send(bridge_event);
+                    _ => {}
+                }
 
                 while let Ok(cmd) = cmd_rx.try_recv() {
                     match cmd {
@@ -306,6 +368,11 @@ async fn run_network_wasm(
                         }
                         NetworkBridgeCommand::Publish { topic, data } => {
                             node.publish(&topic, data)?;
+                        }
+                        NetworkBridgeCommand::ShareFile { topic, filename, mime_type, data } => {
+                            if let Some((_manifest, envelope)) = file_mgr.share_file(&data, filename, mime_type) {
+                                node.publish(&topic, envelope)?;
+                            }
                         }
                     }
                 }
