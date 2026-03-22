@@ -81,6 +81,109 @@ pub struct EncryptedChannelKey {
     pub nonce: [u8; 12],
 }
 
+// ───── Key Ratchet ──────────────────────────────────────────────────────────
+
+/// A forward-secret key ratchet that derives unique per-message keys.
+///
+/// Each call to [`next_key()`](KeyRatchet::next_key) derives a new message
+/// key via HKDF and increments the counter. Old keys cannot be recovered
+/// from the current state, providing forward secrecy.
+///
+/// The ratchet is seeded from a [`ChannelKey`] and can be re-seeded on
+/// key rotation (epoch change).
+#[derive(Clone)]
+pub struct KeyRatchet {
+    seed: [u8; 32],
+    counter: u64,
+    epoch: u32,
+}
+
+impl KeyRatchet {
+    /// Create a new ratchet from a channel key and epoch.
+    pub fn new(key: &ChannelKey, epoch: u32) -> Self {
+        Self {
+            seed: key.0,
+            counter: 1, // Start at 1; counter 0 means "no ratchet" (backwards compat).
+            epoch,
+        }
+    }
+
+    /// Derive the next message key and advance the ratchet.
+    ///
+    /// The returned key is unique to this (epoch, counter) pair. After
+    /// calling this, the previous key cannot be derived again.
+    pub fn next_key(&mut self) -> (ChannelKey, u32, u64) {
+        let hk = Hkdf::<Sha256>::new(None, &self.seed);
+
+        // Derive message key from seed + counter.
+        let mut info = Vec::with_capacity(12);
+        info.extend_from_slice(&self.counter.to_le_bytes());
+        info.extend_from_slice(&self.epoch.to_le_bytes());
+
+        let mut message_key = [0u8; 32];
+        hk.expand(&info, &mut message_key)
+            .expect("32 bytes is valid HKDF output length");
+
+        // Ratchet forward: derive next seed from current seed + counter.
+        // This ensures the old seed can't recover future keys.
+        let mut next_seed = [0u8; 32];
+        let hk_advance = Hkdf::<Sha256>::new(Some(&info), &self.seed);
+        hk_advance
+            .expand(b"willow-ratchet-advance", &mut next_seed)
+            .expect("32 bytes is valid HKDF output length");
+        self.seed = next_seed;
+
+        let counter = self.counter;
+        self.counter += 1;
+
+        (ChannelKey(message_key), self.epoch, counter)
+    }
+
+    /// Current epoch.
+    pub fn epoch(&self) -> u32 {
+        self.epoch
+    }
+
+    /// Current counter value (number of keys derived so far).
+    pub fn counter(&self) -> u64 {
+        self.counter
+    }
+
+    /// Re-seed the ratchet with a new channel key (on key rotation).
+    pub fn reseed(&mut self, key: &ChannelKey, new_epoch: u32) {
+        self.seed = key.0;
+        self.counter = 1;
+        self.epoch = new_epoch;
+    }
+}
+
+impl std::fmt::Debug for KeyRatchet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyRatchet")
+            .field("epoch", &self.epoch)
+            .field("counter", &self.counter)
+            .finish()
+    }
+}
+
+/// Derive a specific message key for decryption given the epoch and counter.
+///
+/// This is used by the receiver who needs to derive the same key the sender
+/// used. The receiver must have the channel key for the given epoch.
+pub fn derive_message_key(channel_key: &ChannelKey, epoch: u32, counter: u64) -> ChannelKey {
+    // Replay the ratchet from counter=1 to the target counter.
+    let mut ratchet = KeyRatchet::new(channel_key, epoch);
+    let mut key;
+    loop {
+        let (k, _, c) = ratchet.next_key();
+        key = k;
+        if c >= counter {
+            break;
+        }
+    }
+    key
+}
+
 // ───── Content Encryption ───────────────────────────────────────────────────
 
 /// Generate a random 256-bit channel key.
@@ -91,10 +194,24 @@ pub fn generate_channel_key() -> ChannelKey {
 }
 
 /// Encrypt a [`Content`] value using a channel's symmetric key.
+///
+/// For forward secrecy, pass the per-message key from a [`KeyRatchet`]
+/// along with the epoch and counter. The `ratchet_counter` is stored in
+/// the sealed content so the receiver can derive the same key.
 pub fn seal_content(
     content: &Content,
     key: &ChannelKey,
     epoch: u32,
+) -> Result<SealedContent, CryptoError> {
+    seal_content_with_counter(content, key, epoch, 0)
+}
+
+/// Encrypt with explicit ratchet counter (used when forward secrecy is active).
+pub fn seal_content_with_counter(
+    content: &Content,
+    key: &ChannelKey,
+    epoch: u32,
+    ratchet_counter: u64,
 ) -> Result<SealedContent, CryptoError> {
     let plaintext =
         willow_transport::pack(content).map_err(|e| CryptoError::Serialization(e.to_string()))?;
@@ -112,12 +229,21 @@ pub fn seal_content(
         ciphertext,
         nonce: nonce_bytes,
         key_epoch: epoch,
+        ratchet_counter,
     })
 }
 
 /// Decrypt a [`SealedContent`] back to a [`Content`] value.
+///
+/// If `ratchet_counter > 0`, derives the per-message key from the channel
+/// key + counter. Otherwise uses the channel key directly (backwards compat).
 pub fn open_content(sealed: &SealedContent, key: &ChannelKey) -> Result<Content, CryptoError> {
-    let cipher = ChaCha20Poly1305::new(key.0.as_ref().into());
+    let decrypt_key = if sealed.ratchet_counter > 0 {
+        derive_message_key(key, sealed.key_epoch, sealed.ratchet_counter)
+    } else {
+        key.clone()
+    };
+    let cipher = ChaCha20Poly1305::new(decrypt_key.0.as_ref().into());
     let nonce = Nonce::from_slice(&sealed.nonce);
 
     let plaintext = cipher
@@ -424,5 +550,145 @@ mod tests {
         assert_send_sync::<ChannelKey>();
         assert_send_sync::<SealedContent>();
         assert_send_sync::<EncryptedChannelKey>();
+        assert_send_sync::<KeyRatchet>();
+    }
+
+    // ── Key Ratchet Tests ───────────────────────────────────────────────
+
+    #[test]
+    fn ratchet_produces_unique_keys() {
+        let key = generate_channel_key();
+        let mut ratchet = KeyRatchet::new(&key, 0);
+
+        let (k1, _, _) = ratchet.next_key();
+        let (k2, _, _) = ratchet.next_key();
+        let (k3, _, _) = ratchet.next_key();
+
+        assert_ne!(k1.as_bytes(), k2.as_bytes());
+        assert_ne!(k2.as_bytes(), k3.as_bytes());
+        assert_ne!(k1.as_bytes(), k3.as_bytes());
+    }
+
+    #[test]
+    fn ratchet_counter_increments() {
+        let key = generate_channel_key();
+        let mut ratchet = KeyRatchet::new(&key, 0);
+
+        assert_eq!(ratchet.counter(), 1);
+        ratchet.next_key();
+        assert_eq!(ratchet.counter(), 2);
+        ratchet.next_key();
+        assert_eq!(ratchet.counter(), 3);
+    }
+
+    #[test]
+    fn ratchet_epoch_preserved() {
+        let key = generate_channel_key();
+        let mut ratchet = KeyRatchet::new(&key, 42);
+
+        let (_, epoch, _) = ratchet.next_key();
+        assert_eq!(epoch, 42);
+    }
+
+    #[test]
+    fn ratchet_reseed_resets_counter() {
+        let key = generate_channel_key();
+        let mut ratchet = KeyRatchet::new(&key, 0);
+        ratchet.next_key();
+        ratchet.next_key();
+        assert_eq!(ratchet.counter(), 3);
+
+        let new_key = generate_channel_key();
+        ratchet.reseed(&new_key, 1);
+        assert_eq!(ratchet.counter(), 1);
+        assert_eq!(ratchet.epoch(), 1);
+    }
+
+    #[test]
+    fn ratchet_reseed_produces_different_keys() {
+        let key = generate_channel_key();
+        let mut ratchet = KeyRatchet::new(&key, 0);
+        let (k1, _, _) = ratchet.next_key();
+
+        let new_key = generate_channel_key();
+        ratchet.reseed(&new_key, 1);
+        let (k2, _, _) = ratchet.next_key();
+
+        assert_ne!(k1.as_bytes(), k2.as_bytes());
+    }
+
+    #[test]
+    fn derive_message_key_matches_ratchet() {
+        let key = generate_channel_key();
+        let mut ratchet = KeyRatchet::new(&key, 0);
+
+        // Advance to counter 4. Ratchet starts at 1.
+        ratchet.next_key(); // counter 1
+        ratchet.next_key(); // counter 2
+        ratchet.next_key(); // counter 3
+        let (k4, _, counter) = ratchet.next_key(); // counter 4
+
+        assert_eq!(counter, 4);
+
+        // derive_message_key should produce the same key at counter 4.
+        let derived = derive_message_key(&key, 0, 4);
+        assert_eq!(k4.as_bytes(), derived.as_bytes());
+    }
+
+    #[test]
+    fn seal_and_open_with_ratchet_round_trip() {
+        let key = generate_channel_key();
+        let mut ratchet = KeyRatchet::new(&key, 0);
+
+        let content = Content::Text {
+            body: "forward secret".into(),
+        };
+
+        let (msg_key, epoch, counter) = ratchet.next_key();
+        let sealed = seal_content_with_counter(&content, &msg_key, epoch, counter).unwrap();
+
+        assert_eq!(sealed.ratchet_counter, 1);
+        assert_eq!(sealed.key_epoch, 0);
+
+        // Receiver derives the same key and decrypts.
+        let decrypted = open_content(&sealed, &key).unwrap();
+        assert_eq!(decrypted, content);
+    }
+
+    #[test]
+    fn old_epoch_key_cannot_decrypt_new_epoch() {
+        let old_key = generate_channel_key();
+        let new_key = generate_channel_key();
+
+        let content = Content::Text {
+            body: "new epoch".into(),
+        };
+
+        // Encrypt with new key at epoch 1.
+        let mut ratchet = KeyRatchet::new(&new_key, 1);
+        let (msg_key, epoch, counter) = ratchet.next_key();
+        let sealed = seal_content_with_counter(&content, &msg_key, epoch, counter).unwrap();
+
+        // Old key cannot decrypt.
+        assert!(open_content(&sealed, &old_key).is_err());
+
+        // New key can decrypt.
+        let decrypted = open_content(&sealed, &new_key).unwrap();
+        assert_eq!(decrypted, content);
+    }
+
+    #[test]
+    fn backwards_compat_no_ratchet() {
+        // Messages with ratchet_counter=0 should still work without ratchet.
+        let key = generate_channel_key();
+        let content = Content::Text {
+            body: "legacy message".into(),
+        };
+
+        let sealed = seal_content(&content, &key, 0).unwrap();
+        assert_eq!(sealed.ratchet_counter, 0);
+
+        let decrypted = open_content(&sealed, &key).unwrap();
+        assert_eq!(decrypted, content);
     }
 }

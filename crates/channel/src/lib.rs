@@ -498,8 +498,14 @@ impl Server {
             .or_insert_with(|| Member::new(peer));
     }
 
-    /// Remove a member from the server. Cannot remove the owner.
-    pub fn remove_member(&mut self, peer: &PeerId) -> Result<(), ChannelError> {
+    /// Remove a member from the server and rotate all channel keys.
+    ///
+    /// Cannot remove the owner. Returns the new channel keys so the app
+    /// can distribute them to remaining members.
+    pub fn remove_member(
+        &mut self,
+        peer: &PeerId,
+    ) -> Result<HashMap<ChannelId, willow_crypto::ChannelKey>, ChannelError> {
         if *peer == self.owner {
             return Err(ChannelError::PermissionDenied(
                 peer.clone(),
@@ -509,8 +515,18 @@ impl Server {
 
         self.members
             .remove(peer)
-            .map(|_| ())
-            .ok_or_else(|| ChannelError::NotAMember(peer.clone()))
+            .ok_or_else(|| ChannelError::NotAMember(peer.clone()))?;
+
+        // Rotate all channel keys so the removed member can't read future messages.
+        let mut new_keys = HashMap::new();
+        for channel_id in self.channels.keys() {
+            let new_key = willow_crypto::generate_channel_key();
+            self.channel_keys
+                .insert(channel_id.clone(), new_key.clone());
+            new_keys.insert(channel_id.clone(), new_key);
+        }
+
+        Ok(new_keys)
     }
 
     /// Create an invite without encrypted keys (for backwards compat / tests).
@@ -827,5 +843,40 @@ mod tests {
         // Verify it matches the original.
         let original = server.channel_key(&ch_id).unwrap();
         assert_eq!(decrypted.as_bytes(), original.as_bytes());
+    }
+
+    #[test]
+    fn remove_member_rotates_channel_keys() {
+        let (_, mut server) = owner_and_server();
+        let ch_id = server.create_channel("general", ChannelKind::Text).unwrap();
+        let original_key = server.channel_key(&ch_id).unwrap().as_bytes().to_owned();
+
+        let alice = Identity::generate().peer_id();
+        server.add_member(alice.clone());
+
+        let new_keys = server.remove_member(&alice).unwrap();
+
+        // Key should have changed.
+        let rotated_key = server.channel_key(&ch_id).unwrap().as_bytes().to_owned();
+        assert_ne!(original_key, rotated_key);
+
+        // Returned keys should match what's stored.
+        assert!(new_keys.contains_key(&ch_id));
+        assert_eq!(new_keys[&ch_id].as_bytes(), &rotated_key);
+    }
+
+    #[test]
+    fn remove_member_rotates_all_channels() {
+        let (_, mut server) = owner_and_server();
+        let ch1 = server.create_channel("general", ChannelKind::Text).unwrap();
+        let ch2 = server.create_channel("random", ChannelKind::Text).unwrap();
+
+        let alice = Identity::generate().peer_id();
+        server.add_member(alice.clone());
+
+        let new_keys = server.remove_member(&alice).unwrap();
+        assert_eq!(new_keys.len(), 2);
+        assert!(new_keys.contains_key(&ch1));
+        assert!(new_keys.contains_key(&ch2));
     }
 }

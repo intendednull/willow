@@ -164,6 +164,11 @@ pub struct SealedContent {
     pub nonce: [u8; 12],
     /// Which generation of the channel key was used.
     pub key_epoch: u32,
+    /// Ratchet counter — which per-message key was used within the epoch.
+    /// The receiver uses this + the epoch's channel key to derive the same
+    /// message key. Defaults to 0 for backwards compat with pre-ratchet messages.
+    #[serde(default)]
+    pub ratchet_counter: u64,
 }
 
 // ───── Message ───────────────────────────────────────────────────────────────
