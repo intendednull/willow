@@ -305,53 +305,239 @@ pub use native::NetworkNode;
 
 // ───── NetworkNode (WASM) ────────────────────────────────────────────────────
 
-// The WASM implementation will be added when targeting wasm32. For now we
-// provide the type so the crate compiles on both targets. A full WASM
-// implementation requires a WebSocket relay server to connect through.
 #[cfg(target_arch = "wasm32")]
 mod wasm {
     use super::*;
+    use futures::channel::mpsc;
+    use futures::{SinkExt, StreamExt};
 
     pub struct NetworkNode {
+        command_tx: mpsc::UnboundedSender<Command>,
         local_peer_id: PeerId,
     }
 
     impl NetworkNode {
-        /// WASM stub — requires a WebSocket relay server address in config.
+        /// Start the network node using WebSocket transport for the browser.
+        ///
+        /// WASM peers cannot listen for incoming connections — they must
+        /// dial out to a relay or bootstrap node via WebSocket.
         pub async fn start(
             identity: Identity,
-            _config: NetworkConfig,
-        ) -> Result<(
-            Self,
-            futures::channel::mpsc::UnboundedReceiver<NetworkEvent>,
-        )> {
+            config: NetworkConfig,
+        ) -> Result<(Self, mpsc::UnboundedReceiver<NetworkEvent>)> {
             let keypair = identity.keypair().clone();
             let local_peer_id = PeerId::from(keypair.public());
-            let (_event_tx, event_rx) = futures::channel::mpsc::unbounded();
 
-            info!(%local_peer_id, "willow network node (wasm) - stub");
+            info!(%local_peer_id, "starting willow network node (wasm)");
 
-            Ok((Self { local_peer_id }, event_rx))
+            let mut swarm = build_swarm(keypair.clone(), &config)?;
+
+            // WASM can't listen — dial bootstrap peers instead.
+            for (peer, addr) in &config.bootstrap_peers {
+                swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .add_address(peer, addr.clone());
+                if let Err(e) = swarm.dial(addr.clone()) {
+                    warn!(%e, "failed to dial bootstrap peer");
+                }
+            }
+            if !config.bootstrap_peers.is_empty() {
+                swarm.behaviour_mut().kademlia.bootstrap().ok();
+            }
+
+            let (command_tx, command_rx) = mpsc::unbounded();
+            let (event_tx, event_rx) = mpsc::unbounded();
+
+            wasm_bindgen_futures::spawn_local(run_swarm(swarm, command_rx, event_tx));
+
+            Ok((
+                Self {
+                    command_tx,
+                    local_peer_id,
+                },
+                event_rx,
+            ))
         }
 
         pub fn peer_id(&self) -> PeerId {
             self.local_peer_id
         }
 
-        pub fn subscribe(&self, _topic: &str) -> Result<()> {
+        pub fn subscribe(&self, topic: &str) -> Result<()> {
+            self.command_tx
+                .unbounded_send(Command::Subscribe(topic.to_string()))
+                .map_err(|_| anyhow::anyhow!("swarm task has stopped"))?;
             Ok(())
         }
 
-        pub fn unsubscribe(&self, _topic: &str) -> Result<()> {
+        pub fn unsubscribe(&self, topic: &str) -> Result<()> {
+            self.command_tx
+                .unbounded_send(Command::Unsubscribe(topic.to_string()))
+                .map_err(|_| anyhow::anyhow!("swarm task has stopped"))?;
             Ok(())
         }
 
-        pub fn publish(&self, _topic: &str, _data: Vec<u8>) -> Result<()> {
+        pub fn publish(&self, topic: &str, data: Vec<u8>) -> Result<()> {
+            self.command_tx
+                .unbounded_send(Command::Publish {
+                    topic: topic.to_string(),
+                    data,
+                })
+                .map_err(|_| anyhow::anyhow!("swarm task has stopped"))?;
             Ok(())
         }
 
-        pub fn dial(&self, _addr: Multiaddr) -> Result<()> {
+        pub fn dial(&self, addr: Multiaddr) -> Result<()> {
+            self.command_tx
+                .unbounded_send(Command::Dial(addr))
+                .map_err(|_| anyhow::anyhow!("swarm task has stopped"))?;
             Ok(())
+        }
+    }
+
+    fn build_swarm(
+        keypair: libp2p::identity::Keypair,
+        config: &NetworkConfig,
+    ) -> Result<Swarm<WillowBehaviour>> {
+        use libp2p::core::muxing::StreamMuxerBox;
+        use libp2p::core::upgrade::Version;
+        use libp2p::core::Transport as _;
+
+        let peer_id = PeerId::from(keypair.public());
+
+        let swarm = SwarmBuilder::with_existing_identity(keypair)
+            .with_wasm_bindgen()
+            .with_other_transport(|key| {
+                let ws = libp2p::websocket_websys::Transport::default();
+                ws.upgrade(Version::V1)
+                    .authenticate(noise::Config::new(key).expect("noise config"))
+                    .multiplex(yamux::Config::default())
+                    .map(|(peer, muxer), _| (peer, StreamMuxerBox::new(muxer)))
+                    .boxed()
+            })?
+            .with_relay_client(noise::Config::new, yamux::Config::default)?
+            .with_behaviour(|key, relay_behaviour| {
+                let gossipsub_config = gossipsub::ConfigBuilder::default()
+                    .heartbeat_interval(config.gossipsub_heartbeat)
+                    .validation_mode(gossipsub::ValidationMode::Strict)
+                    .message_id_fn(|msg: &gossipsub::Message| {
+                        use std::collections::hash_map::DefaultHasher;
+                        use std::hash::{Hash, Hasher};
+                        let mut hasher = DefaultHasher::new();
+                        msg.data.hash(&mut hasher);
+                        msg.topic.hash(&mut hasher);
+                        gossipsub::MessageId::from(hasher.finish().to_string())
+                    })
+                    .build()
+                    .expect("valid gossipsub config");
+
+                let gossipsub = gossipsub::Behaviour::new(
+                    gossipsub::MessageAuthenticity::Signed(key.clone()),
+                    gossipsub_config,
+                )
+                .expect("valid gossipsub behaviour");
+
+                let kademlia = kad::Behaviour::new(peer_id, kad::store::MemoryStore::new(peer_id));
+
+                let identify = identify::Behaviour::new(identify::Config::new(
+                    "/willow/1.0.0".to_string(),
+                    key.public(),
+                ));
+
+                Ok(WillowBehaviour {
+                    gossipsub,
+                    kademlia,
+                    identify,
+                    relay: relay_behaviour,
+                })
+            })?
+            .with_swarm_config(|c| c.with_idle_connection_timeout(config.idle_timeout))
+            .build();
+
+        Ok(swarm)
+    }
+
+    async fn run_swarm(
+        mut swarm: Swarm<WillowBehaviour>,
+        mut commands: mpsc::UnboundedReceiver<Command>,
+        mut events: mpsc::UnboundedSender<NetworkEvent>,
+    ) {
+        loop {
+            futures::select! {
+                cmd = commands.next() => {
+                    match cmd {
+                        Some(Command::Subscribe(topic)) => {
+                            let topic = gossipsub::IdentTopic::new(&topic);
+                            if let Err(e) = swarm.behaviour_mut().gossipsub.subscribe(&topic) {
+                                warn!(%e, "failed to subscribe");
+                            }
+                        }
+                        Some(Command::Unsubscribe(topic)) => {
+                            let topic = gossipsub::IdentTopic::new(&topic);
+                            if let Err(e) = swarm.behaviour_mut().gossipsub.unsubscribe(&topic) {
+                                warn!(%e, "failed to unsubscribe");
+                            }
+                        }
+                        Some(Command::Publish { topic, data }) => {
+                            let topic = gossipsub::IdentTopic::new(&topic);
+                            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                                warn!(%e, "failed to publish");
+                            }
+                        }
+                        Some(Command::Dial(addr)) => {
+                            if let Err(e) = swarm.dial(addr) {
+                                warn!(%e, "failed to dial");
+                            }
+                        }
+                        None => {
+                            info!("command channel closed, shutting down swarm");
+                            return;
+                        }
+                    }
+                }
+
+                event = swarm.select_next_some() => {
+                    match event {
+                        SwarmEvent::Behaviour(crate::behaviour::WillowBehaviourEvent::Gossipsub(
+                            gossipsub::Event::Message { message, .. },
+                        )) => {
+                            let topic = message.topic.to_string();
+                            let _ = events.send(NetworkEvent::Message {
+                                topic,
+                                data: message.data,
+                                source: message.source,
+                            }).await;
+                        }
+
+                        SwarmEvent::Behaviour(crate::behaviour::WillowBehaviourEvent::Identify(
+                            identify::Event::Received { peer_id, info },
+                        )) => {
+                            debug!(%peer_id, protocol = %info.protocol_version, "identify: received");
+                            for addr in info.listen_addrs {
+                                swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
+                            }
+                        }
+
+                        SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                            info!(%peer_id, "connection established");
+                            let _ = events.send(NetworkEvent::PeerConnected(peer_id)).await;
+                        }
+
+                        SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                            debug!(%peer_id, "connection closed");
+                            let _ = events.send(NetworkEvent::PeerDisconnected(peer_id)).await;
+                        }
+
+                        SwarmEvent::NewListenAddr { address, .. } => {
+                            info!(%address, "listening on");
+                            let _ = events.send(NetworkEvent::Listening(address)).await;
+                        }
+
+                        _ => {}
+                    }
+                }
+            }
         }
     }
 }
