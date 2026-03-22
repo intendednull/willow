@@ -6,7 +6,9 @@ use std::sync::mpsc as std_mpsc;
 use crate::network_bridge::{
     LocalIdentity, NetworkBridgeCommand, NetworkBridgeEvent, NetworkCommandSender,
 };
-use crate::ui::{AppView, ChannelKeyStore, ChatState, InputState, ServerState, SettingsInput};
+use crate::ui::{
+    AppView, ChannelKeyStore, ChatState, InputState, ProfileStore, ServerState, SettingsInput,
+};
 use willow_crypto::{generate_channel_key, seal_content};
 use willow_identity::Identity;
 use willow_messaging::hlc::HLC;
@@ -31,6 +33,7 @@ fn test_app() -> (App, std_mpsc::Receiver<NetworkBridgeCommand>) {
     app.insert_resource(ServerState::default());
     app.insert_resource(AppView::default());
     app.insert_resource(SettingsInput::default());
+    app.insert_resource(ProfileStore::default());
     app.insert_resource(crate::ui::MessageDbRes(None));
     app.add_message::<NetworkBridgeEvent>();
     app.add_message::<KeyboardInput>();
@@ -498,11 +501,67 @@ fn default_view_is_chat() {
 }
 
 #[test]
-fn typing_in_settings_view_updates_relay_field() {
+fn typing_in_settings_view_updates_name_field() {
     let (mut app, _rx) = test_app();
 
-    // Switch to settings view.
+    // Switch to settings view (default focused field is DisplayName).
     *app.world_mut().resource_mut::<AppView>() = AppView::Settings;
+
+    send_key(&mut app, KeyCode::KeyA, Some("A"));
+    send_key(&mut app, KeyCode::KeyL, Some("l"));
+    send_key(&mut app, KeyCode::KeyI, Some("i"));
+    send_key(&mut app, KeyCode::KeyC, Some("c"));
+    send_key(&mut app, KeyCode::KeyE, Some("e"));
+    app.update();
+
+    let settings = app.world().resource::<SettingsInput>();
+    assert_eq!(settings.display_name, "Alice");
+    assert!(settings.relay_addr.is_empty());
+
+    // Chat input should be untouched.
+    let input = app.world().resource::<InputState>();
+    assert_eq!(input.text, "");
+}
+
+#[test]
+fn tab_switches_settings_field() {
+    use crate::ui::SettingsField;
+    let (mut app, _rx) = test_app();
+
+    *app.world_mut().resource_mut::<AppView>() = AppView::Settings;
+
+    // Default is DisplayName.
+    assert_eq!(
+        app.world().resource::<SettingsInput>().focused_field,
+        SettingsField::DisplayName
+    );
+
+    // Tab switches to RelayAddr.
+    send_key(&mut app, KeyCode::Tab, None);
+    app.update();
+    assert_eq!(
+        app.world().resource::<SettingsInput>().focused_field,
+        SettingsField::RelayAddr
+    );
+
+    // Tab again switches back.
+    send_key(&mut app, KeyCode::Tab, None);
+    app.update();
+    assert_eq!(
+        app.world().resource::<SettingsInput>().focused_field,
+        SettingsField::DisplayName
+    );
+}
+
+#[test]
+fn typing_in_relay_field_after_tab() {
+    let (mut app, _rx) = test_app();
+
+    *app.world_mut().resource_mut::<AppView>() = AppView::Settings;
+
+    // Tab to relay field.
+    send_key(&mut app, KeyCode::Tab, None);
+    app.update();
 
     send_key(&mut app, KeyCode::Slash, Some("/"));
     send_key(&mut app, KeyCode::KeyI, Some("i"));
@@ -512,10 +571,7 @@ fn typing_in_settings_view_updates_relay_field() {
 
     let settings = app.world().resource::<SettingsInput>();
     assert_eq!(settings.relay_addr, "/ip4");
-
-    // Chat input should be untouched.
-    let input = app.world().resource::<InputState>();
-    assert_eq!(input.text, "");
+    assert!(settings.display_name.is_empty());
 }
 
 #[test]
@@ -553,17 +609,60 @@ fn enter_in_settings_does_not_send_message() {
 }
 
 #[test]
-fn backspace_in_settings_removes_from_relay() {
+fn backspace_in_settings_removes_from_focused_field() {
     let (mut app, _rx) = test_app();
 
     *app.world_mut().resource_mut::<AppView>() = AppView::Settings;
-    app.world_mut().resource_mut::<SettingsInput>().relay_addr = "abc".to_string();
+    app.world_mut().resource_mut::<SettingsInput>().display_name = "abc".to_string();
 
     send_key(&mut app, KeyCode::Backspace, None);
     app.update();
 
     let settings = app.world().resource::<SettingsInput>();
-    assert_eq!(settings.relay_addr, "ab");
+    assert_eq!(settings.display_name, "ab");
+}
+
+// ───── Profile Tests ────────────────────────────────────────────────────────
+
+#[test]
+fn profile_store_returns_name_when_set() {
+    let mut store = ProfileStore::default();
+    store.names.insert("12D3KooWTest".into(), "Alice".into());
+
+    assert_eq!(store.display_name("12D3KooWTest"), "Alice");
+}
+
+#[test]
+fn profile_store_falls_back_to_truncated_id() {
+    let store = ProfileStore::default();
+    let name = store.display_name("12D3KooWAbCdEfGhIjKlMnOp");
+    assert_eq!(name, "12D3KooWAbCd...");
+}
+
+#[test]
+fn send_message_uses_profile_display_name() {
+    let (mut app, _rx) = test_app();
+
+    // Set a display name in the profile store.
+    let peer_id = app
+        .world()
+        .resource::<LocalIdentity>()
+        .0
+        .peer_id()
+        .to_string();
+    app.world_mut()
+        .resource_mut::<ProfileStore>()
+        .names
+        .insert(peer_id, "Bob".into());
+
+    send_key(&mut app, KeyCode::KeyX, Some("x"));
+    app.update();
+    send_key(&mut app, KeyCode::Enter, None);
+    app.update();
+    app.update();
+
+    let state = app.world().resource::<ChatState>();
+    assert_eq!(state.messages[0].author, "Bob");
 }
 
 // ───── Storage Settings Tests ───────────────────────────────────────────────

@@ -27,6 +27,7 @@ impl Plugin for UiPlugin {
             .insert_resource(ServerState::default())
             .insert_resource(AppView::default())
             .insert_resource(SettingsInput::default())
+            .insert_resource(ProfileStore::default())
             .insert_resource(MessageDbRes(
                 crate::storage::open_message_db()
                     .map(|db| std::sync::Arc::new(std::sync::Mutex::new(db))),
@@ -144,6 +145,22 @@ pub(crate) struct MessageDbRes(
     pub(crate) Option<std::sync::Arc<std::sync::Mutex<crate::storage::MessageDb>>>,
 );
 
+/// Maps PeerId strings → display names. Updated from profile broadcasts.
+#[derive(Resource, Default, Clone)]
+pub(crate) struct ProfileStore {
+    pub(crate) names: HashMap<String, String>,
+}
+
+impl ProfileStore {
+    /// Look up a display name for a peer, falling back to truncated ID.
+    pub(crate) fn display_name(&self, peer_id: &str) -> String {
+        self.names
+            .get(peer_id)
+            .cloned()
+            .unwrap_or_else(|| truncate_peer_id(peer_id))
+    }
+}
+
 /// Which view is currently active.
 #[derive(Resource, Default, Debug, PartialEq, Eq)]
 pub(crate) enum AppView {
@@ -156,13 +173,26 @@ pub(crate) enum AppView {
 #[derive(Resource)]
 pub(crate) struct SettingsInput {
     pub(crate) relay_addr: String,
+    pub(crate) display_name: String,
+    /// Which field is currently focused in settings.
+    pub(crate) focused_field: SettingsField,
+}
+
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SettingsField {
+    #[default]
+    DisplayName,
+    RelayAddr,
 }
 
 impl Default for SettingsInput {
     fn default() -> Self {
-        let saved = crate::storage::load_settings().unwrap_or_default();
+        let saved_settings = crate::storage::load_settings().unwrap_or_default();
+        let saved_profile = crate::storage::load_profile().unwrap_or_default();
         Self {
-            relay_addr: saved.relay_addr.unwrap_or_default(),
+            relay_addr: saved_settings.relay_addr.unwrap_or_default(),
+            display_name: saved_profile.display_name,
+            focused_field: SettingsField::DisplayName,
         }
     }
 }
@@ -212,6 +242,14 @@ struct SettingsButton;
 /// Save button in settings.
 #[derive(Component)]
 struct SaveSettingsButton;
+
+/// Display name text field in settings.
+#[derive(Component)]
+pub(crate) struct SettingsNameText;
+
+/// The sidebar display of the local user's name.
+#[derive(Component)]
+struct LocalUserDisplay;
 
 // ───── Helpers ──────────────────────────────────────────────────────────────
 
@@ -330,10 +368,21 @@ fn setup_ui(
     identity: Res<LocalIdentity>,
     server_state: Res<ServerState>,
     settings_input: Res<SettingsInput>,
+    mut profiles: ResMut<ProfileStore>,
 ) {
     commands.spawn(Camera2d);
 
-    let peer_display = truncate_peer_id(&identity.0.peer_id().to_string());
+    // Register our own display name in the profile store.
+    let peer_id_str = identity.0.peer_id().to_string();
+    let local_name = if settings_input.display_name.is_empty() {
+        truncate_peer_id(&peer_id_str)
+    } else {
+        settings_input.display_name.clone()
+    };
+    profiles
+        .names
+        .insert(peer_id_str.clone(), local_name.clone());
+    let peer_display = local_name;
     let server_name = server_state
         .server
         .as_ref()
@@ -372,6 +421,7 @@ fn setup_ui(
                     Text::new(format!("You: {peer_display}")),
                     TextFont::from_font_size(11.0),
                     TextColor(Color::srgb(0.5, 0.5, 0.5)),
+                    LocalUserDisplay,
                 ));
 
                 sidebar.spawn(Node {
@@ -563,6 +613,49 @@ fn spawn_settings_panel(parent: &mut ChildSpawnerCommands, settings: &SettingsIn
                 ..default()
             });
 
+            // Display name section
+            panel.spawn((
+                Text::new("Display Name"),
+                TextFont::from_font_size(13.0),
+                TextColor(Color::srgb(0.6, 0.6, 0.65)),
+            ));
+
+            panel
+                .spawn((
+                    Node {
+                        width: Val::Percent(100.0),
+                        min_height: Val::Px(36.0),
+                        padding: UiRect::horizontal(Val::Px(12.0)),
+                        align_items: AlignItems::Center,
+                        margin: UiRect::vertical(Val::Px(4.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.18, 0.18, 0.2)),
+                ))
+                .with_children(|field| {
+                    let display = if settings.display_name.is_empty() {
+                        "Enter your name..."
+                    } else {
+                        &settings.display_name
+                    };
+                    let color = if settings.display_name.is_empty() {
+                        Color::srgb(0.4, 0.4, 0.45)
+                    } else {
+                        Color::srgb(0.85, 0.85, 0.85)
+                    };
+                    field.spawn((
+                        Text::new(display),
+                        TextFont::from_font_size(13.0),
+                        TextColor(color),
+                        SettingsNameText,
+                    ));
+                });
+
+            panel.spawn(Node {
+                height: Val::Px(12.0),
+                ..default()
+            });
+
             // Relay address section
             panel.spawn((
                 Text::new("Relay Address"),
@@ -683,7 +776,19 @@ pub(crate) fn handle_keyboard_input(
     mut settings_input: ResMut<SettingsInput>,
     mut relay_text_query: Query<
         (&mut Text, &mut TextColor),
-        (With<SettingsRelayText>, Without<InputText>),
+        (
+            With<SettingsRelayText>,
+            Without<InputText>,
+            Without<SettingsNameText>,
+        ),
+    >,
+    mut name_text_query: Query<
+        (&mut Text, &mut TextColor),
+        (
+            With<SettingsNameText>,
+            Without<InputText>,
+            Without<SettingsRelayText>,
+        ),
     >,
 ) {
     for event in key_events.read() {
@@ -692,24 +797,49 @@ pub(crate) fn handle_keyboard_input(
         }
 
         if *view == AppView::Settings {
-            // Route keyboard input to relay address field.
+            // Tab switches between fields.
+            if event.key_code == KeyCode::Tab {
+                settings_input.focused_field = match settings_input.focused_field {
+                    SettingsField::DisplayName => SettingsField::RelayAddr,
+                    SettingsField::RelayAddr => SettingsField::DisplayName,
+                };
+                continue;
+            }
+
+            // Route to the focused field.
+            let target = match settings_input.focused_field {
+                SettingsField::DisplayName => &mut settings_input.display_name,
+                SettingsField::RelayAddr => &mut settings_input.relay_addr,
+            };
+
             match event.key_code {
                 KeyCode::Backspace => {
-                    settings_input.relay_addr.pop();
+                    target.pop();
                 }
-                KeyCode::Escape => {} // handled by toggle_view
+                KeyCode::Escape => {}
                 _ => {
                     if let Some(ref s) = event.text {
                         for c in s.chars() {
                             if !c.is_control() {
-                                settings_input.relay_addr.push(c);
+                                target.push(c);
                             }
                         }
                     }
                 }
             }
 
-            // Update the relay text display.
+            // Update display name text.
+            for (mut text, mut color) in &mut name_text_query {
+                if settings_input.display_name.is_empty() {
+                    **text = "Enter your name...".to_string();
+                    *color = TextColor(Color::srgb(0.4, 0.4, 0.45));
+                } else {
+                    **text = settings_input.display_name.clone();
+                    *color = TextColor(Color::srgb(0.85, 0.85, 0.85));
+                }
+            }
+
+            // Update relay text.
             for (mut text, mut color) in &mut relay_text_query {
                 if settings_input.relay_addr.is_empty() {
                     **text = "/ip4/.../tcp/9091/ws/p2p/12D3KooW...".to_string();
@@ -744,6 +874,7 @@ pub(crate) fn handle_keyboard_input(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn send_message(
     mut input: ResMut<InputState>,
     mut state: ResMut<ChatState>,
@@ -752,6 +883,7 @@ pub(crate) fn send_message(
     key_store: Res<ChannelKeyStore>,
     server_state: Res<ServerState>,
     db: Res<MessageDbRes>,
+    profiles: Res<ProfileStore>,
 ) {
     if !input.send_requested {
         return;
@@ -793,7 +925,7 @@ pub(crate) fn send_message(
         }
     }
 
-    let author = truncate_peer_id(&peer_id.to_string());
+    let author = profiles.display_name(&peer_id.to_string());
     let chat_msg = ChatMessage {
         topic,
         author: author.clone(),
@@ -823,6 +955,7 @@ pub(crate) fn handle_network_events(
     mut state: ResMut<ChatState>,
     key_store: Res<ChannelKeyStore>,
     db: Res<MessageDbRes>,
+    profiles: Res<ProfileStore>,
 ) {
     for event in reader.read() {
         match event {
@@ -858,7 +991,7 @@ pub(crate) fn handle_network_events(
                 };
 
                 if let Content::Text { ref body } = content {
-                    let author = truncate_peer_id(&signer.to_string());
+                    let author = profiles.display_name(&signer.to_string());
 
                     let chat_msg = ChatMessage {
                         topic: topic.clone(),
@@ -1063,9 +1196,32 @@ fn handle_save_settings(
     settings_input: Res<SettingsInput>,
     mut connect_writer: MessageWriter<ConnectCommand>,
     mut view: ResMut<AppView>,
+    mut profiles: ResMut<ProfileStore>,
+    identity: Res<LocalIdentity>,
+    mut user_display_query: Query<&mut Text, With<LocalUserDisplay>>,
 ) {
     for interaction in &query {
         if *interaction == Interaction::Pressed {
+            // Save profile.
+            let name = settings_input.display_name.trim().to_string();
+            crate::storage::save_profile(&crate::storage::LocalProfile {
+                display_name: name.clone(),
+            });
+
+            // Update profile store and sidebar display.
+            let peer_id_str = identity.0.peer_id().to_string();
+            let display = if name.is_empty() {
+                truncate_peer_id(&peer_id_str)
+            } else {
+                name
+            };
+            profiles.names.insert(peer_id_str, display.clone());
+
+            for mut text in &mut user_display_query {
+                **text = format!("You: {display}");
+            }
+
+            // Save relay and reconnect.
             let relay = if settings_input.relay_addr.trim().is_empty() {
                 None
             } else {

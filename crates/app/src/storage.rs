@@ -24,6 +24,22 @@ pub struct NetworkSettings {
     pub relay_addr: Option<String>,
 }
 
+/// Persisted local user profile.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
+pub struct LocalProfile {
+    pub display_name: String,
+}
+
+pub fn save_profile(profile: &LocalProfile) {
+    if let Ok(bytes) = willow_transport::pack(profile) {
+        save_raw("profile", &bytes);
+    }
+}
+
+pub fn load_profile() -> Option<LocalProfile> {
+    willow_transport::unpack(&load_raw("profile")?).ok()
+}
+
 // ───── Public API ───────────────────────────────────────────────────────────
 
 pub fn save_server(server: &Server, keys: &HashMap<String, ChannelKey>) {
