@@ -3,18 +3,39 @@ name = "willow-network"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
-description = "P2P networking layer for Willow using libp2p with tokio"
+description = "P2P networking layer for Willow using libp2p"
 
 [dependencies]
 willow-identity = { path = "../identity" }
 willow-transport = { path = "../transport" }
 
-libp2p = { workspace = true }
-tokio = { workspace = true }
 serde = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+# Native: libp2p with tokio, TCP, mDNS
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+libp2p = { workspace = true }
+tokio = { workspace = true }
+
+# WASM: libp2p with wasm-bindgen transports
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+libp2p = { version = "0.53", features = [
+    "gossipsub",
+    "kad",
+    "noise",
+    "yamux",
+    "relay",
+    "identify",
+    "macros",
+    "ed25519",
+    "serde",
+    "wasm-bindgen",
+    "websocket-websys",
+] }
+futures = "0.3"
+wasm-bindgen-futures = "0.4"
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }

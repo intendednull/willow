@@ -110,6 +110,7 @@ impl Identity {
     }
 
     /// Load an identity from a file, or generate and save a new one.
+    #[cfg(not(target_arch = "wasm32"))]
     ///
     /// The file stores the raw 64-byte Ed25519 keypair. Parent directories
     /// are created if they don't exist.
@@ -364,6 +365,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn load_or_generate_persists_identity() {
         let dir = std::env::temp_dir().join(format!(
             "willow-test-{}",

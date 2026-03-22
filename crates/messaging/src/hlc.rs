@@ -75,11 +75,18 @@ impl std::fmt::Display for HlcTimestamp {
 // ───── HLC state machine ────────────────────────────────────────────────────
 
 /// Returns the current wall-clock time in milliseconds since Unix epoch.
+#[cfg(not(target_arch = "wasm32"))]
 fn wall_clock_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock before Unix epoch")
         .as_millis() as u64
+}
+
+/// Returns the current wall-clock time in milliseconds since Unix epoch (WASM).
+#[cfg(target_arch = "wasm32")]
+fn wall_clock_ms() -> u64 {
+    js_sys::Date::now() as u64
 }
 
 /// A Hybrid Logical Clock instance.

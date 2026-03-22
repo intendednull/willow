@@ -60,30 +60,37 @@ pub struct NetworkPlugin;
 
 impl Plugin for NetworkPlugin {
     fn build(&self, app: &mut App) {
-        let data_dir = dirs::data_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("willow");
-        let identity =
+        #[cfg(not(target_arch = "wasm32"))]
+        let identity = {
+            let data_dir = dirs::data_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join("willow");
             Identity::load_or_generate(data_dir.join("identity.key")).unwrap_or_else(|e| {
                 warn!("failed to load identity, generating new: {e}");
                 Identity::generate()
-            });
+            })
+        };
+        #[cfg(target_arch = "wasm32")]
+        let identity = Identity::generate();
         info!(peer_id = %identity.peer_id(), "local identity ready");
 
         let (event_tx, event_rx) = std_mpsc::channel();
         let (cmd_tx, cmd_rx) = std_mpsc::channel();
 
-        // Spawn the tokio runtime + network node on a background thread.
-        let net_identity = identity.clone();
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-            rt.block_on(async move {
-                match run_network(net_identity, event_tx, cmd_rx).await {
-                    Ok(()) => info!("network task exited cleanly"),
-                    Err(e) => error!("network task failed: {e}"),
-                }
+        // Spawn the tokio runtime + network node on a background thread (native only).
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let net_identity = identity.clone();
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+                rt.block_on(async move {
+                    match run_network(net_identity, event_tx, cmd_rx).await {
+                        Ok(()) => info!("network task exited cleanly"),
+                        Err(e) => error!("network task failed: {e}"),
+                    }
+                });
             });
-        });
+        }
 
         app.insert_resource(LocalIdentity(identity))
             .insert_resource(NetworkEventReceiver(Arc::new(Mutex::new(event_rx))))
@@ -105,6 +112,7 @@ fn poll_network_events(
 }
 
 /// Run the network node on the tokio runtime (called from background thread).
+#[cfg(not(target_arch = "wasm32"))]
 async fn run_network(
     identity: Identity,
     event_tx: std_mpsc::Sender<NetworkBridgeEvent>,

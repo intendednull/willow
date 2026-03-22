@@ -38,7 +38,7 @@ libp2p = { version = "0.53", features = [
 
 # Time & IDs
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "serde", "js"] }
 
 # Game engine / UI
 bevy = "0.18"

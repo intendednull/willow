@@ -163,7 +163,8 @@ fn make_topic(server: &Server, channel_name: &str) -> String {
 
 // ───── Systems ───────────────────────────────────────────────────────────────
 
-/// Data directory for Willow state files.
+/// Data directory for Willow state files (native only).
+#[cfg(not(target_arch = "wasm32"))]
 fn data_dir() -> std::path::PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -174,7 +175,8 @@ fn data_dir() -> std::path::PathBuf {
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct SavedKeys(Vec<(String, [u8; 32])>);
 
-/// Save server and channel keys to disk.
+/// Save server and channel keys to disk (native only).
+#[cfg(not(target_arch = "wasm32"))]
 fn save_server_state(server: &Server, key_store: &ChannelKeyStore) {
     let dir = data_dir();
     let _ = std::fs::create_dir_all(&dir);
@@ -197,7 +199,8 @@ fn save_server_state(server: &Server, key_store: &ChannelKeyStore) {
     }
 }
 
-/// Try to load server and keys from disk. Returns None if not found.
+/// Try to load server and keys from disk. Returns None if not found (native only).
+#[cfg(not(target_arch = "wasm32"))]
 fn load_server_state() -> Option<(Server, HashMap<String, ChannelKey>)> {
     let dir = data_dir();
 
@@ -223,7 +226,12 @@ fn init_server(
     mut key_store: ResMut<ChannelKeyStore>,
     net_cmd: Res<NetworkCommandSender>,
 ) {
-    let (server, keys) = if let Some((server, keys)) = load_server_state() {
+    #[cfg(not(target_arch = "wasm32"))]
+    let loaded = load_server_state();
+    #[cfg(target_arch = "wasm32")]
+    let loaded: Option<(Server, HashMap<String, ChannelKey>)> = None;
+
+    let (server, keys) = if let Some((server, keys)) = loaded {
         info!("loaded server '{}' from disk", server.name);
         (server, keys)
     } else {
@@ -261,6 +269,7 @@ fn init_server(
     }
 
     key_store.keys = keys;
+    #[cfg(not(target_arch = "wasm32"))]
     save_server_state(&server, &key_store);
     server_state.server = Some(server);
 }
