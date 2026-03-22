@@ -21,8 +21,13 @@ crates/
 ## Build & Test
 
 ```bash
-# Check everything compiles
+# Check everything compiles (native)
 cargo check
+
+# Check library crates compile for WASM
+cargo check --target wasm32-unknown-unknown \
+  -p willow-transport -p willow-identity -p willow-crypto \
+  -p willow-messaging -p willow-channel
 
 # Run all tests
 cargo test
@@ -38,7 +43,22 @@ cargo fmt --check
 cargo clippy -- -D warnings
 ```
 
-**All code must pass `cargo fmt`, `cargo clippy -- -D warnings`, and `cargo test` with zero warnings before being committed.**
+**All code must pass `cargo fmt`, `cargo clippy -- -D warnings`, `cargo test`,
+and WASM compilation checks with zero warnings before being committed.**
+
+### Dual-Target Support (Native + WASM)
+
+All library crates must compile for both native and `wasm32-unknown-unknown`.
+When adding new code, ensure WASM compatibility:
+
+- **No `std::fs`** in library crates — gate with `#[cfg(not(target_arch = "wasm32"))]`
+- **No `std::time::SystemTime`** — use `js_sys::Date::now()` on WASM
+- **No `std::thread`** or **tokio** in library crates — these are native-only
+- **RNG**: `getrandom` needs the `js` (v0.2) / `wasm_js` (v0.3) features on WASM
+- **UUID**: workspace dep includes the `js` feature for WASM v4 generation
+- **Network**: mDNS and TCP are native-only; WASM uses WebSocket via relay
+- Use `#[cfg(target_arch = "wasm32")]` / `#[cfg(not(target_arch = "wasm32"))]`
+  for platform-specific code paths
 
 ### Headless UI Testing
 
