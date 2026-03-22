@@ -31,6 +31,7 @@ fn test_app() -> (App, std_mpsc::Receiver<NetworkBridgeCommand>) {
     app.insert_resource(ServerState::default());
     app.insert_resource(AppView::default());
     app.insert_resource(SettingsInput::default());
+    app.insert_resource(crate::ui::MessageDbRes(None));
     app.add_message::<NetworkBridgeEvent>();
     app.add_message::<KeyboardInput>();
     app.add_systems(
@@ -641,6 +642,149 @@ fn server_state_topic_mapping() {
     assert_eq!(state.name_for_topic(&topic), Some("general"));
     assert_eq!(state.topic_for_name("nonexistent"), None);
     assert_eq!(state.name_for_topic("bogus"), None);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn test_message_db() -> (crate::storage::MessageDb, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let db = crate::storage::MessageDb::open_path(dir.path().join("test.db")).unwrap();
+    (db, dir)
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn message_db_insert_and_load() {
+    let (db, _dir) = test_message_db();
+
+    db.insert(&crate::storage::StoredMessage {
+        topic: "test-topic".into(),
+        author: "alice".into(),
+        body: "hello".into(),
+        is_local: false,
+        timestamp_ms: 1000,
+    });
+
+    db.insert(&crate::storage::StoredMessage {
+        topic: "test-topic".into(),
+        author: "bob".into(),
+        body: "world".into(),
+        is_local: true,
+        timestamp_ms: 2000,
+    });
+
+    let loaded = db.load_topic("test-topic", 100);
+    assert_eq!(loaded.len(), 2);
+    assert_eq!(loaded[0].author, "alice");
+    assert_eq!(loaded[0].body, "hello");
+    assert!(!loaded[0].is_local);
+    assert_eq!(loaded[1].author, "bob");
+    assert_eq!(loaded[1].body, "world");
+    assert!(loaded[1].is_local);
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn message_db_topics_isolated() {
+    let (db, _dir) = test_message_db();
+
+    db.insert(&crate::storage::StoredMessage {
+        topic: "alpha".into(),
+        author: "a".into(),
+        body: "1".into(),
+        is_local: false,
+        timestamp_ms: 100,
+    });
+    db.insert(&crate::storage::StoredMessage {
+        topic: "beta".into(),
+        author: "b".into(),
+        body: "2".into(),
+        is_local: false,
+        timestamp_ms: 200,
+    });
+
+    assert_eq!(db.load_topic("alpha", 100).len(), 1);
+    assert_eq!(db.load_topic("beta", 100).len(), 1);
+    assert_eq!(db.load_topic("gamma", 100).len(), 0);
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn message_db_ordered_by_timestamp() {
+    let (db, _dir) = test_message_db();
+
+    // Insert out of order.
+    db.insert(&crate::storage::StoredMessage {
+        topic: "t".into(),
+        author: "a".into(),
+        body: "third".into(),
+        is_local: false,
+        timestamp_ms: 3000,
+    });
+    db.insert(&crate::storage::StoredMessage {
+        topic: "t".into(),
+        author: "a".into(),
+        body: "first".into(),
+        is_local: false,
+        timestamp_ms: 1000,
+    });
+    db.insert(&crate::storage::StoredMessage {
+        topic: "t".into(),
+        author: "a".into(),
+        body: "second".into(),
+        is_local: false,
+        timestamp_ms: 2000,
+    });
+
+    let loaded = db.load_topic("t", 100);
+    assert_eq!(loaded[0].body, "first");
+    assert_eq!(loaded[1].body, "second");
+    assert_eq!(loaded[2].body, "third");
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn message_db_limit() {
+    let (db, _dir) = test_message_db();
+
+    for i in 0..10 {
+        db.insert(&crate::storage::StoredMessage {
+            topic: "t".into(),
+            author: "a".into(),
+            body: format!("msg {i}"),
+            is_local: false,
+            timestamp_ms: i as u64,
+        });
+    }
+
+    assert_eq!(db.load_topic("t", 3).len(), 3);
+    assert_eq!(db.count_topic("t"), 10);
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn message_db_count_and_topics() {
+    let (db, _dir) = test_message_db();
+
+    db.insert(&crate::storage::StoredMessage {
+        topic: "a".into(),
+        author: "x".into(),
+        body: "y".into(),
+        is_local: false,
+        timestamp_ms: 0,
+    });
+    db.insert(&crate::storage::StoredMessage {
+        topic: "b".into(),
+        author: "x".into(),
+        body: "y".into(),
+        is_local: false,
+        timestamp_ms: 0,
+    });
+
+    assert_eq!(db.count_topic("a"), 1);
+    assert_eq!(db.count_topic("b"), 1);
+    let mut topics = db.topics();
+    topics.sort();
+    assert_eq!(topics, vec!["a", "b"]);
 }
 
 #[test]

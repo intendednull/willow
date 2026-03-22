@@ -27,6 +27,10 @@ impl Plugin for UiPlugin {
             .insert_resource(ServerState::default())
             .insert_resource(AppView::default())
             .insert_resource(SettingsInput::default())
+            .insert_resource(MessageDbRes(
+                crate::storage::open_message_db()
+                    .map(|db| std::sync::Arc::new(std::sync::Mutex::new(db))),
+            ))
             .add_systems(Startup, (init_server, setup_ui).chain())
             .add_systems(
                 Update,
@@ -75,6 +79,7 @@ impl ServerState {
     }
 
     /// Get the channel name for a gossipsub topic.
+    #[allow(dead_code)]
     pub(crate) fn name_for_topic(&self, topic: &str) -> Option<&str> {
         self.topic_map.get(topic).map(|(name, _)| name.as_str())
     }
@@ -132,6 +137,12 @@ pub(crate) struct InputState {
 pub(crate) struct ChannelKeyStore {
     pub(crate) keys: HashMap<String, ChannelKey>,
 }
+
+/// Persistent message database.
+#[derive(Resource, Clone)]
+pub(crate) struct MessageDbRes(
+    pub(crate) Option<std::sync::Arc<std::sync::Mutex<crate::storage::MessageDb>>>,
+);
 
 /// Which view is currently active.
 #[derive(Resource, Default, Debug, PartialEq, Eq)]
@@ -225,6 +236,8 @@ fn init_server(
     mut server_state: ResMut<ServerState>,
     mut key_store: ResMut<ChannelKeyStore>,
     mut connect_writer: MessageWriter<ConnectCommand>,
+    mut state: ResMut<ChatState>,
+    db: Res<MessageDbRes>,
 ) {
     let (server, keys) = if let Some((server, keys)) = crate::storage::load_server() {
         info!("loaded server '{}' from disk", server.name);
@@ -259,6 +272,28 @@ fn init_server(
 
     key_store.keys = keys;
     crate::storage::save_server(&server, &key_store.keys);
+
+    // Load persisted messages from the database.
+    if let Some(ref db_arc) = db.0 {
+        if let Ok(db_lock) = db_arc.lock() {
+            for topic in server_state.topic_map.keys() {
+                let stored = db_lock.load_topic(topic, 500);
+                for sm in stored {
+                    state.messages.push(ChatMessage {
+                        topic: sm.topic,
+                        author: sm.author,
+                        body: sm.body,
+                        is_local: sm.is_local,
+                    });
+                }
+            }
+            if !state.messages.is_empty() {
+                state.messages_dirty = true;
+                info!("loaded {} messages from database", state.messages.len());
+            }
+        }
+    }
+
     server_state.server = Some(server);
 
     // Connect to the network with saved relay settings.
@@ -716,6 +751,7 @@ pub(crate) fn send_message(
     net_cmd: Res<NetworkCommandSender>,
     key_store: Res<ChannelKeyStore>,
     server_state: Res<ServerState>,
+    db: Res<MessageDbRes>,
 ) {
     if !input.send_requested {
         return;
@@ -757,12 +793,28 @@ pub(crate) fn send_message(
         }
     }
 
-    state.messages.push(ChatMessage {
+    let author = truncate_peer_id(&peer_id.to_string());
+    let chat_msg = ChatMessage {
         topic,
-        author: truncate_peer_id(&peer_id.to_string()),
-        body,
+        author: author.clone(),
+        body: body.clone(),
         is_local: true,
-    });
+    };
+
+    // Persist to database.
+    if let Some(ref db) = db.0 {
+        if let Ok(db) = db.lock() {
+            db.insert(&crate::storage::StoredMessage {
+                topic: chat_msg.topic.clone(),
+                author,
+                body,
+                is_local: true,
+                timestamp_ms: state.hlc.latest().millis,
+            });
+        }
+    }
+
+    state.messages.push(chat_msg);
     state.messages_dirty = true;
 }
 
@@ -770,7 +822,7 @@ pub(crate) fn handle_network_events(
     mut reader: MessageReader<NetworkBridgeEvent>,
     mut state: ResMut<ChatState>,
     key_store: Res<ChannelKeyStore>,
-    server_state: Res<ServerState>,
+    db: Res<MessageDbRes>,
 ) {
     for event in reader.read() {
         match event {
@@ -808,16 +860,26 @@ pub(crate) fn handle_network_events(
                 if let Content::Text { ref body } = content {
                     let author = truncate_peer_id(&signer.to_string());
 
-                    // Resolve channel name for display, fall back to topic.
-                    let _display_name =
-                        server_state.name_for_topic(topic).unwrap_or(topic.as_str());
-
-                    state.messages.push(ChatMessage {
+                    let chat_msg = ChatMessage {
                         topic: topic.clone(),
-                        author,
+                        author: author.clone(),
                         body: body.clone(),
                         is_local: false,
-                    });
+                    };
+
+                    if let Some(ref db_arc) = db.0 {
+                        if let Ok(db_lock) = db_arc.lock() {
+                            db_lock.insert(&crate::storage::StoredMessage {
+                                topic: topic.clone(),
+                                author,
+                                body: body.clone(),
+                                is_local: false,
+                                timestamp_ms: msg.hlc.millis,
+                            });
+                        }
+                    }
+
+                    state.messages.push(chat_msg);
                     state.messages_dirty = true;
                     state.hlc.receive(msg.hlc);
                 }

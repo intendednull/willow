@@ -69,6 +69,136 @@ pub fn load_settings() -> Option<NetworkSettings> {
     willow_transport::unpack(&load_raw("settings")?).ok()
 }
 
+// ───── Message Persistence ──────────────────────────────────────────────────
+
+/// A stored chat message for display. Lightweight compared to the full
+/// `willow_messaging::Message` — just what the UI needs.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StoredMessage {
+    pub topic: String,
+    pub author: String,
+    pub body: String,
+    pub is_local: bool,
+    pub timestamp_ms: u64,
+}
+
+/// Open (or create) the message database and return a handle.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn open_message_db() -> Option<MessageDb> {
+    let dir = data_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("messages.db");
+    MessageDb::open(&path)
+}
+
+/// SQLite-backed message storage (native only).
+#[cfg(not(target_arch = "wasm32"))]
+pub struct MessageDb {
+    conn: rusqlite::Connection,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl MessageDb {
+    /// Open a database at a specific path (used by tests and `open_message_db`).
+    pub fn open_path(path: impl AsRef<std::path::Path>) -> Option<Self> {
+        Self::open(path.as_ref())
+    }
+
+    fn open(path: &std::path::Path) -> Option<Self> {
+        let conn = rusqlite::Connection::open(path).ok()?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                topic TEXT NOT NULL,
+                author TEXT NOT NULL,
+                body TEXT NOT NULL,
+                is_local INTEGER NOT NULL DEFAULT 0,
+                timestamp_ms INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_messages_topic ON messages(topic, timestamp_ms);",
+        )
+        .ok()?;
+        Some(Self { conn })
+    }
+
+    /// Insert a message.
+    pub fn insert(&self, msg: &StoredMessage) {
+        let _ = self.conn.execute(
+            "INSERT INTO messages (topic, author, body, is_local, timestamp_ms) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![msg.topic, msg.author, msg.body, msg.is_local as i32, msg.timestamp_ms],
+        );
+    }
+
+    /// Load messages for a topic, ordered by timestamp.
+    pub fn load_topic(&self, topic: &str, limit: usize) -> Vec<StoredMessage> {
+        let mut stmt = match self.conn.prepare(
+            "SELECT topic, author, body, is_local, timestamp_ms FROM messages WHERE topic = ?1 ORDER BY timestamp_ms ASC LIMIT ?2",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        stmt.query_map(rusqlite::params![topic, limit as i64], |row| {
+            Ok(StoredMessage {
+                topic: row.get(0)?,
+                author: row.get(1)?,
+                body: row.get(2)?,
+                is_local: row.get::<_, i32>(3)? != 0,
+                timestamp_ms: row.get(4)?,
+            })
+        })
+        .ok()
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
+    /// Load all topics that have messages.
+    pub fn topics(&self) -> Vec<String> {
+        let mut stmt = match self.conn.prepare("SELECT DISTINCT topic FROM messages") {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map([], |row| row.get(0))
+            .ok()
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Count messages for a topic.
+    pub fn count_topic(&self, topic: &str) -> usize {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE topic = ?1",
+                rusqlite::params![topic],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0) as usize
+    }
+}
+
+/// WASM stub — messages are in-memory only (IndexedDB is a future enhancement).
+#[cfg(target_arch = "wasm32")]
+pub struct MessageDb;
+
+#[cfg(target_arch = "wasm32")]
+impl MessageDb {
+    pub fn insert(&self, _msg: &StoredMessage) {}
+    pub fn load_topic(&self, _topic: &str, _limit: usize) -> Vec<StoredMessage> {
+        Vec::new()
+    }
+    pub fn topics(&self) -> Vec<String> {
+        Vec::new()
+    }
+    pub fn count_topic(&self, _topic: &str) -> usize {
+        0
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn open_message_db() -> Option<MessageDb> {
+    Some(MessageDb)
+}
+
 // ───── Native implementation ────────────────────────────────────────────────
 
 #[cfg(not(target_arch = "wasm32"))]
