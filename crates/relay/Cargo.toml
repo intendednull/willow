@@ -1,0 +1,27 @@
+[package]
+name = "willow-relay"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Relay server for Willow P2P chat — bridges native TCP and browser WebSocket peers"
+
+[dependencies]
+libp2p = { version = "0.53", features = [
+    "tokio",
+    "gossipsub",
+    "kad",
+    "noise",
+    "yamux",
+    "tcp",
+    "dns",
+    "relay",
+    "identify",
+    "macros",
+    "ed25519",
+    "websocket",
+] }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { version = "4", features = ["derive"] }

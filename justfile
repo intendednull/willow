@@ -27,9 +27,9 @@ test-crate crate:
 check-native:
     cargo check
 
-# Check WASM compilation for all crates
+# Check WASM compilation (excludes native-only relay server)
 check-wasm:
-    cargo check --target wasm32-unknown-unknown
+    cargo check --target wasm32-unknown-unknown --workspace --exclude willow-relay
 
 # Build the native desktop app
 build:
@@ -55,6 +55,14 @@ build-wasm:
 # Build and serve the WASM web app on localhost:8080
 serve-wasm: build-wasm
     python3 -m http.server 8080 --directory web
+
+# Build the relay server
+build-relay:
+    cargo build --release -p willow-relay
+
+# Run the relay server (TCP 9090, WebSocket 9091)
+relay *args:
+    cargo run -p willow-relay -- {{args}}
 
 # Clean build artifacts
 clean:
