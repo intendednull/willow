@@ -94,10 +94,14 @@ A native desktop app where you and your friends can:
 - [ ] Profile editing (display name, avatar)
 - [ ] Encrypted metadata (topic obfuscation)
 
-### Phase 6 — File Sharing
-- [ ] `willow-files` crate — content-addressed chunked file storage
-- [ ] File transfer protocol over libp2p streams
-- [ ] Drag-and-drop file upload in Bevy
+### Phase 6 — File Sharing (IN PROGRESS)
+- [x] `willow-files` crate — content-addressed chunked file storage
+  - SHA-256 content hashing, configurable chunk size (default 256 KiB)
+  - split_file / assemble_file with integrity verification
+  - ChunkStore for tracking partial downloads and reassembly
+  - FileManifest for metadata broadcast over gossipsub
+- [ ] File transfer protocol over libp2p request-response
+- [ ] File sharing integration in the chat UI
 - [ ] Inline image/video previews
 - [ ] Peers seed files they've downloaded (BitTorrent-style)
 
