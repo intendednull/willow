@@ -351,4 +351,132 @@ mod tests {
         assert_eq!(decoded.content, msg.content);
         assert_eq!(decoded.author, msg.author);
     }
+
+    #[test]
+    fn create_file_message() {
+        let mut hlc = hlc::HLC::new();
+        let peer = Identity::generate().peer_id();
+        let channel = ChannelId::new();
+
+        let msg = Message::file(
+            channel,
+            peer,
+            "abc123hash",
+            "photo.jpg",
+            "image/jpeg",
+            1024,
+            &mut hlc,
+        );
+
+        assert!(matches!(
+            msg.content,
+            Content::File {
+                ref hash,
+                ref filename,
+                ref mime_type,
+                size_bytes,
+            } if hash == "abc123hash"
+                && filename == "photo.jpg"
+                && mime_type == "image/jpeg"
+                && size_bytes == 1024
+        ));
+    }
+
+    #[test]
+    fn content_edit_serde_round_trip() {
+        let target = MessageId::new();
+        let content = Content::Edit {
+            target: target.clone(),
+            new_body: "edited text".into(),
+        };
+        let bytes = willow_transport::pack(&content).unwrap();
+        let decoded: Content = willow_transport::unpack(&bytes).unwrap();
+        assert_eq!(decoded, content);
+    }
+
+    #[test]
+    fn content_delete_serde_round_trip() {
+        let target = MessageId::new();
+        let content = Content::Delete {
+            target: target.clone(),
+        };
+        let bytes = willow_transport::pack(&content).unwrap();
+        let decoded: Content = willow_transport::unpack(&bytes).unwrap();
+        assert_eq!(decoded, content);
+    }
+
+    #[test]
+    fn content_system_serde_round_trip() {
+        let content = Content::System {
+            description: "user joined the channel".into(),
+        };
+        let bytes = willow_transport::pack(&content).unwrap();
+        let decoded: Content = willow_transport::unpack(&bytes).unwrap();
+        assert_eq!(decoded, content);
+    }
+
+    #[test]
+    fn content_encrypted_serde_round_trip() {
+        let content = Content::Encrypted(SealedContent {
+            ciphertext: vec![1, 2, 3, 4],
+            nonce: [0u8; 12],
+            key_epoch: 5,
+            ratchet_counter: 42,
+        });
+        let bytes = willow_transport::pack(&content).unwrap();
+        let decoded: Content = willow_transport::unpack(&bytes).unwrap();
+        assert_eq!(decoded, content);
+    }
+
+    #[test]
+    fn file_message_serde_round_trip() {
+        let mut hlc = hlc::HLC::new();
+        let peer = Identity::generate().peer_id();
+        let channel = ChannelId::new();
+
+        let msg = Message::file(
+            channel,
+            peer,
+            "hash",
+            "doc.pdf",
+            "application/pdf",
+            999,
+            &mut hlc,
+        );
+        let bytes = willow_transport::pack(&msg).unwrap();
+        let decoded: Message = willow_transport::unpack(&bytes).unwrap();
+
+        assert_eq!(decoded.id, msg.id);
+        assert_eq!(decoded.content, msg.content);
+    }
+
+    #[test]
+    fn unicode_message_body() {
+        let mut hlc = hlc::HLC::new();
+        let peer = Identity::generate().peer_id();
+        let channel = ChannelId::new();
+
+        let body = "Hello 🌍 こんにちは 안녕하세요 مرحبا";
+        let msg = Message::text(channel, peer, body, &mut hlc);
+
+        let bytes = willow_transport::pack(&msg).unwrap();
+        let decoded: Message = willow_transport::unpack(&bytes).unwrap();
+
+        assert!(
+            matches!(decoded.content, Content::Text { ref body } if body == "Hello 🌍 こんにちは 안녕하세요 مرحبا")
+        );
+    }
+
+    #[test]
+    fn empty_message_body() {
+        let mut hlc = hlc::HLC::new();
+        let peer = Identity::generate().peer_id();
+        let channel = ChannelId::new();
+
+        let msg = Message::text(channel, peer, "", &mut hlc);
+        let bytes = willow_transport::pack(&msg).unwrap();
+        let decoded: Message = willow_transport::unpack(&bytes).unwrap();
+
+        assert!(matches!(decoded.content, Content::Text { ref body } if body.is_empty()));
+    }
 }

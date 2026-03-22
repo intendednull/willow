@@ -903,3 +903,103 @@ fn server_state_channel_names_sorted() {
     let names = state.channel_names();
     assert_eq!(names, vec!["general", "random", "voice"]);
 }
+
+// ───── File Sharing Tests ───────────────────────────────────────────────────
+
+#[test]
+fn file_announcement_appears_in_chat() {
+    let (mut app, _rx) = test_app();
+
+    app.world_mut()
+        .write_message(NetworkBridgeEvent::FileAnnounced {
+            filename: "photo.jpg".into(),
+            mime_type: "image/jpeg".into(),
+            size: 51200,
+            file_hash: "abc123".into(),
+            from: "peer-xyz".into(),
+            topic: "general".into(),
+        });
+    app.update();
+
+    let state = app.world().resource::<ChatState>();
+    assert_eq!(state.messages.len(), 1);
+    assert!(state.messages[0].body.contains("photo.jpg"));
+    assert!(state.messages[0].body.contains("50 KB"));
+}
+
+#[test]
+fn file_download_event_does_not_crash() {
+    let (mut app, _rx) = test_app();
+
+    app.world_mut()
+        .write_message(NetworkBridgeEvent::FileDownloaded {
+            filename: "doc.pdf".into(),
+            file_hash: "def456".into(),
+        });
+    app.update();
+
+    // Should not crash, no message added for download complete.
+    let state = app.world().resource::<ChatState>();
+    assert!(state.messages.is_empty());
+}
+
+// ───── Storage Round-Trip Tests ─────────────────────────────────────────────
+
+#[test]
+fn profile_persistence_round_trip() {
+    use crate::storage::LocalProfile;
+
+    let profile = LocalProfile {
+        display_name: "Alice".into(),
+    };
+    let bytes = willow_transport::pack(&profile).unwrap();
+    let decoded: LocalProfile = willow_transport::unpack(&bytes).unwrap();
+    assert_eq!(decoded.display_name, "Alice");
+}
+
+#[test]
+fn stored_message_serde_round_trip() {
+    use crate::storage::StoredMessage;
+
+    let msg = StoredMessage {
+        topic: "test/general".into(),
+        author: "Alice".into(),
+        body: "hello world".into(),
+        is_local: true,
+        timestamp_ms: 1234567890,
+    };
+    let bytes = willow_transport::pack(&msg).unwrap();
+    let decoded: StoredMessage = willow_transport::unpack(&bytes).unwrap();
+    assert_eq!(decoded.topic, msg.topic);
+    assert_eq!(decoded.author, msg.author);
+    assert_eq!(decoded.body, msg.body);
+    assert_eq!(decoded.is_local, msg.is_local);
+    assert_eq!(decoded.timestamp_ms, msg.timestamp_ms);
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn message_db_empty_topic_returns_empty() {
+    let (db, _dir) = test_message_db();
+    assert!(db.load_topic("nonexistent", 100).is_empty());
+    assert_eq!(db.count_topic("nonexistent"), 0);
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn message_db_large_message_body() {
+    let (db, _dir) = test_message_db();
+    let big_body = "x".repeat(100_000);
+
+    db.insert(&crate::storage::StoredMessage {
+        topic: "t".into(),
+        author: "a".into(),
+        body: big_body.clone(),
+        is_local: false,
+        timestamp_ms: 0,
+    });
+
+    let loaded = db.load_topic("t", 100);
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].body, big_body);
+}

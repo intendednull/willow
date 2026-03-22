@@ -404,4 +404,47 @@ mod tests {
         // Cleanup.
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn from_ed25519_bytes_round_trip() {
+        let id = Identity::generate();
+        let bytes = id.to_ed25519_bytes().expect("should export bytes");
+        let restored = Identity::from_ed25519_bytes(&bytes).expect("should restore");
+        assert_eq!(restored.peer_id(), id.peer_id());
+    }
+
+    #[test]
+    fn from_ed25519_bytes_invalid_returns_none() {
+        assert!(Identity::from_ed25519_bytes(&[0u8; 10]).is_none());
+        assert!(Identity::from_ed25519_bytes(&[]).is_none());
+        assert!(Identity::from_ed25519_bytes(&[0xFF; 64]).is_none());
+    }
+
+    #[test]
+    fn to_ed25519_bytes_length() {
+        let id = Identity::generate();
+        let bytes = id.to_ed25519_bytes().unwrap();
+        assert_eq!(bytes.len(), 64); // Ed25519 keypair = 32 seed + 32 public
+    }
+
+    #[test]
+    fn user_profile_all_fields() {
+        let peer = Identity::generate().peer_id();
+        let mut profile = UserProfile::new(peer.clone(), "Alice");
+        profile.avatar = Some("https://example.com/avatar.png".into());
+        profile.status = Some("Online".into());
+        profile.bio = Some("Willow developer".into());
+
+        let bytes = willow_transport::pack(&profile).unwrap();
+        let decoded: UserProfile = willow_transport::unpack(&bytes).unwrap();
+
+        assert_eq!(decoded.display_name, "Alice");
+        assert_eq!(
+            decoded.avatar.as_deref(),
+            Some("https://example.com/avatar.png")
+        );
+        assert_eq!(decoded.status.as_deref(), Some("Online"));
+        assert_eq!(decoded.bio.as_deref(), Some("Willow developer"));
+        assert_eq!(decoded.peer_id, peer);
+    }
 }
