@@ -8,6 +8,7 @@ use crate::network_bridge::{
 };
 use crate::ui::{
     AppView, ChannelKeyStore, ChatState, InputState, ProfileStore, ServerState, SettingsInput,
+    UnreadCounts,
 };
 use willow_crypto::{generate_channel_key, seal_content};
 use willow_identity::Identity;
@@ -34,6 +35,7 @@ fn test_app() -> (App, std_mpsc::Receiver<NetworkBridgeCommand>) {
     app.insert_resource(AppView::default());
     app.insert_resource(SettingsInput::default());
     app.insert_resource(ProfileStore::default());
+    app.insert_resource(UnreadCounts::default());
     app.insert_resource(crate::ui::MessageDbRes(None));
     app.add_message::<NetworkBridgeEvent>();
     app.add_message::<KeyboardInput>();

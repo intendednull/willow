@@ -29,6 +29,7 @@ impl Plugin for UiPlugin {
             .insert_resource(SettingsInput::default())
             .insert_resource(ProfileStore::default())
             .insert_resource(FilePicker::default())
+            .insert_resource(UnreadCounts::default())
             .insert_resource(MessageDbRes(
                 crate::storage::open_message_db()
                     .map(|db| std::sync::Arc::new(std::sync::Mutex::new(db))),
@@ -132,6 +133,14 @@ pub struct ChatMessage {
     pub author: String,
     pub body: String,
     pub is_local: bool,
+    /// HLC timestamp in milliseconds (for display).
+    pub timestamp_ms: u64,
+}
+
+/// Tracks unread message counts per channel topic.
+#[derive(Resource, Default)]
+pub(crate) struct UnreadCounts {
+    pub(crate) counts: HashMap<String, usize>,
 }
 
 #[derive(Resource, Default)]
@@ -289,6 +298,17 @@ fn truncate_peer_id(s: &str) -> String {
     }
 }
 
+/// Format a millisecond timestamp as "HH:MM".
+fn format_timestamp(ms: u64) -> String {
+    if ms == 0 {
+        return String::new();
+    }
+    let secs = ms / 1000;
+    let hours = (secs / 3600) % 24;
+    let minutes = (secs / 60) % 60;
+    format!("{hours:02}:{minutes:02}")
+}
+
 /// Build a gossipsub topic string from a server ID and channel name.
 fn make_topic(server: &Server, channel_name: &str) -> String {
     format!("{}/{}", server.id, channel_name)
@@ -350,6 +370,7 @@ fn init_server(
                         author: sm.author,
                         body: sm.body,
                         is_local: sm.is_local,
+                        timestamp_ms: sm.timestamp_ms,
                     });
                 }
             }
@@ -978,11 +999,13 @@ pub(crate) fn send_message(
     }
 
     let author = profiles.display_name(&peer_id.to_string());
+    let ts = state.hlc.latest().millis;
     let chat_msg = ChatMessage {
         topic,
         author: author.clone(),
         body: body.clone(),
         is_local: true,
+        timestamp_ms: ts,
     };
 
     // Persist to database.
@@ -1008,6 +1031,8 @@ pub(crate) fn handle_network_events(
     key_store: Res<ChannelKeyStore>,
     db: Res<MessageDbRes>,
     profiles: Res<ProfileStore>,
+    server_state: Res<ServerState>,
+    mut unread: ResMut<UnreadCounts>,
 ) {
     for event in reader.read() {
         match event {
@@ -1050,6 +1075,7 @@ pub(crate) fn handle_network_events(
                         author: author.clone(),
                         body: body.clone(),
                         is_local: false,
+                        timestamp_ms: msg.hlc.millis,
                     };
 
                     if let Some(ref db_arc) = db.0 {
@@ -1062,6 +1088,14 @@ pub(crate) fn handle_network_events(
                                 timestamp_ms: msg.hlc.millis,
                             });
                         }
+                    }
+
+                    // Track unread if this isn't the active channel.
+                    let current_topic = server_state
+                        .topic_for_name(&state.current_channel)
+                        .unwrap_or_default();
+                    if chat_msg.topic != current_topic {
+                        *unread.counts.entry(chat_msg.topic.clone()).or_insert(0) += 1;
                     }
 
                     state.messages.push(chat_msg);
@@ -1090,11 +1124,13 @@ pub(crate) fn handle_network_events(
                 let author = profiles.display_name(from);
                 let size_kb = size / 1024;
                 let body = format!("[shared file: {filename} ({size_kb} KB)]");
+                let ts = state.hlc.latest().millis;
                 state.messages.push(ChatMessage {
                     topic: topic.clone(),
                     author,
                     body,
                     is_local: false,
+                    timestamp_ms: ts,
                 });
                 state.messages_dirty = true;
             }
@@ -1108,11 +1144,18 @@ pub(crate) fn handle_network_events(
 fn handle_channel_click(
     interaction_query: Query<(&Interaction, &ChannelButton), Changed<Interaction>>,
     mut state: ResMut<ChatState>,
+    server_state: Res<ServerState>,
+    mut unread: ResMut<UnreadCounts>,
 ) {
     for (interaction, button) in &interaction_query {
         if *interaction == Interaction::Pressed && state.current_channel != button.0 {
             state.current_channel = button.0.clone();
             state.messages_dirty = true;
+
+            // Clear unread count for the channel we just switched to.
+            if let Some(topic) = server_state.topic_for_name(&button.0) {
+                unread.counts.remove(&topic);
+            }
         }
     }
 }
@@ -1167,12 +1210,23 @@ fn sync_message_list(
                 Color::srgb(0.9, 0.7, 0.4)
             };
 
+            // Format timestamp as HH:MM.
+            let time_str = format_timestamp(msg.timestamp_ms);
+
             parent
                 .spawn(Node {
                     margin: UiRect::bottom(Val::Px(4.0)),
                     ..default()
                 })
                 .with_children(|row| {
+                    // Timestamp
+                    row.spawn((
+                        Text::new(format!("{time_str} ")),
+                        TextFont::from_font_size(11.0),
+                        TextColor(Color::srgb(0.4, 0.4, 0.45)),
+                    ));
+
+                    // Author + body
                     row.spawn((
                         Text::new(format!("{}: ", msg.author)),
                         TextFont::from_font_size(14.0),
@@ -1226,18 +1280,32 @@ fn update_channel_header(state: Res<ChatState>, mut query: Query<&mut Text, With
 
 fn update_channel_highlights(
     state: Res<ChatState>,
+    unread: Res<UnreadCounts>,
+    server_state: Res<ServerState>,
     query: Query<(&ChannelButton, &Children)>,
-    mut text_query: Query<&mut TextColor>,
+    mut text_query: Query<(&mut Text, &mut TextColor)>,
 ) {
-    if !state.is_changed() {
+    if !state.is_changed() && !unread.is_changed() {
         return;
     }
     for (button, children) in &query {
         let is_active = button.0 == state.current_channel;
+        let topic = server_state.topic_for_name(&button.0).unwrap_or_default();
+        let count = unread.counts.get(&topic).copied().unwrap_or(0);
+
         for child in children.iter() {
-            if let Ok(mut color) = text_query.get_mut(child) {
+            if let Ok((mut text, mut color)) = text_query.get_mut(child) {
+                // Show unread count badge.
+                if count > 0 && !is_active {
+                    **text = format!("# {} ({})", button.0, count);
+                } else {
+                    **text = format!("# {}", button.0);
+                }
+
                 *color = if is_active {
                     TextColor(Color::WHITE)
+                } else if count > 0 {
+                    TextColor(Color::srgb(0.9, 0.9, 0.5)) // yellow for unread
                 } else {
                     TextColor(Color::srgb(0.7, 0.7, 0.7))
                 };
@@ -1452,6 +1520,7 @@ fn poll_file_picker(
         author: author.clone(),
         body: body.clone(),
         is_local: true,
+        timestamp_ms: chat_state.hlc.latest().millis,
     };
 
     if let Some(ref db_arc) = db.0 {
