@@ -8,6 +8,7 @@ description = "P2P networking layer for Willow using libp2p"
 [dependencies]
 willow-identity = { path = "../identity" }
 willow-transport = { path = "../transport" }
+willow-files = { path = "../files" }
 
 serde = { workspace = true }
 anyhow = { workspace = true }
@@ -28,6 +29,8 @@ libp2p = { version = "0.53", features = [
     "yamux",
     "relay",
     "identify",
+    "request-response",
+    "cbor",
     "macros",
     "ed25519",
     "serde",

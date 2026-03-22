@@ -9,6 +9,7 @@
 
 pub mod behaviour;
 pub mod config;
+pub mod file_transfer;
 pub mod node;
 
 pub use behaviour::WillowBehaviour;

@@ -19,7 +19,7 @@ use willow_identity::Identity;
 // ───── Events ────────────────────────────────────────────────────────────────
 
 /// Events emitted by the network layer to the application.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum NetworkEvent {
     Message {
         topic: String,
@@ -33,6 +33,17 @@ pub enum NetworkEvent {
         addrs: Vec<Multiaddr>,
     },
     Listening(Multiaddr),
+    /// A peer requested a file chunk from us.
+    ChunkRequested {
+        peer: PeerId,
+        channel: libp2p::request_response::ResponseChannel<crate::file_transfer::ChunkResponse>,
+        hash: willow_files::ContentHash,
+    },
+    /// We received a chunk response from a peer.
+    ChunkReceived {
+        peer: PeerId,
+        response: crate::file_transfer::ChunkResponse,
+    },
 }
 
 // ───── Commands ──────────────────────────────────────────────────────────────
@@ -41,8 +52,19 @@ pub enum NetworkEvent {
 enum Command {
     Subscribe(String),
     Unsubscribe(String),
-    Publish { topic: String, data: Vec<u8> },
+    Publish {
+        topic: String,
+        data: Vec<u8>,
+    },
     Dial(Multiaddr),
+    RequestChunk {
+        peer: PeerId,
+        hash: willow_files::ContentHash,
+    },
+    RespondChunk {
+        channel: libp2p::request_response::ResponseChannel<crate::file_transfer::ChunkResponse>,
+        response: crate::file_transfer::ChunkResponse,
+    },
 }
 
 // ───── NetworkNode (native) ──────────────────────────────────────────────────
@@ -132,6 +154,26 @@ mod native {
                 .map_err(|_| anyhow::anyhow!("swarm task has stopped"))?;
             Ok(())
         }
+
+        /// Request a file chunk from a specific peer.
+        pub fn request_chunk(&self, peer: PeerId, hash: willow_files::ContentHash) -> Result<()> {
+            self.command_tx
+                .send(Command::RequestChunk { peer, hash })
+                .map_err(|_| anyhow::anyhow!("swarm task has stopped"))?;
+            Ok(())
+        }
+
+        /// Respond to a chunk request using the provided response channel.
+        pub fn respond_chunk(
+            &self,
+            channel: libp2p::request_response::ResponseChannel<crate::file_transfer::ChunkResponse>,
+            response: crate::file_transfer::ChunkResponse,
+        ) -> Result<()> {
+            self.command_tx
+                .send(Command::RespondChunk { channel, response })
+                .map_err(|_| anyhow::anyhow!("swarm task has stopped"))?;
+            Ok(())
+        }
     }
 
     fn build_swarm(
@@ -179,12 +221,21 @@ mod native {
                     key.public(),
                 ));
 
+                let chunk_transfer = libp2p::request_response::cbor::Behaviour::new(
+                    [(
+                        libp2p::StreamProtocol::new("/willow/chunks/1"),
+                        libp2p::request_response::ProtocolSupport::Full,
+                    )],
+                    libp2p::request_response::Config::default(),
+                );
+
                 Ok(WillowBehaviour {
                     gossipsub,
                     kademlia,
                     mdns,
                     identify,
                     relay: relay_behaviour,
+                    chunk_transfer,
                 })
             })?
             .with_swarm_config(|c| c.with_idle_connection_timeout(config.idle_timeout))
@@ -226,6 +277,15 @@ mod native {
                             if let Err(e) = swarm.dial(addr) {
                                 warn!(%e, "failed to dial");
                             }
+                        }
+                        Some(Command::RequestChunk { peer, hash }) => {
+                            swarm.behaviour_mut().chunk_transfer.send_request(
+                                &peer,
+                                crate::file_transfer::ChunkRequest { hash },
+                            );
+                        }
+                        Some(Command::RespondChunk { channel, response }) => {
+                            let _ = swarm.behaviour_mut().chunk_transfer.send_response(channel, response);
                         }
                         None => {
                             info!("command channel closed, shutting down swarm");
@@ -292,6 +352,32 @@ mod native {
                         SwarmEvent::NewListenAddr { address, .. } => {
                             info!(%address, "listening on");
                             let _ = events.send(NetworkEvent::Listening(address));
+                        }
+
+                        SwarmEvent::Behaviour(crate::behaviour::WillowBehaviourEvent::ChunkTransfer(
+                            libp2p::request_response::Event::Message { peer, message, .. },
+                        )) => {
+                            match message {
+                                libp2p::request_response::Message::Request {
+                                    request, channel, ..
+                                } => {
+                                    debug!(%peer, hash = %request.hash, "chunk requested");
+                                    let _ = events.send(NetworkEvent::ChunkRequested {
+                                        peer,
+                                        channel,
+                                        hash: request.hash,
+                                    });
+                                }
+                                libp2p::request_response::Message::Response {
+                                    response, ..
+                                } => {
+                                    debug!(%peer, "chunk received");
+                                    let _ = events.send(NetworkEvent::ChunkReceived {
+                                        peer,
+                                        response,
+                                    });
+                                }
+                            }
                         }
 
                         _ => {}
@@ -396,6 +482,24 @@ mod wasm {
                 .map_err(|_| anyhow::anyhow!("swarm task has stopped"))?;
             Ok(())
         }
+
+        pub fn request_chunk(&self, peer: PeerId, hash: willow_files::ContentHash) -> Result<()> {
+            self.command_tx
+                .unbounded_send(Command::RequestChunk { peer, hash })
+                .map_err(|_| anyhow::anyhow!("swarm task has stopped"))?;
+            Ok(())
+        }
+
+        pub fn respond_chunk(
+            &self,
+            channel: libp2p::request_response::ResponseChannel<crate::file_transfer::ChunkResponse>,
+            response: crate::file_transfer::ChunkResponse,
+        ) -> Result<()> {
+            self.command_tx
+                .unbounded_send(Command::RespondChunk { channel, response })
+                .map_err(|_| anyhow::anyhow!("swarm task has stopped"))?;
+            Ok(())
+        }
     }
 
     fn build_swarm(
@@ -447,11 +551,20 @@ mod wasm {
                     key.public(),
                 ));
 
+                let chunk_transfer = libp2p::request_response::cbor::Behaviour::new(
+                    [(
+                        libp2p::StreamProtocol::new("/willow/chunks/1"),
+                        libp2p::request_response::ProtocolSupport::Full,
+                    )],
+                    libp2p::request_response::Config::default(),
+                );
+
                 Ok(WillowBehaviour {
                     gossipsub,
                     kademlia,
                     identify,
                     relay: relay_behaviour,
+                    chunk_transfer,
                 })
             })?
             .with_swarm_config(|c| c.with_idle_connection_timeout(config.idle_timeout))
@@ -491,6 +604,15 @@ mod wasm {
                             if let Err(e) = swarm.dial(addr) {
                                 warn!(%e, "failed to dial");
                             }
+                        }
+                        Some(Command::RequestChunk { peer, hash }) => {
+                            swarm.behaviour_mut().chunk_transfer.send_request(
+                                &peer,
+                                crate::file_transfer::ChunkRequest { hash },
+                            );
+                        }
+                        Some(Command::RespondChunk { channel, response }) => {
+                            let _ = swarm.behaviour_mut().chunk_transfer.send_response(channel, response);
                         }
                         None => {
                             info!("command channel closed, shutting down swarm");

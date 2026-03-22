@@ -2044,6 +2044,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cbor4ii"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "472931dd4dfcc785075b09be910147f9c6258883fc4591d0dac6116392b2daa6"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.57"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4222,6 +4231,7 @@ dependencies = [
  "libp2p-noise",
  "libp2p-quic",
  "libp2p-relay",
+ "libp2p-request-response",
  "libp2p-swarm",
  "libp2p-tcp",
  "libp2p-upnp",
@@ -4518,6 +4528,28 @@ dependencies = [
  "rand 0.8.5",
  "static_assertions",
  "thiserror 1.0.69",
+ "tracing",
+ "void",
+]
+
+[[package]]
+name = "libp2p-request-response"
+version = "0.26.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e12823250fe0c45bdddea6eefa2be9a609aff1283ff4e1d8a294fdbb89572f6f"
+dependencies = [
+ "async-trait",
+ "cbor4ii",
+ "futures",
+ "futures-bounded",
+ "futures-timer",
+ "instant",
+ "libp2p-core",
+ "libp2p-identity",
+ "libp2p-swarm",
+ "rand 0.8.5",
+ "serde",
+ "smallvec",
  "tracing",
  "void",
 ]
@@ -7914,6 +7946,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "willow-files"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "sha2",
+ "thiserror 1.0.69",
+ "willow-transport",
+]
+
+[[package]]
 name = "willow-identity"
 version = "0.1.0"
 dependencies = [
@@ -7956,6 +7998,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wasm-bindgen-futures",
+ "willow-files",
  "willow-identity",
  "willow-transport",
 ]

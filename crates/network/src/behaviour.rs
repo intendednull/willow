@@ -1,20 +1,14 @@
 //! Composite libp2p network behaviour for Willow.
 //!
-//! [`WillowBehaviour`] combines GossipSub, Kademlia, Identify, and Relay Client
-//! into a single [`NetworkBehaviour`]. On native targets, mDNS is also included
-//! for LAN peer discovery.
+//! [`WillowBehaviour`] combines GossipSub, Kademlia, Identify, Relay Client,
+//! and a file chunk request-response protocol into a single [`NetworkBehaviour`].
+//! On native targets, mDNS is also included for LAN peer discovery.
 
-use libp2p::{gossipsub, identify, kad, relay, swarm::NetworkBehaviour};
+use libp2p::{gossipsub, identify, kad, relay, request_response, swarm::NetworkBehaviour};
+
+use crate::file_transfer::{ChunkRequest, ChunkResponse};
 
 /// The composite behaviour that powers a Willow peer.
-///
-/// | Field       | Protocol   | Purpose                                |
-/// |-------------|------------|----------------------------------------|
-/// | `gossipsub` | GossipSub  | Pub/sub message flooding per topic     |
-/// | `kademlia`  | Kademlia   | DHT for peer/content discovery         |
-/// | `mdns`      | mDNS       | LAN peer discovery (native only)       |
-/// | `identify`  | Identify   | Peer metadata exchange on connect      |
-/// | `relay`     | Relay      | NAT traversal via relay nodes          |
 #[derive(NetworkBehaviour)]
 pub struct WillowBehaviour {
     pub gossipsub: gossipsub::Behaviour,
@@ -23,4 +17,5 @@ pub struct WillowBehaviour {
     pub mdns: libp2p::mdns::tokio::Behaviour,
     pub identify: identify::Behaviour,
     pub relay: relay::client::Behaviour,
+    pub chunk_transfer: request_response::cbor::Behaviour<ChunkRequest, ChunkResponse>,
 }
