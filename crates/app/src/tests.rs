@@ -486,3 +486,177 @@ fn unsigned_message_is_rejected() {
         "unsigned messages should be rejected"
     );
 }
+
+// ───── Settings / View Toggle Tests ─────────────────────────────────────────
+
+#[test]
+fn default_view_is_chat() {
+    let (app, _rx) = test_app();
+    let view = app.world().resource::<AppView>();
+    assert_eq!(*view, AppView::Chat);
+}
+
+#[test]
+fn typing_in_settings_view_updates_relay_field() {
+    let (mut app, _rx) = test_app();
+
+    // Switch to settings view.
+    *app.world_mut().resource_mut::<AppView>() = AppView::Settings;
+
+    send_key(&mut app, KeyCode::Slash, Some("/"));
+    send_key(&mut app, KeyCode::KeyI, Some("i"));
+    send_key(&mut app, KeyCode::KeyP, Some("p"));
+    send_key(&mut app, KeyCode::Digit4, Some("4"));
+    app.update();
+
+    let settings = app.world().resource::<SettingsInput>();
+    assert_eq!(settings.relay_addr, "/ip4");
+
+    // Chat input should be untouched.
+    let input = app.world().resource::<InputState>();
+    assert_eq!(input.text, "");
+}
+
+#[test]
+fn typing_in_chat_view_does_not_update_relay_field() {
+    let (mut app, _rx) = test_app();
+
+    // Stay in chat view (default).
+    send_key(&mut app, KeyCode::KeyA, Some("a"));
+    send_key(&mut app, KeyCode::KeyB, Some("b"));
+    app.update();
+
+    let settings = app.world().resource::<SettingsInput>();
+    assert!(settings.relay_addr.is_empty());
+
+    let input = app.world().resource::<InputState>();
+    assert_eq!(input.text, "ab");
+}
+
+#[test]
+fn enter_in_settings_does_not_send_message() {
+    let (mut app, cmd_rx) = test_app();
+
+    *app.world_mut().resource_mut::<AppView>() = AppView::Settings;
+
+    send_key(&mut app, KeyCode::KeyX, Some("x"));
+    app.update();
+    send_key(&mut app, KeyCode::Enter, None);
+    app.update();
+    app.update();
+
+    // No message should be sent.
+    let state = app.world().resource::<ChatState>();
+    assert!(state.messages.is_empty());
+    assert!(cmd_rx.try_recv().is_err());
+}
+
+#[test]
+fn backspace_in_settings_removes_from_relay() {
+    let (mut app, _rx) = test_app();
+
+    *app.world_mut().resource_mut::<AppView>() = AppView::Settings;
+    app.world_mut().resource_mut::<SettingsInput>().relay_addr = "abc".to_string();
+
+    send_key(&mut app, KeyCode::Backspace, None);
+    app.update();
+
+    let settings = app.world().resource::<SettingsInput>();
+    assert_eq!(settings.relay_addr, "ab");
+}
+
+// ───── Storage Settings Tests ───────────────────────────────────────────────
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn network_settings_round_trip() {
+    use crate::storage::{self, NetworkSettings};
+
+    let settings = NetworkSettings {
+        relay_addr: Some("/ip4/1.2.3.4/tcp/9091/ws/p2p/12D3KooWTest".to_string()),
+    };
+
+    // Serialize and deserialize.
+    let bytes = willow_transport::pack(&settings).unwrap();
+    let decoded: NetworkSettings = willow_transport::unpack(&bytes).unwrap();
+
+    assert_eq!(
+        decoded.relay_addr.as_deref(),
+        Some("/ip4/1.2.3.4/tcp/9091/ws/p2p/12D3KooWTest")
+    );
+}
+
+#[test]
+fn settings_input_defaults_to_empty_relay() {
+    let settings = SettingsInput::default();
+    assert!(settings.relay_addr.is_empty());
+}
+
+// ───── Network Config Tests ─────────────────────────────────────────────────
+
+#[test]
+fn network_config_multiple_relays() {
+    use willow_network::NetworkConfig;
+
+    let config = NetworkConfig::default()
+        .with_relay(
+            "/ip4/1.1.1.1/tcp/9090/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN",
+        )
+        .unwrap()
+        .with_relay(
+            "/ip4/2.2.2.2/tcp/9091/ws/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN",
+        )
+        .unwrap();
+
+    assert_eq!(config.bootstrap_peers.len(), 2);
+    assert_eq!(
+        config.bootstrap_peers[0].1.to_string(),
+        "/ip4/1.1.1.1/tcp/9090"
+    );
+    assert_eq!(
+        config.bootstrap_peers[1].1.to_string(),
+        "/ip4/2.2.2.2/tcp/9091/ws"
+    );
+}
+
+// ───── Server State Tests ───────────────────────────────────────────────────
+
+#[test]
+fn server_state_topic_mapping() {
+    use crate::ui::ServerState;
+    use willow_channel::{ChannelKind, Server};
+
+    let owner = Identity::generate();
+    let mut server = Server::new("Test", owner.peer_id());
+    let ch_id = server.create_channel("general", ChannelKind::Text).unwrap();
+
+    let mut state = ServerState::default();
+    let topic = format!("{}/general", server.id);
+    state
+        .topic_map
+        .insert(topic.clone(), ("general".to_string(), ch_id));
+    state.server = Some(server);
+
+    assert_eq!(state.topic_for_name("general"), Some(topic.clone()));
+    assert_eq!(state.name_for_topic(&topic), Some("general"));
+    assert_eq!(state.topic_for_name("nonexistent"), None);
+    assert_eq!(state.name_for_topic("bogus"), None);
+}
+
+#[test]
+fn server_state_channel_names_sorted() {
+    use crate::ui::ServerState;
+    use willow_channel::{ChannelKind, Server};
+
+    let owner = Identity::generate();
+    let mut server = Server::new("Test", owner.peer_id());
+    server.create_channel("voice", ChannelKind::Voice).unwrap();
+    server.create_channel("general", ChannelKind::Text).unwrap();
+    server.create_channel("random", ChannelKind::Text).unwrap();
+
+    let mut state = ServerState::default();
+    state.server = Some(server);
+
+    let names = state.channel_names();
+    assert_eq!(names, vec!["general", "random", "voice"]);
+}

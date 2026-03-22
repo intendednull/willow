@@ -134,7 +134,7 @@ pub(crate) struct ChannelKeyStore {
 }
 
 /// Which view is currently active.
-#[derive(Resource, Default, PartialEq, Eq)]
+#[derive(Resource, Default, Debug, PartialEq, Eq)]
 pub(crate) enum AppView {
     #[default]
     Chat,
