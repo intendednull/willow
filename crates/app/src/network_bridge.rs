@@ -2,8 +2,9 @@
 //!
 //! Bridges the [`willow_network`] layer into Bevy's synchronous ECS world.
 //!
-//! - **Native**: spawns a tokio runtime on a background thread.
-//! - **WASM**: uses `wasm_bindgen_futures::spawn_local` (single-threaded).
+//! Network startup is deferred — the swarm is not created until a
+//! [`ConnectCommand`] message is written, allowing the UI to configure the
+//! relay address first.
 
 use bevy::prelude::*;
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
@@ -21,6 +22,10 @@ pub struct NetworkEventReceiver(pub Arc<Mutex<std_mpsc::Receiver<NetworkBridgeEv
 /// Bevy resource for sending commands to the network task.
 #[derive(Resource, Clone)]
 pub struct NetworkCommandSender(pub std_mpsc::Sender<NetworkBridgeCommand>);
+
+/// Whether the network is connected.
+#[derive(Resource, Default)]
+pub struct NetworkConnected(pub bool);
 
 /// Events flowing from the network into Bevy.
 #[derive(Debug, Clone, Message)]
@@ -42,6 +47,12 @@ pub enum NetworkBridgeCommand {
     Publish { topic: String, data: Vec<u8> },
 }
 
+/// Message to trigger network connection with an optional relay address.
+#[derive(Debug, Clone, Message)]
+pub struct ConnectCommand {
+    pub relay_addr: Option<String>,
+}
+
 /// Bevy plugin that sets up the network bridge.
 pub struct NetworkPlugin;
 
@@ -53,13 +64,62 @@ impl Plugin for NetworkPlugin {
         let (event_tx, event_rx) = std_mpsc::channel();
         let (cmd_tx, cmd_rx) = std_mpsc::channel();
 
-        spawn_network(identity.clone(), event_tx, cmd_rx);
-
+        // Store channels for deferred connection.
         app.insert_resource(LocalIdentity(identity))
             .insert_resource(NetworkEventReceiver(Arc::new(Mutex::new(event_rx))))
             .insert_resource(NetworkCommandSender(cmd_tx))
+            .insert_resource(NetworkConnected::default())
+            .insert_resource(DeferredNetworkChannels(Arc::new(Mutex::new((
+                Some(event_tx),
+                Some(cmd_rx),
+            )))))
             .add_message::<NetworkBridgeEvent>()
-            .add_systems(Update, poll_network_events);
+            .add_message::<ConnectCommand>()
+            .add_systems(Update, (handle_connect_command, poll_network_events));
+    }
+}
+
+type ChannelPair = (
+    Option<std_mpsc::Sender<NetworkBridgeEvent>>,
+    Option<std_mpsc::Receiver<NetworkBridgeCommand>>,
+);
+
+/// Holds the channels until the network is spawned.
+#[derive(Resource)]
+struct DeferredNetworkChannels(Arc<Mutex<ChannelPair>>);
+
+/// System that handles ConnectCommand to start the network.
+fn handle_connect_command(
+    mut reader: MessageReader<ConnectCommand>,
+    identity: Res<LocalIdentity>,
+    deferred: Res<DeferredNetworkChannels>,
+    mut connected: ResMut<NetworkConnected>,
+) {
+    for cmd in reader.read() {
+        if connected.0 {
+            warn!("network already connected, ignoring ConnectCommand");
+            continue;
+        }
+
+        let Ok(mut channels) = deferred.0.lock() else {
+            continue;
+        };
+        let Some(event_tx) = channels.0.take() else {
+            continue;
+        };
+        let Some(cmd_rx) = channels.1.take() else {
+            continue;
+        };
+
+        let settings = crate::storage::NetworkSettings {
+            relay_addr: cmd.relay_addr.clone(),
+        };
+        crate::storage::save_settings(&settings);
+
+        let config = build_network_config(cmd.relay_addr.as_deref());
+        spawn_network(identity.0.clone(), event_tx, cmd_rx, config);
+        connected.0 = true;
+        info!("network started");
     }
 }
 
@@ -74,17 +134,35 @@ fn poll_network_events(
     }
 }
 
+// ───── Network config ───────────────────────────────────────────────────────
+
+fn build_network_config(relay_addr: Option<&str>) -> willow_network::NetworkConfig {
+    let mut config = willow_network::NetworkConfig::default();
+
+    if let Some(addr) = relay_addr {
+        match config.clone().with_relay(addr) {
+            Ok(c) => {
+                info!(relay = %addr, "configured relay");
+                config = c;
+            }
+            Err(e) => {
+                warn!(relay = %addr, %e, "invalid relay address, ignoring");
+            }
+        }
+    }
+
+    config
+}
+
 // ───── Identity persistence ──────────────────────────────────────────────────
 
 fn load_identity() -> Identity {
-    // Try to load persisted identity bytes.
     if let Some(bytes) = crate::storage::load_identity_bytes() {
         if let Some(id) = Identity::from_ed25519_bytes(&bytes) {
             return id;
         }
     }
 
-    // Generate fresh and persist.
     let identity = Identity::generate();
     if let Some(bytes) = identity.to_ed25519_bytes() {
         crate::storage::save_identity_bytes(&bytes);
@@ -92,16 +170,19 @@ fn load_identity() -> Identity {
     identity
 }
 
+// ───── Native ───────────────────────────────────────────────────────────────
+
 #[cfg(not(target_arch = "wasm32"))]
 fn spawn_network(
     identity: Identity,
     event_tx: std_mpsc::Sender<NetworkBridgeEvent>,
     cmd_rx: std_mpsc::Receiver<NetworkBridgeCommand>,
+    config: willow_network::NetworkConfig,
 ) {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
         rt.block_on(async move {
-            match run_network(identity, event_tx, cmd_rx).await {
+            match run_network(identity, event_tx, cmd_rx, config).await {
                 Ok(()) => info!("network task exited cleanly"),
                 Err(e) => error!("network task failed: {e}"),
             }
@@ -114,10 +195,10 @@ async fn run_network(
     identity: Identity,
     event_tx: std_mpsc::Sender<NetworkBridgeEvent>,
     cmd_rx: std_mpsc::Receiver<NetworkBridgeCommand>,
+    config: willow_network::NetworkConfig,
 ) -> anyhow::Result<()> {
-    use willow_network::{NetworkConfig, NetworkEvent, NetworkNode};
+    use willow_network::{NetworkEvent, NetworkNode};
 
-    let config = NetworkConfig::default();
     let (node, mut events) = NetworkNode::start(identity, config).await?;
 
     loop {
@@ -171,9 +252,10 @@ fn spawn_network(
     identity: Identity,
     event_tx: std_mpsc::Sender<NetworkBridgeEvent>,
     cmd_rx: std_mpsc::Receiver<NetworkBridgeCommand>,
+    config: willow_network::NetworkConfig,
 ) {
     wasm_bindgen_futures::spawn_local(async move {
-        match run_network_wasm(identity, event_tx, cmd_rx).await {
+        match run_network_wasm(identity, event_tx, cmd_rx, config).await {
             Ok(()) => info!("network task exited cleanly"),
             Err(e) => error!("network task failed: {e}"),
         }
@@ -185,16 +267,14 @@ async fn run_network_wasm(
     identity: Identity,
     event_tx: std_mpsc::Sender<NetworkBridgeEvent>,
     cmd_rx: std_mpsc::Receiver<NetworkBridgeCommand>,
+    config: willow_network::NetworkConfig,
 ) -> anyhow::Result<()> {
     use futures::StreamExt;
-    use willow_network::{NetworkConfig, NetworkEvent, NetworkNode};
+    use willow_network::{NetworkEvent, NetworkNode};
 
-    let config = NetworkConfig::default();
     let (node, mut events) = NetworkNode::start(identity, config).await?;
 
-    // In WASM we use a simple poll loop since there's no tokio::select!.
     loop {
-        // Check for network events.
         futures::select! {
             event = events.next() => {
                 let Some(event) = event else { break };
@@ -219,7 +299,6 @@ async fn run_network_wasm(
                 };
                 let _ = event_tx.send(bridge_event);
 
-                // Process pending commands.
                 while let Ok(cmd) = cmd_rx.try_recv() {
                     match cmd {
                         NetworkBridgeCommand::Subscribe(topic) => {

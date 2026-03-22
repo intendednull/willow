@@ -7,7 +7,9 @@ use bevy::prelude::*;
 
 use std::collections::HashMap;
 
-use crate::network_bridge::{LocalIdentity, NetworkBridgeEvent, NetworkCommandSender};
+use crate::network_bridge::{
+    ConnectCommand, LocalIdentity, NetworkBridgeEvent, NetworkCommandSender,
+};
 use willow_channel::{ChannelKind, Server};
 use willow_crypto::ChannelKey;
 use willow_messaging::hlc::HLC;
@@ -37,6 +39,7 @@ impl Plugin for UiPlugin {
             .add_systems(
                 Update,
                 (
+                    subscribe_channels,
                     sync_input_text,
                     update_peer_count,
                     update_channel_header,
@@ -163,12 +166,12 @@ fn make_topic(server: &Server, channel_name: &str) -> String {
 
 // ───── Systems ───────────────────────────────────────────────────────────────
 
-/// Load server from disk or create a fresh one with default channels.
+/// Load or create server, fire ConnectCommand, and subscribe to channels.
 fn init_server(
     identity: Res<LocalIdentity>,
     mut server_state: ResMut<ServerState>,
     mut key_store: ResMut<ChannelKeyStore>,
-    net_cmd: Res<NetworkCommandSender>,
+    mut connect_writer: MessageWriter<ConnectCommand>,
 ) {
     let (server, keys) = if let Some((server, keys)) = crate::storage::load_server() {
         info!("loaded server '{}' from disk", server.name);
@@ -193,23 +196,45 @@ fn init_server(
         (server, keys)
     };
 
-    // Populate topic map and subscribe to all channels.
+    // Populate topic map.
     for ch in server.channels() {
         let topic = make_topic(&server, &ch.name);
         server_state
             .topic_map
             .insert(topic.clone(), (ch.name.clone(), ch.id.clone()));
-
-        let _ = net_cmd
-            .0
-            .send(crate::network_bridge::NetworkBridgeCommand::Subscribe(
-                topic,
-            ));
     }
 
     key_store.keys = keys;
     crate::storage::save_server(&server, &key_store.keys);
     server_state.server = Some(server);
+
+    // Connect to the network with saved relay settings.
+    let settings = crate::storage::load_settings().unwrap_or_default();
+    connect_writer.write(ConnectCommand {
+        relay_addr: settings.relay_addr,
+    });
+}
+
+/// Subscribe to all channels once the network is connected.
+fn subscribe_channels(
+    connected: Res<crate::network_bridge::NetworkConnected>,
+    server_state: Res<ServerState>,
+    net_cmd: Res<NetworkCommandSender>,
+    mut subscribed: Local<bool>,
+) {
+    if *subscribed || !connected.0 {
+        return;
+    }
+    *subscribed = true;
+
+    for topic in server_state.topic_map.keys() {
+        let _ = net_cmd
+            .0
+            .send(crate::network_bridge::NetworkBridgeCommand::Subscribe(
+                topic.clone(),
+            ));
+    }
+    info!("subscribed to {} channels", server_state.topic_map.len());
 }
 
 fn setup_ui(mut commands: Commands, identity: Res<LocalIdentity>, server_state: Res<ServerState>) {
