@@ -6,7 +6,7 @@ use std::sync::mpsc as std_mpsc;
 use crate::network_bridge::{
     LocalIdentity, NetworkBridgeCommand, NetworkBridgeEvent, NetworkCommandSender,
 };
-use crate::ui::{ChannelKeyStore, ChatState, InputState};
+use crate::ui::{ChannelKeyStore, ChatState, InputState, ServerState};
 use willow_crypto::{generate_channel_key, seal_content};
 use willow_identity::Identity;
 use willow_messaging::hlc::HLC;
@@ -17,20 +17,18 @@ use willow_transport::{pack_envelope, unpack_envelope, MessageType};
 fn test_app() -> (App, std_mpsc::Receiver<NetworkBridgeCommand>) {
     let mut app = App::new();
 
-    // MinimalPlugins gives us the scheduler without windowing.
     app.add_plugins(MinimalPlugins);
 
-    // Insert the resources the UI plugin expects.
     let identity = Identity::generate();
     let (cmd_tx, cmd_rx) = std_mpsc::channel();
 
     app.insert_resource(LocalIdentity(identity));
     app.insert_resource(NetworkCommandSender(cmd_tx));
 
-    // Add the UI plugin (skips setup_ui since there's no camera/rendering).
-    app.insert_resource(ChatState::new());
+    app.insert_resource(ChatState::default());
     app.insert_resource(InputState::default());
     app.insert_resource(ChannelKeyStore::default());
+    app.insert_resource(ServerState::default());
     app.add_message::<NetworkBridgeEvent>();
     app.add_message::<KeyboardInput>();
     app.add_systems(
@@ -120,34 +118,25 @@ fn enter_on_empty_does_not_send() {
 fn enter_sends_message_and_clears_input() {
     let (mut app, cmd_rx) = test_app();
 
-    // Type "hi" and process it.
     send_key(&mut app, KeyCode::KeyH, Some("h"));
     send_key(&mut app, KeyCode::KeyI, Some("i"));
     app.update();
 
-    // Press Enter and process — this triggers send_requested in one update,
-    // then send_message fires on the next update.
     send_key(&mut app, KeyCode::Enter, None);
     app.update();
-    // send_message sees send_requested and fires.
     app.update();
 
-    // Input should be cleared.
     let input = app.world().resource::<InputState>();
     assert_eq!(input.text, "");
 
-    // Message should appear in ChatState.
     let state = app.world().resource::<ChatState>();
     assert_eq!(state.messages.len(), 1);
     assert_eq!(state.messages[0].body, "hi");
     assert!(state.messages[0].is_local);
-    assert_eq!(state.messages[0].channel, "general");
 
-    // A Publish command should have been sent to the network.
     let cmd = cmd_rx.try_recv().expect("expected a network command");
     match cmd {
-        NetworkBridgeCommand::Publish { topic, data } => {
-            assert_eq!(topic, "general");
+        NetworkBridgeCommand::Publish { data, .. } => {
             assert!(!data.is_empty());
         }
         other => panic!("expected Publish, got {other:?}"),
@@ -155,7 +144,7 @@ fn enter_sends_message_and_clears_input() {
 }
 
 #[test]
-fn sent_message_is_valid_envelope() {
+fn sent_message_is_valid_signed_envelope() {
     let (mut app, cmd_rx) = test_app();
 
     send_key(&mut app, KeyCode::KeyX, Some("x"));
@@ -166,7 +155,6 @@ fn sent_message_is_valid_envelope() {
 
     let cmd = cmd_rx.try_recv().unwrap();
     if let NetworkBridgeCommand::Publish { data, .. } = cmd {
-        // Verify signature first, then unpack envelope.
         let (envelope_data, _signer) =
             willow_identity::unpack::<Vec<u8>>(&data).expect("valid signature");
         let (msg, msg_type) = unpack_envelope::<Message>(&envelope_data).expect("valid envelope");
@@ -183,7 +171,6 @@ fn sent_message_is_valid_envelope() {
 fn incoming_chat_message_added_to_state() {
     let (mut app, _rx) = test_app();
 
-    // Create a message from a fake remote peer.
     let remote = Identity::generate();
     let mut hlc = HLC::new();
     let msg = Message::text(
@@ -207,7 +194,7 @@ fn incoming_chat_message_added_to_state() {
     assert_eq!(state.messages.len(), 1);
     assert_eq!(state.messages[0].body, "hello from remote");
     assert!(!state.messages[0].is_local);
-    assert_eq!(state.messages[0].channel, "general");
+    assert_eq!(state.messages[0].topic, "general");
 }
 
 #[test]
@@ -295,25 +282,6 @@ fn malformed_data_is_ignored() {
     assert!(state.messages.is_empty());
 }
 
-// ───── Channel Tests ────────────────────────────────────────────────────────
-
-#[test]
-fn messages_are_tagged_with_current_channel() {
-    let (mut app, _rx) = test_app();
-
-    // Change channel to "random".
-    app.world_mut().resource_mut::<ChatState>().current_channel = "random".into();
-
-    send_key(&mut app, KeyCode::KeyA, Some("a"));
-    app.update();
-    send_key(&mut app, KeyCode::Enter, None);
-    app.update();
-    app.update();
-
-    let state = app.world().resource::<ChatState>();
-    assert_eq!(state.messages[0].channel, "random");
-}
-
 // ───── Serialization Round-Trip ─────────────────────────────────────────────
 
 #[test]
@@ -335,7 +303,8 @@ fn message_survives_full_round_trip() {
 fn send_message_encrypts_content_when_key_present() {
     let (mut app, cmd_rx) = test_app();
 
-    // Install a channel key for "general".
+    // Install a channel key for the "general" topic (the fallback topic used
+    // when no ServerState is configured).
     let key = generate_channel_key();
     app.world_mut()
         .resource_mut::<ChannelKeyStore>()
@@ -396,7 +365,6 @@ fn receive_encrypted_message_decrypts() {
         .keys
         .insert("general".into(), key.clone());
 
-    // Build an encrypted message from a remote peer.
     let remote = Identity::generate();
     let mut hlc = HLC::new();
     let plaintext_content = Content::Text {
@@ -464,7 +432,6 @@ fn receive_encrypted_message_wrong_key_ignored() {
 fn receive_unencrypted_message_still_works() {
     let (mut app, _rx) = test_app();
 
-    // Key is present but message is plaintext (backwards compat).
     let key = generate_channel_key();
     app.world_mut()
         .resource_mut::<ChannelKeyStore>()
@@ -501,7 +468,6 @@ fn unsigned_message_is_rejected() {
     let remote = Identity::generate();
     let mut hlc = HLC::new();
     let msg = Message::text(ChannelId::new(), remote.peer_id(), "no sig", &mut hlc);
-    // Send raw envelope without signing.
     let data = pack_envelope(MessageType::Chat, &msg).unwrap();
 
     app.world_mut()

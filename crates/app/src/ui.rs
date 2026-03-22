@@ -8,24 +8,22 @@ use bevy::prelude::*;
 use std::collections::HashMap;
 
 use crate::network_bridge::{LocalIdentity, NetworkBridgeEvent, NetworkCommandSender};
+use willow_channel::{ChannelKind, Server};
 use willow_crypto::ChannelKey;
 use willow_messaging::hlc::HLC;
-use willow_messaging::{ChannelId, Content, Message};
+use willow_messaging::{Content, Message};
 use willow_transport::{pack_envelope, unpack_envelope, MessageType};
-
-/// The gossipsub topic names for each channel.
-const CHANNELS: &[&str] = &["general", "random", "voice"];
 
 /// Plugin for all UI systems and resources.
 pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(ChatState::new())
+        app.insert_resource(ChatState::default())
             .insert_resource(InputState::default())
             .insert_resource(ChannelKeyStore::default())
-            .add_systems(Startup, setup_ui)
-            // Split into two add_systems calls to stay within the 8-tuple limit.
+            .insert_resource(ServerState::default())
+            .add_systems(Startup, (init_server, setup_ui).chain())
             .add_systems(
                 Update,
                 (
@@ -50,20 +48,54 @@ impl Plugin for UiPlugin {
 
 // ───── Resources ─────────────────────────────────────────────────────────────
 
+/// The local server instance. Each peer auto-creates a server on first launch.
+#[derive(Resource, Default)]
+pub(crate) struct ServerState {
+    pub(crate) server: Option<Server>,
+    /// Maps gossipsub topic → (channel_name, channel_id) for display + key lookup.
+    pub(crate) topic_map: HashMap<String, (String, willow_channel::ChannelId)>,
+}
+
+impl ServerState {
+    /// Get the gossipsub topic for a channel by name.
+    pub(crate) fn topic_for_name(&self, name: &str) -> Option<String> {
+        self.topic_map
+            .iter()
+            .find(|(_, (n, _))| n == name)
+            .map(|(topic, _)| topic.clone())
+    }
+
+    /// Get the channel name for a gossipsub topic.
+    pub(crate) fn name_for_topic(&self, topic: &str) -> Option<&str> {
+        self.topic_map.get(topic).map(|(name, _)| name.as_str())
+    }
+
+    /// List all channel names in sidebar order.
+    pub(crate) fn channel_names(&self) -> Vec<String> {
+        let Some(server) = &self.server else {
+            return Vec::new();
+        };
+        let mut names: Vec<_> = server.channels().iter().map(|ch| ch.name.clone()).collect();
+        names.sort();
+        names
+    }
+}
+
 #[derive(Resource)]
 pub struct ChatState {
     pub messages: Vec<ChatMessage>,
+    /// The current channel *name* (human-readable, e.g. "general").
     pub current_channel: String,
     pub peers: Vec<String>,
     pub hlc: HLC,
     pub(crate) messages_dirty: bool,
 }
 
-impl ChatState {
-    pub(crate) fn new() -> Self {
+impl Default for ChatState {
+    fn default() -> Self {
         Self {
             messages: Vec::new(),
-            current_channel: CHANNELS[0].to_string(),
+            current_channel: "general".to_string(),
             peers: Vec::new(),
             hlc: HLC::new(),
             messages_dirty: true,
@@ -73,7 +105,8 @@ impl ChatState {
 
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
-    pub channel: String,
+    /// The gossipsub topic this message belongs to.
+    pub topic: String,
     pub author: String,
     pub body: String,
     pub is_local: bool,
@@ -85,10 +118,7 @@ pub(crate) struct InputState {
     pub(crate) send_requested: bool,
 }
 
-/// Per-channel symmetric encryption keys.
-///
-/// Populated when creating/joining a server. Messages are encrypted before
-/// sending and decrypted on receipt using the channel's key.
+/// Per-channel symmetric encryption keys, keyed by gossipsub topic.
 #[derive(Resource, Default)]
 pub(crate) struct ChannelKeyStore {
     pub(crate) keys: HashMap<String, ChannelKey>,
@@ -108,8 +138,13 @@ struct PeerCount;
 #[derive(Component)]
 struct InputText;
 
+/// Sidebar channel button. Stores the channel *name*.
 #[derive(Component)]
 struct ChannelButton(String);
+
+/// Container for the channel button list so we can rebuild it dynamically.
+#[derive(Component)]
+struct ChannelList;
 
 // ───── Helpers ──────────────────────────────────────────────────────────────
 
@@ -121,24 +156,60 @@ fn truncate_peer_id(s: &str) -> String {
     }
 }
 
+/// Build a gossipsub topic string from a server ID and channel name.
+fn make_topic(server: &Server, channel_name: &str) -> String {
+    format!("{}/{}", server.id, channel_name)
+}
+
 // ───── Systems ───────────────────────────────────────────────────────────────
 
-fn setup_ui(
-    mut commands: Commands,
+/// Create the local server with default channels and populate key stores.
+fn init_server(
     identity: Res<LocalIdentity>,
+    mut server_state: ResMut<ServerState>,
+    mut key_store: ResMut<ChannelKeyStore>,
     net_cmd: Res<NetworkCommandSender>,
 ) {
-    commands.spawn(Camera2d);
+    let mut server = Server::new("My Server", identity.0.peer_id());
 
-    let peer_display = truncate_peer_id(&identity.0.peer_id().to_string());
+    let default_channels = ["general", "random", "voice"];
+    for name in default_channels {
+        let ch_id = server
+            .create_channel(name, ChannelKind::Text)
+            .expect("default channel creation should not fail");
 
-    for ch in CHANNELS {
+        let topic = make_topic(&server, name);
+
+        // Copy the channel key into the key store.
+        if let Some(key) = server.channel_key(&ch_id) {
+            key_store.keys.insert(topic.clone(), key.clone());
+        }
+
+        server_state
+            .topic_map
+            .insert(topic.clone(), (name.to_string(), ch_id));
+
+        // Subscribe to the gossipsub topic.
         let _ = net_cmd
             .0
             .send(crate::network_bridge::NetworkBridgeCommand::Subscribe(
-                ch.to_string(),
+                topic,
             ));
     }
+
+    server_state.server = Some(server);
+}
+
+fn setup_ui(mut commands: Commands, identity: Res<LocalIdentity>, server_state: Res<ServerState>) {
+    commands.spawn(Camera2d);
+
+    let peer_display = truncate_peer_id(&identity.0.peer_id().to_string());
+    let server_name = server_state
+        .server
+        .as_ref()
+        .map(|s| s.name.as_str())
+        .unwrap_or("Willow");
+    let channel_names = server_state.channel_names();
 
     // Root container
     commands
@@ -162,7 +233,7 @@ fn setup_ui(
             ))
             .with_children(|sidebar| {
                 sidebar.spawn((
-                    Text::new("Willow"),
+                    Text::new(server_name),
                     TextFont::from_font_size(24.0),
                     TextColor(Color::srgb(0.9, 0.9, 0.9)),
                 ));
@@ -184,31 +255,20 @@ fn setup_ui(
                     TextColor(Color::srgb(0.5, 0.5, 0.55)),
                 ));
 
-                for name in CHANNELS {
-                    sidebar
-                        .spawn((
-                            Button,
-                            Node {
-                                margin: UiRect::top(Val::Px(4.0)),
-                                padding: UiRect::new(
-                                    Val::Px(8.0),
-                                    Val::Px(8.0),
-                                    Val::Px(4.0),
-                                    Val::Px(4.0),
-                                ),
-                                ..default()
-                            },
-                            BackgroundColor(Color::NONE),
-                            ChannelButton(name.to_string()),
-                        ))
-                        .with_children(|btn| {
-                            btn.spawn((
-                                Text::new(format!("# {name}")),
-                                TextFont::from_font_size(15.0),
-                                TextColor(Color::srgb(0.7, 0.7, 0.7)),
-                            ));
-                        });
-                }
+                // Channel list container
+                sidebar
+                    .spawn((
+                        Node {
+                            flex_direction: FlexDirection::Column,
+                            ..default()
+                        },
+                        ChannelList,
+                    ))
+                    .with_children(|list| {
+                        for name in &channel_names {
+                            spawn_channel_button(list, name);
+                        }
+                    });
 
                 sidebar.spawn(Node {
                     flex_grow: 1.0,
@@ -247,8 +307,12 @@ fn setup_ui(
                     BorderColor::all(Color::srgb(0.15, 0.15, 0.18)),
                 ))
                 .with_children(|header| {
+                    let first = channel_names
+                        .first()
+                        .map(|s| s.as_str())
+                        .unwrap_or("general");
                     header.spawn((
-                        Text::new(format!("# {}", CHANNELS[0])),
+                        Text::new(format!("# {first}")),
                         TextFont::from_font_size(18.0),
                         TextColor(Color::srgb(0.9, 0.9, 0.9)),
                         ChannelHeader,
@@ -303,6 +367,27 @@ fn setup_ui(
         });
 }
 
+fn spawn_channel_button(parent: &mut ChildSpawnerCommands, name: &str) {
+    parent
+        .spawn((
+            Button,
+            Node {
+                margin: UiRect::top(Val::Px(4.0)),
+                padding: UiRect::new(Val::Px(8.0), Val::Px(8.0), Val::Px(4.0), Val::Px(4.0)),
+                ..default()
+            },
+            BackgroundColor(Color::NONE),
+            ChannelButton(name.to_string()),
+        ))
+        .with_children(|btn| {
+            btn.spawn((
+                Text::new(format!("# {name}")),
+                TextFont::from_font_size(15.0),
+                TextColor(Color::srgb(0.7, 0.7, 0.7)),
+            ));
+        });
+}
+
 pub(crate) fn handle_keyboard_input(
     mut key_events: MessageReader<KeyboardInput>,
     mut input: ResMut<InputState>,
@@ -339,6 +424,7 @@ pub(crate) fn send_message(
     identity: Res<LocalIdentity>,
     net_cmd: Res<NetworkCommandSender>,
     key_store: Res<ChannelKeyStore>,
+    server_state: Res<ServerState>,
 ) {
     if !input.send_requested {
         return;
@@ -350,33 +436,38 @@ pub(crate) fn send_message(
         return;
     }
 
-    let channel = state.current_channel.clone();
+    let channel_name = state.current_channel.clone();
     let peer_id = identity.0.peer_id();
 
-    let channel_id = ChannelId::new();
+    // Resolve the gossipsub topic from the channel name.
+    let topic = match server_state.topic_for_name(&channel_name) {
+        Some(t) => t,
+        None => channel_name.clone(), // fallback for tests
+    };
+
+    let channel_id = willow_messaging::ChannelId::new();
     let mut msg = Message::text(channel_id, peer_id.clone(), &body, &mut state.hlc);
 
-    // Encrypt content if we have a key for this channel.
-    if let Some(key) = key_store.keys.get(&channel) {
+    // Encrypt content if we have a key for this topic.
+    if let Some(key) = key_store.keys.get(&topic) {
         if let Ok(sealed) = willow_crypto::seal_content(&msg.content, key, 0) {
             msg.content = Content::Encrypted(sealed);
         }
     }
 
     if let Ok(envelope_data) = pack_envelope(MessageType::Chat, &msg) {
-        // Sign the envelope with our Ed25519 key for author verification.
         if let Ok(signed_data) = willow_identity::pack(&envelope_data, &identity.0) {
             let _ = net_cmd
                 .0
                 .send(crate::network_bridge::NetworkBridgeCommand::Publish {
-                    topic: channel.clone(),
+                    topic: topic.clone(),
                     data: signed_data,
                 });
         }
     }
 
     state.messages.push(ChatMessage {
-        channel,
+        topic,
         author: truncate_peer_id(&peer_id.to_string()),
         body,
         is_local: true,
@@ -388,6 +479,7 @@ pub(crate) fn handle_network_events(
     mut reader: MessageReader<NetworkBridgeEvent>,
     mut state: ResMut<ChatState>,
     key_store: Res<ChannelKeyStore>,
+    server_state: Res<ServerState>,
 ) {
     for event in reader.read() {
         match event {
@@ -398,7 +490,7 @@ pub(crate) fn handle_network_events(
             } => {
                 // Verify Ed25519 signature and extract the signed envelope bytes.
                 let Ok((envelope_data, signer)) = willow_identity::unpack::<Vec<u8>>(data) else {
-                    continue; // invalid or missing signature
+                    continue;
                 };
 
                 let Ok((msg, MessageType::Chat)) = unpack_envelope::<Message>(&envelope_data)
@@ -406,17 +498,17 @@ pub(crate) fn handle_network_events(
                     continue;
                 };
 
-                let _ = &signer; // verified author PeerId
+                let _ = &signer;
 
                 // Decrypt if encrypted, pass through if cleartext.
                 let content = match &msg.content {
                     Content::Encrypted(sealed) => {
                         let Some(key) = key_store.keys.get(topic) else {
-                            continue; // no key for this channel
+                            continue;
                         };
                         match willow_crypto::open_content(sealed, key) {
                             Ok(c) => c,
-                            Err(_) => continue, // decryption failed
+                            Err(_) => continue,
                         }
                     }
                     other => other.clone(),
@@ -424,8 +516,13 @@ pub(crate) fn handle_network_events(
 
                 if let Content::Text { ref body } = content {
                     let author = truncate_peer_id(&signer.to_string());
+
+                    // Resolve channel name for display, fall back to topic.
+                    let _display_name =
+                        server_state.name_for_topic(topic).unwrap_or(topic.as_str());
+
                     state.messages.push(ChatMessage {
-                        channel: topic.clone(),
+                        topic: topic.clone(),
                         author,
                         body: body.clone(),
                         is_local: false,
@@ -465,6 +562,7 @@ fn sync_message_list(
     mut commands: Commands,
     mut state: ResMut<ChatState>,
     list_query: Query<Entity, With<MessageList>>,
+    server_state: Res<ServerState>,
 ) {
     if !state.messages_dirty {
         return;
@@ -477,11 +575,15 @@ fn sync_message_list(
 
     commands.entity(list_entity).detach_all_children();
 
-    let current = &state.current_channel;
+    // Find the topic for the current channel name.
+    let current_topic = server_state
+        .topic_for_name(&state.current_channel)
+        .unwrap_or_default();
+
     let visible: Vec<_> = state
         .messages
         .iter()
-        .filter(|m| m.channel == *current)
+        .filter(|m| m.topic == current_topic)
         .collect();
 
     if visible.is_empty() {
@@ -489,7 +591,7 @@ fn sync_message_list(
             parent.spawn((
                 Text::new(format!(
                     "Welcome to #{}! This is a P2P chat — no servers, no middlemen.",
-                    current
+                    state.current_channel
                 )),
                 TextFont::from_font_size(14.0),
                 TextColor(Color::srgb(0.5, 0.5, 0.55)),
