@@ -176,21 +176,65 @@ impl MessageDb {
     }
 }
 
-/// WASM stub — messages are in-memory only (IndexedDB is a future enhancement).
+/// WASM message storage backed by localStorage.
+///
+/// Each topic's messages are stored as a serialized `Vec<StoredMessage>` under
+/// the key `willow_msgs_<topic_hash>`. The topic is hashed to avoid
+/// localStorage key length issues with long multiaddr-based topic names.
 #[cfg(target_arch = "wasm32")]
 pub struct MessageDb;
 
 #[cfg(target_arch = "wasm32")]
 impl MessageDb {
-    pub fn insert(&self, _msg: &StoredMessage) {}
-    pub fn load_topic(&self, _topic: &str, _limit: usize) -> Vec<StoredMessage> {
-        Vec::new()
+    fn msg_key(topic: &str) -> String {
+        // Simple hash to keep keys short. Not cryptographic — just for storage.
+        let mut h: u64 = 5381;
+        for b in topic.bytes() {
+            h = h.wrapping_mul(33).wrapping_add(b as u64);
+        }
+        format!("willow_msgs_{h:x}")
     }
+
+    fn load_all(topic: &str) -> Vec<StoredMessage> {
+        let Some(bytes) = load_raw(&Self::msg_key(topic)) else {
+            return Vec::new();
+        };
+        willow_transport::unpack::<Vec<StoredMessage>>(&bytes).unwrap_or_default()
+    }
+
+    fn save_all(topic: &str, messages: &[StoredMessage]) {
+        if let Ok(bytes) = willow_transport::pack(&messages.to_vec()) {
+            save_raw(&Self::msg_key(topic), &bytes);
+        }
+    }
+
+    pub fn insert(&self, msg: &StoredMessage) {
+        let mut messages = Self::load_all(&msg.topic);
+        messages.push(msg.clone());
+        // Keep at most 500 messages per topic to avoid localStorage limits.
+        if messages.len() > 500 {
+            messages.drain(..messages.len() - 500);
+        }
+        Self::save_all(&msg.topic, &messages);
+    }
+
+    pub fn load_topic(&self, topic: &str, limit: usize) -> Vec<StoredMessage> {
+        let messages = Self::load_all(topic);
+        if messages.len() > limit {
+            messages[messages.len() - limit..].to_vec()
+        } else {
+            messages
+        }
+    }
+
     pub fn topics(&self) -> Vec<String> {
+        // Can't enumerate localStorage keys by prefix efficiently.
+        // Return empty — topic list comes from ServerState instead.
         Vec::new()
     }
-    pub fn count_topic(&self, _topic: &str) -> usize {
-        0
+
+    pub fn count_topic(&self, topic: &str) -> usize {
+        Self::load_all(topic).len()
     }
 }
 
