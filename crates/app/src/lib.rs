@@ -18,6 +18,7 @@
 pub mod file_manager;
 pub mod network_bridge;
 pub mod storage;
+pub mod theme;
 pub mod ui;
 
 #[cfg(test)]

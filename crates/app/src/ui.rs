@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use crate::network_bridge::{
     ConnectCommand, LocalIdentity, NetworkBridgeEvent, NetworkCommandSender,
 };
+use crate::theme;
 use willow_channel::{ChannelKind, Server};
 use willow_crypto::ChannelKey;
 use willow_messaging::hlc::HLC;
@@ -451,44 +452,57 @@ fn setup_ui(
             // ── Left sidebar ──
             root.spawn((
                 Node {
-                    width: Val::Px(220.0),
+                    width: Val::Px(240.0),
                     height: Val::Percent(100.0),
                     flex_direction: FlexDirection::Column,
-                    padding: UiRect::all(Val::Px(12.0)),
                     ..default()
                 },
-                BackgroundColor(Color::srgb(0.15, 0.15, 0.18)),
+                BackgroundColor(theme::SIDEBAR_BG),
             ))
             .with_children(|sidebar| {
-                sidebar.spawn((
-                    Text::new(server_name),
-                    TextFont::from_font_size(24.0),
-                    TextColor(Color::srgb(0.9, 0.9, 0.9)),
-                ));
+                // Server name header
+                sidebar
+                    .spawn((
+                        Node {
+                            width: Val::Percent(100.0),
+                            height: Val::Px(48.0),
+                            padding: UiRect::horizontal(Val::Px(16.0)),
+                            align_items: AlignItems::Center,
+                            border: UiRect::bottom(Val::Px(1.0)),
+                            ..default()
+                        },
+                        BorderColor::all(theme::DIVIDER),
+                    ))
+                    .with_children(|header| {
+                        header.spawn((
+                            Text::new(server_name),
+                            TextFont::from_font_size(16.0),
+                            TextColor(theme::TEXT_PRIMARY),
+                        ));
+                    });
 
+                // Channel section
                 sidebar.spawn((
-                    Text::new(format!("You: {peer_display}")),
+                    Text::new("TEXT CHANNELS"),
                     TextFont::from_font_size(11.0),
-                    TextColor(Color::srgb(0.5, 0.5, 0.5)),
-                    LocalUserDisplay,
+                    TextColor(theme::TEXT_HEADER),
+                    Node {
+                        padding: UiRect::new(
+                            Val::Px(16.0),
+                            Val::Px(8.0),
+                            Val::Px(16.0),
+                            Val::Px(4.0),
+                        ),
+                        ..default()
+                    },
                 ));
 
-                sidebar.spawn(Node {
-                    height: Val::Px(20.0),
-                    ..default()
-                });
-
-                sidebar.spawn((
-                    Text::new("CHANNELS"),
-                    TextFont::from_font_size(11.0),
-                    TextColor(Color::srgb(0.5, 0.5, 0.55)),
-                ));
-
-                // Channel list container
+                // Channel list
                 sidebar
                     .spawn((
                         Node {
                             flex_direction: FlexDirection::Column,
+                            padding: UiRect::horizontal(Val::Px(8.0)),
                             ..default()
                         },
                         ChannelList,
@@ -499,37 +513,81 @@ fn setup_ui(
                         }
                     });
 
+                // Spacer
                 sidebar.spawn(Node {
                     flex_grow: 1.0,
                     ..default()
                 });
 
-                // Settings button
+                // User area (bottom of sidebar)
                 sidebar
                     .spawn((
-                        Button,
                         Node {
-                            margin: UiRect::bottom(Val::Px(8.0)),
-                            padding: UiRect::all(Val::Px(6.0)),
+                            width: Val::Percent(100.0),
+                            height: Val::Px(52.0),
+                            padding: UiRect::horizontal(Val::Px(8.0)),
+                            align_items: AlignItems::Center,
+                            flex_direction: FlexDirection::Row,
                             ..default()
                         },
-                        BackgroundColor(Color::srgb(0.22, 0.22, 0.25)),
-                        SettingsButton,
+                        BackgroundColor(theme::USER_AREA_BG),
                     ))
-                    .with_children(|btn| {
-                        btn.spawn((
-                            Text::new("Settings"),
-                            TextFont::from_font_size(12.0),
-                            TextColor(Color::srgb(0.7, 0.7, 0.7)),
+                    .with_children(|user_area| {
+                        // Avatar circle
+                        user_area.spawn((
+                            Node {
+                                width: Val::Px(32.0),
+                                height: Val::Px(32.0),
+                                margin: UiRect::right(Val::Px(8.0)),
+                                ..default()
+                            },
+                            BackgroundColor(theme::ACCENT),
                         ));
-                    });
 
-                sidebar.spawn((
-                    Text::new("0 peers connected"),
-                    TextFont::from_font_size(11.0),
-                    TextColor(Color::srgb(0.4, 0.8, 0.4)),
-                    PeerCount,
-                ));
+                        // Name + peer count column
+                        user_area
+                            .spawn(Node {
+                                flex_direction: FlexDirection::Column,
+                                flex_grow: 1.0,
+                                ..default()
+                            })
+                            .with_children(|info| {
+                                info.spawn((
+                                    Text::new(peer_display),
+                                    TextFont::from_font_size(13.0),
+                                    TextColor(theme::TEXT_PRIMARY),
+                                    LocalUserDisplay,
+                                ));
+                                info.spawn((
+                                    Text::new("0 peers"),
+                                    TextFont::from_font_size(11.0),
+                                    TextColor(theme::STATUS_ONLINE),
+                                    PeerCount,
+                                ));
+                            });
+
+                        // Settings gear button
+                        user_area
+                            .spawn((
+                                Button,
+                                Node {
+                                    width: Val::Px(32.0),
+                                    height: Val::Px(32.0),
+                                    align_items: AlignItems::Center,
+                                    justify_content: JustifyContent::Center,
+                                    ..default()
+                                },
+                                BackgroundColor(Color::NONE),
+                                SettingsButton,
+                            ))
+                            .with_children(|btn| {
+                                btn.spawn((
+                                    Text::new("⚙"),
+                                    TextFont::from_font_size(18.0),
+                                    TextColor(theme::TEXT_MUTED),
+                                ));
+                            });
+                    });
             });
 
             // ── Main content area ──
@@ -540,14 +598,11 @@ fn setup_ui(
                     flex_direction: FlexDirection::Column,
                     ..default()
                 },
-                BackgroundColor(Color::srgb(0.2, 0.2, 0.22)),
+                BackgroundColor(theme::MAIN_BG),
                 MainContent,
             ))
             .with_children(|main| {
-                // ── Chat panel ──
                 spawn_chat_panel(main, &channel_names);
-
-                // ── Settings panel (hidden by default) ──
                 spawn_settings_panel(main, &settings_input);
             });
         });
@@ -575,7 +630,8 @@ fn spawn_chat_panel(parent: &mut ChildSpawnerCommands, channel_names: &[String])
                     border: UiRect::bottom(Val::Px(1.0)),
                     ..default()
                 },
-                BorderColor::all(Color::srgb(0.15, 0.15, 0.18)),
+                BackgroundColor(theme::INPUT_BG),
+                BorderColor::all(theme::DIVIDER),
             ))
             .with_children(|header| {
                 let first = channel_names
@@ -584,8 +640,8 @@ fn spawn_chat_panel(parent: &mut ChildSpawnerCommands, channel_names: &[String])
                     .unwrap_or("general");
                 header.spawn((
                     Text::new(format!("# {first}")),
-                    TextFont::from_font_size(18.0),
-                    TextColor(Color::srgb(0.9, 0.9, 0.9)),
+                    TextFont::from_font_size(16.0),
+                    TextColor(theme::TEXT_PRIMARY),
                     ChannelHeader,
                 ));
             });
@@ -596,7 +652,7 @@ fn spawn_chat_panel(parent: &mut ChildSpawnerCommands, channel_names: &[String])
                     flex_grow: 1.0,
                     width: Val::Percent(100.0),
                     flex_direction: FlexDirection::ColumnReverse,
-                    padding: UiRect::all(Val::Px(16.0)),
+                    padding: UiRect::new(Val::Px(16.0), Val::Px(16.0), Val::Px(8.0), Val::Px(8.0)),
                     overflow: Overflow::clip_y(),
                     ..default()
                 },
@@ -604,60 +660,59 @@ fn spawn_chat_panel(parent: &mut ChildSpawnerCommands, channel_names: &[String])
             ));
 
             // Input area
-            chat.spawn((
-                Node {
-                    width: Val::Percent(100.0),
-                    min_height: Val::Px(56.0),
-                    padding: UiRect::all(Val::Px(12.0)),
-                    ..default()
-                },
-                BackgroundColor(Color::srgb(0.17, 0.17, 0.19)),
-            ))
-            .with_children(|input_area| {
-                // Text input field
-                input_area
-                    .spawn((
-                        Node {
-                            flex_grow: 1.0,
-                            min_height: Val::Px(32.0),
-                            padding: UiRect::horizontal(Val::Px(12.0)),
-                            align_items: AlignItems::Center,
-                            ..default()
-                        },
-                        BackgroundColor(Color::srgb(0.25, 0.25, 0.28)),
-                    ))
-                    .with_children(|input| {
-                        input.spawn((
-                            Text::new("Type a message..."),
-                            TextFont::from_font_size(14.0),
-                            TextColor(Color::srgb(0.45, 0.45, 0.48)),
-                            InputText,
-                        ));
-                    });
+            chat.spawn((Node {
+                width: Val::Percent(100.0),
+                min_height: Val::Px(68.0),
+                padding: UiRect::new(Val::Px(16.0), Val::Px(16.0), Val::Px(0.0), Val::Px(16.0)),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                ..default()
+            },))
+                .with_children(|input_area| {
+                    // Share file button (left of input)
+                    input_area
+                        .spawn((
+                            Button,
+                            Node {
+                                width: Val::Px(36.0),
+                                height: Val::Px(36.0),
+                                margin: UiRect::right(Val::Px(8.0)),
+                                align_items: AlignItems::Center,
+                                justify_content: JustifyContent::Center,
+                                ..default()
+                            },
+                            BackgroundColor(theme::INPUT_FIELD_BG),
+                            ShareFileButton,
+                        ))
+                        .with_children(|btn| {
+                            btn.spawn((
+                                Text::new("+"),
+                                TextFont::from_font_size(20.0),
+                                TextColor(theme::TEXT_MUTED),
+                            ));
+                        });
 
-                // Share file button
-                input_area
-                    .spawn((
-                        Button,
-                        Node {
-                            min_height: Val::Px(32.0),
-                            padding: UiRect::horizontal(Val::Px(12.0)),
-                            margin: UiRect::left(Val::Px(8.0)),
-                            align_items: AlignItems::Center,
-                            justify_content: JustifyContent::Center,
-                            ..default()
-                        },
-                        BackgroundColor(Color::srgb(0.3, 0.3, 0.35)),
-                        ShareFileButton,
-                    ))
-                    .with_children(|btn| {
-                        btn.spawn((
-                            Text::new("Share"),
-                            TextFont::from_font_size(13.0),
-                            TextColor(Color::srgb(0.7, 0.7, 0.7)),
-                        ));
-                    });
-            });
+                    // Text input field
+                    input_area
+                        .spawn((
+                            Node {
+                                flex_grow: 1.0,
+                                min_height: Val::Px(40.0),
+                                padding: UiRect::horizontal(Val::Px(16.0)),
+                                align_items: AlignItems::Center,
+                                ..default()
+                            },
+                            BackgroundColor(theme::INPUT_FIELD_BG),
+                        ))
+                        .with_children(|input| {
+                            input.spawn((
+                                Text::new("Type a message..."),
+                                TextFont::from_font_size(14.0),
+                                TextColor(theme::TEXT_PLACEHOLDER),
+                                InputText,
+                            ));
+                        });
+                });
         });
 }
 
@@ -678,7 +733,7 @@ fn spawn_settings_panel(parent: &mut ChildSpawnerCommands, settings: &SettingsIn
             panel.spawn((
                 Text::new("Settings"),
                 TextFont::from_font_size(22.0),
-                TextColor(Color::srgb(0.9, 0.9, 0.9)),
+                TextColor(theme::TEXT_PRIMARY),
             ));
 
             panel.spawn(Node {
@@ -690,7 +745,7 @@ fn spawn_settings_panel(parent: &mut ChildSpawnerCommands, settings: &SettingsIn
             panel.spawn((
                 Text::new("Display Name"),
                 TextFont::from_font_size(13.0),
-                TextColor(Color::srgb(0.6, 0.6, 0.65)),
+                TextColor(theme::TEXT_SECONDARY),
             ));
 
             panel
@@ -703,7 +758,7 @@ fn spawn_settings_panel(parent: &mut ChildSpawnerCommands, settings: &SettingsIn
                         margin: UiRect::vertical(Val::Px(4.0)),
                         ..default()
                     },
-                    BackgroundColor(Color::srgb(0.18, 0.18, 0.2)),
+                    BackgroundColor(theme::INPUT_FIELD_BG),
                 ))
                 .with_children(|field| {
                     let display = if settings.display_name.is_empty() {
@@ -712,9 +767,9 @@ fn spawn_settings_panel(parent: &mut ChildSpawnerCommands, settings: &SettingsIn
                         &settings.display_name
                     };
                     let color = if settings.display_name.is_empty() {
-                        Color::srgb(0.4, 0.4, 0.45)
+                        theme::TEXT_PLACEHOLDER
                     } else {
-                        Color::srgb(0.85, 0.85, 0.85)
+                        theme::TEXT_PRIMARY
                     };
                     field.spawn((
                         Text::new(display),
@@ -733,13 +788,13 @@ fn spawn_settings_panel(parent: &mut ChildSpawnerCommands, settings: &SettingsIn
             panel.spawn((
                 Text::new("Relay Address"),
                 TextFont::from_font_size(13.0),
-                TextColor(Color::srgb(0.6, 0.6, 0.65)),
+                TextColor(theme::TEXT_SECONDARY),
             ));
 
             panel.spawn((
                 Text::new("Connect to a relay server for peer discovery. Leave empty for LAN-only (mDNS)."),
                 TextFont::from_font_size(11.0),
-                TextColor(Color::srgb(0.45, 0.45, 0.5)),
+                TextColor(theme::TEXT_PLACEHOLDER),
                 Node {
                     margin: UiRect::vertical(Val::Px(4.0)),
                     ..default()
@@ -757,7 +812,7 @@ fn spawn_settings_panel(parent: &mut ChildSpawnerCommands, settings: &SettingsIn
                         margin: UiRect::vertical(Val::Px(4.0)),
                         ..default()
                     },
-                    BackgroundColor(Color::srgb(0.18, 0.18, 0.2)),
+                    BackgroundColor(theme::INPUT_FIELD_BG),
                 ))
                 .with_children(|field| {
                     let display = if settings.relay_addr.is_empty() {
@@ -766,9 +821,9 @@ fn spawn_settings_panel(parent: &mut ChildSpawnerCommands, settings: &SettingsIn
                         &settings.relay_addr
                     };
                     let color = if settings.relay_addr.is_empty() {
-                        Color::srgb(0.4, 0.4, 0.45)
+                        theme::TEXT_PLACEHOLDER
                     } else {
-                        Color::srgb(0.85, 0.85, 0.85)
+                        theme::TEXT_PRIMARY
                     };
                     field.spawn((
                         Text::new(display),
@@ -796,14 +851,14 @@ fn spawn_settings_panel(parent: &mut ChildSpawnerCommands, settings: &SettingsIn
                         ),
                         ..default()
                     },
-                    BackgroundColor(Color::srgb(0.25, 0.5, 0.9)),
+                    BackgroundColor(theme::ACCENT),
                     SaveSettingsButton,
                 ))
                 .with_children(|btn| {
                     btn.spawn((
                         Text::new("Save & Reconnect"),
                         TextFont::from_font_size(14.0),
-                        TextColor(Color::WHITE),
+                        TextColor(theme::TEXT_PRIMARY),
                     ));
                 });
 
@@ -815,7 +870,7 @@ fn spawn_settings_panel(parent: &mut ChildSpawnerCommands, settings: &SettingsIn
             panel.spawn((
                 Text::new("Example: /ip4/1.2.3.4/tcp/9091/ws/p2p/12D3KooW..."),
                 TextFont::from_font_size(11.0),
-                TextColor(Color::srgb(0.4, 0.4, 0.45)),
+                TextColor(theme::TEXT_PLACEHOLDER),
             ));
         });
 }
@@ -836,7 +891,7 @@ fn spawn_channel_button(parent: &mut ChildSpawnerCommands, name: &str) {
             btn.spawn((
                 Text::new(format!("# {name}")),
                 TextFont::from_font_size(15.0),
-                TextColor(Color::srgb(0.7, 0.7, 0.7)),
+                TextColor(theme::TEXT_MUTED),
             ));
         });
 }
@@ -905,10 +960,10 @@ pub(crate) fn handle_keyboard_input(
             for (mut text, mut color) in &mut name_text_query {
                 if settings_input.display_name.is_empty() {
                     **text = "Enter your name...".to_string();
-                    *color = TextColor(Color::srgb(0.4, 0.4, 0.45));
+                    *color = TextColor(theme::TEXT_PLACEHOLDER);
                 } else {
                     **text = settings_input.display_name.clone();
-                    *color = TextColor(Color::srgb(0.85, 0.85, 0.85));
+                    *color = TextColor(theme::TEXT_PRIMARY);
                 }
             }
 
@@ -916,10 +971,10 @@ pub(crate) fn handle_keyboard_input(
             for (mut text, mut color) in &mut relay_text_query {
                 if settings_input.relay_addr.is_empty() {
                     **text = "/ip4/.../tcp/9091/ws/p2p/12D3KooW...".to_string();
-                    *color = TextColor(Color::srgb(0.4, 0.4, 0.45));
+                    *color = TextColor(theme::TEXT_PLACEHOLDER);
                 } else {
                     **text = settings_input.relay_addr.clone();
-                    *color = TextColor(Color::srgb(0.85, 0.85, 0.85));
+                    *color = TextColor(theme::TEXT_PRIMARY);
                 }
             }
         } else {
@@ -1196,7 +1251,7 @@ fn sync_message_list(
                     state.current_channel
                 )),
                 TextFont::from_font_size(14.0),
-                TextColor(Color::srgb(0.5, 0.5, 0.55)),
+                TextColor(theme::TEXT_MUTED),
             ));
         });
         return;
@@ -1205,9 +1260,9 @@ fn sync_message_list(
     commands.entity(list_entity).with_children(|parent| {
         for msg in &visible {
             let author_color = if msg.is_local {
-                Color::srgb(0.5, 0.7, 1.0)
+                theme::AUTHOR_LOCAL
             } else {
-                Color::srgb(0.9, 0.7, 0.4)
+                theme::AUTHOR_REMOTE
             };
 
             // Format timestamp as HH:MM.
@@ -1223,7 +1278,7 @@ fn sync_message_list(
                     row.spawn((
                         Text::new(format!("{time_str} ")),
                         TextFont::from_font_size(11.0),
-                        TextColor(Color::srgb(0.4, 0.4, 0.45)),
+                        TextColor(theme::TEXT_PLACEHOLDER),
                     ));
 
                     // Author + body
@@ -1235,7 +1290,7 @@ fn sync_message_list(
                     .with_child((
                         TextSpan::new(&msg.body),
                         TextFont::from_font_size(14.0),
-                        TextColor(Color::srgb(0.85, 0.85, 0.85)),
+                        TextColor(theme::TEXT_PRIMARY),
                     ));
                 });
         }
@@ -1252,10 +1307,10 @@ fn sync_input_text(
     for (mut text, mut color) in &mut query {
         if input.text.is_empty() {
             **text = "Type a message...".to_string();
-            *color = TextColor(Color::srgb(0.45, 0.45, 0.48));
+            *color = TextColor(theme::TEXT_PLACEHOLDER);
         } else {
             **text = input.text.clone();
-            *color = TextColor(Color::srgb(0.9, 0.9, 0.9));
+            *color = TextColor(theme::TEXT_PRIMARY);
         }
     }
 }
@@ -1303,11 +1358,11 @@ fn update_channel_highlights(
                 }
 
                 *color = if is_active {
-                    TextColor(Color::WHITE)
+                    TextColor(theme::TEXT_PRIMARY)
                 } else if count > 0 {
-                    TextColor(Color::srgb(0.9, 0.9, 0.5)) // yellow for unread
+                    TextColor(theme::UNREAD_HIGHLIGHT) // yellow for unread
                 } else {
-                    TextColor(Color::srgb(0.7, 0.7, 0.7))
+                    TextColor(theme::TEXT_MUTED)
                 };
             }
         }
@@ -1416,10 +1471,10 @@ fn toggle_view(
         for (mut text, mut color) in &mut relay_text_query {
             if settings_input.relay_addr.is_empty() {
                 **text = "/ip4/.../tcp/9091/ws/p2p/12D3KooW...".to_string();
-                *color = TextColor(Color::srgb(0.4, 0.4, 0.45));
+                *color = TextColor(theme::TEXT_PLACEHOLDER);
             } else {
                 **text = settings_input.relay_addr.clone();
-                *color = TextColor(Color::srgb(0.85, 0.85, 0.85));
+                *color = TextColor(theme::TEXT_PRIMARY);
             }
         }
     }
