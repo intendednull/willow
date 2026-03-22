@@ -300,7 +300,7 @@ fn truncate_peer_id(s: &str) -> String {
 }
 
 /// Format a millisecond timestamp as "HH:MM".
-fn format_timestamp(ms: u64) -> String {
+pub(crate) fn format_timestamp(ms: u64) -> String {
     if ms == 0 {
         return String::new();
     }

@@ -123,4 +123,30 @@ mod tests {
         let result = NetworkConfig::default().with_relay("not-a-multiaddr");
         assert!(result.is_err());
     }
+
+    #[test]
+    fn default_config_values() {
+        let config = NetworkConfig::default();
+        assert_eq!(config.listen_addr.to_string(), "/ip4/0.0.0.0/tcp/0");
+        assert!(config.bootstrap_peers.is_empty());
+        assert_eq!(config.idle_timeout, Duration::from_secs(120));
+        assert_eq!(config.gossipsub_heartbeat, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn with_relay_chained() {
+        let config = NetworkConfig::default()
+            .with_relay(
+                "/ip4/1.1.1.1/tcp/9090/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN",
+            )
+            .unwrap()
+            .with_relay(
+                "/ip4/2.2.2.2/tcp/9091/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN",
+            )
+            .unwrap();
+
+        assert_eq!(config.bootstrap_peers.len(), 2);
+        // Other defaults preserved.
+        assert_eq!(config.idle_timeout, Duration::from_secs(120));
+    }
 }

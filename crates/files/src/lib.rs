@@ -505,4 +505,28 @@ mod tests {
         // Same content → same chunk hashes regardless of filename.
         assert_eq!(chunks1[0].hash, chunks2[0].hash);
     }
+
+    #[test]
+    fn content_hash_display_truncated() {
+        let h = ContentHash::of(b"display test");
+        let display = format!("{h}");
+        assert!(display.ends_with("..."));
+        // 8 bytes = 16 hex chars + "..."
+        assert_eq!(display.len(), 19);
+    }
+
+    #[test]
+    fn chunk_size_one_byte() {
+        let data = b"abc";
+        let (manifest, chunks) = split_file(data, "tiny.txt", "text/plain", 1);
+        assert_eq!(chunks.len(), 3);
+        let reassembled = assemble_file(&manifest, &chunks).unwrap();
+        assert_eq!(reassembled, data);
+    }
+
+    #[test]
+    fn manifest_preserves_chunk_size() {
+        let (manifest, _) = split_file(b"test", "t.txt", "text/plain", 42);
+        assert_eq!(manifest.chunk_size, 42);
+    }
 }

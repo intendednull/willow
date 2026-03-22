@@ -1005,3 +1005,91 @@ fn message_db_large_message_body() {
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].body, big_body);
 }
+
+// ───── Unread Count Tests ───────────────────────────────────────────────────
+
+#[test]
+fn incoming_message_on_other_channel_increments_unread() {
+    let (mut app, _rx) = test_app();
+
+    // Current channel is "general", message arrives on "other-topic".
+    let remote = Identity::generate();
+    let mut hlc = HLC::new();
+    let msg = Message::text(ChannelId::new(), remote.peer_id(), "hello", &mut hlc);
+    let data = sign_envelope(&msg, &remote);
+
+    app.world_mut()
+        .write_message(NetworkBridgeEvent::MessageReceived {
+            topic: "other-topic".into(),
+            data,
+            source: Some(remote.peer_id().to_string()),
+        });
+    app.update();
+
+    let unread = app.world().resource::<UnreadCounts>();
+    assert_eq!(unread.counts.get("other-topic").copied().unwrap_or(0), 1);
+}
+
+#[test]
+fn incoming_message_on_current_channel_no_unread() {
+    let (mut app, _rx) = test_app();
+
+    // Current channel is "general" — set up topic mapping.
+    app.world_mut()
+        .resource_mut::<ServerState>()
+        .topic_map
+        .insert(
+            "my-topic".into(),
+            ("general".into(), willow_channel::ChannelId::new()),
+        );
+    app.world_mut().resource_mut::<ChatState>().current_channel = "general".into();
+
+    let remote = Identity::generate();
+    let mut hlc = HLC::new();
+    let msg = Message::text(ChannelId::new(), remote.peer_id(), "hello", &mut hlc);
+    let data = sign_envelope(&msg, &remote);
+
+    app.world_mut()
+        .write_message(NetworkBridgeEvent::MessageReceived {
+            topic: "my-topic".into(),
+            data,
+            source: Some(remote.peer_id().to_string()),
+        });
+    app.update();
+
+    let unread = app.world().resource::<UnreadCounts>();
+    assert_eq!(unread.counts.get("my-topic").copied().unwrap_or(0), 0);
+}
+
+// ───── Timestamp Format Tests ───────────────────────────────────────────────
+
+#[test]
+fn format_timestamp_basic() {
+    use crate::ui::format_timestamp;
+    // 13:45 = 13*3600 + 45*60 = 49500 seconds = 49500000 ms
+    assert_eq!(format_timestamp(49_500_000), "13:45");
+}
+
+#[test]
+fn format_timestamp_midnight() {
+    use crate::ui::format_timestamp;
+    assert_eq!(format_timestamp(0), "");
+    assert_eq!(format_timestamp(1000), "00:00"); // 1 second
+}
+
+#[test]
+fn format_timestamp_wraps_24h() {
+    use crate::ui::format_timestamp;
+    // 25 hours = 25*3600*1000 = 90_000_000 ms → should show 01:00
+    assert_eq!(format_timestamp(90_000_000), "01:00");
+}
+
+// ───── Theme Tests ──────────────────────────────────────────────────────────
+
+#[test]
+fn theme_colors_are_distinct() {
+    // Ensure key theme colors are different from each other.
+    assert_ne!(crate::theme::SIDEBAR_BG, crate::theme::MAIN_BG);
+    assert_ne!(crate::theme::TEXT_PRIMARY, crate::theme::TEXT_MUTED);
+    assert_ne!(crate::theme::AUTHOR_LOCAL, crate::theme::AUTHOR_REMOTE);
+}

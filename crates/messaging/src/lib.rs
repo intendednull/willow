@@ -479,4 +479,31 @@ mod tests {
 
         assert!(matches!(decoded.content, Content::Text { ref body } if body.is_empty()));
     }
+
+    #[test]
+    fn message_id_display() {
+        let id = MessageId::new();
+        let display = format!("{id}");
+        assert!(!display.is_empty());
+        // UUID format: 8-4-4-4-12 hex chars
+        assert_eq!(display.len(), 36);
+    }
+
+    #[test]
+    fn channel_id_display() {
+        let id = ChannelId::new();
+        let display = format!("{id}");
+        assert_eq!(display.len(), 36);
+    }
+
+    #[test]
+    fn sealed_content_default_ratchet_counter() {
+        let sealed = SealedContent {
+            ciphertext: vec![],
+            nonce: [0u8; 12],
+            key_epoch: 0,
+            ratchet_counter: 0,
+        };
+        assert_eq!(sealed.ratchet_counter, 0);
+    }
 }

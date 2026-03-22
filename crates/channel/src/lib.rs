@@ -879,4 +879,52 @@ mod tests {
         assert!(new_keys.contains_key(&ch1));
         assert!(new_keys.contains_key(&ch2));
     }
+
+    #[test]
+    fn set_channel_key_overrides() {
+        let (_, mut server) = owner_and_server();
+        let ch_id = server.create_channel("general", ChannelKind::Text).unwrap();
+
+        let original = server.channel_key(&ch_id).unwrap().as_bytes().to_owned();
+        let new_key = willow_crypto::generate_channel_key();
+        server.set_channel_key(ch_id.clone(), new_key);
+
+        let updated = server.channel_key(&ch_id).unwrap().as_bytes().to_owned();
+        assert_ne!(original, updated);
+    }
+
+    #[test]
+    fn invite_valid_with_both_limits() {
+        let (owner, mut server) = owner_and_server();
+
+        let future = Utc::now() + chrono::Duration::hours(1);
+        let invite_id = server.create_invite(owner, Some(future), Some(2)).unwrap();
+
+        let newcomer1 = Identity::generate().peer_id();
+        server.use_invite(&invite_id, newcomer1).unwrap();
+
+        let newcomer2 = Identity::generate().peer_id();
+        server.use_invite(&invite_id, newcomer2).unwrap();
+
+        // Third use should fail (max_uses=2).
+        let newcomer3 = Identity::generate().peer_id();
+        assert!(server.use_invite(&invite_id, newcomer3).is_err());
+    }
+
+    #[test]
+    fn non_member_cannot_create_invite() {
+        let (_, mut server) = owner_and_server();
+        let stranger = Identity::generate().peer_id();
+        assert!(server.create_invite(stranger, None, None).is_err());
+    }
+
+    #[test]
+    fn server_description() {
+        let (_, mut server) = owner_and_server();
+        server.description = Some("A cool server".into());
+
+        let bytes = willow_transport::pack(&server).unwrap();
+        let decoded: Server = willow_transport::unpack(&bytes).unwrap();
+        assert_eq!(decoded.description.as_deref(), Some("A cool server"));
+    }
 }

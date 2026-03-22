@@ -691,4 +691,20 @@ mod tests {
         let decrypted = open_content(&sealed, &key).unwrap();
         assert_eq!(decrypted, content);
     }
+
+    #[test]
+    fn channel_key_from_bytes_round_trip() {
+        let key = generate_channel_key();
+        let bytes = *key.as_bytes();
+        let restored = ChannelKey::from_bytes(bytes);
+        assert_eq!(key.as_bytes(), restored.as_bytes());
+    }
+
+    #[test]
+    fn channel_key_debug_redacted() {
+        let key = generate_channel_key();
+        let debug = format!("{key:?}");
+        assert!(debug.contains("REDACTED"));
+        assert!(!debug.contains(&format!("{:02x}", key.as_bytes()[0])));
+    }
 }
