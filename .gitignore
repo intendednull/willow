@@ -1,3 +1,4 @@
 /target
 dist
 project/.obsidian/
+web/pkg/

@@ -163,62 +163,6 @@ fn make_topic(server: &Server, channel_name: &str) -> String {
 
 // ───── Systems ───────────────────────────────────────────────────────────────
 
-/// Data directory for Willow state files (native only).
-#[cfg(not(target_arch = "wasm32"))]
-fn data_dir() -> std::path::PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("willow")
-}
-
-/// Persisted channel key data: maps channel name → key bytes.
-#[derive(serde::Serialize, serde::Deserialize, Default)]
-struct SavedKeys(Vec<(String, [u8; 32])>);
-
-/// Save server and channel keys to disk (native only).
-#[cfg(not(target_arch = "wasm32"))]
-fn save_server_state(server: &Server, key_store: &ChannelKeyStore) {
-    let dir = data_dir();
-    let _ = std::fs::create_dir_all(&dir);
-
-    // Save server.
-    if let Ok(bytes) = willow_transport::pack(server) {
-        let _ = std::fs::write(dir.join("server.bin"), bytes);
-    }
-
-    // Save channel keys (topic → key bytes).
-    let saved: SavedKeys = SavedKeys(
-        key_store
-            .keys
-            .iter()
-            .map(|(topic, key)| (topic.clone(), *key.as_bytes()))
-            .collect(),
-    );
-    if let Ok(bytes) = willow_transport::pack(&saved) {
-        let _ = std::fs::write(dir.join("keys.bin"), bytes);
-    }
-}
-
-/// Try to load server and keys from disk. Returns None if not found (native only).
-#[cfg(not(target_arch = "wasm32"))]
-fn load_server_state() -> Option<(Server, HashMap<String, ChannelKey>)> {
-    let dir = data_dir();
-
-    let server_bytes = std::fs::read(dir.join("server.bin")).ok()?;
-    let server: Server = willow_transport::unpack(&server_bytes).ok()?;
-
-    let key_bytes = std::fs::read(dir.join("keys.bin")).ok()?;
-    let saved: SavedKeys = willow_transport::unpack(&key_bytes).ok()?;
-
-    let keys = saved
-        .0
-        .into_iter()
-        .map(|(topic, bytes)| (topic, ChannelKey::from_bytes(bytes)))
-        .collect();
-
-    Some((server, keys))
-}
-
 /// Load server from disk or create a fresh one with default channels.
 fn init_server(
     identity: Res<LocalIdentity>,
@@ -226,12 +170,7 @@ fn init_server(
     mut key_store: ResMut<ChannelKeyStore>,
     net_cmd: Res<NetworkCommandSender>,
 ) {
-    #[cfg(not(target_arch = "wasm32"))]
-    let loaded = load_server_state();
-    #[cfg(target_arch = "wasm32")]
-    let loaded: Option<(Server, HashMap<String, ChannelKey>)> = None;
-
-    let (server, keys) = if let Some((server, keys)) = loaded {
+    let (server, keys) = if let Some((server, keys)) = crate::storage::load_server() {
         info!("loaded server '{}' from disk", server.name);
         (server, keys)
     } else {
@@ -269,8 +208,7 @@ fn init_server(
     }
 
     key_store.keys = keys;
-    #[cfg(not(target_arch = "wasm32"))]
-    save_server_state(&server, &key_store);
+    crate::storage::save_server(&server, &key_store.keys);
     server_state.server = Some(server);
 }
 

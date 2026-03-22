@@ -74,17 +74,22 @@ fn poll_network_events(
     }
 }
 
-// ───── Native ───────────────────────────────────────────────────────────────
+// ───── Identity persistence ──────────────────────────────────────────────────
 
-#[cfg(not(target_arch = "wasm32"))]
 fn load_identity() -> Identity {
-    let data_dir = dirs::data_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("willow");
-    Identity::load_or_generate(data_dir.join("identity.key")).unwrap_or_else(|e| {
-        warn!("failed to load identity, generating new: {e}");
-        Identity::generate()
-    })
+    // Try to load persisted identity bytes.
+    if let Some(bytes) = crate::storage::load_identity_bytes() {
+        if let Some(id) = Identity::from_ed25519_bytes(&bytes) {
+            return id;
+        }
+    }
+
+    // Generate fresh and persist.
+    let identity = Identity::generate();
+    if let Some(bytes) = identity.to_ed25519_bytes() {
+        crate::storage::save_identity_bytes(&bytes);
+    }
+    identity
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -160,12 +165,6 @@ async fn run_network(
 }
 
 // ───── WASM ─────────────────────────────────────────────────────────────────
-
-#[cfg(target_arch = "wasm32")]
-fn load_identity() -> Identity {
-    // TODO: load from localStorage when persistence is added
-    Identity::generate()
-}
 
 #[cfg(target_arch = "wasm32")]
 fn spawn_network(

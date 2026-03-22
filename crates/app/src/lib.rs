@@ -16,6 +16,7 @@
 //!   message area, input, and chat rendering.
 
 pub mod network_bridge;
+pub mod storage;
 pub mod ui;
 
 #[cfg(test)]

@@ -109,6 +109,23 @@ impl Identity {
         Self(Arc::new(Keypair::generate_ed25519()))
     }
 
+    /// Create an identity from raw Ed25519 keypair bytes (64 bytes).
+    ///
+    /// Returns `None` if the bytes are invalid.
+    pub fn from_ed25519_bytes(bytes: &[u8]) -> Option<Self> {
+        let mut buf = bytes.to_vec();
+        let ed_kp = libp2p::identity::ed25519::Keypair::try_from_bytes(&mut buf).ok()?;
+        Some(Self(Arc::new(Keypair::from(ed_kp))))
+    }
+
+    /// Export this identity as raw Ed25519 keypair bytes (64 bytes).
+    ///
+    /// Returns `None` if the keypair is not Ed25519.
+    pub fn to_ed25519_bytes(&self) -> Option<Vec<u8>> {
+        let ed_kp = (*self.0).clone().try_into_ed25519().ok()?;
+        Some(ed_kp.to_bytes().to_vec())
+    }
+
     /// Load an identity from a file, or generate and save a new one.
     #[cfg(not(target_arch = "wasm32"))]
     ///

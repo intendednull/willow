@@ -7574,6 +7574,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wasm-bindgen-futures",
+ "web-sys",
  "willow-channel",
  "willow-crypto",
  "willow-identity",
