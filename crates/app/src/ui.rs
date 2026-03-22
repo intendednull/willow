@@ -25,6 +25,8 @@ impl Plugin for UiPlugin {
             .insert_resource(InputState::default())
             .insert_resource(ChannelKeyStore::default())
             .insert_resource(ServerState::default())
+            .insert_resource(AppView::default())
+            .insert_resource(SettingsInput::default())
             .add_systems(Startup, (init_server, setup_ui).chain())
             .add_systems(
                 Update,
@@ -45,6 +47,10 @@ impl Plugin for UiPlugin {
                     update_channel_header,
                     update_channel_highlights,
                 ),
+            )
+            .add_systems(
+                Update,
+                (handle_settings_button, handle_save_settings, toggle_view),
             );
     }
 }
@@ -127,6 +133,29 @@ pub(crate) struct ChannelKeyStore {
     pub(crate) keys: HashMap<String, ChannelKey>,
 }
 
+/// Which view is currently active.
+#[derive(Resource, Default, PartialEq, Eq)]
+pub(crate) enum AppView {
+    #[default]
+    Chat,
+    Settings,
+}
+
+/// Editable settings state.
+#[derive(Resource)]
+pub(crate) struct SettingsInput {
+    pub(crate) relay_addr: String,
+}
+
+impl Default for SettingsInput {
+    fn default() -> Self {
+        let saved = crate::storage::load_settings().unwrap_or_default();
+        Self {
+            relay_addr: saved.relay_addr.unwrap_or_default(),
+        }
+    }
+}
+
 // ───── Components ────────────────────────────────────────────────────────────
 
 #[derive(Component)]
@@ -139,7 +168,7 @@ struct ChannelHeader;
 struct PeerCount;
 
 #[derive(Component)]
-struct InputText;
+pub(crate) struct InputText;
 
 /// Sidebar channel button. Stores the channel *name*.
 #[derive(Component)]
@@ -148,6 +177,30 @@ struct ChannelButton(String);
 /// Container for the channel button list so we can rebuild it dynamically.
 #[derive(Component)]
 struct ChannelList;
+
+/// The main content area (chat + input OR settings panel).
+#[derive(Component)]
+struct MainContent;
+
+/// Settings panel root.
+#[derive(Component)]
+struct SettingsPanel;
+
+/// Chat panel root (channel header + messages + input).
+#[derive(Component)]
+struct ChatPanel;
+
+/// Settings relay address text display.
+#[derive(Component)]
+pub(crate) struct SettingsRelayText;
+
+/// Settings button in the sidebar.
+#[derive(Component)]
+struct SettingsButton;
+
+/// Save button in settings.
+#[derive(Component)]
+struct SaveSettingsButton;
 
 // ───── Helpers ──────────────────────────────────────────────────────────────
 
@@ -237,7 +290,12 @@ fn subscribe_channels(
     info!("subscribed to {} channels", server_state.topic_map.len());
 }
 
-fn setup_ui(mut commands: Commands, identity: Res<LocalIdentity>, server_state: Res<ServerState>) {
+fn setup_ui(
+    mut commands: Commands,
+    identity: Res<LocalIdentity>,
+    server_state: Res<ServerState>,
+    settings_input: Res<SettingsInput>,
+) {
     commands.spawn(Camera2d);
 
     let peer_display = truncate_peer_id(&identity.0.peer_id().to_string());
@@ -312,6 +370,26 @@ fn setup_ui(mut commands: Commands, identity: Res<LocalIdentity>, server_state: 
                     ..default()
                 });
 
+                // Settings button
+                sidebar
+                    .spawn((
+                        Button,
+                        Node {
+                            margin: UiRect::bottom(Val::Px(8.0)),
+                            padding: UiRect::all(Val::Px(6.0)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb(0.22, 0.22, 0.25)),
+                        SettingsButton,
+                    ))
+                    .with_children(|btn| {
+                        btn.spawn((
+                            Text::new("Settings"),
+                            TextFont::from_font_size(12.0),
+                            TextColor(Color::srgb(0.7, 0.7, 0.7)),
+                        ));
+                    });
+
                 sidebar.spawn((
                     Text::new("0 peers connected"),
                     TextFont::from_font_size(11.0),
@@ -329,78 +407,215 @@ fn setup_ui(mut commands: Commands, identity: Res<LocalIdentity>, server_state: 
                     ..default()
                 },
                 BackgroundColor(Color::srgb(0.2, 0.2, 0.22)),
+                MainContent,
             ))
             .with_children(|main| {
-                // Channel header bar
-                main.spawn((
+                // ── Chat panel ──
+                spawn_chat_panel(main, &channel_names);
+
+                // ── Settings panel (hidden by default) ──
+                spawn_settings_panel(main, &settings_input);
+            });
+        });
+}
+
+fn spawn_chat_panel(parent: &mut ChildSpawnerCommands, channel_names: &[String]) {
+    parent
+        .spawn((
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                flex_direction: FlexDirection::Column,
+                ..default()
+            },
+            ChatPanel,
+        ))
+        .with_children(|chat| {
+            // Channel header bar
+            chat.spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Px(48.0),
+                    padding: UiRect::horizontal(Val::Px(16.0)),
+                    align_items: AlignItems::Center,
+                    border: UiRect::bottom(Val::Px(1.0)),
+                    ..default()
+                },
+                BorderColor::all(Color::srgb(0.15, 0.15, 0.18)),
+            ))
+            .with_children(|header| {
+                let first = channel_names
+                    .first()
+                    .map(|s| s.as_str())
+                    .unwrap_or("general");
+                header.spawn((
+                    Text::new(format!("# {first}")),
+                    TextFont::from_font_size(18.0),
+                    TextColor(Color::srgb(0.9, 0.9, 0.9)),
+                    ChannelHeader,
+                ));
+            });
+
+            // Message area
+            chat.spawn((
+                Node {
+                    flex_grow: 1.0,
+                    width: Val::Percent(100.0),
+                    flex_direction: FlexDirection::ColumnReverse,
+                    padding: UiRect::all(Val::Px(16.0)),
+                    overflow: Overflow::clip_y(),
+                    ..default()
+                },
+                MessageList,
+            ));
+
+            // Input area
+            chat.spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    min_height: Val::Px(56.0),
+                    padding: UiRect::all(Val::Px(12.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.17, 0.17, 0.19)),
+            ))
+            .with_children(|input_area| {
+                input_area
+                    .spawn((
+                        Node {
+                            width: Val::Percent(100.0),
+                            min_height: Val::Px(32.0),
+                            padding: UiRect::horizontal(Val::Px(12.0)),
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb(0.25, 0.25, 0.28)),
+                    ))
+                    .with_children(|input| {
+                        input.spawn((
+                            Text::new("Type a message..."),
+                            TextFont::from_font_size(14.0),
+                            TextColor(Color::srgb(0.45, 0.45, 0.48)),
+                            InputText,
+                        ));
+                    });
+            });
+        });
+}
+
+fn spawn_settings_panel(parent: &mut ChildSpawnerCommands, settings: &SettingsInput) {
+    parent
+        .spawn((
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(Val::Px(24.0)),
+                display: Display::None, // hidden by default
+                ..default()
+            },
+            SettingsPanel,
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Text::new("Settings"),
+                TextFont::from_font_size(22.0),
+                TextColor(Color::srgb(0.9, 0.9, 0.9)),
+            ));
+
+            panel.spawn(Node {
+                height: Val::Px(20.0),
+                ..default()
+            });
+
+            // Relay address section
+            panel.spawn((
+                Text::new("Relay Address"),
+                TextFont::from_font_size(13.0),
+                TextColor(Color::srgb(0.6, 0.6, 0.65)),
+            ));
+
+            panel.spawn((
+                Text::new("Connect to a relay server for peer discovery. Leave empty for LAN-only (mDNS)."),
+                TextFont::from_font_size(11.0),
+                TextColor(Color::srgb(0.45, 0.45, 0.5)),
+                Node {
+                    margin: UiRect::vertical(Val::Px(4.0)),
+                    ..default()
+                },
+            ));
+
+            // Relay input field
+            panel
+                .spawn((
                     Node {
                         width: Val::Percent(100.0),
-                        height: Val::Px(48.0),
-                        padding: UiRect::horizontal(Val::Px(16.0)),
+                        min_height: Val::Px(36.0),
+                        padding: UiRect::horizontal(Val::Px(12.0)),
                         align_items: AlignItems::Center,
-                        border: UiRect::bottom(Val::Px(1.0)),
+                        margin: UiRect::vertical(Val::Px(4.0)),
                         ..default()
                     },
-                    BorderColor::all(Color::srgb(0.15, 0.15, 0.18)),
+                    BackgroundColor(Color::srgb(0.18, 0.18, 0.2)),
                 ))
-                .with_children(|header| {
-                    let first = channel_names
-                        .first()
-                        .map(|s| s.as_str())
-                        .unwrap_or("general");
-                    header.spawn((
-                        Text::new(format!("# {first}")),
-                        TextFont::from_font_size(18.0),
-                        TextColor(Color::srgb(0.9, 0.9, 0.9)),
-                        ChannelHeader,
+                .with_children(|field| {
+                    let display = if settings.relay_addr.is_empty() {
+                        "/ip4/.../tcp/9091/ws/p2p/12D3KooW..."
+                    } else {
+                        &settings.relay_addr
+                    };
+                    let color = if settings.relay_addr.is_empty() {
+                        Color::srgb(0.4, 0.4, 0.45)
+                    } else {
+                        Color::srgb(0.85, 0.85, 0.85)
+                    };
+                    field.spawn((
+                        Text::new(display),
+                        TextFont::from_font_size(13.0),
+                        TextColor(color),
+                        SettingsRelayText,
                     ));
                 });
 
-                // Message area
-                main.spawn((
-                    Node {
-                        flex_grow: 1.0,
-                        width: Val::Percent(100.0),
-                        flex_direction: FlexDirection::ColumnReverse,
-                        padding: UiRect::all(Val::Px(16.0)),
-                        overflow: Overflow::clip_y(),
-                        ..default()
-                    },
-                    MessageList,
-                ));
-
-                // Input area
-                main.spawn((
-                    Node {
-                        width: Val::Percent(100.0),
-                        min_height: Val::Px(56.0),
-                        padding: UiRect::all(Val::Px(12.0)),
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgb(0.17, 0.17, 0.19)),
-                ))
-                .with_children(|input_area| {
-                    input_area
-                        .spawn((
-                            Node {
-                                width: Val::Percent(100.0),
-                                min_height: Val::Px(32.0),
-                                padding: UiRect::horizontal(Val::Px(12.0)),
-                                align_items: AlignItems::Center,
-                                ..default()
-                            },
-                            BackgroundColor(Color::srgb(0.25, 0.25, 0.28)),
-                        ))
-                        .with_children(|input| {
-                            input.spawn((
-                                Text::new("Type a message..."),
-                                TextFont::from_font_size(14.0),
-                                TextColor(Color::srgb(0.45, 0.45, 0.48)),
-                                InputText,
-                            ));
-                        });
-                });
+            panel.spawn(Node {
+                height: Val::Px(12.0),
+                ..default()
             });
+
+            // Save button
+            panel
+                .spawn((
+                    Button,
+                    Node {
+                        padding: UiRect::new(
+                            Val::Px(16.0),
+                            Val::Px(16.0),
+                            Val::Px(8.0),
+                            Val::Px(8.0),
+                        ),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.25, 0.5, 0.9)),
+                    SaveSettingsButton,
+                ))
+                .with_children(|btn| {
+                    btn.spawn((
+                        Text::new("Save & Reconnect"),
+                        TextFont::from_font_size(14.0),
+                        TextColor(Color::WHITE),
+                    ));
+                });
+
+            panel.spawn(Node {
+                height: Val::Px(16.0),
+                ..default()
+            });
+
+            panel.spawn((
+                Text::new("Example: /ip4/1.2.3.4/tcp/9091/ws/p2p/12D3KooW..."),
+                TextFont::from_font_size(11.0),
+                TextColor(Color::srgb(0.4, 0.4, 0.45)),
+            ));
         });
 }
 
@@ -425,28 +640,67 @@ fn spawn_channel_button(parent: &mut ChildSpawnerCommands, name: &str) {
         });
 }
 
+#[allow(clippy::type_complexity)]
 pub(crate) fn handle_keyboard_input(
     mut key_events: MessageReader<KeyboardInput>,
     mut input: ResMut<InputState>,
+    view: Res<AppView>,
+    mut settings_input: ResMut<SettingsInput>,
+    mut relay_text_query: Query<
+        (&mut Text, &mut TextColor),
+        (With<SettingsRelayText>, Without<InputText>),
+    >,
 ) {
     for event in key_events.read() {
         if !event.state.is_pressed() {
             continue;
         }
-        match event.key_code {
-            KeyCode::Enter => {
-                if !input.text.is_empty() {
-                    input.send_requested = true;
+
+        if *view == AppView::Settings {
+            // Route keyboard input to relay address field.
+            match event.key_code {
+                KeyCode::Backspace => {
+                    settings_input.relay_addr.pop();
+                }
+                KeyCode::Escape => {} // handled by toggle_view
+                _ => {
+                    if let Some(ref s) = event.text {
+                        for c in s.chars() {
+                            if !c.is_control() {
+                                settings_input.relay_addr.push(c);
+                            }
+                        }
+                    }
                 }
             }
-            KeyCode::Backspace => {
-                input.text.pop();
+
+            // Update the relay text display.
+            for (mut text, mut color) in &mut relay_text_query {
+                if settings_input.relay_addr.is_empty() {
+                    **text = "/ip4/.../tcp/9091/ws/p2p/12D3KooW...".to_string();
+                    *color = TextColor(Color::srgb(0.4, 0.4, 0.45));
+                } else {
+                    **text = settings_input.relay_addr.clone();
+                    *color = TextColor(Color::srgb(0.85, 0.85, 0.85));
+                }
             }
-            _ => {
-                if let Some(ref s) = event.text {
-                    for c in s.chars() {
-                        if !c.is_control() {
-                            input.text.push(c);
+        } else {
+            // Chat mode: route to message input.
+            match event.key_code {
+                KeyCode::Enter => {
+                    if !input.text.is_empty() {
+                        input.send_requested = true;
+                    }
+                }
+                KeyCode::Backspace => {
+                    input.text.pop();
+                }
+                _ => {
+                    if let Some(ref s) = event.text {
+                        for c in s.chars() {
+                            if !c.is_control() {
+                                input.text.push(c);
+                            }
                         }
                     }
                 }
@@ -723,3 +977,97 @@ fn update_channel_highlights(
         }
     }
 }
+
+// ───── Settings Systems ─────────────────────────────────────────────────────
+
+/// Toggle between Chat and Settings when the settings button is clicked.
+fn handle_settings_button(
+    query: Query<&Interaction, (Changed<Interaction>, With<SettingsButton>)>,
+    mut view: ResMut<AppView>,
+) {
+    for interaction in &query {
+        if *interaction == Interaction::Pressed {
+            *view = match *view {
+                AppView::Chat => AppView::Settings,
+                AppView::Settings => AppView::Chat,
+            };
+        }
+    }
+}
+
+/// Handle "Save & Reconnect" button in settings.
+fn handle_save_settings(
+    query: Query<&Interaction, (Changed<Interaction>, With<SaveSettingsButton>)>,
+    settings_input: Res<SettingsInput>,
+    mut connect_writer: MessageWriter<ConnectCommand>,
+    mut view: ResMut<AppView>,
+) {
+    for interaction in &query {
+        if *interaction == Interaction::Pressed {
+            let relay = if settings_input.relay_addr.trim().is_empty() {
+                None
+            } else {
+                Some(settings_input.relay_addr.trim().to_string())
+            };
+
+            connect_writer.write(ConnectCommand { relay_addr: relay });
+            *view = AppView::Chat;
+            info!("settings saved, reconnecting");
+        }
+    }
+}
+
+/// Show/hide chat and settings panels based on current view.
+#[allow(clippy::type_complexity)]
+fn toggle_view(
+    view: Res<AppView>,
+    mut chat_query: Query<&mut Node, (With<ChatPanel>, Without<SettingsPanel>)>,
+    mut settings_query: Query<&mut Node, (With<SettingsPanel>, Without<ChatPanel>)>,
+    mut settings_input: ResMut<SettingsInput>,
+    mut relay_text_query: Query<
+        (&mut Text, &mut TextColor),
+        (With<SettingsRelayText>, Without<InputText>),
+    >,
+) {
+    if !view.is_changed() {
+        return;
+    }
+
+    for mut node in &mut chat_query {
+        node.display = if *view == AppView::Chat {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+
+    for mut node in &mut settings_query {
+        node.display = if *view == AppView::Settings {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+
+    // When entering settings, reload the saved relay address.
+    if *view == AppView::Settings {
+        let saved = crate::storage::load_settings().unwrap_or_default();
+        settings_input.relay_addr = saved.relay_addr.unwrap_or_default();
+
+        for (mut text, mut color) in &mut relay_text_query {
+            if settings_input.relay_addr.is_empty() {
+                **text = "/ip4/.../tcp/9091/ws/p2p/12D3KooW...".to_string();
+                *color = TextColor(Color::srgb(0.4, 0.4, 0.45));
+            } else {
+                **text = settings_input.relay_addr.clone();
+                *color = TextColor(Color::srgb(0.85, 0.85, 0.85));
+            }
+        }
+    }
+}
+
+// ───── Settings Keyboard Input ──────────────────────────────────────────────
+
+// The existing handle_keyboard_input routes to the chat input. When settings
+// is active, keyboard input goes to the relay address field instead. Let's
+// update handle_keyboard_input to be view-aware.

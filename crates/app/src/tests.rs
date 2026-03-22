@@ -6,7 +6,7 @@ use std::sync::mpsc as std_mpsc;
 use crate::network_bridge::{
     LocalIdentity, NetworkBridgeCommand, NetworkBridgeEvent, NetworkCommandSender,
 };
-use crate::ui::{ChannelKeyStore, ChatState, InputState, ServerState};
+use crate::ui::{AppView, ChannelKeyStore, ChatState, InputState, ServerState, SettingsInput};
 use willow_crypto::{generate_channel_key, seal_content};
 use willow_identity::Identity;
 use willow_messaging::hlc::HLC;
@@ -29,6 +29,8 @@ fn test_app() -> (App, std_mpsc::Receiver<NetworkBridgeCommand>) {
     app.insert_resource(InputState::default());
     app.insert_resource(ChannelKeyStore::default());
     app.insert_resource(ServerState::default());
+    app.insert_resource(AppView::default());
+    app.insert_resource(SettingsInput::default());
     app.add_message::<NetworkBridgeEvent>();
     app.add_message::<KeyboardInput>();
     app.add_systems(
