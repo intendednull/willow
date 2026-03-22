@@ -28,6 +28,7 @@ impl Plugin for UiPlugin {
             .insert_resource(AppView::default())
             .insert_resource(SettingsInput::default())
             .insert_resource(ProfileStore::default())
+            .insert_resource(FilePicker::default())
             .insert_resource(MessageDbRes(
                 crate::storage::open_message_db()
                     .map(|db| std::sync::Arc::new(std::sync::Mutex::new(db))),
@@ -55,7 +56,13 @@ impl Plugin for UiPlugin {
             )
             .add_systems(
                 Update,
-                (handle_settings_button, handle_save_settings, toggle_view),
+                (
+                    handle_settings_button,
+                    handle_save_settings,
+                    toggle_view,
+                    handle_share_file_button,
+                    poll_file_picker,
+                ),
             );
     }
 }
@@ -250,6 +257,27 @@ pub(crate) struct SettingsNameText;
 /// The sidebar display of the local user's name.
 #[derive(Component)]
 struct LocalUserDisplay;
+
+/// "Share File" button in the input area.
+#[derive(Component)]
+struct ShareFileButton;
+
+/// File data from the picker: (filename, mime_type, data).
+type FilePickerResult = (String, String, Vec<u8>);
+
+/// Tracks pending file picker operations.
+#[derive(Resource, Clone)]
+pub(crate) struct FilePicker {
+    rx: std::sync::Arc<std::sync::Mutex<Option<std::sync::mpsc::Receiver<FilePickerResult>>>>,
+}
+
+impl Default for FilePicker {
+    fn default() -> Self {
+        Self {
+            rx: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+}
 
 // ───── Helpers ──────────────────────────────────────────────────────────────
 
@@ -565,10 +593,11 @@ fn spawn_chat_panel(parent: &mut ChildSpawnerCommands, channel_names: &[String])
                 BackgroundColor(Color::srgb(0.17, 0.17, 0.19)),
             ))
             .with_children(|input_area| {
+                // Text input field
                 input_area
                     .spawn((
                         Node {
-                            width: Val::Percent(100.0),
+                            flex_grow: 1.0,
                             min_height: Val::Px(32.0),
                             padding: UiRect::horizontal(Val::Px(12.0)),
                             align_items: AlignItems::Center,
@@ -582,6 +611,29 @@ fn spawn_chat_panel(parent: &mut ChildSpawnerCommands, channel_names: &[String])
                             TextFont::from_font_size(14.0),
                             TextColor(Color::srgb(0.45, 0.45, 0.48)),
                             InputText,
+                        ));
+                    });
+
+                // Share file button
+                input_area
+                    .spawn((
+                        Button,
+                        Node {
+                            min_height: Val::Px(32.0),
+                            padding: UiRect::horizontal(Val::Px(12.0)),
+                            margin: UiRect::left(Val::Px(8.0)),
+                            align_items: AlignItems::Center,
+                            justify_content: JustifyContent::Center,
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb(0.3, 0.3, 0.35)),
+                        ShareFileButton,
+                    ))
+                    .with_children(|btn| {
+                        btn.spawn((
+                            Text::new("Share"),
+                            TextFont::from_font_size(13.0),
+                            TextColor(Color::srgb(0.7, 0.7, 0.7)),
                         ));
                     });
             });
@@ -1305,8 +1357,147 @@ fn toggle_view(
     }
 }
 
-// ───── Settings Keyboard Input ──────────────────────────────────────────────
+// ───── File Sharing ─────────────────────────────────────────────────────────
 
-// The existing handle_keyboard_input routes to the chat input. When settings
-// is active, keyboard input goes to the relay address field instead. Let's
-// update handle_keyboard_input to be view-aware.
+/// Open a file dialog when the "Share" button is clicked.
+fn handle_share_file_button(
+    query: Query<&Interaction, (Changed<Interaction>, With<ShareFileButton>)>,
+    picker: Res<FilePicker>,
+) {
+    for interaction in &query {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+
+        let rx_arc = picker.rx.clone();
+
+        // Spawn the file dialog on a background thread (it's blocking).
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (tx, rx) = std::sync::mpsc::channel();
+            if let Ok(mut guard) = rx_arc.lock() {
+                *guard = Some(rx);
+            }
+            std::thread::spawn(move || {
+                if let Some(path) = rfd::FileDialog::new().pick_file() {
+                    if let Ok(data) = std::fs::read(&path) {
+                        let filename = path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
+                        let mime = mime_from_extension(&filename);
+                        let _ = tx.send((filename, mime, data));
+                    }
+                }
+            });
+        }
+
+        // WASM: file picker not yet implemented (would need web_sys input element)
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = rx_arc;
+            info!("file picker not yet available on WASM");
+        }
+    }
+}
+
+/// Poll for file picker results and send the ShareFile command.
+#[allow(clippy::too_many_arguments)]
+fn poll_file_picker(
+    picker: Res<FilePicker>,
+    net_cmd: Res<NetworkCommandSender>,
+    state: Res<ChatState>,
+    server_state: Res<ServerState>,
+    mut chat_state: ResMut<ChatState>,
+    profiles: Res<ProfileStore>,
+    identity: Res<LocalIdentity>,
+    db: Res<MessageDbRes>,
+) {
+    let Ok(mut guard) = picker.rx.lock() else {
+        return;
+    };
+    let Some(rx) = guard.as_ref() else {
+        return;
+    };
+
+    let Ok((filename, mime_type, data)) = rx.try_recv() else {
+        return;
+    };
+
+    // Drop the receiver since we got the file.
+    *guard = None;
+
+    let channel_name = state.current_channel.clone();
+    let topic = server_state
+        .topic_for_name(&channel_name)
+        .unwrap_or(channel_name);
+
+    let size_kb = data.len() / 1024;
+
+    let _ = net_cmd
+        .0
+        .send(crate::network_bridge::NetworkBridgeCommand::ShareFile {
+            topic: topic.clone(),
+            filename: filename.clone(),
+            mime_type,
+            data,
+        });
+
+    // Show in local chat.
+    let author = profiles.display_name(&identity.0.peer_id().to_string());
+    let body = format!("[shared file: {filename} ({size_kb} KB)]");
+    let chat_msg = ChatMessage {
+        topic,
+        author: author.clone(),
+        body: body.clone(),
+        is_local: true,
+    };
+
+    if let Some(ref db_arc) = db.0 {
+        if let Ok(db_lock) = db_arc.lock() {
+            db_lock.insert(&crate::storage::StoredMessage {
+                topic: chat_msg.topic.clone(),
+                author,
+                body,
+                is_local: true,
+                timestamp_ms: chat_state.hlc.latest().millis,
+            });
+        }
+    }
+
+    chat_state.messages.push(chat_msg);
+    chat_state.messages_dirty = true;
+}
+
+/// Guess MIME type from file extension.
+#[cfg(not(target_arch = "wasm32"))]
+fn mime_from_extension(filename: &str) -> String {
+    let ext = filename
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mp3" => "audio/mpeg",
+        "ogg" => "audio/ogg",
+        "wav" => "audio/wav",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "txt" => "text/plain",
+        "json" => "application/json",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "js" => "application/javascript",
+        "rs" => "text/x-rust",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}

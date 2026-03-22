@@ -16,6 +16,7 @@ willow-files = { path = "../files" }
 
 bevy = { workspace = true }
 anyhow = { workspace = true }
+rfd = "0.17"
 serde = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
