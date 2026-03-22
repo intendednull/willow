@@ -21,30 +21,20 @@ crates/
 ## Build & Test
 
 ```bash
-# Check everything compiles (native)
-cargo check
-
-# Check library crates compile for WASM
-cargo check --target wasm32-unknown-unknown \
-  -p willow-transport -p willow-identity -p willow-crypto \
-  -p willow-messaging -p willow-channel
-
-# Run all tests
-cargo test
-
-# Run tests for a specific crate
-cargo test -p willow-messaging
-
-# Build the desktop app (requires desktop environment with GPU)
-cargo build -p willow-app
-
-# Formatting and linting (must pass with zero warnings)
-cargo fmt --check
-cargo clippy -- -D warnings
+just check          # run ALL checks (fmt, clippy, test, wasm) — use before committing
+just fmt            # format code
+just clippy         # lint with warnings as errors
+just test           # run all tests
+just test-crate willow-messaging  # test a specific crate
+just check-wasm     # verify WASM compilation
+just build          # build native desktop app
+just build-wasm     # build WASM web app
+just serve-wasm     # build + serve on localhost:8080
+just run            # run native desktop app
 ```
 
-**All code must pass `cargo fmt`, `cargo clippy -- -D warnings`, `cargo test`,
-and WASM compilation checks with zero warnings before being committed.**
+**All code must pass `just check` (fmt + clippy + test + WASM) with zero
+warnings before being committed.**
 
 ### Dual-Target Support (Native + WASM)
 

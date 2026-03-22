@@ -4,7 +4,9 @@
 //! Callers interact with it through a command-style API (subscribe, publish,
 //! dial) and receive events via an mpsc channel.
 
-use anyhow::{Context, Result};
+#[cfg(not(target_arch = "wasm32"))]
+use anyhow::Context;
+use anyhow::Result;
 use libp2p::{
     gossipsub, identify, kad, noise, swarm::SwarmEvent, yamux, Multiaddr, PeerId, Swarm,
     SwarmBuilder,
