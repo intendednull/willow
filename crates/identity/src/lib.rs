@@ -56,6 +56,10 @@ pub enum IdentityError {
     /// A public key could not be decoded from its wire format.
     #[error("failed to decode public key: {0}")]
     PublicKeyDecode(String),
+
+    /// An I/O or other error.
+    #[error("{0}")]
+    Other(String),
 }
 
 // ───── PeerId ────────────────────────────────────────────────────────────────
@@ -103,6 +107,32 @@ impl Identity {
     /// Generate a fresh random Ed25519 identity.
     pub fn generate() -> Self {
         Self(Arc::new(Keypair::generate_ed25519()))
+    }
+
+    /// Load an identity from a file, or generate and save a new one.
+    ///
+    /// The file stores the raw 64-byte Ed25519 keypair. Parent directories
+    /// are created if they don't exist.
+    pub fn load_or_generate(path: impl AsRef<std::path::Path>) -> Result<Self, IdentityError> {
+        use std::fs;
+
+        let path = path.as_ref();
+        if let Ok(mut bytes) = fs::read(path) {
+            let ed_kp = libp2p::identity::ed25519::Keypair::try_from_bytes(&mut bytes)
+                .map_err(|e| IdentityError::Other(e.to_string()))?;
+            Ok(Self(Arc::new(Keypair::from(ed_kp))))
+        } else {
+            let identity = Self::generate();
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|e| IdentityError::Other(e.to_string()))?;
+            }
+            let kp: Keypair = (*identity.0).clone();
+            let ed_kp = kp
+                .try_into_ed25519()
+                .map_err(|e| IdentityError::Other(e.to_string()))?;
+            fs::write(path, ed_kp.to_bytes()).map_err(|e| IdentityError::Other(e.to_string()))?;
+            Ok(identity)
+        }
     }
 
     /// Derive the public [`PeerId`] for this identity.
@@ -330,7 +360,29 @@ mod tests {
     fn peer_id_display() {
         let peer = Identity::generate().peer_id();
         let display = format!("{peer}");
-        // libp2p PeerIds are base58 encoded, typically starting with "12D3"
         assert!(!display.is_empty());
+    }
+
+    #[test]
+    fn load_or_generate_persists_identity() {
+        let dir = std::env::temp_dir().join(format!(
+            "willow-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = dir.join("identity.key");
+
+        // First call: generates and saves.
+        let id1 = Identity::load_or_generate(&path).unwrap();
+
+        // Second call: loads the same identity.
+        let id2 = Identity::load_or_generate(&path).unwrap();
+
+        assert_eq!(id1.peer_id(), id2.peer_id());
+
+        // Cleanup.
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

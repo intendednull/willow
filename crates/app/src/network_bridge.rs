@@ -60,8 +60,15 @@ pub struct NetworkPlugin;
 
 impl Plugin for NetworkPlugin {
     fn build(&self, app: &mut App) {
-        let identity = Identity::generate();
-        info!(peer_id = %identity.peer_id(), "generated local identity");
+        let data_dir = dirs::data_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("willow");
+        let identity =
+            Identity::load_or_generate(data_dir.join("identity.key")).unwrap_or_else(|e| {
+                warn!("failed to load identity, generating new: {e}");
+                Identity::generate()
+            });
+        info!(peer_id = %identity.peer_id(), "local identity ready");
 
         let (event_tx, event_rx) = std_mpsc::channel();
         let (cmd_tx, cmd_rx) = std_mpsc::channel();

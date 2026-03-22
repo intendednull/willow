@@ -163,33 +163,96 @@ fn make_topic(server: &Server, channel_name: &str) -> String {
 
 // ───── Systems ───────────────────────────────────────────────────────────────
 
-/// Create the local server with default channels and populate key stores.
+/// Data directory for Willow state files.
+fn data_dir() -> std::path::PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("willow")
+}
+
+/// Persisted channel key data: maps channel name → key bytes.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct SavedKeys(Vec<(String, [u8; 32])>);
+
+/// Save server and channel keys to disk.
+fn save_server_state(server: &Server, key_store: &ChannelKeyStore) {
+    let dir = data_dir();
+    let _ = std::fs::create_dir_all(&dir);
+
+    // Save server.
+    if let Ok(bytes) = willow_transport::pack(server) {
+        let _ = std::fs::write(dir.join("server.bin"), bytes);
+    }
+
+    // Save channel keys (topic → key bytes).
+    let saved: SavedKeys = SavedKeys(
+        key_store
+            .keys
+            .iter()
+            .map(|(topic, key)| (topic.clone(), *key.as_bytes()))
+            .collect(),
+    );
+    if let Ok(bytes) = willow_transport::pack(&saved) {
+        let _ = std::fs::write(dir.join("keys.bin"), bytes);
+    }
+}
+
+/// Try to load server and keys from disk. Returns None if not found.
+fn load_server_state() -> Option<(Server, HashMap<String, ChannelKey>)> {
+    let dir = data_dir();
+
+    let server_bytes = std::fs::read(dir.join("server.bin")).ok()?;
+    let server: Server = willow_transport::unpack(&server_bytes).ok()?;
+
+    let key_bytes = std::fs::read(dir.join("keys.bin")).ok()?;
+    let saved: SavedKeys = willow_transport::unpack(&key_bytes).ok()?;
+
+    let keys = saved
+        .0
+        .into_iter()
+        .map(|(topic, bytes)| (topic, ChannelKey::from_bytes(bytes)))
+        .collect();
+
+    Some((server, keys))
+}
+
+/// Load server from disk or create a fresh one with default channels.
 fn init_server(
     identity: Res<LocalIdentity>,
     mut server_state: ResMut<ServerState>,
     mut key_store: ResMut<ChannelKeyStore>,
     net_cmd: Res<NetworkCommandSender>,
 ) {
-    let mut server = Server::new("My Server", identity.0.peer_id());
+    let (server, keys) = if let Some((server, keys)) = load_server_state() {
+        info!("loaded server '{}' from disk", server.name);
+        (server, keys)
+    } else {
+        info!("creating new server");
+        let mut server = Server::new("My Server", identity.0.peer_id());
+        let mut keys = HashMap::new();
 
-    let default_channels = ["general", "random", "voice"];
-    for name in default_channels {
-        let ch_id = server
-            .create_channel(name, ChannelKind::Text)
-            .expect("default channel creation should not fail");
+        let default_channels = ["general", "random", "voice"];
+        for name in default_channels {
+            let ch_id = server
+                .create_channel(name, ChannelKind::Text)
+                .expect("default channel creation should not fail");
 
-        let topic = make_topic(&server, name);
-
-        // Copy the channel key into the key store.
-        if let Some(key) = server.channel_key(&ch_id) {
-            key_store.keys.insert(topic.clone(), key.clone());
+            let topic = make_topic(&server, name);
+            if let Some(key) = server.channel_key(&ch_id) {
+                keys.insert(topic, key.clone());
+            }
         }
 
+        (server, keys)
+    };
+
+    // Populate topic map and subscribe to all channels.
+    for ch in server.channels() {
+        let topic = make_topic(&server, &ch.name);
         server_state
             .topic_map
-            .insert(topic.clone(), (name.to_string(), ch_id));
+            .insert(topic.clone(), (ch.name.clone(), ch.id.clone()));
 
-        // Subscribe to the gossipsub topic.
         let _ = net_cmd
             .0
             .send(crate::network_bridge::NetworkBridgeCommand::Subscribe(
@@ -197,6 +260,8 @@ fn init_server(
             ));
     }
 
+    key_store.keys = keys;
+    save_server_state(&server, &key_store);
     server_state.server = Some(server);
 }
 
