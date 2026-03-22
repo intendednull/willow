@@ -1,0 +1,23 @@
+{
+	"nodes":[
+		{"id":"4b1d896b23d3e12a","type":"text","text":"Server","x":-120,"y":-80,"width":250,"height":60},
+		{"id":"1dc8819a9b562668","type":"text","text":"Database","x":-480,"y":-80,"width":250,"height":60},
+		{"id":"483fd9271873f360","type":"text","text":"Discord is in control of everything","x":-120,"y":-400,"width":250,"height":60},
+		{"id":"1e560411a9d98c15","type":"text","text":"User","x":320,"y":20,"width":250,"height":60},
+		{"id":"a39f68aba7424cf9","type":"text","text":"User","x":320,"y":-80,"width":250,"height":60},
+		{"id":"a63551ae484db7f9","type":"text","text":"User","x":320,"y":-180,"width":250,"height":60}
+	],
+	"edges":[
+		{"id":"6cf85df5c5313412","fromNode":"a63551ae484db7f9","fromSide":"left","toNode":"4b1d896b23d3e12a","toSide":"right"},
+		{"id":"3d0929dfb066aa6c","fromNode":"4b1d896b23d3e12a","fromSide":"right","toNode":"a63551ae484db7f9","toSide":"left"},
+		{"id":"18fe81bc54e2917f","fromNode":"a39f68aba7424cf9","fromSide":"left","toNode":"4b1d896b23d3e12a","toSide":"right"},
+		{"id":"d2a1274d47c9a81a","fromNode":"1e560411a9d98c15","fromSide":"left","toNode":"4b1d896b23d3e12a","toSide":"right"},
+		{"id":"9e7c802bf17d5cea","fromNode":"4b1d896b23d3e12a","fromSide":"left","toNode":"1dc8819a9b562668","toSide":"right"},
+		{"id":"584746af45a08443","fromNode":"1dc8819a9b562668","fromSide":"right","toNode":"4b1d896b23d3e12a","toSide":"left"},
+		{"id":"331c9e8a86e556e7","fromNode":"4b1d896b23d3e12a","fromSide":"right","toNode":"a39f68aba7424cf9","toSide":"left"},
+		{"id":"8d5ca35db2582419","fromNode":"4b1d896b23d3e12a","fromSide":"right","toNode":"1e560411a9d98c15","toSide":"left"},
+		{"id":"480ddfbadbd2b8e3","fromNode":"483fd9271873f360","fromSide":"bottom","toNode":"1dc8819a9b562668","toSide":"top"},
+		{"id":"a25fd04805ce0e56","fromNode":"483fd9271873f360","fromSide":"bottom","toNode":"4b1d896b23d3e12a","toSide":"top"},
+		{"id":"34997d2b1a785489","fromNode":"483fd9271873f360","fromSide":"bottom","toNode":"a63551ae484db7f9","toSide":"top"}
+	]
+}

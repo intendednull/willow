@@ -1,0 +1,38 @@
+{
+	"nodes":[
+		{"id":"title","type":"text","text":"# Willow Architecture\n\nP2P encrypted chat — no central servers","x":-200,"y":-600,"width":400,"height":80},
+
+		{"id":"app","type":"text","text":"## willow-app\nBevy 0.18 Desktop UI\n- Text input & rendering\n- Channel switching\n- ChannelKeyStore\n- Encrypt on send\n- Decrypt on receive\n- Ed25519 sign/verify","x":-200,"y":-480,"width":400,"height":160},
+
+		{"id":"crypto","type":"text","text":"## willow-crypto\n- ChaCha20-Poly1305 (AEAD)\n- X25519 key exchange\n- HKDF-SHA256 key derivation\n- seal_content / open_content\n- Channel key wrapping","x":-620,"y":-260,"width":340,"height":140},
+
+		{"id":"channel","type":"text","text":"## willow-channel\n- Server / Channel / Role\n- Permission system (12 perms)\n- Invite with encrypted keys\n- ChannelKey per channel","x":280,"y":-260,"width":340,"height":140},
+
+		{"id":"messaging","type":"text","text":"## willow-messaging\n- Message + Content enum\n- Content::Encrypted(SealedContent)\n- HLC ordering\n- InMemoryStore","x":-620,"y":-80,"width":340,"height":120},
+
+		{"id":"identity","type":"text","text":"## willow-identity\n- Ed25519 keypairs\n- PeerId (public identifier)\n- pack/unpack (sign/verify)\n- UserProfile","x":280,"y":-80,"width":340,"height":120},
+
+		{"id":"transport","type":"text","text":"## willow-transport\n- bincode serialization\n- Envelope { version, type, payload }\n- pack_envelope / unpack_envelope\n- 7 MessageTypes","x":-200,"y":80,"width":400,"height":120},
+
+		{"id":"network","type":"text","text":"## willow-network\n- libp2p swarm\n- GossipSub (pub/sub messaging)\n- Kademlia (DHT peer discovery)\n- mDNS (LAN discovery)\n- Noise (transport encryption)\n- Relay (NAT traversal)","x":-200,"y":240,"width":400,"height":160},
+
+		{"id":"peer_a","type":"text","text":"**Peer A**\n🔑 Ed25519 Identity","x":-620,"y":320,"width":200,"height":60},
+		{"id":"peer_b","type":"text","text":"**Peer B**\n🔑 Ed25519 Identity","x":420,"y":320,"width":200,"height":60},
+
+		{"id":"flow","type":"text","text":"## Message Flow\n1. Type → Message::text()\n2. seal_content() → Content::Encrypted\n3. pack_envelope() → bytes\n4. identity::pack() → signed bytes\n5. GossipSub publish\n6. Peer receives → verify sig\n7. unpack_envelope()\n8. open_content() → plaintext\n9. Display in UI","x":-700,"y":80,"width":280,"height":250}
+	],
+	"edges":[
+		{"id":"e1","fromNode":"app","fromSide":"left","toNode":"crypto","toSide":"top","label":"encrypt/decrypt"},
+		{"id":"e2","fromNode":"app","fromSide":"right","toNode":"channel","toSide":"top","label":"keys & perms"},
+		{"id":"e3","fromNode":"app","fromSide":"bottom","toNode":"transport","toSide":"top","label":"serialize"},
+		{"id":"e4","fromNode":"crypto","fromSide":"bottom","toNode":"messaging","toSide":"top","label":"Content"},
+		{"id":"e5","fromNode":"crypto","fromSide":"bottom","toNode":"identity","toSide":"top","label":"X25519 keys"},
+		{"id":"e6","fromNode":"channel","fromSide":"bottom","toNode":"identity","toSide":"top","label":"PeerId"},
+		{"id":"e7","fromNode":"messaging","fromSide":"bottom","toNode":"transport","toSide":"left","label":"bincode"},
+		{"id":"e8","fromNode":"identity","fromSide":"bottom","toNode":"transport","toSide":"right","label":"bincode"},
+		{"id":"e9","fromNode":"transport","fromSide":"bottom","toNode":"network","toSide":"top","label":"bytes"},
+		{"id":"e10","fromNode":"network","fromSide":"left","toNode":"peer_a","toSide":"right","label":"TCP+Noise"},
+		{"id":"e11","fromNode":"network","fromSide":"right","toNode":"peer_b","toSide":"left","label":"TCP+Noise"},
+		{"id":"e12","fromNode":"peer_a","fromSide":"right","toNode":"peer_b","toSide":"left","label":"GossipSub"}
+	]
+}

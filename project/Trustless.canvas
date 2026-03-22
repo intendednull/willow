@@ -1,0 +1,40 @@
+{
+	"nodes":[
+		{"id":"883b22a31bbe535f","type":"text","text":"User","x":-260,"y":-360,"width":250,"height":60},
+		{"id":"ae2e7ff69d0490d5","type":"text","text":"User","x":-760,"y":-190,"width":250,"height":60},
+		{"id":"3ced7391e401a836","type":"text","text":"User","x":220,"y":-190,"width":250,"height":60},
+		{"id":"814eaf45e9240b65","x":-260,"y":-40,"width":250,"height":60,"type":"text","text":"Index server"},
+		{"id":"10bc2a96e2e52890","type":"text","text":"User","x":180,"y":140,"width":250,"height":60},
+		{"id":"934de159dd85899e","type":"text","text":"User","x":-700,"y":170,"width":250,"height":60},
+		{"id":"eb78d51f7dccba87","type":"text","text":"User","x":-240,"y":230,"width":250,"height":60},
+		{"id":"3a9852a4540b16ec","x":-240,"y":540,"width":250,"height":60,"type":"text","text":"Archive Service"},
+		{"id":"56034e59769ab5d7","x":-240,"y":800,"width":250,"height":60,"type":"text","text":"User"}
+	],
+	"edges":[
+		{"id":"86f2e76594cb5f61","fromNode":"ae2e7ff69d0490d5","fromSide":"right","toNode":"814eaf45e9240b65","toSide":"left"},
+		{"id":"92d919cd39b86fde","fromNode":"814eaf45e9240b65","fromSide":"left","toNode":"ae2e7ff69d0490d5","toSide":"right"},
+		{"id":"66e7af2ff29d8ef8","fromNode":"ae2e7ff69d0490d5","fromSide":"right","toNode":"883b22a31bbe535f","toSide":"bottom"},
+		{"id":"c16e816a2cefb721","fromNode":"ae2e7ff69d0490d5","fromSide":"right","toNode":"eb78d51f7dccba87","toSide":"top"},
+		{"id":"9e235b5353998f55","fromNode":"ae2e7ff69d0490d5","fromSide":"bottom","toNode":"934de159dd85899e","toSide":"top"},
+		{"id":"ab7fc6fe980e98fe","fromNode":"ae2e7ff69d0490d5","fromSide":"right","toNode":"3ced7391e401a836","toSide":"left"},
+		{"id":"2078fc09d3182927","fromNode":"ae2e7ff69d0490d5","fromSide":"bottom","toNode":"eb78d51f7dccba87","toSide":"top"},
+		{"id":"9213e1d3ea20b7e3","fromNode":"934de159dd85899e","fromSide":"right","toNode":"eb78d51f7dccba87","toSide":"left"},
+		{"id":"74bc0cb00501504c","fromNode":"eb78d51f7dccba87","fromSide":"top","toNode":"3ced7391e401a836","toSide":"left"},
+		{"id":"47415a18285396cb","fromNode":"eb78d51f7dccba87","fromSide":"top","toNode":"814eaf45e9240b65","toSide":"bottom"},
+		{"id":"250748526f7728c7","fromNode":"814eaf45e9240b65","fromSide":"bottom","toNode":"eb78d51f7dccba87","toSide":"top"},
+		{"id":"29cc8b9aef329593","fromNode":"eb78d51f7dccba87","fromSide":"right","toNode":"10bc2a96e2e52890","toSide":"left"},
+		{"id":"4a3b3d13c1a5c0b3","fromNode":"10bc2a96e2e52890","fromSide":"bottom","toNode":"eb78d51f7dccba87","toSide":"right"},
+		{"id":"68cfb71eb9f26e03","fromNode":"10bc2a96e2e52890","fromSide":"top","toNode":"814eaf45e9240b65","toSide":"right"},
+		{"id":"fdfa199ebcc88fb5","fromNode":"883b22a31bbe535f","fromSide":"bottom","toNode":"3ced7391e401a836","toSide":"left"},
+		{"id":"ef0ca82c0bbee168","fromNode":"883b22a31bbe535f","fromSide":"bottom","toNode":"814eaf45e9240b65","toSide":"top"},
+		{"id":"5169e805e9e6cf84","fromNode":"814eaf45e9240b65","fromSide":"top","toNode":"883b22a31bbe535f","toSide":"bottom"},
+		{"id":"8443ed0b727ee3f0","fromNode":"3a9852a4540b16ec","fromSide":"top","toNode":"934de159dd85899e","toSide":"bottom"},
+		{"id":"3ea09af5cf6a0fc2","fromNode":"3a9852a4540b16ec","fromSide":"top","toNode":"eb78d51f7dccba87","toSide":"bottom"},
+		{"id":"ba188e0c9bbf1e0a","fromNode":"3a9852a4540b16ec","fromSide":"top","toNode":"10bc2a96e2e52890","toSide":"bottom"},
+		{"id":"f8134954a058941a","fromNode":"10bc2a96e2e52890","fromSide":"bottom","toNode":"3a9852a4540b16ec","toSide":"top","label":"pizza?"},
+		{"id":"c527aaa76715cc90","fromNode":"eb78d51f7dccba87","fromSide":"bottom","toNode":"3a9852a4540b16ec","toSide":"top","label":"pizza?"},
+		{"id":"d375faf6d6725320","fromNode":"934de159dd85899e","fromSide":"bottom","toNode":"3a9852a4540b16ec","toSide":"top"},
+		{"id":"7be1735248370796","fromNode":"934de159dd85899e","fromSide":"bottom","toNode":"3a9852a4540b16ec","toSide":"top","label":"pizza?"},
+		{"id":"91100ac57995231a","fromNode":"56034e59769ab5d7","fromSide":"top","toNode":"3a9852a4540b16ec","toSide":"bottom","label":"pizza"}
+	]
+}
