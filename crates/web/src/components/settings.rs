@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 
 use crate::app::ClientHandle;
+use crate::util::copy_to_clipboard;
 
 /// Profile settings panel — display name, relay address, peer ID.
 #[component]
@@ -10,7 +11,6 @@ pub fn SettingsPanel(
     on_server_settings: impl Fn(()) + Send + Clone + 'static,
 ) -> impl IntoView {
     let (display_name, set_display_name) = signal(String::new());
-    let (relay_addr, set_relay_addr) = signal(crate::app::DEFAULT_RELAY.to_string());
     let (status_msg, set_status_msg) = signal(String::new());
     let (server_name, set_server_name) = signal(String::new());
 
@@ -79,18 +79,7 @@ pub fn SettingsPanel(
                 />
             </div>
 
-            // Relay address.
-            <div class="settings-section">
-                <label>"Relay Address"</label>
-                <input
-                    type="text"
-                    placeholder="/ip4/1.2.3.4/tcp/9091/ws/p2p/12D3KooW..."
-                    prop:value=move || relay_addr.get()
-                    on:input=move |ev| set_relay_addr.set(event_target_value(&ev))
-                />
-            </div>
-
-            <button class="btn btn-primary" on:click=on_save>"Save & Reconnect"</button>
+            <button class="btn btn-primary" on:click=on_save>"Save"</button>
 
             // Link to server settings.
             <div class="settings-section" style="margin-top: 24px;">
@@ -100,10 +89,4 @@ pub fn SettingsPanel(
             </div>
         </div>
     }
-}
-
-/// Copy text to the clipboard via the web API.
-fn copy_to_clipboard(text: &str) {
-    let escaped = text.replace('\\', "\\\\").replace('\'', "\\'");
-    let _ = js_sys::eval(&format!("navigator.clipboard.writeText('{escaped}')"));
 }

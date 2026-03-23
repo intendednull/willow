@@ -68,6 +68,8 @@ pub fn FileShareButton(client: ClientHandle, channel: ReadSignal<String>) -> imp
 
         reader.set_onloadend(Some(cb.as_ref().unchecked_ref()));
         let _ = reader.read_as_array_buffer(&file);
+        // Intentional leak: the FileReader callback must outlive this scope.
+        // Since file picks are infrequent, the leak is acceptable.
         cb.forget();
     };
 

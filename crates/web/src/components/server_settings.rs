@@ -2,6 +2,7 @@ use leptos::prelude::*;
 
 use crate::app::ClientHandle;
 use crate::components::RoleManager;
+use crate::util::copy_to_clipboard;
 
 /// A single role entry: (role_id, role_name, list of granted permission strings).
 type RoleEntry = (String, String, Vec<String>);
@@ -127,10 +128,4 @@ pub fn ServerSettingsPanel(
             </div>
         </div>
     }
-}
-
-/// Copy text to the clipboard via the web API.
-fn copy_to_clipboard(text: &str) {
-    let escaped = text.replace('\\', "\\\\").replace('\'', "\\'");
-    let _ = js_sys::eval(&format!("navigator.clipboard.writeText('{escaped}')"));
 }

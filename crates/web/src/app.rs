@@ -261,10 +261,14 @@ pub fn App() -> impl IntoView {
         c.switch_server(&id);
         set_active_server_id.set(id);
         set_servers.set(c.server_list());
-        set_channels.set(c.channels());
-        set_current_channel.set(String::from("general"));
-        let ch = "general";
-        set_messages.set(c.messages(ch).into_iter().cloned().collect());
+        let chs = c.channels();
+        set_channels.set(chs.clone());
+        let first_ch = chs
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "general".to_string());
+        set_current_channel.set(first_ch.clone());
+        set_messages.set(c.messages(&first_ch).into_iter().cloned().collect());
         set_show_settings.set(false);
     };
 

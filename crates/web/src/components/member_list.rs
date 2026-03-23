@@ -3,7 +3,6 @@ use leptos::prelude::*;
 use crate::app::ClientHandle;
 
 /// Right sidebar showing connected peers with trust/kick actions.
-/// Right sidebar showing connected peers with trust/kick actions.
 /// Accepts `(peer_id, display_name)` tuples so names update reactively.
 #[component]
 pub fn MemberList(
@@ -73,7 +72,13 @@ pub fn MemberList(
                                     let pk = pid_kick.clone();
                                     let ck = client_kick.clone();
                                     move || {
-                                        if is_self() {
+                                        let is_owner = {
+                                            let c = client_badge.borrow();
+                                            c.state().active()
+                                                .map(|ctx| ctx.server.owner.to_string())
+                                                .unwrap_or_default() == peer_id.get_untracked()
+                                        };
+                                        if is_self() || !is_owner {
                                             None
                                         } else {
                                             let pt = pt.clone();

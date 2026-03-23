@@ -4,6 +4,7 @@ use leptos::prelude::*;
 use send_wrapper::SendWrapper;
 
 use crate::app::ClientHandle;
+use crate::util::copy_to_clipboard;
 
 /// Welcome/onboarding screen shown when the user has no servers.
 ///
@@ -133,10 +134,7 @@ pub fn WelcomeScreen(
                                 on:click={
                                     let pid = peer_id.clone();
                                     move |_| {
-                                        let _ = js_sys::eval(&format!(
-                                            "navigator.clipboard.writeText('{}')",
-                                            pid
-                                        ));
+                                        copy_to_clipboard(&pid);
                                         set_copy_label.set("Copied!");
                                         set_timeout(move || set_copy_label.set("Copy"), std::time::Duration::from_secs(2));
                                     }
