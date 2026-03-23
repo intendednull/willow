@@ -114,6 +114,18 @@ pub fn toggle_view(
     }
 }
 
+/// Handle clicks on settings input fields to focus them.
+pub fn handle_settings_field_click(
+    query: Query<(&Interaction, &SettingsFieldContainer), Changed<Interaction>>,
+    mut settings_input: ResMut<SettingsInput>,
+) {
+    for (interaction, container) in &query {
+        if *interaction == Interaction::Pressed {
+            settings_input.focused_field = container.0;
+        }
+    }
+}
+
 /// Reactively sync the settings text fields and focus indicator from SettingsInput.
 #[allow(clippy::type_complexity)]
 pub fn sync_settings_fields(

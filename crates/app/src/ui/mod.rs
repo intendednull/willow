@@ -70,6 +70,7 @@ impl Plugin for UiPlugin {
                     channels::handle_new_channel_input,
                     channels::handle_delete_channel,
                     channels::sync_new_channel_input,
+                    input::handle_input_focus,
                     input::handle_keyboard_input,
                     input::send_message,
                     chat::handle_network_events,
@@ -94,12 +95,18 @@ impl Plugin for UiPlugin {
                     settings::handle_settings_button,
                     settings::handle_save_settings,
                     settings::toggle_view,
+                    settings::handle_settings_field_click,
                     settings::sync_settings_fields,
                     channels::handle_generate_invite,
                     channels::handle_join_server,
                     channels::sync_invite_fields,
                     channels::sync_member_list,
                     channels::handle_kick_member,
+                ),
+            )
+            .add_systems(
+                Update,
+                (
                     channels::handle_create_role_button,
                     channels::handle_new_role_input,
                     channels::sync_role_list,

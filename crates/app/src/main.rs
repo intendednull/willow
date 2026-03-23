@@ -10,6 +10,8 @@ fn main() {
             primary_window: Some(Window {
                 title: "Willow".to_string(),
                 resolution: (1280u32, 720u32).into(),
+                fit_canvas_to_parent: true,
+                prevent_default_event_handling: true,
                 ..default()
             }),
             ..default()

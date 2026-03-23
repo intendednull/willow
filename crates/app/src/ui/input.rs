@@ -101,7 +101,11 @@ pub fn handle_keyboard_input(
                 }
             }
         } else {
-            // Chat mode.
+            // Chat mode — any typing auto-focuses the input.
+            if !input.focused {
+                input.focused = true;
+            }
+
             // Ctrl+F opens search.
             if event.key_code == KeyCode::KeyF
                 && (keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight))
@@ -384,6 +388,40 @@ pub fn send_message(
     state.messages_dirty = true;
 }
 
+/// Handle clicks on the chat input area to toggle focus.
+#[allow(clippy::type_complexity)]
+pub fn handle_input_focus(
+    input_query: Query<&Interaction, (Changed<Interaction>, With<ChatInputArea>)>,
+    other_query: Query<&Interaction, (Changed<Interaction>, Without<ChatInputArea>, With<Button>)>,
+    mut input: ResMut<InputState>,
+    mut border_query: Query<&mut BorderColor, With<ChatInputArea>>,
+) {
+    // Clicking the input area focuses it.
+    for interaction in &input_query {
+        if *interaction == Interaction::Pressed {
+            input.focused = true;
+        }
+    }
+
+    // Clicking any other button unfocuses.
+    if input.focused {
+        for interaction in &other_query {
+            if *interaction == Interaction::Pressed {
+                input.focused = false;
+            }
+        }
+    }
+
+    // Update border color based on focus.
+    for mut border in &mut border_query {
+        *border = if input.focused {
+            BorderColor::all(theme::ACCENT)
+        } else {
+            BorderColor::all(theme::TEXT_MUTED)
+        };
+    }
+}
+
 /// Sync the chat input text display reactively from InputState.
 pub fn sync_input_text(
     input: Res<InputState>,
@@ -405,10 +443,12 @@ pub fn sync_input_text(
                 *color = TextColor(theme::TEXT_PRIMARY);
             }
         } else if input.text.is_empty() {
-            **text = constants::CHAT_PLACEHOLDER.to_string();
+            let cursor = if input.focused { "▏" } else { "" };
+            **text = format!("{}{cursor}", constants::CHAT_PLACEHOLDER);
             *color = TextColor(theme::TEXT_PLACEHOLDER);
         } else {
-            **text = input.text.clone();
+            let cursor = if input.focused { "▏" } else { "" };
+            **text = format!("{}{cursor}", input.text);
             *color = TextColor(theme::TEXT_PRIMARY);
         }
     }

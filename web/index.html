@@ -17,13 +17,22 @@
             display: block;
             width: 100%;
             height: 100%;
+            outline: none;
         }
     </style>
 </head>
 <body>
     <script type="module">
-        import init from './pkg/willow_app.js';
-        init();
+        import init from './pkg/willow-app.js';
+        await init();
+
+        // Ensure the canvas gets keyboard focus on any click.
+        const canvas = document.querySelector('canvas');
+        if (canvas) {
+            canvas.tabIndex = 0;
+            canvas.focus();
+            document.addEventListener('click', () => canvas.focus());
+        }
     </script>
 </body>
 </html>

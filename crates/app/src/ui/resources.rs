@@ -195,6 +195,8 @@ impl OpLog {
 pub struct InputState {
     pub text: String,
     pub send_requested: bool,
+    /// Whether the chat input box is focused (receiving keyboard input).
+    pub focused: bool,
     /// When editing, holds the message ID being edited.
     pub editing_message_id: Option<String>,
     /// When replying, holds the parent message ID and a preview.

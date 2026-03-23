@@ -348,25 +348,16 @@ pub fn spawn_chat_panel(parent: &mut ChildSpawnerCommands, channel_names: &[Stri
                     });
 
                 // Text input
-                input_area
-                    .spawn((
-                        Node {
-                            flex_grow: 1.0,
-                            min_height: Val::Px(40.0),
-                            padding: UiRect::horizontal(Val::Px(16.0)),
-                            align_items: AlignItems::Center,
-                            ..default()
-                        },
-                        BackgroundColor(theme::INPUT_FIELD_BG),
-                    ))
-                    .with_children(|input| {
-                        input.spawn((
-                            Text::new(constants::CHAT_PLACEHOLDER),
-                            TextFont::from_font_size(14.0),
-                            TextColor(theme::TEXT_PLACEHOLDER),
-                            InputText,
-                        ));
-                    });
+                {
+                    let config = super::components::InputFieldConfig {
+                        placeholder: constants::CHAT_PLACEHOLDER,
+                        font_size: 14.0,
+                        full_width: false,
+                        ..default()
+                    };
+                    super::components::spawn_input_field(input_area, &config, Some(InputText))
+                        .insert(ChatInputArea);
+                }
             });
         });
 }
@@ -503,29 +494,14 @@ pub fn spawn_settings_panel(parent: &mut ChildSpawnerCommands, settings: &Settin
                 },
             ));
 
-            panel
-                .spawn((
-                    Node {
-                        width: Val::Percent(100.0),
-                        min_height: Val::Px(36.0),
-                        padding: UiRect::horizontal(Val::Px(12.0)),
-                        align_items: AlignItems::Center,
-                        margin: UiRect::vertical(Val::Px(4.0)),
-                        border: UiRect::all(Val::Px(1.0)),
-                        ..default()
-                    },
-                    BackgroundColor(theme::INPUT_FIELD_BG),
-                    BorderColor::all(Color::NONE),
-                    SettingsFieldContainer(super::resources::SettingsField::InviteRecipient),
-                ))
-                .with_children(|field| {
-                    field.spawn((
-                        Text::new("12D3KooW..."),
-                        TextFont::from_font_size(13.0),
-                        TextColor(theme::TEXT_PLACEHOLDER),
-                        // Reuse JoinCodeInput as a generic text display; we'll add a dedicated one.
-                    ));
-                });
+            {
+                let config = super::components::InputFieldConfig {
+                    placeholder: "12D3KooW...",
+                    ..default()
+                };
+                super::components::spawn_input_field(panel, &config, None::<InputFieldText>)
+                    .insert(SettingsFieldContainer(super::resources::SettingsField::InviteRecipient));
+            }
 
             panel.spawn(Node {
                 height: Val::Px(4.0),
@@ -615,29 +591,14 @@ pub fn spawn_settings_panel(parent: &mut ChildSpawnerCommands, settings: &Settin
                 },
             ));
 
-            panel
-                .spawn((
-                    Node {
-                        width: Val::Percent(100.0),
-                        min_height: Val::Px(36.0),
-                        padding: UiRect::horizontal(Val::Px(12.0)),
-                        align_items: AlignItems::Center,
-                        margin: UiRect::vertical(Val::Px(4.0)),
-                        border: UiRect::all(Val::Px(1.0)),
-                        ..default()
-                    },
-                    BackgroundColor(theme::INPUT_FIELD_BG),
-                    BorderColor::all(Color::NONE),
-                    SettingsFieldContainer(super::resources::SettingsField::JoinCode),
-                ))
-                .with_children(|field| {
-                    field.spawn((
-                        Text::new("Paste invite code..."),
-                        TextFont::from_font_size(13.0),
-                        TextColor(theme::TEXT_PLACEHOLDER),
-                        JoinCodeInput,
-                    ));
-                });
+            {
+                let config = super::components::InputFieldConfig {
+                    placeholder: "Paste invite code...",
+                    ..default()
+                };
+                super::components::spawn_input_field(panel, &config, Some(JoinCodeInput))
+                    .insert(SettingsFieldContainer(super::resources::SettingsField::JoinCode));
+            }
 
 
             panel.spawn(Node {
@@ -771,38 +732,19 @@ fn spawn_settings_input_field(
     panel: &mut ChildSpawnerCommands,
     value: &str,
     placeholder: &str,
-    marker: impl Component,
+    text_marker: impl Component,
     container: SettingsFieldContainer,
 ) {
-    let (display, color) = if value.is_empty() {
-        (placeholder, theme::TEXT_PLACEHOLDER)
-    } else {
-        (value, theme::TEXT_PRIMARY)
-    };
-
-    panel
-        .spawn((
-            Node {
-                width: Val::Percent(100.0),
-                min_height: Val::Px(36.0),
-                padding: UiRect::horizontal(Val::Px(12.0)),
-                align_items: AlignItems::Center,
-                margin: UiRect::vertical(Val::Px(4.0)),
-                border: UiRect::all(Val::Px(1.0)),
-                ..default()
-            },
-            BackgroundColor(theme::INPUT_FIELD_BG),
-            BorderColor::all(Color::NONE),
-            container,
-        ))
-        .with_children(|field| {
-            field.spawn((
-                Text::new(display),
-                TextFont::from_font_size(13.0),
-                TextColor(color),
-                marker,
-            ));
-        });
+    super::components::spawn_input_field(
+        panel,
+        &super::components::InputFieldConfig {
+            value,
+            placeholder,
+            ..default()
+        },
+        Some(text_marker),
+    )
+    .insert(container);
 }
 
 pub fn spawn_channel_button(parent: &mut ChildSpawnerCommands, name: &str) {

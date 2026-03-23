@@ -133,3 +133,100 @@ pub struct JoinCodeInput;
 /// Trust/Untrust button for a peer. Stores the peer ID string.
 #[derive(Component)]
 pub struct TrustMemberButton(pub String);
+
+/// The clickable chat input area container.
+#[derive(Component)]
+pub struct ChatInputArea;
+
+// ───── Reusable Input Field ─────────────────────────────────────────────────
+
+/// Marker for the text child inside an input field.
+#[derive(Component)]
+pub struct InputFieldText;
+
+/// Configuration bundle for spawning a clickable input field.
+/// Use [`spawn_input_field`] to create one with consistent styling.
+pub struct InputFieldConfig<'a> {
+    /// Initial display text.
+    pub value: &'a str,
+    /// Placeholder shown when empty.
+    pub placeholder: &'a str,
+    /// Font size (default 13.0).
+    pub font_size: f32,
+    /// Whether the field fills available width vs grows.
+    pub full_width: bool,
+}
+
+impl<'a> Default for InputFieldConfig<'a> {
+    fn default() -> Self {
+        Self {
+            value: "",
+            placeholder: "",
+            font_size: 13.0,
+            full_width: true,
+        }
+    }
+}
+
+/// Spawn a clickable input field with consistent styling.
+///
+/// The field gets `Button` (for click detection), styled `Node`, `BackgroundColor`,
+/// `BorderColor`, and a text child. Pass additional marker components via the
+/// returned `EntityCommands`.
+///
+/// ```ignore
+/// spawn_input_field(parent, &config)
+///     .insert(MyMarkerComponent)
+///     .with_children(|_| {});
+/// ```
+/// Spawn a clickable input field. Returns `EntityCommands` for the container
+/// so callers can `.insert(MyMarker)`. Pass `text_marker` to add an extra
+/// component to the text child (e.g. `InputText` for the chat input).
+pub fn spawn_input_field<'a>(
+    parent: &'a mut bevy::prelude::ChildSpawnerCommands,
+    config: &InputFieldConfig,
+    text_marker: Option<impl bevy::prelude::Component>,
+) -> bevy::prelude::EntityCommands<'a> {
+    use crate::theme;
+    use bevy::prelude::*;
+
+    let (display, color) = if config.value.is_empty() {
+        (config.placeholder, theme::TEXT_PLACEHOLDER)
+    } else {
+        (config.value, theme::TEXT_PRIMARY)
+    };
+    let font_size = config.font_size;
+
+    let mut entity = parent.spawn((
+        Button,
+        Node {
+            width: if config.full_width {
+                Val::Percent(100.0)
+            } else {
+                Val::Auto
+            },
+            flex_grow: if config.full_width { 0.0 } else { 1.0 },
+            min_height: Val::Px(36.0),
+            padding: UiRect::horizontal(Val::Px(12.0)),
+            align_items: AlignItems::Center,
+            margin: UiRect::vertical(Val::Px(4.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            border_radius: BorderRadius::all(Val::Px(4.0)),
+            ..default()
+        },
+        BackgroundColor(theme::INPUT_FIELD_BG),
+        BorderColor::all(Color::NONE),
+    ));
+    entity.with_children(move |field| {
+        let mut text_entity = field.spawn((
+            Text::new(display),
+            TextFont::from_font_size(font_size),
+            TextColor(color),
+            InputFieldText,
+        ));
+        if let Some(marker) = text_marker {
+            text_entity.insert(marker);
+        }
+    });
+    entity
+}
