@@ -193,12 +193,37 @@ pub fn handle_keyboard_input(
                 input.focused = true;
             }
 
-            // Ctrl+V pastes from clipboard.
+            let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+
+            // Ctrl+A selects all.
+            if event.key_code == KeyCode::KeyA && ctrl {
+                input.select_all();
+                continue;
+            }
+
+            // Ctrl+C copies selection to clipboard.
+            if event.key_code == KeyCode::KeyC && ctrl {
+                let selected = input.selected_text();
+                if !selected.is_empty() {
+                    crate::clipboard::copy_to_clipboard(&selected);
+                }
+                continue;
+            }
+
+            // Ctrl+X cuts selection to clipboard.
+            if event.key_code == KeyCode::KeyX && ctrl {
+                let selected = input.selected_text();
+                if !selected.is_empty() {
+                    crate::clipboard::copy_to_clipboard(&selected);
+                }
+                input.delete_selection();
+                continue;
+            }
+
+            // Ctrl+V pastes from clipboard (replaces selection if any).
             if event.key_code == KeyCode::KeyV && ctrl {
                 if let Some(text) = crate::clipboard::read_clipboard() {
-                    let mut cursor = input.cursor;
-                    crate::text_edit::insert_str(&mut input.text, &mut cursor, &text);
-                    input.cursor = cursor;
+                    input.insert_str(&text);
                 }
                 continue;
             }
@@ -264,61 +289,31 @@ pub fn handle_keyboard_input(
                 continue;
             }
 
-            let mut cursor = input.cursor;
             match event.key_code {
                 KeyCode::Enter => {
+                    input.selection = None;
                     if !input.text.is_empty() {
                         input.send_requested = true;
                     } else if input.editing_message_id.is_some() {
-                        // Enter with empty text while editing -> cancel.
                         input.editing_message_id = None;
                     }
                 }
-                KeyCode::Backspace => {
-                    if ctrl {
-                        crate::text_edit::backspace_word(&mut input.text, &mut cursor);
-                    } else {
-                        crate::text_edit::backspace(&mut input.text, &mut cursor);
-                    }
-                }
-                KeyCode::Delete => {
-                    if ctrl {
-                        crate::text_edit::delete_word(&mut input.text, &mut cursor);
-                    } else {
-                        crate::text_edit::delete(&mut input.text, &mut cursor);
-                    }
-                }
-                KeyCode::ArrowLeft => {
-                    if ctrl {
-                        crate::text_edit::move_word_left(&input.text, &mut cursor);
-                    } else {
-                        crate::text_edit::move_left(&mut cursor);
-                    }
-                }
-                KeyCode::ArrowRight => {
-                    if ctrl {
-                        crate::text_edit::move_word_right(&input.text, &mut cursor);
-                    } else {
-                        crate::text_edit::move_right(&input.text, &mut cursor);
-                    }
-                }
-                KeyCode::Home => {
-                    crate::text_edit::move_home(&mut cursor);
-                }
-                KeyCode::End => {
-                    crate::text_edit::move_end(&input.text, &mut cursor);
-                }
+                KeyCode::Backspace => input.backspace(ctrl),
+                KeyCode::Delete => input.delete(ctrl),
+                KeyCode::ArrowLeft => input.move_left(ctrl, shift),
+                KeyCode::ArrowRight => input.move_right(ctrl, shift),
+                KeyCode::Home => input.move_home(shift),
+                KeyCode::End => input.move_end(shift),
                 _ => {
                     if let Some(ref s) = event.text {
                         for c in s.chars() {
                             if !c.is_control() {
-                                crate::text_edit::insert_char(&mut input.text, &mut cursor, c);
+                                input.insert_char(c);
                             }
                         }
                     }
                 }
             }
-            input.cursor = cursor;
         }
     }
 }

@@ -196,6 +196,8 @@ pub struct InputState {
     pub text: String,
     /// Cursor position in characters (not bytes).
     pub cursor: usize,
+    /// Selection anchor. When set, text between `selection` and `cursor` is selected.
+    pub selection: Option<usize>,
     pub send_requested: bool,
     /// Whether the chat input box is focused (receiving keyboard input).
     pub focused: bool,
@@ -203,6 +205,114 @@ pub struct InputState {
     pub editing_message_id: Option<String>,
     /// When replying, holds the parent message ID and a preview.
     pub replying_to: Option<(String, String)>, // (message_id, "Author: preview...")
+}
+
+impl InputState {
+    /// Delete selected text, returning true if there was a selection.
+    pub fn delete_selection(&mut self) -> bool {
+        crate::text_edit::delete_selection(&mut self.text, &mut self.cursor, &mut self.selection)
+    }
+
+    /// Select all text.
+    pub fn select_all(&mut self) {
+        crate::text_edit::select_all(&self.text, &mut self.cursor, &mut self.selection);
+    }
+
+    /// Get the selected text (empty string if no selection).
+    pub fn selected_text(&self) -> String {
+        self.selection
+            .map(|sel| crate::text_edit::selected_text(&self.text, self.cursor, sel).to_string())
+            .unwrap_or_default()
+    }
+
+    /// Insert a string at the cursor, replacing any selection.
+    pub fn insert_str(&mut self, s: &str) {
+        self.delete_selection();
+        crate::text_edit::insert_str(&mut self.text, &mut self.cursor, s);
+    }
+
+    /// Insert a char at the cursor, replacing any selection.
+    pub fn insert_char(&mut self, c: char) {
+        self.delete_selection();
+        crate::text_edit::insert_char(&mut self.text, &mut self.cursor, c);
+    }
+
+    /// Backspace: delete selection if any, otherwise delete char before cursor.
+    pub fn backspace(&mut self, word: bool) {
+        if !self.delete_selection() {
+            if word {
+                crate::text_edit::backspace_word(&mut self.text, &mut self.cursor);
+            } else {
+                crate::text_edit::backspace(&mut self.text, &mut self.cursor);
+            }
+        }
+    }
+
+    /// Delete: delete selection if any, otherwise delete char after cursor.
+    pub fn delete(&mut self, word: bool) {
+        if !self.delete_selection() {
+            if word {
+                crate::text_edit::delete_word(&mut self.text, &mut self.cursor);
+            } else {
+                crate::text_edit::delete(&mut self.text, &mut self.cursor);
+            }
+        }
+    }
+
+    /// Move cursor, handling shift-select.
+    pub fn move_left(&mut self, word: bool, shift: bool) {
+        if shift && self.selection.is_none() {
+            self.selection = Some(self.cursor);
+        } else if !shift {
+            self.selection = None;
+        }
+        if word {
+            crate::text_edit::move_word_left(&self.text, &mut self.cursor);
+        } else {
+            crate::text_edit::move_left(&mut self.cursor);
+        }
+    }
+
+    /// Move cursor right, handling shift-select.
+    pub fn move_right(&mut self, word: bool, shift: bool) {
+        if shift && self.selection.is_none() {
+            self.selection = Some(self.cursor);
+        } else if !shift {
+            self.selection = None;
+        }
+        if word {
+            crate::text_edit::move_word_right(&self.text, &mut self.cursor);
+        } else {
+            crate::text_edit::move_right(&self.text, &mut self.cursor);
+        }
+    }
+
+    /// Move to start, handling shift-select.
+    pub fn move_home(&mut self, shift: bool) {
+        if shift && self.selection.is_none() {
+            self.selection = Some(self.cursor);
+        } else if !shift {
+            self.selection = None;
+        }
+        crate::text_edit::move_home(&mut self.cursor);
+    }
+
+    /// Move to end, handling shift-select.
+    pub fn move_end(&mut self, shift: bool) {
+        if shift && self.selection.is_none() {
+            self.selection = Some(self.cursor);
+        } else if !shift {
+            self.selection = None;
+        }
+        crate::text_edit::move_end(&self.text, &mut self.cursor);
+    }
+
+    /// Clear text, cursor, and selection.
+    pub fn clear(&mut self) {
+        self.text.clear();
+        self.cursor = 0;
+        self.selection = None;
+    }
 }
 
 /// Active search filter. When non-empty, only matching messages are shown.

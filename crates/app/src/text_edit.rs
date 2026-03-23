@@ -159,6 +159,60 @@ pub fn clear(text: &mut String, cursor: &mut usize) {
     *cursor = 0;
 }
 
+// ───── Selection ────────────────────────────────────────────────────────────
+
+/// Get the ordered (start, end) range of a selection.
+pub fn selection_range(cursor: usize, selection: usize) -> (usize, usize) {
+    if cursor < selection {
+        (cursor, selection)
+    } else {
+        (selection, cursor)
+    }
+}
+
+/// Delete the selected text, returning true if there was a selection.
+pub fn delete_selection(
+    text: &mut String,
+    cursor: &mut usize,
+    selection: &mut Option<usize>,
+) -> bool {
+    let Some(sel) = selection.take() else {
+        return false;
+    };
+    let (start, end) = selection_range(*cursor, sel);
+    let start_byte = char_to_byte(text, start);
+    let end_byte = char_to_byte(text, end);
+    text.drain(start_byte..end_byte);
+    *cursor = start;
+    true
+}
+
+/// Get the selected text as a string slice.
+pub fn selected_text(text: &str, cursor: usize, selection: usize) -> &str {
+    let (start, end) = selection_range(cursor, selection);
+    let start_byte = char_to_byte(text, start);
+    let end_byte = char_to_byte(text, end);
+    &text[start_byte..end_byte]
+}
+
+/// Select all text: set selection anchor to 0, cursor to end.
+pub fn select_all(text: &str, cursor: &mut usize, selection: &mut Option<usize>) {
+    *selection = Some(0);
+    *cursor = char_len(text);
+}
+
+/// Split text into three parts for display: before selection, selected, after selection.
+pub fn split_with_selection(text: &str, cursor: usize, selection: usize) -> (&str, &str, &str) {
+    let (start, end) = selection_range(cursor, selection);
+    let start_byte = char_to_byte(text, start);
+    let end_byte = char_to_byte(text, end);
+    (
+        &text[..start_byte],
+        &text[start_byte..end_byte],
+        &text[end_byte..],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
