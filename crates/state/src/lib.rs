@@ -189,6 +189,26 @@ pub enum EventKind {
         /// Encrypted key material for each recipient: (peer_id, encrypted_key_bytes).
         encrypted_keys: Vec<(String, Vec<u8>)>,
     },
+
+    // -- Server metadata --
+    /// Rename the server. Only the owner can do this.
+    RenameServer {
+        /// The new server name.
+        new_name: String,
+    },
+    /// Set the server description. Only the owner can do this.
+    SetServerDescription {
+        /// The new description text.
+        description: String,
+    },
+
+    // -- Verification --
+    /// Carries the author's current state hash for comparison.
+    /// This is a no-op event: it does not mutate state.
+    StateVerification {
+        /// The author's current state hash.
+        state_hash: StateHash,
+    },
 }
 
 /// Result of applying an event to state.
@@ -258,13 +278,17 @@ fn apply_inner(state: &mut ServerState, event: &Event) -> ApplyResult {
 
         EventKind::KickMember { .. } => Some(types::Permission::KickMembers),
 
-        // Chat, profile, and encryption events are open to any peer.
+        // Chat, profile, encryption, and verification events are open to any peer.
+        // RenameServer/SetServerDescription are owner-only but checked in the match body.
         EventKind::Message { .. }
         | EventKind::EditMessage { .. }
         | EventKind::DeleteMessage { .. }
         | EventKind::Reaction { .. }
         | EventKind::SetProfile { .. }
-        | EventKind::RotateChannelKey { .. } => None,
+        | EventKind::RotateChannelKey { .. }
+        | EventKind::RenameServer { .. }
+        | EventKind::SetServerDescription { .. }
+        | EventKind::StateVerification { .. } => None,
     };
 
     if let Some(ref perm) = required_permission {
@@ -461,6 +485,30 @@ fn apply_inner(state: &mut ServerState, event: &Event) -> ApplyResult {
                     .channel_keys
                     .insert(channel_id.clone(), key_bytes.clone());
             }
+        }
+
+        EventKind::RenameServer { new_name } => {
+            if event.author != state.owner {
+                return ApplyResult::Rejected(format!(
+                    "only the owner can rename the server (author: '{}')",
+                    event.author
+                ));
+            }
+            state.server_name = new_name.clone();
+        }
+
+        EventKind::SetServerDescription { description } => {
+            if event.author != state.owner {
+                return ApplyResult::Rejected(format!(
+                    "only the owner can set the server description (author: '{}')",
+                    event.author
+                ));
+            }
+            state.description = description.clone();
+        }
+
+        EventKind::StateVerification { .. } => {
+            // No-op: purely informational, does not mutate state.
         }
     }
 

@@ -1,12 +1,17 @@
 use leptos::prelude::*;
 
 use crate::app::ClientHandle;
+use crate::components::RoleManager;
 
-/// Settings panel for display name, relay, invites, and join.
+/// A single role entry: (role_id, role_name, list of granted permission strings).
+type RoleEntry = (String, String, Vec<String>);
+
+/// Settings panel for display name, relay, invites, join, and role management.
 #[component]
 pub fn SettingsPanel(
     client: ClientHandle,
     peer_id: ReadSignal<String>,
+    #[prop(into)] roles: Signal<Vec<RoleEntry>>,
     on_joined: impl Fn(()) + Send + Clone + 'static,
 ) -> impl IntoView {
     let (display_name, set_display_name) = signal(String::new());
@@ -178,6 +183,15 @@ pub fn SettingsPanel(
                     ></textarea>
                 </div>
                 <button class="btn btn-primary" on:click=on_join>"Join"</button>
+            </div>
+
+            // Role management section.
+            <div class="settings-section role-section">
+                <RoleManager
+                    client=client.clone()
+                    peer_id=peer_id
+                    roles=roles
+                />
             </div>
         </div>
     }

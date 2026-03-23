@@ -1,15 +1,19 @@
 mod chat;
+mod file_share;
 mod input;
 mod member_list;
 mod message;
+mod roles;
 mod server_list;
 mod settings;
 mod sidebar;
 
 pub use chat::*;
+pub use file_share::*;
 pub use input::*;
 pub use member_list::*;
 pub use message::*;
+pub use roles::*;
 pub use server_list::*;
 pub use settings::*;
 pub use sidebar::*;

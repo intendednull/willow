@@ -173,7 +173,10 @@ async fn scale_5_peers_message_flood() {
         deliver_time,
         deliver_time.as_millis() as f64 / received.max(1) as f64
     );
-    assert!(received >= 3, "at least 3/4 peers should receive the message");
+    assert!(
+        received >= 3,
+        "at least 3/4 peers should receive the message"
+    );
     drop(nodes);
 }
 

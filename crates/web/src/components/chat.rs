@@ -36,9 +36,21 @@ pub fn MessageList(
     /// Whether the app is still in its initial loading state.
     #[prop(optional, into)]
     loading: Signal<bool>,
+    /// The local user's display name (used to determine "own" messages).
+    #[prop(optional, into)]
+    local_display_name: Option<Signal<String>>,
     /// Callback fired when the user clicks a message (to start a reply).
     #[prop(optional, into)]
     on_message_click: Option<Callback<ChatMessage>>,
+    /// Callback fired when the user wants to edit a message.
+    #[prop(optional, into)]
+    on_edit: Option<Callback<ChatMessage>>,
+    /// Callback fired when the user wants to delete a message.
+    #[prop(optional, into)]
+    on_delete: Option<Callback<ChatMessage>>,
+    /// Callback fired when the user picks an emoji reaction.
+    #[prop(optional, into)]
+    on_react: Option<Callback<(ChatMessage, String)>>,
 ) -> impl IntoView {
     let list_ref = NodeRef::<leptos::html::Div>::new();
     let (show_scroll_btn, set_show_scroll_btn) = signal(false);
@@ -90,7 +102,7 @@ pub fn MessageList(
         }
     };
 
-    let on_msg_click = on_message_click.clone();
+    let on_msg_click = on_message_click;
 
     view! {
         <div class="message-list-container">
@@ -114,7 +126,13 @@ pub fn MessageList(
                     } else {
                         // Build grouped message views: consecutive messages from
                         // the same author collapse the header.
-                        let on_click = on_msg_click.clone();
+                        let on_click = on_msg_click;
+                        let on_ed = on_edit;
+                        let on_del = on_delete;
+                        let on_re = on_react;
+                        let local_name = local_display_name
+                            .map(|sig| sig.get())
+                            .unwrap_or_default();
                         let views: Vec<_> = msgs.iter().enumerate().map(|(i, msg)| {
                             let show_header = if i == 0 {
                                 true
@@ -122,12 +140,37 @@ pub fn MessageList(
                                 msgs[i - 1].author != msg.author
                             };
                             let m = msg.clone();
-                            if let Some(ref cb) = on_click {
-                                let cb = cb.clone();
-                                view! { <MessageView message=m show_header=show_header on_click=cb /> }.into_any()
-                            } else {
-                                view! { <MessageView message=m show_header=show_header /> }.into_any()
+                            let is_own = msg.is_local || msg.author == local_name;
+                            let mut builder = view! {
+                                <MessageView
+                                    message=m
+                                    show_header=show_header
+                                    is_own=is_own
+                                />
+                            };
+                            // We need to build with all props. Re-create to pass them.
+                            let m2 = msg.clone();
+                            if on_click.is_some() || on_ed.is_some() || on_del.is_some() || on_re.is_some() {
+                                let click_cb = on_click;
+                                let ed_cb = on_ed;
+                                let del_cb = on_del;
+                                let re_cb = on_re;
+                                // Unfortunately we need to re-create the view
+                                // to pass all optional props. Using nested if/else
+                                // creates mismatched types, so use into_any().
+                                builder = view! {
+                                    <MessageView
+                                        message=m2
+                                        show_header=show_header
+                                        is_own=is_own
+                                        on_click=click_cb.unwrap_or_else(|| Callback::new(|_| {}))
+                                        on_edit=ed_cb.unwrap_or_else(|| Callback::new(|_| {}))
+                                        on_delete=del_cb.unwrap_or_else(|| Callback::new(|_| {}))
+                                        on_react=re_cb.unwrap_or_else(|| Callback::new(|_| {}))
+                                    />
+                                };
                             }
+                            builder.into_any()
                         }).collect();
                         view! { <div>{views}</div> }.into_any()
                     }

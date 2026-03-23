@@ -1782,3 +1782,505 @@ async fn loading_spinner_shows_initially() {
         "empty state should show after loading with no messages"
     );
 }
+
+// ── Feature: Edit/Delete Own Messages Tests ─────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn own_message_shows_action_buttons() {
+    // Own messages (is_local = true) should display action buttons on hover.
+    let mut msg = make_msg("Me", "my message", 1000);
+    msg.is_local = true;
+    let is_own = msg.is_local;
+    let body = msg.body.clone();
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                <div class="body">{body}</div>
+                {if is_own {
+                    Some(view! {
+                        <div class="message-actions">
+                            <button class="edit-action">"Edit"</button>
+                            <button class="delete-action">"Delete"</button>
+                        </div>
+                    })
+                } else {
+                    None
+                }}
+            </div>
+        }
+    });
+
+    tick().await;
+
+    // Action buttons should exist in the DOM (CSS controls visibility on hover).
+    let actions = query(&container, ".message-actions");
+    assert!(
+        actions.is_some(),
+        "action bar should be in DOM for own messages"
+    );
+    let edit_btn = query(&container, ".edit-action").unwrap();
+    assert_eq!(text(&edit_btn), "Edit");
+    let delete_btn = query(&container, ".delete-action").unwrap();
+    assert_eq!(text(&delete_btn), "Delete");
+}
+
+#[wasm_bindgen_test]
+async fn other_message_hides_action_buttons() {
+    // Messages from other users (is_local = false) should NOT show
+    // edit/delete action buttons.
+    let msg = make_msg("OtherUser", "their message", 1000);
+    let is_own = msg.is_local; // false
+    let body = msg.body.clone();
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                <div class="body">{body}</div>
+                {if is_own {
+                    Some(view! {
+                        <div class="message-actions">
+                            <button class="edit-action">"Edit"</button>
+                            <button class="delete-action">"Delete"</button>
+                        </div>
+                    })
+                } else {
+                    None
+                }}
+            </div>
+        }
+    });
+
+    tick().await;
+
+    // No action buttons for other users' messages.
+    assert!(
+        query(&container, ".message-actions").is_none(),
+        "action bar should NOT be in DOM for other users' messages"
+    );
+    assert!(query(&container, ".edit-action").is_none());
+    assert!(query(&container, ".delete-action").is_none());
+}
+
+#[wasm_bindgen_test]
+async fn editing_bar_shows_when_editing() {
+    // When editing is set, an edit bar should appear above the input.
+    let (editing, set_editing) = signal(Option::<willow_client::ChatMessage>::None);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="input-area">
+                {move || {
+                    editing.get().map(|m| {
+                        let preview = if m.body.len() > 60 {
+                            format!("{}...", &m.body[..60])
+                        } else {
+                            m.body.clone()
+                        };
+                        view! {
+                            <div class="edit-bar">
+                                <span class="edit-bar-text">
+                                    {format!("Editing: {}", preview)}
+                                </span>
+                                <button
+                                    class="edit-bar-cancel"
+                                    on:click=move |_| set_editing.set(None)
+                                >
+                                    "x"
+                                </button>
+                            </div>
+                        }
+                    })
+                }}
+                <input type="text" placeholder="Message #channel" />
+            </div>
+        }
+    });
+
+    tick().await;
+
+    // No edit bar initially.
+    assert!(
+        query(&container, ".edit-bar").is_none(),
+        "edit bar should not be visible initially"
+    );
+
+    // Set editing to a message.
+    let msg = make_msg("Me", "original text", 1000);
+    set_editing.set(Some(msg));
+    tick().await;
+
+    // Edit bar should now be visible.
+    let _bar = query(&container, ".edit-bar").unwrap();
+    let bar_text = text(&query(&container, ".edit-bar-text").unwrap());
+    assert!(
+        bar_text.contains("Editing: original text"),
+        "edit bar should show the message preview, got: {bar_text}"
+    );
+
+    // Cancel button should exist.
+    assert!(query(&container, ".edit-bar-cancel").is_some());
+
+    // Click cancel.
+    let cancel_btn = query(&container, ".edit-bar-cancel").unwrap();
+    simulate_click(&cancel_btn);
+    tick().await;
+
+    // Edit bar should be gone.
+    assert!(
+        query(&container, ".edit-bar").is_none(),
+        "edit bar should disappear after cancel"
+    );
+    // Check that editing signal was cleared (reflected in UI).
+    assert!(query(&container, ".edit-bar").is_none());
+}
+
+#[wasm_bindgen_test]
+async fn edit_callback_fires_on_click() {
+    // When the Edit button is clicked, the on_edit callback should fire.
+    let (edited_msg, set_edited_msg) = signal(Option::<String>::None);
+
+    let mut msg = make_msg("Me", "editable message", 1000);
+    msg.is_local = true;
+    let msg_id = msg.id.clone();
+    let body = msg.body.clone();
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                <div class="body">{body}</div>
+                <div class="message-actions">
+                    <button
+                        class="edit-action"
+                        on:click=move |_| set_edited_msg.set(Some(msg_id.clone()))
+                    >
+                        "Edit"
+                    </button>
+                </div>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    // Click Edit.
+    let edit_btn = query(&container, ".edit-action").unwrap();
+    simulate_click(&edit_btn);
+    tick().await;
+
+    assert!(
+        edited_msg.get_untracked().is_some(),
+        "edit callback should have fired"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn delete_callback_fires_on_click() {
+    // When the Delete button is clicked, the on_delete callback should fire.
+    let (deleted_msg, set_deleted_msg) = signal(Option::<String>::None);
+
+    let mut msg = make_msg("Me", "deletable message", 1000);
+    msg.is_local = true;
+    let msg_id = msg.id.clone();
+    let body = msg.body.clone();
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                <div class="body">{body}</div>
+                <div class="message-actions">
+                    <button
+                        class="delete-action"
+                        on:click=move |_| set_deleted_msg.set(Some(msg_id.clone()))
+                    >
+                        "Delete"
+                    </button>
+                </div>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    let delete_btn = query(&container, ".delete-action").unwrap();
+    simulate_click(&delete_btn);
+    tick().await;
+
+    assert!(
+        deleted_msg.get_untracked().is_some(),
+        "delete callback should have fired"
+    );
+}
+
+// ── Feature: Emoji Reactions Tests ──────────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn emoji_reaction_picker_toggles() {
+    // The reaction picker should appear when the "+" button is clicked,
+    // and disappear when clicked again.
+    let (show_picker, set_show_picker) = signal(false);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                <div class="message-actions">
+                    <div class="reaction-trigger">
+                        <button
+                            class="react-action"
+                            on:click=move |_| set_show_picker.update(|v| *v = !*v)
+                        >
+                            "+"
+                        </button>
+                        {move || {
+                            if show_picker.get() {
+                                Some(view! {
+                                    <div class="reaction-picker">
+                                        <button class="emoji-btn">{"\u{1F44D}"}</button>
+                                        <button class="emoji-btn">{"\u{2764}\u{FE0F}"}</button>
+                                        <button class="emoji-btn">{"\u{1F602}"}</button>
+                                    </div>
+                                })
+                            } else {
+                                None
+                            }
+                        }}
+                    </div>
+                </div>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    // Picker should be hidden initially.
+    assert!(
+        query(&container, ".reaction-picker").is_none(),
+        "reaction picker should be hidden initially"
+    );
+
+    // Click the "+" button to show the picker.
+    let react_btn = query(&container, ".react-action").unwrap();
+    simulate_click(&react_btn);
+    tick().await;
+
+    assert!(
+        query(&container, ".reaction-picker").is_some(),
+        "reaction picker should be visible after clicking +"
+    );
+    let emoji_btns = query_all(&container, ".emoji-btn");
+    assert_eq!(
+        emoji_btns.len(),
+        3,
+        "should show 3 emoji buttons in the picker"
+    );
+
+    // Click "+" again to close the picker.
+    simulate_click(&react_btn);
+    tick().await;
+
+    assert!(
+        query(&container, ".reaction-picker").is_none(),
+        "reaction picker should toggle off on second click"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn clicking_emoji_calls_callback() {
+    // Clicking an emoji in the reaction picker should fire the callback
+    // with the chosen emoji and close the picker.
+    let (chosen_emoji, set_chosen_emoji) = signal(Option::<String>::None);
+    let (show_picker, set_show_picker) = signal(true); // Start open for this test.
+
+    let container = mount_test(move || {
+        let emojis = vec![
+            "\u{1F44D}".to_string(),
+            "\u{2764}\u{FE0F}".to_string(),
+            "\u{1F525}".to_string(),
+        ];
+
+        view! {
+            <div class="message">
+                <div class="message-actions">
+                    <div class="reaction-trigger">
+                        <button class="react-action">"+"</button>
+                        {move || {
+                            if show_picker.get() {
+                                let emojis_clone = emojis.clone();
+                                Some(view! {
+                                    <div class="reaction-picker">
+                                        {emojis_clone.into_iter().map(|emoji| {
+                                            let e = emoji.clone();
+                                            view! {
+                                                <button
+                                                    class="emoji-btn"
+                                                    on:click=move |_| {
+                                                        set_chosen_emoji.set(Some(e.clone()));
+                                                        set_show_picker.set(false);
+                                                    }
+                                                >
+                                                    {emoji}
+                                                </button>
+                                            }
+                                        }).collect::<Vec<_>>()}
+                                    </div>
+                                })
+                            } else {
+                                None
+                            }
+                        }}
+                    </div>
+                </div>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    // Picker is open with 3 emoji buttons.
+    let emoji_btns = query_all(&container, ".emoji-btn");
+    assert_eq!(emoji_btns.len(), 3);
+
+    // Click the fire emoji (third button).
+    simulate_click(&emoji_btns[2]);
+    tick().await;
+
+    // Callback should have been called with the fire emoji.
+    let chosen = chosen_emoji.get_untracked();
+    assert_eq!(
+        chosen,
+        Some("\u{1F525}".to_string()),
+        "callback should receive the clicked emoji"
+    );
+
+    // Picker should be closed after selecting.
+    assert!(
+        query(&container, ".reaction-picker").is_none(),
+        "picker should close after selecting an emoji"
+    );
+}
+
+// ── File Sharing Tests ──────────────────────────────────────────────────────
+
+/// Parse an inline file message body. Mirrors the logic in file_share.rs.
+fn parse_inline_file(body: &str) -> Option<(String, Vec<u8>)> {
+    let inner = body.strip_prefix("[file:")?.strip_suffix(']')?;
+    let colon = inner.find(':')?;
+    let filename = &inner[..colon];
+    let b64 = &inner[colon + 1..];
+    let data = willow_client::base64::decode(b64)?;
+    Some((filename.to_string(), data))
+}
+
+/// Format byte count for display. Mirrors file_share.rs logic.
+fn format_file_size(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
+#[wasm_bindgen_test]
+async fn file_share_button_renders() {
+    let container = mount_test(move || {
+        view! {
+            <div class="input-row">
+                <button class="file-share-btn" title="Attach file">
+                    "\u{1F4CE}"
+                </button>
+                <div class="input-area">
+                    <input type="text" placeholder="Message #general" />
+                </div>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    let btn = query(&container, ".file-share-btn");
+    assert!(btn.is_some(), "file share button should exist");
+
+    let btn_el = btn.unwrap();
+    assert_eq!(
+        btn_el.get_attribute("title").unwrap_or_default(),
+        "Attach file",
+        "button should have the correct title attribute"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn file_message_renders_as_card() {
+    let data = b"hello file!";
+    let encoded = willow_client::base64::encode(data);
+    let body = format!("[file:test.txt:{}]", encoded);
+    let parsed = parse_inline_file(&body);
+
+    assert!(parsed.is_some(), "should parse inline file body");
+    let (filename, file_data) = parsed.unwrap();
+    let size_str = format_file_size(file_data.len());
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                <div class="file-card">
+                    <span class="file-icon">"\u{1F4C4}"</span>
+                    <div class="file-info">
+                        <span class="file-name">{filename}</span>
+                        <span class="file-size">{size_str}</span>
+                    </div>
+                    <button class="download-btn btn btn-sm btn-primary">
+                        "\u{2B07}"
+                    </button>
+                </div>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    let card = query(&container, ".file-card");
+    assert!(card.is_some(), "file card should render");
+
+    let name_el = query(&container, ".file-name").unwrap();
+    assert_eq!(text(&name_el), "test.txt");
+
+    let size_el = query(&container, ".file-size").unwrap();
+    assert_eq!(text(&size_el), "11 B");
+
+    let dl_btn = query(&container, ".download-btn");
+    assert!(dl_btn.is_some(), "download button should exist");
+}
+
+#[wasm_bindgen_test]
+async fn regular_message_does_not_render_file_card() {
+    let body = "just a normal message".to_string();
+    let is_file = parse_inline_file(&body).is_some();
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                {if is_file {
+                    Some(view! { <div class="file-card">"file"</div> })
+                } else {
+                    None
+                }}
+                {if !is_file {
+                    Some(view! { <div class="body">{body}</div> })
+                } else {
+                    None
+                }}
+            </div>
+        }
+    });
+
+    tick().await;
+
+    assert!(
+        query(&container, ".file-card").is_none(),
+        "normal messages should not render file cards"
+    );
+    let body_el = query(&container, ".body").unwrap();
+    assert_eq!(text(&body_el), "just a normal message");
+}

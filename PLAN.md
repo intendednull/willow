@@ -114,7 +114,7 @@ A native desktop app where you and your friends can:
 - [x] Author verification in network bridge (stamped_op.author == signer)
 - [x] Integration tests: server sync, 3-node propagation, file chunks
 
-### Phase 8 — Event-Sourced State Machine (IN PROGRESS)
+### Phase 8 — Event-Sourced State Machine (COMPLETE)
 - [x] willow-state crate: pure deterministic state machine (zero I/O)
 - [x] Event + EventKind with 17 mutation variants
 - [x] StateHash (SHA-256) for divergence detection
@@ -136,7 +136,7 @@ A native desktop app where you and your friends can:
 - [x] Dual-format network layer (new Event + legacy Op) for interop
 - [x] Bevy app uses legacy format via bridge (deprecated but functional)
 - [x] Relay stores events in SQLite as they pass through gossipsub
-- [ ] Multi-peer state verification (consensus on hash)
+- [x] Multi-peer state verification (StateVerification event + hash tracking)
 
 ### Phase 9 — Voice & Video (FUTURE)
 - [ ] WebRTC-like media transport
@@ -167,6 +167,13 @@ A native desktop app where you and your friends can:
 - [x] Message editing and deletion
 - [x] Reply threads with parent preview
 - [x] Trust badges in member list ([owner], [trusted])
+- [x] Server name/description editing (owner-only)
+- [x] Notification sounds (Web Audio API, plays when tab hidden)
+- [x] Dark/light theme toggle (CSS variables, localStorage persistence)
+- [x] File sharing UI (inline file attachment with download cards)
+- [x] Role management in Leptos web app (CRUD + permission toggles)
+- [x] PWA manifest + service worker for installable web app
+- [x] E2E integration tests (9 tests covering full invite→chat→sync flow)
 
 ### Infrastructure (COMPLETE)
 - [x] WASM dual-target support (all crates compile for wasm32)
@@ -195,21 +202,23 @@ A native desktop app where you and your friends can:
 
 ## Test Coverage
 
-420+ tests across 7 tiers:
+451+ tests across 8 tiers:
 
 | Tier | Tests | Scope |
 |------|-------|-------|
-| Pure state machine | 64 | Determinism, permissions, merges, stress, replay |
-| Client library | 93 | API methods, event store, bridge, state accessors |
+| Pure state machine | 77 | Determinism, permissions, merges, stress, replay, verification |
+| Client library | 101 | API methods, event store, bridge, state accessors, file sharing |
 | Bevy headless UI | 99 | Keyboard, chat, settings, invites, permissions |
 | Network integration | 14 | Real libp2p, 3-node topology, file chunks |
 | Scaling | 7 | 5/10/20 peers, message flood, 532k events/sec |
+| E2E flow | 9 | State machine + network: invite, chat, sync, merge, permissions |
 | Relay history | 3 | Store events, serve to new peers, multi-peer |
-| Browser (Leptos) | 39 | Real DOM, signals, events, all components |
+| Browser (Leptos) | 39+ | Real DOM, signals, events, all components |
 | Other crates | ~100 | Transport, identity, crypto, channel, files |
 
 Run: `just test` (cargo), `just test-browser` (headless Firefox),
-`just test-all` (both), `just test-scale` (with output)
+`just test-all` (both), `just test-scale` (with output),
+`just test-e2e` (end-to-end flow)
 
 ## Honest Tradeoffs
 

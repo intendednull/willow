@@ -1,8 +1,9 @@
-:root {
+:root, [data-theme="dark"] {
     --bg-main: #1a1a1e;
     --bg-sidebar: #15151a;
     --bg-input: #2a2a30;
     --bg-message-hover: #1e1e24;
+    --bg-server-rail: #111114;
     --text-primary: #e0e0e5;
     --text-secondary: #b0b0b8;
     --text-muted: #6a6a75;
@@ -13,6 +14,28 @@
     --online: #3ba55c;
     --unread: #f0b232;
     --border: #2a2a30;
+    --scrollbar-thumb: #2a2a30;
+    --scrollbar-track: transparent;
+}
+
+[data-theme="light"] {
+    --bg-main: #ffffff;
+    --bg-sidebar: #f2f3f5;
+    --bg-input: #ebedef;
+    --bg-message-hover: #f6f6f7;
+    --bg-server-rail: #e3e5e8;
+    --text-primary: #2e3338;
+    --text-secondary: #4f5660;
+    --text-muted: #747f8d;
+    --text-placeholder: #a3a6aa;
+    --accent: #5865f2;
+    --accent-hover: #4752c4;
+    --danger: #ed4245;
+    --online: #3ba55c;
+    --unread: #f0b232;
+    --border: #e3e5e8;
+    --scrollbar-thumb: #c7ccd1;
+    --scrollbar-track: transparent;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -42,7 +65,7 @@ html, body {
 .server-rail {
     width: 72px;
     min-width: 72px;
-    background: #111114;
+    background: var(--bg-server-rail);
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -322,6 +345,7 @@ html, body {
 
 .message {
     padding: 4px 0;
+    position: relative;
 }
 
 .message:hover { background: var(--bg-message-hover); border-radius: 4px; padding: 4px 8px; margin: 0 -8px; }
@@ -362,6 +386,103 @@ html, body {
     color: var(--text-secondary);
 }
 
+/* ── Message action bar (edit/delete/react) ────────────────────────── */
+
+.message-actions {
+    display: none;
+    position: absolute;
+    top: -12px;
+    right: 8px;
+    background: var(--bg-sidebar);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px;
+    gap: 2px;
+    z-index: 2;
+}
+
+.message:hover .message-actions { display: flex; }
+
+.message-actions button {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 12px;
+    padding: 2px 6px;
+    cursor: pointer;
+    border-radius: 2px;
+}
+
+.message-actions button:hover { background: var(--bg-input); color: var(--text-primary); }
+
+.message-actions .delete-action:hover { color: var(--danger); }
+
+/* ── Reaction trigger + picker ─────────────────────────────────────── */
+
+.reaction-trigger {
+    position: relative;
+}
+
+.reaction-picker {
+    position: absolute;
+    bottom: 100%;
+    right: 0;
+    background: var(--bg-sidebar);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 4px;
+    display: flex;
+    gap: 2px;
+    z-index: 3;
+}
+
+.reaction-picker button {
+    background: transparent;
+    border: none;
+    font-size: 18px;
+    padding: 4px;
+    cursor: pointer;
+    border-radius: 4px;
+}
+
+.reaction-picker button:hover { background: var(--bg-input); }
+
+/* ── Edit bar (above input, similar to reply bar) ──────────────────── */
+
+.edit-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 14px;
+    margin-bottom: 6px;
+    background: var(--bg-input);
+    border-left: 3px solid var(--unread);
+    border-radius: 4px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.edit-bar-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.edit-bar-cancel {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 4px;
+    margin-left: 8px;
+}
+
+.edit-bar-cancel:hover {
+    color: var(--danger);
+}
+
 /* Input area */
 .input-area {
     padding: 12px 16px;
@@ -389,6 +510,81 @@ html, body {
 
 .input-area input::placeholder, .input-area textarea::placeholder {
     color: var(--text-placeholder);
+}
+
+/* ── Input row (attach button + input) ─────────────────────────────── */
+
+.input-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 0;
+}
+
+.input-row .input-area {
+    flex: 1;
+    min-width: 0;
+}
+
+.file-share-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 20px;
+    padding: 12px 8px 12px 16px;
+    cursor: pointer;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: color 0.15s ease;
+}
+
+.file-share-btn:hover {
+    color: var(--text-primary);
+}
+
+/* ── File card (inline file attachment) ────────────────────────────── */
+
+.file-card {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    max-width: 400px;
+    margin-top: 4px;
+}
+
+.file-card .file-icon {
+    font-size: 24px;
+    flex-shrink: 0;
+}
+
+.file-card .file-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.file-card .file-name {
+    color: var(--accent);
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.file-card .file-size {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.file-card .download-btn {
+    flex-shrink: 0;
+    font-size: 16px;
+    padding: 6px 10px;
 }
 
 /* Member list (right sidebar) */
@@ -596,6 +792,151 @@ html, body {
     text-align: center;
 }
 
+/* ── Role Manager ──────────────────────────────────────────────────── */
+
+.role-manager {
+    margin-top: 24px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+}
+
+.role-manager-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 0 8px;
+}
+
+.role-manager-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    letter-spacing: 0.5px;
+    font-weight: 600;
+}
+
+.role-add-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 0 4px;
+    line-height: 1;
+}
+
+.role-add-btn:hover {
+    color: var(--text-primary);
+}
+
+.role-create-input {
+    padding: 2px 0 6px;
+}
+
+.role-create-input input {
+    width: 100%;
+    padding: 4px 8px;
+    background: var(--bg-input);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 13px;
+    outline: none;
+}
+
+.role-item {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.role-item:last-child {
+    border-bottom: none;
+}
+
+.role-item-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+}
+
+.role-name {
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--text-primary);
+}
+
+.role-delete-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 14px;
+    cursor: pointer;
+    padding: 2px 6px;
+    line-height: 1;
+}
+
+.role-delete-btn:hover {
+    color: var(--danger);
+}
+
+.permission-toggles {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    margin-bottom: 8px;
+}
+
+.permission-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.permission-toggle input[type="checkbox"] {
+    accent-color: var(--accent);
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
+    margin: 0;
+}
+
+.permission-toggle input[type="checkbox"]:disabled {
+    cursor: default;
+    opacity: 0.5;
+}
+
+.role-assign {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+}
+
+.role-assign-input {
+    flex: 1;
+    padding: 4px 8px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 12px;
+    outline: none;
+}
+
+.role-assign-input:focus {
+    border-color: var(--accent);
+}
+
+.role-section {
+    margin-top: 24px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+}
+
 /* ── Message grouping ───────────────────────────────────────────────── */
 
 .message.grouped {
@@ -696,6 +1037,49 @@ html, body {
 
 /* Clickable message for reply */
 .message { cursor: pointer; }
+
+/* ── Scrollbar theming ─────────────────────────────────────────────── */
+
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* ── Theme toggle button ───────────────────────────────────────────── */
+
+.theme-toggle {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 2px 4px;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
+.theme-toggle:hover {
+    color: var(--text-primary);
+}
+
+/* ── Mute toggle (settings) ────────────────────────────────────────── */
+
+.settings-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    cursor: pointer;
+}
+
+.settings-checkbox input[type="checkbox"] {
+    width: auto;
+    margin-bottom: 0;
+    accent-color: var(--accent);
+}
 
 /* ── Mobile toggle button ────────────────────────────────────────────── */
 

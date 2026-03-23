@@ -55,6 +55,17 @@ pub enum ClientEvent {
     RoleDeleted {
         role_id: String,
     },
+    StateHashMismatch {
+        peer_id: String,
+        our_hash: String,
+        their_hash: String,
+    },
+    ServerRenamed {
+        new_name: String,
+    },
+    ServerDescriptionChanged {
+        description: String,
+    },
 }
 
 /// Push notifications sent through the optional notification channel.

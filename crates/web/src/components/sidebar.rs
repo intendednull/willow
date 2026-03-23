@@ -175,6 +175,18 @@ pub fn Sidebar(
                     }
                 </span>
                 <button
+                    class="btn btn-sm theme-toggle"
+                    title="Toggle theme"
+                    on:click=move |_| crate::app::toggle_theme()
+                >
+                    {move || {
+                        let is_dark = js_sys::eval(
+                            "document.documentElement.getAttribute('data-theme') !== 'light'"
+                        ).ok().and_then(|v| v.as_bool()).unwrap_or(true);
+                        if is_dark { "\u{2600}\u{fe0f}" } else { "\u{1f319}" }
+                    }}
+                </button>
+                <button
                     class="btn btn-sm"
                     style="margin-left: auto; background: transparent; color: var(--text-muted);"
                     on:click=move |_| on_settings_click(())

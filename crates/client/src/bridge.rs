@@ -73,7 +73,11 @@ pub fn event_to_op(event: &Event) -> Option<Op> {
             // convert them here.
             None
         }
-        EventKind::RenameChannel { .. } | EventKind::RotateChannelKey { .. } => {
+        EventKind::RenameChannel { .. }
+        | EventKind::RotateChannelKey { .. }
+        | EventKind::RenameServer { .. }
+        | EventKind::SetServerDescription { .. }
+        | EventKind::StateVerification { .. } => {
             // No legacy Op equivalent.
             None
         }

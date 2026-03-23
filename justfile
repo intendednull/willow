@@ -43,6 +43,10 @@ test-relay:
 test-scale:
     cargo test -p willow-app --test peer_scale -- --nocapture
 
+# Run the end-to-end flow integration tests
+test-e2e:
+    cargo test -p willow-app --test e2e_flow -- --nocapture
+
 # Run in-browser Leptos component tests (requires Firefox + geckodriver)
 test-browser:
     wasm-pack test --headless --firefox crates/web

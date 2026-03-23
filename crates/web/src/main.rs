@@ -14,5 +14,10 @@ fn main() {
         }
     }
 
+    // Register the service worker for PWA support.
+    let _ = js_sys::eval(
+        "if ('serviceWorker' in navigator) { navigator.serviceWorker.register('/sw.js').catch(function() {}); }",
+    );
+
     leptos::mount::mount_to_body(app::App);
 }

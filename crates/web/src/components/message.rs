@@ -1,6 +1,20 @@
 use leptos::prelude::*;
 use willow_client::ChatMessage;
 
+use super::file_share::{parse_inline_file, FileCard};
+
+/// Common emoji used in the reaction picker.
+pub const REACTION_EMOJI: &[&str] = &[
+    "\u{1F44D}",        // thumbs up
+    "\u{2764}\u{FE0F}", // heart
+    "\u{1F602}",        // joy
+    "\u{1F389}",        // party
+    "\u{1F62E}",        // surprised
+    "\u{1F440}",        // eyes
+    "\u{1F525}",        // fire
+    "\u{2705}",         // check
+];
+
 /// Format a timestamp as a relative time string for recent messages.
 ///
 /// - Less than 60 seconds ago: "just now"
@@ -28,7 +42,8 @@ pub fn format_relative_time(timestamp_ms: u64) -> String {
     }
 }
 
-/// A single message bubble with author, timestamp, body, and reactions.
+/// A single message bubble with author, timestamp, body, reactions, and
+/// optional action buttons (edit/delete/react) for own messages.
 ///
 /// When `show_header` is `false` the author/timestamp meta row is hidden,
 /// which is used for consecutive messages from the same author (grouping).
@@ -39,9 +54,21 @@ pub fn MessageView(
     /// Set to `false` for grouped (consecutive same-author) messages.
     #[prop(default = true)]
     show_header: bool,
+    /// Whether this message was sent by the local user.
+    #[prop(default = false)]
+    is_own: bool,
     /// Optional callback fired when the user clicks this message (used for replies).
     #[prop(optional, into)]
     on_click: Option<Callback<ChatMessage>>,
+    /// Callback fired when the user wants to edit this message.
+    #[prop(optional, into)]
+    on_edit: Option<Callback<ChatMessage>>,
+    /// Callback fired when the user wants to delete this message.
+    #[prop(optional, into)]
+    on_delete: Option<Callback<ChatMessage>>,
+    /// Callback fired when the user picks an emoji reaction (message, emoji).
+    #[prop(optional, into)]
+    on_react: Option<Callback<(ChatMessage, String)>>,
 ) -> impl IntoView {
     let author_class = if message.is_local {
         "author local"
@@ -74,6 +101,19 @@ pub fn MessageView(
 
     let msg_for_click = message.clone();
 
+    // Signal controlling the reaction picker popup visibility.
+    let (show_picker, set_show_picker) = signal(false);
+
+    // Determine whether to show any action buttons at all.
+    let has_react = on_react.is_some();
+    let has_edit = on_edit.is_some() && is_own && !message.deleted;
+    let has_delete = on_delete.is_some() && is_own && !message.deleted;
+    let show_actions = has_react || has_edit || has_delete;
+
+    // Clones for closures.
+    let msg_for_edit = message.clone();
+    let msg_for_delete = message.clone();
+
     view! {
         <div
             class=msg_class
@@ -103,7 +143,106 @@ pub fn MessageView(
             } else {
                 None
             }}
-            <div class=body_class>{body}</div>
+            {if let Some((filename, data)) = parse_inline_file(&body) {
+                view! { <FileCard filename=filename data=data /> }.into_any()
+            } else {
+                view! { <div class=body_class>{body}</div> }.into_any()
+            }}
+            // Action bar -- shown on hover via CSS.
+            {if show_actions {
+                let edit_cb = on_edit;
+                let edit_msg = msg_for_edit.clone();
+                let delete_cb = on_delete;
+                let delete_msg = msg_for_delete.clone();
+                let react_cb = on_react;
+
+                Some(view! {
+                    <div class="message-actions">
+                        {if has_react {
+                            let react_cb_inner = react_cb;
+                            Some(view! {
+                                <div class="reaction-trigger">
+                                    <button
+                                        class="react-action"
+                                        on:click=move |ev| {
+                                            ev.stop_propagation();
+                                            set_show_picker.update(|v| *v = !*v);
+                                        }
+                                    >
+                                        "+"
+                                    </button>
+                                    {move || {
+                                        if show_picker.get() {
+                                            let cb = react_cb_inner;
+                                            Some(view! {
+                                                <div class="reaction-picker">
+                                                    {REACTION_EMOJI.iter().map(|emoji| {
+                                                        let emoji_str = emoji.to_string();
+                                                        let emoji_val = emoji_str.clone();
+                                                        let msg_clone = message.clone();
+                                                        let cb_clone = cb;
+                                                        view! {
+                                                            <button on:click=move |ev| {
+                                                                ev.stop_propagation();
+                                                                if let Some(ref cb) = cb_clone {
+                                                                    cb.run((msg_clone.clone(), emoji_val.clone()));
+                                                                }
+                                                                set_show_picker.set(false);
+                                                            }>
+                                                                {emoji_str}
+                                                            </button>
+                                                        }
+                                                    }).collect::<Vec<_>>()}
+                                                </div>
+                                            })
+                                        } else {
+                                            None
+                                        }
+                                    }}
+                                </div>
+                            })
+                        } else {
+                            None
+                        }}
+                        {if has_edit {
+                            Some(view! {
+                                <button
+                                    class="edit-action"
+                                    on:click=move |ev| {
+                                        ev.stop_propagation();
+                                        if let Some(ref cb) = edit_cb {
+                                            cb.run(edit_msg.clone());
+                                        }
+                                    }
+                                >
+                                    "Edit"
+                                </button>
+                            })
+                        } else {
+                            None
+                        }}
+                        {if has_delete {
+                            Some(view! {
+                                <button
+                                    class="delete-action"
+                                    on:click=move |ev| {
+                                        ev.stop_propagation();
+                                        if let Some(ref cb) = delete_cb {
+                                            cb.run(delete_msg.clone());
+                                        }
+                                    }
+                                >
+                                    "Delete"
+                                </button>
+                            })
+                        } else {
+                            None
+                        }}
+                    </div>
+                })
+            } else {
+                None
+            }}
             {if has_reactions {
                 Some(view! {
                     <div class="reactions">

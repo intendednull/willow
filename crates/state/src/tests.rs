@@ -2032,3 +2032,255 @@ fn merge_preserves_permission_chain() {
     assert!(merged_state.has_permission("peer-b", &Permission::Administrator));
     assert!(merged_state.roles.contains_key("role-mod"));
 }
+
+// ── StateVerification ────────────────────────────────────────────────────
+
+#[test]
+fn state_verification_does_not_mutate_state() {
+    let mut state = test_state();
+    let hash_before = state.hash();
+
+    let evt = event(
+        &state,
+        "e1",
+        "owner",
+        EventKind::StateVerification {
+            state_hash: hash_before.clone(),
+        },
+    );
+    assert_eq!(apply(&mut state, &evt), ApplyResult::Applied);
+
+    // Hash should be the same (seen_event_ids is excluded from hash).
+    assert_eq!(state.hash(), hash_before);
+}
+
+#[test]
+fn identical_states_produce_matching_hashes() {
+    let mut state_a = test_state();
+    let mut state_b = test_state();
+
+    // Apply the same events to both.
+    let create = event(
+        &state_a,
+        "e1",
+        "owner",
+        EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: "ch1".into(),
+        },
+    );
+    assert_eq!(apply(&mut state_a, &create), ApplyResult::Applied);
+    assert_eq!(apply_lenient(&mut state_b, &create), ApplyResult::Applied);
+
+    assert_eq!(state_a.hash(), state_b.hash());
+}
+
+#[test]
+fn state_verification_accepted_from_any_peer() {
+    let mut state = test_state();
+
+    // A stranger can send a StateVerification event.
+    let evt = event(
+        &state,
+        "e1",
+        "stranger",
+        EventKind::StateVerification {
+            state_hash: state.hash(),
+        },
+    );
+    assert_eq!(apply(&mut state, &evt), ApplyResult::Applied);
+}
+
+// ── Server renaming ──────────────────────────────────────────────────────
+
+#[test]
+fn owner_can_rename_server() {
+    let mut state = test_state();
+    assert_eq!(state.server_name, "Test Server");
+
+    let evt = event(
+        &state,
+        "e1",
+        "owner",
+        EventKind::RenameServer {
+            new_name: "Renamed Server".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &evt), ApplyResult::Applied);
+    assert_eq!(state.server_name, "Renamed Server");
+}
+
+#[test]
+fn non_owner_cannot_rename_server() {
+    let mut state = test_state();
+
+    // Grant alice ManageChannels to ensure she has some perms but is not owner.
+    let grant = event(
+        &state,
+        "e0",
+        "owner",
+        EventKind::GrantPermission {
+            peer_id: "alice".into(),
+            permission: Permission::ManageChannels,
+        },
+    );
+    assert_eq!(apply(&mut state, &grant), ApplyResult::Applied);
+
+    let rename = event(
+        &state,
+        "e1",
+        "alice",
+        EventKind::RenameServer {
+            new_name: "Hacked".into(),
+        },
+    );
+    assert!(matches!(
+        apply(&mut state, &rename),
+        ApplyResult::Rejected(_)
+    ));
+    assert_eq!(state.server_name, "Test Server");
+}
+
+#[test]
+fn rename_server_changes_hash() {
+    let mut state = test_state();
+    let hash_before = state.hash();
+
+    let evt = event(
+        &state,
+        "e1",
+        "owner",
+        EventKind::RenameServer {
+            new_name: "New Name".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &evt), ApplyResult::Applied);
+    assert_ne!(state.hash(), hash_before);
+}
+
+// ── Server description ──────────────────────────────────────────────────
+
+#[test]
+fn owner_can_set_server_description() {
+    let mut state = test_state();
+    assert_eq!(state.description, "");
+
+    let evt = event(
+        &state,
+        "e1",
+        "owner",
+        EventKind::SetServerDescription {
+            description: "A cool server".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &evt), ApplyResult::Applied);
+    assert_eq!(state.description, "A cool server");
+}
+
+#[test]
+fn non_owner_cannot_set_server_description() {
+    let mut state = test_state();
+
+    let grant = event(
+        &state,
+        "e0",
+        "owner",
+        EventKind::GrantPermission {
+            peer_id: "alice".into(),
+            permission: Permission::Administrator,
+        },
+    );
+    assert_eq!(apply(&mut state, &grant), ApplyResult::Applied);
+
+    let desc = event(
+        &state,
+        "e1",
+        "alice",
+        EventKind::SetServerDescription {
+            description: "Unauthorized".into(),
+        },
+    );
+    assert!(matches!(apply(&mut state, &desc), ApplyResult::Rejected(_)));
+    assert_eq!(state.description, "");
+}
+
+#[test]
+fn description_is_stored_and_accessible() {
+    let mut state = test_state();
+
+    let evt = event(
+        &state,
+        "e1",
+        "owner",
+        EventKind::SetServerDescription {
+            description: "Welcome to the server".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &evt), ApplyResult::Applied);
+    assert_eq!(state.description, "Welcome to the server");
+
+    // Updating description replaces it.
+    let evt2 = event(
+        &state,
+        "e2",
+        "owner",
+        EventKind::SetServerDescription {
+            description: "Updated description".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &evt2), ApplyResult::Applied);
+    assert_eq!(state.description, "Updated description");
+}
+
+#[test]
+fn description_changes_hash() {
+    let mut state = test_state();
+    let hash_before = state.hash();
+
+    let evt = event(
+        &state,
+        "e1",
+        "owner",
+        EventKind::SetServerDescription {
+            description: "Something".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &evt), ApplyResult::Applied);
+    assert_ne!(state.hash(), hash_before);
+}
+
+#[test]
+fn rename_server_round_trip_serialization() {
+    let kind = EventKind::RenameServer {
+        new_name: "New Name".into(),
+    };
+    let bytes = bincode::serialize(&kind).unwrap();
+    let decoded: EventKind = bincode::deserialize(&bytes).unwrap();
+    assert!(matches!(decoded, EventKind::RenameServer { ref new_name } if new_name == "New Name"));
+}
+
+#[test]
+fn set_server_description_round_trip_serialization() {
+    let kind = EventKind::SetServerDescription {
+        description: "My desc".into(),
+    };
+    let bytes = bincode::serialize(&kind).unwrap();
+    let decoded: EventKind = bincode::deserialize(&bytes).unwrap();
+    assert!(matches!(
+        decoded,
+        EventKind::SetServerDescription { ref description } if description == "My desc"
+    ));
+}
+
+#[test]
+fn state_verification_round_trip_serialization() {
+    let kind = EventKind::StateVerification {
+        state_hash: StateHash::from_bytes(b"test"),
+    };
+    let bytes = bincode::serialize(&kind).unwrap();
+    let decoded: EventKind = bincode::deserialize(&bytes).unwrap();
+    assert!(matches!(
+        decoded,
+        EventKind::StateVerification { ref state_hash } if *state_hash == StateHash::from_bytes(b"test")
+    ));
+}

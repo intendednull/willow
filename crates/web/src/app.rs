@@ -7,8 +7,27 @@ use send_wrapper::SendWrapper;
 use willow_client::{ChatMessage, Client, ClientConfig, ClientEvent};
 
 use crate::components::{
-    ChannelHeader, ChatInput, MemberList, MessageList, ServerList, SettingsPanel, Sidebar,
+    ChannelHeader, ChatInput, FileShareButton, MemberList, MessageList, ServerList, SettingsPanel,
+    Sidebar,
 };
+
+fn play_notification_sound() {
+    let _ = js_sys::eval(
+        r#"(function(){try{var c=new(window.AudioContext||window.webkitAudioContext)();var o=c.createOscillator();var g=c.createGain();o.connect(g);g.connect(c.destination);o.frequency.value=800;g.gain.value=0.1;o.start();o.stop(c.currentTime+0.15);}catch(e){}})()"#,
+    );
+}
+
+fn init_theme() {
+    let _ = js_sys::eval(
+        r#"var t=localStorage.getItem('willow-theme')||'dark';document.documentElement.setAttribute('data-theme',t);"#,
+    );
+}
+
+pub fn toggle_theme() {
+    let _ = js_sys::eval(
+        r#"var h=document.documentElement;var c=h.getAttribute('data-theme')||'dark';var n=c==='dark'?'light':'dark';h.setAttribute('data-theme',n);localStorage.setItem('willow-theme',n);"#,
+    );
+}
 
 /// How many milliseconds to wait before clearing the loading state automatically.
 const LOADING_TIMEOUT_MS: u32 = 5_000;
@@ -32,6 +51,8 @@ fn new_client_handle() -> ClientHandle {
 /// network, and runs a poll loop to bridge client state into reactive signals.
 #[component]
 pub fn App() -> impl IntoView {
+    init_theme();
+
     // Create and connect the client.
     let client = new_client_handle();
 
@@ -54,25 +75,27 @@ pub fn App() -> impl IntoView {
     let (unread, set_unread) = signal(HashMap::<String, usize>::new());
     let (connection_status, set_connection_status) = signal("connecting".to_string());
     let (replying_to, set_replying_to) = signal(Option::<ChatMessage>::None);
+    let (editing, set_editing) = signal(Option::<ChatMessage>::None);
     let (loading, set_loading) = signal(true);
+    let (display_name, set_display_name) = signal(String::new());
+    let (roles, set_roles) = signal(Vec::<(String, String, Vec<String>)>::new());
 
     // Auto-clear loading after LOADING_TIMEOUT_MS even if no peer connects.
-    {
-        let set_loading = set_loading.clone();
-        set_timeout(
-            move || {
-                set_loading.set(false);
-            },
-            std::time::Duration::from_millis(LOADING_TIMEOUT_MS as u64),
-        );
-    }
+    set_timeout(
+        move || {
+            set_loading.set(false);
+        },
+        std::time::Duration::from_millis(LOADING_TIMEOUT_MS as u64),
+    );
 
     // Populate initial state from the client.
     {
         let c = client.borrow();
         set_channels.set(c.channels());
         set_peer_id.set(c.peer_id());
+        set_display_name.set(c.display_name());
         set_servers.set(c.server_list());
+        set_roles.set(extract_roles(&c));
         if let Some(id) = c.active_server_id() {
             set_active_server_id.set(id.to_string());
         }
@@ -90,8 +113,19 @@ pub fn App() -> impl IntoView {
 
             for event in events {
                 match event {
-                    ClientEvent::MessageReceived { .. }
-                    | ClientEvent::MessageEdited { .. }
+                    ClientEvent::MessageReceived { ref message, .. } => {
+                        needs_msg_refresh = true;
+                        if !message.is_local {
+                            let hidden = js_sys::eval("document.hidden")
+                                .ok()
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            if hidden {
+                                play_notification_sound();
+                            }
+                        }
+                    }
+                    ClientEvent::MessageEdited { .. }
                     | ClientEvent::MessageDeleted { .. }
                     | ClientEvent::ReactionAdded { .. }
                     | ClientEvent::SyncCompleted { .. } => {
@@ -129,6 +163,8 @@ pub fn App() -> impl IntoView {
                                 msg.author = display_name.clone();
                             }
                         }
+                        // Refresh local display name in case it was us.
+                        set_display_name.set(c.display_name());
                         needs_msg_refresh = true;
                         needs_peer_refresh = true;
                     }
@@ -170,6 +206,11 @@ pub fn App() -> impl IntoView {
             }
             if needs_channel_refresh {
                 set_channels.set(c.channels());
+                set_roles.set(extract_roles(&c));
+            }
+            if needs_msg_refresh || needs_peer_refresh {
+                // Roles may change via sync events, so refresh on any state change.
+                set_roles.set(extract_roles(&c));
             }
         },
         std::time::Duration::from_millis(50),
@@ -232,6 +273,38 @@ pub fn App() -> impl IntoView {
         set_show_settings.set(false);
     };
 
+    // Edit message handler -- called when the user submits an edited message.
+    let client_edit = client.clone();
+    let on_edit_send = move |(message_id, new_body): (String, String)| {
+        let ch = current_channel.get_untracked();
+        let mut c = client_edit.borrow_mut();
+        let _ = c.edit_message(&ch, &message_id, &new_body);
+        set_editing.set(None);
+        set_messages.set(c.messages(&ch).into_iter().cloned().collect());
+    };
+
+    // Delete message handler.
+    let client_delete = client.clone();
+    let on_delete_msg = move |msg: ChatMessage| {
+        let ch = current_channel.get_untracked();
+        let mut c = client_delete.borrow_mut();
+        let _ = c.delete_message(&ch, &msg.id);
+        set_messages.set(c.messages(&ch).into_iter().cloned().collect());
+    };
+
+    // React handler.
+    let client_react = client.clone();
+    let on_react = move |(msg, emoji): (ChatMessage, String)| {
+        let ch = current_channel.get_untracked();
+        let mut c = client_react.borrow_mut();
+        let _ = c.react(&ch, &msg.id, &emoji);
+        set_messages.set(c.messages(&ch).into_iter().cloned().collect());
+    };
+
+    let sidebar_client = client.clone();
+    let file_client = client.clone();
+    let member_client = client.clone();
+
     view! {
         <div class="app">
             <ServerList
@@ -255,7 +328,7 @@ pub fn App() -> impl IntoView {
                 unread=unread
                 connection_status=connection_status
                 peer_count=peer_count
-                client=client.clone()
+                client=sidebar_client
                 on_channel_click=on_channel_click
                 on_settings_click=move |_| {
                     set_show_settings.update(|v| *v = !*v);
@@ -267,8 +340,9 @@ pub fn App() -> impl IntoView {
                     let sc = settings_client.clone();
                     let pid = peer_id;
                     if show_settings.get() {
-                        view! { <SettingsPanel client=sc peer_id=pid on_joined=on_joined.clone() /> }.into_any()
+                        view! { <SettingsPanel client=sc peer_id=pid roles=Signal::from(roles) on_joined=on_joined.clone() /> }.into_any()
                     } else {
+                        let fc = file_client.clone();
                         view! {
                             <div class="chat-container">
                                 <ChannelHeader
@@ -279,17 +353,34 @@ pub fn App() -> impl IntoView {
                                 <MessageList
                                     messages=messages
                                     loading=Signal::from(loading)
+                                    local_display_name={let s: Signal<String> = Signal::from(display_name); s}
                                     on_message_click=Callback::new(move |msg: ChatMessage| {
                                         set_replying_to.set(Some(msg));
                                     })
-                                />
-                                <ChatInput
-                                    on_send=on_send.clone()
-                                    replying_to=replying_to
-                                    on_cancel_reply=Callback::new(move |_| {
-                                        set_replying_to.set(None);
+                                    on_edit=Callback::new(move |msg: ChatMessage| {
+                                        set_editing.set(Some(msg));
                                     })
+                                    on_delete=Callback::new(on_delete_msg.clone())
+                                    on_react=Callback::new(on_react.clone())
                                 />
+                                <div class="input-row">
+                                    <FileShareButton
+                                        client=fc
+                                        channel=current_channel
+                                    />
+                                    <ChatInput
+                                        on_send=on_send.clone()
+                                        replying_to=replying_to
+                                        on_cancel_reply=Callback::new(move |_| {
+                                            set_replying_to.set(None);
+                                        })
+                                        editing=editing
+                                        on_edit_send=Callback::new(on_edit_send.clone())
+                                        on_cancel_edit=Callback::new(move |_| {
+                                            set_editing.set(None);
+                                        })
+                                    />
+                                </div>
                             </div>
                         }.into_any()
                     }
@@ -297,9 +388,25 @@ pub fn App() -> impl IntoView {
             </div>
             <MemberList
                 peers=peers
-                client=client.clone()
+                client=member_client
                 peer_id=peer_id
             />
         </div>
     }
+}
+
+/// Extract roles from the client's event-sourced state as a list of
+/// `(role_id, role_name, permission_strings)` tuples for reactive signals.
+fn extract_roles(client: &willow_client::Client) -> Vec<(String, String, Vec<String>)> {
+    let es = &client.state().event_state;
+    let mut entries: Vec<(String, String, Vec<String>)> = es
+        .roles
+        .values()
+        .map(|role| {
+            let perms: Vec<String> = role.permissions.iter().cloned().collect();
+            (role.id.clone(), role.name.clone(), perms)
+        })
+        .collect();
+    entries.sort_by(|a, b| a.1.cmp(&b.1));
+    entries
 }

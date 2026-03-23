@@ -99,6 +99,8 @@ pub struct Client {
     pub(crate) profile_broadcast_counter: u32,
     /// Optional push notification sender for reactive UIs.
     pub(crate) notification_tx: Option<std_mpsc::Sender<events::ClientNotification>>,
+    /// Tracks what state hash each peer has reported via StateVerification events.
+    pub(crate) state_verification_results: HashMap<String, willow_state::StateHash>,
 }
 
 #[allow(deprecated)]
@@ -328,6 +330,7 @@ impl Client {
             connected_subscribed: false,
             profile_broadcast_counter: 0,
             notification_tx: None,
+            state_verification_results: HashMap::new(),
         }
     }
 
@@ -529,6 +532,8 @@ impl Client {
                     }
                     if count > 0 {
                         events.push(ClientEvent::SyncCompleted { ops_applied: count });
+                        // Trigger state verification after sync completion.
+                        let _ = self.verify_state();
                     }
                 }
 
@@ -838,7 +843,11 @@ impl Client {
     }
 
     /// Convert a [`willow_state::Event`] into [`ClientEvent`]s for the caller.
-    fn emit_client_events_for(&self, event: &willow_state::Event, events: &mut Vec<ClientEvent>) {
+    fn emit_client_events_for(
+        &mut self,
+        event: &willow_state::Event,
+        events: &mut Vec<ClientEvent>,
+    ) {
         match &event.kind {
             willow_state::EventKind::Message { channel_id, body } => {
                 // Look up the channel name from the channel_id.
@@ -909,6 +918,28 @@ impl Client {
             willow_state::EventKind::RevokePermission { peer_id, .. } => {
                 events.push(ClientEvent::PeerUntrusted(peer_id.clone()));
             }
+            willow_state::EventKind::RenameServer { new_name } => {
+                events.push(ClientEvent::ServerRenamed {
+                    new_name: new_name.clone(),
+                });
+            }
+            willow_state::EventKind::SetServerDescription { description } => {
+                events.push(ClientEvent::ServerDescriptionChanged {
+                    description: description.clone(),
+                });
+            }
+            willow_state::EventKind::StateVerification { state_hash } => {
+                let our_hash = self.state.event_state.hash();
+                self.state_verification_results
+                    .insert(event.author.clone(), state_hash.clone());
+                if *state_hash != our_hash {
+                    events.push(ClientEvent::StateHashMismatch {
+                        peer_id: event.author.clone(),
+                        our_hash: our_hash.to_string(),
+                        their_hash: state_hash.to_string(),
+                    });
+                }
+            }
             _ => {}
         }
     }
@@ -976,6 +1007,26 @@ impl Client {
             });
 
         self.send_content(channel, content, body, preview)
+    }
+
+    /// Share a small file inline by base64-encoding it into a text message.
+    ///
+    /// The message body uses the format `[file:filename:base64data]` so the
+    /// UI can detect it and render a download card. Files larger than 256 KB
+    /// are rejected.
+    pub fn share_file_inline(
+        &mut self,
+        channel: &str,
+        filename: &str,
+        data: &[u8],
+    ) -> anyhow::Result<()> {
+        const MAX_INLINE_SIZE: usize = 256 * 1024;
+        if data.len() > MAX_INLINE_SIZE {
+            anyhow::bail!("file too large for inline sharing (max 256 KB)");
+        }
+        let encoded = base64::encode(data);
+        let body = format!("[file:{}:{}]", filename, encoded);
+        self.send_message(channel, &body)
     }
 
     /// Edit an existing message.
@@ -1466,6 +1517,69 @@ impl Client {
             role_id: role_id.to_string(),
         });
 
+        Ok(())
+    }
+
+    /// Broadcast a state verification event carrying this peer's current state hash.
+    pub fn verify_state(&mut self) -> anyhow::Result<()> {
+        let author = self.identity.peer_id().to_string();
+        let state_hash = self.state.event_state.hash();
+        let event = willow_state::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_hash: self.state.event_state.hash(),
+            author,
+            timestamp_ms: util::current_time_ms(),
+            kind: willow_state::EventKind::StateVerification { state_hash },
+        };
+        self.apply_event(&event);
+        self.broadcast_event(event, None);
+        Ok(())
+    }
+
+    /// Returns (agreeing_peers, total_peers_reporting) based on collected
+    /// StateVerification results.
+    pub fn state_hash_agreement(&self) -> (usize, usize) {
+        let our_hash = self.state.event_state.hash();
+        let total = self.state_verification_results.len();
+        let agreeing = self
+            .state_verification_results
+            .values()
+            .filter(|h| **h == our_hash)
+            .count();
+        (agreeing, total)
+    }
+
+    /// Rename the server. Only the owner can do this.
+    pub fn rename_server(&mut self, new_name: &str) -> anyhow::Result<()> {
+        let author = self.identity.peer_id().to_string();
+        let event = willow_state::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_hash: self.state.event_state.hash(),
+            author,
+            timestamp_ms: util::current_time_ms(),
+            kind: willow_state::EventKind::RenameServer {
+                new_name: new_name.to_string(),
+            },
+        };
+        self.apply_event(&event);
+        self.broadcast_event(event, None);
+        Ok(())
+    }
+
+    /// Set the server description. Only the owner can do this.
+    pub fn set_server_description(&mut self, desc: &str) -> anyhow::Result<()> {
+        let author = self.identity.peer_id().to_string();
+        let event = willow_state::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_hash: self.state.event_state.hash(),
+            author,
+            timestamp_ms: util::current_time_ms(),
+            kind: willow_state::EventKind::SetServerDescription {
+                description: desc.to_string(),
+            },
+        };
+        self.apply_event(&event);
+        self.broadcast_event(event, None);
         Ok(())
     }
 
@@ -2027,6 +2141,7 @@ pub(crate) fn test_client() -> (Client, std::sync::mpsc::Receiver<network::Netwo
         connected_subscribed: false,
         profile_broadcast_counter: 0,
         notification_tx: None,
+        state_verification_results: HashMap::new(),
     };
 
     (client, cmd_rx)
@@ -2635,5 +2750,117 @@ mod tests {
             "EventAlice",
             "display_name should come from event_state profile"
         );
+    }
+
+    // ───── State verification tests ─────────────────────────────────────
+
+    #[test]
+    fn verify_state_broadcasts_event() {
+        let (mut client, rx) = test_client();
+        client.verify_state().unwrap();
+
+        // Should broadcast a BroadcastEvent command.
+        let cmd = rx.try_recv().unwrap();
+        assert!(matches!(
+            cmd,
+            network::NetworkCommand::BroadcastEvent { .. }
+        ));
+    }
+
+    #[test]
+    fn state_hash_agreement_empty_initially() {
+        let (client, _rx) = test_client();
+        let (agreeing, total) = client.state_hash_agreement();
+        assert_eq!(agreeing, 0);
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn state_hash_agreement_tracks_matching_peer() {
+        let (mut client, _rx) = test_client();
+
+        // Simulate a remote peer's StateVerification event with a matching hash.
+        let our_hash = client.state.event_state.hash();
+        client
+            .state_verification_results
+            .insert("peer-a".to_string(), our_hash);
+
+        let (agreeing, total) = client.state_hash_agreement();
+        assert_eq!(agreeing, 1);
+        assert_eq!(total, 1);
+    }
+
+    #[test]
+    fn state_hash_agreement_tracks_mismatched_peer() {
+        let (mut client, _rx) = test_client();
+
+        // Insert a different hash for a peer.
+        let wrong_hash = willow_state::StateHash::from_bytes(b"wrong");
+        client
+            .state_verification_results
+            .insert("peer-b".to_string(), wrong_hash);
+
+        let (agreeing, total) = client.state_hash_agreement();
+        assert_eq!(agreeing, 0);
+        assert_eq!(total, 1);
+    }
+
+    #[test]
+    fn state_hash_agreement_mixed() {
+        let (mut client, _rx) = test_client();
+        let our_hash = client.state.event_state.hash();
+
+        // One matching, one mismatched.
+        client
+            .state_verification_results
+            .insert("peer-a".to_string(), our_hash);
+        client.state_verification_results.insert(
+            "peer-b".to_string(),
+            willow_state::StateHash::from_bytes(b"different"),
+        );
+
+        let (agreeing, total) = client.state_hash_agreement();
+        assert_eq!(agreeing, 1);
+        assert_eq!(total, 2);
+    }
+
+    // ───── Server rename/description tests ──────────────────────────────
+
+    #[test]
+    fn rename_server_updates_event_state() {
+        let (mut client, _rx) = test_client();
+        client.rename_server("New Server Name").unwrap();
+        assert_eq!(client.state.event_state.server_name, "New Server Name");
+    }
+
+    #[test]
+    fn rename_server_broadcasts_event() {
+        let (mut client, rx) = test_client();
+        client.rename_server("Another Name").unwrap();
+
+        let cmd = rx.try_recv().unwrap();
+        assert!(matches!(
+            cmd,
+            network::NetworkCommand::BroadcastEvent { .. }
+        ));
+    }
+
+    #[test]
+    fn set_server_description_updates_event_state() {
+        let (mut client, _rx) = test_client();
+        client.set_server_description("A cool server").unwrap();
+        assert_eq!(client.state.event_state.description, "A cool server");
+    }
+
+    #[test]
+    fn set_server_description_broadcasts_event() {
+        let (mut client, rx) = test_client();
+        client.set_server_description("Hello world").unwrap();
+
+        let cmd = rx.try_recv().unwrap();
+        assert!(matches!(
+            cmd,
+            network::NetworkCommand::BroadcastEvent { .. }
+        ));
     }
 }

@@ -34,6 +34,8 @@ pub struct ServerState {
     pub messages: Vec<ChatMessage>,
     /// Peer profiles keyed by peer ID.
     pub profiles: HashMap<String, Profile>,
+    /// Server description (default empty string).
+    pub description: String,
     /// Encrypted channel key material (opaque bytes, keyed by channel ID).
     pub channel_keys: HashMap<String, Vec<u8>>,
     /// Set of seen event IDs for deduplication.
@@ -80,6 +82,7 @@ impl ServerState {
             server_id: &'a str,
             server_name: &'a str,
             owner: &'a str,
+            description: &'a str,
             channels: Vec<(&'a String, &'a Channel)>,
             roles: Vec<(&'a String, &'a Role)>,
             members: Vec<(&'a String, &'a Member)>,
@@ -119,6 +122,7 @@ impl ServerState {
             server_id: &self.server_id,
             server_name: &self.server_name,
             owner: &self.owner,
+            description: &self.description,
             channels,
             roles,
             members,
