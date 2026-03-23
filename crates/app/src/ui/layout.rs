@@ -667,6 +667,32 @@ pub fn spawn_settings_panel(parent: &mut ChildSpawnerCommands, settings: &Settin
                         TextColor(theme::TEXT_PRIMARY),
                     ));
                 });
+
+            // ── Members Section ──
+            panel.spawn(Node {
+                height: Val::Px(24.0),
+                ..default()
+            });
+
+            panel.spawn((
+                Text::new("Members"),
+                TextFont::from_font_size(13.0),
+                TextColor(theme::TEXT_SECONDARY),
+            ));
+
+            panel.spawn(Node {
+                height: Val::Px(4.0),
+                ..default()
+            });
+
+            // Member list container — populated dynamically by sync_member_list.
+            panel.spawn((
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    ..default()
+                },
+                MemberList,
+            ));
         });
 }
 

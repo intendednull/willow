@@ -66,6 +66,14 @@ pub struct SettingsFieldContainer(pub super::resources::SettingsField);
 #[derive(Component)]
 pub struct DeleteChannelButton(pub String);
 
+/// Container for the member list in settings.
+#[derive(Component)]
+pub struct MemberList;
+
+/// Kick button for a specific peer. Stores the peer ID string.
+#[derive(Component)]
+pub struct KickMemberButton(pub String);
+
 /// "Copy PeerId" button in the user area.
 #[derive(Component)]
 pub struct CopyPeerIdButton;

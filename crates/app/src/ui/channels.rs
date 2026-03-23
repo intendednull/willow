@@ -430,6 +430,174 @@ pub fn sync_invite_fields(
     }
 }
 
+// ───── Member List ──────────────────────────────────────────────────────────
+
+/// Rebuild the member list in settings when peers change.
+pub fn sync_member_list(
+    mut commands: Commands,
+    state: Res<ChatState>,
+    profiles: Res<ProfileStore>,
+    list_query: Query<Entity, With<MemberList>>,
+    identity: Res<LocalIdentity>,
+) {
+    if !state.is_changed() {
+        return;
+    }
+
+    let Ok(list_entity) = list_query.single() else {
+        return;
+    };
+
+    commands.entity(list_entity).detach_all_children();
+
+    let local_peer = identity.0.peer_id().to_string();
+    let local_name = profiles.display_name(&local_peer);
+
+    commands.entity(list_entity).with_children(|list| {
+        // Show the local user first.
+        spawn_member_row(list, &local_name, &local_peer, true);
+
+        // Show connected peers.
+        for peer_id in &state.peers {
+            let name = profiles.display_name(peer_id);
+            spawn_member_row(list, &name, peer_id, false);
+        }
+    });
+}
+
+fn spawn_member_row(parent: &mut ChildSpawnerCommands, name: &str, peer_id: &str, is_self: bool) {
+    parent
+        .spawn(Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            margin: UiRect::bottom(Val::Px(4.0)),
+            padding: UiRect::horizontal(Val::Px(4.0)),
+            ..default()
+        })
+        .with_children(|row| {
+            // Online indicator dot
+            row.spawn((
+                Node {
+                    width: Val::Px(8.0),
+                    height: Val::Px(8.0),
+                    margin: UiRect::right(Val::Px(8.0)),
+                    ..default()
+                },
+                BackgroundColor(theme::STATUS_ONLINE),
+            ));
+
+            // Name
+            row.spawn((
+                Text::new(if is_self {
+                    format!("{name} (you)")
+                } else {
+                    name.to_string()
+                }),
+                TextFont::from_font_size(13.0),
+                TextColor(theme::TEXT_PRIMARY),
+                Node {
+                    flex_grow: 1.0,
+                    ..default()
+                },
+            ));
+
+            // Kick button (only for others, not self)
+            if !is_self {
+                row.spawn((
+                    Button,
+                    Node {
+                        padding: UiRect::horizontal(Val::Px(6.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::NONE),
+                    KickMemberButton(peer_id.to_string()),
+                ))
+                .with_children(|btn| {
+                    btn.spawn((
+                        Text::new("Kick"),
+                        TextFont::from_font_size(11.0),
+                        TextColor(theme::DANGER),
+                    ));
+                });
+            }
+        });
+}
+
+/// Handle kick button clicks.
+pub fn handle_kick_member(
+    query: Query<(&Interaction, &KickMemberButton), Changed<Interaction>>,
+    mut server_state: ResMut<ServerState>,
+    mut key_store: ResMut<ChannelKeyStore>,
+    mut state: ResMut<ChatState>,
+) {
+    for (interaction, button) in &query {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+
+        let kicked_peer = &button.0;
+
+        // Find the PeerId in the server and remove.
+        let rotated = {
+            let Some(server) = &mut server_state.server else {
+                continue;
+            };
+
+            // We need the PeerId to call remove_member. Try to find it.
+            let member_peer = server
+                .members()
+                .iter()
+                .find(|m| m.peer_id.to_string() == *kicked_peer)
+                .map(|m| m.peer_id.clone());
+
+            let Some(peer_id) = member_peer else {
+                warn!("peer {} not found in server members", kicked_peer);
+                continue;
+            };
+
+            match server.remove_member(&peer_id) {
+                Ok(new_keys) => {
+                    crate::storage::save_server(server, &key_store.keys);
+                    Some(new_keys)
+                }
+                Err(e) => {
+                    warn!("failed to kick {}: {e}", kicked_peer);
+                    None
+                }
+            }
+        };
+
+        if let Some(new_keys) = rotated {
+            // Update key store with rotated keys.
+            for (ch_id, key) in &new_keys {
+                // Find the topic for this channel ID.
+                for (topic, (_, tid)) in &server_state.topic_map {
+                    if tid == ch_id {
+                        key_store.keys.insert(topic.clone(), key.clone());
+                        break;
+                    }
+                }
+            }
+
+            // Remove from peers list.
+            state.peers.retain(|p| p != kicked_peer);
+
+            // Add system message.
+            let ts = state.hlc.latest().millis;
+            state.messages.push(ChatMessage::new(
+                String::new(),
+                "System".into(),
+                format!("Kicked {kicked_peer} — channel keys rotated"),
+                false,
+                ts,
+            ));
+            state.messages_dirty = true;
+
+            info!("kicked peer {kicked_peer}, keys rotated");
+        }
+    }
+}
+
 // ───── Clipboard Systems ────────────────────────────────────────────────────
 
 /// Copy the local PeerId to clipboard when the "ID" button is clicked.

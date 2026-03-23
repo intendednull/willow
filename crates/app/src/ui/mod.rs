@@ -97,6 +97,8 @@ impl Plugin for UiPlugin {
                     channels::handle_generate_invite,
                     channels::handle_join_server,
                     channels::sync_invite_fields,
+                    channels::sync_member_list,
+                    channels::handle_kick_member,
                     channels::handle_copy_peer_id,
                     channels::handle_copy_invite,
                     files::handle_share_file_button,
