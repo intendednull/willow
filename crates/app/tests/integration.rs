@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use tokio::time::timeout;
 
-use willow_app::server_sync::{self, ServerOp, StampedOp, SyncMessage};
+use willow_app::server_sync::{self, Op, StampedOp, SyncMessage};
 use willow_files::FileManifest;
 use willow_identity::Identity;
 use willow_messaging::hlc::{HlcTimestamp, HLC};
@@ -367,7 +367,7 @@ async fn server_op_sync_between_peers() {
     let mut hlc = HLC::new();
     let channel_id = uuid::Uuid::new_v4().to_string();
     let stamped = StampedOp::new(
-        ServerOp::CreateChannel {
+        Op::CreateChannel {
             name: "general".into(),
             channel_id: channel_id.clone(),
         },
@@ -388,7 +388,7 @@ async fn server_op_sync_between_peers() {
     // Verify it's an Op with the correct channel name.
     match msg {
         SyncMessage::Op(op) => {
-            assert!(matches!(op.op, ServerOp::CreateChannel { ref name, .. } if name == "general"));
+            assert!(matches!(op.op, Op::CreateChannel { ref name, .. } if name == "general"));
             assert_eq!(op.author, id_a.peer_id().to_string());
         }
         other => panic!("expected SyncMessage::Op, got {:?}", other),
@@ -413,7 +413,7 @@ async fn server_op_author_verified_against_signer() {
     // A creates a StampedOp but sets author to a DIFFERENT peer_id.
     let mut hlc = HLC::new();
     let stamped = StampedOp::new(
-        ServerOp::CreateChannel {
+        Op::CreateChannel {
             name: "spoofed".into(),
             channel_id: uuid::Uuid::new_v4().to_string(),
         },
@@ -477,7 +477,7 @@ async fn sync_request_and_batch_over_network() {
     // B creates a SyncBatch with one op and publishes.
     let mut hlc = HLC::new();
     let stamped = StampedOp::new(
-        ServerOp::CreateChannel {
+        Op::CreateChannel {
             name: "from-batch".into(),
             channel_id: uuid::Uuid::new_v4().to_string(),
         },
@@ -500,7 +500,7 @@ async fn sync_request_and_batch_over_network() {
             assert_eq!(ops.len(), 1);
             assert_eq!(ops[0].op_id, stamped.op_id);
             assert!(
-                matches!(ops[0].op, ServerOp::CreateChannel { ref name, .. } if name == "from-batch")
+                matches!(ops[0].op, Op::CreateChannel { ref name, .. } if name == "from-batch")
             );
         }
         other => panic!("expected SyncMessage::SyncBatch, got {:?}", other),
@@ -658,7 +658,7 @@ async fn signed_server_op_tampered_rejected() {
     // A creates and signs a server op.
     let mut hlc = HLC::new();
     let stamped = StampedOp::new(
-        ServerOp::CreateChannel {
+        Op::CreateChannel {
             name: "tamper-test".into(),
             channel_id: uuid::Uuid::new_v4().to_string(),
         },
@@ -697,7 +697,7 @@ async fn multiple_ops_deduplicated() {
     // A creates a single StampedOp.
     let mut hlc = HLC::new();
     let stamped = StampedOp::new(
-        ServerOp::CreateChannel {
+        Op::CreateChannel {
             name: "dedup-test".into(),
             channel_id: uuid::Uuid::new_v4().to_string(),
         },

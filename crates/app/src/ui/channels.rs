@@ -138,7 +138,7 @@ fn create_channel(
 
     // Broadcast to peers.
     broadcast_op(
-        crate::server_sync::ServerOp::CreateChannel {
+        crate::server_sync::Op::CreateChannel {
             name: name.to_string(),
             channel_id: ch_id_str,
         },
@@ -292,7 +292,7 @@ pub fn handle_delete_channel(
 
         // Broadcast to peers.
         broadcast_op(
-            crate::server_sync::ServerOp::DeleteChannel { name: name.clone() },
+            crate::server_sync::Op::DeleteChannel { name: name.clone() },
             &mut state,
             &identity,
             &mut op_log,
@@ -705,7 +705,7 @@ pub fn handle_kick_member(
 
             // Broadcast to peers.
             broadcast_op(
-                crate::server_sync::ServerOp::KickMember {
+                crate::server_sync::Op::KickMember {
                     peer_id: kicked_peer.clone(),
                     rotated_keys: rotated_key_entries,
                 },
@@ -766,7 +766,7 @@ pub fn handle_new_role_input(
                         server.create_role(role);
                         crate::storage::save_server(server, &key_store.keys);
                         broadcast_op(
-                            crate::server_sync::ServerOp::CreateRole {
+                            crate::server_sync::Op::CreateRole {
                                 name: name.clone(),
                                 role_id: role_id.to_string(),
                             },
@@ -1015,7 +1015,7 @@ pub fn handle_toggle_permission(
         } else {
             crate::storage::save_server(server, &key_store.keys);
             broadcast_op(
-                crate::server_sync::ServerOp::SetPermission {
+                crate::server_sync::Op::SetPermission {
                     role_id: button.0.clone(),
                     permission: button.1.clone(),
                     granted,
@@ -1055,7 +1055,7 @@ pub fn handle_delete_role(
         } else {
             crate::storage::save_server(server, &key_store.keys);
             broadcast_op(
-                crate::server_sync::ServerOp::DeleteRole {
+                crate::server_sync::Op::DeleteRole {
                     role_id: button.0.clone(),
                 },
                 &mut state,
@@ -1106,7 +1106,7 @@ pub fn handle_assign_role(
         } else {
             crate::storage::save_server(server, &key_store.keys);
             broadcast_op(
-                crate::server_sync::ServerOp::AssignRole {
+                crate::server_sync::Op::AssignRole {
                     peer_id: peer_id_str.clone(),
                     role_id: button.1.clone(),
                 },
@@ -1170,7 +1170,7 @@ pub fn handle_trust_member(
         if op_log.is_trusted(peer_id, &owner) {
             // Untrust
             broadcast_op(
-                crate::server_sync::ServerOp::UntrustPeer {
+                crate::server_sync::Op::UntrustPeer {
                     peer_id: peer_id.clone(),
                 },
                 &mut state,
@@ -1182,7 +1182,7 @@ pub fn handle_trust_member(
         } else {
             // Trust
             broadcast_op(
-                crate::server_sync::ServerOp::TrustPeer {
+                crate::server_sync::Op::TrustPeer {
                     peer_id: peer_id.clone(),
                 },
                 &mut state,
@@ -1197,7 +1197,7 @@ pub fn handle_trust_member(
 
 /// Helper to stamp, record, persist, and broadcast a server op.
 fn broadcast_op(
-    op: crate::server_sync::ServerOp,
+    op: crate::server_sync::Op,
     state: &mut ChatState,
     identity: &crate::network_bridge::LocalIdentity,
     op_log: &mut OpLog,
@@ -1209,5 +1209,7 @@ fn broadcast_op(
     crate::storage::save_op_log(&op_log.ops);
     let _ = net_cmd
         .0
-        .send(crate::network_bridge::NetworkBridgeCommand::BroadcastServerOp(stamped));
+        .send(crate::network_bridge::NetworkBridgeCommand::BroadcastOp(
+            stamped,
+        ));
 }

@@ -226,8 +226,8 @@ pub fn handle_network_events(
             } => {
                 profiles.names.insert(peer_id.clone(), display_name.clone());
             }
-            NetworkBridgeEvent::ServerOpReceived { stamped_op, from } => {
-                handle_server_op(
+            NetworkBridgeEvent::OpReceived { stamped_op, from } => {
+                let applied = handle_op(
                     stamped_op,
                     from,
                     &mut server_state,
@@ -237,6 +237,30 @@ pub fn handle_network_events(
                     &mut op_log,
                     &identity,
                 );
+
+                // Process chat messages for display after the general op
+                // handling (dedup, HLC advance) has completed.
+                if applied {
+                    if let crate::server_sync::Op::ChatMessage {
+                        topic,
+                        content_data,
+                    } = &stamped_op.op
+                    {
+                        process_chat_message(
+                            topic,
+                            content_data,
+                            &stamped_op.author,
+                            &stamped_op.op_id,
+                            stamped_op.hlc.millis,
+                            &mut key_store,
+                            &mut state,
+                            &db,
+                            &profiles,
+                            &server_state,
+                            &mut unread,
+                        );
+                    }
+                }
             }
             NetworkBridgeEvent::SyncRequested { latest_hlc, from } => {
                 // Only respond to trusted peers.
@@ -277,7 +301,7 @@ pub fn handle_network_events(
                 sorted_ops.sort_by(|a, b| a.hlc.cmp(&b.hlc));
                 let count = sorted_ops.len();
                 for stamped_op in &sorted_ops {
-                    handle_server_op(
+                    let applied = handle_op(
                         stamped_op,
                         &stamped_op.author,
                         &mut server_state,
@@ -287,6 +311,28 @@ pub fn handle_network_events(
                         &mut op_log,
                         &identity,
                     );
+
+                    if applied {
+                        if let crate::server_sync::Op::ChatMessage {
+                            topic,
+                            content_data,
+                        } = &stamped_op.op
+                        {
+                            process_chat_message(
+                                topic,
+                                content_data,
+                                &stamped_op.author,
+                                &stamped_op.op_id,
+                                stamped_op.hlc.millis,
+                                &mut key_store,
+                                &mut state,
+                                &db,
+                                &profiles,
+                                &server_state,
+                                &mut unread,
+                            );
+                        }
+                    }
                 }
                 if count > 0 {
                     info!("applied sync batch of {count} ops from {from}");
@@ -550,8 +596,13 @@ pub fn update_channel_highlights(
 }
 
 /// Apply a remote server operation to local state.
+///
+/// Returns `true` if the op was new and accepted (not deduplicated or
+/// rejected). Chat messages bypass the trust check — anyone who can
+/// subscribe to a channel topic can chat. Trust is enforced only for
+/// server state mutations.
 #[allow(clippy::too_many_arguments)]
-fn handle_server_op(
+fn handle_op(
     stamped: &crate::server_sync::StampedOp,
     from: &str,
     server_state: &mut ResMut<ServerState>,
@@ -560,41 +611,48 @@ fn handle_server_op(
     net_cmd: &Res<crate::network_bridge::NetworkCommandSender>,
     op_log: &mut ResMut<OpLog>,
     identity: &Res<crate::network_bridge::LocalIdentity>,
-) {
-    use crate::server_sync::ServerOp;
+) -> bool {
+    use crate::server_sync::Op;
 
     // Dedup: skip if we've already seen this op.
     if op_log.seen_ids.contains(&stamped.op_id) {
-        return;
+        return false;
     }
 
-    // Trust check: only the owner and explicitly trusted peers may mutate state.
-    let owner = server_state
-        .server
-        .as_ref()
-        .map(|s| s.owner.to_string())
-        .unwrap_or_default();
-    if !op_log.is_trusted(from, &owner) {
-        warn!("untrusted op from {from}, recording id only");
-        op_log.seen_ids.insert(stamped.op_id.clone());
-        return;
+    // Trust check: only for non-chat ops (server state mutations).
+    let needs_trust = !matches!(stamped.op, Op::ChatMessage { .. });
+    if needs_trust {
+        let owner = server_state
+            .server
+            .as_ref()
+            .map(|s| s.owner.to_string())
+            .unwrap_or_default();
+        if !op_log.is_trusted(from, &owner) {
+            warn!("untrusted op from {from}, recording id only");
+            op_log.seen_ids.insert(stamped.op_id.clone());
+            return false;
+        }
     }
 
     // Advance local HLC.
     state.hlc.receive(stamped.hlc);
 
-    // Record and persist.
+    // Record (chat messages go to seen_ids only, not ops — see OpLog::record).
     op_log.record(stamped.clone());
-    crate::storage::save_op_log(&op_log.ops);
+
+    // Persist op log only for server ops (not chat messages).
+    if needs_trust {
+        crate::storage::save_op_log(&op_log.ops);
+    }
 
     match &stamped.op {
-        ServerOp::CreateChannel { name, channel_id } => {
+        Op::CreateChannel { name, channel_id } => {
             let info = {
                 let Some(server) = &mut server_state.server else {
-                    return;
+                    return true;
                 };
                 if server.channels().iter().any(|ch| ch.name == *name) {
-                    return;
+                    return true;
                 }
                 let ch_uuid =
                     uuid::Uuid::parse_str(channel_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
@@ -602,7 +660,7 @@ fn handle_server_op(
                 let Ok(ch_id) =
                     server.create_channel_with_id(ch_id, name, willow_channel::ChannelKind::Text)
                 else {
-                    return;
+                    return true;
                 };
                 let topic = super::make_topic(server, name);
                 let key = server.channel_key(&ch_id).cloned();
@@ -625,7 +683,7 @@ fn handle_server_op(
                 ));
             info!("remote channel #{name} created by {from}");
         }
-        ServerOp::DeleteChannel { name } => {
+        Op::DeleteChannel { name } => {
             let to_remove = server_state
                 .topic_map
                 .iter()
@@ -648,7 +706,7 @@ fn handle_server_op(
                 info!("remote channel #{name} deleted by {from}");
             }
         }
-        ServerOp::CreateRole { name, role_id } => {
+        Op::CreateRole { name, role_id } => {
             if let Some(server) = &mut server_state.server {
                 if !server.roles().iter().any(|r| r.name == *name) {
                     let rid =
@@ -660,7 +718,7 @@ fn handle_server_op(
                 }
             }
         }
-        ServerOp::DeleteRole { role_id } => {
+        Op::DeleteRole { role_id } => {
             if let Some(server) = &mut server_state.server {
                 let rid =
                     willow_channel::RoleId(uuid::Uuid::parse_str(role_id).unwrap_or_default());
@@ -668,7 +726,7 @@ fn handle_server_op(
                 crate::storage::save_server(server, &key_store.keys);
             }
         }
-        ServerOp::SetPermission {
+        Op::SetPermission {
             role_id,
             permission,
             granted,
@@ -684,13 +742,13 @@ fn handle_server_op(
                     "CreateInvite" => willow_channel::Permission::CreateInvite,
                     "AttachFiles" => willow_channel::Permission::AttachFiles,
                     "ManageChannels" => willow_channel::Permission::ManageChannels,
-                    _ => return,
+                    _ => return true,
                 };
                 let _ = server.set_permission(&rid, perm, *granted);
                 crate::storage::save_server(server, &key_store.keys);
             }
         }
-        ServerOp::AssignRole { peer_id, role_id } => {
+        Op::AssignRole { peer_id, role_id } => {
             if let Some(server) = &mut server_state.server {
                 let rid =
                     willow_channel::RoleId(uuid::Uuid::parse_str(role_id).unwrap_or_default());
@@ -705,7 +763,7 @@ fn handle_server_op(
                 }
             }
         }
-        ServerOp::KickMember {
+        Op::KickMember {
             peer_id,
             rotated_keys,
         } => {
@@ -744,11 +802,175 @@ fn handle_server_op(
             }
             info!("peer {peer_id} kicked by {from}, keys rotated");
         }
-        ServerOp::TrustPeer { peer_id } => {
+        Op::TrustPeer { peer_id } => {
             info!("peer {peer_id} trusted by {from}");
         }
-        ServerOp::UntrustPeer { peer_id } => {
+        Op::UntrustPeer { peer_id } => {
             info!("peer {peer_id} untrusted by {from}");
         }
+        // Chat message display is handled by the caller after handle_op returns.
+        Op::ChatMessage { .. } => {}
+    }
+
+    true
+}
+
+/// Process a ChatMessage op for display: deserialize content, decrypt if
+/// needed, and add to ChatState / persist to MessageDb.
+#[allow(clippy::too_many_arguments)]
+fn process_chat_message(
+    topic: &str,
+    content_data: &[u8],
+    author_peer_id: &str,
+    op_id: &str,
+    hlc_millis: u64,
+    key_store: &mut ResMut<ChannelKeyStore>,
+    state: &mut ResMut<ChatState>,
+    db: &Res<MessageDbRes>,
+    profiles: &ResMut<ProfileStore>,
+    server_state: &ResMut<ServerState>,
+    unread: &mut ResMut<UnreadCounts>,
+) {
+    let Ok(content) = willow_transport::unpack::<Content>(content_data) else {
+        warn!("failed to deserialize ChatMessage content");
+        return;
+    };
+
+    // Decrypt if encrypted.
+    let content = match &content {
+        Content::Encrypted(sealed) => {
+            let Some(key) = key_store.keys.get(topic) else {
+                return;
+            };
+            match willow_crypto::open_content(sealed, key) {
+                Ok(c) => c,
+                Err(_) => return,
+            }
+        }
+        other => other.clone(),
+    };
+
+    let author = profiles.display_name(author_peer_id);
+
+    // Handle reactions.
+    if let Content::Reaction {
+        ref target,
+        ref emoji,
+    } = content
+    {
+        let target_str = target.to_string();
+        for m in &mut state.messages {
+            if m.id == target_str {
+                m.reactions
+                    .entry(emoji.clone())
+                    .or_default()
+                    .push(author.clone());
+                state.messages_dirty = true;
+                break;
+            }
+        }
+        return;
+    }
+
+    // Handle edits.
+    if let Content::Edit {
+        ref target,
+        ref new_body,
+    } = content
+    {
+        let target_str = target.to_string();
+        for m in &mut state.messages {
+            if m.id == target_str {
+                m.body = new_body.clone();
+                m.edited = true;
+                state.messages_dirty = true;
+                break;
+            }
+        }
+        return;
+    }
+
+    // Handle deletes.
+    if let Content::Delete { ref target } = content {
+        let target_str = target.to_string();
+        for m in &mut state.messages {
+            if m.id == target_str {
+                m.body = "[message deleted]".to_string();
+                m.deleted = true;
+                m.reactions.clear();
+                state.messages_dirty = true;
+                break;
+            }
+        }
+        return;
+    }
+
+    // Handle replies.
+    if let Content::Reply {
+        ref parent,
+        ref body,
+    } = content
+    {
+        let parent_str = parent.to_string();
+
+        let preview = state.messages.iter().find(|m| m.id == parent_str).map(|m| {
+            let text = if m.body.len() > 50 {
+                format!("{}...", &m.body[..50])
+            } else {
+                m.body.clone()
+            };
+            format!("{}: {text}", m.author)
+        });
+
+        let mut chat_msg =
+            ChatMessage::new(topic.to_string(), author, body.clone(), false, hlc_millis);
+        chat_msg.id = op_id.to_string();
+        chat_msg.reply_preview = preview;
+
+        state.messages.push(chat_msg);
+        state.messages_dirty = true;
+        return;
+    }
+
+    // Handle text messages.
+    if let Content::Text { ref body } = content {
+        let mut chat_msg = ChatMessage::new(
+            topic.to_string(),
+            author.clone(),
+            body.clone(),
+            false,
+            hlc_millis,
+        );
+        chat_msg.id = op_id.to_string();
+
+        if let Some(ref db_arc) = db.0 {
+            if let Ok(db_lock) = db_arc.lock() {
+                db_lock.insert(&crate::storage::StoredMessage {
+                    topic: topic.to_string(),
+                    author: author.clone(),
+                    body: body.clone(),
+                    is_local: false,
+                    timestamp_ms: hlc_millis,
+                });
+            }
+        }
+
+        let current_topic = server_state
+            .topic_for_name(&state.current_channel)
+            .unwrap_or_default();
+        if chat_msg.topic != current_topic {
+            *unread.counts.entry(chat_msg.topic.clone()).or_insert(0) += 1;
+
+            let channel_name = server_state
+                .name_for_topic(&chat_msg.topic)
+                .unwrap_or("unknown");
+            crate::notify::send_notification(
+                &format!("#{channel_name}"),
+                &format!("{}: {}", chat_msg.author, chat_msg.body),
+            );
+        }
+
+        state.messages.push(chat_msg);
+        state.messages_dirty = true;
     }
 }

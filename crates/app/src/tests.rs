@@ -14,7 +14,7 @@ use willow_crypto::{generate_channel_key, seal_content};
 use willow_identity::Identity;
 use willow_messaging::hlc::HLC;
 use willow_messaging::{ChannelId, Content, Message};
-use willow_transport::{pack_envelope, unpack_envelope, MessageType};
+use willow_transport::{pack_envelope, MessageType};
 
 /// Build a headless Bevy app with the UI systems but no window or GPU.
 fn test_app() -> (App, std_mpsc::Receiver<NetworkBridgeCommand>) {
@@ -55,10 +55,26 @@ fn test_app() -> (App, std_mpsc::Receiver<NetworkBridgeCommand>) {
     (app, cmd_rx)
 }
 
-/// Create a signed envelope from a message and identity.
-fn sign_envelope(msg: &Message, identity: &Identity) -> Vec<u8> {
-    let envelope_data = pack_envelope(MessageType::Chat, msg).unwrap();
-    willow_identity::pack(&envelope_data, identity).unwrap()
+/// Create a `StampedOp::ChatMessage` from a `Content` value.
+///
+/// Returns the stamped op and the op_id (which doubles as message ID).
+fn make_chat_op(
+    topic: &str,
+    content: Content,
+    author: &str,
+) -> (crate::server_sync::StampedOp, String) {
+    let mut hlc = HLC::new();
+    let content_data = willow_transport::pack(&content).unwrap();
+    let stamped = crate::server_sync::StampedOp::new(
+        crate::server_sync::Op::ChatMessage {
+            topic: topic.into(),
+            content_data,
+        },
+        &mut hlc,
+        author,
+    );
+    let op_id = stamped.op_id.clone();
+    (stamped, op_id)
 }
 
 fn send_key(app: &mut App, key_code: KeyCode, text: Option<&str>) {
@@ -148,15 +164,18 @@ fn enter_sends_message_and_clears_input() {
 
     let cmd = cmd_rx.try_recv().expect("expected a network command");
     match cmd {
-        NetworkBridgeCommand::Publish { data, .. } => {
-            assert!(!data.is_empty());
+        NetworkBridgeCommand::BroadcastOp(stamped) => {
+            assert!(matches!(
+                stamped.op,
+                crate::server_sync::Op::ChatMessage { .. }
+            ));
         }
-        other => panic!("expected Publish, got {other:?}"),
+        other => panic!("expected BroadcastOp, got {other:?}"),
     }
 }
 
 #[test]
-fn sent_message_is_valid_signed_envelope() {
+fn sent_message_is_valid_stamped_op() {
     let (mut app, cmd_rx) = test_app();
 
     send_key(&mut app, KeyCode::KeyX, Some("x"));
@@ -166,14 +185,17 @@ fn sent_message_is_valid_signed_envelope() {
     app.update();
 
     let cmd = cmd_rx.try_recv().unwrap();
-    if let NetworkBridgeCommand::Publish { data, .. } = cmd {
-        let (envelope_data, _signer) =
-            willow_identity::unpack::<Vec<u8>>(&data).expect("valid signature");
-        let (msg, msg_type) = unpack_envelope::<Message>(&envelope_data).expect("valid envelope");
-        assert_eq!(msg_type, MessageType::Chat);
-        assert!(matches!(msg.content, Content::Text { ref body } if body == "x"));
+    if let NetworkBridgeCommand::BroadcastOp(stamped) = cmd {
+        assert!(!stamped.op_id.is_empty());
+        assert!(!stamped.author.is_empty());
+        if let crate::server_sync::Op::ChatMessage { content_data, .. } = &stamped.op {
+            let content: Content = willow_transport::unpack(content_data).expect("valid content");
+            assert!(matches!(content, Content::Text { ref body } if body == "x"));
+        } else {
+            panic!("expected ChatMessage op");
+        }
     } else {
-        panic!("expected Publish");
+        panic!("expected BroadcastOp");
     }
 }
 
@@ -184,20 +206,19 @@ fn incoming_chat_message_added_to_state() {
     let (mut app, _rx) = test_app();
 
     let remote = Identity::generate();
-    let mut hlc = HLC::new();
-    let msg = Message::text(
-        ChannelId::new(),
-        remote.peer_id(),
-        "hello from remote",
-        &mut hlc,
+    let author = remote.peer_id().to_string();
+    let (stamped, _op_id) = make_chat_op(
+        "general",
+        Content::Text {
+            body: "hello from remote".into(),
+        },
+        &author,
     );
-    let data = sign_envelope(&msg, &remote);
 
     app.world_mut()
-        .write_message(NetworkBridgeEvent::MessageReceived {
-            topic: "general".into(),
-            data,
-            source: Some(remote.peer_id().to_string()),
+        .write_message(NetworkBridgeEvent::OpReceived {
+            stamped_op: stamped,
+            from: author,
         });
 
     app.update();
@@ -214,16 +235,20 @@ fn incoming_message_updates_hlc() {
     let (mut app, _rx) = test_app();
 
     let remote = Identity::generate();
-    let mut hlc = HLC::new();
-    let msg = Message::text(ChannelId::new(), remote.peer_id(), "sync clock", &mut hlc);
-    let remote_hlc = msg.hlc;
-    let data = sign_envelope(&msg, &remote);
+    let author = remote.peer_id().to_string();
+    let (stamped, _) = make_chat_op(
+        "general",
+        Content::Text {
+            body: "sync clock".into(),
+        },
+        &author,
+    );
+    let remote_hlc = stamped.hlc;
 
     app.world_mut()
-        .write_message(NetworkBridgeEvent::MessageReceived {
-            topic: "general".into(),
-            data,
-            source: Some(remote.peer_id().to_string()),
+        .write_message(NetworkBridgeEvent::OpReceived {
+            stamped_op: stamped,
+            from: author,
         });
 
     app.update();
@@ -329,17 +354,19 @@ fn send_message_encrypts_content_when_key_present() {
     app.update();
     app.update();
 
-    let cmd = cmd_rx.try_recv().expect("expected publish");
-    if let NetworkBridgeCommand::Publish { data, .. } = cmd {
-        let (envelope_data, _) =
-            willow_identity::unpack::<Vec<u8>>(&data).expect("valid signature");
-        let (msg, _) = unpack_envelope::<Message>(&envelope_data).expect("valid envelope");
-        assert!(
-            matches!(msg.content, Content::Encrypted(_)),
-            "content should be encrypted when key is present"
-        );
+    let cmd = cmd_rx.try_recv().expect("expected BroadcastOp");
+    if let NetworkBridgeCommand::BroadcastOp(stamped) = cmd {
+        if let crate::server_sync::Op::ChatMessage { content_data, .. } = &stamped.op {
+            let content: Content = willow_transport::unpack(content_data).unwrap();
+            assert!(
+                matches!(content, Content::Encrypted(_)),
+                "content should be encrypted when key is present"
+            );
+        } else {
+            panic!("expected ChatMessage op");
+        }
     } else {
-        panic!("expected Publish");
+        panic!("expected BroadcastOp");
     }
 }
 
@@ -353,17 +380,19 @@ fn send_message_plaintext_when_no_key() {
     app.update();
     app.update();
 
-    let cmd = cmd_rx.try_recv().expect("expected publish");
-    if let NetworkBridgeCommand::Publish { data, .. } = cmd {
-        let (envelope_data, _) =
-            willow_identity::unpack::<Vec<u8>>(&data).expect("valid signature");
-        let (msg, _) = unpack_envelope::<Message>(&envelope_data).expect("valid envelope");
-        assert!(
-            matches!(msg.content, Content::Text { .. }),
-            "content should be plaintext when no key"
-        );
+    let cmd = cmd_rx.try_recv().expect("expected BroadcastOp");
+    if let NetworkBridgeCommand::BroadcastOp(stamped) = cmd {
+        if let crate::server_sync::Op::ChatMessage { content_data, .. } = &stamped.op {
+            let content: Content = willow_transport::unpack(content_data).unwrap();
+            assert!(
+                matches!(content, Content::Text { .. }),
+                "content should be plaintext when no key"
+            );
+        } else {
+            panic!("expected ChatMessage op");
+        }
     } else {
-        panic!("expected Publish");
+        panic!("expected BroadcastOp");
     }
 }
 
@@ -378,20 +407,18 @@ fn receive_encrypted_message_decrypts() {
         .insert("general".into(), key.clone());
 
     let remote = Identity::generate();
-    let mut hlc = HLC::new();
+    let author = remote.peer_id().to_string();
     let plaintext_content = Content::Text {
         body: "encrypted hello".into(),
     };
     let sealed = seal_content(&plaintext_content, &key, 0).unwrap();
-    let mut msg = Message::text(ChannelId::new(), remote.peer_id(), "placeholder", &mut hlc);
-    msg.content = Content::Encrypted(sealed);
-    let data = sign_envelope(&msg, &remote);
+    let encrypted_content = Content::Encrypted(sealed);
+    let (stamped, _) = make_chat_op("general", encrypted_content, &author);
 
     app.world_mut()
-        .write_message(NetworkBridgeEvent::MessageReceived {
-            topic: "general".into(),
-            data,
-            source: Some(remote.peer_id().to_string()),
+        .write_message(NetworkBridgeEvent::OpReceived {
+            stamped_op: stamped,
+            from: author,
         });
     app.update();
 
@@ -412,7 +439,7 @@ fn receive_encrypted_message_wrong_key_ignored() {
         .insert("general".into(), wrong_key);
 
     let remote = Identity::generate();
-    let mut hlc = HLC::new();
+    let author = remote.peer_id().to_string();
     let sealed = seal_content(
         &Content::Text {
             body: "secret".into(),
@@ -421,15 +448,13 @@ fn receive_encrypted_message_wrong_key_ignored() {
         0,
     )
     .unwrap();
-    let mut msg = Message::text(ChannelId::new(), remote.peer_id(), "x", &mut hlc);
-    msg.content = Content::Encrypted(sealed);
-    let data = sign_envelope(&msg, &remote);
+    let encrypted_content = Content::Encrypted(sealed);
+    let (stamped, _) = make_chat_op("general", encrypted_content, &author);
 
     app.world_mut()
-        .write_message(NetworkBridgeEvent::MessageReceived {
-            topic: "general".into(),
-            data,
-            source: Some(remote.peer_id().to_string()),
+        .write_message(NetworkBridgeEvent::OpReceived {
+            stamped_op: stamped,
+            from: author,
         });
     app.update();
 
@@ -451,20 +476,19 @@ fn receive_unencrypted_message_still_works() {
         .insert("general".into(), key);
 
     let remote = Identity::generate();
-    let mut hlc = HLC::new();
-    let msg = Message::text(
-        ChannelId::new(),
-        remote.peer_id(),
-        "plaintext msg",
-        &mut hlc,
+    let author = remote.peer_id().to_string();
+    let (stamped, _) = make_chat_op(
+        "general",
+        Content::Text {
+            body: "plaintext msg".into(),
+        },
+        &author,
     );
-    let data = sign_envelope(&msg, &remote);
 
     app.world_mut()
-        .write_message(NetworkBridgeEvent::MessageReceived {
-            topic: "general".into(),
-            data,
-            source: Some(remote.peer_id().to_string()),
+        .write_message(NetworkBridgeEvent::OpReceived {
+            stamped_op: stamped,
+            from: author,
         });
     app.update();
 
@@ -1037,15 +1061,19 @@ fn incoming_message_on_other_channel_increments_unread() {
 
     // Current channel is "general", message arrives on "other-topic".
     let remote = Identity::generate();
-    let mut hlc = HLC::new();
-    let msg = Message::text(ChannelId::new(), remote.peer_id(), "hello", &mut hlc);
-    let data = sign_envelope(&msg, &remote);
+    let author = remote.peer_id().to_string();
+    let (stamped, _) = make_chat_op(
+        "other-topic",
+        Content::Text {
+            body: "hello".into(),
+        },
+        &author,
+    );
 
     app.world_mut()
-        .write_message(NetworkBridgeEvent::MessageReceived {
-            topic: "other-topic".into(),
-            data,
-            source: Some(remote.peer_id().to_string()),
+        .write_message(NetworkBridgeEvent::OpReceived {
+            stamped_op: stamped,
+            from: author,
         });
     app.update();
 
@@ -1068,15 +1096,19 @@ fn incoming_message_on_current_channel_no_unread() {
     app.world_mut().resource_mut::<ChatState>().current_channel = "general".into();
 
     let remote = Identity::generate();
-    let mut hlc = HLC::new();
-    let msg = Message::text(ChannelId::new(), remote.peer_id(), "hello", &mut hlc);
-    let data = sign_envelope(&msg, &remote);
+    let author = remote.peer_id().to_string();
+    let (stamped, _) = make_chat_op(
+        "my-topic",
+        Content::Text {
+            body: "hello".into(),
+        },
+        &author,
+    );
 
     app.world_mut()
-        .write_message(NetworkBridgeEvent::MessageReceived {
-            topic: "my-topic".into(),
-            data,
-            source: Some(remote.peer_id().to_string()),
+        .write_message(NetworkBridgeEvent::OpReceived {
+            stamped_op: stamped,
+            from: author,
         });
     app.update();
 
@@ -1123,18 +1155,16 @@ fn theme_colors_are_distinct() {
 fn search_filters_messages_by_body() {
     let (mut app, _rx) = test_app();
 
-    // Add two messages on "general" topic.
+    // Add messages on "general" topic via the op pipeline.
     let remote = Identity::generate();
-    let mut hlc = HLC::new();
+    let author = remote.peer_id().to_string();
 
     for body in ["hello world", "goodbye world", "hello again"] {
-        let msg = Message::text(ChannelId::new(), remote.peer_id(), body, &mut hlc);
-        let data = sign_envelope(&msg, &remote);
+        let (stamped, _) = make_chat_op("general", Content::Text { body: body.into() }, &author);
         app.world_mut()
-            .write_message(NetworkBridgeEvent::MessageReceived {
-                topic: "general".into(),
-                data,
-                source: Some(remote.peer_id().to_string()),
+            .write_message(NetworkBridgeEvent::OpReceived {
+                stamped_op: stamped,
+                from: author.clone(),
             });
     }
     app.update();
@@ -1410,21 +1440,14 @@ fn app_processes_accepted_invite_keys() {
         body: "encrypted for app".into(),
     };
     let sealed = willow_crypto::seal_content(&content, owner_key, 0).unwrap();
-
-    let mut msg = Message::text(
-        ChannelId::new(),
-        owner.peer_id(),
-        "placeholder",
-        &mut HLC::new(),
-    );
-    msg.content = Content::Encrypted(sealed);
-    let data = sign_envelope(&msg, &owner);
+    let encrypted_content = Content::Encrypted(sealed);
+    let owner_str = owner.peer_id().to_string();
+    let (stamped, _) = make_chat_op(&topic, encrypted_content, &owner_str);
 
     app.world_mut()
-        .write_message(NetworkBridgeEvent::MessageReceived {
-            topic: topic.clone(),
-            data,
-            source: Some(owner.peer_id().to_string()),
+        .write_message(NetworkBridgeEvent::OpReceived {
+            stamped_op: stamped,
+            from: owner_str,
         });
     app.update();
 
@@ -1444,29 +1467,40 @@ fn reaction_updates_target_message() {
 
     // Send a message first so we have a target.
     let sender = Identity::generate();
-    let mut hlc = HLC::new();
-    let msg = Message::text(ChannelId::new(), sender.peer_id(), "react to me", &mut hlc);
-    let msg_id = msg.id.clone();
-    let data = sign_envelope(&msg, &sender);
+    let sender_str = sender.peer_id().to_string();
+    let (stamped_msg, msg_op_id) = make_chat_op(
+        "general",
+        Content::Text {
+            body: "react to me".into(),
+        },
+        &sender_str,
+    );
 
     app.world_mut()
-        .write_message(NetworkBridgeEvent::MessageReceived {
-            topic: "general".into(),
-            data,
-            source: Some(sender.peer_id().to_string()),
+        .write_message(NetworkBridgeEvent::OpReceived {
+            stamped_op: stamped_msg,
+            from: sender_str,
         });
     app.update();
 
-    // Now send a reaction targeting that message.
+    // Now send a reaction targeting that message (using op_id as target).
     let reactor = Identity::generate();
-    let reaction = Message::reaction(ChannelId::new(), reactor.peer_id(), msg_id, "👍", &mut hlc);
-    let reaction_data = sign_envelope(&reaction, &reactor);
+    let reactor_str = reactor.peer_id().to_string();
+    let target_id =
+        willow_messaging::MessageId(uuid::Uuid::parse_str(&msg_op_id).unwrap_or_default());
+    let (stamped_reaction, _) = make_chat_op(
+        "general",
+        Content::Reaction {
+            target: target_id,
+            emoji: "👍".into(),
+        },
+        &reactor_str,
+    );
 
     app.world_mut()
-        .write_message(NetworkBridgeEvent::MessageReceived {
-            topic: "general".into(),
-            data: reaction_data,
-            source: Some(reactor.peer_id().to_string()),
+        .write_message(NetworkBridgeEvent::OpReceived {
+            stamped_op: stamped_reaction,
+            from: reactor_str,
         });
     app.update();
 
@@ -1482,35 +1516,40 @@ fn multiple_reactions_on_same_message() {
     let (mut app, _rx) = test_app();
 
     let sender = Identity::generate();
-    let mut hlc = HLC::new();
-    let msg = Message::text(ChannelId::new(), sender.peer_id(), "popular msg", &mut hlc);
-    let msg_id = msg.id.clone();
-    let data = sign_envelope(&msg, &sender);
+    let sender_str = sender.peer_id().to_string();
+    let (stamped_msg, msg_op_id) = make_chat_op(
+        "general",
+        Content::Text {
+            body: "popular msg".into(),
+        },
+        &sender_str,
+    );
 
     app.world_mut()
-        .write_message(NetworkBridgeEvent::MessageReceived {
-            topic: "general".into(),
-            data,
-            source: Some(sender.peer_id().to_string()),
+        .write_message(NetworkBridgeEvent::OpReceived {
+            stamped_op: stamped_msg,
+            from: sender_str,
         });
     app.update();
 
     // Two different people react with the same emoji.
+    let target_id =
+        willow_messaging::MessageId(uuid::Uuid::parse_str(&msg_op_id).unwrap_or_default());
     for _ in 0..2 {
         let reactor = Identity::generate();
-        let reaction = Message::reaction(
-            ChannelId::new(),
-            reactor.peer_id(),
-            msg_id.clone(),
-            "🎉",
-            &mut hlc,
+        let reactor_str = reactor.peer_id().to_string();
+        let (stamped_reaction, _) = make_chat_op(
+            "general",
+            Content::Reaction {
+                target: target_id.clone(),
+                emoji: "🎉".into(),
+            },
+            &reactor_str,
         );
-        let reaction_data = sign_envelope(&reaction, &reactor);
         app.world_mut()
-            .write_message(NetworkBridgeEvent::MessageReceived {
-                topic: "general".into(),
-                data: reaction_data,
-                source: Some(reactor.peer_id().to_string()),
+            .write_message(NetworkBridgeEvent::OpReceived {
+                stamped_op: stamped_reaction,
+                from: reactor_str,
             });
     }
     app.update();
@@ -1524,21 +1563,20 @@ fn reaction_to_nonexistent_message_ignored() {
     let (mut app, _rx) = test_app();
 
     let reactor = Identity::generate();
-    let mut hlc = HLC::new();
-    let reaction = Message::reaction(
-        ChannelId::new(),
-        reactor.peer_id(),
-        willow_messaging::MessageId::new(), // random target that doesn't exist
-        "👎",
-        &mut hlc,
+    let reactor_str = reactor.peer_id().to_string();
+    let (stamped, _) = make_chat_op(
+        "general",
+        Content::Reaction {
+            target: willow_messaging::MessageId::new(),
+            emoji: "👎".into(),
+        },
+        &reactor_str,
     );
-    let data = sign_envelope(&reaction, &reactor);
 
     app.world_mut()
-        .write_message(NetworkBridgeEvent::MessageReceived {
-            topic: "general".into(),
-            data,
-            source: Some(reactor.peer_id().to_string()),
+        .write_message(NetworkBridgeEvent::OpReceived {
+            stamped_op: stamped,
+            from: reactor_str,
         });
     app.update();
 
@@ -1553,37 +1591,37 @@ fn edit_updates_message_body() {
     let (mut app, _rx) = test_app();
 
     let sender = Identity::generate();
-    let mut hlc = HLC::new();
-    let msg = Message::text(ChannelId::new(), sender.peer_id(), "original", &mut hlc);
-    let msg_id = msg.id.clone();
-    let data = sign_envelope(&msg, &sender);
+    let sender_str = sender.peer_id().to_string();
+    let (stamped_msg, msg_op_id) = make_chat_op(
+        "general",
+        Content::Text {
+            body: "original".into(),
+        },
+        &sender_str,
+    );
 
     app.world_mut()
-        .write_message(NetworkBridgeEvent::MessageReceived {
-            topic: "general".into(),
-            data,
-            source: Some(sender.peer_id().to_string()),
+        .write_message(NetworkBridgeEvent::OpReceived {
+            stamped_op: stamped_msg,
+            from: sender_str.clone(),
         });
     app.update();
 
-    let edit = Message {
-        id: willow_messaging::MessageId::new(),
-        channel_id: ChannelId::new(),
-        author: sender.peer_id(),
-        content: Content::Edit {
-            target: msg_id,
+    let target_id =
+        willow_messaging::MessageId(uuid::Uuid::parse_str(&msg_op_id).unwrap_or_default());
+    let (stamped_edit, _) = make_chat_op(
+        "general",
+        Content::Edit {
+            target: target_id,
             new_body: "edited body".into(),
         },
-        created_at: chrono::Utc::now(),
-        hlc: hlc.now(),
-    };
-    let edit_data = sign_envelope(&edit, &sender);
+        &sender_str,
+    );
 
     app.world_mut()
-        .write_message(NetworkBridgeEvent::MessageReceived {
-            topic: "general".into(),
-            data: edit_data,
-            source: Some(sender.peer_id().to_string()),
+        .write_message(NetworkBridgeEvent::OpReceived {
+            stamped_op: stamped_edit,
+            from: sender_str,
         });
     app.update();
 
@@ -1598,34 +1636,34 @@ fn delete_marks_message() {
     let (mut app, _rx) = test_app();
 
     let sender = Identity::generate();
-    let mut hlc = HLC::new();
-    let msg = Message::text(ChannelId::new(), sender.peer_id(), "delete me", &mut hlc);
-    let msg_id = msg.id.clone();
-    let data = sign_envelope(&msg, &sender);
+    let sender_str = sender.peer_id().to_string();
+    let (stamped_msg, msg_op_id) = make_chat_op(
+        "general",
+        Content::Text {
+            body: "delete me".into(),
+        },
+        &sender_str,
+    );
 
     app.world_mut()
-        .write_message(NetworkBridgeEvent::MessageReceived {
-            topic: "general".into(),
-            data,
-            source: Some(sender.peer_id().to_string()),
+        .write_message(NetworkBridgeEvent::OpReceived {
+            stamped_op: stamped_msg,
+            from: sender_str.clone(),
         });
     app.update();
 
-    let delete = Message {
-        id: willow_messaging::MessageId::new(),
-        channel_id: ChannelId::new(),
-        author: sender.peer_id(),
-        content: Content::Delete { target: msg_id },
-        created_at: chrono::Utc::now(),
-        hlc: hlc.now(),
-    };
-    let del_data = sign_envelope(&delete, &sender);
+    let target_id =
+        willow_messaging::MessageId(uuid::Uuid::parse_str(&msg_op_id).unwrap_or_default());
+    let (stamped_del, _) = make_chat_op(
+        "general",
+        Content::Delete { target: target_id },
+        &sender_str,
+    );
 
     app.world_mut()
-        .write_message(NetworkBridgeEvent::MessageReceived {
-            topic: "general".into(),
-            data: del_data,
-            source: Some(sender.peer_id().to_string()),
+        .write_message(NetworkBridgeEvent::OpReceived {
+            stamped_op: stamped_del,
+            from: sender_str,
         });
     app.update();
 
@@ -1643,40 +1681,40 @@ fn reply_shows_parent_preview() {
 
     // Send a parent message.
     let sender = Identity::generate();
-    let mut hlc = HLC::new();
-    let parent = Message::text(
-        ChannelId::new(),
-        sender.peer_id(),
-        "parent message",
-        &mut hlc,
+    let sender_str = sender.peer_id().to_string();
+    let (stamped_parent, parent_op_id) = make_chat_op(
+        "general",
+        Content::Text {
+            body: "parent message".into(),
+        },
+        &sender_str,
     );
-    let parent_id = parent.id.clone();
-    let data = sign_envelope(&parent, &sender);
 
     app.world_mut()
-        .write_message(NetworkBridgeEvent::MessageReceived {
-            topic: "general".into(),
-            data,
-            source: Some(sender.peer_id().to_string()),
+        .write_message(NetworkBridgeEvent::OpReceived {
+            stamped_op: stamped_parent,
+            from: sender_str,
         });
     app.update();
 
     // Send a reply.
     let replier = Identity::generate();
-    let reply = Message::reply(
-        ChannelId::new(),
-        replier.peer_id(),
-        parent_id,
-        "this is my reply",
-        &mut hlc,
+    let replier_str = replier.peer_id().to_string();
+    let parent_msg_id =
+        willow_messaging::MessageId(uuid::Uuid::parse_str(&parent_op_id).unwrap_or_default());
+    let (stamped_reply, _) = make_chat_op(
+        "general",
+        Content::Reply {
+            parent: parent_msg_id,
+            body: "this is my reply".into(),
+        },
+        &replier_str,
     );
-    let reply_data = sign_envelope(&reply, &replier);
 
     app.world_mut()
-        .write_message(NetworkBridgeEvent::MessageReceived {
-            topic: "general".into(),
-            data: reply_data,
-            source: Some(replier.peer_id().to_string()),
+        .write_message(NetworkBridgeEvent::OpReceived {
+            stamped_op: stamped_reply,
+            from: replier_str,
         });
     app.update();
 
@@ -1695,14 +1733,14 @@ fn reply_shows_parent_preview() {
 
 #[test]
 fn oplog_dedup_rejects_duplicate() {
-    use crate::server_sync::{ServerOp, StampedOp};
+    use crate::server_sync::{Op, StampedOp};
     use willow_messaging::hlc::HLC;
 
     let mut log = OpLog::default();
     let mut hlc = HLC::new();
 
     let op = StampedOp::new(
-        ServerOp::CreateChannel {
+        Op::CreateChannel {
             name: "test".into(),
             channel_id: uuid::Uuid::new_v4().to_string(),
         },
@@ -1717,7 +1755,7 @@ fn oplog_dedup_rejects_duplicate() {
 
 #[test]
 fn oplog_trust_peer_updates_set() {
-    use crate::server_sync::{ServerOp, StampedOp};
+    use crate::server_sync::{Op, StampedOp};
     use willow_messaging::hlc::HLC;
 
     let mut log = OpLog::default();
@@ -1726,7 +1764,7 @@ fn oplog_trust_peer_updates_set() {
     assert!(!log.is_trusted("alice", "owner"));
 
     log.record(StampedOp::new(
-        ServerOp::TrustPeer {
+        Op::TrustPeer {
             peer_id: "alice".into(),
         },
         &mut hlc,
@@ -1735,7 +1773,7 @@ fn oplog_trust_peer_updates_set() {
     assert!(log.is_trusted("alice", "owner"));
 
     log.record(StampedOp::new(
-        ServerOp::UntrustPeer {
+        Op::UntrustPeer {
             peer_id: "alice".into(),
         },
         &mut hlc,
@@ -1753,21 +1791,21 @@ fn oplog_owner_always_trusted() {
 
 #[test]
 fn oplog_rebuild_restores_state() {
-    use crate::server_sync::{ServerOp, StampedOp};
+    use crate::server_sync::{Op, StampedOp};
     use willow_messaging::hlc::HLC;
 
     let mut log = OpLog::default();
     let mut hlc = HLC::new();
 
     log.record(StampedOp::new(
-        ServerOp::TrustPeer {
+        Op::TrustPeer {
             peer_id: "alice".into(),
         },
         &mut hlc,
         "owner",
     ));
     log.record(StampedOp::new(
-        ServerOp::CreateChannel {
+        Op::CreateChannel {
             name: "general".into(),
             channel_id: uuid::Uuid::new_v4().to_string(),
         },
@@ -1787,7 +1825,7 @@ fn oplog_rebuild_restores_state() {
 
 #[test]
 fn oplog_latest_hlc_tracks_most_recent() {
-    use crate::server_sync::{ServerOp, StampedOp};
+    use crate::server_sync::{Op, StampedOp};
     use willow_messaging::hlc::{HlcTimestamp, HLC};
 
     let mut log = OpLog::default();
@@ -1796,7 +1834,7 @@ fn oplog_latest_hlc_tracks_most_recent() {
     assert_eq!(log.latest_hlc(), HlcTimestamp::ZERO);
 
     let op1 = StampedOp::new(
-        ServerOp::CreateChannel {
+        Op::CreateChannel {
             name: "a".into(),
             channel_id: uuid::Uuid::new_v4().to_string(),
         },
@@ -1808,7 +1846,7 @@ fn oplog_latest_hlc_tracks_most_recent() {
     assert_eq!(log.latest_hlc(), t1);
 
     let op2 = StampedOp::new(
-        ServerOp::CreateChannel {
+        Op::CreateChannel {
             name: "b".into(),
             channel_id: uuid::Uuid::new_v4().to_string(),
         },
@@ -1834,7 +1872,7 @@ fn untrusted_op_rejected_by_handler() {
     let untrusted = Identity::generate();
     let mut hlc = HLC::new();
     let stamped = crate::server_sync::StampedOp::new(
-        crate::server_sync::ServerOp::CreateChannel {
+        crate::server_sync::Op::CreateChannel {
             name: "hacked".into(),
             channel_id: uuid::Uuid::new_v4().to_string(),
         },
@@ -1848,7 +1886,7 @@ fn untrusted_op_rejected_by_handler() {
     match sync_msg {
         crate::server_sync::SyncMessage::Op(stamped_op) => {
             app.world_mut()
-                .write_message(NetworkBridgeEvent::ServerOpReceived {
+                .write_message(NetworkBridgeEvent::OpReceived {
                     stamped_op: stamped_op.clone(),
                     from: stamped_op.author.clone(),
                 });
@@ -1882,7 +1920,7 @@ fn trusted_op_applied_by_handler() {
     let owner_identity = app.world().resource::<LocalIdentity>().0.clone();
     let mut hlc = HLC::new();
     let stamped = crate::server_sync::StampedOp::new(
-        crate::server_sync::ServerOp::CreateChannel {
+        crate::server_sync::Op::CreateChannel {
             name: "legit".into(),
             channel_id: uuid::Uuid::new_v4().to_string(),
         },
@@ -1891,7 +1929,7 @@ fn trusted_op_applied_by_handler() {
     );
 
     app.world_mut()
-        .write_message(NetworkBridgeEvent::ServerOpReceived {
+        .write_message(NetworkBridgeEvent::OpReceived {
             stamped_op: stamped.clone(),
             from: owner_identity.peer_id().to_string(),
         });
@@ -1908,7 +1946,7 @@ fn trusted_op_applied_by_handler() {
 
 #[test]
 fn sync_message_round_trip() {
-    use crate::server_sync::{ServerOp, StampedOp, SyncMessage};
+    use crate::server_sync::{Op, StampedOp, SyncMessage};
     use willow_messaging::hlc::HLC;
 
     let id = Identity::generate();
@@ -1916,7 +1954,7 @@ fn sync_message_round_trip() {
 
     // Test Op variant
     let stamped = StampedOp::new(
-        ServerOp::CreateChannel {
+        Op::CreateChannel {
             name: "ch".into(),
             channel_id: uuid::Uuid::new_v4().to_string(),
         },
@@ -1963,7 +2001,7 @@ fn set_permission_is_idempotent() {
     // Apply SetPermission { granted: true } twice — should be idempotent
     for _ in 0..2 {
         let stamped = crate::server_sync::StampedOp::new(
-            crate::server_sync::ServerOp::SetPermission {
+            crate::server_sync::Op::SetPermission {
                 role_id: role_id.to_string(),
                 permission: "SendMessages".into(),
                 granted: true,
@@ -1972,7 +2010,7 @@ fn set_permission_is_idempotent() {
             &owner_id_str,
         );
         app.world_mut()
-            .write_message(NetworkBridgeEvent::ServerOpReceived {
+            .write_message(NetworkBridgeEvent::OpReceived {
                 stamped_op: stamped.clone(),
                 from: owner_id_str.clone(),
             });
@@ -2018,7 +2056,7 @@ fn catchup_sync_applies_missing_ops() {
     // Record the CreateChannel op in A's OpLog
     let mut hlc_a = HLC::new();
     let create_op = crate::server_sync::StampedOp::new(
-        crate::server_sync::ServerOp::CreateChannel {
+        crate::server_sync::Op::CreateChannel {
             name: "synced-channel".into(),
             channel_id: ch_id.to_string(),
         },
@@ -2047,7 +2085,7 @@ fn catchup_sync_applies_missing_ops() {
             assert!(!ops.is_empty(), "batch should contain ops");
             assert!(
                 ops.iter()
-                    .any(|op| matches!(&op.op, crate::server_sync::ServerOp::CreateChannel { name, .. } if name == "synced-channel")),
+                    .any(|op| matches!(&op.op, crate::server_sync::Op::CreateChannel { name, .. } if name == "synced-channel")),
                 "batch should contain the CreateChannel op"
             );
             found_batch = true;
@@ -2115,7 +2153,7 @@ fn catchup_filters_by_hlc() {
     // Record two ops with advancing HLC
     let mut hlc = HLC::new();
     let old_op = crate::server_sync::StampedOp::new(
-        crate::server_sync::ServerOp::CreateChannel {
+        crate::server_sync::Op::CreateChannel {
             name: "old-channel".into(),
             channel_id: uuid::Uuid::new_v4().to_string(),
         },
@@ -2128,7 +2166,7 @@ fn catchup_filters_by_hlc() {
         .record(old_op.clone());
 
     let new_op = crate::server_sync::StampedOp::new(
-        crate::server_sync::ServerOp::CreateChannel {
+        crate::server_sync::Op::CreateChannel {
             name: "new-channel".into(),
             channel_id: uuid::Uuid::new_v4().to_string(),
         },
@@ -2171,7 +2209,7 @@ fn catchup_rejects_untrusted_sync_request() {
     // Record an op
     let mut hlc = HLC::new();
     let op = crate::server_sync::StampedOp::new(
-        crate::server_sync::ServerOp::CreateChannel {
+        crate::server_sync::Op::CreateChannel {
             name: "secret".into(),
             channel_id: uuid::Uuid::new_v4().to_string(),
         },

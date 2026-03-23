@@ -5,11 +5,7 @@ use bevy::prelude::*;
 
 use crate::network_bridge::{LocalIdentity, NetworkCommandSender};
 use crate::theme;
-use willow_messaging::{Content, Message};
-use willow_transport::{pack_envelope, MessageType};
-
-#[allow(unused_imports)]
-use super::resources::ChatMessage;
+use willow_messaging::Content;
 
 use super::components::*;
 use super::constants;
@@ -199,6 +195,11 @@ pub fn handle_keyboard_input(
 }
 
 /// Send a message when Enter was pressed.
+///
+/// Messages are routed through the unified Op pipeline: the content is
+/// serialized into a [`crate::server_sync::Op::ChatMessage`], wrapped in a
+/// [`crate::server_sync::StampedOp`], recorded in the [`OpLog`] for dedup,
+/// and broadcast via [`crate::network_bridge::NetworkBridgeCommand::BroadcastOp`].
 #[allow(clippy::too_many_arguments)]
 pub fn send_message(
     mut input: ResMut<InputState>,
@@ -209,6 +210,7 @@ pub fn send_message(
     server_state: Res<ServerState>,
     db: Res<MessageDbRes>,
     profiles: Res<ProfileStore>,
+    mut op_log: ResMut<OpLog>,
 ) {
     if !input.send_requested {
         return;
@@ -223,14 +225,12 @@ pub fn send_message(
     }
 
     let channel_name = state.current_channel.clone();
-    let peer_id = identity.0.peer_id();
+    let peer_id_str = identity.0.peer_id().to_string();
 
     let topic = match server_state.topic_for_name(&channel_name) {
         Some(t) => t,
         None => channel_name.clone(),
     };
-
-    let channel_id = willow_messaging::ChannelId::new();
 
     // Handle edit or delete of an existing message.
     if let Some(ref target_id) = editing_id {
@@ -238,37 +238,44 @@ pub fn send_message(
             willow_messaging::MessageId(uuid::Uuid::parse_str(target_id).unwrap_or_default());
 
         let content = if body == "$$DELETE$$" {
-            // Delete the message.
             Content::Delete {
                 target: target_msg_id.clone(),
             }
         } else {
-            // Edit the message.
             Content::Edit {
                 target: target_msg_id.clone(),
                 new_body: body.clone(),
             }
         };
 
-        let msg = Message {
-            id: willow_messaging::MessageId::new(),
-            channel_id,
-            author: peer_id.clone(),
-            content: content.clone(),
-            created_at: chrono::Utc::now(),
-            hlc: state.hlc.now(),
+        // Encrypt if channel key exists.
+        let wire_content = if let Some(key) = key_store.keys.get(&topic) {
+            if let Ok(sealed) = willow_crypto::seal_content(&content, key, 0) {
+                Content::Encrypted(sealed)
+            } else {
+                content.clone()
+            }
+        } else {
+            content.clone()
         };
 
-        if let Ok(envelope_data) = pack_envelope(MessageType::Chat, &msg) {
-            if let Ok(signed_data) = willow_identity::pack(&envelope_data, &identity.0) {
-                let _ = net_cmd
-                    .0
-                    .send(crate::network_bridge::NetworkBridgeCommand::Publish {
-                        topic,
-                        data: signed_data,
-                    });
-            }
-        }
+        let content_data = willow_transport::pack(&wire_content).unwrap_or_default();
+        let stamped = crate::server_sync::StampedOp::new(
+            crate::server_sync::Op::ChatMessage {
+                topic,
+                content_data,
+            },
+            &mut state.hlc,
+            &peer_id_str,
+        );
+
+        op_log.record(stamped.clone());
+
+        let _ = net_cmd
+            .0
+            .send(crate::network_bridge::NetworkBridgeCommand::BroadcastOp(
+                stamped,
+            ));
 
         // Apply locally.
         let target_str = target_msg_id.to_string();
@@ -300,40 +307,60 @@ pub fn send_message(
 
     let replying = input.replying_to.take();
 
-    // Build the message — either a reply or a regular text message.
-    let mut msg = if let Some((ref parent_id, _)) = replying {
+    // Build content — either a reply or a regular text message.
+    let content = if let Some((ref parent_id, _)) = replying {
         let parent =
             willow_messaging::MessageId(uuid::Uuid::parse_str(parent_id).unwrap_or_default());
-        Message::reply(channel_id, peer_id.clone(), parent, &body, &mut state.hlc)
+        Content::Reply {
+            parent,
+            body: body.clone(),
+        }
     } else {
-        Message::text(channel_id, peer_id.clone(), &body, &mut state.hlc)
+        Content::Text { body: body.clone() }
     };
 
-    if let Some(key) = key_store.keys.get(&topic) {
-        if let Ok(sealed) = willow_crypto::seal_content(&msg.content, key, 0) {
-            msg.content = Content::Encrypted(sealed);
+    // Encrypt if channel key exists.
+    let wire_content = if let Some(key) = key_store.keys.get(&topic) {
+        if let Ok(sealed) = willow_crypto::seal_content(&content, key, 0) {
+            Content::Encrypted(sealed)
+        } else {
+            content.clone()
         }
-    }
+    } else {
+        content
+    };
 
-    if let Ok(envelope_data) = pack_envelope(MessageType::Chat, &msg) {
-        if let Ok(signed_data) = willow_identity::pack(&envelope_data, &identity.0) {
-            let _ = net_cmd
-                .0
-                .send(crate::network_bridge::NetworkBridgeCommand::Publish {
-                    topic: topic.clone(),
-                    data: signed_data,
-                });
-        }
-    }
+    // Serialize and create StampedOp.
+    let content_data = willow_transport::pack(&wire_content).unwrap_or_default();
+    let stamped = crate::server_sync::StampedOp::new(
+        crate::server_sync::Op::ChatMessage {
+            topic: topic.clone(),
+            content_data,
+        },
+        &mut state.hlc,
+        &peer_id_str,
+    );
 
-    let author = profiles.display_name(&peer_id.to_string());
-    let ts = state.hlc.latest().millis;
+    // Record for dedup (in-memory only — chat messages are not persisted to op log file).
+    op_log.record(stamped.clone());
+
+    // Broadcast via the unified op pipeline.
+    let _ = net_cmd
+        .0
+        .send(crate::network_bridge::NetworkBridgeCommand::BroadcastOp(
+            stamped.clone(),
+        ));
+
+    // Add to local display.
+    let author = profiles.display_name(&peer_id_str);
+    let ts = stamped.hlc.millis;
     let mut chat_msg = ChatMessage::new(topic, author.clone(), body.clone(), true, ts);
-    chat_msg.id = msg.id.to_string();
+    chat_msg.id = stamped.op_id.clone();
     if let Some((_, ref preview)) = replying {
         chat_msg.reply_preview = Some(preview.clone());
     }
 
+    // Persist to MessageDb.
     if let Some(ref db) = db.0 {
         if let Ok(db) = db.lock() {
             db.insert(&crate::storage::StoredMessage {
@@ -341,7 +368,7 @@ pub fn send_message(
                 author,
                 body,
                 is_local: true,
-                timestamp_ms: state.hlc.latest().millis,
+                timestamp_ms: ts,
             });
         }
     }

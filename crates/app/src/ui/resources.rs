@@ -145,17 +145,22 @@ pub struct OpLog {
 
 impl OpLog {
     /// Record a stamped op. Returns true if it was new (not a duplicate).
+    ///
+    /// Chat messages are tracked in `seen_ids` for dedup but are **not**
+    /// stored in `ops` — they are persisted via `MessageDb` instead.
     pub fn record(&mut self, stamped: crate::server_sync::StampedOp) -> bool {
         if !self.seen_ids.insert(stamped.op_id.clone()) {
             return false;
         }
         match &stamped.op {
-            crate::server_sync::ServerOp::TrustPeer { peer_id } => {
+            crate::server_sync::Op::TrustPeer { peer_id } => {
                 self.trusted_peers.insert(peer_id.clone());
             }
-            crate::server_sync::ServerOp::UntrustPeer { peer_id } => {
+            crate::server_sync::Op::UntrustPeer { peer_id } => {
                 self.trusted_peers.remove(peer_id);
             }
+            // Chat messages go to MessageDb, not the op log.
+            crate::server_sync::Op::ChatMessage { .. } => return true,
             _ => {}
         }
         self.ops.push(stamped);

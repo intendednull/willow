@@ -61,7 +61,7 @@ pub enum NetworkBridgeEvent {
         display_name: String,
     },
     /// A server operation was received from a peer.
-    ServerOpReceived {
+    OpReceived {
         stamped_op: crate::server_sync::StampedOp,
         from: String,
     },
@@ -97,7 +97,7 @@ pub enum NetworkBridgeCommand {
         display_name: String,
     },
     /// Broadcast a server state operation.
-    BroadcastServerOp(crate::server_sync::StampedOp),
+    BroadcastOp(crate::server_sync::StampedOp),
     /// Request missing ops from peers.
     RequestSync {
         latest_hlc: willow_messaging::hlc::HlcTimestamp,
@@ -297,7 +297,7 @@ async fn run_network(
                             match sync_msg {
                                 crate::server_sync::SyncMessage::Op(stamped_op) => {
                                     if stamped_op.author == from {
-                                        let _ = event_tx.send(NetworkBridgeEvent::ServerOpReceived {
+                                        let _ = event_tx.send(NetworkBridgeEvent::OpReceived {
                                             stamped_op,
                                             from,
                                         });
@@ -378,12 +378,21 @@ async fn run_network(
                                 let _ = node.publish(PROFILE_TOPIC, data);
                             }
                         }
-                        NetworkBridgeCommand::BroadcastServerOp(stamped_op) => {
+                        NetworkBridgeCommand::BroadcastOp(stamped_op) => {
                             let identity = willow_identity::Identity::from_ed25519_bytes(
                                 &crate::storage::load_identity_bytes().unwrap_or_default(),
                             ).unwrap_or_else(willow_identity::Identity::generate);
-                            if let Some(data) = crate::server_sync::pack_op(&stamped_op, &identity) {
-                                let _ = node.publish(crate::server_sync::SERVER_OPS_TOPIC, data);
+                            // Route chat messages to their channel topic;
+                            // all other ops go to the server ops topic.
+                            let publish_topic = match &stamped_op.op {
+                                crate::server_sync::Op::ChatMessage { topic, .. } => topic.clone(),
+                                _ => crate::server_sync::SERVER_OPS_TOPIC.to_string(),
+                            };
+                            if let Some(data) = crate::server_sync::pack_sync(
+                                &crate::server_sync::SyncMessage::Op(stamped_op),
+                                &identity,
+                            ) {
+                                let _ = node.publish(&publish_topic, data);
                             }
                         }
                         NetworkBridgeCommand::RequestSync { latest_hlc } => {
@@ -456,7 +465,7 @@ async fn run_network_wasm(
                             match sync_msg {
                                 crate::server_sync::SyncMessage::Op(stamped_op) => {
                                     if stamped_op.author == from {
-                                        let _ = event_tx.send(NetworkBridgeEvent::ServerOpReceived {
+                                        let _ = event_tx.send(NetworkBridgeEvent::OpReceived {
                                             stamped_op,
                                             from,
                                         });
@@ -519,16 +528,22 @@ async fn run_network_wasm(
                                 let _ = node.publish(PROFILE_TOPIC, data);
                             }
                         }
-                        NetworkBridgeCommand::BroadcastServerOp(stamped_op) => {
+                        NetworkBridgeCommand::BroadcastOp(stamped_op) => {
                             let identity = willow_identity::Identity::from_ed25519_bytes(
                                 &crate::storage::load_identity_bytes().unwrap_or_default(),
                             )
                             .unwrap_or_else(willow_identity::Identity::generate);
-                            if let Some(data) = crate::server_sync::pack_op(&stamped_op, &identity) {
-                                let _ = node.publish(
-                                    crate::server_sync::SERVER_OPS_TOPIC,
-                                    data,
-                                );
+                            // Route chat messages to their channel topic;
+                            // all other ops go to the server ops topic.
+                            let publish_topic = match &stamped_op.op {
+                                crate::server_sync::Op::ChatMessage { topic, .. } => topic.clone(),
+                                _ => crate::server_sync::SERVER_OPS_TOPIC.to_string(),
+                            };
+                            if let Some(data) = crate::server_sync::pack_sync(
+                                &crate::server_sync::SyncMessage::Op(stamped_op),
+                                &identity,
+                            ) {
+                                let _ = node.publish(&publish_topic, data);
                             }
                         }
                         NetworkBridgeCommand::RequestSync { latest_hlc } => {

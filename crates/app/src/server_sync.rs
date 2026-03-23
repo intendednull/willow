@@ -21,7 +21,7 @@ use willow_messaging::hlc::HlcTimestamp;
 
 /// A signed, timestamped server state mutation.
 ///
-/// Wraps a [`ServerOp`] with metadata for deduplication and ordering.
+/// Wraps an [`Op`] with metadata for deduplication and ordering.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StampedOp {
     /// Unique ID for deduplication.
@@ -31,12 +31,12 @@ pub struct StampedOp {
     /// PeerId of the author (verified against signature on receive).
     pub author: String,
     /// The actual mutation.
-    pub op: ServerOp,
+    pub op: Op,
 }
 
 impl StampedOp {
     /// Create a new stamped op with a fresh UUID and HLC timestamp.
-    pub fn new(op: ServerOp, hlc: &mut willow_messaging::hlc::HLC, author_peer_id: &str) -> Self {
+    pub fn new(op: Op, hlc: &mut willow_messaging::hlc::HLC, author_peer_id: &str) -> Self {
         Self {
             op_id: uuid::Uuid::new_v4().to_string(),
             hlc: hlc.now(),
@@ -46,9 +46,9 @@ impl StampedOp {
     }
 }
 
-/// A server state mutation.
+/// A state mutation (server ops and chat messages).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ServerOp {
+pub enum Op {
     CreateChannel {
         name: String,
         channel_id: String,
@@ -86,6 +86,12 @@ pub enum ServerOp {
     /// Remove trust from a peer.
     UntrustPeer {
         peer_id: String,
+    },
+    /// A chat message (text, reaction, edit, delete, reply, file).
+    /// `content_data` is the serialized `Content` enum (may be encrypted).
+    ChatMessage {
+        topic: String,
+        content_data: Vec<u8>,
     },
 }
 
@@ -141,7 +147,7 @@ mod tests {
     use willow_identity::Identity;
     use willow_messaging::hlc::HLC;
 
-    fn make_stamped(op: ServerOp) -> StampedOp {
+    fn make_stamped(op: Op) -> StampedOp {
         let mut hlc = HLC::new();
         StampedOp::new(op, &mut hlc, "test-peer")
     }
@@ -149,7 +155,7 @@ mod tests {
     #[test]
     fn pack_unpack_round_trip() {
         let id = Identity::generate();
-        let stamped = make_stamped(ServerOp::CreateChannel {
+        let stamped = make_stamped(Op::CreateChannel {
             name: "general".into(),
             channel_id: uuid::Uuid::new_v4().to_string(),
         });
@@ -159,15 +165,13 @@ mod tests {
 
         assert_eq!(signer, id.peer_id());
         assert_eq!(decoded.op_id, stamped.op_id);
-        assert!(
-            matches!(decoded.op, ServerOp::CreateChannel { ref name, .. } if name == "general")
-        );
+        assert!(matches!(decoded.op, Op::CreateChannel { ref name, .. } if name == "general"));
     }
 
     #[test]
     fn wrong_signer_still_verifies() {
         let id = Identity::generate();
-        let stamped = make_stamped(ServerOp::KickMember {
+        let stamped = make_stamped(Op::KickMember {
             peer_id: "someone".into(),
             rotated_keys: vec![],
         });
@@ -180,7 +184,7 @@ mod tests {
     #[test]
     fn tampered_data_fails() {
         let id = Identity::generate();
-        let stamped = make_stamped(ServerOp::CreateRole {
+        let stamped = make_stamped(Op::CreateRole {
             name: "admin".into(),
             role_id: uuid::Uuid::new_v4().to_string(),
         });
@@ -197,37 +201,37 @@ mod tests {
     fn all_op_variants_serialize() {
         let id = Identity::generate();
         let ops = vec![
-            ServerOp::CreateChannel {
+            Op::CreateChannel {
                 name: "test".into(),
                 channel_id: uuid::Uuid::new_v4().to_string(),
             },
-            ServerOp::DeleteChannel {
+            Op::DeleteChannel {
                 name: "test".into(),
             },
-            ServerOp::CreateRole {
+            Op::CreateRole {
                 name: "mod".into(),
                 role_id: uuid::Uuid::new_v4().to_string(),
             },
-            ServerOp::DeleteRole {
+            Op::DeleteRole {
                 role_id: "abc".into(),
             },
-            ServerOp::SetPermission {
+            Op::SetPermission {
                 role_id: "abc".into(),
                 permission: "Administrator".into(),
                 granted: true,
             },
-            ServerOp::AssignRole {
+            Op::AssignRole {
                 peer_id: "peer1".into(),
                 role_id: "role1".into(),
             },
-            ServerOp::KickMember {
+            Op::KickMember {
                 peer_id: "peer1".into(),
                 rotated_keys: vec![],
             },
-            ServerOp::TrustPeer {
+            Op::TrustPeer {
                 peer_id: "peer1".into(),
             },
-            ServerOp::UntrustPeer {
+            Op::UntrustPeer {
                 peer_id: "peer1".into(),
             },
         ];
@@ -244,7 +248,7 @@ mod tests {
     fn stamped_op_has_unique_ids() {
         let mut hlc = HLC::new();
         let a = StampedOp::new(
-            ServerOp::CreateChannel {
+            Op::CreateChannel {
                 name: "a".into(),
                 channel_id: uuid::Uuid::new_v4().to_string(),
             },
@@ -252,7 +256,7 @@ mod tests {
             "peer",
         );
         let b = StampedOp::new(
-            ServerOp::CreateChannel {
+            Op::CreateChannel {
                 name: "b".into(),
                 channel_id: uuid::Uuid::new_v4().to_string(),
             },
@@ -266,7 +270,7 @@ mod tests {
     fn stamped_op_hlc_advances() {
         let mut hlc = HLC::new();
         let a = StampedOp::new(
-            ServerOp::CreateChannel {
+            Op::CreateChannel {
                 name: "a".into(),
                 channel_id: uuid::Uuid::new_v4().to_string(),
             },
@@ -274,7 +278,7 @@ mod tests {
             "peer",
         );
         let b = StampedOp::new(
-            ServerOp::CreateChannel {
+            Op::CreateChannel {
                 name: "b".into(),
                 channel_id: uuid::Uuid::new_v4().to_string(),
             },
