@@ -23,6 +23,8 @@ pub fn handle_keyboard_input(
     mut input: ResMut<InputState>,
     mut view: ResMut<AppView>,
     mut settings_input: ResMut<SettingsInput>,
+    mut search: ResMut<SearchFilter>,
+    keys: Res<ButtonInput<KeyCode>>,
 ) {
     for event in key_events.read() {
         if !event.state.is_pressed() {
@@ -61,7 +63,37 @@ pub fn handle_keyboard_input(
                     }
                 }
             }
+        } else if search.active {
+            // Search mode.
+            match event.key_code {
+                KeyCode::Escape | KeyCode::Enter => {
+                    search.active = false;
+                    search.query.clear();
+                }
+                KeyCode::Backspace => {
+                    search.query.pop();
+                }
+                _ => {
+                    if let Some(ref s) = event.text {
+                        for c in s.chars() {
+                            if !c.is_control() {
+                                search.query.push(c);
+                            }
+                        }
+                    }
+                }
+            }
         } else {
+            // Chat mode.
+            // Ctrl+F opens search.
+            if event.key_code == KeyCode::KeyF
+                && (keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight))
+            {
+                search.active = true;
+                search.query.clear();
+                continue;
+            }
+
             match event.key_code {
                 KeyCode::Enter => {
                     if !input.text.is_empty() {

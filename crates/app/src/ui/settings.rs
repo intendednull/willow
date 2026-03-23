@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 
-use crate::network_bridge::{ConnectCommand, LocalIdentity};
+use crate::network_bridge::{ConnectCommand, LocalIdentity, NetworkCommandSender};
 use crate::theme;
 
 use super::components::*;
@@ -25,6 +25,7 @@ pub fn handle_settings_button(
 }
 
 /// Handle "Save & Reconnect" button in settings.
+#[allow(clippy::too_many_arguments)]
 pub fn handle_save_settings(
     query: Query<&Interaction, (Changed<Interaction>, With<SaveSettingsButton>)>,
     settings_input: Res<SettingsInput>,
@@ -32,6 +33,7 @@ pub fn handle_save_settings(
     mut view: ResMut<AppView>,
     mut profiles: ResMut<ProfileStore>,
     identity: Res<LocalIdentity>,
+    net_cmd: Res<NetworkCommandSender>,
     mut user_display_query: Query<&mut Text, With<LocalUserDisplay>>,
 ) {
     for interaction in &query {
@@ -58,6 +60,15 @@ pub fn handle_save_settings(
             } else {
                 Some(settings_input.relay_addr.trim().to_string())
             };
+
+            // Broadcast profile to peers.
+            if !display.is_empty() {
+                let _ = net_cmd.0.send(
+                    crate::network_bridge::NetworkBridgeCommand::BroadcastProfile {
+                        display_name: display.clone(),
+                    },
+                );
+            }
 
             connect_writer.write(ConnectCommand { relay_addr: relay });
             *view = AppView::Chat;

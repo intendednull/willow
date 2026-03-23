@@ -16,7 +16,7 @@ pub fn handle_network_events(
     mut state: ResMut<ChatState>,
     key_store: Res<ChannelKeyStore>,
     db: Res<MessageDbRes>,
-    profiles: Res<ProfileStore>,
+    mut profiles: ResMut<ProfileStore>,
     server_state: Res<ServerState>,
     mut unread: ResMut<UnreadCounts>,
 ) {
@@ -120,6 +120,12 @@ pub fn handle_network_events(
             NetworkBridgeEvent::FileDownloaded { filename, .. } => {
                 info!("file downloaded: {filename}");
             }
+            NetworkBridgeEvent::ProfileReceived {
+                peer_id,
+                display_name,
+            } => {
+                profiles.names.insert(peer_id.clone(), display_name.clone());
+            }
         }
     }
 }
@@ -149,8 +155,9 @@ pub fn sync_message_list(
     mut state: ResMut<ChatState>,
     list_query: Query<Entity, With<MessageList>>,
     server_state: Res<ServerState>,
+    search: Res<SearchFilter>,
 ) {
-    if !state.messages_dirty {
+    if !state.messages_dirty && !search.is_changed() {
         return;
     }
     state.messages_dirty = false;
@@ -165,10 +172,17 @@ pub fn sync_message_list(
         .topic_for_name(&state.current_channel)
         .unwrap_or_default();
 
+    let query_lower = search.query.to_lowercase();
     let visible: Vec<_> = state
         .messages
         .iter()
         .filter(|m| m.topic == current_topic)
+        .filter(|m| {
+            !search.active
+                || query_lower.is_empty()
+                || m.body.to_lowercase().contains(&query_lower)
+                || m.author.to_lowercase().contains(&query_lower)
+        })
         .collect();
 
     if visible.is_empty() {
@@ -240,13 +254,22 @@ pub fn update_peer_count(state: Res<ChatState>, mut query: Query<&mut Text, With
 /// Update the channel header text.
 pub fn update_channel_header(
     state: Res<ChatState>,
+    search: Res<SearchFilter>,
     mut query: Query<&mut Text, With<ChannelHeader>>,
 ) {
-    if !state.is_changed() {
+    if !state.is_changed() && !search.is_changed() {
         return;
     }
     for mut text in &mut query {
-        **text = format!("# {}", state.current_channel);
+        if search.active {
+            if search.query.is_empty() {
+                **text = format!("# {} — Search...", state.current_channel);
+            } else {
+                **text = format!("# {} — Search: {}", state.current_channel, search.query);
+            }
+        } else {
+            **text = format!("# {}", state.current_channel);
+        }
     }
 }
 

@@ -11,6 +11,9 @@ use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 
 use willow_identity::Identity;
 
+/// Global gossipsub topic for profile broadcasts.
+pub const PROFILE_TOPIC: &str = "_willow_profiles";
+
 /// Bevy resource holding the local user's identity.
 #[derive(Resource)]
 pub struct LocalIdentity(pub Identity);
@@ -52,6 +55,11 @@ pub enum NetworkBridgeEvent {
         filename: String,
         file_hash: String,
     },
+    /// A peer's profile was received.
+    ProfileReceived {
+        peer_id: String,
+        display_name: String,
+    },
 }
 
 /// Commands flowing from Bevy to the network.
@@ -68,6 +76,10 @@ pub enum NetworkBridgeCommand {
         filename: String,
         mime_type: String,
         data: Vec<u8>,
+    },
+    /// Broadcast our profile to peers.
+    BroadcastProfile {
+        display_name: String,
     },
 }
 
@@ -232,7 +244,7 @@ async fn run_network(
                 let Some(event) = event else { break };
                 match event {
                     NetworkEvent::Message { topic, data, source } => {
-                        // Check if this is a file manifest (MessageType::File).
+                        // Try to parse as a known envelope type.
                         if let Ok((manifest, willow_transport::MessageType::File)) =
                             willow_transport::unpack_envelope::<willow_files::FileManifest>(&data)
                         {
@@ -245,6 +257,13 @@ async fn run_network(
                                 file_hash: manifest.file_hash.to_hex(),
                                 from,
                                 topic: topic.clone(),
+                            });
+                        } else if let Ok((profile, willow_transport::MessageType::Identity)) =
+                            willow_transport::unpack_envelope::<willow_identity::UserProfile>(&data)
+                        {
+                            let _ = event_tx.send(NetworkBridgeEvent::ProfileReceived {
+                                peer_id: profile.peer_id.to_string(),
+                                display_name: profile.display_name,
                             });
                         } else {
                             let _ = event_tx.send(NetworkBridgeEvent::MessageReceived {
@@ -293,9 +312,19 @@ async fn run_network(
                         }
                         NetworkBridgeCommand::ShareFile { topic, filename, mime_type, data } => {
                             if let Some((manifest, envelope)) = file_mgr.share_file(&data, filename.clone(), mime_type) {
-                                // Broadcast manifest via gossipsub.
                                 node.publish(&topic, envelope)?;
                                 info!(file = %filename, hash = %manifest.file_hash, "shared file");
+                            }
+                        }
+                        NetworkBridgeCommand::BroadcastProfile { display_name } => {
+                            let profile = willow_identity::UserProfile::new(
+                                willow_identity::PeerId::from(node.peer_id()),
+                                &display_name,
+                            );
+                            if let Ok(data) = willow_transport::pack_envelope(
+                                willow_transport::MessageType::Identity, &profile,
+                            ) {
+                                let _ = node.publish(PROFILE_TOPIC, data);
                             }
                         }
                     }
@@ -372,6 +401,17 @@ async fn run_network_wasm(
                         NetworkBridgeCommand::ShareFile { topic, filename, mime_type, data } => {
                             if let Some((_manifest, envelope)) = file_mgr.share_file(&data, filename, mime_type) {
                                 node.publish(&topic, envelope)?;
+                            }
+                        }
+                        NetworkBridgeCommand::BroadcastProfile { display_name } => {
+                            let profile = willow_identity::UserProfile::new(
+                                willow_identity::PeerId::from(node.peer_id()),
+                                &display_name,
+                            );
+                            if let Ok(data) = willow_transport::pack_envelope(
+                                willow_transport::MessageType::Identity, &profile,
+                            ) {
+                                let _ = node.publish(PROFILE_TOPIC, data);
                             }
                         }
                     }

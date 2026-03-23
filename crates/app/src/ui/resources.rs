@@ -101,6 +101,13 @@ pub struct InputState {
     pub send_requested: bool,
 }
 
+/// Active search filter. When non-empty, only matching messages are shown.
+#[derive(Resource, Default)]
+pub struct SearchFilter {
+    pub query: String,
+    pub active: bool,
+}
+
 /// Per-channel symmetric encryption keys, keyed by gossipsub topic.
 #[derive(Resource, Default)]
 pub struct ChannelKeyStore {

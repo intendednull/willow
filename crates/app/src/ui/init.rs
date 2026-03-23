@@ -99,5 +99,23 @@ pub fn subscribe_channels(
                 topic.clone(),
             ));
     }
+
+    // Subscribe to the global profile broadcast topic.
+    let _ = net_cmd
+        .0
+        .send(crate::network_bridge::NetworkBridgeCommand::Subscribe(
+            crate::network_bridge::PROFILE_TOPIC.to_string(),
+        ));
+
+    // Broadcast our profile so peers learn our display name.
+    let saved_profile = crate::storage::load_profile().unwrap_or_default();
+    if !saved_profile.display_name.is_empty() {
+        let _ = net_cmd.0.send(
+            crate::network_bridge::NetworkBridgeCommand::BroadcastProfile {
+                display_name: saved_profile.display_name,
+            },
+        );
+    }
+
     info!("subscribed to {} channels", server_state.topic_map.len());
 }
