@@ -1074,8 +1074,12 @@ impl Client {
             }
         } else {
             // Create a new server context for this server.
+            // Use the ORIGINAL server ID from the invite so topics match.
             let mut server =
                 willow_channel::Server::new(&accepted.server_name, self.identity.peer_id());
+            server.id = willow_channel::ServerId(
+                uuid::Uuid::parse_str(&server_id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+            );
 
             let mut topic_map = HashMap::new();
             let mut keys = HashMap::new();
