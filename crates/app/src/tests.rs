@@ -551,7 +551,22 @@ fn tab_switches_settings_field() {
         SettingsField::RelayAddr
     );
 
-    // Tab again switches back.
+    // Tab cycles through all fields.
+    send_key(&mut app, KeyCode::Tab, None);
+    app.update();
+    assert_eq!(
+        app.world().resource::<SettingsInput>().focused_field,
+        SettingsField::InviteRecipient
+    );
+
+    send_key(&mut app, KeyCode::Tab, None);
+    app.update();
+    assert_eq!(
+        app.world().resource::<SettingsInput>().focused_field,
+        SettingsField::JoinCode
+    );
+
+    // Tab wraps back to DisplayName.
     send_key(&mut app, KeyCode::Tab, None);
     app.update();
     assert_eq!(

@@ -451,6 +451,177 @@ pub fn spawn_settings_panel(parent: &mut ChildSpawnerCommands, settings: &Settin
                 TextFont::from_font_size(11.0),
                 TextColor(theme::TEXT_PLACEHOLDER),
             ));
+
+            // ── Invite Section ──
+            panel.spawn(Node {
+                height: Val::Px(24.0),
+                ..default()
+            });
+
+            panel.spawn((
+                Text::new("Server Invites"),
+                TextFont::from_font_size(13.0),
+                TextColor(theme::TEXT_SECONDARY),
+            ));
+
+            panel.spawn(Node {
+                height: Val::Px(8.0),
+                ..default()
+            });
+
+            // Recipient PeerId input
+            panel.spawn((
+                Text::new("Recipient PeerId (ask them to copy from their sidebar)"),
+                TextFont::from_font_size(11.0),
+                TextColor(theme::TEXT_PLACEHOLDER),
+                Node {
+                    margin: UiRect::bottom(Val::Px(4.0)),
+                    ..default()
+                },
+            ));
+
+            panel
+                .spawn((
+                    Node {
+                        width: Val::Percent(100.0),
+                        min_height: Val::Px(36.0),
+                        padding: UiRect::horizontal(Val::Px(12.0)),
+                        align_items: AlignItems::Center,
+                        margin: UiRect::vertical(Val::Px(4.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    BackgroundColor(theme::INPUT_FIELD_BG),
+                    BorderColor::all(Color::NONE),
+                    SettingsFieldContainer(super::resources::SettingsField::InviteRecipient),
+                ))
+                .with_children(|field| {
+                    field.spawn((
+                        Text::new("12D3KooW..."),
+                        TextFont::from_font_size(13.0),
+                        TextColor(theme::TEXT_PLACEHOLDER),
+                        // Reuse JoinCodeInput as a generic text display; we'll add a dedicated one.
+                    ));
+                });
+
+            panel.spawn(Node {
+                height: Val::Px(4.0),
+                ..default()
+            });
+
+            // Generate invite button + code display
+            panel
+                .spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    ..default()
+                })
+                .with_children(|row| {
+                    row.spawn((
+                        Button,
+                        Node {
+                            padding: UiRect::new(
+                                Val::Px(12.0),
+                                Val::Px(12.0),
+                                Val::Px(6.0),
+                                Val::Px(6.0),
+                            ),
+                            margin: UiRect::right(Val::Px(8.0)),
+                            ..default()
+                        },
+                        BackgroundColor(theme::ACCENT),
+                        GenerateInviteButton,
+                    ))
+                    .with_children(|btn| {
+                        btn.spawn((
+                            Text::new("Generate Invite"),
+                            TextFont::from_font_size(12.0),
+                            TextColor(theme::TEXT_PRIMARY),
+                        ));
+                    });
+
+                    row.spawn((
+                        Text::new(""),
+                        TextFont::from_font_size(11.0),
+                        TextColor(theme::STATUS_ONLINE),
+                        InviteCodeDisplay,
+                    ));
+                });
+
+            // Join server section
+            panel.spawn(Node {
+                height: Val::Px(16.0),
+                ..default()
+            });
+
+            panel.spawn((
+                Text::new("Join a Server"),
+                TextFont::from_font_size(13.0),
+                TextColor(theme::TEXT_SECONDARY),
+            ));
+
+            panel.spawn((
+                Text::new("Paste an invite code from another user."),
+                TextFont::from_font_size(11.0),
+                TextColor(theme::TEXT_PLACEHOLDER),
+                Node {
+                    margin: UiRect::vertical(Val::Px(4.0)),
+                    ..default()
+                },
+            ));
+
+            panel
+                .spawn((
+                    Node {
+                        width: Val::Percent(100.0),
+                        min_height: Val::Px(36.0),
+                        padding: UiRect::horizontal(Val::Px(12.0)),
+                        align_items: AlignItems::Center,
+                        margin: UiRect::vertical(Val::Px(4.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    BackgroundColor(theme::INPUT_FIELD_BG),
+                    BorderColor::all(Color::NONE),
+                    SettingsFieldContainer(super::resources::SettingsField::JoinCode),
+                ))
+                .with_children(|field| {
+                    field.spawn((
+                        Text::new("Paste invite code..."),
+                        TextFont::from_font_size(13.0),
+                        TextColor(theme::TEXT_PLACEHOLDER),
+                        JoinCodeInput,
+                    ));
+                });
+
+
+            panel.spawn(Node {
+                height: Val::Px(8.0),
+                ..default()
+            });
+
+            panel
+                .spawn((
+                    Button,
+                    Node {
+                        padding: UiRect::new(
+                            Val::Px(12.0),
+                            Val::Px(12.0),
+                            Val::Px(6.0),
+                            Val::Px(6.0),
+                        ),
+                        ..default()
+                    },
+                    BackgroundColor(theme::ACCENT),
+                    JoinServerButton,
+                ))
+                .with_children(|btn| {
+                    btn.spawn((
+                        Text::new("Join Server"),
+                        TextFont::from_font_size(12.0),
+                        TextColor(theme::TEXT_PRIMARY),
+                    ));
+                });
         });
 }
 

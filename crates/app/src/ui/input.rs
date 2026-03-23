@@ -25,7 +25,7 @@ pub fn handle_keyboard_input(
     mut settings_input: ResMut<SettingsInput>,
     mut search: ResMut<SearchFilter>,
     keys: Res<ButtonInput<KeyCode>>,
-    channel_mgmt: Res<ChannelManagement>,
+    mut channel_mgmt: ResMut<ChannelManagement>,
 ) {
     for event in key_events.read() {
         if !event.state.is_pressed() {
@@ -42,16 +42,25 @@ pub fn handle_keyboard_input(
                 KeyCode::Tab => {
                     settings_input.focused_field = match settings_input.focused_field {
                         SettingsField::DisplayName => SettingsField::RelayAddr,
-                        SettingsField::RelayAddr => SettingsField::DisplayName,
+                        SettingsField::RelayAddr => SettingsField::InviteRecipient,
+                        SettingsField::InviteRecipient => SettingsField::JoinCode,
+                        SettingsField::JoinCode => SettingsField::DisplayName,
                     };
                 }
-                KeyCode::Backspace => {
-                    let target = match settings_input.focused_field {
-                        SettingsField::DisplayName => &mut settings_input.display_name,
-                        SettingsField::RelayAddr => &mut settings_input.relay_addr,
-                    };
-                    target.pop();
-                }
+                KeyCode::Backspace => match settings_input.focused_field {
+                    SettingsField::DisplayName => {
+                        settings_input.display_name.pop();
+                    }
+                    SettingsField::RelayAddr => {
+                        settings_input.relay_addr.pop();
+                    }
+                    SettingsField::InviteRecipient => {
+                        channel_mgmt.invite_recipient.pop();
+                    }
+                    SettingsField::JoinCode => {
+                        channel_mgmt.join_code.pop();
+                    }
+                },
                 KeyCode::Escape => {
                     *view = AppView::Chat;
                 }
@@ -60,6 +69,8 @@ pub fn handle_keyboard_input(
                         let target = match settings_input.focused_field {
                             SettingsField::DisplayName => &mut settings_input.display_name,
                             SettingsField::RelayAddr => &mut settings_input.relay_addr,
+                            SettingsField::InviteRecipient => &mut channel_mgmt.invite_recipient,
+                            SettingsField::JoinCode => &mut channel_mgmt.join_code,
                         };
                         for c in s.chars() {
                             if !c.is_control() {

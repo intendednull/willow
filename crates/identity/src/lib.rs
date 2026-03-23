@@ -79,6 +79,28 @@ impl PeerId {
     }
 }
 
+/// Extract Ed25519 public key bytes from a PeerId string.
+///
+/// Returns `None` if the string is not a valid PeerId or doesn't contain
+/// an Ed25519 key.
+pub fn ed25519_public_from_peer_id(peer_id_str: &str) -> Option<[u8; 32]> {
+    let inner: libp2p::PeerId = peer_id_str.parse().ok()?;
+    let digest = inner.as_ref().digest();
+    // Ed25519 protobuf encoding: [0x08, 0x01, 0x12, 0x20, ...32 bytes...]
+    if digest.len() >= 36
+        && digest[0] == 0x08
+        && digest[1] == 0x01
+        && digest[2] == 0x12
+        && digest[3] == 0x20
+    {
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&digest[4..36]);
+        Some(key)
+    } else {
+        None
+    }
+}
+
 impl std::fmt::Display for PeerId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)

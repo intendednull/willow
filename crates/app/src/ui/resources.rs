@@ -115,11 +115,11 @@ pub struct ChannelManagement {
     pub creating_channel: bool,
     /// The name being typed for a new channel.
     pub new_channel_name: String,
-    /// When set, contains a generated invite code to display to the user.
+    /// The recipient PeerId for invite generation.
+    pub invite_recipient: String,
+    /// When set, contains a generated invite code to display.
     pub invite_code: Option<String>,
-    /// When set, the user is pasting an invite code to join a server.
-    pub joining: bool,
-    /// The invite code being pasted.
+    /// The invite code being pasted to join a server.
     pub join_code: String,
 }
 
@@ -171,6 +171,8 @@ pub enum SettingsField {
     #[default]
     DisplayName,
     RelayAddr,
+    InviteRecipient,
+    JoinCode,
 }
 
 impl Default for SettingsInput {

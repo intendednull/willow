@@ -3,7 +3,7 @@
 use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
 
-use crate::network_bridge::NetworkCommandSender;
+use crate::network_bridge::{LocalIdentity, NetworkCommandSender};
 use crate::theme;
 use willow_channel::ChannelKind;
 
@@ -209,4 +209,164 @@ pub fn sync_new_channel_input(
             ));
         });
     });
+}
+
+// ───── Invite Systems ───────────────────────────────────────────────────────
+
+/// Handle "Generate Invite" button — creates a secure invite encrypted
+/// for the recipient PeerId entered in the settings.
+pub fn handle_generate_invite(
+    query: Query<&Interaction, (Changed<Interaction>, With<GenerateInviteButton>)>,
+    mut mgmt: ResMut<ChannelManagement>,
+    server_state: Res<ServerState>,
+    key_store: Res<ChannelKeyStore>,
+    mut invite_display: Query<&mut Text, With<InviteCodeDisplay>>,
+) {
+    for interaction in &query {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+
+        let recipient_str = mgmt.invite_recipient.trim();
+        if recipient_str.is_empty() {
+            mgmt.invite_code = Some("[enter recipient PeerId above]".into());
+            for mut text in &mut invite_display {
+                **text = "[enter recipient PeerId above]".to_string();
+            }
+            continue;
+        }
+
+        let Some(recipient_pub) = crate::invite::peer_id_to_ed25519_public(recipient_str) else {
+            mgmt.invite_code = Some("[invalid PeerId]".into());
+            for mut text in &mut invite_display {
+                **text = "[invalid PeerId]".to_string();
+            }
+            continue;
+        };
+
+        let Some(server) = &server_state.server else {
+            continue;
+        };
+
+        match crate::invite::generate_invite(
+            server,
+            &key_store.keys,
+            &server_state.topic_map,
+            &recipient_pub,
+        ) {
+            Some(code) => {
+                info!(
+                    "generated secure invite for {}",
+                    &recipient_str[..12.min(recipient_str.len())]
+                );
+                mgmt.invite_code = Some(code.clone());
+                for mut text in &mut invite_display {
+                    let preview = if code.len() > 40 {
+                        format!("{}... ({}B)", &code[..40], code.len())
+                    } else {
+                        code.clone()
+                    };
+                    **text = preview;
+                }
+            }
+            None => {
+                mgmt.invite_code = Some("[encryption failed]".into());
+                for mut text in &mut invite_display {
+                    **text = "[encryption failed]".to_string();
+                }
+            }
+        }
+    }
+}
+
+/// Handle "Join Server" button — decrypts an invite code and joins.
+#[allow(clippy::too_many_arguments)]
+pub fn handle_join_server(
+    query: Query<&Interaction, (Changed<Interaction>, With<JoinServerButton>)>,
+    mut mgmt: ResMut<ChannelManagement>,
+    identity: Res<LocalIdentity>,
+    mut key_store: ResMut<ChannelKeyStore>,
+    mut server_state: ResMut<ServerState>,
+    mut state: ResMut<ChatState>,
+    net_cmd: Res<NetworkCommandSender>,
+    mut commands: Commands,
+    list_query: Query<Entity, With<ChannelList>>,
+) {
+    for interaction in &query {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+
+        let code = mgmt.join_code.trim().to_string();
+        if code.is_empty() {
+            continue;
+        }
+
+        let Some(accepted) = crate::invite::accept_invite(&code, &identity.0) else {
+            warn!("failed to accept invite — invalid code or not intended for us");
+            mgmt.join_code.clear();
+            continue;
+        };
+
+        info!(
+            "accepted invite for server '{}' with {} channels",
+            accepted.server_name,
+            accepted.channel_keys.len()
+        );
+
+        // Subscribe to channels and store keys.
+        for (topic, (name, key)) in &accepted.channel_keys {
+            key_store.keys.insert(topic.clone(), key.clone());
+
+            if !server_state.topic_map.contains_key(topic) {
+                server_state.topic_map.insert(
+                    topic.clone(),
+                    (name.clone(), willow_channel::ChannelId::new()),
+                );
+            }
+
+            let _ = net_cmd
+                .0
+                .send(crate::network_bridge::NetworkBridgeCommand::Subscribe(
+                    topic.clone(),
+                ));
+        }
+
+        // Switch to the first new channel.
+        if let Some((_, (name, _))) = accepted.channel_keys.iter().next() {
+            state.current_channel = name.clone();
+            state.messages_dirty = true;
+        }
+
+        // Rebuild sidebar.
+        let names = server_state.channel_names();
+        rebuild_channel_list(&mut commands, &list_query, &names);
+
+        // Persist keys.
+        if let Some(server) = &server_state.server {
+            crate::storage::save_server(server, &key_store.keys);
+        }
+
+        mgmt.join_code.clear();
+    }
+}
+
+/// Sync the invite-related text fields in settings.
+pub fn sync_invite_fields(
+    mgmt: Res<ChannelManagement>,
+    mut join_query: Query<(&mut Text, &mut TextColor), With<JoinCodeInput>>,
+) {
+    if !mgmt.is_changed() {
+        return;
+    }
+
+    for (mut text, mut color) in &mut join_query {
+        if mgmt.join_code.is_empty() {
+            **text = "Paste invite code...".to_string();
+            *color = TextColor(theme::TEXT_PLACEHOLDER);
+        } else {
+            **text = mgmt.join_code.clone();
+            *color = TextColor(theme::TEXT_PRIMARY);
+        }
+    }
 }

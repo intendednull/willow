@@ -69,3 +69,19 @@ pub struct CreateChannelButton;
 /// Text display for the new channel name input.
 #[derive(Component)]
 pub struct NewChannelInput;
+
+/// "Generate Invite" button.
+#[derive(Component)]
+pub struct GenerateInviteButton;
+
+/// Text display showing the generated invite code.
+#[derive(Component)]
+pub struct InviteCodeDisplay;
+
+/// "Join Server" button (processes the join_code).
+#[derive(Component)]
+pub struct JoinServerButton;
+
+/// Text input for pasting an invite code.
+#[derive(Component)]
+pub struct JoinCodeInput;
