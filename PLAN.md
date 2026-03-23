@@ -135,7 +135,7 @@ A native desktop app where you and your friends can:
 - [x] Full wire format migration: WireMessage(Event) replaces SyncMessage(Op)
 - [x] Dual-format network layer (new Event + legacy Op) for interop
 - [x] Bevy app uses legacy format via bridge (deprecated but functional)
-- [ ] Relay as trusted EventStore client (deployment pattern)
+- [x] Relay stores events in SQLite as they pass through gossipsub
 - [ ] Multi-peer state verification (consensus on hash)
 
 ### Phase 9 — Voice & Video (FUTURE)
