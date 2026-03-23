@@ -9142,6 +9142,7 @@ dependencies = [
  "libp2p",
  "rusqlite",
  "serde",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

@@ -51,11 +51,7 @@ impl RelayEventStore {
 
     /// Load events for a specific topic since a given timestamp.
     #[allow(dead_code)]
-    pub fn events_for_topic_since(
-        &self,
-        topic: &str,
-        since_ms: u64,
-    ) -> Vec<Event> {
+    pub fn events_for_topic_since(&self, topic: &str, since_ms: u64) -> Vec<Event> {
         let mut stmt = match self.conn.prepare(
             "SELECT event_data FROM events WHERE topic = ?1 AND timestamp_ms > ?2 ORDER BY timestamp_ms LIMIT 500",
         ) {
@@ -84,16 +80,14 @@ impl RelayEventStore {
             Err(_) => return Vec::new(),
         };
 
-        stmt.query_map(params![since_ms as i64], |row| {
-            row.get::<_, Vec<u8>>(0)
-        })
-        .ok()
-        .map(|rows| {
-            rows.filter_map(|r| r.ok())
-                .filter_map(|data| willow_transport::unpack::<Event>(&data).ok())
-                .collect()
-        })
-        .unwrap_or_default()
+        stmt.query_map(params![since_ms as i64], |row| row.get::<_, Vec<u8>>(0))
+            .ok()
+            .map(|rows| {
+                rows.filter_map(|r| r.ok())
+                    .filter_map(|data| willow_transport::unpack::<Event>(&data).ok())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Total number of stored events.

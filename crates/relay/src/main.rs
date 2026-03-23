@@ -24,32 +24,12 @@
 //! willow-relay --identity relay.key
 //! ```
 
-use std::time::Duration;
-
 use anyhow::{Context, Result};
 use clap::Parser;
-use libp2p::{
-    futures::StreamExt, gossipsub, identify, kad, noise, relay, swarm::SwarmEvent, tcp, yamux,
-    Multiaddr, PeerId, SwarmBuilder,
-};
-use tracing::{debug, info, warn};
+use libp2p::{futures::StreamExt, identity::Keypair, Multiaddr};
+use tracing::info;
 
-mod event_store;
-use event_store::RelayEventStore;
-
-/// Wire message format — mirrors willow_client::WireMessage but defined
-/// locally to avoid pulling in the full client dependency.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-enum WireMessage {
-    Event(willow_state::Event),
-    SyncRequest {
-        state_hash: willow_state::StateHash,
-        topic: Option<String>,
-    },
-    SyncBatch {
-        events: Vec<willow_state::Event>,
-    },
-}
+use willow_relay::Relay;
 
 #[derive(Parser)]
 #[command(name = "willow-relay", about = "Willow P2P relay server")]
@@ -84,250 +64,47 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let keypair = load_or_generate_keypair(args.identity.as_deref())?;
-    let local_peer_id = PeerId::from(keypair.public());
 
-    // Build a willow Identity for signing sync responses.
-    let relay_identity = {
-        let ed_kp = keypair.clone().try_into_ed25519()
-            .expect("keypair should be ed25519");
-        let bytes = ed_kp.to_bytes();
-        willow_identity::Identity::from_ed25519_bytes(&bytes)
-            .expect("valid ed25519 bytes")
-    };
+    let data_dir = args.data_dir.unwrap_or_else(|| {
+        dirs::data_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("willow-relay")
+    });
+    let db_path = data_dir.join("events.db");
 
-    info!(%local_peer_id, "starting willow relay");
+    let mut relay = Relay::start(keypair, &db_path).await?;
 
-    // Build the swarm with TCP + WebSocket transports.
-    let mut swarm = SwarmBuilder::with_existing_identity(keypair)
-        .with_tokio()
-        .with_tcp(
-            tcp::Config::default(),
-            noise::Config::new,
-            yamux::Config::default,
-        )?
-        .with_websocket(noise::Config::new, yamux::Config::default)
-        .await?
-        .with_behaviour(|key| {
-            // GossipSub
-            let gossipsub_config = gossipsub::ConfigBuilder::default()
-                .heartbeat_interval(Duration::from_secs(1))
-                .validation_mode(gossipsub::ValidationMode::Strict)
-                .message_id_fn(|msg: &gossipsub::Message| {
-                    use std::collections::hash_map::DefaultHasher;
-                    use std::hash::{Hash, Hasher};
-                    let mut hasher = DefaultHasher::new();
-                    msg.data.hash(&mut hasher);
-                    msg.topic.hash(&mut hasher);
-                    gossipsub::MessageId::from(hasher.finish().to_string())
-                })
-                .build()
-                .expect("valid gossipsub config");
-
-            let gossipsub = gossipsub::Behaviour::new(
-                gossipsub::MessageAuthenticity::Signed(key.clone()),
-                gossipsub_config,
-            )
-            .expect("valid gossipsub behaviour");
-
-            // Kademlia
-            let kademlia =
-                kad::Behaviour::new(local_peer_id, kad::store::MemoryStore::new(local_peer_id));
-
-            // Identify
-            let identify = identify::Behaviour::new(identify::Config::new(
-                "/willow/1.0.0".to_string(),
-                key.public(),
-            ));
-
-            // Relay server (not client — this node IS the relay)
-            let relay = relay::Behaviour::new(local_peer_id, relay::Config::default());
-
-            Ok(RelayBehaviour {
-                gossipsub,
-                kademlia,
-                identify,
-                relay,
-            })
-        })?
-        .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(300)))
-        .build();
+    info!(%relay.peer_id, "starting willow relay");
 
     // Listen on TCP.
     let tcp_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{}", args.tcp_port)
         .parse()
         .context("invalid TCP address")?;
-    swarm.listen_on(tcp_addr)?;
+    relay.swarm.listen_on(tcp_addr)?;
 
     // Listen on WebSocket (TCP + /ws upgrade).
     let ws_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{}/ws", args.ws_port)
         .parse()
         .context("invalid WebSocket address")?;
-    swarm.listen_on(ws_addr)?;
+    relay.swarm.listen_on(ws_addr)?;
 
     info!(
         tcp_port = args.tcp_port,
         ws_port = args.ws_port,
+        events = relay.event_store.count(),
         "relay listening"
     );
 
-    // Open the event store for history persistence.
-    let data_dir = args
-        .data_dir
-        .unwrap_or_else(|| {
-            dirs::data_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join("willow-relay")
-        });
-    std::fs::create_dir_all(&data_dir).ok();
-    let mut event_store =
-        RelayEventStore::open(&data_dir.join("events.db")).expect("failed to open event store");
-    info!(path = ?data_dir.join("events.db"), events = event_store.count(), "event store ready");
-
     // Run the swarm event loop.
     loop {
-        match swarm.select_next_some().await {
-            SwarmEvent::NewListenAddr { address, .. } => {
-                info!(%address, "listening on");
-                println!("Relay PeerId: {local_peer_id}");
-                println!("Listening on: {address}");
-            }
-
-            SwarmEvent::ConnectionEstablished {
-                peer_id, endpoint, ..
-            } => {
-                info!(%peer_id, ?endpoint, "peer connected");
-            }
-
-            SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
-                debug!(%peer_id, ?cause, "peer disconnected");
-            }
-
-            SwarmEvent::Behaviour(RelayBehaviourEvent::Identify(identify::Event::Received {
-                peer_id,
-                info,
-            })) => {
-                debug!(%peer_id, protocol = %info.protocol_version, "identify received");
-                for addr in info.listen_addrs {
-                    swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
-                }
-            }
-
-            SwarmEvent::Behaviour(RelayBehaviourEvent::Gossipsub(
-                gossipsub::Event::Subscribed { peer_id, topic },
-            )) => {
-                info!(%peer_id, %topic, "peer subscribed");
-                // Auto-subscribe to any topic a peer subscribes to,
-                // so the relay can forward messages.
-                let topic = gossipsub::IdentTopic::new(topic.to_string());
-                if let Err(e) = swarm.behaviour_mut().gossipsub.subscribe(&topic) {
-                    warn!(%e, "failed to subscribe");
-                }
-            }
-
-            SwarmEvent::Behaviour(RelayBehaviourEvent::Gossipsub(gossipsub::Event::Message {
-                message,
-                ..
-            })) => {
-                let topic_str = message.topic.to_string();
-                let data = &message.data;
-
-                // Try to parse and store events as they pass through.
-                // The relay is just another peer that remembers everything.
-                if let Ok((envelope_bytes, _signer)) =
-                    willow_identity::unpack::<Vec<u8>>(data)
-                {
-                    if let Ok((wire_msg, willow_transport::MessageType::Channel)) =
-                        willow_transport::unpack_envelope::<WireMessage>(&envelope_bytes)
-                    {
-                        match wire_msg {
-                            WireMessage::Event(ref event) => {
-                                event_store.store_event(&topic_str, event, data);
-                                debug!(
-                                    id = %event.id,
-                                    author = %event.author,
-                                    topic = %topic_str,
-                                    "stored event"
-                                );
-                            }
-                            WireMessage::SyncRequest { ref topic, .. } => {
-                                // Respond with stored events — the relay provides history.
-                                let events = if let Some(ref t) = topic {
-                                    event_store.events_for_topic_since(t, 0)
-                                } else {
-                                    event_store.all_events_since(0)
-                                };
-
-                                if !events.is_empty() {
-                                    let batch = WireMessage::SyncBatch {
-                                        events: events.clone(),
-                                    };
-                                    if let Ok(envelope) = willow_transport::pack_envelope(
-                                        willow_transport::MessageType::Channel,
-                                        &batch,
-                                    ) {
-                                        if let Ok(signed) =
-                                            willow_identity::pack(&envelope, &relay_identity)
-                                        {
-                                            let reply_topic = topic
-                                                .as_deref()
-                                                .unwrap_or("_willow_server_ops");
-                                            let gt =
-                                                gossipsub::IdentTopic::new(reply_topic);
-                                            let _ = swarm
-                                                .behaviour_mut()
-                                                .gossipsub
-                                                .publish(gt, signed);
-                                            info!(
-                                                count = events.len(),
-                                                topic = %reply_topic,
-                                                "relay sent sync response"
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    debug!("sync request but no events stored");
-                                }
-                            }
-                            WireMessage::SyncBatch { ref events } => {
-                                for event in events {
-                                    event_store.store_event(&topic_str, event, &[]);
-                                }
-                                debug!(count = events.len(), "cached sync batch");
-                            }
-                        }
-                    }
-                }
-
-                debug!(
-                    topic = %topic_str,
-                    source = ?message.source,
-                    bytes = data.len(),
-                    stored = event_store.count(),
-                    "relaying message"
-                );
-            }
-
-            SwarmEvent::Behaviour(RelayBehaviourEvent::Relay(event)) => {
-                debug!(?event, "relay event");
-            }
-
-            _ => {}
-        }
+        let event = relay.swarm.select_next_some().await;
+        relay.handle_swarm_event(event);
     }
 }
 
-/// Composite behaviour for the relay server.
-#[derive(libp2p::swarm::NetworkBehaviour)]
-struct RelayBehaviour {
-    gossipsub: gossipsub::Behaviour,
-    kademlia: kad::Behaviour<kad::store::MemoryStore>,
-    identify: identify::Behaviour,
-    relay: relay::Behaviour,
-}
-
 /// Load an Ed25519 keypair from disk, or generate a fresh one.
-fn load_or_generate_keypair(path: Option<&std::path::Path>) -> Result<libp2p::identity::Keypair> {
-    use libp2p::identity::{ed25519, Keypair};
+fn load_or_generate_keypair(path: Option<&std::path::Path>) -> Result<Keypair> {
+    use libp2p::identity::ed25519;
 
     if let Some(path) = path {
         if let Ok(mut bytes) = std::fs::read(path) {
