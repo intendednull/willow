@@ -1633,3 +1633,59 @@ fn delete_marks_message() {
     assert!(state.messages[0].deleted);
     assert_eq!(state.messages[0].body, "[message deleted]");
 }
+
+// ───── Reply Tests ──────────────────────────────────────────────────────────
+
+#[test]
+fn reply_shows_parent_preview() {
+    let (mut app, _rx) = test_app();
+
+    // Send a parent message.
+    let sender = Identity::generate();
+    let mut hlc = HLC::new();
+    let parent = Message::text(
+        ChannelId::new(),
+        sender.peer_id(),
+        "parent message",
+        &mut hlc,
+    );
+    let parent_id = parent.id.clone();
+    let data = sign_envelope(&parent, &sender);
+
+    app.world_mut()
+        .write_message(NetworkBridgeEvent::MessageReceived {
+            topic: "general".into(),
+            data,
+            source: Some(sender.peer_id().to_string()),
+        });
+    app.update();
+
+    // Send a reply.
+    let replier = Identity::generate();
+    let reply = Message::reply(
+        ChannelId::new(),
+        replier.peer_id(),
+        parent_id,
+        "this is my reply",
+        &mut hlc,
+    );
+    let reply_data = sign_envelope(&reply, &replier);
+
+    app.world_mut()
+        .write_message(NetworkBridgeEvent::MessageReceived {
+            topic: "general".into(),
+            data: reply_data,
+            source: Some(replier.peer_id().to_string()),
+        });
+    app.update();
+
+    let state = app.world().resource::<ChatState>();
+    assert_eq!(state.messages.len(), 2);
+    assert_eq!(state.messages[1].body, "this is my reply");
+    assert!(state.messages[1].reply_preview.is_some());
+    assert!(state.messages[1]
+        .reply_preview
+        .as_ref()
+        .unwrap()
+        .contains("parent message"));
+}

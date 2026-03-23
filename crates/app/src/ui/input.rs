@@ -115,6 +115,28 @@ pub fn handle_keyboard_input(
                 continue;
             }
 
+            // Ctrl+R → reply to last message.
+            if event.key_code == KeyCode::KeyR
+                && (keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight))
+                && input.replying_to.is_none()
+            {
+                if let Some(last_msg) = state.messages.iter().rev().find(|m| !m.deleted) {
+                    let preview = if last_msg.body.len() > 40 {
+                        format!("{}: {}...", last_msg.author, &last_msg.body[..40])
+                    } else {
+                        format!("{}: {}", last_msg.author, last_msg.body)
+                    };
+                    input.replying_to = Some((last_msg.id.clone(), preview));
+                }
+                continue;
+            }
+
+            // Escape cancels reply.
+            if event.key_code == KeyCode::Escape && input.replying_to.is_some() {
+                input.replying_to = None;
+                continue;
+            }
+
             // Up arrow with empty input → edit last own message.
             if event.key_code == KeyCode::ArrowUp
                 && input.text.is_empty()
@@ -276,7 +298,16 @@ pub fn send_message(
         return;
     }
 
-    let mut msg = Message::text(channel_id, peer_id.clone(), &body, &mut state.hlc);
+    let replying = input.replying_to.take();
+
+    // Build the message — either a reply or a regular text message.
+    let mut msg = if let Some((ref parent_id, _)) = replying {
+        let parent =
+            willow_messaging::MessageId(uuid::Uuid::parse_str(parent_id).unwrap_or_default());
+        Message::reply(channel_id, peer_id.clone(), parent, &body, &mut state.hlc)
+    } else {
+        Message::text(channel_id, peer_id.clone(), &body, &mut state.hlc)
+    };
 
     if let Some(key) = key_store.keys.get(&topic) {
         if let Ok(sealed) = willow_crypto::seal_content(&msg.content, key, 0) {
@@ -299,6 +330,9 @@ pub fn send_message(
     let ts = state.hlc.latest().millis;
     let mut chat_msg = ChatMessage::new(topic, author.clone(), body.clone(), true, ts);
     chat_msg.id = msg.id.to_string();
+    if let Some((_, ref preview)) = replying {
+        chat_msg.reply_preview = Some(preview.clone());
+    }
 
     if let Some(ref db) = db.0 {
         if let Ok(db) = db.lock() {
@@ -325,12 +359,20 @@ pub fn sync_input_text(
         return;
     }
     for (mut text, mut color) in &mut query {
-        if input.text.is_empty() && input.editing_message_id.is_none() {
-            **text = constants::CHAT_PLACEHOLDER.to_string();
-            *color = TextColor(theme::TEXT_PLACEHOLDER);
-        } else if input.editing_message_id.is_some() {
+        if input.editing_message_id.is_some() {
             **text = format!("[editing] {}", input.text);
             *color = TextColor(theme::UNREAD_HIGHLIGHT);
+        } else if let Some((_, ref preview)) = input.replying_to {
+            if input.text.is_empty() {
+                **text = format!("↳ replying to {preview}");
+                *color = TextColor(theme::TEXT_MUTED);
+            } else {
+                **text = format!("↳ {}", input.text);
+                *color = TextColor(theme::TEXT_PRIMARY);
+            }
+        } else if input.text.is_empty() {
+            **text = constants::CHAT_PLACEHOLDER.to_string();
+            *color = TextColor(theme::TEXT_PLACEHOLDER);
         } else {
             **text = input.text.clone();
             *color = TextColor(theme::TEXT_PRIMARY);

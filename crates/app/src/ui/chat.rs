@@ -105,6 +105,41 @@ pub fn handle_network_events(
                     continue;
                 }
 
+                // Handle replies — create a message with reply_preview.
+                if let Content::Reply {
+                    ref parent,
+                    ref body,
+                } = content
+                {
+                    let author = profiles.display_name(&signer.to_string());
+                    let parent_str = parent.to_string();
+
+                    // Build reply preview from the parent message.
+                    let preview = state.messages.iter().find(|m| m.id == parent_str).map(|m| {
+                        let text = if m.body.len() > 50 {
+                            format!("{}...", &m.body[..50])
+                        } else {
+                            m.body.clone()
+                        };
+                        format!("{}: {text}", m.author)
+                    });
+
+                    let mut chat_msg = ChatMessage::new(
+                        topic.clone(),
+                        author.clone(),
+                        body.clone(),
+                        false,
+                        msg.hlc.millis,
+                    );
+                    chat_msg.id = msg.id.to_string();
+                    chat_msg.reply_preview = preview;
+
+                    state.messages.push(chat_msg);
+                    state.messages_dirty = true;
+                    state.hlc.receive(msg.hlc);
+                    continue;
+                }
+
                 if let Content::Text { ref body } = content {
                     let author = profiles.display_name(&signer.to_string());
 
@@ -278,6 +313,22 @@ pub fn sync_message_list(
                     ..default()
                 })
                 .with_children(|col| {
+                    // Reply preview (if this is a reply)
+                    if let Some(ref preview) = msg.reply_preview {
+                        col.spawn(Node {
+                            padding: UiRect::left(Val::Px(48.0)),
+                            margin: UiRect::bottom(Val::Px(2.0)),
+                            ..default()
+                        })
+                        .with_children(|reply_row| {
+                            reply_row.spawn((
+                                Text::new(format!("↳ {preview}")),
+                                TextFont::from_font_size(11.0),
+                                TextColor(theme::TEXT_MUTED),
+                            ));
+                        });
+                    }
+
                     // Message text row
                     col.spawn(Node::default()).with_children(|row| {
                         row.spawn((

@@ -95,6 +95,8 @@ pub struct ChatMessage {
     pub edited: bool,
     /// Whether this message has been deleted (shows "[deleted]").
     pub deleted: bool,
+    /// If this is a reply, the parent message preview ("Author: text...").
+    pub reply_preview: Option<String>,
 }
 
 impl ChatMessage {
@@ -115,6 +117,7 @@ impl ChatMessage {
             reactions: HashMap::new(),
             edited: false,
             deleted: false,
+            reply_preview: None,
         }
     }
 }
@@ -135,6 +138,8 @@ pub struct InputState {
     pub send_requested: bool,
     /// When editing, holds the message ID being edited.
     pub editing_message_id: Option<String>,
+    /// When replying, holds the parent message ID and a preview.
+    pub replying_to: Option<(String, String)>, // (message_id, "Author: preview...")
 }
 
 /// Active search filter. When non-empty, only matching messages are shown.
