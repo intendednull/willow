@@ -506,8 +506,10 @@ fn default_view_is_chat() {
 fn typing_in_settings_view_updates_name_field() {
     let (mut app, _rx) = test_app();
 
-    // Switch to settings view (default focused field is DisplayName).
+    // Switch to settings view and clear any persisted values.
     *app.world_mut().resource_mut::<AppView>() = AppView::Settings;
+    app.world_mut().resource_mut::<SettingsInput>().display_name = String::new();
+    app.world_mut().resource_mut::<SettingsInput>().relay_addr = String::new();
 
     send_key(&mut app, KeyCode::KeyA, Some("A"));
     send_key(&mut app, KeyCode::KeyL, Some("l"));
@@ -560,6 +562,8 @@ fn typing_in_relay_field_after_tab() {
     let (mut app, _rx) = test_app();
 
     *app.world_mut().resource_mut::<AppView>() = AppView::Settings;
+    app.world_mut().resource_mut::<SettingsInput>().display_name = String::new();
+    app.world_mut().resource_mut::<SettingsInput>().relay_addr = String::new();
 
     // Tab to relay field.
     send_key(&mut app, KeyCode::Tab, None);

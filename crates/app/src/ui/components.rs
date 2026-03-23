@@ -1,0 +1,59 @@
+//! Bevy marker components for the Willow UI.
+
+use bevy::prelude::*;
+
+#[derive(Component)]
+pub struct MessageList;
+
+#[derive(Component)]
+pub struct ChannelHeader;
+
+#[derive(Component)]
+pub struct PeerCount;
+
+#[derive(Component)]
+pub struct InputText;
+
+/// Sidebar channel button. Stores the channel *name*.
+#[derive(Component)]
+pub struct ChannelButton(pub String);
+
+/// Container for the channel button list so we can rebuild it dynamically.
+#[derive(Component)]
+pub struct ChannelList;
+
+/// The main content area (chat + input OR settings panel).
+#[derive(Component)]
+pub struct MainContent;
+
+/// Settings panel root.
+#[derive(Component)]
+pub struct SettingsPanel;
+
+/// Chat panel root (channel header + messages + input).
+#[derive(Component)]
+pub struct ChatPanel;
+
+/// Settings relay address text display.
+#[derive(Component)]
+pub struct SettingsRelayText;
+
+/// Settings button in the sidebar.
+#[derive(Component)]
+pub struct SettingsButton;
+
+/// Save button in settings.
+#[derive(Component)]
+pub struct SaveSettingsButton;
+
+/// Display name text field in settings.
+#[derive(Component)]
+pub struct SettingsNameText;
+
+/// The sidebar display of the local user's name.
+#[derive(Component)]
+pub struct LocalUserDisplay;
+
+/// "Share File" button in the input area.
+#[derive(Component)]
+pub struct ShareFileButton;
