@@ -110,85 +110,123 @@ impl Client {
             }
         }
 
-        // Load or create server.
-        let (server, keys) = if let Some((server, keys)) = storage::load_server() {
-            (server, keys)
-        } else {
-            let mut server = willow_channel::Server::new("My Server", identity.peer_id());
-            let mut keys = HashMap::new();
+        // Load servers. Try multi-server list first, fall back to legacy single server.
+        let server_ids = storage::load_server_list();
+        let mut first_server_id = None;
 
-            let default_channels = ["general", "random", "voice"];
-            for name in default_channels {
-                let ch_id = server
-                    .create_channel(name, willow_channel::ChannelKind::Text)
-                    .expect("default channel creation should not fail");
+        if let Some(ids) = &server_ids {
+            // Load each server from per-server storage.
+            for id in ids {
+                if let Some((server, keys)) = storage::load_server_by_id(id) {
+                    let mut topic_map = HashMap::new();
+                    for ch in server.channels() {
+                        let topic = util::make_topic(&server, &ch.name);
+                        topic_map.insert(topic, (ch.name.clone(), ch.id.clone()));
+                    }
 
-                let topic = util::make_topic(&server, name);
-                if let Some(key) = server.channel_key(&ch_id) {
-                    keys.insert(topic, key.clone());
+                    let mut op_log = OpLog::default();
+                    if let Some(ops) = storage::load_op_log_for(id) {
+                        for op in ops {
+                            op_log.record(op);
+                        }
+                    }
+
+                    let ctx = ServerContext {
+                        server,
+                        topic_map,
+                        keys,
+                        op_log,
+                        unread: HashMap::new(),
+                    };
+                    state.servers.insert(id.clone(), ctx);
+                    if first_server_id.is_none() {
+                        first_server_id = Some(id.clone());
+                    }
+                }
+            }
+        }
+
+        // Fall back to legacy single-server storage or create default.
+        if state.servers.is_empty() {
+            let (server, keys) = if let Some((server, keys)) = storage::load_server() {
+                (server, keys)
+            } else {
+                let mut server =
+                    willow_channel::Server::new("My Server", identity.peer_id());
+                let mut keys = HashMap::new();
+                for name in ["general", "random", "voice"] {
+                    let ch_id = server
+                        .create_channel(name, willow_channel::ChannelKind::Text)
+                        .expect("default channel creation should not fail");
+                    let topic = util::make_topic(&server, name);
+                    if let Some(key) = server.channel_key(&ch_id) {
+                        keys.insert(topic, key.clone());
+                    }
+                }
+                (server, keys)
+            };
+
+            let sid = server.id.to_string();
+            let mut topic_map = HashMap::new();
+            for ch in server.channels() {
+                let topic = util::make_topic(&server, &ch.name);
+                topic_map.insert(topic, (ch.name.clone(), ch.id.clone()));
+            }
+
+            let mut op_log = OpLog::default();
+            if let Some(ops) = storage::load_op_log() {
+                for op in ops {
+                    op_log.record(op);
                 }
             }
 
-            (server, keys)
-        };
-
-        // Build the ServerContext for this server.
-        let server_id = server.id.to_string();
-        let mut topic_map = HashMap::new();
-        for ch in server.channels() {
-            let topic = util::make_topic(&server, &ch.name);
-            topic_map.insert(topic.clone(), (ch.name.clone(), ch.id.clone()));
+            let ctx = ServerContext {
+                server,
+                topic_map,
+                keys,
+                op_log,
+                unread: HashMap::new(),
+            };
+            state.servers.insert(sid.clone(), ctx);
+            first_server_id = Some(sid);
         }
 
-        // Also populate legacy fields for backward compatibility.
-        state.server.topic_map = topic_map.clone();
-        state.key_store.keys = keys.clone();
+        state.active_server = first_server_id.clone();
 
+        // Populate legacy fields from the active server.
+        if let Some(sid) = &state.active_server {
+            if let Some(ctx) = state.servers.get(sid) {
+                state.server.topic_map = ctx.topic_map.clone();
+                state.key_store.keys = ctx.keys.clone();
+                let ops: Vec<_> = ctx.op_log.ops.clone();
+                state.op_log = OpLog::default();
+                for op in ops {
+                    state.op_log.record(op);
+                }
+            }
+        }
+
+        // Save in multi-server format.
         if config.persistence {
-            storage::save_server(&server, &keys);
+            Self::persist_servers(&state);
         }
 
-        // Load op log.
-        let mut op_log = OpLog::default();
-        if let Some(ops) = storage::load_op_log() {
-            for op in ops {
-                op_log.record(op);
-            }
-        }
-        // Also populate legacy op_log.
-        state.op_log = OpLog::default();
-        if let Some(ops) = storage::load_op_log() {
-            for op in ops {
-                state.op_log.record(op);
-            }
-        }
-
-        let ctx = ServerContext {
-            server: server.clone(),
-            topic_map: topic_map.clone(),
-            keys,
-            op_log,
-            unread: HashMap::new(),
-        };
-
-        state.servers.insert(server_id.clone(), ctx);
-        state.active_server = Some(server_id);
-
-        // Load persisted messages.
+        // Load persisted messages for all servers.
         if let Some(ref db_arc) = state.message_db {
             if let Ok(db_lock) = db_arc.lock() {
-                let active_id = state.active_server.clone().unwrap_or_default();
-                for topic in topic_map.keys() {
-                    let stored = db_lock.load_topic(topic, 500);
-                    for sm in stored {
-                        state.chat.messages.push(ChatMessage::new(
-                            active_id.clone(),
-                            sm.topic,
-                            sm.author,
-                            sm.body,
-                            sm.is_local,
-                            sm.timestamp_ms,
-                        ));
+                for (sid, ctx) in &state.servers {
+                    for topic in ctx.topic_map.keys() {
+                        let stored = db_lock.load_topic(topic, 500);
+                        for sm in stored {
+                            state.chat.messages.push(ChatMessage::new(
+                                sid.clone(),
+                                sm.topic,
+                                sm.author,
+                                sm.body,
+                                sm.is_local,
+                                sm.timestamp_ms,
+                            ));
+                        }
                     }
                 }
             }
@@ -207,8 +245,10 @@ impl Client {
             }
         }
 
-        // Set legacy server field.
-        state.server.server = Some(server);
+        // Set legacy server field from active context.
+        if let Some(ctx) = state.active() {
+            state.server.server = Some(ctx.server.clone());
+        }
 
         Self {
             state,
@@ -219,6 +259,16 @@ impl Client {
             config,
             deferred_channels: Some(deferred),
             connected_subscribed: false,
+        }
+    }
+
+    /// Persist all servers to storage.
+    fn persist_servers(state: &ClientState) {
+        let ids: Vec<String> = state.servers.keys().cloned().collect();
+        storage::save_server_list(&ids);
+        for (id, ctx) in &state.servers {
+            storage::save_server_by_id(id, &ctx.server, &ctx.keys);
+            storage::save_op_log_for(id, &ctx.op_log.ops);
         }
     }
 
@@ -1059,10 +1109,8 @@ impl Client {
             self.state.chat.messages_dirty = true;
         }
 
-        // Save the active server.
-        if let Some(ctx) = self.state.active() {
-            storage::save_server(&ctx.server, &ctx.keys);
-        }
+        // Persist all servers so the joined server survives refresh.
+        Self::persist_servers(&self.state);
 
         Ok(())
     }

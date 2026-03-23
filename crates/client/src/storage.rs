@@ -85,6 +85,59 @@ pub fn load_settings() -> Option<NetworkSettings> {
     willow_transport::unpack(&load_raw("settings")?).ok()
 }
 
+// ---- Multi-server persistence -----------------------------------------------
+
+/// Save a single server context by ID.
+pub fn save_server_by_id(id: &str, server: &Server, keys: &HashMap<String, ChannelKey>) {
+    if let Ok(bytes) = willow_transport::pack(server) {
+        save_raw(&format!("srv_{id}"), &bytes);
+    }
+    let saved = SavedKeys(
+        keys.iter()
+            .map(|(topic, key)| (topic.clone(), *key.as_bytes()))
+            .collect(),
+    );
+    if let Ok(bytes) = willow_transport::pack(&saved) {
+        save_raw(&format!("srvkeys_{id}"), &bytes);
+    }
+}
+
+/// Load a single server context by ID.
+pub fn load_server_by_id(id: &str) -> Option<(Server, HashMap<String, ChannelKey>)> {
+    let server: Server = willow_transport::unpack(&load_raw(&format!("srv_{id}"))?).ok()?;
+    let saved: SavedKeys = willow_transport::unpack(&load_raw(&format!("srvkeys_{id}"))?).ok()?;
+    let keys = saved
+        .0
+        .into_iter()
+        .map(|(topic, bytes)| (topic, ChannelKey::from_bytes(bytes)))
+        .collect();
+    Some((server, keys))
+}
+
+/// Save the list of known server IDs.
+pub fn save_server_list(ids: &[String]) {
+    if let Ok(bytes) = willow_transport::pack(&ids.to_vec()) {
+        save_raw("server_list", &bytes);
+    }
+}
+
+/// Load the list of known server IDs.
+pub fn load_server_list() -> Option<Vec<String>> {
+    willow_transport::unpack(&load_raw("server_list")?).ok()
+}
+
+/// Save an op log for a specific server.
+pub fn save_op_log_for(id: &str, ops: &[crate::ops::StampedOp]) {
+    if let Ok(bytes) = willow_transport::pack(&ops.to_vec()) {
+        save_raw(&format!("oplog_{id}"), &bytes);
+    }
+}
+
+/// Load an op log for a specific server.
+pub fn load_op_log_for(id: &str) -> Option<Vec<crate::ops::StampedOp>> {
+    willow_transport::unpack(&load_raw(&format!("oplog_{id}"))?).ok()
+}
+
 pub fn save_op_log(ops: &[crate::ops::StampedOp]) {
     if let Ok(bytes) = willow_transport::pack(&ops.to_vec()) {
         save_raw("oplog", &bytes);
