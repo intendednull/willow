@@ -23,6 +23,14 @@
 </head>
 <body>
     <script type="module">
+        // Capture paste events before Bevy prevents default on key events.
+        document.addEventListener('paste', (e) => {
+            const text = (e.clipboardData || window.clipboardData)?.getData('text');
+            if (text) {
+                window.__willow_paste = text;
+            }
+        }, true);
+
         import init from './pkg/willow-app.js';
         await init();
 

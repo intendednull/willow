@@ -26,9 +26,20 @@ pub fn copy_to_clipboard(text: &str) {
     }
 }
 
-/// Read text from the clipboard (WASM — not supported synchronously).
-/// The async clipboard API requires a Promise; return None for now.
+/// Read text from the clipboard (WASM).
+///
+/// Reads from `window.__willow_paste`, which is set by a `paste` event
+/// listener in index.html. Clears the value after reading.
 #[cfg(target_arch = "wasm32")]
 pub fn read_clipboard() -> Option<String> {
-    None
+    use web_sys::wasm_bindgen::JsValue;
+    use web_sys::js_sys;
+    let window = web_sys::window()?;
+    let key = JsValue::from_str("__willow_paste");
+    let val = js_sys::Reflect::get(&window, &key).ok()?;
+    if val.is_undefined() || val.is_null() {
+        return None;
+    }
+    let _ = js_sys::Reflect::set(&window, &key, &JsValue::NULL);
+    val.as_string().filter(|s: &String| !s.is_empty())
 }
