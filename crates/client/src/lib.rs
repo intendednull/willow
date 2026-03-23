@@ -164,48 +164,34 @@ impl Client {
             }
         }
 
-        // Fall back to legacy single-server storage or create default.
+        // Fall back to legacy single-server storage. Do NOT create a default.
         if state.servers.is_empty() {
-            let (server, keys) = if let Some((server, keys)) = storage::load_server() {
-                (server, keys)
-            } else {
-                let mut server = willow_channel::Server::new("My Server", identity.peer_id());
-                let mut keys = HashMap::new();
-                for name in ["general", "random", "voice"] {
-                    let ch_id = server
-                        .create_channel(name, willow_channel::ChannelKind::Text)
-                        .expect("default channel creation should not fail");
-                    let topic = util::make_topic(&server, name);
-                    if let Some(key) = server.channel_key(&ch_id) {
-                        keys.insert(topic, key.clone());
+            if let Some((server, keys)) = storage::load_server() {
+                let sid = server.id.to_string();
+                let mut topic_map = HashMap::new();
+                for ch in server.channels() {
+                    let topic = util::make_topic(&server, &ch.name);
+                    topic_map.insert(topic, (ch.name.clone(), ch.id.clone()));
+                }
+
+                let mut op_log = OpLog::default();
+                if let Some(ops) = storage::load_op_log() {
+                    for op in ops {
+                        op_log.record(op);
                     }
                 }
-                (server, keys)
-            };
 
-            let sid = server.id.to_string();
-            let mut topic_map = HashMap::new();
-            for ch in server.channels() {
-                let topic = util::make_topic(&server, &ch.name);
-                topic_map.insert(topic, (ch.name.clone(), ch.id.clone()));
+                let ctx = ServerContext {
+                    server,
+                    topic_map,
+                    keys,
+                    op_log,
+                    unread: HashMap::new(),
+                };
+                state.servers.insert(sid.clone(), ctx);
+                first_server_id = Some(sid);
             }
-
-            let mut op_log = OpLog::default();
-            if let Some(ops) = storage::load_op_log() {
-                for op in ops {
-                    op_log.record(op);
-                }
-            }
-
-            let ctx = ServerContext {
-                server,
-                topic_map,
-                keys,
-                op_log,
-                unread: HashMap::new(),
-            };
-            state.servers.insert(sid.clone(), ctx);
-            first_server_id = Some(sid);
+            // If no legacy server found, servers stays empty — user must create or join.
         }
 
         state.active_server = first_server_id.clone();
@@ -969,6 +955,127 @@ impl Client {
     /// Get the ID of the currently active server.
     pub fn active_server_id(&self) -> Option<&str> {
         self.state.active_server.as_deref()
+    }
+
+    /// Check whether any servers exist.
+    pub fn has_servers(&self) -> bool {
+        !self.state.servers.is_empty()
+    }
+
+    /// Create a brand-new server with the local user as owner.
+    ///
+    /// Automatically creates a "general" text channel, initializes the
+    /// event-sourced state, persists everything, and subscribes to the
+    /// channel topic on the network.
+    ///
+    /// Returns the server ID.
+    pub fn create_server(&mut self, name: &str) -> anyhow::Result<String> {
+        let mut server = willow_channel::Server::new(name, self.identity.peer_id());
+        let server_id = server.id.to_string();
+
+        // Create default "general" channel.
+        let ch_id = server
+            .create_channel("general", willow_channel::ChannelKind::Text)
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let topic = util::make_topic(&server, "general");
+
+        let mut topic_map = HashMap::new();
+        let mut keys = HashMap::new();
+
+        if let Some(key) = server.channel_key(&ch_id) {
+            keys.insert(topic.clone(), key.clone());
+        }
+        let ch_id_str = ch_id.to_string();
+        topic_map.insert(topic.clone(), ("general".to_string(), ch_id));
+
+        let ctx = ServerContext {
+            server,
+            topic_map,
+            keys,
+            op_log: OpLog::default(),
+            unread: HashMap::new(),
+        };
+
+        self.state.servers.insert(server_id.clone(), ctx);
+        self.state.active_server = Some(server_id.clone());
+        self.state.chat.current_channel = "general".to_string();
+
+        // Initialize event-sourced state for this server.
+        let peer_id = self.identity.peer_id().to_string();
+        self.state.event_state =
+            willow_state::ServerState::new(server_id.clone(), name.to_string(), peer_id.clone());
+
+        // Open event store.
+        if self.config.persistence {
+            if let Some(store) = storage::open_event_store(&server_id) {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.state.event_store = state::PersistentEventStore::Sqlite(store);
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    self.state.event_store = state::PersistentEventStore::LocalStorage(store);
+                }
+            }
+        }
+
+        // Create the general channel via event.
+        let create_ch = willow_state::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_hash: self.state.event_state.hash(),
+            author: peer_id,
+            timestamp_ms: util::current_time_ms(),
+            kind: willow_state::EventKind::CreateChannel {
+                name: "general".to_string(),
+                channel_id: ch_id_str,
+            },
+        };
+        self.apply_event(&create_ch);
+
+        // Persist.
+        if self.config.persistence {
+            Self::persist_servers(&self.state);
+        }
+
+        // Subscribe to channel topic if connected.
+        let _ = self.cmd_tx.send(network::NetworkCommand::Subscribe(topic));
+
+        Ok(server_id)
+    }
+
+    /// Set display name for the active server via event-sourced state.
+    pub fn set_server_display_name(&mut self, name: &str) -> anyhow::Result<()> {
+        if self.state.active_server.is_none() {
+            return Err(anyhow::anyhow!("no active server"));
+        }
+        let peer_id = self.identity.peer_id().to_string();
+        let event = willow_state::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_hash: self.state.event_state.hash(),
+            author: peer_id,
+            timestamp_ms: util::current_time_ms(),
+            kind: willow_state::EventKind::SetProfile {
+                display_name: name.to_string(),
+            },
+        };
+        self.apply_event(&event);
+        self.broadcast_event(event, None);
+
+        // Also update the global profile for backward compat.
+        self.set_display_name(name);
+
+        Ok(())
+    }
+
+    /// Get the display name for the active server (from event-sourced state).
+    pub fn server_display_name(&self) -> String {
+        let peer_id = self.identity.peer_id().to_string();
+        self.state
+            .event_state
+            .profiles
+            .get(&peer_id)
+            .map(|p| p.display_name.clone())
+            .unwrap_or_else(|| self.display_name())
     }
 
     // ───── Action methods ───────────────────────────────────────────────────
@@ -2862,5 +2969,209 @@ mod tests {
             cmd,
             network::NetworkCommand::BroadcastEvent { .. }
         ));
+    }
+
+    // ───── No-server and create_server tests ─────────────────────────────
+
+    #[test]
+    fn has_servers_returns_true_for_test_client() {
+        let (client, _rx) = test_client();
+        assert!(client.has_servers());
+    }
+
+    #[test]
+    fn no_servers_returns_empty_channels() {
+        let (mut client, _rx) = test_client();
+        // Manually clear all servers to simulate no-server state.
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        let channels = client.channels();
+        assert!(channels.is_empty());
+    }
+
+    #[test]
+    fn no_servers_returns_empty_messages() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        let msgs = client.messages("general");
+        assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn no_servers_active_server_name_returns_no_server() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        assert_eq!(client.active_server_name(), "No Server");
+    }
+
+    #[test]
+    fn no_servers_send_message_returns_error() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        let result = client.send_message("general", "hello");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn no_servers_create_channel_returns_error() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        let result = client.create_channel("test");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn create_server_adds_server() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+        assert!(!client.has_servers());
+
+        let server_id = client.create_server("My New Server").unwrap();
+        assert!(client.has_servers());
+        assert_eq!(
+            client.state.active_server.as_deref(),
+            Some(server_id.as_str())
+        );
+        assert_eq!(client.active_server_name(), "My New Server");
+    }
+
+    #[test]
+    fn create_server_has_general_channel() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        client.create_server("Test").unwrap();
+        let channels = client.channels();
+        assert!(
+            channels.contains(&"general".to_string()),
+            "created server should have a 'general' channel"
+        );
+    }
+
+    #[test]
+    fn create_server_sets_current_channel() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        client.create_server("Test").unwrap();
+        assert_eq!(client.state.chat.current_channel, "general");
+    }
+
+    #[test]
+    fn create_server_initializes_event_state() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        let server_id = client.create_server("Event Test").unwrap();
+        assert_eq!(client.state.event_state.server_id, server_id);
+        assert_eq!(client.state.event_state.server_name, "Event Test");
+        assert_eq!(
+            client.state.event_state.owner,
+            client.identity.peer_id().to_string()
+        );
+
+        // Event state should have the general channel.
+        assert!(
+            client
+                .state
+                .event_state
+                .channels
+                .values()
+                .any(|ch| ch.name == "general"),
+            "event_state should have 'general' channel"
+        );
+    }
+
+    #[test]
+    fn create_server_subscribes_to_topic() {
+        let (mut client, rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        client.create_server("Sub Test").unwrap();
+
+        // Should have sent a Subscribe command for the general channel topic.
+        let cmd = rx.try_recv().unwrap();
+        assert!(
+            matches!(cmd, network::NetworkCommand::Subscribe(_)),
+            "expected Subscribe, got {:?}",
+            std::mem::discriminant(&cmd),
+        );
+    }
+
+    #[test]
+    fn create_server_allows_sending_messages() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        client.create_server("Msg Test").unwrap();
+        client.send_message("general", "hello new server").unwrap();
+
+        let msgs = client.messages("general");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].body, "hello new server");
+    }
+
+    #[test]
+    fn create_multiple_servers() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        let id1 = client.create_server("Server One").unwrap();
+        let id2 = client.create_server("Server Two").unwrap();
+
+        assert_eq!(client.state.servers.len(), 2);
+        assert_ne!(id1, id2);
+
+        // Active server should be the last created.
+        assert_eq!(client.state.active_server.as_deref(), Some(id2.as_str()));
+        assert_eq!(client.active_server_name(), "Server Two");
+
+        // Can switch back to first server.
+        client.switch_server(&id1);
+        assert_eq!(client.active_server_name(), "Server One");
+    }
+
+    // ───── Per-server profile tests ──────────────────────────────────────
+
+    #[test]
+    fn set_server_display_name_updates_event_state() {
+        let (mut client, _rx) = test_client();
+        client.set_server_display_name("ServerAlice").unwrap();
+
+        assert_eq!(client.server_display_name(), "ServerAlice");
+    }
+
+    #[test]
+    fn set_server_display_name_no_server_returns_error() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        let result = client.set_server_display_name("test");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn server_display_name_falls_back_to_global() {
+        let (mut client, _rx) = test_client();
+        client.set_display_name("GlobalName");
+        // No server profile set, so should fall back to global.
+        assert_eq!(client.server_display_name(), "GlobalName");
     }
 }

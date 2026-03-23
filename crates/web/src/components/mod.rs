@@ -7,6 +7,7 @@ mod roles;
 mod server_list;
 mod settings;
 mod sidebar;
+mod welcome;
 
 pub use chat::*;
 pub use file_share::*;
@@ -17,3 +18,4 @@ pub use roles::*;
 pub use server_list::*;
 pub use settings::*;
 pub use sidebar::*;
+pub use welcome::*;

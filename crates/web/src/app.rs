@@ -8,7 +8,7 @@ use willow_client::{ChatMessage, Client, ClientConfig, ClientEvent};
 
 use crate::components::{
     ChannelHeader, ChatInput, FileShareButton, MemberList, MessageList, ServerList, SettingsPanel,
-    Sidebar,
+    Sidebar, WelcomeScreen,
 };
 
 fn play_notification_sound() {
@@ -88,18 +88,27 @@ pub fn App() -> impl IntoView {
         std::time::Duration::from_millis(LOADING_TIMEOUT_MS as u64),
     );
 
-    // Populate initial state from the client.
-    {
-        let c = client.borrow();
+    // Closure that refreshes all signals from the client state. Used after
+    // server creation, joining, and on initial load.
+    let refresh_client = client.clone();
+    let refresh_all_signals = move || {
+        let c = refresh_client.borrow();
+        set_servers.set(c.server_list());
         set_channels.set(c.channels());
         set_peer_id.set(c.peer_id());
         set_display_name.set(c.display_name());
-        set_servers.set(c.server_list());
         set_roles.set(extract_roles(&c));
         if let Some(id) = c.active_server_id() {
             set_active_server_id.set(id.to_string());
         }
-    }
+        let ch = c.state().chat.current_channel.clone();
+        set_current_channel.set(ch.clone());
+        set_messages.set(c.messages(&ch).into_iter().cloned().collect());
+        set_show_settings.set(false);
+    };
+
+    // Populate initial state from the client.
+    refresh_all_signals();
 
     // Poll loop -- drain network events and refresh signals.
     let client_poll = client.clone();
@@ -305,93 +314,138 @@ pub fn App() -> impl IntoView {
     let file_client = client.clone();
     let member_client = client.clone();
 
+    // Welcome screen callbacks that refresh all signals.
+    let welcome_client = client.clone();
+    let refresh_for_created = refresh_all_signals.clone();
+    let on_welcome_created = move |_: ()| {
+        refresh_for_created();
+    };
+    let refresh_for_joined = refresh_all_signals.clone();
+    let on_welcome_joined = move |_: ()| {
+        refresh_for_joined();
+    };
+
     view! {
-        <div class="app">
-            <ServerList
-                servers=servers
-                active_server_id=active_server_id
-                on_server_click=on_server_click
-                on_settings_click=move |_| {
-                    set_show_settings.update(|v| *v = !*v);
-                    set_show_sidebar.set(false);
-                }
-            />
-            // Overlay to close sidebar on mobile tap
-            <div
-                class=move || if show_sidebar.get() { "sidebar-overlay open" } else { "sidebar-overlay" }
-                on:click=move |_| set_show_sidebar.set(false)
-            />
-            <Sidebar
-                channels=channels
-                current_channel=current_channel
-                open=show_sidebar
-                unread=unread
-                connection_status=connection_status
-                peer_count=peer_count
-                client=sidebar_client
-                on_channel_click=on_channel_click
-                on_settings_click=move |_| {
-                    set_show_settings.update(|v| *v = !*v);
-                    set_show_sidebar.set(false);
-                }
-            />
-            <div class="main-content">
-                {move || {
-                    let sc = settings_client.clone();
-                    let pid = peer_id;
-                    if show_settings.get() {
-                        view! { <SettingsPanel client=sc peer_id=pid roles=Signal::from(roles) on_joined=on_joined.clone() /> }.into_any()
-                    } else {
-                        let fc = file_client.clone();
-                        view! {
-                            <div class="chat-container">
-                                <ChannelHeader
-                                    channel=current_channel
-                                    peer_count=peer_count
-                                    on_menu_click=move |_| set_show_sidebar.update(|v| *v = !*v)
-                                />
-                                <MessageList
-                                    messages=messages
-                                    loading=Signal::from(loading)
-                                    local_display_name={let s: Signal<String> = Signal::from(display_name); s}
-                                    on_message_click=Callback::new(move |msg: ChatMessage| {
-                                        set_replying_to.set(Some(msg));
-                                    })
-                                    on_edit=Callback::new(move |msg: ChatMessage| {
-                                        set_editing.set(Some(msg));
-                                    })
-                                    on_delete=Callback::new(on_delete_msg.clone())
-                                    on_react=Callback::new(on_react.clone())
-                                />
-                                <div class="input-row">
-                                    <FileShareButton
-                                        client=fc
-                                        channel=current_channel
-                                    />
-                                    <ChatInput
-                                        on_send=on_send.clone()
-                                        replying_to=replying_to
-                                        on_cancel_reply=Callback::new(move |_| {
-                                            set_replying_to.set(None);
-                                        })
-                                        editing=editing
-                                        on_edit_send=Callback::new(on_edit_send.clone())
-                                        on_cancel_edit=Callback::new(move |_| {
-                                            set_editing.set(None);
-                                        })
-                                    />
-                                </div>
-                            </div>
-                        }.into_any()
-                    }
-                }}
-            </div>
-            <MemberList
-                peers=peers
-                client=member_client
-                peer_id=peer_id
-            />
-        </div>
+        {move || {
+            let srv = servers.get();
+            if srv.is_empty() {
+                let wc = welcome_client.clone();
+                let on_created = on_welcome_created.clone();
+                let on_join = on_welcome_joined.clone();
+                view! {
+                    <WelcomeScreen
+                        client=wc
+                        on_server_created=on_created
+                        on_joined=on_join
+                    />
+                }.into_any()
+            } else {
+                let sc = settings_client.clone();
+                let fc = file_client.clone();
+                let sbc = sidebar_client.clone();
+                let mc = member_client.clone();
+                let ch_click = on_channel_click.clone();
+                let srv_click = on_server_click.clone();
+                let send = on_send.clone();
+                let edit_send = on_edit_send.clone();
+                let del_msg = on_delete_msg.clone();
+                let react = on_react.clone();
+                let joined = on_joined.clone();
+                view! {
+                    <div class="app">
+                        <ServerList
+                            servers=servers
+                            active_server_id=active_server_id
+                            on_server_click=srv_click
+                            on_settings_click=move |_| {
+                                set_show_settings.update(|v| *v = !*v);
+                                set_show_sidebar.set(false);
+                            }
+                        />
+                        // Overlay to close sidebar on mobile tap
+                        <div
+                            class=move || if show_sidebar.get() { "sidebar-overlay open" } else { "sidebar-overlay" }
+                            on:click=move |_| set_show_sidebar.set(false)
+                        />
+                        <Sidebar
+                            channels=channels
+                            current_channel=current_channel
+                            open=show_sidebar
+                            unread=unread
+                            connection_status=connection_status
+                            peer_count=peer_count
+                            client=sbc
+                            on_channel_click=ch_click
+                            on_settings_click=move |_| {
+                                set_show_settings.update(|v| *v = !*v);
+                                set_show_sidebar.set(false);
+                            }
+                        />
+                        <div class="main-content">
+                            {move || {
+                                let sc2 = sc.clone();
+                                let pid = peer_id;
+                                if show_settings.get() {
+                                    let joined2 = joined.clone();
+                                    view! { <SettingsPanel client=sc2 peer_id=pid roles=Signal::from(roles) on_joined=joined2 /> }.into_any()
+                                } else {
+                                    let fc2 = fc.clone();
+                                    let send2 = send.clone();
+                                    let edit_send2 = edit_send.clone();
+                                    let del_msg2 = del_msg.clone();
+                                    let react2 = react.clone();
+                                    view! {
+                                        <div class="chat-container">
+                                            <ChannelHeader
+                                                channel=current_channel
+                                                peer_count=peer_count
+                                                on_menu_click=move |_| set_show_sidebar.update(|v| *v = !*v)
+                                            />
+                                            <MessageList
+                                                messages=messages
+                                                loading=Signal::from(loading)
+                                                local_display_name={let s: Signal<String> = Signal::from(display_name); s}
+                                                on_message_click=Callback::new(move |msg: ChatMessage| {
+                                                    set_replying_to.set(Some(msg));
+                                                })
+                                                on_edit=Callback::new(move |msg: ChatMessage| {
+                                                    set_editing.set(Some(msg));
+                                                })
+                                                on_delete=Callback::new(del_msg2)
+                                                on_react=Callback::new(react2)
+                                            />
+                                            <div class="input-row">
+                                                <FileShareButton
+                                                    client=fc2
+                                                    channel=current_channel
+                                                />
+                                                <ChatInput
+                                                    on_send=send2
+                                                    replying_to=replying_to
+                                                    on_cancel_reply=Callback::new(move |_| {
+                                                        set_replying_to.set(None);
+                                                    })
+                                                    editing=editing
+                                                    on_edit_send=Callback::new(edit_send2)
+                                                    on_cancel_edit=Callback::new(move |_| {
+                                                        set_editing.set(None);
+                                                    })
+                                                />
+                                            </div>
+                                        </div>
+                                    }.into_any()
+                                }
+                            }}
+                        </div>
+                        <MemberList
+                            peers=peers
+                            client=mc
+                            peer_id=peer_id
+                        />
+                    </div>
+                }.into_any()
+            }
+        }}
     }
 }
 

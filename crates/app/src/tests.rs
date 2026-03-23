@@ -723,7 +723,7 @@ fn send_message_uses_profile_display_name() {
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
 fn network_settings_round_trip() {
-    use crate::storage::{self, NetworkSettings};
+    use crate::storage::NetworkSettings;
 
     let settings = NetworkSettings {
         relay_addr: Some("/ip4/1.2.3.4/tcp/9091/ws/p2p/12D3KooWTest".to_string()),

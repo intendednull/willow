@@ -21,19 +21,23 @@ pub fn SettingsPanel(
     let (join_code, set_join_code) = signal(String::new());
     let (status_msg, set_status_msg) = signal(String::new());
 
-    // Initialize display name from client.
+    // Active server name for display.
+    let (server_name, set_server_name) = signal(String::new());
+
+    // Initialize display name and server name from client.
     {
         let c = client.borrow();
-        set_display_name.set(c.display_name());
+        set_display_name.set(c.server_display_name());
+        set_server_name.set(c.active_server_name());
     }
 
-    // Save & Reconnect handler.
+    // Save handler -- uses per-server display name.
     let client_save = client.clone();
     let on_save = move |_| {
         let name = display_name.get_untracked();
         let mut c = client_save.borrow_mut();
         if !name.trim().is_empty() {
-            c.set_display_name(name.trim());
+            let _ = c.set_server_display_name(name.trim());
         }
         set_status_msg.set("Saved.".to_string());
     };
@@ -121,9 +125,13 @@ pub fn SettingsPanel(
                 </div>
             </div>
 
-            // Display name.
+            // Per-server profile.
             <div class="settings-section">
-                <label>"Display Name"</label>
+                <div class="settings-server-label">
+                    <span class="settings-server-prefix">"Profile for: "</span>
+                    <span class="settings-server-name">{move || server_name.get()}</span>
+                </div>
+                <label>"Display Name (this server)"</label>
                 <input
                     type="text"
                     placeholder="Enter display name..."
