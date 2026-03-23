@@ -148,6 +148,19 @@ pub fn App() -> impl IntoView {
     };
 
     let settings_client = client.clone();
+    let joined_client = client.clone();
+    let on_joined = move |_: ()| {
+        let c = joined_client.borrow();
+        set_servers.set(c.server_list());
+        if let Some(id) = c.active_server_id() {
+            set_active_server_id.set(id.to_string());
+        }
+        set_channels.set(c.channels());
+        let ch = c.state().chat.current_channel.clone();
+        set_current_channel.set(ch.clone());
+        set_messages.set(c.messages(&ch).into_iter().cloned().collect());
+        set_show_settings.set(false);
+    };
 
     view! {
         <div class="app">
@@ -183,7 +196,7 @@ pub fn App() -> impl IntoView {
                     let sc = settings_client.clone();
                     let pid = peer_id;
                     if show_settings.get() {
-                        view! { <SettingsPanel client=sc peer_id=pid /> }.into_any()
+                        view! { <SettingsPanel client=sc peer_id=pid on_joined=on_joined.clone() /> }.into_any()
                     } else {
                         view! {
                             <div class="chat-container">

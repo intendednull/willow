@@ -4,7 +4,11 @@ use crate::app::ClientHandle;
 
 /// Settings panel for display name, relay, invites, and join.
 #[component]
-pub fn SettingsPanel(client: ClientHandle, peer_id: ReadSignal<String>) -> impl IntoView {
+pub fn SettingsPanel(
+    client: ClientHandle,
+    peer_id: ReadSignal<String>,
+    on_joined: impl Fn(()) + Send + Clone + 'static,
+) -> impl IntoView {
     let (display_name, set_display_name) = signal(String::new());
     let (relay_addr, set_relay_addr) = signal(String::new());
     let (invite_peer, set_invite_peer) = signal(String::new());
@@ -78,6 +82,8 @@ pub fn SettingsPanel(client: ClientHandle, peer_id: ReadSignal<String>) -> impl 
             Ok(()) => {
                 set_status_msg.set("Joined successfully!".to_string());
                 set_join_code.set(String::new());
+                drop(c); // release borrow before callback
+                on_joined(());
             }
             Err(e) => {
                 set_status_msg.set(format!("Join failed: {e}"));
@@ -164,12 +170,13 @@ pub fn SettingsPanel(client: ClientHandle, peer_id: ReadSignal<String>) -> impl 
             <div class="settings-section join-section">
                 <h3>"Join a Server"</h3>
                 <label>"Invite Code"</label>
-                <input
-                    type="text"
-                    placeholder="Paste invite code..."
-                    prop:value=move || join_code.get()
-                    on:input=move |ev| set_join_code.set(event_target_value(&ev))
-                />
+                <div class="invite-code-display">
+                    <textarea
+                        placeholder="Paste invite code..."
+                        prop:value=move || join_code.get()
+                        on:input=move |ev| set_join_code.set(event_target_value(&ev))
+                    ></textarea>
+                </div>
                 <button class="btn btn-primary" on:click=on_join>"Join"</button>
             </div>
         </div>
