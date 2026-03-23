@@ -74,6 +74,10 @@ pub enum ServerOp {
     },
     KickMember {
         peer_id: String,
+        /// Encrypted rotated channel keys for remaining members.
+        /// Each entry: (recipient_peer_id, topic, encrypted_key).
+        #[serde(default)]
+        rotated_keys: Vec<(String, String, willow_crypto::EncryptedChannelKey)>,
     },
     /// Mark a peer as trusted (can broadcast ops, sync state).
     TrustPeer {
@@ -155,7 +159,9 @@ mod tests {
 
         assert_eq!(signer, id.peer_id());
         assert_eq!(decoded.op_id, stamped.op_id);
-        assert!(matches!(decoded.op, ServerOp::CreateChannel { ref name, .. } if name == "general"));
+        assert!(
+            matches!(decoded.op, ServerOp::CreateChannel { ref name, .. } if name == "general")
+        );
     }
 
     #[test]
@@ -163,6 +169,7 @@ mod tests {
         let id = Identity::generate();
         let stamped = make_stamped(ServerOp::KickMember {
             peer_id: "someone".into(),
+            rotated_keys: vec![],
         });
 
         let data = pack_op(&stamped, &id).unwrap();
@@ -215,6 +222,7 @@ mod tests {
             },
             ServerOp::KickMember {
                 peer_id: "peer1".into(),
+                rotated_keys: vec![],
             },
             ServerOp::TrustPeer {
                 peer_id: "peer1".into(),

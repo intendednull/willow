@@ -22,6 +22,7 @@ pub fn handle_network_events(
     mut unread: ResMut<UnreadCounts>,
     net_cmd: Res<crate::network_bridge::NetworkCommandSender>,
     mut op_log: ResMut<OpLog>,
+    identity: Res<crate::network_bridge::LocalIdentity>,
 ) {
     for event in reader.read() {
         match event {
@@ -234,6 +235,7 @@ pub fn handle_network_events(
                     &mut state,
                     &net_cmd,
                     &mut op_log,
+                    &identity,
                 );
             }
             NetworkBridgeEvent::SyncRequested { latest_hlc, from } => {
@@ -283,6 +285,7 @@ pub fn handle_network_events(
                         &mut state,
                         &net_cmd,
                         &mut op_log,
+                        &identity,
                     );
                 }
                 if count > 0 {
@@ -547,6 +550,7 @@ pub fn update_channel_highlights(
 }
 
 /// Apply a remote server operation to local state.
+#[allow(clippy::too_many_arguments)]
 fn handle_server_op(
     stamped: &crate::server_sync::StampedOp,
     from: &str,
@@ -555,6 +559,7 @@ fn handle_server_op(
     state: &mut ResMut<ChatState>,
     net_cmd: &Res<crate::network_bridge::NetworkCommandSender>,
     op_log: &mut ResMut<OpLog>,
+    identity: &Res<crate::network_bridge::LocalIdentity>,
 ) {
     use crate::server_sync::ServerOp;
 
@@ -700,9 +705,44 @@ fn handle_server_op(
                 }
             }
         }
-        ServerOp::KickMember { peer_id } => {
+        ServerOp::KickMember {
+            peer_id,
+            rotated_keys,
+        } => {
             state.peers.retain(|p| p != peer_id);
-            info!("peer {peer_id} kicked by {from}");
+
+            // Remove member from server (rotates keys locally).
+            {
+                if let Some(server) = &mut server_state.server {
+                    let member_peer = server
+                        .members()
+                        .iter()
+                        .find(|m| m.peer_id.to_string() == *peer_id)
+                        .map(|m| m.peer_id.clone());
+                    if let Some(peer) = member_peer {
+                        let _ = server.remove_member(&peer);
+                    }
+                }
+            }
+
+            // Decrypt and apply rotated keys intended for us.
+            let our_peer_id = identity.0.peer_id().to_string();
+            for (recipient, topic, encrypted) in rotated_keys {
+                if *recipient == our_peer_id {
+                    if let Ok(key) = willow_crypto::decrypt_channel_key(encrypted, &identity.0) {
+                        key_store.keys.insert(topic.clone(), key.clone());
+                        let ch_id = server_state.topic_map.get(topic).map(|(_, id)| id.clone());
+                        if let (Some(ch_id), Some(server)) = (ch_id, server_state.server.as_mut()) {
+                            server.set_channel_key(ch_id, key);
+                        }
+                    }
+                }
+            }
+
+            if let Some(server) = &server_state.server {
+                crate::storage::save_server(server, &key_store.keys);
+            }
+            info!("peer {peer_id} kicked by {from}, keys rotated");
         }
         ServerOp::TrustPeer { peer_id } => {
             info!("peer {peer_id} trusted by {from}");

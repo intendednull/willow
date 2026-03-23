@@ -677,10 +677,37 @@ pub fn handle_kick_member(
             ));
             state.messages_dirty = true;
 
+            // Encrypt rotated keys for remaining members.
+            let mut rotated_key_entries = Vec::new();
+            if let Some(server) = &server_state.server {
+                for member in server.members() {
+                    let peer_str = member.peer_id.to_string();
+                    if let Some(pub_key) = crate::invite::peer_id_to_ed25519_public(&peer_str) {
+                        for (ch_id, key) in &new_keys {
+                            for (topic, (_, tid)) in &server_state.topic_map {
+                                if tid == ch_id {
+                                    if let Ok(enc) =
+                                        willow_crypto::encrypt_channel_key_for(key, &pub_key)
+                                    {
+                                        rotated_key_entries.push((
+                                            peer_str.clone(),
+                                            topic.clone(),
+                                            enc,
+                                        ));
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Broadcast to peers.
             broadcast_op(
                 crate::server_sync::ServerOp::KickMember {
                     peer_id: kicked_peer.clone(),
+                    rotated_keys: rotated_key_entries,
                 },
                 &mut state,
                 &identity,
