@@ -2006,7 +2006,12 @@ pub(crate) fn test_client() -> (Client, std::sync::mpsc::Receiver<network::Netwo
     };
 
     state.servers.insert(server_id.clone(), ctx);
-    state.active_server = Some(server_id);
+    state.active_server = Some(server_id.clone());
+
+    // Initialize event_state with the server's owner (the local identity),
+    // mirroring what Client::new() does.
+    state.event_state =
+        willow_state::ServerState::new(server_id, "Test Server", identity.peer_id().to_string());
 
     let client = Client {
         state,
@@ -2444,5 +2449,191 @@ mod tests {
     fn test_active_server_name() {
         let (client, _rx) = test_client();
         assert_eq!(client.active_server_name(), "Test Server");
+    }
+
+    // ───── Multi-peer scenario tests ─────────────────────────────────────
+
+    #[test]
+    fn client_create_multiple_channels_and_verify() {
+        let (mut client, _rx) = test_client();
+
+        // Create 5 channels via client API.
+        let names = ["alpha", "beta", "gamma", "delta", "epsilon"];
+        for name in &names {
+            client.create_channel(name).unwrap();
+        }
+
+        // Verify all appear in channels() list.
+        let channels = client.channels();
+        for name in &names {
+            assert!(
+                channels.contains(&name.to_string()),
+                "channel '{}' should be in channels list",
+                name
+            );
+        }
+
+        // Verify event_state has all 5 channels.
+        let event_channels: Vec<String> = client
+            .state
+            .event_state
+            .channels
+            .values()
+            .map(|c| c.name.clone())
+            .collect();
+        for name in &names {
+            assert!(
+                event_channels.contains(&name.to_string()),
+                "channel '{}' should be in event_state.channels",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn client_send_messages_to_different_channels() {
+        let (mut client, _rx) = test_client();
+
+        // Create 3 channels.
+        let ch_names = ["dev", "design", "random"];
+        for name in &ch_names {
+            client.create_channel(name).unwrap();
+        }
+
+        // Send 2 messages to each channel.
+        for name in &ch_names {
+            client.send_message(name, &format!("{name} msg 1")).unwrap();
+            client.send_message(name, &format!("{name} msg 2")).unwrap();
+        }
+
+        // Verify messages() returns correct messages per channel.
+        for name in &ch_names {
+            let msgs = client.messages(name);
+            assert_eq!(
+                msgs.len(),
+                2,
+                "channel '{}' should have 2 messages, got {}",
+                name,
+                msgs.len()
+            );
+            assert_eq!(msgs[0].body, format!("{name} msg 1"));
+            assert_eq!(msgs[1].body, format!("{name} msg 2"));
+        }
+
+        // Verify event_state.messages has all 6 messages.
+        assert_eq!(
+            client.state.event_state.messages.len(),
+            6,
+            "event_state should have 6 messages total"
+        );
+    }
+
+    #[test]
+    fn client_trust_and_permission_flow() {
+        let (mut client, _rx) = test_client();
+
+        // Trust a peer.
+        client.trust_peer("some-peer");
+
+        // Verify they appear in event_state.peer_permissions with Administrator.
+        assert!(
+            client
+                .state
+                .event_state
+                .has_permission("some-peer", &willow_state::Permission::Administrator),
+            "trusted peer should have Administrator permission"
+        );
+        assert!(
+            client.state.event_state.members.contains_key("some-peer"),
+            "trusted peer should be a member"
+        );
+
+        // Untrust them.
+        client.untrust_peer("some-peer");
+
+        // Verify Administrator permission removed.
+        assert!(
+            !client
+                .state
+                .event_state
+                .has_permission("some-peer", &willow_state::Permission::Administrator),
+            "untrusted peer should not have Administrator permission"
+        );
+    }
+
+    #[test]
+    fn client_event_store_persists_events() {
+        use willow_state::EventStore as _;
+
+        let (mut client, _rx) = test_client();
+
+        // Perform several actions.
+        client.create_channel("test-channel").unwrap();
+        client.send_message("test-channel", "hello").unwrap();
+        client.trust_peer("peer-x");
+
+        // Check event_store has the corresponding events.
+        let events = client.state.event_store.all_events();
+        assert!(
+            events.len() >= 3,
+            "event store should have at least 3 events, got {}",
+            events.len()
+        );
+    }
+
+    #[test]
+    fn client_channels_from_event_state() {
+        let (mut client, _rx) = test_client();
+
+        // Create channels via client.
+        client.create_channel("forum").unwrap();
+        client.create_channel("help").unwrap();
+
+        // Verify channels() returns names from event_state.
+        let channels = client.channels();
+        assert!(
+            channels.contains(&"forum".to_string()),
+            "should contain 'forum'"
+        );
+        assert!(
+            channels.contains(&"help".to_string()),
+            "should contain 'help'"
+        );
+
+        // Also verify the event_state has them.
+        let es_names: Vec<String> = client
+            .state
+            .event_state
+            .channels
+            .values()
+            .map(|c| c.name.clone())
+            .collect();
+        assert!(es_names.contains(&"forum".to_string()));
+        assert!(es_names.contains(&"help".to_string()));
+    }
+
+    #[test]
+    fn client_display_name_from_event_state() {
+        let (mut client, _rx) = test_client();
+
+        // Set display name via SetProfile event on the event_state.
+        let peer_id = client.peer_id();
+        let event = willow_state::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_hash: client.state.event_state.hash(),
+            author: peer_id.clone(),
+            timestamp_ms: 1000,
+            kind: willow_state::EventKind::SetProfile {
+                display_name: "EventAlice".into(),
+            },
+        };
+        willow_state::apply_lenient(&mut client.state.event_state, &event);
+
+        // Verify display_name() reads from event_state.profiles.
+        assert_eq!(
+            client.display_name(),
+            "EventAlice",
+            "display_name should come from event_state profile"
+        );
     }
 }

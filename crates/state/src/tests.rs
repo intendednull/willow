@@ -4,7 +4,7 @@
 //! enforcement, divergence detection, merge, and the in-memory event store.
 
 use crate::hash::StateHash;
-use crate::merge::{find_common_ancestor, merge};
+use crate::merge::merge;
 use crate::server::ServerState;
 use crate::store::{EventStore, InMemoryStore};
 use crate::types::Permission;
@@ -1064,4 +1064,971 @@ fn multiple_permissions_per_peer() {
     assert!(state.has_permission("alice", &Permission::KickMembers));
     // Alice is still "trusted" because she has at least one permission.
     assert!(state.is_trusted("alice"));
+}
+
+// ── Multi-peer scenario tests ────────────────────────────────────────────
+
+/// Helper: create an event with a UUID and the current state hash as parent.
+fn make_event(state: &ServerState, author: &str, kind: EventKind) -> Event {
+    Event {
+        id: uuid::Uuid::new_v4().to_string(),
+        parent_hash: state.hash(),
+        author: author.to_string(),
+        timestamp_ms: 1000,
+        kind,
+    }
+}
+
+#[test]
+fn five_peers_concurrent_messages() {
+    let mut state = test_state();
+
+    // Create a channel first.
+    let create_ch = make_event(
+        &state,
+        "owner",
+        EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: "ch1".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &create_ch), ApplyResult::Applied);
+
+    // 5 peers all send messages.
+    let peers = ["alice", "bob", "carol", "dave", "eve"];
+    for (i, peer) in peers.iter().enumerate() {
+        let msg = make_event(
+            &state,
+            peer,
+            EventKind::Message {
+                channel_id: "ch1".into(),
+                body: format!("Hello from {peer} #{i}"),
+            },
+        );
+        assert_eq!(apply(&mut state, &msg), ApplyResult::Applied);
+    }
+
+    // All 5 messages should be in the state.
+    assert_eq!(state.messages.len(), 5);
+    for peer in &peers {
+        assert!(state.messages.iter().any(|m| m.author == *peer));
+    }
+}
+
+#[test]
+fn permission_cascade() {
+    let mut state = test_state();
+
+    // Owner grants Admin to peer A.
+    let grant_admin = make_event(
+        &state,
+        "owner",
+        EventKind::GrantPermission {
+            peer_id: "peer-a".into(),
+            permission: Permission::Administrator,
+        },
+    );
+    assert_eq!(apply(&mut state, &grant_admin), ApplyResult::Applied);
+
+    // Peer A grants ManageChannels to peer B (Admin can do this).
+    let grant_manage = make_event(
+        &state,
+        "peer-a",
+        EventKind::GrantPermission {
+            peer_id: "peer-b".into(),
+            permission: Permission::ManageChannels,
+        },
+    );
+    assert_eq!(apply(&mut state, &grant_manage), ApplyResult::Applied);
+
+    // Peer B creates a channel (they have ManageChannels).
+    let create_ch = make_event(
+        &state,
+        "peer-b",
+        EventKind::CreateChannel {
+            name: "dev".into(),
+            channel_id: "ch-dev".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &create_ch), ApplyResult::Applied);
+
+    // Verify the channel exists and the permission chain holds.
+    assert!(state.channels.contains_key("ch-dev"));
+    assert!(state.has_permission("peer-a", &Permission::Administrator));
+    assert!(state.has_permission("peer-b", &Permission::ManageChannels));
+}
+
+#[test]
+fn kick_revokes_all_permissions() {
+    let mut state = test_state();
+
+    // Owner grants multiple permissions to a peer.
+    for perm in [
+        Permission::ManageChannels,
+        Permission::KickMembers,
+        Permission::SendMessages,
+    ] {
+        let grant = make_event(
+            &state,
+            "owner",
+            EventKind::GrantPermission {
+                peer_id: "alice".into(),
+                permission: perm,
+            },
+        );
+        assert_eq!(apply(&mut state, &grant), ApplyResult::Applied);
+    }
+    assert!(state.members.contains_key("alice"));
+    assert!(state.has_permission("alice", &Permission::ManageChannels));
+    assert!(state.has_permission("alice", &Permission::KickMembers));
+
+    // Owner kicks the peer.
+    let kick = make_event(
+        &state,
+        "owner",
+        EventKind::KickMember {
+            peer_id: "alice".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &kick), ApplyResult::Applied);
+
+    // All permissions and membership should be revoked.
+    assert!(!state.members.contains_key("alice"));
+    assert!(!state.has_permission("alice", &Permission::ManageChannels));
+    assert!(!state.has_permission("alice", &Permission::KickMembers));
+    assert!(!state.has_permission("alice", &Permission::SendMessages));
+    assert!(!state.is_trusted("alice"));
+
+    // Kicked peer can still send messages (messages are open to all),
+    // but cannot perform privileged operations.
+    let create_ch = make_event(
+        &state,
+        "alice",
+        EventKind::CreateChannel {
+            name: "sneaky".into(),
+            channel_id: "ch-sneaky".into(),
+        },
+    );
+    assert!(matches!(
+        apply(&mut state, &create_ch),
+        ApplyResult::Rejected(_)
+    ));
+}
+
+#[test]
+fn concurrent_channel_create_same_name() {
+    // Two events creating a channel with the same channel_id concurrently.
+    // The first (by timestamp) should succeed, the second should be a no-op.
+    let common = test_state();
+    let common_hash = common.hash();
+
+    let evt_a = event_with(
+        "ea1",
+        common_hash.clone(),
+        "owner",
+        100,
+        EventKind::CreateChannel {
+            name: "dev".into(),
+            channel_id: "ch-dev".into(),
+        },
+    );
+
+    let evt_b = event_with(
+        "eb1",
+        common_hash,
+        "owner",
+        200,
+        EventKind::CreateChannel {
+            name: "dev-duplicate".into(),
+            channel_id: "ch-dev".into(),
+        },
+    );
+
+    // Merge them: both applied leniently, but second is a no-op since
+    // channel_id already exists.
+    let (merged_state, events) = merge(&[evt_a], &[evt_b], &common);
+
+    assert_eq!(events.len(), 2);
+    assert!(merged_state.channels.contains_key("ch-dev"));
+    // The first event (timestamp 100) determines the channel name.
+    assert_eq!(merged_state.channels["ch-dev"].name, "dev");
+}
+
+#[test]
+fn edit_and_delete_message_lifecycle() {
+    let mut state = test_state();
+
+    // Create channel.
+    let create_ch = make_event(
+        &state,
+        "owner",
+        EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: "ch1".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &create_ch), ApplyResult::Applied);
+
+    // Peer sends message.
+    let msg = event(
+        &state,
+        "msg1",
+        "alice",
+        EventKind::Message {
+            channel_id: "ch1".into(),
+            body: "original text".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &msg), ApplyResult::Applied);
+    assert_eq!(state.messages[0].body, "original text");
+
+    // Sender edits it.
+    let edit = make_event(
+        &state,
+        "alice",
+        EventKind::EditMessage {
+            message_id: "msg1".into(),
+            new_body: "edited text".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &edit), ApplyResult::Applied);
+    assert_eq!(state.messages[0].body, "edited text");
+    assert!(state.messages[0].edited);
+
+    // Another peer reacts.
+    let react = make_event(
+        &state,
+        "bob",
+        EventKind::Reaction {
+            message_id: "msg1".into(),
+            emoji: ":thumbsup:".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &react), ApplyResult::Applied);
+    assert!(state.messages[0].reactions.contains_key(":thumbsup:"));
+
+    // Sender deletes it.
+    let delete = make_event(
+        &state,
+        "alice",
+        EventKind::DeleteMessage {
+            message_id: "msg1".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &delete), ApplyResult::Applied);
+
+    // Message should be marked deleted with reactions cleared.
+    assert!(state.messages[0].deleted);
+    assert_eq!(state.messages[0].body, "[message deleted]");
+    assert!(state.messages[0].reactions.is_empty());
+}
+
+#[test]
+fn merge_with_concurrent_mutations() {
+    // Two peers diverge from the same state.
+    let common = test_state();
+    let common_hash = common.hash();
+
+    // Peer A creates channel "dev" and sends a message.
+    let evt_a1 = event_with(
+        "ea1",
+        common_hash.clone(),
+        "owner",
+        100,
+        EventKind::CreateChannel {
+            name: "dev".into(),
+            channel_id: "ch-dev".into(),
+        },
+    );
+    let evt_a2 = event_with(
+        "ea2",
+        common_hash.clone(),
+        "owner",
+        101,
+        EventKind::Message {
+            channel_id: "ch-dev".into(),
+            body: "First dev message".into(),
+        },
+    );
+
+    // Peer B creates channel "staging" and grants a permission.
+    let evt_b1 = event_with(
+        "eb1",
+        common_hash.clone(),
+        "owner",
+        150,
+        EventKind::CreateChannel {
+            name: "staging".into(),
+            channel_id: "ch-staging".into(),
+        },
+    );
+    let evt_b2 = event_with(
+        "eb2",
+        common_hash,
+        "owner",
+        151,
+        EventKind::GrantPermission {
+            peer_id: "alice".into(),
+            permission: Permission::ManageChannels,
+        },
+    );
+
+    // Merge the two histories.
+    let (merged_state, events) = merge(&[evt_a1, evt_a2], &[evt_b1, evt_b2], &common);
+
+    // All 4 events should be in the merged history.
+    assert_eq!(events.len(), 4);
+    // Both channels should exist.
+    assert!(merged_state.channels.contains_key("ch-dev"));
+    assert!(merged_state.channels.contains_key("ch-staging"));
+    // Message should be there.
+    assert_eq!(merged_state.messages.len(), 1);
+    assert_eq!(merged_state.messages[0].body, "First dev message");
+    // Permission should be granted.
+    assert!(merged_state.has_permission("alice", &Permission::ManageChannels));
+}
+
+#[test]
+fn merge_with_conflicting_deletes() {
+    // Start with two channels in the common state.
+    let mut common = test_state();
+    let create_a = make_event(
+        &common,
+        "owner",
+        EventKind::CreateChannel {
+            name: "alpha".into(),
+            channel_id: "ch-alpha".into(),
+        },
+    );
+    assert_eq!(apply(&mut common, &create_a), ApplyResult::Applied);
+    let create_b = make_event(
+        &common,
+        "owner",
+        EventKind::CreateChannel {
+            name: "beta".into(),
+            channel_id: "ch-beta".into(),
+        },
+    );
+    assert_eq!(apply(&mut common, &create_b), ApplyResult::Applied);
+    assert!(common.channels.contains_key("ch-alpha"));
+    assert!(common.channels.contains_key("ch-beta"));
+
+    let common_hash = common.hash();
+
+    // Peer A deletes "alpha".
+    let del_a = event_with(
+        "da1",
+        common_hash.clone(),
+        "owner",
+        100,
+        EventKind::DeleteChannel {
+            channel_id: "ch-alpha".into(),
+        },
+    );
+
+    // Peer B deletes "beta".
+    let del_b = event_with(
+        "db1",
+        common_hash,
+        "owner",
+        200,
+        EventKind::DeleteChannel {
+            channel_id: "ch-beta".into(),
+        },
+    );
+
+    // After merge, both channels should be deleted.
+    let (merged_state, events) = merge(&[del_a], &[del_b], &common);
+    assert_eq!(events.len(), 2);
+    assert!(!merged_state.channels.contains_key("ch-alpha"));
+    assert!(!merged_state.channels.contains_key("ch-beta"));
+}
+
+#[test]
+fn replay_100_events_produces_correct_state() {
+    // Build all events once, apply them, then replay the same events
+    // on a fresh state to verify identical hash.
+    let mut state = test_state();
+    let mut all_events = Vec::new();
+    let authors = ["owner", "alice", "bob", "carol"];
+
+    // Create 5 channels.
+    for i in 0..5 {
+        let evt = make_event(
+            &state,
+            "owner",
+            EventKind::CreateChannel {
+                name: format!("channel-{i}"),
+                channel_id: format!("ch-{i}"),
+            },
+        );
+        assert_eq!(apply(&mut state, &evt), ApplyResult::Applied);
+        all_events.push(evt);
+    }
+
+    // Grant permissions to 3 peers.
+    for peer in ["alice", "bob", "carol"] {
+        let evt = make_event(
+            &state,
+            "owner",
+            EventKind::GrantPermission {
+                peer_id: peer.into(),
+                permission: Permission::SendMessages,
+            },
+        );
+        assert_eq!(apply(&mut state, &evt), ApplyResult::Applied);
+        all_events.push(evt);
+    }
+
+    // Create 2 roles.
+    for i in 0..2 {
+        let evt = make_event(
+            &state,
+            "owner",
+            EventKind::CreateRole {
+                name: format!("Role-{i}"),
+                role_id: format!("role-{i}"),
+            },
+        );
+        assert_eq!(apply(&mut state, &evt), ApplyResult::Applied);
+        all_events.push(evt);
+    }
+
+    // Send 90 messages across channels (100 - 5 channels - 3 perms - 2 roles).
+    for i in 0..90 {
+        let channel_id = format!("ch-{}", i % 5);
+        let author = authors[i % authors.len()];
+        let evt = make_event(
+            &state,
+            author,
+            EventKind::Message {
+                channel_id,
+                body: format!("Message #{i}"),
+            },
+        );
+        assert_eq!(apply(&mut state, &evt), ApplyResult::Applied);
+        all_events.push(evt);
+    }
+
+    let final_hash = state.hash();
+    assert_eq!(all_events.len(), 100);
+
+    // Verify state contents.
+    assert_eq!(state.channels.len(), 5);
+    assert_eq!(state.messages.len(), 90);
+    assert_eq!(state.roles.len(), 2);
+    // 1 owner + 3 granted peers.
+    assert_eq!(state.members.len(), 4);
+
+    // Replay the exact same events from scratch on a fresh state.
+    let mut store = InMemoryStore::new();
+    let mut replay_state = test_state();
+
+    for evt in &all_events {
+        store.append(evt.clone());
+        apply_lenient(&mut replay_state, evt);
+    }
+
+    // Replayed state should have the same hash.
+    assert_eq!(replay_state.hash(), final_hash);
+    assert_eq!(store.all_events().len(), 100);
+}
+
+#[test]
+fn stress_1000_messages_same_channel() {
+    let mut state = test_state();
+
+    // Create a channel.
+    let create_ch = make_event(
+        &state,
+        "owner",
+        EventKind::CreateChannel {
+            name: "stress-test".into(),
+            channel_id: "ch-stress".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &create_ch), ApplyResult::Applied);
+
+    // Rapid-fire 1000 messages from 10 different authors.
+    let authors: Vec<String> = (0..10).map(|i| format!("peer-{i}")).collect();
+    for i in 0..1000 {
+        let author = &authors[i % 10];
+        let msg = make_event(
+            &state,
+            author,
+            EventKind::Message {
+                channel_id: "ch-stress".into(),
+                body: format!("msg-{i}"),
+            },
+        );
+        assert_eq!(apply(&mut state, &msg), ApplyResult::Applied);
+    }
+
+    assert_eq!(state.messages.len(), 1000);
+    // Verify each author has exactly 100 messages.
+    for author in &authors {
+        let count = state
+            .messages
+            .iter()
+            .filter(|m| m.author == *author)
+            .count();
+        assert_eq!(count, 100, "author {author} should have 100 messages");
+    }
+}
+
+#[test]
+fn untrusted_peer_cant_escalate() {
+    let mut state = test_state();
+
+    // Create a channel (as owner) so there's something to interact with.
+    let create_ch = make_event(
+        &state,
+        "owner",
+        EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: "ch1".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &create_ch), ApplyResult::Applied);
+
+    // Grant stranger only SendMessages.
+    let grant = make_event(
+        &state,
+        "owner",
+        EventKind::GrantPermission {
+            peer_id: "stranger".into(),
+            permission: Permission::SendMessages,
+        },
+    );
+    assert_eq!(apply(&mut state, &grant), ApplyResult::Applied);
+
+    // Stranger tries to create a channel (should fail).
+    let create = make_event(
+        &state,
+        "stranger",
+        EventKind::CreateChannel {
+            name: "hacked".into(),
+            channel_id: "ch-hacked".into(),
+        },
+    );
+    assert!(matches!(
+        apply(&mut state, &create),
+        ApplyResult::Rejected(_)
+    ));
+    assert!(!state.channels.contains_key("ch-hacked"));
+
+    // Stranger tries to grant themselves Admin (should fail).
+    let self_grant = make_event(
+        &state,
+        "stranger",
+        EventKind::GrantPermission {
+            peer_id: "stranger".into(),
+            permission: Permission::Administrator,
+        },
+    );
+    assert!(matches!(
+        apply(&mut state, &self_grant),
+        ApplyResult::Rejected(_)
+    ));
+    assert!(!state.has_permission("stranger", &Permission::Administrator));
+
+    // Stranger tries to kick another peer (should fail).
+    let kick = make_event(
+        &state,
+        "stranger",
+        EventKind::KickMember {
+            peer_id: "owner".into(),
+        },
+    );
+    assert!(matches!(apply(&mut state, &kick), ApplyResult::Rejected(_)));
+    assert!(state.members.contains_key("owner"));
+
+    // Stranger can still send messages (messages are open).
+    let msg = make_event(
+        &state,
+        "stranger",
+        EventKind::Message {
+            channel_id: "ch1".into(),
+            body: "I can only send messages".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &msg), ApplyResult::Applied);
+    assert_eq!(state.messages.len(), 1);
+}
+
+#[test]
+fn profile_history_through_events() {
+    let mut state = test_state();
+
+    // Peer sets profile "Alice".
+    let set1 = make_event(
+        &state,
+        "peer-1",
+        EventKind::SetProfile {
+            display_name: "Alice".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &set1), ApplyResult::Applied);
+    assert_eq!(state.profiles["peer-1"].display_name, "Alice");
+
+    // Then changes to "Bob".
+    let set2 = make_event(
+        &state,
+        "peer-1",
+        EventKind::SetProfile {
+            display_name: "Bob".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &set2), ApplyResult::Applied);
+    assert_eq!(state.profiles["peer-1"].display_name, "Bob");
+
+    // Then to "Charlie".
+    let set3 = make_event(
+        &state,
+        "peer-1",
+        EventKind::SetProfile {
+            display_name: "Charlie".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &set3), ApplyResult::Applied);
+
+    // Final state should show "Charlie".
+    assert_eq!(state.profiles["peer-1"].display_name, "Charlie");
+    // All three SetProfile events should have been applied (seen IDs).
+    assert!(state.seen_event_ids.contains(&set1.id));
+    assert!(state.seen_event_ids.contains(&set2.id));
+    assert!(state.seen_event_ids.contains(&set3.id));
+}
+
+#[test]
+fn state_hash_changes_on_every_mutation() {
+    let mut state = test_state();
+    let mut hashes = vec![state.hash()];
+
+    // Apply 10 different events and collect the hash after each.
+    let event_kinds = vec![
+        EventKind::CreateChannel {
+            name: "ch-1".into(),
+            channel_id: "ch1".into(),
+        },
+        EventKind::CreateChannel {
+            name: "ch-2".into(),
+            channel_id: "ch2".into(),
+        },
+        EventKind::GrantPermission {
+            peer_id: "alice".into(),
+            permission: Permission::ManageChannels,
+        },
+        EventKind::GrantPermission {
+            peer_id: "bob".into(),
+            permission: Permission::SendMessages,
+        },
+        EventKind::CreateRole {
+            name: "Mod".into(),
+            role_id: "r1".into(),
+        },
+        EventKind::Message {
+            channel_id: "ch1".into(),
+            body: "hello".into(),
+        },
+        EventKind::Message {
+            channel_id: "ch2".into(),
+            body: "world".into(),
+        },
+        EventKind::SetProfile {
+            display_name: "Owner".into(),
+        },
+        EventKind::RenameChannel {
+            channel_id: "ch1".into(),
+            new_name: "renamed".into(),
+        },
+        EventKind::DeleteChannel {
+            channel_id: "ch2".into(),
+        },
+    ];
+
+    for kind in event_kinds {
+        let evt = make_event(&state, "owner", kind);
+        assert_eq!(apply(&mut state, &evt), ApplyResult::Applied);
+        hashes.push(state.hash());
+    }
+
+    // No two hashes should be the same.
+    assert_eq!(hashes.len(), 11);
+    for i in 0..hashes.len() {
+        for j in (i + 1)..hashes.len() {
+            assert_ne!(
+                hashes[i], hashes[j],
+                "hashes at index {i} and {j} should differ"
+            );
+        }
+    }
+}
+
+#[test]
+fn idempotency_across_all_event_kinds() {
+    let mut state = test_state();
+
+    // Setup: create a channel and a role so downstream events have targets.
+    let setup_ch = make_event(
+        &state,
+        "owner",
+        EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: "ch1".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &setup_ch), ApplyResult::Applied);
+    let setup_role = make_event(
+        &state,
+        "owner",
+        EventKind::CreateRole {
+            name: "Mod".into(),
+            role_id: "r1".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &setup_role), ApplyResult::Applied);
+
+    // Grant alice permissions so she is a member for AssignRole.
+    let grant_alice = make_event(
+        &state,
+        "owner",
+        EventKind::GrantPermission {
+            peer_id: "alice".into(),
+            permission: Permission::ManageRoles,
+        },
+    );
+    assert_eq!(apply(&mut state, &grant_alice), ApplyResult::Applied);
+
+    // Send a message so we have a message to edit/delete/react to.
+    let msg_evt = event(
+        &state,
+        "msg-idem",
+        "owner",
+        EventKind::Message {
+            channel_id: "ch1".into(),
+            body: "test".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &msg_evt), ApplyResult::Applied);
+
+    // Test each EventKind variant: apply, then apply again via apply_lenient.
+    let variants: Vec<EventKind> = vec![
+        EventKind::CreateChannel {
+            name: "new-ch".into(),
+            channel_id: "ch-new".into(),
+        },
+        EventKind::DeleteChannel {
+            channel_id: "ch-new".into(),
+        },
+        EventKind::RenameChannel {
+            channel_id: "ch1".into(),
+            new_name: "renamed".into(),
+        },
+        EventKind::CreateRole {
+            name: "Admin".into(),
+            role_id: "r2".into(),
+        },
+        EventKind::DeleteRole {
+            role_id: "r2".into(),
+        },
+        EventKind::SetPermission {
+            role_id: "r1".into(),
+            permission: "TestPerm".into(),
+            granted: true,
+        },
+        EventKind::AssignRole {
+            peer_id: "alice".into(),
+            role_id: "r1".into(),
+        },
+        EventKind::GrantPermission {
+            peer_id: "bob".into(),
+            permission: Permission::SendMessages,
+        },
+        EventKind::RevokePermission {
+            peer_id: "bob".into(),
+            permission: Permission::SendMessages,
+        },
+        EventKind::Message {
+            channel_id: "ch1".into(),
+            body: "duplicate test".into(),
+        },
+        EventKind::EditMessage {
+            message_id: "msg-idem".into(),
+            new_body: "edited".into(),
+        },
+        EventKind::DeleteMessage {
+            message_id: "msg-idem".into(),
+        },
+        EventKind::Reaction {
+            message_id: "msg-idem".into(),
+            emoji: ":+1:".into(),
+        },
+        EventKind::SetProfile {
+            display_name: "Test".into(),
+        },
+        EventKind::RotateChannelKey {
+            channel_id: "ch1".into(),
+            encrypted_keys: vec![("owner".into(), vec![1, 2, 3])],
+        },
+    ];
+
+    for kind in variants {
+        let evt = make_event(&state, "owner", kind);
+        let first_result = apply(&mut state, &evt);
+        // First application should succeed (Applied or Rejected, but not AlreadySeen).
+        assert_ne!(
+            first_result,
+            ApplyResult::AlreadySeen,
+            "first apply should not be AlreadySeen"
+        );
+
+        let hash_after_first = state.hash();
+
+        // Second application should be AlreadySeen.
+        let second_result = apply_lenient(&mut state, &evt);
+        assert_eq!(second_result, ApplyResult::AlreadySeen);
+
+        // Hash should be unchanged after duplicate.
+        assert_eq!(state.hash(), hash_after_first);
+    }
+}
+
+// ── Merge stress tests ───────────────────────────────────────────────────
+
+#[test]
+fn merge_three_way_divergence() {
+    // Three peers diverge from the same state.
+    let common = test_state();
+    let common_hash = common.hash();
+
+    // Peer A creates channel "alpha" and sends a message.
+    let events_a = vec![
+        event_with(
+            "a1",
+            common_hash.clone(),
+            "owner",
+            100,
+            EventKind::CreateChannel {
+                name: "alpha".into(),
+                channel_id: "ch-alpha".into(),
+            },
+        ),
+        event_with(
+            "a2",
+            common_hash.clone(),
+            "owner",
+            101,
+            EventKind::Message {
+                channel_id: "ch-alpha".into(),
+                body: "msg from A".into(),
+            },
+        ),
+    ];
+
+    // Peer B creates channel "beta" and sends a message.
+    let events_b = vec![
+        event_with(
+            "b1",
+            common_hash.clone(),
+            "owner",
+            200,
+            EventKind::CreateChannel {
+                name: "beta".into(),
+                channel_id: "ch-beta".into(),
+            },
+        ),
+        event_with(
+            "b2",
+            common_hash.clone(),
+            "owner",
+            201,
+            EventKind::Message {
+                channel_id: "ch-beta".into(),
+                body: "msg from B".into(),
+            },
+        ),
+    ];
+
+    // Peer C creates channel "gamma" and grants a permission.
+    let events_c = vec![
+        event_with(
+            "c1",
+            common_hash.clone(),
+            "owner",
+            300,
+            EventKind::CreateChannel {
+                name: "gamma".into(),
+                channel_id: "ch-gamma".into(),
+            },
+        ),
+        event_with(
+            "c2",
+            common_hash,
+            "owner",
+            301,
+            EventKind::GrantPermission {
+                peer_id: "alice".into(),
+                permission: Permission::ManageChannels,
+            },
+        ),
+    ];
+
+    // Merge A+B first.
+    let (state_ab, events_ab) = merge(&events_a, &events_b, &common);
+    assert_eq!(events_ab.len(), 4);
+    assert!(state_ab.channels.contains_key("ch-alpha"));
+    assert!(state_ab.channels.contains_key("ch-beta"));
+
+    // Then merge AB+C.
+    let (final_state, final_events) = merge(&events_ab, &events_c, &common);
+
+    // All channels and messages from all three should be present.
+    assert_eq!(final_events.len(), 6);
+    assert!(final_state.channels.contains_key("ch-alpha"));
+    assert!(final_state.channels.contains_key("ch-beta"));
+    assert!(final_state.channels.contains_key("ch-gamma"));
+    assert_eq!(final_state.messages.len(), 2);
+    assert!(final_state.has_permission("alice", &Permission::ManageChannels));
+}
+
+#[test]
+fn merge_preserves_permission_chain() {
+    // Start with a common state where owner has set things up.
+    let common = test_state();
+    let common_hash = common.hash();
+
+    // Peer A (owner): grants Admin to peer B (diverged from common).
+    let events_a = vec![event_with(
+        "a1",
+        common_hash.clone(),
+        "owner",
+        100,
+        EventKind::GrantPermission {
+            peer_id: "peer-b".into(),
+            permission: Permission::Administrator,
+        },
+    )];
+
+    // Peer B (in their diverged history): creates a role.
+    // Note: B doesn't have Admin yet in their own view, but after merge
+    // the permission grant comes first (timestamp 100 < 200).
+    let events_b = vec![event_with(
+        "b1",
+        common_hash,
+        "peer-b",
+        200,
+        EventKind::CreateRole {
+            name: "Moderator".into(),
+            role_id: "role-mod".into(),
+        },
+    )];
+
+    // After merge, the grant event (ts=100) comes before the create role (ts=200).
+    let (merged_state, events) = merge(&events_a, &events_b, &common);
+    assert_eq!(events.len(), 2);
+
+    // Both the permission grant and the role should exist.
+    assert!(merged_state.has_permission("peer-b", &Permission::Administrator));
+    assert!(merged_state.roles.contains_key("role-mod"));
 }
