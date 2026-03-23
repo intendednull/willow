@@ -212,6 +212,64 @@ pub fn sync_new_channel_input(
     });
 }
 
+// ───── Channel Deletion ─────────────────────────────────────────────────────
+
+/// Handle delete channel button clicks.
+pub fn handle_delete_channel(
+    query: Query<(&Interaction, &DeleteChannelButton), Changed<Interaction>>,
+    mut server_state: ResMut<ServerState>,
+    mut key_store: ResMut<ChannelKeyStore>,
+    mut state: ResMut<ChatState>,
+    mut commands: Commands,
+    list_query: Query<Entity, With<ChannelList>>,
+) {
+    for (interaction, button) in &query {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+
+        let name = &button.0;
+
+        // Find the channel ID and topic for this name.
+        let Some((topic, (_ch_name, ch_id))) = server_state
+            .topic_map
+            .iter()
+            .find(|(_, (n, _))| n == name)
+            .map(|(t, v)| (t.clone(), v.clone()))
+        else {
+            continue;
+        };
+
+        // Delete from the server.
+        {
+            let Some(server) = &mut server_state.server else {
+                continue;
+            };
+            if let Err(e) = server.delete_channel(&ch_id) {
+                warn!("failed to delete channel '{name}': {e}");
+                continue;
+            }
+            crate::storage::save_server(server, &key_store.keys);
+        }
+
+        // Remove from topic map and key store.
+        server_state.topic_map.remove(&topic);
+        key_store.keys.remove(&topic);
+
+        // If we deleted the current channel, switch to another.
+        if state.current_channel == *name {
+            let names = server_state.channel_names();
+            state.current_channel = names.first().cloned().unwrap_or_default();
+            state.messages_dirty = true;
+        }
+
+        // Rebuild sidebar.
+        rebuild_channel_list(&mut commands, &list_query, &server_state.channel_names());
+
+        info!("deleted channel #{name}");
+    }
+}
+
 // ───── Invite Systems ───────────────────────────────────────────────────────
 
 /// Handle "Generate Invite" button — creates a secure invite encrypted

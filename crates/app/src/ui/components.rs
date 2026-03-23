@@ -62,6 +62,10 @@ pub struct ShareFileButton;
 #[derive(Component)]
 pub struct SettingsFieldContainer(pub super::resources::SettingsField);
 
+/// Delete channel button. Stores the channel name.
+#[derive(Component)]
+pub struct DeleteChannelButton(pub String);
+
 /// "Copy PeerId" button in the user area.
 #[derive(Component)]
 pub struct CopyPeerIdButton;

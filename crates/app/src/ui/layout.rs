@@ -727,21 +727,51 @@ fn spawn_settings_input_field(
 
 pub fn spawn_channel_button(parent: &mut ChildSpawnerCommands, name: &str) {
     parent
-        .spawn((
-            Button,
-            Node {
-                margin: UiRect::top(Val::Px(4.0)),
-                padding: UiRect::new(Val::Px(8.0), Val::Px(8.0), Val::Px(4.0), Val::Px(4.0)),
-                ..default()
-            },
-            BackgroundColor(Color::NONE),
-            ChannelButton(name.to_string()),
-        ))
-        .with_children(|btn| {
-            btn.spawn((
-                Text::new(format!("# {name}")),
-                TextFont::from_font_size(15.0),
-                TextColor(theme::TEXT_MUTED),
-            ));
+        .spawn(Node {
+            margin: UiRect::top(Val::Px(2.0)),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            ..default()
+        })
+        .with_children(|row| {
+            // Channel name button (takes most of the row).
+            row.spawn((
+                Button,
+                Node {
+                    flex_grow: 1.0,
+                    padding: UiRect::new(Val::Px(8.0), Val::Px(4.0), Val::Px(4.0), Val::Px(4.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::NONE),
+                ChannelButton(name.to_string()),
+            ))
+            .with_children(|btn| {
+                btn.spawn((
+                    Text::new(format!("# {name}")),
+                    TextFont::from_font_size(15.0),
+                    TextColor(theme::TEXT_MUTED),
+                ));
+            });
+
+            // Delete button (small "×" on the right).
+            row.spawn((
+                Button,
+                Node {
+                    width: Val::Px(20.0),
+                    height: Val::Px(20.0),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                },
+                BackgroundColor(Color::NONE),
+                DeleteChannelButton(name.to_string()),
+            ))
+            .with_children(|btn| {
+                btn.spawn((
+                    Text::new("×"),
+                    TextFont::from_font_size(14.0),
+                    TextColor(theme::TEXT_PLACEHOLDER),
+                ));
+            });
         });
 }

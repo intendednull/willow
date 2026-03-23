@@ -66,6 +66,7 @@ impl Plugin for UiPlugin {
                 (
                     channels::handle_create_channel_button,
                     channels::handle_new_channel_input,
+                    channels::handle_delete_channel,
                     channels::sync_new_channel_input,
                     input::handle_keyboard_input,
                     input::send_message,
