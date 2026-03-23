@@ -8292,6 +8292,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "willow-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "futures",
+ "js-sys",
+ "rusqlite",
+ "serde",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "willow-channel",
+ "willow-crypto",
+ "willow-files",
+ "willow-identity",
+ "willow-messaging",
+ "willow-network",
+ "willow-transport",
+]
+
+[[package]]
 name = "willow-crypto"
 version = "0.1.0"
 dependencies = [
