@@ -86,6 +86,15 @@ async fn main() -> Result<()> {
     let keypair = load_or_generate_keypair(args.identity.as_deref())?;
     let local_peer_id = PeerId::from(keypair.public());
 
+    // Build a willow Identity for signing sync responses.
+    let relay_identity = {
+        let ed_kp = keypair.clone().try_into_ed25519()
+            .expect("keypair should be ed25519");
+        let bytes = ed_kp.to_bytes();
+        willow_identity::Identity::from_ed25519_bytes(&bytes)
+            .expect("valid ed25519 bytes")
+    };
+
     info!(%local_peer_id, "starting willow relay");
 
     // Build the swarm with TCP + WebSocket transports.
@@ -240,13 +249,51 @@ async fn main() -> Result<()> {
                                     "stored event"
                                 );
                             }
+                            WireMessage::SyncRequest { ref topic, .. } => {
+                                // Respond with stored events — the relay provides history.
+                                let events = if let Some(ref t) = topic {
+                                    event_store.events_for_topic_since(t, 0)
+                                } else {
+                                    event_store.all_events_since(0)
+                                };
+
+                                if !events.is_empty() {
+                                    let batch = WireMessage::SyncBatch {
+                                        events: events.clone(),
+                                    };
+                                    if let Ok(envelope) = willow_transport::pack_envelope(
+                                        willow_transport::MessageType::Channel,
+                                        &batch,
+                                    ) {
+                                        if let Ok(signed) =
+                                            willow_identity::pack(&envelope, &relay_identity)
+                                        {
+                                            let reply_topic = topic
+                                                .as_deref()
+                                                .unwrap_or("_willow_server_ops");
+                                            let gt =
+                                                gossipsub::IdentTopic::new(reply_topic);
+                                            let _ = swarm
+                                                .behaviour_mut()
+                                                .gossipsub
+                                                .publish(gt, signed);
+                                            info!(
+                                                count = events.len(),
+                                                topic = %reply_topic,
+                                                "relay sent sync response"
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    debug!("sync request but no events stored");
+                                }
+                            }
                             WireMessage::SyncBatch { ref events } => {
                                 for event in events {
                                     event_store.store_event(&topic_str, event, &[]);
                                 }
                                 debug!(count = events.len(), "cached sync batch");
                             }
-                            _ => {}
                         }
                     }
                 }
