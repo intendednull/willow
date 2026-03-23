@@ -47,6 +47,9 @@ pub struct RelayBehaviour {
     pub relay: relay::Behaviour,
 }
 
+/// Profile topic for broadcasting display names.
+const PROFILE_TOPIC: &str = "_willow_profiles";
+
 /// A running relay node with its swarm, event store, and signing identity.
 pub struct Relay {
     /// The libp2p swarm driving all network protocols.
@@ -57,6 +60,8 @@ pub struct Relay {
     pub identity: willow_identity::Identity,
     /// This relay's libp2p peer ID.
     pub peer_id: PeerId,
+    /// Display name for this relay in peer lists.
+    pub display_name: String,
 }
 
 impl Relay {
@@ -136,6 +141,7 @@ impl Relay {
             event_store,
             identity: relay_identity,
             peer_id: local_peer_id,
+            display_name: String::new(),
         })
     }
 
@@ -182,6 +188,8 @@ impl Relay {
                 if let Err(e) = self.swarm.behaviour_mut().gossipsub.subscribe(&topic) {
                     warn!(%e, "failed to subscribe");
                 }
+                // Broadcast our display name so the new peer sees us.
+                self.broadcast_profile();
                 false
             }
 
@@ -196,6 +204,35 @@ impl Relay {
             }
 
             _ => false,
+        }
+    }
+
+    /// Subscribe to the profile topic and broadcast our display name.
+    pub fn set_display_name(&mut self, name: &str) {
+        self.display_name = name.to_string();
+        let topic = gossipsub::IdentTopic::new(PROFILE_TOPIC);
+        if let Err(e) = self.swarm.behaviour_mut().gossipsub.subscribe(&topic) {
+            warn!(%e, "failed to subscribe to profile topic");
+        }
+        self.broadcast_profile();
+    }
+
+    /// Broadcast our display name on the profile topic.
+    fn broadcast_profile(&mut self) {
+        if self.display_name.is_empty() {
+            return;
+        }
+        let profile = willow_identity::UserProfile::new(
+            willow_identity::PeerId::from(self.peer_id),
+            self.display_name.clone(),
+        );
+        if let Ok(data) =
+            willow_transport::pack_envelope(willow_transport::MessageType::Identity, &profile)
+        {
+            let topic = gossipsub::IdentTopic::new(PROFILE_TOPIC);
+            if let Err(e) = self.swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                debug!(%e, "failed to broadcast profile (no subscribers yet)");
+            }
         }
     }
 

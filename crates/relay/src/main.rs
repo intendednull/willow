@@ -51,6 +51,10 @@ struct Args {
     /// Defaults to ~/.local/share/willow-relay/
     #[arg(long)]
     data_dir: Option<std::path::PathBuf>,
+
+    /// Display name for this relay node (visible in peer lists).
+    #[arg(long, default_value = "Relay Node")]
+    name: String,
 }
 
 #[tokio::main]
@@ -74,7 +78,8 @@ async fn main() -> Result<()> {
 
     let mut relay = Relay::start(keypair, &db_path).await?;
 
-    info!(%relay.peer_id, "starting willow relay");
+    relay.set_display_name(&args.name);
+    info!(%relay.peer_id, name = %args.name, "starting willow relay");
 
     // Listen on TCP.
     let tcp_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{}", args.tcp_port)
