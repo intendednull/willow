@@ -125,11 +125,16 @@ A native desktop app where you and your friends can:
 - [x] 50 tests covering determinism, permissions, merge convergence
 - [x] Invite payload carries owner + sync provider hints (unverified)
 - [x] willow-client integrates willow-state (event_state + event_store)
-- [ ] Full migration: Client actions create Events, not Ops
-- [ ] Push-based notification (mpsc channel, no polling)
-- [ ] SQLite/localStorage EventStore implementations
-- [ ] Relay as trusted EventStore client
+- [x] Full migration: Client actions create Events, apply to event_state
+- [x] Bridge layer (Event ↔ Op) for wire format backward compat
+- [x] Push-based notification (mpsc channel via ClientNotification)
+- [x] SQLite EventStore (native) + localStorage EventStore (WASM)
+- [x] PersistentEventStore enum with platform dispatch
+- [x] Event replay on startup to rebuild state from stored events
+- [x] Invite carries owner + sync provider hints (unverified suggestions)
+- [ ] Relay as trusted EventStore client (deployment pattern — run Client alongside relay)
 - [ ] Multi-peer state verification (consensus on hash)
+- [ ] Full wire format migration (transmit Events directly, retire Op)
 
 ### Phase 9 — Voice & Video (FUTURE)
 - [ ] WebRTC-like media transport
