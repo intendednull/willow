@@ -599,16 +599,17 @@ html, body {
     .app {
         height: 100%;
         height: 100dvh;
+        flex-direction: column;
     }
 
     .mobile-nav-toggle {
         display: block;
     }
 
-    /* Sidebar becomes a slide-over drawer */
+    /* Sidebar becomes a slide-over drawer below the server rail */
     .sidebar {
         position: fixed;
-        top: 0;
+        top: 52px; /* below the horizontal server rail */
         left: 0;
         bottom: 0;
         z-index: 10;
@@ -628,14 +629,17 @@ html, body {
         display: block;
     }
 
-    /* Main content fills viewport */
+    /* Main content fills remaining space */
     .main-content {
+        flex: 1;
         width: 100%;
         min-height: 0;
+        overflow: hidden;
     }
 
     .chat-container {
-        height: 100%;
+        flex: 1;
+        min-height: 0;
     }
 
     /* Larger touch targets */
@@ -733,11 +737,6 @@ html, body {
         width: 2px;
         height: 24px;
         min-width: 2px;
-    }
-
-    /* App layout becomes vertical on mobile */
-    .app {
-        flex-direction: column;
     }
 
     .member-list {
