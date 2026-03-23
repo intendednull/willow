@@ -506,12 +506,10 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
 /* ── Message Grouping ────────────────────────────────────────────── */
 
 .message.grouped {
-    padding-left: 52px;
-    margin-top: -2px;
+    margin-top: 2px;
 }
 
 .message.grouped:hover {
-    padding-left: 50px;
 }
 
 /* ── Reactions ───────────────────────────────────────────────────── */
