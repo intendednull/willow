@@ -1430,6 +1430,56 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     z-index: 9;
 }
 
+/* ── Message links & embeds ─────────────────────────────────────── */
+
+.message-link {
+    color: var(--accent);
+    text-decoration: none;
+    word-break: break-all;
+}
+
+.message-link:hover {
+    text-decoration: underline;
+}
+
+.message-embeds {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 8px;
+    max-width: 400px;
+}
+
+.embed-link {
+    display: block;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    transition: border-color 0.15s ease;
+}
+
+.embed-link:hover {
+    border-color: var(--accent);
+}
+
+.embed-image {
+    display: block;
+    max-width: 100%;
+    max-height: 300px;
+    object-fit: contain;
+    background: var(--bg-input);
+    border-radius: 8px;
+}
+
+@media (max-width: 640px) {
+    .message-embeds {
+        max-width: 100%;
+    }
+    .embed-image {
+        max-height: 200px;
+    }
+}
+
 /* ── Typing Indicator ────────────────────────────────────────────── */
 
 .typing-indicator {

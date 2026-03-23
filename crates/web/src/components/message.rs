@@ -3,6 +3,64 @@ use willow_client::ChatMessage;
 
 use super::file_share::{parse_inline_file, FileCard};
 
+/// Image file extensions for URL embedding.
+const IMAGE_EXTENSIONS: &[&str] = &[
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico",
+];
+
+/// Check if a URL points to an image based on extension.
+fn is_image_url(url: &str) -> bool {
+    let lower = url.to_lowercase();
+    // Strip query params for extension check.
+    let path = lower.split('?').next().unwrap_or(&lower);
+    IMAGE_EXTENSIONS.iter().any(|ext| path.ends_with(ext))
+}
+
+/// Extract URLs from text. Returns (segments, image_urls).
+/// Segments alternate between plain text and URLs.
+fn extract_urls(text: &str) -> (Vec<(String, bool)>, Vec<String>) {
+    let mut segments = Vec::new();
+    let mut images = Vec::new();
+    let mut last_end = 0;
+
+    for (start, _) in text
+        .match_indices("http://")
+        .chain(text.match_indices("https://"))
+    {
+        // Find end of URL (whitespace or end of string).
+        let url_start = start;
+        let rest = &text[url_start..];
+        let url_end = rest
+            .find(|c: char| c.is_whitespace() || c == '>' || c == ')' || c == ']')
+            .map(|i| url_start + i)
+            .unwrap_or(text.len());
+        let url = &text[url_start..url_end];
+
+        // Add preceding text.
+        if url_start > last_end {
+            segments.push((text[last_end..url_start].to_string(), false));
+        }
+        segments.push((url.to_string(), true));
+
+        if is_image_url(url) {
+            images.push(url.to_string());
+        }
+
+        last_end = url_end;
+    }
+
+    // Remaining text.
+    if last_end < text.len() {
+        segments.push((text[last_end..].to_string(), false));
+    }
+
+    if segments.is_empty() {
+        segments.push((text.to_string(), false));
+    }
+
+    (segments, images)
+}
+
 /// Common emoji used in the reaction picker.
 pub const REACTION_EMOJI: &[&str] = &[
     "\u{1F44D}",        // thumbs up
@@ -146,7 +204,38 @@ pub fn MessageView(
             {if let Some((filename, data)) = parse_inline_file(&body) {
                 view! { <FileCard filename=filename data=data /> }.into_any()
             } else {
-                view! { <div class=body_class>{body}</div> }.into_any()
+                let (segments, images) = extract_urls(&body);
+                let has_images = !images.is_empty();
+                view! {
+                    <div class=body_class>
+                        {segments.into_iter().map(|(text, is_url)| {
+                            if is_url {
+                                let display = text.clone();
+                                view! {
+                                    <a href=text target="_blank" rel="noopener noreferrer" class="message-link">{display}</a>
+                                }.into_any()
+                            } else {
+                                view! { <span>{text}</span> }.into_any()
+                            }
+                        }).collect::<Vec<_>>()}
+                    </div>
+                    {if has_images {
+                        Some(view! {
+                            <div class="message-embeds">
+                                {images.into_iter().map(|url| {
+                                    let url_clone = url.clone();
+                                    view! {
+                                        <a href=url.clone() target="_blank" rel="noopener noreferrer" class="embed-link">
+                                            <img class="embed-image" src=url_clone alt="embedded image" loading="lazy" />
+                                        </a>
+                                    }
+                                }).collect::<Vec<_>>()}
+                            </div>
+                        })
+                    } else {
+                        None
+                    }}
+                }.into_any()
             }}
             // Action bar -- shown on hover via CSS.
             {if show_actions {
