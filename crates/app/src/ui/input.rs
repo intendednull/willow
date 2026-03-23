@@ -38,6 +38,21 @@ pub fn handle_keyboard_input(
         }
 
         if *view == AppView::Settings {
+            // Ctrl+V pastes into the focused settings field.
+            if event.key_code == KeyCode::KeyV
+                && (keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight))
+            {
+                if let Some(text) = crate::clipboard::read_clipboard() {
+                    let target = match settings_input.focused_field {
+                        SettingsField::DisplayName => &mut settings_input.display_name,
+                        SettingsField::RelayAddr => &mut settings_input.relay_addr,
+                        SettingsField::InviteRecipient => &mut channel_mgmt.invite_recipient,
+                        SettingsField::JoinCode => &mut channel_mgmt.join_code,
+                    };
+                    target.push_str(&text);
+                }
+                continue;
+            }
             match event.key_code {
                 KeyCode::Tab => {
                     settings_input.focused_field = match settings_input.focused_field {
@@ -106,20 +121,25 @@ pub fn handle_keyboard_input(
                 input.focused = true;
             }
 
+            let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+
+            // Ctrl+V pastes from clipboard.
+            if event.key_code == KeyCode::KeyV && ctrl {
+                if let Some(text) = crate::clipboard::read_clipboard() {
+                    input.text.push_str(&text);
+                }
+                continue;
+            }
+
             // Ctrl+F opens search.
-            if event.key_code == KeyCode::KeyF
-                && (keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight))
-            {
+            if event.key_code == KeyCode::KeyF && ctrl {
                 search.active = true;
                 search.query.clear();
                 continue;
             }
 
             // Ctrl+R → reply to last message.
-            if event.key_code == KeyCode::KeyR
-                && (keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight))
-                && input.replying_to.is_none()
-            {
+            if event.key_code == KeyCode::KeyR && ctrl && input.replying_to.is_none() {
                 if let Some(last_msg) = state.messages.iter().rev().find(|m| !m.deleted) {
                     let preview = if last_msg.body.len() > 40 {
                         format!("{}: {}...", last_msg.author, &last_msg.body[..40])
@@ -155,10 +175,7 @@ pub fn handle_keyboard_input(
             }
 
             // Ctrl+Backspace while editing → delete the message.
-            if event.key_code == KeyCode::Backspace
-                && (keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight))
-                && input.editing_message_id.is_some()
-            {
+            if event.key_code == KeyCode::Backspace && ctrl && input.editing_message_id.is_some() {
                 // Mark as delete request — send_message will handle it.
                 input.send_requested = true;
                 input.text = "$$DELETE$$".to_string();
