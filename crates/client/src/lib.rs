@@ -1107,7 +1107,7 @@ impl Client {
             self.state.servers.insert(server_id.clone(), ctx);
         }
 
-        self.state.active_server = Some(server_id);
+        self.state.active_server = Some(server_id.clone());
 
         if let Some((_, (name, _))) = accepted.channel_keys.iter().next() {
             self.state.chat.current_channel = name.clone();
@@ -1116,6 +1116,21 @@ impl Client {
 
         // Persist all servers so the joined server survives refresh.
         Self::persist_servers(&self.state);
+
+        // Request sync for the new server — get all ops and chat history
+        // from peers since we have nothing.
+        let _ = self.cmd_tx.send(network::NetworkCommand::RequestSync {
+            latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
+            topic: None,
+        });
+        if let Some(ctx) = self.state.servers.get(&server_id) {
+            for topic in ctx.topic_map.keys() {
+                let _ = self.cmd_tx.send(network::NetworkCommand::RequestSync {
+                    latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
+                    topic: Some(topic.clone()),
+                });
+            }
+        }
 
         Ok(())
     }
@@ -1337,25 +1352,27 @@ impl Client {
             });
         }
 
-        // Request missing server ops from the active server.
-        let latest_hlc = self
-            .state
-            .active()
-            .map(|ctx| ctx.op_log.latest_hlc())
-            .unwrap_or(willow_messaging::hlc::HlcTimestamp::ZERO);
-        let _ = self.cmd_tx.send(network::NetworkCommand::RequestSync {
-            latest_hlc,
-            topic: None,
-        });
-
-        // Request chat history for each channel across all servers.
+        // Request missing server ops and chat history for ALL servers.
         for ctx in self.state.servers.values() {
+            // Server ops sync.
+            let _ = self.cmd_tx.send(network::NetworkCommand::RequestSync {
+                latest_hlc: ctx.op_log.latest_hlc(),
+                topic: None,
+            });
+            // Chat history per channel.
             for topic in ctx.topic_map.keys() {
                 let _ = self.cmd_tx.send(network::NetworkCommand::RequestSync {
                     latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
                     topic: Some(topic.clone()),
                 });
             }
+        }
+        // Also request with ZERO if we have no servers yet (first launch).
+        if self.state.servers.is_empty() {
+            let _ = self.cmd_tx.send(network::NetworkCommand::RequestSync {
+                latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
+                topic: None,
+            });
         }
     }
 }

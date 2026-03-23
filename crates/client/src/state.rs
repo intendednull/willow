@@ -388,13 +388,15 @@ impl ClientState {
         // Record (chat messages go to seen_ids only, not ops).
         ctx.op_log.record(stamped.clone());
 
-        // Persist op log only for server ops (not chat messages).
-        if needs_trust {
-            crate::storage::save_op_log(&ctx.op_log.ops);
-        }
-
         // Cache the active server id for later use.
         let active_id = self.active_server.clone().unwrap_or_default();
+
+        // Persist op log for server ops (not chat messages).
+        if needs_trust {
+            if let Some(ctx) = self.servers.get(&active_id) {
+                crate::storage::save_op_log_for(&active_id, &ctx.op_log.ops);
+            }
+        }
 
         match &stamped.op {
             Op::CreateChannel { name, channel_id } => {
@@ -417,7 +419,7 @@ impl ClientState {
                     ctx.keys.insert(topic.clone(), key);
                 }
                 ctx.topic_map.insert(topic.clone(), (name.clone(), ch_id));
-                crate::storage::save_server(&ctx.server, &ctx.keys);
+                crate::storage::save_server_by_id(&active_id, &ctx.server, &ctx.keys);
                 let _ = cmd_tx.send(crate::network::NetworkCommand::Subscribe(topic));
             }
             Op::DeleteChannel { name } => {
@@ -430,7 +432,7 @@ impl ClientState {
 
                 if let Some((topic, ch_id)) = to_remove {
                     let _ = ctx.server.delete_channel(&ch_id);
-                    crate::storage::save_server(&ctx.server, &ctx.keys);
+                    crate::storage::save_server_by_id(&active_id, &ctx.server, &ctx.keys);
                     ctx.topic_map.remove(&topic);
                     ctx.keys.remove(&topic);
 
@@ -448,7 +450,7 @@ impl ClientState {
                         willow_channel::RoleId(uuid::Uuid::parse_str(role_id).unwrap_or_default());
                     let role = willow_channel::Role::with_id(rid, name);
                     ctx.server.create_role(role);
-                    crate::storage::save_server(&ctx.server, &ctx.keys);
+                    crate::storage::save_server_by_id(&active_id, &ctx.server, &ctx.keys);
                 }
             }
             Op::DeleteRole { role_id } => {
@@ -456,7 +458,7 @@ impl ClientState {
                 let rid =
                     willow_channel::RoleId(uuid::Uuid::parse_str(role_id).unwrap_or_default());
                 let _ = ctx.server.delete_role(&rid);
-                crate::storage::save_server(&ctx.server, &ctx.keys);
+                crate::storage::save_server_by_id(&active_id, &ctx.server, &ctx.keys);
             }
             Op::SetPermission {
                 role_id,
@@ -477,7 +479,7 @@ impl ClientState {
                     _ => return true,
                 };
                 let _ = ctx.server.set_permission(&rid, perm, *granted);
-                crate::storage::save_server(&ctx.server, &ctx.keys);
+                crate::storage::save_server_by_id(&active_id, &ctx.server, &ctx.keys);
             }
             Op::AssignRole { peer_id, role_id } => {
                 let ctx = self.servers.get_mut(&active_id).unwrap();
@@ -491,7 +493,7 @@ impl ClientState {
                     .map(|m| m.peer_id.clone());
                 if let Some(peer) = member_peer {
                     let _ = ctx.server.assign_role(&peer, &rid);
-                    crate::storage::save_server(&ctx.server, &ctx.keys);
+                    crate::storage::save_server_by_id(&active_id, &ctx.server, &ctx.keys);
                 }
             }
             Op::KickMember {
@@ -524,7 +526,7 @@ impl ClientState {
                     }
                 }
 
-                crate::storage::save_server(&ctx.server, &ctx.keys);
+                crate::storage::save_server_by_id(&active_id, &ctx.server, &ctx.keys);
             }
             Op::TrustPeer { .. } | Op::UntrustPeer { .. } => {
                 // Trust changes are handled by OpLog::record above.
