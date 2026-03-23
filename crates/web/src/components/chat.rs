@@ -67,12 +67,17 @@ pub fn MessageList(
             let client_height = el.client_height() as f64;
 
             // Auto-scroll if: this is the first render, new messages arrived,
-            // OR the user was within 100px of the bottom.
-            let was_at_bottom = (scroll_height - scroll_top - client_height) < 100.0;
+            // OR the user was within 200px of the bottom.
+            let was_at_bottom = (scroll_height - scroll_top - client_height) < 200.0;
             let is_new = prev_len.map(|p| len > p).unwrap_or(true);
 
             if was_at_bottom || is_new {
-                el.set_scroll_top(el.scroll_height());
+                // Defer scroll to next microtask so DOM has updated (fixes mobile).
+                let el_clone = el.clone();
+                set_timeout(
+                    move || el_clone.set_scroll_top(el_clone.scroll_height()),
+                    std::time::Duration::ZERO,
+                );
             }
 
             // Update scroll-to-bottom button visibility.

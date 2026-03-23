@@ -481,6 +481,11 @@ impl Client {
                     from,
                 } => {
                     tracing::info!(count = batch_events.len(), %from, "received event sync batch");
+                    // Track the sender as online.
+                    if !from.is_empty() && !self.state.chat.peers.contains(&from) {
+                        self.state.chat.peers.push(from.clone());
+                        events.push(ClientEvent::PeerConnected(from.clone()));
+                    }
                     let mut sorted = batch_events;
                     sorted.sort_by_key(|e| e.timestamp_ms);
                     let count = sorted.len();
@@ -525,6 +530,11 @@ impl Client {
 
                 // ── Legacy wire format: OpReceived ──────────────────
                 network::NetworkEvent::OpReceived { stamped_op, from } => {
+                    // Track message authors as online (they may be behind a relay).
+                    if !from.is_empty() && !self.state.chat.peers.contains(&from) {
+                        self.state.chat.peers.push(from.clone());
+                        events.push(ClientEvent::PeerConnected(from.clone()));
+                    }
                     tracing::info!(
                         op = ?std::mem::discriminant(&stamped_op.op),
                         from = %from,
@@ -1932,9 +1942,50 @@ impl Client {
             .collect()
     }
 
-    /// Get the list of connected peers.
+    /// Get the list of connected peers (libp2p-level connections).
     pub fn peers(&self) -> &[String] {
         &self.state.chat.peers
+    }
+
+    /// Get all server members with online/offline status.
+    ///
+    /// Returns `(peer_id, display_name, is_online)` for each member.
+    /// Falls back to `chat.peers` for peers not in the member list
+    /// (e.g. connected before event sync completes).
+    pub fn server_members(&self) -> Vec<(String, String, bool)> {
+        let online: std::collections::HashSet<&str> =
+            self.state.chat.peers.iter().map(|s| s.as_str()).collect();
+
+        let mut result = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        // Members from event-sourced state.
+        for (pid, member) in &self.state.event_state.members {
+            let name = member
+                .display_name
+                .clone()
+                .or_else(|| {
+                    self.state
+                        .event_state
+                        .profiles
+                        .get(pid)
+                        .map(|p| p.display_name.clone())
+                })
+                .unwrap_or_else(|| self.peer_display_name(pid));
+            let is_online = online.contains(pid.as_str());
+            result.push((pid.clone(), name, is_online));
+            seen.insert(pid.clone());
+        }
+
+        // Connected peers not yet in the member list (pre-sync).
+        for pid in &self.state.chat.peers {
+            if !seen.contains(pid) {
+                let name = self.peer_display_name(pid);
+                result.push((pid.clone(), name, true));
+            }
+        }
+
+        result
     }
 
     /// Whether the network is connected.

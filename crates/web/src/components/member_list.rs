@@ -7,20 +7,20 @@ use crate::app::ClientHandle;
 /// Accepts `(peer_id, display_name)` tuples so names update reactively.
 #[component]
 pub fn MemberList(
-    peers: ReadSignal<Vec<(String, String)>>,
+    peers: ReadSignal<Vec<(String, String, bool)>>,
     client: ClientHandle,
     peer_id: ReadSignal<String>,
 ) -> impl IntoView {
     view! {
         <div class="member-list">
-            <h3>"Online"</h3>
+            <h3>"Members"</h3>
             <For
                 each=move || peers.get()
-                key=|(id, _)| id.clone()
+                key=|(id, _, _)| id.clone()
                 let:peer
             >
                 {
-                    let (pid, name) = peer;
+                    let (pid, name, is_online) = peer;
                     let pid_badge = pid.clone();
                     let pid_trust = pid.clone();
                     let pid_untrust = pid.clone();
@@ -32,7 +32,7 @@ pub fn MemberList(
                     let client_kick = client.clone();
                     view! {
                         <div class="member-item">
-                            <div class="status-dot"></div>
+                            <div class={if is_online { "status-dot" } else { "status-dot offline" }}></div>
                             <span class="member-name">
                                 {name}
                                 <span class="member-peer-id">{

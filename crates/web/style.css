@@ -626,6 +626,10 @@ html, body {
     flex-shrink: 0;
 }
 
+.member-item .status-dot.offline {
+    background: var(--text-muted);
+}
+
 .member-item .member-name {
     flex-shrink: 1;
     min-width: 0;
