@@ -60,6 +60,21 @@ pub enum NetworkBridgeEvent {
         peer_id: String,
         display_name: String,
     },
+    /// A server operation was received from a peer.
+    ServerOpReceived {
+        stamped_op: crate::server_sync::StampedOp,
+        from: String,
+    },
+    /// A sync request was received from a peer.
+    SyncRequested {
+        latest_hlc: willow_messaging::hlc::HlcTimestamp,
+        from: String,
+    },
+    /// A batch of ops was received as a sync response.
+    SyncBatchReceived {
+        ops: Vec<crate::server_sync::StampedOp>,
+        from: String,
+    },
 }
 
 /// Commands flowing from Bevy to the network.
@@ -80,6 +95,16 @@ pub enum NetworkBridgeCommand {
     /// Broadcast our profile to peers.
     BroadcastProfile {
         display_name: String,
+    },
+    /// Broadcast a server state operation.
+    BroadcastServerOp(crate::server_sync::StampedOp),
+    /// Request missing ops from peers.
+    RequestSync {
+        latest_hlc: willow_messaging::hlc::HlcTimestamp,
+    },
+    /// Send a batch of ops as a sync response.
+    SendSyncBatch {
+        ops: Vec<crate::server_sync::StampedOp>,
     },
 }
 
@@ -265,6 +290,32 @@ async fn run_network(
                                 peer_id: profile.peer_id.to_string(),
                                 display_name: profile.display_name,
                             });
+                        } else if let Some((sync_msg, signer)) =
+                            crate::server_sync::unpack_sync(&data)
+                        {
+                            let from = signer.to_string();
+                            match sync_msg {
+                                crate::server_sync::SyncMessage::Op(stamped_op) => {
+                                    if stamped_op.author == from {
+                                        let _ = event_tx.send(NetworkBridgeEvent::ServerOpReceived {
+                                            stamped_op,
+                                            from,
+                                        });
+                                    }
+                                }
+                                crate::server_sync::SyncMessage::SyncRequest { latest_hlc } => {
+                                    let _ = event_tx.send(NetworkBridgeEvent::SyncRequested {
+                                        latest_hlc,
+                                        from,
+                                    });
+                                }
+                                crate::server_sync::SyncMessage::SyncBatch { ops } => {
+                                    let _ = event_tx.send(NetworkBridgeEvent::SyncBatchReceived {
+                                        ops,
+                                        from,
+                                    });
+                                }
+                            }
                         } else {
                             let _ = event_tx.send(NetworkBridgeEvent::MessageReceived {
                                 topic,
@@ -327,6 +378,32 @@ async fn run_network(
                                 let _ = node.publish(PROFILE_TOPIC, data);
                             }
                         }
+                        NetworkBridgeCommand::BroadcastServerOp(stamped_op) => {
+                            let identity = willow_identity::Identity::from_ed25519_bytes(
+                                &crate::storage::load_identity_bytes().unwrap_or_default(),
+                            ).unwrap_or_else(willow_identity::Identity::generate);
+                            if let Some(data) = crate::server_sync::pack_op(&stamped_op, &identity) {
+                                let _ = node.publish(crate::server_sync::SERVER_OPS_TOPIC, data);
+                            }
+                        }
+                        NetworkBridgeCommand::RequestSync { latest_hlc } => {
+                            let identity = willow_identity::Identity::from_ed25519_bytes(
+                                &crate::storage::load_identity_bytes().unwrap_or_default(),
+                            ).unwrap_or_else(willow_identity::Identity::generate);
+                            let msg = crate::server_sync::SyncMessage::SyncRequest { latest_hlc };
+                            if let Some(data) = crate::server_sync::pack_sync(&msg, &identity) {
+                                let _ = node.publish(crate::server_sync::SERVER_OPS_TOPIC, data);
+                            }
+                        }
+                        NetworkBridgeCommand::SendSyncBatch { ops } => {
+                            let identity = willow_identity::Identity::from_ed25519_bytes(
+                                &crate::storage::load_identity_bytes().unwrap_or_default(),
+                            ).unwrap_or_else(willow_identity::Identity::generate);
+                            let msg = crate::server_sync::SyncMessage::SyncBatch { ops };
+                            if let Some(data) = crate::server_sync::pack_sync(&msg, &identity) {
+                                let _ = node.publish(crate::server_sync::SERVER_OPS_TOPIC, data);
+                            }
+                        }
                     }
                 }
             }
@@ -372,11 +449,39 @@ async fn run_network_wasm(
                 let Some(event) = event else { break };
                 match event {
                     NetworkEvent::Message { topic, data, source } => {
-                        let _ = event_tx.send(NetworkBridgeEvent::MessageReceived {
-                            topic,
-                            data,
-                            source: source.map(|p| p.to_string()),
-                        });
+                        if let Some((sync_msg, signer)) =
+                            crate::server_sync::unpack_sync(&data)
+                        {
+                            let from = signer.to_string();
+                            match sync_msg {
+                                crate::server_sync::SyncMessage::Op(stamped_op) => {
+                                    if stamped_op.author == from {
+                                        let _ = event_tx.send(NetworkBridgeEvent::ServerOpReceived {
+                                            stamped_op,
+                                            from,
+                                        });
+                                    }
+                                }
+                                crate::server_sync::SyncMessage::SyncRequest { latest_hlc } => {
+                                    let _ = event_tx.send(NetworkBridgeEvent::SyncRequested {
+                                        latest_hlc,
+                                        from,
+                                    });
+                                }
+                                crate::server_sync::SyncMessage::SyncBatch { ops } => {
+                                    let _ = event_tx.send(NetworkBridgeEvent::SyncBatchReceived {
+                                        ops,
+                                        from,
+                                    });
+                                }
+                            }
+                        } else {
+                            let _ = event_tx.send(NetworkBridgeEvent::MessageReceived {
+                                topic,
+                                data,
+                                source: source.map(|p| p.to_string()),
+                            });
+                        }
                     }
                     NetworkEvent::PeerConnected(peer) => {
                         let _ = event_tx.send(NetworkBridgeEvent::PeerConnected(peer.to_string()));
@@ -412,6 +517,38 @@ async fn run_network_wasm(
                                 willow_transport::MessageType::Identity, &profile,
                             ) {
                                 let _ = node.publish(PROFILE_TOPIC, data);
+                            }
+                        }
+                        NetworkBridgeCommand::BroadcastServerOp(stamped_op) => {
+                            let identity = willow_identity::Identity::from_ed25519_bytes(
+                                &crate::storage::load_identity_bytes().unwrap_or_default(),
+                            )
+                            .unwrap_or_else(willow_identity::Identity::generate);
+                            if let Some(data) = crate::server_sync::pack_op(&stamped_op, &identity) {
+                                let _ = node.publish(
+                                    crate::server_sync::SERVER_OPS_TOPIC,
+                                    data,
+                                );
+                            }
+                        }
+                        NetworkBridgeCommand::RequestSync { latest_hlc } => {
+                            let identity = willow_identity::Identity::from_ed25519_bytes(
+                                &crate::storage::load_identity_bytes().unwrap_or_default(),
+                            )
+                            .unwrap_or_else(willow_identity::Identity::generate);
+                            let msg = crate::server_sync::SyncMessage::SyncRequest { latest_hlc };
+                            if let Some(data) = crate::server_sync::pack_sync(&msg, &identity) {
+                                let _ = node.publish(crate::server_sync::SERVER_OPS_TOPIC, data);
+                            }
+                        }
+                        NetworkBridgeCommand::SendSyncBatch { ops } => {
+                            let identity = willow_identity::Identity::from_ed25519_bytes(
+                                &crate::storage::load_identity_bytes().unwrap_or_default(),
+                            )
+                            .unwrap_or_else(willow_identity::Identity::generate);
+                            let msg = crate::server_sync::SyncMessage::SyncBatch { ops };
+                            if let Some(data) = crate::server_sync::pack_sync(&msg, &identity) {
+                                let _ = node.publish(crate::server_sync::SERVER_OPS_TOPIC, data);
                             }
                         }
                     }

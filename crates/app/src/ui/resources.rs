@@ -132,6 +132,60 @@ pub struct UnreadCounts {
     pub counts: HashMap<String, usize>,
 }
 
+/// Ordered log of server operations for deduplication, replay, and trust.
+#[derive(Resource, Default)]
+pub struct OpLog {
+    /// All recorded operations in HLC order.
+    pub ops: Vec<crate::server_sync::StampedOp>,
+    /// Set of seen op IDs for deduplication.
+    pub seen_ids: std::collections::HashSet<String>,
+    /// Set of trusted PeerIds (derived from TrustPeer/UntrustPeer ops).
+    pub trusted_peers: std::collections::HashSet<String>,
+}
+
+impl OpLog {
+    /// Record a stamped op. Returns true if it was new (not a duplicate).
+    pub fn record(&mut self, stamped: crate::server_sync::StampedOp) -> bool {
+        if !self.seen_ids.insert(stamped.op_id.clone()) {
+            return false;
+        }
+        match &stamped.op {
+            crate::server_sync::ServerOp::TrustPeer { peer_id } => {
+                self.trusted_peers.insert(peer_id.clone());
+            }
+            crate::server_sync::ServerOp::UntrustPeer { peer_id } => {
+                self.trusted_peers.remove(peer_id);
+            }
+            _ => {}
+        }
+        self.ops.push(stamped);
+        true
+    }
+
+    /// Check whether a peer is trusted (owner is always trusted).
+    pub fn is_trusted(&self, peer_id: &str, owner: &str) -> bool {
+        peer_id == owner || self.trusted_peers.contains(peer_id)
+    }
+
+    /// Rebuild seen_ids and trusted_peers from the ops list (after loading).
+    pub fn rebuild(&mut self) {
+        self.seen_ids.clear();
+        self.trusted_peers.clear();
+        let ops = std::mem::take(&mut self.ops);
+        for op in ops {
+            self.record(op);
+        }
+    }
+
+    /// The HLC timestamp of the most recent op.
+    pub fn latest_hlc(&self) -> willow_messaging::hlc::HlcTimestamp {
+        self.ops
+            .last()
+            .map(|op| op.hlc)
+            .unwrap_or(willow_messaging::hlc::HlcTimestamp::ZERO)
+    }
+}
+
 #[derive(Resource, Default)]
 pub struct InputState {
     pub text: String,

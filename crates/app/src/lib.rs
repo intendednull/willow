@@ -22,6 +22,7 @@ pub mod file_manager;
 pub mod invite;
 pub mod network_bridge;
 pub mod notify;
+pub mod server_sync;
 pub mod storage;
 pub mod theme;
 pub mod ui;

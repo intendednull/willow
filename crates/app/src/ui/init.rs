@@ -17,6 +17,7 @@ pub fn init_server(
     mut connect_writer: MessageWriter<ConnectCommand>,
     mut state: ResMut<ChatState>,
     db: Res<MessageDbRes>,
+    mut op_log: ResMut<OpLog>,
 ) {
     let (server, keys) = if let Some((server, keys)) = crate::storage::load_server() {
         info!("loaded server '{}' from disk", server.name);
@@ -72,6 +73,14 @@ pub fn init_server(
         }
     }
 
+    // Load op log.
+    if let Some(ops) = crate::storage::load_op_log() {
+        for op in ops {
+            op_log.record(op);
+        }
+        info!("loaded {} ops from op log", op_log.ops.len());
+    }
+
     server_state.server = Some(server);
 
     let settings = crate::storage::load_settings().unwrap_or_default();
@@ -85,6 +94,7 @@ pub fn subscribe_channels(
     connected: Res<crate::network_bridge::NetworkConnected>,
     server_state: Res<ServerState>,
     net_cmd: Res<NetworkCommandSender>,
+    op_log: Res<OpLog>,
     mut subscribed: Local<bool>,
 ) {
     if *subscribed || !connected.0 {
@@ -107,6 +117,13 @@ pub fn subscribe_channels(
             crate::network_bridge::PROFILE_TOPIC.to_string(),
         ));
 
+    // Subscribe to server state operations topic.
+    let _ = net_cmd
+        .0
+        .send(crate::network_bridge::NetworkBridgeCommand::Subscribe(
+            crate::server_sync::SERVER_OPS_TOPIC.to_string(),
+        ));
+
     // Broadcast our profile so peers learn our display name.
     let saved_profile = crate::storage::load_profile().unwrap_or_default();
     if !saved_profile.display_name.is_empty() {
@@ -116,6 +133,14 @@ pub fn subscribe_channels(
             },
         );
     }
+
+    // Request missing ops from peers.
+    let _ = net_cmd
+        .0
+        .send(crate::network_bridge::NetworkBridgeCommand::RequestSync {
+            latest_hlc: op_log.latest_hlc(),
+        });
+    info!("requested server state sync");
 
     info!("subscribed to {} channels", server_state.topic_map.len());
 }

@@ -54,6 +54,7 @@ impl Plugin for UiPlugin {
             .insert_resource(ProfileStore::default())
             .insert_resource(FilePicker::default())
             .insert_resource(UnreadCounts::default())
+            .insert_resource(OpLog::default())
             .insert_resource(SearchFilter::default())
             .insert_resource(EmojiRegistryRes(crate::emoji::EmojiRegistry::new()))
             .insert_resource(MessageDbRes(

@@ -216,6 +216,16 @@ impl Role {
         }
     }
 
+    /// Create a new role with a specific ID and no permissions.
+    pub fn with_id(id: RoleId, name: impl Into<String>) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            permissions: HashSet::new(),
+            color: None,
+        }
+    }
+
     /// Check whether this role grants a specific permission.
     pub fn has_permission(&self, perm: Permission) -> bool {
         self.permissions.contains(&Permission::Administrator) || self.permissions.contains(&perm)
@@ -451,6 +461,30 @@ impl Server {
         Ok(id)
     }
 
+    /// Create a channel with a specific ID (for replaying remote ops).
+    pub fn create_channel_with_id(
+        &mut self,
+        id: ChannelId,
+        name: impl Into<String>,
+        kind: ChannelKind,
+    ) -> Result<ChannelId, ChannelError> {
+        let name = name.into();
+        if self.channels.values().any(|ch| ch.name == name) {
+            return Err(ChannelError::DuplicateChannelName(name));
+        }
+        let channel = Channel {
+            id: id.clone(),
+            name,
+            topic: None,
+            kind,
+            created_at: chrono::Utc::now(),
+        };
+        self.channel_keys
+            .insert(id.clone(), willow_crypto::generate_channel_key());
+        self.channels.insert(id.clone(), channel);
+        Ok(id)
+    }
+
     /// Get the encryption key for a channel.
     pub fn channel_key(&self, id: &ChannelId) -> Option<&willow_crypto::ChannelKey> {
         self.channel_keys.get(id)
@@ -490,6 +524,25 @@ impl Server {
             role.permissions.remove(&perm);
         } else {
             role.permissions.insert(perm);
+        }
+        Ok(())
+    }
+
+    /// Explicitly set or clear a permission on a role.
+    pub fn set_permission(
+        &mut self,
+        role_id: &RoleId,
+        perm: Permission,
+        granted: bool,
+    ) -> Result<(), ChannelError> {
+        let role = self
+            .roles
+            .get_mut(role_id)
+            .ok_or_else(|| ChannelError::RoleNotFound(role_id.clone()))?;
+        if granted {
+            role.permissions.insert(perm);
+        } else {
+            role.permissions.remove(&perm);
         }
         Ok(())
     }

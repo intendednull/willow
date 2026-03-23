@@ -85,6 +85,16 @@ pub fn load_settings() -> Option<NetworkSettings> {
     willow_transport::unpack(&load_raw("settings")?).ok()
 }
 
+pub fn save_op_log(ops: &[crate::server_sync::StampedOp]) {
+    if let Ok(bytes) = willow_transport::pack(&ops.to_vec()) {
+        save_raw("oplog", &bytes);
+    }
+}
+
+pub fn load_op_log() -> Option<Vec<crate::server_sync::StampedOp>> {
+    willow_transport::unpack(&load_raw("oplog")?).ok()
+}
+
 // ───── Message Persistence ──────────────────────────────────────────────────
 
 /// A stored chat message for display. Lightweight compared to the full

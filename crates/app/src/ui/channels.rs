@@ -39,6 +39,8 @@ pub fn handle_new_channel_input(
     net_cmd: Res<NetworkCommandSender>,
     mut commands: Commands,
     list_query: Query<Entity, With<ChannelList>>,
+    identity: Res<LocalIdentity>,
+    mut op_log: ResMut<OpLog>,
 ) {
     if !mgmt.creating_channel {
         return;
@@ -61,6 +63,8 @@ pub fn handle_new_channel_input(
                         &net_cmd,
                         &mut commands,
                         &list_query,
+                        &identity,
+                        &mut op_log,
                     );
                 }
                 mgmt.creating_channel = false;
@@ -86,6 +90,7 @@ pub fn handle_new_channel_input(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_channel(
     name: &str,
     server_state: &mut ResMut<ServerState>,
@@ -94,6 +99,8 @@ fn create_channel(
     net_cmd: &Res<NetworkCommandSender>,
     commands: &mut Commands,
     list_query: &Query<Entity, With<ChannelList>>,
+    identity: &Res<LocalIdentity>,
+    op_log: &mut ResMut<OpLog>,
 ) {
     // Create channel on the server.
     let (topic, ch_id) = {
@@ -117,6 +124,7 @@ fn create_channel(
     };
 
     // Update topic map (server borrow is dropped now).
+    let ch_id_str = ch_id.to_string();
     server_state
         .topic_map
         .insert(topic.clone(), (name.to_string(), ch_id));
@@ -127,6 +135,18 @@ fn create_channel(
         .send(crate::network_bridge::NetworkBridgeCommand::Subscribe(
             topic,
         ));
+
+    // Broadcast to peers.
+    broadcast_op(
+        crate::server_sync::ServerOp::CreateChannel {
+            name: name.to_string(),
+            channel_id: ch_id_str,
+        },
+        state,
+        identity,
+        op_log,
+        net_cmd,
+    );
 
     // Switch to the new channel.
     state.current_channel = name.to_string();
@@ -214,6 +234,7 @@ pub fn sync_new_channel_input(
 
 // ───── Channel Deletion ─────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 /// Handle delete channel button clicks.
 pub fn handle_delete_channel(
     query: Query<(&Interaction, &DeleteChannelButton), Changed<Interaction>>,
@@ -222,6 +243,9 @@ pub fn handle_delete_channel(
     mut state: ResMut<ChatState>,
     mut commands: Commands,
     list_query: Query<Entity, With<ChannelList>>,
+    net_cmd: Res<NetworkCommandSender>,
+    identity: Res<LocalIdentity>,
+    mut op_log: ResMut<OpLog>,
 ) {
     for (interaction, button) in &query {
         if *interaction != Interaction::Pressed {
@@ -265,6 +289,15 @@ pub fn handle_delete_channel(
 
         // Rebuild sidebar.
         rebuild_channel_list(&mut commands, &list_query, &server_state.channel_names());
+
+        // Broadcast to peers.
+        broadcast_op(
+            crate::server_sync::ServerOp::DeleteChannel { name: name.clone() },
+            &mut state,
+            &identity,
+            &mut op_log,
+            &net_cmd,
+        );
 
         info!("deleted channel #{name}");
     }
@@ -524,12 +557,16 @@ fn spawn_member_row(parent: &mut ChildSpawnerCommands, name: &str, peer_id: &str
         });
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Handle kick button clicks.
 pub fn handle_kick_member(
     query: Query<(&Interaction, &KickMemberButton), Changed<Interaction>>,
     mut server_state: ResMut<ServerState>,
     mut key_store: ResMut<ChannelKeyStore>,
     mut state: ResMut<ChatState>,
+    net_cmd: Res<NetworkCommandSender>,
+    identity: Res<LocalIdentity>,
+    mut op_log: ResMut<OpLog>,
 ) {
     for (interaction, button) in &query {
         if *interaction != Interaction::Pressed {
@@ -594,6 +631,17 @@ pub fn handle_kick_member(
             ));
             state.messages_dirty = true;
 
+            // Broadcast to peers.
+            broadcast_op(
+                crate::server_sync::ServerOp::KickMember {
+                    peer_id: kicked_peer.clone(),
+                },
+                &mut state,
+                &identity,
+                &mut op_log,
+                &net_cmd,
+            );
+
             info!("kicked peer {kicked_peer}, keys rotated");
         }
     }
@@ -614,12 +662,17 @@ pub fn handle_create_role_button(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Handle keyboard input for new role creation.
 pub fn handle_new_role_input(
     mut key_events: MessageReader<bevy::input::keyboard::KeyboardInput>,
     mut mgmt: ResMut<ChannelManagement>,
     mut server_state: ResMut<ServerState>,
     key_store: Res<ChannelKeyStore>,
+    net_cmd: Res<NetworkCommandSender>,
+    identity: Res<LocalIdentity>,
+    mut state: ResMut<ChatState>,
+    mut op_log: ResMut<OpLog>,
 ) {
     if !mgmt.creating_role {
         return;
@@ -635,9 +688,20 @@ pub fn handle_new_role_input(
                 let name = mgmt.new_role_name.trim().to_string();
                 if !name.is_empty() {
                     if let Some(server) = &mut server_state.server {
-                        let role = willow_channel::Role::new(&name);
+                        let role_id = willow_channel::RoleId::new();
+                        let role = willow_channel::Role::with_id(role_id.clone(), &name);
                         server.create_role(role);
                         crate::storage::save_server(server, &key_store.keys);
+                        broadcast_op(
+                            crate::server_sync::ServerOp::CreateRole {
+                                name: name.clone(),
+                                role_id: role_id.to_string(),
+                            },
+                            &mut state,
+                            &identity,
+                            &mut op_log,
+                            &net_cmd,
+                        );
                         info!("created role '{name}'");
                     }
                 }
@@ -836,11 +900,16 @@ pub fn sync_role_list(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Handle permission toggle button clicks.
 pub fn handle_toggle_permission(
     query: Query<(&Interaction, &TogglePermButton), Changed<Interaction>>,
     mut server_state: ResMut<ServerState>,
     key_store: Res<ChannelKeyStore>,
+    net_cmd: Res<NetworkCommandSender>,
+    identity: Res<LocalIdentity>,
+    mut state: ResMut<ChatState>,
+    mut op_log: ResMut<OpLog>,
 ) {
     for (interaction, button) in &query {
         if *interaction != Interaction::Pressed {
@@ -863,19 +932,40 @@ pub fn handle_toggle_permission(
             _ => continue,
         };
 
-        if let Err(e) = server.toggle_permission(&role_id, perm) {
-            warn!("failed to toggle permission: {e}");
+        let granted = !server
+            .role(&role_id)
+            .map(|r| r.permissions.contains(&perm))
+            .unwrap_or(false);
+
+        if let Err(e) = server.set_permission(&role_id, perm, granted) {
+            warn!("failed to set permission: {e}");
         } else {
             crate::storage::save_server(server, &key_store.keys);
+            broadcast_op(
+                crate::server_sync::ServerOp::SetPermission {
+                    role_id: button.0.clone(),
+                    permission: button.1.clone(),
+                    granted,
+                },
+                &mut state,
+                &identity,
+                &mut op_log,
+                &net_cmd,
+            );
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Handle delete role button clicks.
 pub fn handle_delete_role(
     query: Query<(&Interaction, &DeleteRoleButton), Changed<Interaction>>,
     mut server_state: ResMut<ServerState>,
     key_store: Res<ChannelKeyStore>,
+    net_cmd: Res<NetworkCommandSender>,
+    identity: Res<LocalIdentity>,
+    mut state: ResMut<ChatState>,
+    mut op_log: ResMut<OpLog>,
 ) {
     for (interaction, button) in &query {
         if *interaction != Interaction::Pressed {
@@ -891,16 +981,30 @@ pub fn handle_delete_role(
             warn!("failed to delete role: {e}");
         } else {
             crate::storage::save_server(server, &key_store.keys);
+            broadcast_op(
+                crate::server_sync::ServerOp::DeleteRole {
+                    role_id: button.0.clone(),
+                },
+                &mut state,
+                &identity,
+                &mut op_log,
+                &net_cmd,
+            );
             info!("deleted role");
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Handle role assignment button clicks — assigns the role to the member.
 pub fn handle_assign_role(
     query: Query<(&Interaction, &AssignRoleButton), Changed<Interaction>>,
     mut server_state: ResMut<ServerState>,
     key_store: Res<ChannelKeyStore>,
+    net_cmd: Res<NetworkCommandSender>,
+    identity: Res<LocalIdentity>,
+    mut state: ResMut<ChatState>,
+    mut op_log: ResMut<OpLog>,
 ) {
     for (interaction, button) in &query {
         if *interaction != Interaction::Pressed {
@@ -928,6 +1032,16 @@ pub fn handle_assign_role(
             warn!("failed to assign role: {e}");
         } else {
             crate::storage::save_server(server, &key_store.keys);
+            broadcast_op(
+                crate::server_sync::ServerOp::AssignRole {
+                    peer_id: peer_id_str.clone(),
+                    role_id: button.1.clone(),
+                },
+                &mut state,
+                &identity,
+                &mut op_log,
+                &net_cmd,
+            );
             info!("assigned role to {peer_id_str}");
         }
     }
@@ -962,4 +1076,21 @@ pub fn handle_copy_invite(
             }
         }
     }
+}
+
+/// Helper to stamp, record, persist, and broadcast a server op.
+fn broadcast_op(
+    op: crate::server_sync::ServerOp,
+    state: &mut ChatState,
+    identity: &crate::network_bridge::LocalIdentity,
+    op_log: &mut OpLog,
+    net_cmd: &crate::network_bridge::NetworkCommandSender,
+) {
+    let stamped =
+        crate::server_sync::StampedOp::new(op, &mut state.hlc, &identity.0.peer_id().to_string());
+    op_log.record(stamped.clone());
+    crate::storage::save_op_log(&op_log.ops);
+    let _ = net_cmd
+        .0
+        .send(crate::network_bridge::NetworkBridgeCommand::BroadcastServerOp(stamped));
 }

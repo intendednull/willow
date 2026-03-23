@@ -11,14 +11,17 @@ use super::components::*;
 use super::resources::*;
 
 /// Process incoming network events and update the chat state.
+#[allow(clippy::too_many_arguments)]
 pub fn handle_network_events(
     mut reader: MessageReader<NetworkBridgeEvent>,
     mut state: ResMut<ChatState>,
-    key_store: Res<ChannelKeyStore>,
+    mut key_store: ResMut<ChannelKeyStore>,
     db: Res<MessageDbRes>,
     mut profiles: ResMut<ProfileStore>,
-    server_state: Res<ServerState>,
+    mut server_state: ResMut<ServerState>,
     mut unread: ResMut<UnreadCounts>,
+    net_cmd: Res<crate::network_bridge::NetworkCommandSender>,
+    mut op_log: ResMut<OpLog>,
 ) {
     for event in reader.read() {
         match event {
@@ -221,6 +224,70 @@ pub fn handle_network_events(
                 display_name,
             } => {
                 profiles.names.insert(peer_id.clone(), display_name.clone());
+            }
+            NetworkBridgeEvent::ServerOpReceived { stamped_op, from } => {
+                handle_server_op(
+                    stamped_op,
+                    from,
+                    &mut server_state,
+                    &mut key_store,
+                    &mut state,
+                    &net_cmd,
+                    &mut op_log,
+                );
+            }
+            NetworkBridgeEvent::SyncRequested { latest_hlc, from } => {
+                // Only respond to trusted peers.
+                let owner = server_state
+                    .server
+                    .as_ref()
+                    .map(|s| s.owner.to_string())
+                    .unwrap_or_default();
+                if op_log.is_trusted(from, &owner) {
+                    let missing: Vec<_> = op_log
+                        .ops
+                        .iter()
+                        .filter(|op| op.hlc > *latest_hlc)
+                        .cloned()
+                        .collect();
+                    let count = missing.len();
+                    if !missing.is_empty() {
+                        let _ = net_cmd.0.send(
+                            crate::network_bridge::NetworkBridgeCommand::SendSyncBatch {
+                                ops: missing,
+                            },
+                        );
+                        info!("sent {count} ops to sync peer {from}");
+                    }
+                }
+            }
+            NetworkBridgeEvent::SyncBatchReceived { ops, from } => {
+                // Verify batch sender is trusted.
+                let owner = server_state
+                    .server
+                    .as_ref()
+                    .map(|s| s.owner.to_string())
+                    .unwrap_or_default();
+                if !op_log.is_trusted(from, &owner) {
+                    continue;
+                }
+                let mut sorted_ops = ops.clone();
+                sorted_ops.sort_by(|a, b| a.hlc.cmp(&b.hlc));
+                let count = sorted_ops.len();
+                for stamped_op in &sorted_ops {
+                    handle_server_op(
+                        stamped_op,
+                        &stamped_op.author,
+                        &mut server_state,
+                        &mut key_store,
+                        &mut state,
+                        &net_cmd,
+                        &mut op_log,
+                    );
+                }
+                if count > 0 {
+                    info!("applied sync batch of {count} ops from {from}");
+                }
             }
         }
     }
@@ -475,6 +542,173 @@ pub fn update_channel_highlights(
                     TextColor(theme::TEXT_MUTED)
                 };
             }
+        }
+    }
+}
+
+/// Apply a remote server operation to local state.
+fn handle_server_op(
+    stamped: &crate::server_sync::StampedOp,
+    from: &str,
+    server_state: &mut ResMut<ServerState>,
+    key_store: &mut ResMut<ChannelKeyStore>,
+    state: &mut ResMut<ChatState>,
+    net_cmd: &Res<crate::network_bridge::NetworkCommandSender>,
+    op_log: &mut ResMut<OpLog>,
+) {
+    use crate::server_sync::ServerOp;
+
+    // Dedup: skip if we've already seen this op.
+    if op_log.seen_ids.contains(&stamped.op_id) {
+        return;
+    }
+
+    // Trust check: only the owner and explicitly trusted peers may mutate state.
+    let owner = server_state
+        .server
+        .as_ref()
+        .map(|s| s.owner.to_string())
+        .unwrap_or_default();
+    if !op_log.is_trusted(from, &owner) {
+        warn!("untrusted op from {from}, recording id only");
+        op_log.seen_ids.insert(stamped.op_id.clone());
+        return;
+    }
+
+    // Advance local HLC.
+    state.hlc.receive(stamped.hlc);
+
+    // Record and persist.
+    op_log.record(stamped.clone());
+    crate::storage::save_op_log(&op_log.ops);
+
+    match &stamped.op {
+        ServerOp::CreateChannel { name, channel_id } => {
+            let info = {
+                let Some(server) = &mut server_state.server else {
+                    return;
+                };
+                if server.channels().iter().any(|ch| ch.name == *name) {
+                    return;
+                }
+                let ch_uuid =
+                    uuid::Uuid::parse_str(channel_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+                let ch_id = willow_channel::ChannelId(ch_uuid);
+                let Ok(ch_id) =
+                    server.create_channel_with_id(ch_id, name, willow_channel::ChannelKind::Text)
+                else {
+                    return;
+                };
+                let topic = super::make_topic(server, name);
+                let key = server.channel_key(&ch_id).cloned();
+                (topic, ch_id, key)
+            };
+            let (topic, ch_id, key) = info;
+            if let Some(k) = key {
+                key_store.keys.insert(topic.clone(), k);
+            }
+            server_state
+                .topic_map
+                .insert(topic.clone(), (name.clone(), ch_id));
+            if let Some(server) = &server_state.server {
+                crate::storage::save_server(server, &key_store.keys);
+            }
+            let _ = net_cmd
+                .0
+                .send(crate::network_bridge::NetworkBridgeCommand::Subscribe(
+                    topic,
+                ));
+            info!("remote channel #{name} created by {from}");
+        }
+        ServerOp::DeleteChannel { name } => {
+            let to_remove = server_state
+                .topic_map
+                .iter()
+                .find(|(_, (n, _))| n == name)
+                .map(|(t, (_, id))| (t.clone(), id.clone()));
+
+            if let Some((topic, ch_id)) = to_remove {
+                if let Some(server) = &mut server_state.server {
+                    let _ = server.delete_channel(&ch_id);
+                    crate::storage::save_server(server, &key_store.keys);
+                }
+                server_state.topic_map.remove(&topic);
+                key_store.keys.remove(&topic);
+
+                if state.current_channel == *name {
+                    let names = server_state.channel_names();
+                    state.current_channel = names.first().cloned().unwrap_or_default();
+                    state.messages_dirty = true;
+                }
+                info!("remote channel #{name} deleted by {from}");
+            }
+        }
+        ServerOp::CreateRole { name, role_id } => {
+            if let Some(server) = &mut server_state.server {
+                if !server.roles().iter().any(|r| r.name == *name) {
+                    let rid =
+                        willow_channel::RoleId(uuid::Uuid::parse_str(role_id).unwrap_or_default());
+                    let role = willow_channel::Role::with_id(rid, name);
+                    server.create_role(role);
+                    crate::storage::save_server(server, &key_store.keys);
+                    info!("remote role '{name}' created by {from}");
+                }
+            }
+        }
+        ServerOp::DeleteRole { role_id } => {
+            if let Some(server) = &mut server_state.server {
+                let rid =
+                    willow_channel::RoleId(uuid::Uuid::parse_str(role_id).unwrap_or_default());
+                let _ = server.delete_role(&rid);
+                crate::storage::save_server(server, &key_store.keys);
+            }
+        }
+        ServerOp::SetPermission {
+            role_id,
+            permission,
+            granted,
+        } => {
+            if let Some(server) = &mut server_state.server {
+                let rid =
+                    willow_channel::RoleId(uuid::Uuid::parse_str(role_id).unwrap_or_default());
+                let perm = match permission.as_str() {
+                    "Administrator" => willow_channel::Permission::Administrator,
+                    "SendMessages" => willow_channel::Permission::SendMessages,
+                    "ReadMessages" => willow_channel::Permission::ReadMessages,
+                    "KickMembers" => willow_channel::Permission::KickMembers,
+                    "CreateInvite" => willow_channel::Permission::CreateInvite,
+                    "AttachFiles" => willow_channel::Permission::AttachFiles,
+                    "ManageChannels" => willow_channel::Permission::ManageChannels,
+                    _ => return,
+                };
+                let _ = server.set_permission(&rid, perm, *granted);
+                crate::storage::save_server(server, &key_store.keys);
+            }
+        }
+        ServerOp::AssignRole { peer_id, role_id } => {
+            if let Some(server) = &mut server_state.server {
+                let rid =
+                    willow_channel::RoleId(uuid::Uuid::parse_str(role_id).unwrap_or_default());
+                let member_peer = server
+                    .members()
+                    .iter()
+                    .find(|m| m.peer_id.to_string() == *peer_id)
+                    .map(|m| m.peer_id.clone());
+                if let Some(peer) = member_peer {
+                    let _ = server.assign_role(&peer, &rid);
+                    crate::storage::save_server(server, &key_store.keys);
+                }
+            }
+        }
+        ServerOp::KickMember { peer_id } => {
+            state.peers.retain(|p| p != peer_id);
+            info!("peer {peer_id} kicked by {from}");
+        }
+        ServerOp::TrustPeer { peer_id } => {
+            info!("peer {peer_id} trusted by {from}");
+        }
+        ServerOp::UntrustPeer { peer_id } => {
+            info!("peer {peer_id} untrusted by {from}");
         }
     }
 }
