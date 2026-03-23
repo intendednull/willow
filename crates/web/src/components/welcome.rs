@@ -1,12 +1,15 @@
+use std::rc::Rc;
+
 use leptos::prelude::*;
+use send_wrapper::SendWrapper;
 
 use crate::app::ClientHandle;
 
 /// Welcome/onboarding screen shown when the user has no servers.
 ///
 /// Presents two options: create a new server or join an existing one via
-/// invite code. Calls the appropriate callbacks when a server is created
-/// or joined so the parent can refresh all reactive signals.
+/// invite code. Joining shows a profile step where the user can customize
+/// their display name for the new server.
 #[component]
 pub fn WelcomeScreen(
     client: ClientHandle,
@@ -25,6 +28,17 @@ pub fn WelcomeScreen(
     // Join-server state.
     let (join_code, set_join_code) = signal(String::new());
     let (join_status, set_join_status) = signal(String::new());
+    // Two-step join: false = paste code, true = profile step.
+    let (join_step_profile, set_join_step_profile) = signal(false);
+    let (join_profile_name, set_join_profile_name) = signal(String::new());
+    // Stash the validated code so the confirm handler can use it.
+    let (validated_code, set_validated_code) = signal(String::new());
+
+    // Pre-fill join profile name with current global display name.
+    {
+        let c = client.borrow();
+        set_join_profile_name.set(c.display_name());
+    }
 
     // Create server handler.
     let client_create = client.clone();
@@ -37,7 +51,6 @@ pub fn WelcomeScreen(
         let mut c = client_create.borrow_mut();
         match c.create_server(name.trim()) {
             Ok(_server_id) => {
-                // Optionally set display name.
                 let dn = display_name.get_untracked();
                 if !dn.trim().is_empty() {
                     let _ = c.set_server_display_name(dn.trim());
@@ -52,27 +65,22 @@ pub fn WelcomeScreen(
         }
     };
 
-    // Join server handler.
-    let client_join = client.clone();
-    let on_join = move |_| {
+    // Step 1: validate invite code and show profile step.
+    let on_join_next = move |_: web_sys::MouseEvent| {
         let code = join_code.get_untracked();
         if code.trim().is_empty() {
             set_join_status.set("Please paste an invite code.".to_string());
             return;
         }
-        let mut c = client_join.borrow_mut();
-        match c.accept_invite(code.trim()) {
-            Ok(()) => {
-                set_join_status.set(String::new());
-                set_join_code.set(String::new());
-                drop(c);
-                on_joined(());
-            }
-            Err(e) => {
-                set_join_status.set(format!("Invalid invite code: {e}"));
-            }
-        }
+        set_validated_code.set(code.trim().to_string());
+        set_join_status.set(String::new());
+        set_join_step_profile.set(true);
     };
+
+    // Step 2 state: wrap non-Copy client in Rc so closures can clone it.
+    let client_join = SendWrapper::new(Rc::new(client.clone()));
+    let on_joined_rc: SendWrapper<Rc<dyn Fn(())>> =
+        SendWrapper::new(Rc::new(on_joined) as Rc<dyn Fn(())>);
 
     view! {
         <div class="welcome-screen">
@@ -147,16 +155,70 @@ pub fn WelcomeScreen(
                                 })
                             }
                         }}
-                        <label>"Invite Code"</label>
-                        <textarea
-                            class="welcome-invite-input"
-                            placeholder="Paste invite code here..."
-                            prop:value=move || join_code.get()
-                            on:input=move |ev| set_join_code.set(event_target_value(&ev))
-                        ></textarea>
-                        <button class="btn btn-primary welcome-btn" on:click=on_join>
-                            "Join Server"
-                        </button>
+                        {move || {
+                            if join_step_profile.get() {
+                                // Step 2: profile name before joining.
+                                let cj = client_join.clone();
+                                let joined_cb = on_joined_rc.clone();
+                                let confirm = move |_: web_sys::MouseEvent| {
+                                    let code = validated_code.get_untracked();
+                                    let mut c = cj.borrow_mut();
+                                    match c.accept_invite(&code) {
+                                        Ok(()) => {
+                                            let name = join_profile_name.get_untracked();
+                                            if !name.trim().is_empty() {
+                                                let _ = c.set_server_display_name(name.trim());
+                                            }
+                                            set_join_status.set(String::new());
+                                            set_join_code.set(String::new());
+                                            set_join_step_profile.set(false);
+                                            drop(c);
+                                            (joined_cb)(());
+                                        }
+                                        Err(e) => {
+                                            set_join_status.set(format!("Invalid invite code: {e}"));
+                                            set_join_step_profile.set(false);
+                                        }
+                                    }
+                                };
+                                view! {
+                                    <div class="join-profile-step">
+                                        <label>"Display Name for this server"</label>
+                                        <p class="welcome-hint">"Pre-filled with your current name. Change it if you want a different identity on this server."</p>
+                                        <input
+                                            type="text"
+                                            placeholder="Your name..."
+                                            prop:value=move || join_profile_name.get()
+                                            on:input=move |ev| set_join_profile_name.set(event_target_value(&ev))
+                                        />
+                                        <div class="join-profile-buttons">
+                                            <button class="btn btn-sm" on:click=move |_| set_join_step_profile.set(false)>
+                                                "\u{2190} Back"
+                                            </button>
+                                            <button class="btn btn-primary welcome-btn" on:click=confirm>
+                                                "Join Server"
+                                            </button>
+                                        </div>
+                                    </div>
+                                }.into_any()
+                            } else {
+                                // Step 1: paste invite code.
+                                view! {
+                                    <div>
+                                        <label>"Invite Code"</label>
+                                        <textarea
+                                            class="welcome-invite-input"
+                                            placeholder="Paste invite code here..."
+                                            prop:value=move || join_code.get()
+                                            on:input=move |ev| set_join_code.set(event_target_value(&ev))
+                                        ></textarea>
+                                        <button class="btn btn-primary welcome-btn" on:click=on_join_next>
+                                            "Next \u{2192}"
+                                        </button>
+                                    </div>
+                                }.into_any()
+                            }
+                        }}
                     </div>
                 </div>
             </div>

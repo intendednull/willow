@@ -1411,6 +1411,21 @@ html, body {
     margin-bottom: 16px;
 }
 
+.join-profile-step {
+    margin-top: 8px;
+}
+
+.join-profile-buttons {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 12px;
+}
+
+.join-profile-buttons .welcome-btn {
+    flex: 1;
+}
+
 .welcome-peer-id .peer-id-text {
     flex: 1;
     font-size: 11px;
