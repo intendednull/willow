@@ -15,6 +15,7 @@
 //! - [`UiPlugin`](ui::UiPlugin) — top-level layout: sidebar, channel list,
 //!   message area, input, and chat rendering.
 
+pub mod base64;
 pub mod clipboard;
 pub mod emoji;
 pub mod file_manager;

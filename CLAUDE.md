@@ -14,8 +14,34 @@ crates/
 ├── messaging/   — Chat messages, HLC ordering, message store (willow-messaging)
 ├── crypto/      — E2E encryption: ChaCha20-Poly1305, X25519 key exchange (willow-crypto)
 ├── channel/     — Servers, channels, roles, permissions (willow-channel)
+├── files/       — Content-addressed file chunking and reassembly (willow-files)
 ├── network/     — libp2p P2P networking layer (willow-network)
+├── relay/       — Relay server for bridging TCP and WebSocket peers (willow-relay)
 └── app/         — Bevy desktop UI application (willow-app)
+    └── src/
+        ├── main.rs          — App entry point
+        ├── lib.rs           — Module exports
+        ├── base64.rs        — Shared base64 encode/decode
+        ├── clipboard.rs     — Cross-platform clipboard (arboard / web_sys)
+        ├── emoji.rs         — Shortcode registry and expansion
+        ├── file_manager.rs  — File sharing and chunk management
+        ├── invite.rs        — Secure per-recipient invite codes
+        ├── network_bridge.rs — Async/sync bridge (tokio ↔ Bevy)
+        ├── storage.rs       — Cross-platform persistence (filesystem / localStorage)
+        ├── theme.rs         — Discord-style dark color palette
+        ├── tests.rs         — Headless UI tests
+        └── ui/
+            ├── mod.rs        — Plugin registration, helpers
+            ├── resources.rs  — ECS resources (ChatState, etc.)
+            ├── components.rs — Marker components
+            ├── constants.rs  — Shared placeholder strings
+            ├── layout.rs     — Entity spawning
+            ├── init.rs       — Server init, channel subscription
+            ├── input.rs      — Keyboard handling, message sending
+            ├── chat.rs       — Network events, message rendering
+            ├── channels.rs   — Channel create/delete, invites, clipboard
+            ├── settings.rs   — Settings view systems
+            └── files.rs      — File picker systems
 ```
 
 ## Build & Test
@@ -31,6 +57,7 @@ just build          # build native desktop app
 just build-wasm     # build WASM web app
 just serve-wasm     # build + serve on localhost:8080
 just run            # run native desktop app
+just relay          # run the relay server
 ```
 
 **All code must pass `just check` (fmt + clippy + test + WASM) with zero
@@ -68,16 +95,6 @@ Note: `handle_keyboard_input` and `send_message` run in the same `Update`
 schedule but as separate systems. Setting `send_requested = true` takes effect
 on the *next* `app.update()` call.
 
-### System Dependencies (for Bevy app)
-
-On a full desktop Linux system, you'll need:
-```bash
-sudo apt install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
-```
-
-The library crates (transport, identity, messaging, channel, network) compile
-without any system dependencies.
-
 ## Code Conventions
 
 - **Crate naming**: `willow-<name>` in Cargo.toml, `willow_<name>` in code
@@ -94,28 +111,35 @@ without any system dependencies.
 ```
 willow-app → willow-crypto   → willow-identity → willow-transport
            → willow-network  → willow-identity
-           → willow-channel  → willow-identity
+                             → willow-files
+           → willow-channel  → willow-crypto
+                             → willow-identity
            → willow-messaging → willow-identity
                               (defines SealedContent used by willow-crypto)
+           → willow-files
 ```
 
 ### Async / Sync Boundary
 
-- **Network layer**: Fully async (tokio). Runs on a background thread.
+- **Network layer**: Fully async (tokio on native, wasm-bindgen-futures on WASM).
+  Runs on a background thread (native) or via spawn_local (WASM).
 - **Bevy app**: Synchronous ECS. Communicates with the network via `std::sync::mpsc` channels.
-- **Bridge**: `network_bridge.rs` in the app crate converts between the two worlds.
+- **Bridge**: `network_bridge.rs` converts between the two worlds.
+- **Deferred startup**: Network doesn't start until `ConnectCommand` is sent,
+  allowing the UI to configure relay addresses first.
 
 ### Message Flow
 
 1. User types in Bevy UI → `Message::text()` creates cleartext message
 2. If channel key exists → `seal_content()` encrypts Content → `Content::Encrypted`
-3. `pack_envelope()` serializes → `NetworkBridgeCommand::Publish`
-4. Bridge sends to tokio task → `NetworkNode::publish()`
+3. `pack_envelope()` serializes → `identity::pack()` signs with Ed25519
+4. `NetworkBridgeCommand::Publish` → bridge sends to network task
 5. libp2p GossipSub floods to subscribed peers
 6. Remote peer receives → `NetworkEvent::Message`
 7. Bridge forwards to Bevy → `NetworkBridgeEvent::MessageReceived`
-8. `unpack_envelope()` → if `Content::Encrypted`, `open_content()` decrypts
-9. Bevy system updates `ChatState` resource → UI re-renders
+8. `identity::unpack()` verifies signature → `unpack_envelope()`
+9. If `Content::Encrypted`, `open_content()` decrypts
+10. Emoji shortcodes expanded → message rendered in UI
 
 ### Hybrid Logical Clocks (HLC)
 
@@ -131,7 +155,7 @@ consistent ordering even when system clocks drift.
 1. Add a variant to `Content` in `crates/messaging/src/lib.rs`
 2. Add a constructor method on `Message`
 3. Add tests
-4. Handle the new variant in the app's network event handler
+4. Handle the new variant in the app's network event handler (`ui/chat.rs`)
 
 ### Adding a new permission
 
@@ -144,3 +168,17 @@ consistent ordering even when system clocks drift.
 1. Add the protocol to `WillowBehaviour` in `crates/network/src/behaviour.rs`
 2. Handle its events in `run_swarm()` in `crates/network/src/node.rs`
 3. Expose relevant commands/events through `NetworkNode` and `NetworkEvent`
+
+### Adding a new UI system
+
+1. Add the system function to the appropriate `ui/` module
+2. Register it in `ui/mod.rs` under the correct `add_systems()` group
+3. If it needs new resources, add to `ui/resources.rs` and register in `build()`
+4. If it needs new components, add to `ui/components.rs`
+5. Add a test in `tests.rs` using `test_app()`
+
+### Adding a custom emoji
+
+1. Call `EmojiRegistry::add("shortcode", "replacement")` on the `EmojiRegistryRes`
+2. Users type `:shortcode:` in messages — expanded during rendering
+3. Built-in emoji: edit `emoji.rs` `builtin()` function

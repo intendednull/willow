@@ -75,7 +75,7 @@ pub fn generate_invite(
     };
 
     let bytes = willow_transport::pack(&payload).ok()?;
-    Some(base64_encode(&bytes))
+    Some(crate::base64::encode(&bytes))
 }
 
 /// Parse an invite code and decrypt the channel keys using our identity.
@@ -86,7 +86,7 @@ pub fn accept_invite(
     code: &str,
     our_identity: &willow_identity::Identity,
 ) -> Option<AcceptedInvite> {
-    let bytes = base64_decode(code.trim())?;
+    let bytes = crate::base64::decode(code.trim())?;
     let payload: InvitePayload = willow_transport::unpack(&bytes).ok()?;
 
     let mut channel_keys = HashMap::new();
@@ -113,69 +113,6 @@ pub struct AcceptedInvite {
 /// Extract the 32-byte Ed25519 public key from a PeerId string.
 pub fn peer_id_to_ed25519_public(peer_id_str: &str) -> Option<[u8; 32]> {
     willow_identity::ed25519_public_from_peer_id(peer_id_str)
-}
-
-// ───── Base64 ───────────────────────────────────────────────────────────────
-
-#[allow(clippy::manual_is_multiple_of, clippy::manual_div_ceil)]
-fn base64_encode(data: &[u8]) -> String {
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::with_capacity((data.len() + 2) / 3 * 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        result.push(CHARS[((n >> 18) & 63) as usize] as char);
-        result.push(CHARS[((n >> 12) & 63) as usize] as char);
-        if chunk.len() > 1 {
-            result.push(CHARS[((n >> 6) & 63) as usize] as char);
-        } else {
-            result.push('=');
-        }
-        if chunk.len() > 2 {
-            result.push(CHARS[(n & 63) as usize] as char);
-        } else {
-            result.push('=');
-        }
-    }
-    result
-}
-
-fn base64_decode(input: &str) -> Option<Vec<u8>> {
-    fn char_val(c: u8) -> Option<u32> {
-        match c {
-            b'A'..=b'Z' => Some((c - b'A') as u32),
-            b'a'..=b'z' => Some((c - b'a' + 26) as u32),
-            b'0'..=b'9' => Some((c - b'0' + 52) as u32),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
-        }
-    }
-    let bytes = input.as_bytes();
-    #[allow(clippy::manual_is_multiple_of)]
-    if bytes.len() % 4 != 0 || bytes.is_empty() {
-        return None;
-    }
-    let mut result = Vec::with_capacity(bytes.len() / 4 * 3);
-    for chunk in bytes.chunks(4) {
-        let a = char_val(chunk[0])?;
-        let b = char_val(chunk[1])?;
-        let n = (a << 18) | (b << 12);
-        result.push((n >> 16) as u8);
-        if chunk[2] != b'=' {
-            let c = char_val(chunk[2])?;
-            let n = n | (c << 6);
-            result.push((n >> 8) as u8);
-            if chunk[3] != b'=' {
-                let d = char_val(chunk[3])?;
-                let n = n | d;
-                result.push(n as u8);
-            }
-        }
-    }
-    Some(result)
 }
 
 #[cfg(test)]
