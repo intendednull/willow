@@ -1953,6 +1953,7 @@ impl Client {
     /// Falls back to `chat.peers` for peers not in the member list
     /// (e.g. connected before event sync completes).
     pub fn server_members(&self) -> Vec<(String, String, bool)> {
+        let local_id = self.identity.peer_id().to_string();
         let online: std::collections::HashSet<&str> =
             self.state.chat.peers.iter().map(|s| s.as_str()).collect();
 
@@ -1972,7 +1973,8 @@ impl Client {
                         .map(|p| p.display_name.clone())
                 })
                 .unwrap_or_else(|| self.peer_display_name(pid));
-            let is_online = online.contains(pid.as_str());
+            // Local user is always online.
+            let is_online = *pid == local_id || online.contains(pid.as_str());
             result.push((pid.clone(), name, is_online));
             seen.insert(pid.clone());
         }
