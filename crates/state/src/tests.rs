@@ -1,12 +1,13 @@
 //! Tests for the event-sourced state machine.
 //!
-//! Covers determinism, idempotency, channel/message lifecycle, trust
+//! Covers determinism, idempotency, channel/message lifecycle, permission
 //! enforcement, divergence detection, merge, and the in-memory event store.
 
 use crate::hash::StateHash;
 use crate::merge::{find_common_ancestor, merge};
 use crate::server::ServerState;
 use crate::store::{EventStore, InMemoryStore};
+use crate::types::Permission;
 use crate::{apply, apply_lenient, ApplyResult, Event, EventKind};
 
 /// Helper: create a server state with a default owner.
@@ -49,8 +50,9 @@ fn apply_is_deterministic() {
             name: "random".into(),
             channel_id: "ch2".into(),
         },
-        EventKind::TrustPeer {
+        EventKind::GrantPermission {
             peer_id: "alice".into(),
+            permission: Permission::ManageChannels,
         },
     ];
 
@@ -279,36 +281,38 @@ fn reaction_added_to_message() {
     assert_eq!(state.messages[0].reactions[":+1:"], vec!["owner"]);
 }
 
-// ── Trust lifecycle ──────────────────────────────────────────────────────
+// ── Permission lifecycle ─────────────────────────────────────────────────
 
 #[test]
-fn trust_and_untrust() {
+fn grant_and_revoke_permission() {
     let mut state = test_state();
 
-    // Trust a peer.
-    let trust = event(
+    // Grant a permission.
+    let grant = event(
         &state,
         "e1",
         "owner",
-        EventKind::TrustPeer {
+        EventKind::GrantPermission {
             peer_id: "alice".into(),
+            permission: Permission::ManageChannels,
         },
     );
-    assert_eq!(apply(&mut state, &trust), ApplyResult::Applied);
-    assert!(state.trusted_peers.contains("alice"));
+    assert_eq!(apply(&mut state, &grant), ApplyResult::Applied);
+    assert!(state.has_permission("alice", &Permission::ManageChannels));
     assert!(state.members.contains_key("alice"));
 
-    // Untrust.
-    let untrust = event(
+    // Revoke.
+    let revoke = event(
         &state,
         "e2",
         "owner",
-        EventKind::UntrustPeer {
+        EventKind::RevokePermission {
             peer_id: "alice".into(),
+            permission: Permission::ManageChannels,
         },
     );
-    assert_eq!(apply(&mut state, &untrust), ApplyResult::Applied);
-    assert!(!state.trusted_peers.contains("alice"));
+    assert_eq!(apply(&mut state, &revoke), ApplyResult::Applied);
+    assert!(!state.has_permission("alice", &Permission::ManageChannels));
 }
 
 // ── Parent hash mismatch ─────────────────────────────────────────────────
@@ -333,13 +337,13 @@ fn parent_hash_mismatch() {
     assert!(!state.channels.contains_key("ch1"));
 }
 
-// ── Trust enforcement ────────────────────────────────────────────────────
+// ── Permission enforcement ──────────────────────────────────────────────
 
 #[test]
-fn untrusted_author_rejected() {
+fn unpermitted_author_rejected() {
     let mut state = test_state();
 
-    // An untrusted peer tries to create a channel.
+    // An unpermitted peer tries to create a channel.
     let evt = event(
         &state,
         "e1",
@@ -356,7 +360,7 @@ fn untrusted_author_rejected() {
 }
 
 #[test]
-fn untrusted_peer_can_send_messages() {
+fn unpermitted_peer_can_send_messages() {
     let mut state = test_state();
 
     let create_ch = event(
@@ -370,7 +374,7 @@ fn untrusted_peer_can_send_messages() {
     );
     assert_eq!(apply(&mut state, &create_ch), ApplyResult::Applied);
 
-    // An untrusted peer sends a message — this should be accepted.
+    // A peer with no permissions sends a message -- this should be accepted.
     let msg = event(
         &state,
         "msg1",
@@ -382,6 +386,217 @@ fn untrusted_peer_can_send_messages() {
     );
     assert_eq!(apply(&mut state, &msg), ApplyResult::Applied);
     assert_eq!(state.messages.len(), 1);
+}
+
+#[test]
+fn permission_enforcement() {
+    let mut state = test_state();
+
+    // Grant alice only SendMessages.
+    let grant = event(
+        &state,
+        "e0",
+        "owner",
+        EventKind::GrantPermission {
+            peer_id: "alice".into(),
+            permission: Permission::SendMessages,
+        },
+    );
+    assert_eq!(apply(&mut state, &grant), ApplyResult::Applied);
+
+    // Alice should NOT be able to create channels (requires ManageChannels).
+    let create = event(
+        &state,
+        "e1",
+        "alice",
+        EventKind::CreateChannel {
+            name: "unauthorized".into(),
+            channel_id: "ch1".into(),
+        },
+    );
+    let result = apply(&mut state, &create);
+    assert!(matches!(result, ApplyResult::Rejected(_)));
+    assert!(!state.channels.contains_key("ch1"));
+}
+
+#[test]
+fn admin_permission_grants_all() {
+    let mut state = test_state();
+
+    // Grant alice Administrator.
+    let grant = event(
+        &state,
+        "e0",
+        "owner",
+        EventKind::GrantPermission {
+            peer_id: "alice".into(),
+            permission: Permission::Administrator,
+        },
+    );
+    assert_eq!(apply(&mut state, &grant), ApplyResult::Applied);
+
+    // Admin can create channels.
+    let create = event(
+        &state,
+        "e1",
+        "alice",
+        EventKind::CreateChannel {
+            name: "admin-channel".into(),
+            channel_id: "ch1".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &create), ApplyResult::Applied);
+    assert!(state.channels.contains_key("ch1"));
+
+    // Admin can create roles.
+    let create_role = event(
+        &state,
+        "e2",
+        "alice",
+        EventKind::CreateRole {
+            name: "Moderator".into(),
+            role_id: "role1".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &create_role), ApplyResult::Applied);
+    assert!(state.roles.contains_key("role1"));
+
+    // Admin can kick members.
+    // First add bob as a member.
+    let grant_bob = event(
+        &state,
+        "e3",
+        "alice",
+        EventKind::GrantPermission {
+            peer_id: "bob".into(),
+            permission: Permission::SendMessages,
+        },
+    );
+    assert_eq!(apply(&mut state, &grant_bob), ApplyResult::Applied);
+    assert!(state.members.contains_key("bob"));
+
+    let kick = event(
+        &state,
+        "e4",
+        "alice",
+        EventKind::KickMember {
+            peer_id: "bob".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &kick), ApplyResult::Applied);
+    assert!(!state.members.contains_key("bob"));
+}
+
+#[test]
+fn owner_always_has_permission() {
+    let state = test_state();
+
+    // Owner has every permission without any explicit grants.
+    assert!(state.has_permission("owner", &Permission::ManageChannels));
+    assert!(state.has_permission("owner", &Permission::ManageRoles));
+    assert!(state.has_permission("owner", &Permission::KickMembers));
+    assert!(state.has_permission("owner", &Permission::SendMessages));
+    assert!(state.has_permission("owner", &Permission::SyncProvider));
+    assert!(state.has_permission("owner", &Permission::CreateInvite));
+    assert!(state.has_permission("owner", &Permission::Administrator));
+}
+
+#[test]
+fn fine_grained_permissions() {
+    let mut state = test_state();
+
+    // Grant alice only SendMessages.
+    let grant = event(
+        &state,
+        "e0",
+        "owner",
+        EventKind::GrantPermission {
+            peer_id: "alice".into(),
+            permission: Permission::SendMessages,
+        },
+    );
+    assert_eq!(apply(&mut state, &grant), ApplyResult::Applied);
+
+    // Create a channel (as owner) so alice can send messages.
+    let create_ch = event(
+        &state,
+        "e1",
+        "owner",
+        EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: "ch1".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &create_ch), ApplyResult::Applied);
+
+    // Alice can send messages (messages don't require permissions).
+    let msg = event(
+        &state,
+        "msg1",
+        "alice",
+        EventKind::Message {
+            channel_id: "ch1".into(),
+            body: "hello from alice".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &msg), ApplyResult::Applied);
+    assert_eq!(state.messages.len(), 1);
+
+    // Alice cannot create channels.
+    let create = event(
+        &state,
+        "e2",
+        "alice",
+        EventKind::CreateChannel {
+            name: "unauthorized".into(),
+            channel_id: "ch2".into(),
+        },
+    );
+    assert!(matches!(
+        apply(&mut state, &create),
+        ApplyResult::Rejected(_)
+    ));
+
+    // Alice cannot kick members.
+    let kick = event(
+        &state,
+        "e3",
+        "alice",
+        EventKind::KickMember {
+            peer_id: "owner".into(),
+        },
+    );
+    assert!(matches!(apply(&mut state, &kick), ApplyResult::Rejected(_)));
+
+    // Alice cannot create roles.
+    let create_role = event(
+        &state,
+        "e4",
+        "alice",
+        EventKind::CreateRole {
+            name: "Admin".into(),
+            role_id: "role1".into(),
+        },
+    );
+    assert!(matches!(
+        apply(&mut state, &create_role),
+        ApplyResult::Rejected(_)
+    ));
+
+    // Alice cannot grant permissions.
+    let grant_perm = event(
+        &state,
+        "e5",
+        "alice",
+        EventKind::GrantPermission {
+            peer_id: "bob".into(),
+            permission: Permission::Administrator,
+        },
+    );
+    assert!(matches!(
+        apply(&mut state, &grant_perm),
+        ApplyResult::Rejected(_)
+    ));
 }
 
 // ── Full replay from genesis ─────────────────────────────────────────────
@@ -407,8 +622,9 @@ fn full_replay_from_genesis() {
         &state,
         "e2",
         "owner",
-        EventKind::TrustPeer {
+        EventKind::GrantPermission {
             peer_id: "alice".into(),
+            permission: Permission::ManageChannels,
         },
     );
     assert_eq!(apply(&mut state, &e2), ApplyResult::Applied);
@@ -438,7 +654,7 @@ fn full_replay_from_genesis() {
 
     // Verify state contents.
     assert!(replayed.channels.contains_key("ch1"));
-    assert!(replayed.trusted_peers.contains("alice"));
+    assert!(replayed.has_permission("alice", &Permission::ManageChannels));
     assert_eq!(replayed.messages.len(), 1);
 }
 
@@ -521,16 +737,17 @@ fn event_store_in_memory() {
 fn create_role_and_assign() {
     let mut state = test_state();
 
-    // Trust alice first.
-    let trust = event(
+    // Grant alice ManageRoles so she becomes a member.
+    let grant = event(
         &state,
         "e0",
         "owner",
-        EventKind::TrustPeer {
+        EventKind::GrantPermission {
             peer_id: "alice".into(),
+            permission: Permission::ManageRoles,
         },
     );
-    assert_eq!(apply(&mut state, &trust), ApplyResult::Applied);
+    assert_eq!(apply(&mut state, &grant), ApplyResult::Applied);
 
     // Create a role.
     let create_role = event(
@@ -577,15 +794,16 @@ fn create_role_and_assign() {
 fn delete_role_removes_from_members() {
     let mut state = test_state();
 
-    let trust = event(
+    let grant = event(
         &state,
         "e0",
         "owner",
-        EventKind::TrustPeer {
+        EventKind::GrantPermission {
             peer_id: "alice".into(),
+            permission: Permission::ManageRoles,
         },
     );
-    assert_eq!(apply(&mut state, &trust), ApplyResult::Applied);
+    assert_eq!(apply(&mut state, &grant), ApplyResult::Applied);
 
     let create = event(
         &state,
@@ -626,20 +844,21 @@ fn delete_role_removes_from_members() {
 // ── Kick member ──────────────────────────────────────────────────────────
 
 #[test]
-fn kick_member_removes_and_untrusts() {
+fn kick_member_removes_and_revokes_permissions() {
     let mut state = test_state();
 
-    let trust = event(
+    let grant = event(
         &state,
         "e0",
         "owner",
-        EventKind::TrustPeer {
+        EventKind::GrantPermission {
             peer_id: "alice".into(),
+            permission: Permission::ManageChannels,
         },
     );
-    assert_eq!(apply(&mut state, &trust), ApplyResult::Applied);
+    assert_eq!(apply(&mut state, &grant), ApplyResult::Applied);
     assert!(state.members.contains_key("alice"));
-    assert!(state.trusted_peers.contains("alice"));
+    assert!(state.has_permission("alice", &Permission::ManageChannels));
 
     let kick = event(
         &state,
@@ -651,7 +870,7 @@ fn kick_member_removes_and_untrusts() {
     );
     assert_eq!(apply(&mut state, &kick), ApplyResult::Applied);
     assert!(!state.members.contains_key("alice"));
-    assert!(!state.trusted_peers.contains("alice"));
+    assert!(!state.has_permission("alice", &Permission::ManageChannels));
 }
 
 #[test]
@@ -732,4 +951,117 @@ fn delete_channel_removes_messages() {
     );
     assert_eq!(apply(&mut state, &delete), ApplyResult::Applied);
     assert!(state.messages.is_empty());
+}
+
+// ── Sync provider ────────────────────────────────────────────────────────
+
+#[test]
+fn sync_provider_permission() {
+    let mut state = test_state();
+
+    // Alice is not a sync provider by default.
+    assert!(!state.is_sync_provider("alice"));
+
+    let grant = event(
+        &state,
+        "e0",
+        "owner",
+        EventKind::GrantPermission {
+            peer_id: "alice".into(),
+            permission: Permission::SyncProvider,
+        },
+    );
+    assert_eq!(apply(&mut state, &grant), ApplyResult::Applied);
+    assert!(state.is_sync_provider("alice"));
+
+    // Owner is always a sync provider.
+    assert!(state.is_sync_provider("owner"));
+}
+
+// ── Backward compat: is_trusted ──────────────────────────────────────────
+
+#[test]
+fn is_trusted_compat() {
+    let mut state = test_state();
+
+    // Owner is always trusted.
+    assert!(state.is_trusted("owner"));
+    // Stranger with no permissions is not trusted.
+    assert!(!state.is_trusted("stranger"));
+
+    // Grant any permission makes a peer "trusted".
+    let grant = event(
+        &state,
+        "e0",
+        "owner",
+        EventKind::GrantPermission {
+            peer_id: "alice".into(),
+            permission: Permission::SendMessages,
+        },
+    );
+    assert_eq!(apply(&mut state, &grant), ApplyResult::Applied);
+    assert!(state.is_trusted("alice"));
+
+    // Revoke all permissions makes peer untrusted again.
+    let revoke = event(
+        &state,
+        "e1",
+        "owner",
+        EventKind::RevokePermission {
+            peer_id: "alice".into(),
+            permission: Permission::SendMessages,
+        },
+    );
+    assert_eq!(apply(&mut state, &revoke), ApplyResult::Applied);
+    assert!(!state.is_trusted("alice"));
+}
+
+// ── Multiple permissions per peer ────────────────────────────────────────
+
+#[test]
+fn multiple_permissions_per_peer() {
+    let mut state = test_state();
+
+    let g1 = event(
+        &state,
+        "e0",
+        "owner",
+        EventKind::GrantPermission {
+            peer_id: "alice".into(),
+            permission: Permission::ManageChannels,
+        },
+    );
+    assert_eq!(apply(&mut state, &g1), ApplyResult::Applied);
+
+    let g2 = event(
+        &state,
+        "e1",
+        "owner",
+        EventKind::GrantPermission {
+            peer_id: "alice".into(),
+            permission: Permission::KickMembers,
+        },
+    );
+    assert_eq!(apply(&mut state, &g2), ApplyResult::Applied);
+
+    assert!(state.has_permission("alice", &Permission::ManageChannels));
+    assert!(state.has_permission("alice", &Permission::KickMembers));
+    assert!(!state.has_permission("alice", &Permission::ManageRoles));
+
+    // Revoke one, keep the other.
+    let r1 = event(
+        &state,
+        "e2",
+        "owner",
+        EventKind::RevokePermission {
+            peer_id: "alice".into(),
+            permission: Permission::ManageChannels,
+        },
+    );
+    assert_eq!(apply(&mut state, &r1), ApplyResult::Applied);
+
+    assert!(!state.has_permission("alice", &Permission::ManageChannels));
+    assert!(state.has_permission("alice", &Permission::KickMembers));
+    // Alice is still "trusted" because she has at least one permission.
+    assert!(state.is_trusted("alice"));
 }

@@ -277,6 +277,12 @@ pub struct ClientState {
     /// Persistent message database (native-only SQLite, WASM localStorage).
     pub message_db: Option<std::sync::Arc<std::sync::Mutex<crate::storage::MessageDb>>>,
 
+    // --- Event-sourced state (willow-state) ---
+    /// Event-sourced server state, running alongside the legacy system.
+    pub event_state: willow_state::ServerState,
+    /// In-memory event store for the event-sourced model.
+    pub event_store: willow_state::InMemoryStore,
+
     // --- Legacy fields kept for backward compatibility with willow-app ---
     /// The local server instance and topic map (legacy, prefer `servers`).
     pub server: ServerState,
@@ -297,6 +303,8 @@ impl Default for ClientState {
             profiles: ProfileStore::default(),
             emoji: crate::emoji::EmojiRegistry::new(),
             message_db: None,
+            event_state: willow_state::ServerState::default(),
+            event_store: willow_state::InMemoryStore::new(),
             server: ServerState::default(),
             op_log: OpLog::default(),
             key_store: ChannelKeyStore::default(),

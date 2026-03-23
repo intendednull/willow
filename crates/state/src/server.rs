@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::hash::StateHash;
-use crate::types::{Channel, ChatMessage, Member, Profile, Role};
+use crate::types::{Channel, ChatMessage, Member, Permission, Profile, Role};
 
 /// The complete shared state of a server, derivable from events.
 ///
@@ -28,8 +28,8 @@ pub struct ServerState {
     pub roles: HashMap<String, Role>,
     /// Members keyed by peer ID.
     pub members: HashMap<String, Member>,
-    /// Explicitly trusted peer IDs (the owner is implicitly trusted).
-    pub trusted_peers: HashSet<String>,
+    /// Per-peer permissions. Owner always has all permissions implicitly.
+    pub peer_permissions: HashMap<String, HashSet<Permission>>,
     /// Chat messages in event-sequence order.
     pub messages: Vec<ChatMessage>,
     /// Peer profiles keyed by peer ID.
@@ -83,7 +83,7 @@ impl ServerState {
             channels: Vec<(&'a String, &'a Channel)>,
             roles: Vec<(&'a String, &'a Role)>,
             members: Vec<(&'a String, &'a Member)>,
-            trusted_peers: Vec<&'a String>,
+            peer_permissions: Vec<(&'a String, Vec<&'a Permission>)>,
             messages: &'a [ChatMessage],
             profiles: Vec<(&'a String, &'a Profile)>,
             channel_keys: Vec<(&'a String, &'a Vec<u8>)>,
@@ -98,8 +98,16 @@ impl ServerState {
         let mut members: Vec<_> = self.members.iter().collect();
         members.sort_by_key(|(k, _)| *k);
 
-        let mut trusted_peers: Vec<_> = self.trusted_peers.iter().collect();
-        trusted_peers.sort();
+        let mut peer_permissions: Vec<_> = self
+            .peer_permissions
+            .iter()
+            .map(|(k, v)| {
+                let mut perms: Vec<_> = v.iter().collect();
+                perms.sort_by_key(|p| format!("{p:?}"));
+                (k, perms)
+            })
+            .collect();
+        peer_permissions.sort_by_key(|(k, _)| (*k).clone());
 
         let mut profiles: Vec<_> = self.profiles.iter().collect();
         profiles.sort_by_key(|(k, _)| *k);
@@ -114,7 +122,7 @@ impl ServerState {
             channels,
             roles,
             members,
-            trusted_peers,
+            peer_permissions,
             messages: &self.messages,
             profiles,
             channel_keys,
@@ -126,9 +134,38 @@ impl ServerState {
         StateHash::from_bytes(&bytes)
     }
 
+    /// Check whether a peer has a specific permission.
+    ///
+    /// The owner always has all permissions. Non-owner peers with
+    /// [`Administrator`](Permission::Administrator) also have all permissions.
+    pub fn has_permission(&self, peer_id: &str, perm: &Permission) -> bool {
+        if peer_id == self.owner {
+            return true; // owner has all permissions
+        }
+        self.peer_permissions
+            .get(peer_id)
+            .map(|perms| perms.contains(&Permission::Administrator) || perms.contains(perm))
+            .unwrap_or(false)
+    }
+
+    /// Check if a peer can provide sync (trusted for history).
+    pub fn is_sync_provider(&self, peer_id: &str) -> bool {
+        self.has_permission(peer_id, &Permission::SyncProvider)
+    }
+
     /// Check whether a peer is trusted (owner is always trusted).
+    ///
+    /// A peer is considered trusted if it has any permissions granted.
+    /// This is a backward-compatible bridge for code that uses the old
+    /// binary trust model.
     pub fn is_trusted(&self, peer_id: &str) -> bool {
-        peer_id == self.owner || self.trusted_peers.contains(peer_id)
+        if peer_id == self.owner {
+            return true;
+        }
+        self.peer_permissions
+            .get(peer_id)
+            .map(|perms| !perms.is_empty())
+            .unwrap_or(false)
     }
 }
 
@@ -177,5 +214,30 @@ mod tests {
         let b = ServerState::new("s1", "Test", "owner");
         a.seen_event_ids.insert("evt-1".into());
         assert_eq!(a.hash(), b.hash());
+    }
+
+    #[test]
+    fn owner_has_all_permissions() {
+        let state = ServerState::new("s1", "Test", "owner");
+        assert!(state.has_permission("owner", &Permission::ManageChannels));
+        assert!(state.has_permission("owner", &Permission::Administrator));
+        assert!(state.has_permission("owner", &Permission::SyncProvider));
+    }
+
+    #[test]
+    fn peer_without_permissions() {
+        let state = ServerState::new("s1", "Test", "owner");
+        assert!(!state.has_permission("stranger", &Permission::ManageChannels));
+        assert!(!state.is_sync_provider("stranger"));
+    }
+
+    #[test]
+    fn hash_changes_with_permissions() {
+        let a = ServerState::new("s1", "Test", "owner");
+        let mut b = ServerState::new("s1", "Test", "owner");
+        let mut perms = std::collections::HashSet::new();
+        perms.insert(Permission::ManageChannels);
+        b.peer_permissions.insert("alice".into(), perms);
+        assert_ne!(a.hash(), b.hash());
     }
 }

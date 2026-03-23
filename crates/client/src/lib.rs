@@ -37,6 +37,9 @@ pub use state::{
     ServerState, UnreadCounts,
 };
 
+/// Re-export the event-sourced state crate for use by downstream consumers.
+pub use willow_state;
+
 use std::collections::HashMap;
 use std::sync::mpsc as std_mpsc;
 
@@ -153,8 +156,7 @@ impl Client {
             let (server, keys) = if let Some((server, keys)) = storage::load_server() {
                 (server, keys)
             } else {
-                let mut server =
-                    willow_channel::Server::new("My Server", identity.peer_id());
+                let mut server = willow_channel::Server::new("My Server", identity.peer_id());
                 let mut keys = HashMap::new();
                 for name in ["general", "random", "voice"] {
                     let ch_id = server
@@ -420,11 +422,9 @@ impl Client {
                         // Re-broadcast profile so the new peer learns our name.
                         let saved = storage::load_profile().unwrap_or_default();
                         if !saved.display_name.is_empty() {
-                            let _ = self.cmd_tx.send(
-                                network::NetworkCommand::BroadcastProfile {
-                                    display_name: saved.display_name,
-                                },
-                            );
+                            let _ = self.cmd_tx.send(network::NetworkCommand::BroadcastProfile {
+                                display_name: saved.display_name,
+                            });
                         }
                     }
                     events.push(ClientEvent::PeerConnected(peer));

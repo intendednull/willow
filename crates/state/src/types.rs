@@ -62,6 +62,29 @@ pub struct ChatMessage {
     pub reply_to: Option<String>,
 }
 
+/// Fine-grained permissions that can be granted to individual peers.
+///
+/// The owner always has all permissions implicitly. Non-owner peers must be
+/// explicitly granted permissions via [`GrantPermission`](crate::EventKind::GrantPermission).
+/// The [`Administrator`](Permission::Administrator) permission implies all others.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Permission {
+    /// Can sync/provide full history to other peers.
+    SyncProvider,
+    /// Can manage channels (create, delete, rename).
+    ManageChannels,
+    /// Can manage roles and permissions.
+    ManageRoles,
+    /// Can kick members.
+    KickMembers,
+    /// Can send messages.
+    SendMessages,
+    /// Can create invites.
+    CreateInvite,
+    /// Full admin access (implies all permissions).
+    Administrator,
+}
+
 /// A peer's display profile.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Profile {

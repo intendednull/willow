@@ -49,7 +49,7 @@ pub use hash::StateHash;
 pub use merge::{find_common_ancestor, merge};
 pub use server::ServerState;
 pub use store::{EventStore, InMemoryStore};
-pub use types::{Channel, ChatMessage, Member, Profile, Role};
+pub use types::{Channel, ChatMessage, Member, Permission, Profile, Role};
 
 use serde::{Deserialize, Serialize};
 
@@ -126,15 +126,19 @@ pub enum EventKind {
     },
 
     // -- Members --
-    /// Mark a peer as trusted (can mutate server state).
-    TrustPeer {
-        /// The peer ID to trust.
+    /// Grant a permission to a peer.
+    GrantPermission {
+        /// The peer ID to grant the permission to.
         peer_id: String,
+        /// The permission to grant.
+        permission: types::Permission,
     },
-    /// Remove trust from a peer.
-    UntrustPeer {
-        /// The peer ID to untrust.
+    /// Revoke a permission from a peer.
+    RevokePermission {
+        /// The peer ID to revoke the permission from.
         peer_id: String,
+        /// The permission to revoke.
+        permission: types::Permission,
     },
     /// Remove a member from the server.
     KickMember {
@@ -236,23 +240,41 @@ pub fn apply_lenient(state: &mut ServerState, event: &Event) -> ApplyResult {
 
 /// Shared implementation for both strict and lenient apply.
 fn apply_inner(state: &mut ServerState, event: &Event) -> ApplyResult {
-    // Trust enforcement: only the owner and explicitly trusted peers can
-    // mutate server structure. Chat messages from any member are accepted.
-    let needs_trust = !matches!(
-        event.kind,
-        EventKind::Message { .. }
-            | EventKind::EditMessage { .. }
-            | EventKind::DeleteMessage { .. }
-            | EventKind::Reaction { .. }
-            | EventKind::SetProfile { .. }
-    );
+    // Fine-grained permission enforcement.
+    // Determine which permission is required for this event kind.
+    let required_permission = match &event.kind {
+        EventKind::CreateChannel { .. }
+        | EventKind::DeleteChannel { .. }
+        | EventKind::RenameChannel { .. } => Some(types::Permission::ManageChannels),
 
-    if needs_trust && !state.is_trusted(&event.author) {
-        state.seen_event_ids.insert(event.id.clone());
-        return ApplyResult::Rejected(format!(
-            "author '{}' is not trusted for {:?}",
-            event.author, event.kind
-        ));
+        EventKind::CreateRole { .. }
+        | EventKind::DeleteRole { .. }
+        | EventKind::SetPermission { .. }
+        | EventKind::AssignRole { .. } => Some(types::Permission::ManageRoles),
+
+        EventKind::GrantPermission { .. } | EventKind::RevokePermission { .. } => {
+            Some(types::Permission::ManageRoles)
+        }
+
+        EventKind::KickMember { .. } => Some(types::Permission::KickMembers),
+
+        // Chat, profile, and encryption events are open to any peer.
+        EventKind::Message { .. }
+        | EventKind::EditMessage { .. }
+        | EventKind::DeleteMessage { .. }
+        | EventKind::Reaction { .. }
+        | EventKind::SetProfile { .. }
+        | EventKind::RotateChannelKey { .. } => None,
+    };
+
+    if let Some(ref perm) = required_permission {
+        if !state.has_permission(&event.author, perm) {
+            state.seen_event_ids.insert(event.id.clone());
+            return ApplyResult::Rejected(format!(
+                "author '{}' lacks {:?} permission for {:?}",
+                event.author, perm, event.kind
+            ));
+        }
     }
 
     // Mark as seen.
@@ -332,8 +354,15 @@ fn apply_inner(state: &mut ServerState, event: &Event) -> ApplyResult {
             }
         }
 
-        EventKind::TrustPeer { peer_id } => {
-            state.trusted_peers.insert(peer_id.clone());
+        EventKind::GrantPermission {
+            peer_id,
+            permission,
+        } => {
+            state
+                .peer_permissions
+                .entry(peer_id.clone())
+                .or_default()
+                .insert(permission.clone());
             // Also ensure they are a member.
             state
                 .members
@@ -345,15 +374,23 @@ fn apply_inner(state: &mut ServerState, event: &Event) -> ApplyResult {
                 });
         }
 
-        EventKind::UntrustPeer { peer_id } => {
-            state.trusted_peers.remove(peer_id);
+        EventKind::RevokePermission {
+            peer_id,
+            permission,
+        } => {
+            if let Some(perms) = state.peer_permissions.get_mut(peer_id) {
+                perms.remove(permission);
+                if perms.is_empty() {
+                    state.peer_permissions.remove(peer_id);
+                }
+            }
         }
 
         EventKind::KickMember { peer_id } => {
             // Cannot kick the owner.
             if *peer_id != state.owner {
                 state.members.remove(peer_id);
-                state.trusted_peers.remove(peer_id);
+                state.peer_permissions.remove(peer_id);
             }
         }
 
