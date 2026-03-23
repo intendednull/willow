@@ -18,18 +18,24 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 html, body {
-    width: 100%; height: 100%;
+    width: 100%;
+    height: 100%;
+    height: 100dvh; /* dynamic viewport height — respects mobile browser chrome */
     overflow: hidden;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     font-size: 14px;
     color: var(--text-primary);
     background: var(--bg-main);
+    -webkit-text-size-adjust: 100%;
 }
 
 .app {
     display: flex;
     width: 100%;
-    height: 100vh;
+    height: 100%;
+    height: 100dvh;
+    overflow: hidden;
+    position: relative;
 }
 
 /* Sidebar */
@@ -168,6 +174,26 @@ html, body {
     display: flex;
     flex-direction: column;
     min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.chat-container {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* Loading state shown before WASM renders */
+.loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100dvh;
+    color: var(--text-muted);
+    font-size: 16px;
 }
 
 .channel-header {
@@ -242,9 +268,10 @@ html, body {
 
 /* Input area */
 .input-area {
-    padding: 16px;
+    padding: 12px 16px;
     border-top: 1px solid var(--border);
     flex-shrink: 0;
+    background: var(--bg-main);
 }
 
 .input-area input, .input-area textarea {
@@ -501,9 +528,16 @@ html, body {
 /* ── Responsive: Mobile (< 640px) ───────────────────────────────────── */
 
 @media (max-width: 640px) {
-    html {
+    html, body {
+        height: 100%;
+        height: 100dvh;
         /* Safe area for notched phones */
-        padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+        padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+    }
+
+    .app {
+        height: 100%;
+        height: 100dvh;
     }
 
     .mobile-nav-toggle {
@@ -518,12 +552,15 @@ html, body {
         bottom: 0;
         z-index: 10;
         width: 280px;
+        max-width: 85vw;
         transform: translateX(-100%);
         transition: transform 0.2s ease;
+        box-shadow: none;
     }
 
     .sidebar.open {
         transform: translateX(0);
+        box-shadow: 4px 0 20px rgba(0, 0, 0, 0.5);
     }
 
     .sidebar-overlay.open {
@@ -533,6 +570,11 @@ html, body {
     /* Main content fills viewport */
     .main-content {
         width: 100%;
+        min-height: 0;
+    }
+
+    .chat-container {
+        height: 100%;
     }
 
     /* Larger touch targets */

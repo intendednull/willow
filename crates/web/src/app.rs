@@ -155,7 +155,7 @@ pub fn App() -> impl IntoView {
                         view! { <SettingsPanel client=sc peer_id=pid /> }.into_any()
                     } else {
                         view! {
-                            <div style="display: flex; flex-direction: column; height: 100%;">
+                            <div class="chat-container">
                                 <ChannelHeader
                                     channel=current_channel
                                     peer_count=peer_count
