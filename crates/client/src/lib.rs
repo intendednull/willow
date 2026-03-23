@@ -33,8 +33,8 @@ pub mod util;
 pub use events::ClientEvent;
 pub use ops::{Op, StampedOp, SyncMessage};
 pub use state::{
-    ChannelKeyStore, ChatMessage, ChatState, ClientState, OpLog, ProfileStore, ServerState,
-    UnreadCounts,
+    ChannelKeyStore, ChatMessage, ChatState, ClientState, OpLog, ProfileStore, ServerContext,
+    ServerState, UnreadCounts,
 };
 
 use std::collections::HashMap;
@@ -132,27 +132,57 @@ impl Client {
             (server, keys)
         };
 
-        // Build topic map.
+        // Build the ServerContext for this server.
+        let server_id = server.id.to_string();
+        let mut topic_map = HashMap::new();
         for ch in server.channels() {
             let topic = util::make_topic(&server, &ch.name);
-            state
-                .server
-                .topic_map
-                .insert(topic.clone(), (ch.name.clone(), ch.id.clone()));
+            topic_map.insert(topic.clone(), (ch.name.clone(), ch.id.clone()));
         }
 
-        state.key_store.keys = keys;
+        // Also populate legacy fields for backward compatibility.
+        state.server.topic_map = topic_map.clone();
+        state.key_store.keys = keys.clone();
+
         if config.persistence {
-            storage::save_server(&server, &state.key_store.keys);
+            storage::save_server(&server, &keys);
         }
+
+        // Load op log.
+        let mut op_log = OpLog::default();
+        if let Some(ops) = storage::load_op_log() {
+            for op in ops {
+                op_log.record(op);
+            }
+        }
+        // Also populate legacy op_log.
+        state.op_log = OpLog::default();
+        if let Some(ops) = storage::load_op_log() {
+            for op in ops {
+                state.op_log.record(op);
+            }
+        }
+
+        let ctx = ServerContext {
+            server: server.clone(),
+            topic_map: topic_map.clone(),
+            keys,
+            op_log,
+            unread: HashMap::new(),
+        };
+
+        state.servers.insert(server_id.clone(), ctx);
+        state.active_server = Some(server_id);
 
         // Load persisted messages.
         if let Some(ref db_arc) = state.message_db {
             if let Ok(db_lock) = db_arc.lock() {
-                for topic in state.server.topic_map.keys() {
+                let active_id = state.active_server.clone().unwrap_or_default();
+                for topic in topic_map.keys() {
                     let stored = db_lock.load_topic(topic, 500);
                     for sm in stored {
                         state.chat.messages.push(ChatMessage::new(
+                            active_id.clone(),
                             sm.topic,
                             sm.author,
                             sm.body,
@@ -161,13 +191,6 @@ impl Client {
                         ));
                     }
                 }
-            }
-        }
-
-        // Load op log.
-        if let Some(ops) = storage::load_op_log() {
-            for op in ops {
-                state.op_log.record(op);
             }
         }
 
@@ -184,6 +207,7 @@ impl Client {
             }
         }
 
+        // Set legacy server field.
         state.server.server = Some(server);
 
         Self {
@@ -260,8 +284,8 @@ impl Client {
                                 if let Some(msg) = self.state.chat.messages.last() {
                                     let channel = self
                                         .state
-                                        .server
-                                        .name_for_topic(&msg.topic)
+                                        .active()
+                                        .and_then(|ctx| ctx.name_for_topic(&msg.topic))
                                         .unwrap_or("unknown")
                                         .to_string();
                                     events.push(ClientEvent::MessageReceived {
@@ -347,7 +371,14 @@ impl Client {
                     let size_kb = size / 1024;
                     let body = format!("[shared file: {filename} ({size_kb} KB)]");
                     let ts = self.state.chat.hlc.latest().millis;
+                    let server_id = self
+                        .state
+                        .find_server_for_topic(&topic)
+                        .map(|s| s.to_string())
+                        .or_else(|| self.state.active_server.clone())
+                        .unwrap_or_default();
                     self.state.chat.messages.push(ChatMessage::new(
+                        server_id,
                         topic.clone(),
                         author,
                         body,
@@ -358,8 +389,8 @@ impl Client {
 
                     let channel = self
                         .state
-                        .server
-                        .name_for_topic(&topic)
+                        .active()
+                        .and_then(|ctx| ctx.name_for_topic(&topic))
                         .unwrap_or("unknown")
                         .to_string();
                     events.push(ClientEvent::FileAnnounced {
@@ -379,12 +410,15 @@ impl Client {
                 } => {
                     let owner = self
                         .state
-                        .server
-                        .server
-                        .as_ref()
-                        .map(|s| s.owner.to_string())
+                        .active()
+                        .map(|ctx| ctx.server.owner.to_string())
                         .unwrap_or_default();
-                    if self.state.op_log.is_trusted(&from, &owner) {
+                    let is_trusted = self
+                        .state
+                        .active()
+                        .map(|ctx| ctx.op_log.is_trusted(&from, &owner))
+                        .unwrap_or(false);
+                    if is_trusted {
                         if let Some(ref req_topic) = topic {
                             if let Some(ref db_arc) = self.state.message_db {
                                 if let Ok(db_lock) = db_arc.lock() {
@@ -406,12 +440,16 @@ impl Client {
                         } else {
                             let missing: Vec<_> = self
                                 .state
-                                .op_log
-                                .ops
-                                .iter()
-                                .filter(|op| op.hlc > latest_hlc)
-                                .cloned()
-                                .collect();
+                                .active()
+                                .map(|ctx| {
+                                    ctx.op_log
+                                        .ops
+                                        .iter()
+                                        .filter(|op| op.hlc > latest_hlc)
+                                        .cloned()
+                                        .collect()
+                                })
+                                .unwrap_or_default();
                             if !missing.is_empty() {
                                 let _ = self
                                     .cmd_tx
@@ -423,12 +461,15 @@ impl Client {
                 network::NetworkEvent::SyncBatchReceived { ops, from } => {
                     let owner = self
                         .state
-                        .server
-                        .server
-                        .as_ref()
-                        .map(|s| s.owner.to_string())
+                        .active()
+                        .map(|ctx| ctx.server.owner.to_string())
                         .unwrap_or_default();
-                    if !self.state.op_log.is_trusted(&from, &owner) {
+                    let is_trusted = self
+                        .state
+                        .active()
+                        .map(|ctx| ctx.op_log.is_trusted(&from, &owner))
+                        .unwrap_or(false);
+                    if !is_trusted {
                         continue;
                     }
                     let mut sorted_ops = ops;
@@ -470,6 +511,33 @@ impl Client {
         }
 
         events
+    }
+
+    // ───── Server management ──────────────────────────────────────────────────
+
+    /// Switch to a different server by ID.
+    pub fn switch_server(&mut self, server_id: &str) {
+        if self.state.servers.contains_key(server_id) {
+            self.state.active_server = Some(server_id.to_string());
+        }
+    }
+
+    /// List all servers as (id, name) pairs.
+    pub fn server_list(&self) -> Vec<(String, String)> {
+        self.state.server_list()
+    }
+
+    /// Get the name of the currently active server.
+    pub fn active_server_name(&self) -> String {
+        self.state
+            .active()
+            .map(|ctx| ctx.server.name.clone())
+            .unwrap_or_else(|| "No Server".to_string())
+    }
+
+    /// Get the ID of the currently active server.
+    pub fn active_server_id(&self) -> Option<&str> {
+        self.state.active_server.as_deref()
     }
 
     // ───── Action methods ───────────────────────────────────────────────────
@@ -524,9 +592,11 @@ impl Client {
             new_body: new_body.to_string(),
         };
 
-        let topic = self
+        let ctx = self
             .state
-            .server
+            .active()
+            .ok_or_else(|| anyhow::anyhow!("no active server"))?;
+        let topic = ctx
             .topic_for_name(channel)
             .unwrap_or_else(|| channel.to_string());
 
@@ -542,7 +612,9 @@ impl Client {
             &mut self.state.chat.hlc,
             &peer_id_str,
         );
-        self.state.op_log.record(stamped.clone());
+        if let Some(ctx) = self.state.active_mut() {
+            ctx.op_log.record(stamped.clone());
+        }
         let _ = self
             .cmd_tx
             .send(network::NetworkCommand::BroadcastOp(stamped));
@@ -569,9 +641,11 @@ impl Client {
             target: target.clone(),
         };
 
-        let topic = self
+        let ctx = self
             .state
-            .server
+            .active()
+            .ok_or_else(|| anyhow::anyhow!("no active server"))?;
+        let topic = ctx
             .topic_for_name(channel)
             .unwrap_or_else(|| channel.to_string());
 
@@ -587,7 +661,9 @@ impl Client {
             &mut self.state.chat.hlc,
             &peer_id_str,
         );
-        self.state.op_log.record(stamped.clone());
+        if let Some(ctx) = self.state.active_mut() {
+            ctx.op_log.record(stamped.clone());
+        }
         let _ = self
             .cmd_tx
             .send(network::NetworkCommand::BroadcastOp(stamped));
@@ -616,9 +692,11 @@ impl Client {
             emoji: emoji.to_string(),
         };
 
-        let topic = self
+        let ctx = self
             .state
-            .server
+            .active()
+            .ok_or_else(|| anyhow::anyhow!("no active server"))?;
+        let topic = ctx
             .topic_for_name(channel)
             .unwrap_or_else(|| channel.to_string());
 
@@ -634,7 +712,9 @@ impl Client {
             &mut self.state.chat.hlc,
             &peer_id_str,
         );
-        self.state.op_log.record(stamped.clone());
+        if let Some(ctx) = self.state.active_mut() {
+            ctx.op_log.record(stamped.clone());
+        }
         let _ = self
             .cmd_tx
             .send(network::NetworkCommand::BroadcastOp(stamped));
@@ -658,24 +738,23 @@ impl Client {
 
     /// Create a new channel.
     pub fn create_channel(&mut self, name: &str) -> anyhow::Result<()> {
-        let (topic, ch_id) = {
-            let Some(server) = &mut self.state.server.server else {
-                anyhow::bail!("no server");
-            };
-            let ch_id = server.create_channel(name, willow_channel::ChannelKind::Text)?;
-            let topic = util::make_topic(server, name);
+        let ctx = self
+            .state
+            .active_mut()
+            .ok_or_else(|| anyhow::anyhow!("no active server"))?;
 
-            if let Some(key) = server.channel_key(&ch_id) {
-                self.state.key_store.keys.insert(topic.clone(), key.clone());
-            }
-            storage::save_server(server, &self.state.key_store.keys);
-            (topic, ch_id)
-        };
+        let ch_id = ctx
+            .server
+            .create_channel(name, willow_channel::ChannelKind::Text)?;
+        let topic = util::make_topic(&ctx.server, name);
+
+        if let Some(key) = ctx.server.channel_key(&ch_id) {
+            ctx.keys.insert(topic.clone(), key.clone());
+        }
+        storage::save_server(&ctx.server, &ctx.keys);
 
         let ch_id_str = ch_id.to_string();
-        self.state
-            .server
-            .topic_map
+        ctx.topic_map
             .insert(topic.clone(), (name.to_string(), ch_id));
 
         let _ = self.cmd_tx.send(network::NetworkCommand::Subscribe(topic));
@@ -693,9 +772,12 @@ impl Client {
 
     /// Delete a channel.
     pub fn delete_channel(&mut self, name: &str) -> anyhow::Result<()> {
-        let Some((topic, (_ch_name, ch_id))) = self
+        let ctx = self
             .state
-            .server
+            .active_mut()
+            .ok_or_else(|| anyhow::anyhow!("no active server"))?;
+
+        let Some((topic, (_ch_name, ch_id))) = ctx
             .topic_map
             .iter()
             .find(|(_, (n, _))| n == name)
@@ -704,19 +786,18 @@ impl Client {
             anyhow::bail!("channel not found");
         };
 
-        {
-            let Some(server) = &mut self.state.server.server else {
-                anyhow::bail!("no server");
-            };
-            server.delete_channel(&ch_id)?;
-            storage::save_server(server, &self.state.key_store.keys);
-        }
+        ctx.server.delete_channel(&ch_id)?;
+        storage::save_server(&ctx.server, &ctx.keys);
 
-        self.state.server.topic_map.remove(&topic);
-        self.state.key_store.keys.remove(&topic);
+        ctx.topic_map.remove(&topic);
+        ctx.keys.remove(&topic);
 
         if self.state.chat.current_channel == name {
-            let names = self.state.server.channel_names();
+            let names = self
+                .state
+                .active()
+                .map(|ctx| ctx.channel_names())
+                .unwrap_or_default();
             self.state.chat.current_channel = names.first().cloned().unwrap_or_default();
             self.state.chat.messages_dirty = true;
         }
@@ -744,31 +825,30 @@ impl Client {
 
     /// Kick a member, rotating channel keys.
     pub fn kick_member(&mut self, peer_id: &str) -> anyhow::Result<()> {
-        let rotated = {
-            let Some(server) = &mut self.state.server.server else {
-                anyhow::bail!("no server");
-            };
+        let ctx = self
+            .state
+            .active_mut()
+            .ok_or_else(|| anyhow::anyhow!("no active server"))?;
 
-            let member_peer = server
-                .members()
-                .iter()
-                .find(|m| m.peer_id.to_string() == peer_id)
-                .map(|m| m.peer_id.clone());
+        let member_peer = ctx
+            .server
+            .members()
+            .iter()
+            .find(|m| m.peer_id.to_string() == peer_id)
+            .map(|m| m.peer_id.clone());
 
-            let Some(peer) = member_peer else {
-                anyhow::bail!("peer not found in server members");
-            };
-
-            let new_keys = server.remove_member(&peer)?;
-            storage::save_server(server, &self.state.key_store.keys);
-            new_keys
+        let Some(peer) = member_peer else {
+            anyhow::bail!("peer not found in server members");
         };
+
+        let rotated = ctx.server.remove_member(&peer)?;
+        storage::save_server(&ctx.server, &ctx.keys);
 
         // Update key store with rotated keys.
         for (ch_id, key) in &rotated {
-            for (topic, (_, tid)) in &self.state.server.topic_map {
+            for (topic, (_, tid)) in &ctx.topic_map {
                 if tid == ch_id {
-                    self.state.key_store.keys.insert(topic.clone(), key.clone());
+                    ctx.keys.insert(topic.clone(), key.clone());
                     break;
                 }
             }
@@ -778,12 +858,12 @@ impl Client {
 
         // Encrypt rotated keys for remaining members.
         let mut rotated_key_entries = Vec::new();
-        if let Some(server) = &self.state.server.server {
-            for member in server.members() {
+        if let Some(ctx) = self.state.active() {
+            for member in ctx.server.members() {
                 let peer_str = member.peer_id.to_string();
                 if let Some(pub_key) = invite::peer_id_to_ed25519_public(&peer_str) {
                     for (ch_id, key) in &rotated {
-                        for (topic, (_, tid)) in &self.state.server.topic_map {
+                        for (topic, (_, tid)) in &ctx.topic_map {
                             if tid == ch_id {
                                 if let Ok(enc) =
                                     willow_crypto::encrypt_channel_key_for(key, &pub_key)
@@ -815,11 +895,12 @@ impl Client {
         let role_id = willow_channel::RoleId::new();
         let role = willow_channel::Role::with_id(role_id.clone(), name);
 
-        let Some(server) = &mut self.state.server.server else {
-            anyhow::bail!("no server");
-        };
-        server.create_role(role);
-        storage::save_server(server, &self.state.key_store.keys);
+        let ctx = self
+            .state
+            .active_mut()
+            .ok_or_else(|| anyhow::anyhow!("no active server"))?;
+        ctx.server.create_role(role);
+        storage::save_server(&ctx.server, &ctx.keys);
 
         self.broadcast_op(Op::CreateRole {
             name: name.to_string(),
@@ -833,11 +914,12 @@ impl Client {
     pub fn delete_role(&mut self, role_id: &str) -> anyhow::Result<()> {
         let rid = willow_channel::RoleId(uuid::Uuid::parse_str(role_id).unwrap_or_default());
 
-        let Some(server) = &mut self.state.server.server else {
-            anyhow::bail!("no server");
-        };
-        server.delete_role(&rid)?;
-        storage::save_server(server, &self.state.key_store.keys);
+        let ctx = self
+            .state
+            .active_mut()
+            .ok_or_else(|| anyhow::anyhow!("no active server"))?;
+        ctx.server.delete_role(&rid)?;
+        storage::save_server(&ctx.server, &ctx.keys);
 
         self.broadcast_op(Op::DeleteRole {
             role_id: role_id.to_string(),
@@ -856,11 +938,12 @@ impl Client {
         let rid = willow_channel::RoleId(uuid::Uuid::parse_str(role_id).unwrap_or_default());
         let perm = parse_permission(permission)?;
 
-        let Some(server) = &mut self.state.server.server else {
-            anyhow::bail!("no server");
-        };
-        server.set_permission(&rid, perm, granted)?;
-        storage::save_server(server, &self.state.key_store.keys);
+        let ctx = self
+            .state
+            .active_mut()
+            .ok_or_else(|| anyhow::anyhow!("no active server"))?;
+        ctx.server.set_permission(&rid, perm, granted)?;
+        storage::save_server(&ctx.server, &ctx.keys);
 
         self.broadcast_op(Op::SetPermission {
             role_id: role_id.to_string(),
@@ -875,11 +958,13 @@ impl Client {
     pub fn assign_role(&mut self, peer_id: &str, role_id: &str) -> anyhow::Result<()> {
         let rid = willow_channel::RoleId(uuid::Uuid::parse_str(role_id).unwrap_or_default());
 
-        let Some(server) = &mut self.state.server.server else {
-            anyhow::bail!("no server");
-        };
+        let ctx = self
+            .state
+            .active_mut()
+            .ok_or_else(|| anyhow::anyhow!("no active server"))?;
 
-        let member_peer = server
+        let member_peer = ctx
+            .server
             .members()
             .iter()
             .find(|m| m.peer_id.to_string() == peer_id)
@@ -889,8 +974,8 @@ impl Client {
             anyhow::bail!("peer not found");
         };
 
-        server.assign_role(&peer, &rid)?;
-        storage::save_server(server, &self.state.key_store.keys);
+        ctx.server.assign_role(&peer, &rid)?;
+        storage::save_server(&ctx.server, &ctx.keys);
 
         self.broadcast_op(Op::AssignRole {
             peer_id: peer_id.to_string(),
@@ -906,17 +991,13 @@ impl Client {
             anyhow::bail!("invalid recipient PeerId");
         };
 
-        let Some(server) = &self.state.server.server else {
-            anyhow::bail!("no server");
-        };
+        let ctx = self
+            .state
+            .active()
+            .ok_or_else(|| anyhow::anyhow!("no active server"))?;
 
-        invite::generate_invite(
-            server,
-            &self.state.key_store.keys,
-            &self.state.server.topic_map,
-            &pub_key,
-        )
-        .ok_or_else(|| anyhow::anyhow!("invite generation failed"))
+        invite::generate_invite(&ctx.server, &ctx.keys, &ctx.topic_map, &pub_key)
+            .ok_or_else(|| anyhow::anyhow!("invite generation failed"))
     }
 
     /// Accept an invite code and join the server.
@@ -924,28 +1005,63 @@ impl Client {
         let accepted = invite::accept_invite(code, &self.identity)
             .ok_or_else(|| anyhow::anyhow!("invalid invite code or not for us"))?;
 
-        for (topic, (name, key)) in &accepted.channel_keys {
-            self.state.key_store.keys.insert(topic.clone(), key.clone());
+        let server_id = accepted.server_id.clone();
 
-            if !self.state.server.topic_map.contains_key(topic) {
-                self.state.server.topic_map.insert(
+        // Check if we already have this server.
+        if let Some(ctx) = self.state.servers.get_mut(&server_id) {
+            // Merge new channel keys into existing server context.
+            for (topic, (name, key)) in &accepted.channel_keys {
+                ctx.keys.insert(topic.clone(), key.clone());
+                if !ctx.topic_map.contains_key(topic) {
+                    ctx.topic_map.insert(
+                        topic.clone(),
+                        (name.clone(), willow_channel::ChannelId::new()),
+                    );
+                }
+                let _ = self
+                    .cmd_tx
+                    .send(network::NetworkCommand::Subscribe(topic.clone()));
+            }
+        } else {
+            // Create a new server context for this server.
+            let server =
+                willow_channel::Server::new(&accepted.server_name, self.identity.peer_id());
+
+            let mut topic_map = HashMap::new();
+            let mut keys = HashMap::new();
+
+            for (topic, (name, key)) in &accepted.channel_keys {
+                keys.insert(topic.clone(), key.clone());
+                topic_map.insert(
                     topic.clone(),
                     (name.clone(), willow_channel::ChannelId::new()),
                 );
+                let _ = self
+                    .cmd_tx
+                    .send(network::NetworkCommand::Subscribe(topic.clone()));
             }
 
-            let _ = self
-                .cmd_tx
-                .send(network::NetworkCommand::Subscribe(topic.clone()));
+            let ctx = ServerContext {
+                server,
+                topic_map,
+                keys,
+                op_log: OpLog::default(),
+                unread: HashMap::new(),
+            };
+
+            self.state.servers.insert(server_id.clone(), ctx);
         }
+
+        self.state.active_server = Some(server_id);
 
         if let Some((_, (name, _))) = accepted.channel_keys.iter().next() {
             self.state.chat.current_channel = name.clone();
             self.state.chat.messages_dirty = true;
         }
 
-        if let Some(server) = &self.state.server.server {
-            storage::save_server(server, &self.state.key_store.keys);
+        // Save the active server.
+        if let Some(ctx) = self.state.active() {
+            storage::save_server(&ctx.server, &ctx.keys);
         }
 
         Ok(())
@@ -971,8 +1087,10 @@ impl Client {
             self.state.chat.current_channel = name.to_string();
             self.state.chat.messages_dirty = true;
 
-            if let Some(topic) = self.state.server.topic_for_name(name) {
-                self.state.unread.counts.remove(&topic);
+            if let Some(ctx) = self.state.active_mut() {
+                if let Some(topic) = ctx.topic_for_name(name) {
+                    ctx.unread.remove(&topic);
+                }
             }
         }
     }
@@ -999,24 +1117,26 @@ impl Client {
         self.state.profiles.display_name(peer_id)
     }
 
-    /// Get messages for a channel, filtered by topic.
+    /// Get messages for a channel, filtered by active server and topic.
     pub fn messages(&self, channel: &str) -> Vec<&ChatMessage> {
-        let topic = self
-            .state
-            .server
-            .topic_for_name(channel)
-            .unwrap_or_default();
+        let Some(server_id) = &self.state.active_server else {
+            return vec![];
+        };
+        let Some(ctx) = self.state.servers.get(server_id) else {
+            return vec![];
+        };
+        let topic = ctx.topic_for_name(channel).unwrap_or_default();
         self.state
             .chat
             .messages
             .iter()
-            .filter(|m| m.topic == topic)
+            .filter(|m| m.server_id == *server_id && m.topic == topic)
             .collect()
     }
 
-    /// List all channel names.
+    /// List all channel names for the active server.
     pub fn channels(&self) -> Vec<String> {
-        self.state.server.channel_names()
+        self.state.channel_names()
     }
 
     /// Get the list of connected peers.
@@ -1035,8 +1155,10 @@ impl Client {
     fn broadcast_op(&mut self, op: Op) {
         let peer_id_str = self.identity.peer_id().to_string();
         let stamped = StampedOp::new(op, &mut self.state.chat.hlc, &peer_id_str);
-        self.state.op_log.record(stamped.clone());
-        storage::save_op_log(&self.state.op_log.ops);
+        if let Some(ctx) = self.state.active_mut() {
+            ctx.op_log.record(stamped.clone());
+            storage::save_op_log(&ctx.op_log.ops);
+        }
         let _ = self
             .cmd_tx
             .send(network::NetworkCommand::BroadcastOp(stamped));
@@ -1050,11 +1172,14 @@ impl Client {
         body: &str,
         reply_preview: Option<String>,
     ) -> anyhow::Result<()> {
-        let topic = self
+        let ctx = self
             .state
-            .server
+            .active()
+            .ok_or_else(|| anyhow::anyhow!("no active server"))?;
+        let topic = ctx
             .topic_for_name(channel)
             .unwrap_or_else(|| channel.to_string());
+        let server_id = self.state.active_server.clone().unwrap_or_default();
 
         let wire_content = self.encrypt_content(&content, &topic);
         let content_data = willow_transport::pack(&wire_content).unwrap_or_default();
@@ -1069,7 +1194,9 @@ impl Client {
             &peer_id_str,
         );
 
-        self.state.op_log.record(stamped.clone());
+        if let Some(ctx) = self.state.active_mut() {
+            ctx.op_log.record(stamped.clone());
+        }
 
         // Persist the stamped op for catch-up sync.
         if let Some(ref db_arc) = self.state.message_db {
@@ -1085,8 +1212,14 @@ impl Client {
         // Add to local display.
         let author = self.state.profiles.display_name(&peer_id_str);
         let ts = stamped.hlc.millis;
-        let mut chat_msg =
-            ChatMessage::new(topic.clone(), author.clone(), body.to_string(), true, ts);
+        let mut chat_msg = ChatMessage::new(
+            server_id,
+            topic.clone(),
+            author.clone(),
+            body.to_string(),
+            true,
+            ts,
+        );
         chat_msg.id = stamped.op_id.clone();
         chat_msg.reply_preview = reply_preview;
 
@@ -1111,7 +1244,8 @@ impl Client {
 
     /// Encrypt content if a channel key exists for the topic.
     fn encrypt_content(&self, content: &Content, topic: &str) -> Content {
-        if let Some(key) = self.state.key_store.keys.get(topic) {
+        let key = self.state.active().and_then(|ctx| ctx.keys.get(topic));
+        if let Some(key) = key {
             if let Ok(sealed) = willow_crypto::seal_content(content, key, 0) {
                 return Content::Encrypted(sealed);
             }
@@ -1120,14 +1254,16 @@ impl Client {
     }
 
     /// Called when we first hear from the network (Listening or PeerConnected).
-    /// Subscribes to all channel topics, profile topic, server ops topic,
-    /// broadcasts profile, and requests sync.
+    /// Subscribes to all channel topics for ALL servers, profile topic,
+    /// server ops topic, broadcasts profile, and requests sync.
     fn on_connected(&self) {
-        // Subscribe to all channel topics.
-        for topic in self.state.server.topic_map.keys() {
-            let _ = self
-                .cmd_tx
-                .send(network::NetworkCommand::Subscribe(topic.clone()));
+        // Subscribe to all channel topics across all servers.
+        for ctx in self.state.servers.values() {
+            for topic in ctx.topic_map.keys() {
+                let _ = self
+                    .cmd_tx
+                    .send(network::NetworkCommand::Subscribe(topic.clone()));
+            }
         }
 
         // Subscribe to the global profile broadcast topic.
@@ -1148,18 +1284,25 @@ impl Client {
             });
         }
 
-        // Request missing server ops.
+        // Request missing server ops from the active server.
+        let latest_hlc = self
+            .state
+            .active()
+            .map(|ctx| ctx.op_log.latest_hlc())
+            .unwrap_or(willow_messaging::hlc::HlcTimestamp::ZERO);
         let _ = self.cmd_tx.send(network::NetworkCommand::RequestSync {
-            latest_hlc: self.state.op_log.latest_hlc(),
+            latest_hlc,
             topic: None,
         });
 
-        // Request chat history for each channel.
-        for topic in self.state.server.topic_map.keys() {
-            let _ = self.cmd_tx.send(network::NetworkCommand::RequestSync {
-                latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
-                topic: Some(topic.clone()),
-            });
+        // Request chat history for each channel across all servers.
+        for ctx in self.state.servers.values() {
+            for topic in ctx.topic_map.keys() {
+                let _ = self.cmd_tx.send(network::NetworkCommand::RequestSync {
+                    latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
+                    topic: Some(topic.clone()),
+                });
+            }
         }
     }
 }
@@ -1210,14 +1353,31 @@ pub(crate) fn test_client() -> (Client, std::sync::mpsc::Receiver<network::Netwo
         .create_channel("general", willow_channel::ChannelKind::Text)
         .unwrap();
     let topic = util::make_topic(&server, "general");
+
+    let server_id = server.id.to_string();
+    let mut topic_map = HashMap::new();
+    let mut keys = HashMap::new();
+
     if let Some(key) = server.channel_key(&ch_id) {
-        state.key_store.keys.insert(topic.clone(), key.clone());
+        keys.insert(topic.clone(), key.clone());
     }
-    state
-        .server
-        .topic_map
-        .insert(topic, ("general".to_string(), ch_id));
-    state.server.server = Some(server);
+    topic_map.insert(topic, ("general".to_string(), ch_id));
+
+    // Also populate legacy fields.
+    state.server.topic_map = topic_map.clone();
+    state.key_store.keys = keys.clone();
+    state.server.server = Some(server.clone());
+
+    let ctx = ServerContext {
+        server,
+        topic_map,
+        keys,
+        op_log: OpLog::default(),
+        unread: HashMap::new(),
+    };
+
+    state.servers.insert(server_id.clone(), ctx);
+    state.active_server = Some(server_id);
 
     let client = Client {
         state,
@@ -1453,5 +1613,177 @@ mod tests {
         // Verify recipient can accept.
         let accepted = invite::accept_invite(&code, &recipient).unwrap();
         assert!(!accepted.channel_keys.is_empty());
+    }
+
+    // ───── Multi-server tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_switch_server() {
+        let (mut client, _rx) = test_client();
+
+        // Create a second server context.
+        let server2 = willow_channel::Server::new("Second Server", client.identity.peer_id());
+        let server2_id = server2.id.to_string();
+        let ctx2 = ServerContext {
+            server: server2,
+            topic_map: HashMap::new(),
+            keys: HashMap::new(),
+            op_log: OpLog::default(),
+            unread: HashMap::new(),
+        };
+        client.state.servers.insert(server2_id.clone(), ctx2);
+
+        let original_id = client.state.active_server.clone().unwrap();
+        assert_ne!(original_id, server2_id);
+
+        client.switch_server(&server2_id);
+        assert_eq!(
+            client.state.active_server.as_deref(),
+            Some(server2_id.as_str())
+        );
+
+        // Switch back.
+        client.switch_server(&original_id);
+        assert_eq!(
+            client.state.active_server.as_deref(),
+            Some(original_id.as_str())
+        );
+
+        // Switch to non-existent server does nothing.
+        client.switch_server("non-existent");
+        assert_eq!(
+            client.state.active_server.as_deref(),
+            Some(original_id.as_str())
+        );
+    }
+
+    #[test]
+    fn test_accept_invite_creates_new_server() {
+        let (mut client, _rx) = test_client();
+        let initial_count = client.state.servers.len();
+        assert_eq!(initial_count, 1);
+
+        // Create a second identity (the "owner" of the other server).
+        let owner = Identity::generate();
+        let mut owner_server = willow_channel::Server::new("Other Server", owner.peer_id());
+        let ch_id = owner_server
+            .create_channel("lobby", willow_channel::ChannelKind::Text)
+            .unwrap();
+
+        let mut keys = HashMap::new();
+        let mut topic_map = HashMap::new();
+        let topic = format!("{}/lobby", owner_server.id);
+        if let Some(key) = owner_server.channel_key(&ch_id) {
+            keys.insert(topic.clone(), key.clone());
+        }
+        topic_map.insert(topic, ("lobby".into(), ch_id));
+
+        // Generate invite for our client.
+        let our_pub = {
+            let ed_kp = client
+                .identity
+                .keypair()
+                .clone()
+                .try_into_ed25519()
+                .unwrap();
+            let full = ed_kp.to_bytes();
+            let mut pub_bytes = [0u8; 32];
+            pub_bytes.copy_from_slice(&full[32..]);
+            pub_bytes
+        };
+        let code = invite::generate_invite(&owner_server, &keys, &topic_map, &our_pub).unwrap();
+
+        // Accept the invite.
+        client.accept_invite(&code).unwrap();
+
+        // Should now have 2 servers.
+        assert_eq!(client.state.servers.len(), 2);
+
+        // Active server should be the new one.
+        let active_id = client.state.active_server.clone().unwrap();
+        let new_ctx = client.state.servers.get(&active_id).unwrap();
+        assert!(!new_ctx.keys.is_empty());
+    }
+
+    #[test]
+    fn test_messages_filtered_by_server() {
+        let (mut client, _rx) = test_client();
+
+        // Send a message on server 1.
+        client.send_message("general", "server1 msg").unwrap();
+
+        let server1_id = client.state.active_server.clone().unwrap();
+
+        // Create a second server context with a "general" channel.
+        let server2 = willow_channel::Server::new("Server 2", client.identity.peer_id());
+        let server2_id = server2.id.to_string();
+        let topic2 = util::make_topic(&server2, "general");
+        let mut topic_map2 = HashMap::new();
+        topic_map2.insert(
+            topic2.clone(),
+            ("general".to_string(), willow_channel::ChannelId::new()),
+        );
+        let ctx2 = ServerContext {
+            server: server2,
+            topic_map: topic_map2,
+            keys: HashMap::new(),
+            op_log: OpLog::default(),
+            unread: HashMap::new(),
+        };
+        client.state.servers.insert(server2_id.clone(), ctx2);
+
+        // Add a message that belongs to server 2.
+        client.state.chat.messages.push(ChatMessage::new(
+            server2_id.clone(),
+            topic2,
+            "Bob".to_string(),
+            "server2 msg".to_string(),
+            false,
+            1000,
+        ));
+
+        // When viewing server 1, only see server 1 messages.
+        client.switch_server(&server1_id);
+        let msgs = client.messages("general");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].body, "server1 msg");
+
+        // When viewing server 2, only see server 2 messages.
+        client.switch_server(&server2_id);
+        let msgs = client.messages("general");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].body, "server2 msg");
+    }
+
+    #[test]
+    fn test_server_list() {
+        let (mut client, _rx) = test_client();
+
+        let list = client.server_list();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].1, "Test Server");
+
+        // Add a second server.
+        let server2 = willow_channel::Server::new("Second", client.identity.peer_id());
+        let server2_id = server2.id.to_string();
+        client.state.servers.insert(
+            server2_id,
+            ServerContext {
+                server: server2,
+                topic_map: HashMap::new(),
+                keys: HashMap::new(),
+                op_log: OpLog::default(),
+                unread: HashMap::new(),
+            },
+        );
+
+        let list = client.server_list();
+        assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn test_active_server_name() {
+        let (client, _rx) = test_client();
+        assert_eq!(client.active_server_name(), "Test Server");
     }
 }

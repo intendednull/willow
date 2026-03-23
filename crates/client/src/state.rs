@@ -15,7 +15,51 @@ pub const MAX_MESSAGES_IN_MEMORY: usize = 1000;
 /// The default channel name used when no channels exist.
 pub const DEFAULT_CHANNEL: &str = "general";
 
+/// All state for a single server.
+pub struct ServerContext {
+    /// The channel server instance.
+    pub server: Server,
+    /// Maps gossipsub topic -> (channel_name, channel_id) for display + key lookup.
+    pub topic_map: HashMap<String, (String, willow_channel::ChannelId)>,
+    /// Per-channel encryption keys, keyed by topic.
+    pub keys: HashMap<String, ChannelKey>,
+    /// Operation log for this server (dedup, trust, op history).
+    pub op_log: OpLog,
+    /// Unread message counts per channel topic.
+    pub unread: HashMap<String, usize>,
+}
+
+impl ServerContext {
+    /// Get the gossipsub topic for a channel by name.
+    pub fn topic_for_name(&self, name: &str) -> Option<String> {
+        self.topic_map
+            .iter()
+            .find(|(_, (n, _))| n == name)
+            .map(|(topic, _)| topic.clone())
+    }
+
+    /// Get the channel name for a gossipsub topic.
+    pub fn name_for_topic(&self, topic: &str) -> Option<&str> {
+        self.topic_map.get(topic).map(|(name, _)| name.as_str())
+    }
+
+    /// List all channel names in sidebar order.
+    pub fn channel_names(&self) -> Vec<String> {
+        let mut names: Vec<_> = self
+            .server
+            .channels()
+            .iter()
+            .map(|ch| ch.name.clone())
+            .collect();
+        names.sort();
+        names
+    }
+}
+
 /// The local server instance. Each peer auto-creates a server on first launch.
+///
+/// Kept for backward compatibility. New code should use [`ServerContext`] via
+/// `ClientState::servers`.
 #[derive(Default)]
 pub struct ServerState {
     pub server: Option<Server>,
@@ -84,6 +128,8 @@ impl ChatState {
 /// A single chat message with metadata.
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
+    /// The server this message belongs to.
+    pub server_id: String,
     /// The gossipsub topic this message belongs to.
     pub topic: String,
     /// Unique ID for this message (for reactions/edit/delete to target).
@@ -105,6 +151,7 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     pub fn new(
+        server_id: String,
         topic: String,
         author: String,
         body: String,
@@ -112,6 +159,7 @@ impl ChatMessage {
         timestamp_ms: u64,
     ) -> Self {
         Self {
+            server_id,
             topic,
             id: uuid::Uuid::new_v4().to_string(),
             author,
@@ -218,38 +266,85 @@ impl ProfileStore {
 pub struct ClientState {
     /// Chat messages, current channel, peers, and HLC clock.
     pub chat: ChatState,
-    /// The local server instance and topic map.
-    pub server: ServerState,
-    /// Ordered log of server operations.
-    pub op_log: OpLog,
-    /// Per-channel symmetric encryption keys.
-    pub key_store: ChannelKeyStore,
-    /// Peer display names.
+    /// All servers, keyed by ServerId string.
+    pub servers: HashMap<String, ServerContext>,
+    /// Currently active server ID.
+    pub active_server: Option<String>,
+    /// Peer display names (global across all servers).
     pub profiles: ProfileStore,
-    /// Unread message counts per channel.
-    pub unread: UnreadCounts,
     /// Emoji shortcode expansion registry.
     pub emoji: crate::emoji::EmojiRegistry,
     /// Persistent message database (native-only SQLite, WASM localStorage).
     pub message_db: Option<std::sync::Arc<std::sync::Mutex<crate::storage::MessageDb>>>,
+
+    // --- Legacy fields kept for backward compatibility with willow-app ---
+    /// The local server instance and topic map (legacy, prefer `servers`).
+    pub server: ServerState,
+    /// Ordered log of server operations (legacy, prefer per-server op_log).
+    pub op_log: OpLog,
+    /// Per-channel symmetric encryption keys (legacy, prefer per-server keys).
+    pub key_store: ChannelKeyStore,
+    /// Unread message counts per channel (legacy, prefer per-server unread).
+    pub unread: UnreadCounts,
 }
 
 impl Default for ClientState {
     fn default() -> Self {
         Self {
             chat: ChatState::default(),
+            servers: HashMap::new(),
+            active_server: None,
+            profiles: ProfileStore::default(),
+            emoji: crate::emoji::EmojiRegistry::new(),
+            message_db: None,
             server: ServerState::default(),
             op_log: OpLog::default(),
             key_store: ChannelKeyStore::default(),
-            profiles: ProfileStore::default(),
             unread: UnreadCounts::default(),
-            emoji: crate::emoji::EmojiRegistry::new(),
-            message_db: None,
         }
     }
 }
 
 impl ClientState {
+    /// Get the active server context (if any).
+    pub fn active(&self) -> Option<&ServerContext> {
+        self.active_server
+            .as_ref()
+            .and_then(|id| self.servers.get(id))
+    }
+
+    /// Get the active server context mutably.
+    pub fn active_mut(&mut self) -> Option<&mut ServerContext> {
+        self.active_server
+            .as_ref()
+            .and_then(|id| self.servers.get_mut(id))
+    }
+
+    /// Channel names for the active server.
+    pub fn channel_names(&self) -> Vec<String> {
+        self.active()
+            .map(|ctx| ctx.channel_names())
+            .unwrap_or_default()
+    }
+
+    /// List all server IDs and names.
+    pub fn server_list(&self) -> Vec<(String, String)> {
+        self.servers
+            .iter()
+            .map(|(id, ctx)| (id.clone(), ctx.server.name.clone()))
+            .collect()
+    }
+
+    /// Find which server owns a given topic.
+    pub fn find_server_for_topic(&self, topic: &str) -> Option<&str> {
+        for (id, ctx) in &self.servers {
+            if ctx.topic_map.contains_key(topic) {
+                return Some(id);
+            }
+        }
+        None
+    }
+
     /// Apply a remote server operation to local state.
     ///
     /// Returns `true` if the op was new and accepted (not deduplicated or
@@ -265,22 +360,21 @@ impl ClientState {
     ) -> bool {
         use crate::ops::Op;
 
+        let Some(ctx) = self.active_mut() else {
+            return false;
+        };
+
         // Dedup: skip if we've already seen this op.
-        if self.op_log.seen_ids.contains(&stamped.op_id) {
+        if ctx.op_log.seen_ids.contains(&stamped.op_id) {
             return false;
         }
 
         // Trust check: only for non-chat ops (server state mutations).
         let needs_trust = !matches!(stamped.op, Op::ChatMessage { .. });
         if needs_trust {
-            let owner = self
-                .server
-                .server
-                .as_ref()
-                .map(|s| s.owner.to_string())
-                .unwrap_or_default();
-            if !self.op_log.is_trusted(from, &owner) {
-                self.op_log.seen_ids.insert(stamped.op_id.clone());
+            let owner = ctx.server.owner.to_string();
+            if !ctx.op_log.is_trusted(from, &owner) {
+                ctx.op_log.seen_ids.insert(stamped.op_id.clone());
                 return false;
             }
         }
@@ -288,127 +382,116 @@ impl ClientState {
         // Advance local HLC.
         self.chat.hlc.receive(stamped.hlc);
 
+        // Re-borrow after HLC update.
+        let ctx = self.active_mut().unwrap();
+
         // Record (chat messages go to seen_ids only, not ops).
-        self.op_log.record(stamped.clone());
+        ctx.op_log.record(stamped.clone());
 
         // Persist op log only for server ops (not chat messages).
         if needs_trust {
-            crate::storage::save_op_log(&self.op_log.ops);
+            crate::storage::save_op_log(&ctx.op_log.ops);
         }
+
+        // Cache the active server id for later use.
+        let active_id = self.active_server.clone().unwrap_or_default();
 
         match &stamped.op {
             Op::CreateChannel { name, channel_id } => {
-                let info = {
-                    let Some(server) = &mut self.server.server else {
-                        return true;
-                    };
-                    if server.channels().iter().any(|ch| ch.name == *name) {
-                        return true;
-                    }
-                    let ch_uuid =
-                        uuid::Uuid::parse_str(channel_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
-                    let ch_id = willow_channel::ChannelId(ch_uuid);
-                    let Ok(ch_id) = server.create_channel_with_id(
-                        ch_id,
-                        name,
-                        willow_channel::ChannelKind::Text,
-                    ) else {
-                        return true;
-                    };
-                    let topic = crate::util::make_topic(server, name);
-                    let key = server.channel_key(&ch_id).cloned();
-                    (topic, ch_id, key)
+                let ctx = self.servers.get_mut(&active_id).unwrap();
+                if ctx.server.channels().iter().any(|ch| ch.name == *name) {
+                    return true;
+                }
+                let ch_uuid =
+                    uuid::Uuid::parse_str(channel_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+                let ch_id = willow_channel::ChannelId(ch_uuid);
+                let Ok(ch_id) = ctx.server.create_channel_with_id(
+                    ch_id,
+                    name,
+                    willow_channel::ChannelKind::Text,
+                ) else {
+                    return true;
                 };
-                let (topic, ch_id, key) = info;
-                if let Some(k) = key {
-                    self.key_store.keys.insert(topic.clone(), k);
+                let topic = crate::util::make_topic(&ctx.server, name);
+                if let Some(key) = ctx.server.channel_key(&ch_id).cloned() {
+                    ctx.keys.insert(topic.clone(), key);
                 }
-                self.server
-                    .topic_map
-                    .insert(topic.clone(), (name.clone(), ch_id));
-                if let Some(server) = &self.server.server {
-                    crate::storage::save_server(server, &self.key_store.keys);
-                }
+                ctx.topic_map.insert(topic.clone(), (name.clone(), ch_id));
+                crate::storage::save_server(&ctx.server, &ctx.keys);
                 let _ = cmd_tx.send(crate::network::NetworkCommand::Subscribe(topic));
             }
             Op::DeleteChannel { name } => {
-                let to_remove = self
-                    .server
+                let ctx = self.servers.get_mut(&active_id).unwrap();
+                let to_remove = ctx
                     .topic_map
                     .iter()
                     .find(|(_, (n, _))| n == name)
                     .map(|(t, (_, id))| (t.clone(), id.clone()));
 
                 if let Some((topic, ch_id)) = to_remove {
-                    if let Some(server) = &mut self.server.server {
-                        let _ = server.delete_channel(&ch_id);
-                        crate::storage::save_server(server, &self.key_store.keys);
-                    }
-                    self.server.topic_map.remove(&topic);
-                    self.key_store.keys.remove(&topic);
+                    let _ = ctx.server.delete_channel(&ch_id);
+                    crate::storage::save_server(&ctx.server, &ctx.keys);
+                    ctx.topic_map.remove(&topic);
+                    ctx.keys.remove(&topic);
 
                     if self.chat.current_channel == *name {
-                        let names = self.server.channel_names();
+                        let names = self.servers.get(&active_id).unwrap().channel_names();
                         self.chat.current_channel = names.first().cloned().unwrap_or_default();
                         self.chat.messages_dirty = true;
                     }
                 }
             }
             Op::CreateRole { name, role_id } => {
-                if let Some(server) = &mut self.server.server {
-                    if !server.roles().iter().any(|r| r.name == *name) {
-                        let rid = willow_channel::RoleId(
-                            uuid::Uuid::parse_str(role_id).unwrap_or_default(),
-                        );
-                        let role = willow_channel::Role::with_id(rid, name);
-                        server.create_role(role);
-                        crate::storage::save_server(server, &self.key_store.keys);
-                    }
+                let ctx = self.servers.get_mut(&active_id).unwrap();
+                if !ctx.server.roles().iter().any(|r| r.name == *name) {
+                    let rid =
+                        willow_channel::RoleId(uuid::Uuid::parse_str(role_id).unwrap_or_default());
+                    let role = willow_channel::Role::with_id(rid, name);
+                    ctx.server.create_role(role);
+                    crate::storage::save_server(&ctx.server, &ctx.keys);
                 }
             }
             Op::DeleteRole { role_id } => {
-                if let Some(server) = &mut self.server.server {
-                    let rid =
-                        willow_channel::RoleId(uuid::Uuid::parse_str(role_id).unwrap_or_default());
-                    let _ = server.delete_role(&rid);
-                    crate::storage::save_server(server, &self.key_store.keys);
-                }
+                let ctx = self.servers.get_mut(&active_id).unwrap();
+                let rid =
+                    willow_channel::RoleId(uuid::Uuid::parse_str(role_id).unwrap_or_default());
+                let _ = ctx.server.delete_role(&rid);
+                crate::storage::save_server(&ctx.server, &ctx.keys);
             }
             Op::SetPermission {
                 role_id,
                 permission,
                 granted,
             } => {
-                if let Some(server) = &mut self.server.server {
-                    let rid =
-                        willow_channel::RoleId(uuid::Uuid::parse_str(role_id).unwrap_or_default());
-                    let perm = match permission.as_str() {
-                        "Administrator" => willow_channel::Permission::Administrator,
-                        "SendMessages" => willow_channel::Permission::SendMessages,
-                        "ReadMessages" => willow_channel::Permission::ReadMessages,
-                        "KickMembers" => willow_channel::Permission::KickMembers,
-                        "CreateInvite" => willow_channel::Permission::CreateInvite,
-                        "AttachFiles" => willow_channel::Permission::AttachFiles,
-                        "ManageChannels" => willow_channel::Permission::ManageChannels,
-                        _ => return true,
-                    };
-                    let _ = server.set_permission(&rid, perm, *granted);
-                    crate::storage::save_server(server, &self.key_store.keys);
-                }
+                let ctx = self.servers.get_mut(&active_id).unwrap();
+                let rid =
+                    willow_channel::RoleId(uuid::Uuid::parse_str(role_id).unwrap_or_default());
+                let perm = match permission.as_str() {
+                    "Administrator" => willow_channel::Permission::Administrator,
+                    "SendMessages" => willow_channel::Permission::SendMessages,
+                    "ReadMessages" => willow_channel::Permission::ReadMessages,
+                    "KickMembers" => willow_channel::Permission::KickMembers,
+                    "CreateInvite" => willow_channel::Permission::CreateInvite,
+                    "AttachFiles" => willow_channel::Permission::AttachFiles,
+                    "ManageChannels" => willow_channel::Permission::ManageChannels,
+                    _ => return true,
+                };
+                let _ = ctx.server.set_permission(&rid, perm, *granted);
+                crate::storage::save_server(&ctx.server, &ctx.keys);
             }
             Op::AssignRole { peer_id, role_id } => {
-                if let Some(server) = &mut self.server.server {
-                    let rid =
-                        willow_channel::RoleId(uuid::Uuid::parse_str(role_id).unwrap_or_default());
-                    let member_peer = server
-                        .members()
-                        .iter()
-                        .find(|m| m.peer_id.to_string() == *peer_id)
-                        .map(|m| m.peer_id.clone());
-                    if let Some(peer) = member_peer {
-                        let _ = server.assign_role(&peer, &rid);
-                        crate::storage::save_server(server, &self.key_store.keys);
-                    }
+                let ctx = self.servers.get_mut(&active_id).unwrap();
+                let rid =
+                    willow_channel::RoleId(uuid::Uuid::parse_str(role_id).unwrap_or_default());
+                let member_peer = ctx
+                    .server
+                    .members()
+                    .iter()
+                    .find(|m| m.peer_id.to_string() == *peer_id)
+                    .map(|m| m.peer_id.clone());
+                if let Some(peer) = member_peer {
+                    let _ = ctx.server.assign_role(&peer, &rid);
+                    crate::storage::save_server(&ctx.server, &ctx.keys);
                 }
             }
             Op::KickMember {
@@ -417,35 +500,31 @@ impl ClientState {
             } => {
                 self.chat.peers.retain(|p| p != peer_id);
 
-                if let Some(server) = &mut self.server.server {
-                    let member_peer = server
-                        .members()
-                        .iter()
-                        .find(|m| m.peer_id.to_string() == *peer_id)
-                        .map(|m| m.peer_id.clone());
-                    if let Some(peer) = member_peer {
-                        let _ = server.remove_member(&peer);
-                    }
+                let ctx = self.servers.get_mut(&active_id).unwrap();
+                let member_peer = ctx
+                    .server
+                    .members()
+                    .iter()
+                    .find(|m| m.peer_id.to_string() == *peer_id)
+                    .map(|m| m.peer_id.clone());
+                if let Some(peer) = member_peer {
+                    let _ = ctx.server.remove_member(&peer);
                 }
 
                 let our_peer_id = identity.peer_id().to_string();
                 for (recipient, topic, encrypted) in rotated_keys {
                     if *recipient == our_peer_id {
                         if let Ok(key) = willow_crypto::decrypt_channel_key(encrypted, identity) {
-                            self.key_store.keys.insert(topic.clone(), key.clone());
-                            let ch_id = self.server.topic_map.get(topic).map(|(_, id)| id.clone());
-                            if let (Some(ch_id), Some(server)) =
-                                (ch_id, self.server.server.as_mut())
-                            {
-                                server.set_channel_key(ch_id, key);
+                            ctx.keys.insert(topic.clone(), key.clone());
+                            let ch_id = ctx.topic_map.get(topic).map(|(_, id)| id.clone());
+                            if let Some(ch_id) = ch_id {
+                                ctx.server.set_channel_key(ch_id, key);
                             }
                         }
                     }
                 }
 
-                if let Some(server) = &self.server.server {
-                    crate::storage::save_server(server, &self.key_store.keys);
-                }
+                crate::storage::save_server(&ctx.server, &ctx.keys);
             }
             Op::TrustPeer { .. } | Op::UntrustPeer { .. } => {
                 // Trust changes are handled by OpLog::record above.
@@ -469,6 +548,13 @@ impl ClientState {
         hlc_millis: u64,
         stamped: &crate::ops::StampedOp,
     ) {
+        // Determine which server this topic belongs to.
+        let server_id = self
+            .find_server_for_topic(topic)
+            .map(|s| s.to_string())
+            .or_else(|| self.active_server.clone())
+            .unwrap_or_default();
+
         // Store the stamped op for catch-up sync.
         if let Some(ref db_arc) = self.message_db {
             if let Ok(db_lock) = db_arc.lock() {
@@ -481,13 +567,18 @@ impl ClientState {
             return;
         };
 
-        // Decrypt if encrypted.
+        // Decrypt if encrypted -- look up key from the correct server context.
+        let key = self
+            .servers
+            .get(&server_id)
+            .and_then(|ctx| ctx.keys.get(topic).cloned());
+
         let content = match &content {
             willow_messaging::Content::Encrypted(sealed) => {
-                let Some(key) = self.key_store.keys.get(topic) else {
+                let Some(ref k) = key else {
                     return;
                 };
-                match willow_crypto::open_content(sealed, key) {
+                match willow_crypto::open_content(sealed, k) {
                     Ok(c) => c,
                     Err(_) => return,
                 }
@@ -572,8 +663,14 @@ impl ClientState {
                     format!("{}: {text}", m.author)
                 });
 
-            let mut chat_msg =
-                ChatMessage::new(topic.to_string(), author, body.clone(), false, hlc_millis);
+            let mut chat_msg = ChatMessage::new(
+                server_id,
+                topic.to_string(),
+                author,
+                body.clone(),
+                false,
+                hlc_millis,
+            );
             chat_msg.id = op_id.to_string();
             chat_msg.reply_preview = preview;
 
@@ -585,6 +682,7 @@ impl ClientState {
         // Handle text messages.
         if let willow_messaging::Content::Text { ref body } = content {
             let mut chat_msg = ChatMessage::new(
+                server_id.clone(),
                 topic.to_string(),
                 author.clone(),
                 body.clone(),
@@ -605,16 +703,16 @@ impl ClientState {
                 }
             }
 
+            // Update unread counts using the correct server context.
             let current_topic = self
-                .server
-                .topic_for_name(&self.chat.current_channel)
+                .servers
+                .get(&server_id)
+                .and_then(|ctx| ctx.topic_for_name(&self.chat.current_channel))
                 .unwrap_or_default();
             if chat_msg.topic != current_topic {
-                *self
-                    .unread
-                    .counts
-                    .entry(chat_msg.topic.clone())
-                    .or_insert(0) += 1;
+                if let Some(ctx) = self.servers.get_mut(&server_id) {
+                    *ctx.unread.entry(chat_msg.topic.clone()).or_insert(0) += 1;
+                }
             }
 
             self.chat.messages.push(chat_msg);
