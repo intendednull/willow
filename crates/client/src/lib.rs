@@ -1074,18 +1074,23 @@ impl Client {
             }
         } else {
             // Create a new server context for this server.
-            let server =
+            let mut server =
                 willow_channel::Server::new(&accepted.server_name, self.identity.peer_id());
 
             let mut topic_map = HashMap::new();
             let mut keys = HashMap::new();
 
             for (topic, (name, key)) in &accepted.channel_keys {
+                // Create the channel on the server so it appears in channels().
+                let ch_id = server
+                    .create_channel(name, willow_channel::ChannelKind::Text)
+                    .unwrap_or_else(|_| willow_channel::ChannelId::new());
+
+                // Override the generated key with the one from the invite.
+                server.set_channel_key(ch_id.clone(), key.clone());
+
                 keys.insert(topic.clone(), key.clone());
-                topic_map.insert(
-                    topic.clone(),
-                    (name.clone(), willow_channel::ChannelId::new()),
-                );
+                topic_map.insert(topic.clone(), (name.clone(), ch_id));
                 let _ = self
                     .cmd_tx
                     .send(network::NetworkCommand::Subscribe(topic.clone()));
