@@ -85,8 +85,17 @@ pub fn App() -> impl IntoView {
                     ClientEvent::ChannelCreated(_) | ClientEvent::ChannelDeleted(_) => {
                         needs_channel_refresh = true;
                     }
-                    ClientEvent::ProfileUpdated { .. } => {
+                    ClientEvent::ProfileUpdated { ref peer_id, ref display_name } => {
+                        // Update author names on all existing messages from this peer.
+                        for msg in &mut c.state_mut().chat.messages {
+                            if msg.author == *peer_id
+                                || msg.author == willow_client::util::truncate_peer_id(peer_id)
+                            {
+                                msg.author = display_name.clone();
+                            }
+                        }
                         needs_msg_refresh = true;
+                        needs_peer_refresh = true;
                     }
                     _ => {}
                 }

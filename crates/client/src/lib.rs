@@ -397,6 +397,16 @@ impl Client {
                     if !self.connected_subscribed {
                         self.on_connected();
                         self.connected_subscribed = true;
+                    } else {
+                        // Re-broadcast profile so the new peer learns our name.
+                        let saved = storage::load_profile().unwrap_or_default();
+                        if !saved.display_name.is_empty() {
+                            let _ = self.cmd_tx.send(
+                                network::NetworkCommand::BroadcastProfile {
+                                    display_name: saved.display_name,
+                                },
+                            );
+                        }
                     }
                     events.push(ClientEvent::PeerConnected(peer));
                 }
@@ -1171,6 +1181,11 @@ impl Client {
     /// Get a reference to the full client state.
     pub fn state(&self) -> &ClientState {
         &self.state
+    }
+
+    /// Mutable access to the client state.
+    pub fn state_mut(&mut self) -> &mut ClientState {
+        &mut self.state
     }
 
     /// Get the local PeerId as a string.

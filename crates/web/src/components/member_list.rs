@@ -18,10 +18,8 @@ pub fn MemberList(
                 let:peer
             >
                 {
-                    let peer_display = {
-                        let c = client.borrow();
-                        c.peer_display_name(&peer)
-                    };
+                    let peer_display = peer.clone();
+                    let peer_name_client = client.clone();
                     let peer_trust = peer.clone();
                     let peer_untrust = peer.clone();
                     let peer_kick = peer.clone();
@@ -33,7 +31,14 @@ pub fn MemberList(
                     view! {
                         <div class="member-item">
                             <div class="status-dot"></div>
-                            <span class="member-name">{peer_display.clone()}</span>
+                            <span class="member-name">{
+                                let pd = peer_display.clone();
+                                let nc = peer_name_client.clone();
+                                move || {
+                                    let c = nc.borrow();
+                                    c.peer_display_name(&pd)
+                                }
+                            }</span>
                             {
                                 let pb = peer_badge.clone();
                                 let cb = client_badge.clone();
