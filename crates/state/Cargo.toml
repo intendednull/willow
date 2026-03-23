@@ -1,0 +1,12 @@
+[package]
+name = "willow-state"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Pure deterministic event-sourced state machine for the Willow P2P chat network"
+
+[dependencies]
+bincode = { workspace = true }
+serde = { workspace = true }
+sha2 = "0.10"
+uuid = { workspace = true }

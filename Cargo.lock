@@ -9144,6 +9144,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "willow-state"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "serde",
+ "sha2",
+ "uuid",
+]
+
+[[package]]
 name = "willow-transport"
 version = "0.1.0"
 dependencies = [

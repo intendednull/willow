@@ -1,0 +1,72 @@
+//! Pure data types for the event-sourced state machine.
+//!
+//! These types hold the shared state of a server without any UI framework,
+//! networking, or crypto dependency. They are the building blocks of
+//! [`ServerState`](crate::server::ServerState).
+
+use std::collections::{HashMap, HashSet};
+
+use serde::{Deserialize, Serialize};
+
+/// A named conversation space inside a server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Channel {
+    /// Unique ID (UUID string).
+    pub id: String,
+    /// Display name (e.g. "general").
+    pub name: String,
+}
+
+/// A named bundle of permissions that can be assigned to members.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Role {
+    /// Unique ID (UUID string).
+    pub id: String,
+    /// Human-readable name (e.g. "Moderator").
+    pub name: String,
+    /// The set of permission strings this role grants.
+    pub permissions: HashSet<String>,
+}
+
+/// A peer's membership record within a server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Member {
+    /// The peer's ID string.
+    pub peer_id: String,
+    /// Role IDs assigned to this member.
+    pub roles: HashSet<String>,
+    /// Optional display name override.
+    pub display_name: Option<String>,
+}
+
+/// A single chat message with metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatMessage {
+    /// Unique message ID (matches the event ID that created it).
+    pub id: String,
+    /// The channel this message belongs to.
+    pub channel_id: String,
+    /// Author's peer ID.
+    pub author: String,
+    /// Message body text.
+    pub body: String,
+    /// Wall-clock timestamp in milliseconds.
+    pub timestamp_ms: u64,
+    /// Whether this message has been edited.
+    pub edited: bool,
+    /// Whether this message has been soft-deleted.
+    pub deleted: bool,
+    /// Reactions: emoji string -> list of reactor peer IDs.
+    pub reactions: HashMap<String, Vec<String>>,
+    /// If this is a reply, the ID of the parent message.
+    pub reply_to: Option<String>,
+}
+
+/// A peer's display profile.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Profile {
+    /// The peer's ID string.
+    pub peer_id: String,
+    /// Display name.
+    pub display_name: String,
+}
