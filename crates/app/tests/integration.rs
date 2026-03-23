@@ -6,6 +6,10 @@
 //! These tests use localhost TCP with direct dialing for deterministic
 //! peer discovery.
 
+// The integration tests still exercise the legacy Op/StampedOp wire format
+// through the dual-format bridge. Suppress deprecation warnings.
+#![allow(deprecated)]
+
 use std::collections::HashSet;
 use std::time::Duration;
 

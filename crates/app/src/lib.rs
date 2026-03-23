@@ -15,6 +15,11 @@
 //! - [`UiPlugin`](ui::UiPlugin) — top-level layout: sidebar, channel list,
 //!   message area, input, and chat rendering.
 
+// The Bevy app still uses the legacy Op/StampedOp wire format via the
+// dual-format bridge in willow-client. Suppress deprecation warnings until
+// a full migration to the Event-based format is undertaken.
+#![allow(deprecated)]
+
 pub mod clipboard;
 pub mod network_bridge;
 pub mod notify;
@@ -29,6 +34,8 @@ pub use willow_client::files as file_manager;
 pub use willow_client::invite;
 pub use willow_client::ops as server_sync;
 pub use willow_client::storage;
+// Re-export the new Event-based state types for future migration.
+pub use willow_client::willow_state;
 
 #[cfg(test)]
 mod tests;
