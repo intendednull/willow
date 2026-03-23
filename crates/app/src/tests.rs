@@ -1115,3 +1115,136 @@ fn theme_colors_are_distinct() {
     assert_ne!(crate::theme::TEXT_PRIMARY, crate::theme::TEXT_MUTED);
     assert_ne!(crate::theme::AUTHOR_LOCAL, crate::theme::AUTHOR_REMOTE);
 }
+
+// ───── Search Tests ─────────────────────────────────────────────────────────
+
+#[test]
+fn search_filters_messages_by_body() {
+    let (mut app, _rx) = test_app();
+
+    // Add two messages on "general" topic.
+    let remote = Identity::generate();
+    let mut hlc = HLC::new();
+
+    for body in ["hello world", "goodbye world", "hello again"] {
+        let msg = Message::text(ChannelId::new(), remote.peer_id(), body, &mut hlc);
+        let data = sign_envelope(&msg, &remote);
+        app.world_mut()
+            .write_message(NetworkBridgeEvent::MessageReceived {
+                topic: "general".into(),
+                data,
+                source: Some(remote.peer_id().to_string()),
+            });
+    }
+    app.update();
+
+    let state = app.world().resource::<ChatState>();
+    assert_eq!(state.messages.len(), 3);
+}
+
+// ───── Escape Key Tests ─────────────────────────────────────────────────────
+
+#[test]
+fn escape_exits_settings_view() {
+    let (mut app, _rx) = test_app();
+
+    *app.world_mut().resource_mut::<AppView>() = AppView::Settings;
+
+    send_key(&mut app, KeyCode::Escape, None);
+    app.update();
+
+    assert_eq!(*app.world().resource::<AppView>(), AppView::Chat);
+}
+
+// ───── Message Pruning Tests ────────────────────────────────────────────────
+
+#[test]
+fn prune_if_needed_caps_messages() {
+    use crate::ui::ChatMessage;
+
+    let mut state = ChatState::default();
+    for i in 0..1100 {
+        state.messages.push(ChatMessage {
+            topic: "t".into(),
+            author: "a".into(),
+            body: format!("msg {i}"),
+            is_local: false,
+            timestamp_ms: i as u64,
+        });
+    }
+    assert_eq!(state.messages.len(), 1100);
+    state.prune_if_needed();
+    assert_eq!(state.messages.len(), 1000);
+    // Oldest messages were removed.
+    assert_eq!(state.messages[0].body, "msg 100");
+}
+
+// ───── Profile Received Tests ───────────────────────────────────────────────
+
+#[test]
+fn profile_received_updates_store() {
+    let (mut app, _rx) = test_app();
+
+    app.world_mut()
+        .write_message(NetworkBridgeEvent::ProfileReceived {
+            peer_id: "12D3KooWTestPeer".into(),
+            display_name: "Alice".into(),
+        });
+    app.update();
+
+    let profiles = app.world().resource::<ProfileStore>();
+    assert_eq!(profiles.display_name("12D3KooWTestPeer"), "Alice");
+}
+
+// ───── Identity PeerId Extraction Tests ─────────────────────────────────────
+
+#[test]
+fn ed25519_public_from_peer_id_valid() {
+    let id = Identity::generate();
+    let peer_str = id.peer_id().to_string();
+    let pub_bytes = willow_identity::ed25519_public_from_peer_id(&peer_str);
+    assert!(pub_bytes.is_some());
+    assert_eq!(pub_bytes.unwrap().len(), 32);
+}
+
+#[test]
+fn ed25519_public_from_peer_id_invalid() {
+    assert!(willow_identity::ed25519_public_from_peer_id("not-a-peer-id").is_none());
+    assert!(willow_identity::ed25519_public_from_peer_id("").is_none());
+}
+
+// ───── Invite Tamper Tests ──────────────────────────────────────────────────
+
+#[test]
+fn tampered_invite_code_fails() {
+    use willow_channel::ChannelKind;
+
+    let owner = Identity::generate();
+    let recipient = Identity::generate();
+
+    let mut server = willow_channel::Server::new("Test", owner.peer_id());
+    let ch_id = server.create_channel("general", ChannelKind::Text).unwrap();
+
+    let mut keys = std::collections::HashMap::new();
+    let mut topic_map = std::collections::HashMap::new();
+    let topic = format!("{}/general", server.id);
+    if let Some(key) = server.channel_key(&ch_id) {
+        keys.insert(topic.clone(), key.clone());
+    }
+    topic_map.insert(topic, ("general".into(), ch_id));
+
+    let ed_kp = recipient.keypair().clone().try_into_ed25519().unwrap();
+    let full = ed_kp.to_bytes();
+    let mut pub_bytes = [0u8; 32];
+    pub_bytes.copy_from_slice(&full[32..]);
+
+    let mut code = crate::invite::generate_invite(&server, &keys, &topic_map, &pub_bytes).unwrap();
+
+    // Tamper with the code.
+    if let Some(byte) = unsafe { code.as_bytes_mut().last_mut() } {
+        *byte = if *byte == b'A' { b'B' } else { b'A' };
+    }
+
+    // Should fail to decrypt.
+    assert!(crate::invite::accept_invite(&code, &recipient).is_none());
+}

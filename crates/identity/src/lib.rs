@@ -469,4 +469,25 @@ mod tests {
         assert_eq!(decoded.bio.as_deref(), Some("Willow developer"));
         assert_eq!(decoded.peer_id, peer);
     }
+
+    #[test]
+    fn ed25519_public_from_peer_id_round_trip() {
+        let id = Identity::generate();
+        let peer_str = id.peer_id().to_string();
+        let pub_bytes = ed25519_public_from_peer_id(&peer_str).unwrap();
+
+        // Compare with what we get from the keypair directly.
+        let ed_kp = id.keypair().clone().try_into_ed25519().unwrap();
+        let full = ed_kp.to_bytes();
+        let mut expected = [0u8; 32];
+        expected.copy_from_slice(&full[32..]);
+
+        assert_eq!(pub_bytes, expected);
+    }
+
+    #[test]
+    fn ed25519_public_from_peer_id_invalid() {
+        assert!(ed25519_public_from_peer_id("not-a-peer-id").is_none());
+        assert!(ed25519_public_from_peer_id("").is_none());
+    }
 }
