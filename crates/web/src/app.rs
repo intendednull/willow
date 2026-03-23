@@ -13,8 +13,15 @@ use crate::components::{
 /// Wrapper around `Rc<RefCell<Client>>` that is `Send` for single-threaded WASM.
 pub type ClientHandle = SendWrapper<Rc<RefCell<Client>>>;
 
+/// Default relay address for the deployed Willow relay server.
+pub const DEFAULT_RELAY: &str = "/ip4/172.234.217.219/tcp/9091/ws/p2p/12D3KooWMBmUF1rHYG5CneKi8JZfKdMAciJd4oCgknTJkbwCUurd";
+
 fn new_client_handle() -> ClientHandle {
-    SendWrapper::new(Rc::new(RefCell::new(Client::new(ClientConfig::default()))))
+    let config = ClientConfig {
+        relay_addr: Some(DEFAULT_RELAY.to_string()),
+        ..ClientConfig::default()
+    };
+    SendWrapper::new(Rc::new(RefCell::new(Client::new(config))))
 }
 
 /// Root application component. Creates the `Client`, connects to the P2P

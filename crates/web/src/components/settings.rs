@@ -10,7 +10,7 @@ pub fn SettingsPanel(
     on_joined: impl Fn(()) + Send + Clone + 'static,
 ) -> impl IntoView {
     let (display_name, set_display_name) = signal(String::new());
-    let (relay_addr, set_relay_addr) = signal(String::new());
+    let (relay_addr, set_relay_addr) = signal(crate::app::DEFAULT_RELAY.to_string());
     let (invite_peer, set_invite_peer) = signal(String::new());
     let (invite_code, set_invite_code) = signal(String::new());
     let (join_code, set_join_code) = signal(String::new());
