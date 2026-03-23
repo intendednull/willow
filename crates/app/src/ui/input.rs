@@ -8,6 +8,9 @@ use crate::theme;
 use willow_messaging::{Content, Message};
 use willow_transport::{pack_envelope, MessageType};
 
+#[allow(unused_imports)]
+use super::resources::ChatMessage;
+
 use super::components::*;
 use super::constants;
 use super::resources::*;
@@ -17,7 +20,7 @@ use super::resources::*;
 /// This system only mutates resources (`InputState`, `SettingsInput`).
 /// UI text updates are handled reactively by `sync_input_text` and
 /// `sync_settings_fields`.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn handle_keyboard_input(
     mut key_events: MessageReader<KeyboardInput>,
     mut input: ResMut<InputState>,
@@ -26,6 +29,7 @@ pub fn handle_keyboard_input(
     mut search: ResMut<SearchFilter>,
     keys: Res<ButtonInput<KeyCode>>,
     mut channel_mgmt: ResMut<ChannelManagement>,
+    state: Res<ChatState>,
 ) {
     for event in key_events.read() {
         if !event.state.is_pressed() {
@@ -111,10 +115,48 @@ pub fn handle_keyboard_input(
                 continue;
             }
 
+            // Up arrow with empty input → edit last own message.
+            if event.key_code == KeyCode::ArrowUp
+                && input.text.is_empty()
+                && input.editing_message_id.is_none()
+            {
+                if let Some(last_own) = state
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|m| m.is_local && !m.deleted)
+                {
+                    input.editing_message_id = Some(last_own.id.clone());
+                    input.text = last_own.body.clone();
+                }
+                continue;
+            }
+
+            // Ctrl+Backspace while editing → delete the message.
+            if event.key_code == KeyCode::Backspace
+                && (keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight))
+                && input.editing_message_id.is_some()
+            {
+                // Mark as delete request — send_message will handle it.
+                input.send_requested = true;
+                input.text = "$$DELETE$$".to_string();
+                continue;
+            }
+
+            // Escape while editing → cancel edit.
+            if event.key_code == KeyCode::Escape && input.editing_message_id.is_some() {
+                input.editing_message_id = None;
+                input.text.clear();
+                continue;
+            }
+
             match event.key_code {
                 KeyCode::Enter => {
                     if !input.text.is_empty() {
                         input.send_requested = true;
+                    } else if input.editing_message_id.is_some() {
+                        // Enter with empty text while editing → cancel.
+                        input.editing_message_id = None;
                     }
                 }
                 KeyCode::Backspace => {
@@ -152,7 +194,9 @@ pub fn send_message(
     input.send_requested = false;
 
     let body = input.text.drain(..).collect::<String>();
-    if body.is_empty() {
+    let editing_id = input.editing_message_id.take();
+
+    if body.is_empty() && editing_id.is_none() {
         return;
     }
 
@@ -165,6 +209,73 @@ pub fn send_message(
     };
 
     let channel_id = willow_messaging::ChannelId::new();
+
+    // Handle edit or delete of an existing message.
+    if let Some(ref target_id) = editing_id {
+        let target_msg_id =
+            willow_messaging::MessageId(uuid::Uuid::parse_str(target_id).unwrap_or_default());
+
+        let content = if body == "$$DELETE$$" {
+            // Delete the message.
+            Content::Delete {
+                target: target_msg_id.clone(),
+            }
+        } else {
+            // Edit the message.
+            Content::Edit {
+                target: target_msg_id.clone(),
+                new_body: body.clone(),
+            }
+        };
+
+        let msg = Message {
+            id: willow_messaging::MessageId::new(),
+            channel_id,
+            author: peer_id.clone(),
+            content: content.clone(),
+            created_at: chrono::Utc::now(),
+            hlc: state.hlc.now(),
+        };
+
+        if let Ok(envelope_data) = pack_envelope(MessageType::Chat, &msg) {
+            if let Ok(signed_data) = willow_identity::pack(&envelope_data, &identity.0) {
+                let _ = net_cmd
+                    .0
+                    .send(crate::network_bridge::NetworkBridgeCommand::Publish {
+                        topic,
+                        data: signed_data,
+                    });
+            }
+        }
+
+        // Apply locally.
+        let target_str = target_msg_id.to_string();
+        for m in &mut state.messages {
+            if m.id == target_str {
+                match content {
+                    Content::Edit { ref new_body, .. } => {
+                        m.body = new_body.clone();
+                        m.edited = true;
+                    }
+                    Content::Delete { .. } => {
+                        m.body = "[message deleted]".to_string();
+                        m.deleted = true;
+                        m.reactions.clear();
+                    }
+                    _ => {}
+                }
+                state.messages_dirty = true;
+                break;
+            }
+        }
+
+        return;
+    }
+
+    if body.is_empty() {
+        return;
+    }
+
     let mut msg = Message::text(channel_id, peer_id.clone(), &body, &mut state.hlc);
 
     if let Some(key) = key_store.keys.get(&topic) {
@@ -214,9 +325,12 @@ pub fn sync_input_text(
         return;
     }
     for (mut text, mut color) in &mut query {
-        if input.text.is_empty() {
+        if input.text.is_empty() && input.editing_message_id.is_none() {
             **text = constants::CHAT_PLACEHOLDER.to_string();
             *color = TextColor(theme::TEXT_PLACEHOLDER);
+        } else if input.editing_message_id.is_some() {
+            **text = format!("[editing] {}", input.text);
+            *color = TextColor(theme::UNREAD_HIGHLIGHT);
         } else {
             **text = input.text.clone();
             *color = TextColor(theme::TEXT_PRIMARY);

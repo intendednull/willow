@@ -8252,6 +8252,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "bevy",
+ "chrono",
  "dirs",
  "futures",
  "notify-rust",

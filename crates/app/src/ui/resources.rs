@@ -82,7 +82,7 @@ impl ChatState {
 pub struct ChatMessage {
     /// The gossipsub topic this message belongs to.
     pub topic: String,
-    /// Unique ID for this message (for reactions to target).
+    /// Unique ID for this message (for reactions/edit/delete to target).
     pub id: String,
     pub author: String,
     pub body: String,
@@ -91,6 +91,10 @@ pub struct ChatMessage {
     pub timestamp_ms: u64,
     /// Reactions: emoji → list of author names.
     pub reactions: HashMap<String, Vec<String>>,
+    /// Whether this message has been edited.
+    pub edited: bool,
+    /// Whether this message has been deleted (shows "[deleted]").
+    pub deleted: bool,
 }
 
 impl ChatMessage {
@@ -109,6 +113,8 @@ impl ChatMessage {
             is_local,
             timestamp_ms,
             reactions: HashMap::new(),
+            edited: false,
+            deleted: false,
         }
     }
 }
@@ -127,6 +133,8 @@ pub struct UnreadCounts {
 pub struct InputState {
     pub text: String,
     pub send_requested: bool,
+    /// When editing, holds the message ID being edited.
+    pub editing_message_id: Option<String>,
 }
 
 /// Active search filter. When non-empty, only matching messages are shown.

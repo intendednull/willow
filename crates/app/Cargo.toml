@@ -18,6 +18,7 @@ bevy = { workspace = true }
 anyhow = { workspace = true }
 rfd = "0.17"
 uuid = { workspace = true }
+chrono = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

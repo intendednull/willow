@@ -72,6 +72,39 @@ pub fn handle_network_events(
                     continue;
                 }
 
+                // Handle edits by updating the target message body.
+                if let Content::Edit {
+                    ref target,
+                    ref new_body,
+                } = content
+                {
+                    let target_str = target.to_string();
+                    for m in &mut state.messages {
+                        if m.id == target_str {
+                            m.body = new_body.clone();
+                            m.edited = true;
+                            state.messages_dirty = true;
+                            break;
+                        }
+                    }
+                    continue;
+                }
+
+                // Handle deletes by marking the target message.
+                if let Content::Delete { ref target } = content {
+                    let target_str = target.to_string();
+                    for m in &mut state.messages {
+                        if m.id == target_str {
+                            m.body = "[message deleted]".to_string();
+                            m.deleted = true;
+                            m.reactions.clear();
+                            state.messages_dirty = true;
+                            break;
+                        }
+                    }
+                    continue;
+                }
+
                 if let Content::Text { ref body } = content {
                     let author = profiles.display_name(&signer.to_string());
 
@@ -253,16 +286,29 @@ pub fn sync_message_list(
                             TextColor(theme::TEXT_PLACEHOLDER),
                         ));
 
-                        row.spawn((
+                        let body_color = if msg.deleted {
+                            theme::TEXT_MUTED
+                        } else {
+                            theme::TEXT_PRIMARY
+                        };
+
+                        let mut author_text = row.spawn((
                             Text::new(format!("{}: ", msg.author)),
                             TextFont::from_font_size(14.0),
                             TextColor(author_color),
-                        ))
-                        .with_child((
+                        ));
+                        author_text.with_child((
                             TextSpan::new(emoji_reg.0.expand(&msg.body)),
                             TextFont::from_font_size(14.0),
-                            TextColor(theme::TEXT_PRIMARY),
+                            TextColor(body_color),
                         ));
+                        if msg.edited && !msg.deleted {
+                            author_text.with_child((
+                                TextSpan::new(" (edited)"),
+                                TextFont::from_font_size(10.0),
+                                TextColor(theme::TEXT_PLACEHOLDER),
+                            ));
+                        }
                     });
 
                     // Reactions row (if any)

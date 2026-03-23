@@ -1544,3 +1544,92 @@ fn reaction_to_nonexistent_message_ignored() {
     let state = app.world().resource::<ChatState>();
     assert!(state.messages.is_empty());
 }
+
+// ───── Edit & Delete Tests ──────────────────────────────────────────────────
+
+#[test]
+fn edit_updates_message_body() {
+    let (mut app, _rx) = test_app();
+
+    let sender = Identity::generate();
+    let mut hlc = HLC::new();
+    let msg = Message::text(ChannelId::new(), sender.peer_id(), "original", &mut hlc);
+    let msg_id = msg.id.clone();
+    let data = sign_envelope(&msg, &sender);
+
+    app.world_mut()
+        .write_message(NetworkBridgeEvent::MessageReceived {
+            topic: "general".into(),
+            data,
+            source: Some(sender.peer_id().to_string()),
+        });
+    app.update();
+
+    let edit = Message {
+        id: willow_messaging::MessageId::new(),
+        channel_id: ChannelId::new(),
+        author: sender.peer_id(),
+        content: Content::Edit {
+            target: msg_id,
+            new_body: "edited body".into(),
+        },
+        created_at: chrono::Utc::now(),
+        hlc: hlc.now(),
+    };
+    let edit_data = sign_envelope(&edit, &sender);
+
+    app.world_mut()
+        .write_message(NetworkBridgeEvent::MessageReceived {
+            topic: "general".into(),
+            data: edit_data,
+            source: Some(sender.peer_id().to_string()),
+        });
+    app.update();
+
+    let state = app.world().resource::<ChatState>();
+    assert_eq!(state.messages.len(), 1);
+    assert_eq!(state.messages[0].body, "edited body");
+    assert!(state.messages[0].edited);
+}
+
+#[test]
+fn delete_marks_message() {
+    let (mut app, _rx) = test_app();
+
+    let sender = Identity::generate();
+    let mut hlc = HLC::new();
+    let msg = Message::text(ChannelId::new(), sender.peer_id(), "delete me", &mut hlc);
+    let msg_id = msg.id.clone();
+    let data = sign_envelope(&msg, &sender);
+
+    app.world_mut()
+        .write_message(NetworkBridgeEvent::MessageReceived {
+            topic: "general".into(),
+            data,
+            source: Some(sender.peer_id().to_string()),
+        });
+    app.update();
+
+    let delete = Message {
+        id: willow_messaging::MessageId::new(),
+        channel_id: ChannelId::new(),
+        author: sender.peer_id(),
+        content: Content::Delete { target: msg_id },
+        created_at: chrono::Utc::now(),
+        hlc: hlc.now(),
+    };
+    let del_data = sign_envelope(&delete, &sender);
+
+    app.world_mut()
+        .write_message(NetworkBridgeEvent::MessageReceived {
+            topic: "general".into(),
+            data: del_data,
+            source: Some(sender.peer_id().to_string()),
+        });
+    app.update();
+
+    let state = app.world().resource::<ChatState>();
+    assert_eq!(state.messages.len(), 1);
+    assert!(state.messages[0].deleted);
+    assert_eq!(state.messages[0].body, "[message deleted]");
+}
