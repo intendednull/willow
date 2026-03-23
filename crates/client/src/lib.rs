@@ -84,6 +84,8 @@ pub struct Client {
     pub(crate) deferred_channels: Option<std::sync::Arc<std::sync::Mutex<Option<DeferredPair>>>>,
     /// Whether we have performed initial channel subscriptions.
     pub(crate) connected_subscribed: bool,
+    /// Counter for throttled profile re-broadcasts.
+    pub(crate) profile_broadcast_counter: u32,
 }
 
 impl Client {
@@ -267,6 +269,7 @@ impl Client {
             config,
             deferred_channels: Some(deferred),
             connected_subscribed: false,
+            profile_broadcast_counter: 0,
         }
     }
 
@@ -314,6 +317,22 @@ impl Client {
     /// [`ClientEvent`]s for the caller to handle.
     pub fn poll(&mut self) -> Vec<ClientEvent> {
         let mut events = Vec::new();
+
+        // Re-broadcast our profile periodically during startup so peers
+        // learn our display name even if the initial broadcast was missed
+        // (gossipsub mesh not yet formed).
+        if self.connected_subscribed && self.profile_broadcast_counter < 600 {
+            self.profile_broadcast_counter += 1;
+            // Broadcast at ticks 60, 120, 200, 400 (~3s, 6s, 10s, 20s at 50ms poll)
+            if matches!(self.profile_broadcast_counter, 60 | 120 | 200 | 400) {
+                let saved = storage::load_profile().unwrap_or_default();
+                if !saved.display_name.is_empty() {
+                    let _ = self.cmd_tx.send(network::NetworkCommand::BroadcastProfile {
+                        display_name: saved.display_name,
+                    });
+                }
+            }
+        }
 
         while let Ok(net_event) = self.event_rx.try_recv() {
             match net_event {
@@ -1482,6 +1501,7 @@ pub(crate) fn test_client() -> (Client, std::sync::mpsc::Receiver<network::Netwo
         },
         deferred_channels: None,
         connected_subscribed: false,
+        profile_broadcast_counter: 0,
     };
 
     (client, cmd_rx)
