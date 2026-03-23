@@ -38,7 +38,8 @@ pub fn App() -> impl IntoView {
     let (show_settings, set_show_settings) = signal(false);
     let (show_sidebar, set_show_sidebar) = signal(false);
     let (peer_id, set_peer_id) = signal(String::new());
-    let (server_name, set_server_name) = signal(String::from("Willow"));
+    let (servers, set_servers) = signal(Vec::<(String, String)>::new());
+    let (active_server_id, set_active_server_id) = signal(String::new());
     let (unread, set_unread) = signal(HashMap::<String, usize>::new());
 
     // Populate initial state from the client.
@@ -46,8 +47,9 @@ pub fn App() -> impl IntoView {
         let c = client.borrow();
         set_channels.set(c.channels());
         set_peer_id.set(c.peer_id());
-        if let Some(server) = &c.state().server.server {
-            set_server_name.set(server.name.clone());
+        set_servers.set(c.server_list());
+        if let Some(id) = c.active_server_id() {
+            set_active_server_id.set(id.to_string());
         }
     }
 
@@ -86,11 +88,13 @@ pub fn App() -> impl IntoView {
             if needs_msg_refresh {
                 let ch = current_channel.get_untracked();
                 set_messages.set(c.messages(&ch).into_iter().cloned().collect());
-                // Update unread counts -- map topic-based counts to channel names.
+                // Update unread counts from the active server.
                 let mut unread_map = HashMap::new();
-                for (topic, count) in &c.state().unread.counts {
-                    if let Some(name) = c.state().server.name_for_topic(topic) {
-                        unread_map.insert(name.to_string(), *count);
+                if let Some(ctx) = c.state().active() {
+                    for (topic, count) in &ctx.unread {
+                        if let Some(name) = ctx.name_for_topic(topic) {
+                            unread_map.insert(name.to_string(), *count);
+                        }
                     }
                 }
                 set_unread.set(unread_map);
@@ -129,12 +133,28 @@ pub fn App() -> impl IntoView {
         set_messages.set(c.messages(&ch).into_iter().cloned().collect());
     };
 
+    // Server switch handler.
+    let client_server = client.clone();
+    let on_server_click = move |id: String| {
+        let mut c = client_server.borrow_mut();
+        c.switch_server(&id);
+        set_active_server_id.set(id);
+        set_servers.set(c.server_list());
+        set_channels.set(c.channels());
+        set_current_channel.set(String::from("general"));
+        let ch = "general";
+        set_messages.set(c.messages(ch).into_iter().cloned().collect());
+        set_show_settings.set(false);
+    };
+
     let settings_client = client.clone();
 
     view! {
         <div class="app">
             <ServerList
-                server_name=server_name
+                servers=servers
+                active_server_id=active_server_id
+                on_server_click=on_server_click
                 on_settings_click=move |_| {
                     set_show_settings.update(|v| *v = !*v);
                     set_show_sidebar.set(false);
