@@ -1990,3 +1990,211 @@ fn set_permission_is_idempotent() {
         .permissions
         .contains(&willow_channel::Permission::SendMessages));
 }
+
+#[test]
+fn catchup_sync_applies_missing_ops() {
+    // Simulate the full catch-up flow:
+    // 1. Peer A (owner) creates a channel — recorded in A's OpLog
+    // 2. Peer B connects and sends SyncRequest
+    // 3. A's handler responds with ops newer than B's HLC
+    // 4. B receives the SyncBatch and applies the ops
+    // 5. B's server state now has the channel
+
+    // --- Set up Peer A with a server and a channel ---
+    let (mut app_a, cmd_rx_a) = test_app();
+    let owner = app_a
+        .world()
+        .resource::<LocalIdentity>()
+        .0
+        .peer_id()
+        .clone();
+    let owner_str = owner.to_string();
+    let mut server_a = willow_channel::Server::new("Sync Test", owner.clone());
+    let ch_id = server_a
+        .create_channel("synced-channel", willow_channel::ChannelKind::Text)
+        .unwrap();
+    app_a.world_mut().resource_mut::<ServerState>().server = Some(server_a);
+
+    // Record the CreateChannel op in A's OpLog
+    let mut hlc_a = HLC::new();
+    let create_op = crate::server_sync::StampedOp::new(
+        crate::server_sync::ServerOp::CreateChannel {
+            name: "synced-channel".into(),
+            channel_id: ch_id.to_string(),
+        },
+        &mut hlc_a,
+        &owner_str,
+    );
+    app_a
+        .world_mut()
+        .resource_mut::<OpLog>()
+        .record(create_op.clone());
+
+    // --- Peer B sends SyncRequest (latest_hlc = ZERO, i.e. "I have nothing") ---
+    // A receives the request. Inject it as a SyncRequested event.
+    app_a
+        .world_mut()
+        .write_message(NetworkBridgeEvent::SyncRequested {
+            latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
+            from: owner_str.clone(), // from a trusted peer (owner trusts self)
+        });
+    app_a.update();
+
+    // A should have sent a SendSyncBatch command with the op.
+    let mut found_batch = false;
+    while let Ok(cmd) = cmd_rx_a.try_recv() {
+        if let NetworkBridgeCommand::SendSyncBatch { ops } = cmd {
+            assert!(!ops.is_empty(), "batch should contain ops");
+            assert!(
+                ops.iter()
+                    .any(|op| matches!(&op.op, crate::server_sync::ServerOp::CreateChannel { name, .. } if name == "synced-channel")),
+                "batch should contain the CreateChannel op"
+            );
+            found_batch = true;
+
+            // --- Now simulate B receiving this batch ---
+            let (mut app_b, _cmd_rx_b) = test_app();
+            // B has a fresh server (same owner for simplicity — in reality different)
+            let b_owner = app_b
+                .world()
+                .resource::<LocalIdentity>()
+                .0
+                .peer_id()
+                .clone();
+            let server_b = willow_channel::Server::new("B Server", b_owner);
+            app_b.world_mut().resource_mut::<ServerState>().server = Some(server_b);
+
+            // Trust A's owner so B accepts the ops.
+            app_b
+                .world_mut()
+                .resource_mut::<OpLog>()
+                .trusted_peers
+                .insert(owner_str.clone());
+
+            // Inject the SyncBatch event into B
+            app_b
+                .world_mut()
+                .write_message(NetworkBridgeEvent::SyncBatchReceived {
+                    ops: ops.clone(),
+                    from: owner_str.clone(),
+                });
+            app_b.update();
+
+            // B should now have the "synced-channel"
+            let b_server = app_b
+                .world()
+                .resource::<ServerState>()
+                .server
+                .as_ref()
+                .unwrap();
+            assert!(
+                b_server
+                    .channels()
+                    .iter()
+                    .any(|ch| ch.name == "synced-channel"),
+                "B should have the synced channel after catch-up"
+            );
+
+            // B's OpLog should contain the op
+            let b_log = app_b.world().resource::<OpLog>();
+            assert!(b_log.seen_ids.contains(&create_op.op_id));
+        }
+    }
+    assert!(found_batch, "A should have sent a SyncBatch command");
+}
+
+#[test]
+fn catchup_filters_by_hlc() {
+    // Verify that SyncRequest only returns ops NEWER than the requested HLC.
+    let (mut app, cmd_rx) = test_app();
+    let owner = app.world().resource::<LocalIdentity>().0.peer_id().clone();
+    let owner_str = owner.to_string();
+    let server = willow_channel::Server::new("Filter Test", owner.clone());
+    app.world_mut().resource_mut::<ServerState>().server = Some(server);
+
+    // Record two ops with advancing HLC
+    let mut hlc = HLC::new();
+    let old_op = crate::server_sync::StampedOp::new(
+        crate::server_sync::ServerOp::CreateChannel {
+            name: "old-channel".into(),
+            channel_id: uuid::Uuid::new_v4().to_string(),
+        },
+        &mut hlc,
+        &owner_str,
+    );
+    let old_hlc = old_op.hlc;
+    app.world_mut()
+        .resource_mut::<OpLog>()
+        .record(old_op.clone());
+
+    let new_op = crate::server_sync::StampedOp::new(
+        crate::server_sync::ServerOp::CreateChannel {
+            name: "new-channel".into(),
+            channel_id: uuid::Uuid::new_v4().to_string(),
+        },
+        &mut hlc,
+        &owner_str,
+    );
+    app.world_mut()
+        .resource_mut::<OpLog>()
+        .record(new_op.clone());
+
+    // SyncRequest with old_hlc — should only return new_op
+    app.world_mut()
+        .write_message(NetworkBridgeEvent::SyncRequested {
+            latest_hlc: old_hlc,
+            from: owner_str.clone(),
+        });
+    app.update();
+
+    let mut batch_ops = Vec::new();
+    while let Ok(cmd) = cmd_rx.try_recv() {
+        if let NetworkBridgeCommand::SendSyncBatch { ops } = cmd {
+            batch_ops = ops;
+        }
+    }
+    assert_eq!(
+        batch_ops.len(),
+        1,
+        "should only return ops newer than old_hlc"
+    );
+    assert_eq!(batch_ops[0].op_id, new_op.op_id);
+}
+
+#[test]
+fn catchup_rejects_untrusted_sync_request() {
+    let (mut app, cmd_rx) = test_app();
+    let owner = app.world().resource::<LocalIdentity>().0.peer_id().clone();
+    let server = willow_channel::Server::new("Trust Test", owner.clone());
+    app.world_mut().resource_mut::<ServerState>().server = Some(server);
+
+    // Record an op
+    let mut hlc = HLC::new();
+    let op = crate::server_sync::StampedOp::new(
+        crate::server_sync::ServerOp::CreateChannel {
+            name: "secret".into(),
+            channel_id: uuid::Uuid::new_v4().to_string(),
+        },
+        &mut hlc,
+        &owner.to_string(),
+    );
+    app.world_mut().resource_mut::<OpLog>().record(op);
+
+    // SyncRequest from an UNTRUSTED peer
+    let stranger = Identity::generate();
+    app.world_mut()
+        .write_message(NetworkBridgeEvent::SyncRequested {
+            latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
+            from: stranger.peer_id().to_string(),
+        });
+    app.update();
+
+    // Should NOT have sent any SyncBatch
+    let mut found_batch = false;
+    while let Ok(cmd) = cmd_rx.try_recv() {
+        if matches!(cmd, NetworkBridgeCommand::SendSyncBatch { .. }) {
+            found_batch = true;
+        }
+    }
+    assert!(!found_batch, "should not respond to untrusted sync request");
+}
