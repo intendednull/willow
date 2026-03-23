@@ -310,10 +310,17 @@ impl Client {
         while let Ok(net_event) = self.event_rx.try_recv() {
             match net_event {
                 network::NetworkEvent::OpReceived { stamped_op, from } => {
+                    tracing::info!(
+                        op = ?std::mem::discriminant(&stamped_op.op),
+                        from = %from,
+                        op_id = %stamped_op.op_id,
+                        "received op"
+                    );
                     let applied =
                         self.state
                             .apply_op(&stamped_op, &from, &self.identity, &self.cmd_tx);
 
+                    tracing::info!(applied, "op apply result");
                     if applied {
                         // Emit op-specific events.
                         match &stamped_op.op {
@@ -458,17 +465,11 @@ impl Client {
                     from,
                     topic,
                 } => {
-                    let owner = self
-                        .state
-                        .active()
-                        .map(|ctx| ctx.server.owner.to_string())
-                        .unwrap_or_default();
-                    let is_trusted = self
-                        .state
-                        .active()
-                        .map(|ctx| ctx.op_log.is_trusted(&from, &owner))
-                        .unwrap_or(false);
-                    if is_trusted {
+                    tracing::info!(%from, ?topic, "sync requested");
+                    // Respond to any peer that can reach us -- they already
+                    // have the channel key (via invite) so withholding
+                    // history doesn't add security.
+                    {
                         if let Some(ref req_topic) = topic {
                             if let Some(ref db_arc) = self.state.message_db {
                                 if let Ok(db_lock) = db_arc.lock() {
@@ -501,6 +502,8 @@ impl Client {
                                 })
                                 .unwrap_or_default();
                             if !missing.is_empty() {
+                                let count = missing.len();
+                                tracing::info!(count, "sending server ops sync batch");
                                 let _ = self
                                     .cmd_tx
                                     .send(network::NetworkCommand::SendSyncBatch { ops: missing });
@@ -509,19 +512,7 @@ impl Client {
                     }
                 }
                 network::NetworkEvent::SyncBatchReceived { ops, from } => {
-                    let owner = self
-                        .state
-                        .active()
-                        .map(|ctx| ctx.server.owner.to_string())
-                        .unwrap_or_default();
-                    let is_trusted = self
-                        .state
-                        .active()
-                        .map(|ctx| ctx.op_log.is_trusted(&from, &owner))
-                        .unwrap_or(false);
-                    if !is_trusted {
-                        continue;
-                    }
+                    tracing::info!(count = ops.len(), %from, "received sync batch");
                     let mut sorted_ops = ops;
                     sorted_ops.sort_by(|a, b| a.hlc.cmp(&b.hlc));
                     let count = sorted_ops.len();

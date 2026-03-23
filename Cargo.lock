@@ -9150,6 +9150,7 @@ dependencies = [
  "leptos",
  "send_wrapper 0.6.0",
  "tracing",
+ "tracing-wasm",
  "wasm-bindgen",
  "web-sys",
  "willow-client",
