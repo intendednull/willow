@@ -1164,13 +1164,13 @@ fn prune_if_needed_caps_messages() {
 
     let mut state = ChatState::default();
     for i in 0..1100 {
-        state.messages.push(ChatMessage {
-            topic: "t".into(),
-            author: "a".into(),
-            body: format!("msg {i}"),
-            is_local: false,
-            timestamp_ms: i as u64,
-        });
+        state.messages.push(ChatMessage::new(
+            "t".into(),
+            "a".into(),
+            format!("msg {i}"),
+            false,
+            i as u64,
+        ));
     }
     assert_eq!(state.messages.len(), 1100);
     state.prune_if_needed();
@@ -1433,4 +1433,114 @@ fn app_processes_accepted_invite_keys() {
 
     // Drain any subscribe commands.
     while cmd_rx.try_recv().is_ok() {}
+}
+
+// ───── Emoji Reaction Tests ─────────────────────────────────────────────────
+
+#[test]
+fn reaction_updates_target_message() {
+    let (mut app, _rx) = test_app();
+
+    // Send a message first so we have a target.
+    let sender = Identity::generate();
+    let mut hlc = HLC::new();
+    let msg = Message::text(ChannelId::new(), sender.peer_id(), "react to me", &mut hlc);
+    let msg_id = msg.id.clone();
+    let data = sign_envelope(&msg, &sender);
+
+    app.world_mut()
+        .write_message(NetworkBridgeEvent::MessageReceived {
+            topic: "general".into(),
+            data,
+            source: Some(sender.peer_id().to_string()),
+        });
+    app.update();
+
+    // Now send a reaction targeting that message.
+    let reactor = Identity::generate();
+    let reaction = Message::reaction(ChannelId::new(), reactor.peer_id(), msg_id, "👍", &mut hlc);
+    let reaction_data = sign_envelope(&reaction, &reactor);
+
+    app.world_mut()
+        .write_message(NetworkBridgeEvent::MessageReceived {
+            topic: "general".into(),
+            data: reaction_data,
+            source: Some(reactor.peer_id().to_string()),
+        });
+    app.update();
+
+    // The original message should now have the reaction.
+    let state = app.world().resource::<ChatState>();
+    assert_eq!(state.messages.len(), 1); // Reaction doesn't add a new message.
+    assert!(state.messages[0].reactions.contains_key("👍"));
+    assert_eq!(state.messages[0].reactions["👍"].len(), 1);
+}
+
+#[test]
+fn multiple_reactions_on_same_message() {
+    let (mut app, _rx) = test_app();
+
+    let sender = Identity::generate();
+    let mut hlc = HLC::new();
+    let msg = Message::text(ChannelId::new(), sender.peer_id(), "popular msg", &mut hlc);
+    let msg_id = msg.id.clone();
+    let data = sign_envelope(&msg, &sender);
+
+    app.world_mut()
+        .write_message(NetworkBridgeEvent::MessageReceived {
+            topic: "general".into(),
+            data,
+            source: Some(sender.peer_id().to_string()),
+        });
+    app.update();
+
+    // Two different people react with the same emoji.
+    for _ in 0..2 {
+        let reactor = Identity::generate();
+        let reaction = Message::reaction(
+            ChannelId::new(),
+            reactor.peer_id(),
+            msg_id.clone(),
+            "🎉",
+            &mut hlc,
+        );
+        let reaction_data = sign_envelope(&reaction, &reactor);
+        app.world_mut()
+            .write_message(NetworkBridgeEvent::MessageReceived {
+                topic: "general".into(),
+                data: reaction_data,
+                source: Some(reactor.peer_id().to_string()),
+            });
+    }
+    app.update();
+
+    let state = app.world().resource::<ChatState>();
+    assert_eq!(state.messages[0].reactions["🎉"].len(), 2);
+}
+
+#[test]
+fn reaction_to_nonexistent_message_ignored() {
+    let (mut app, _rx) = test_app();
+
+    let reactor = Identity::generate();
+    let mut hlc = HLC::new();
+    let reaction = Message::reaction(
+        ChannelId::new(),
+        reactor.peer_id(),
+        willow_messaging::MessageId::new(), // random target that doesn't exist
+        "👎",
+        &mut hlc,
+    );
+    let data = sign_envelope(&reaction, &reactor);
+
+    app.world_mut()
+        .write_message(NetworkBridgeEvent::MessageReceived {
+            topic: "general".into(),
+            data,
+            source: Some(reactor.peer_id().to_string()),
+        });
+    app.update();
+
+    let state = app.world().resource::<ChatState>();
+    assert!(state.messages.is_empty());
 }

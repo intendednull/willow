@@ -82,11 +82,35 @@ impl ChatState {
 pub struct ChatMessage {
     /// The gossipsub topic this message belongs to.
     pub topic: String,
+    /// Unique ID for this message (for reactions to target).
+    pub id: String,
     pub author: String,
     pub body: String,
     pub is_local: bool,
     /// HLC timestamp in milliseconds (for display).
     pub timestamp_ms: u64,
+    /// Reactions: emoji → list of author names.
+    pub reactions: HashMap<String, Vec<String>>,
+}
+
+impl ChatMessage {
+    pub fn new(
+        topic: String,
+        author: String,
+        body: String,
+        is_local: bool,
+        timestamp_ms: u64,
+    ) -> Self {
+        Self {
+            topic,
+            id: uuid::Uuid::new_v4().to_string(),
+            author,
+            body,
+            is_local,
+            timestamp_ms,
+            reactions: HashMap::new(),
+        }
+    }
 }
 
 /// Tracks unread message counts per channel topic.

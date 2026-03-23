@@ -186,13 +186,8 @@ pub fn send_message(
 
     let author = profiles.display_name(&peer_id.to_string());
     let ts = state.hlc.latest().millis;
-    let chat_msg = ChatMessage {
-        topic,
-        author: author.clone(),
-        body: body.clone(),
-        is_local: true,
-        timestamp_ms: ts,
-    };
+    let mut chat_msg = ChatMessage::new(topic, author.clone(), body.clone(), true, ts);
+    chat_msg.id = msg.id.to_string();
 
     if let Some(ref db) = db.0 {
         if let Ok(db) = db.lock() {

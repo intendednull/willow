@@ -51,16 +51,39 @@ pub fn handle_network_events(
                     other => other.clone(),
                 };
 
+                // Handle reactions by updating the target message.
+                if let Content::Reaction {
+                    ref target,
+                    ref emoji,
+                } = content
+                {
+                    let author = profiles.display_name(&signer.to_string());
+                    let target_str = target.to_string();
+                    for m in &mut state.messages {
+                        if m.id == target_str {
+                            m.reactions
+                                .entry(emoji.clone())
+                                .or_default()
+                                .push(author.clone());
+                            state.messages_dirty = true;
+                            break;
+                        }
+                    }
+                    continue;
+                }
+
                 if let Content::Text { ref body } = content {
                     let author = profiles.display_name(&signer.to_string());
 
-                    let chat_msg = ChatMessage {
-                        topic: topic.clone(),
-                        author: author.clone(),
-                        body: body.clone(),
-                        is_local: false,
-                        timestamp_ms: msg.hlc.millis,
-                    };
+                    let mut chat_msg = ChatMessage::new(
+                        topic.clone(),
+                        author.clone(),
+                        body.clone(),
+                        false,
+                        msg.hlc.millis,
+                    );
+                    // Use the real message ID so reactions can target it.
+                    chat_msg.id = msg.id.to_string();
 
                     if let Some(ref db_arc) = db.0 {
                         if let Ok(db_lock) = db_arc.lock() {
@@ -108,13 +131,9 @@ pub fn handle_network_events(
                 let size_kb = size / 1024;
                 let body = format!("[shared file: {filename} ({size_kb} KB)]");
                 let ts = state.hlc.latest().millis;
-                state.messages.push(ChatMessage {
-                    topic: topic.clone(),
-                    author,
-                    body,
-                    is_local: false,
-                    timestamp_ms: ts,
-                });
+                state
+                    .messages
+                    .push(ChatMessage::new(topic.clone(), author, body, false, ts));
                 state.messages_dirty = true;
             }
             NetworkBridgeEvent::FileDownloaded { filename, .. } => {
@@ -212,25 +231,64 @@ pub fn sync_message_list(
             parent
                 .spawn(Node {
                     margin: UiRect::bottom(Val::Px(4.0)),
+                    flex_direction: FlexDirection::Column,
                     ..default()
                 })
-                .with_children(|row| {
-                    row.spawn((
-                        Text::new(format!("{time_str} ")),
-                        TextFont::from_font_size(11.0),
-                        TextColor(theme::TEXT_PLACEHOLDER),
-                    ));
+                .with_children(|col| {
+                    // Message text row
+                    col.spawn(Node::default()).with_children(|row| {
+                        row.spawn((
+                            Text::new(format!("{time_str} ")),
+                            TextFont::from_font_size(11.0),
+                            TextColor(theme::TEXT_PLACEHOLDER),
+                        ));
 
-                    row.spawn((
-                        Text::new(format!("{}: ", msg.author)),
-                        TextFont::from_font_size(14.0),
-                        TextColor(author_color),
-                    ))
-                    .with_child((
-                        TextSpan::new(&msg.body),
-                        TextFont::from_font_size(14.0),
-                        TextColor(theme::TEXT_PRIMARY),
-                    ));
+                        row.spawn((
+                            Text::new(format!("{}: ", msg.author)),
+                            TextFont::from_font_size(14.0),
+                            TextColor(author_color),
+                        ))
+                        .with_child((
+                            TextSpan::new(&msg.body),
+                            TextFont::from_font_size(14.0),
+                            TextColor(theme::TEXT_PRIMARY),
+                        ));
+                    });
+
+                    // Reactions row (if any)
+                    if !msg.reactions.is_empty() {
+                        col.spawn(Node {
+                            flex_direction: FlexDirection::Row,
+                            margin: UiRect::top(Val::Px(2.0)),
+                            padding: UiRect::left(Val::Px(48.0)),
+                            ..default()
+                        })
+                        .with_children(|reactions_row| {
+                            for (emoji, authors) in &msg.reactions {
+                                reactions_row
+                                    .spawn((
+                                        Node {
+                                            padding: UiRect::new(
+                                                Val::Px(6.0),
+                                                Val::Px(6.0),
+                                                Val::Px(2.0),
+                                                Val::Px(2.0),
+                                            ),
+                                            margin: UiRect::right(Val::Px(4.0)),
+                                            ..default()
+                                        },
+                                        BackgroundColor(theme::INPUT_FIELD_BG),
+                                    ))
+                                    .with_children(|badge| {
+                                        badge.spawn((
+                                            Text::new(format!("{emoji} {}", authors.len())),
+                                            TextFont::from_font_size(12.0),
+                                            TextColor(theme::TEXT_SECONDARY),
+                                        ));
+                                    });
+                            }
+                        });
+                    }
                 });
         }
     });

@@ -56,13 +56,13 @@ pub fn init_server(
             for topic in server_state.topic_map.keys() {
                 let stored = db_lock.load_topic(topic, 500);
                 for sm in stored {
-                    state.messages.push(ChatMessage {
-                        topic: sm.topic,
-                        author: sm.author,
-                        body: sm.body,
-                        is_local: sm.is_local,
-                        timestamp_ms: sm.timestamp_ms,
-                    });
+                    state.messages.push(ChatMessage::new(
+                        sm.topic,
+                        sm.author,
+                        sm.body,
+                        sm.is_local,
+                        sm.timestamp_ms,
+                    ));
                 }
             }
             if !state.messages.is_empty() {

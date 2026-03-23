@@ -90,13 +90,13 @@ pub fn poll_file_picker(
 
     let author = profiles.display_name(&identity.0.peer_id().to_string());
     let body = format!("[shared file: {filename} ({size_kb} KB)]");
-    let chat_msg = ChatMessage {
+    let chat_msg = ChatMessage::new(
         topic,
-        author: author.clone(),
-        body: body.clone(),
-        is_local: true,
-        timestamp_ms: chat_state.hlc.latest().millis,
-    };
+        author.clone(),
+        body.clone(),
+        true,
+        chat_state.hlc.latest().millis,
+    );
 
     if let Some(ref db_arc) = db.0 {
         if let Ok(db_lock) = db_arc.lock() {
