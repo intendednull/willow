@@ -49,6 +49,7 @@ pub fn App() -> impl IntoView {
     let (servers, set_servers) = signal(Vec::<(String, String)>::new());
     let (active_server_id, set_active_server_id) = signal(String::new());
     let (unread, set_unread) = signal(HashMap::<String, usize>::new());
+    let (connection_status, set_connection_status) = signal("connecting".to_string());
 
     // Populate initial state from the client.
     {
@@ -80,8 +81,21 @@ pub fn App() -> impl IntoView {
                     | ClientEvent::SyncCompleted { .. } => {
                         needs_msg_refresh = true;
                     }
-                    ClientEvent::PeerConnected(_) | ClientEvent::PeerDisconnected(_) => {
+                    ClientEvent::PeerConnected(_) => {
                         needs_peer_refresh = true;
+                        set_connection_status.set("connected".to_string());
+                    }
+                    ClientEvent::PeerDisconnected(_) => {
+                        needs_peer_refresh = true;
+                    }
+                    ClientEvent::Listening(_) => {
+                        // We are listening but may have no peers yet.
+                        let status = connection_status.get_untracked();
+                        if status == "connecting" {
+                            // Stay "connecting" until a peer connects, but at
+                            // least we know the node is up.
+                            set_connection_status.set("connecting".to_string());
+                        }
                     }
                     ClientEvent::ChannelCreated(_) | ClientEvent::ChannelDeleted(_) => {
                         needs_channel_refresh = true;
@@ -120,16 +134,22 @@ pub fn App() -> impl IntoView {
                 set_unread.set(unread_map);
             }
             if needs_peer_refresh {
-                set_peers.set(
-                    c.peers()
-                        .iter()
-                        .map(|id| {
-                            let name = c.peer_display_name(id);
-                            (id.clone(), name)
-                        })
-                        .collect(),
-                );
-                set_peer_count.set(c.peers().len());
+                let peer_list: Vec<(String, String)> = c
+                    .peers()
+                    .iter()
+                    .map(|id| {
+                        let name = c.peer_display_name(id);
+                        (id.clone(), name)
+                    })
+                    .collect();
+                let count = peer_list.len();
+                set_peers.set(peer_list);
+                set_peer_count.set(count);
+                if count > 0 {
+                    set_connection_status.set("connected".to_string());
+                } else {
+                    set_connection_status.set("connecting".to_string());
+                }
             }
             if needs_channel_refresh {
                 set_channels.set(c.channels());
@@ -211,6 +231,8 @@ pub fn App() -> impl IntoView {
                 current_channel=current_channel
                 open=show_sidebar
                 unread=unread
+                connection_status=connection_status
+                peer_count=peer_count
                 client=client.clone()
                 on_channel_click=on_channel_click
                 on_settings_click=move |_| {

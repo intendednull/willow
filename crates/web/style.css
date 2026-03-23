@@ -229,6 +229,41 @@ html, body {
     background: var(--online);
 }
 
+/* Connection status indicator */
+.connection-status {
+    padding: 8px 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-top: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.connection-status .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.connection-status .status-dot.connected {
+    background: var(--online);
+}
+
+.connection-status .status-dot.connecting {
+    background: var(--warning, #f0b232);
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+.connection-status .status-dot.disconnected {
+    background: var(--danger);
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
 /* Main content */
 .main-content {
     flex: 1;

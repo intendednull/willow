@@ -5,6 +5,8 @@
 //! These tests render Leptos components in a real browser DOM and verify
 //! that signals, events, and effects work correctly.
 
+use std::collections::HashMap;
+
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
@@ -54,6 +56,38 @@ fn query(container: &web_sys::HtmlElement, selector: &str) -> Option<web_sys::El
 /// Get text content of an element.
 fn text(el: &web_sys::Element) -> String {
     el.text_content().unwrap_or_default()
+}
+
+/// Create a test `ChatMessage` with minimal arguments.
+fn make_msg(author: &str, body: &str, timestamp_ms: u64) -> willow_client::ChatMessage {
+    willow_client::ChatMessage::new(
+        "test-server".into(),
+        "test-topic".into(),
+        author.into(),
+        body.into(),
+        false,
+        timestamp_ms,
+    )
+}
+
+/// Simulate typing text into an input element (set value + dispatch input event).
+fn simulate_type(input: &web_sys::HtmlInputElement, value: &str) {
+    input.set_value(value);
+    let event = web_sys::InputEvent::new("input").unwrap();
+    input
+        .dyn_ref::<web_sys::EventTarget>()
+        .unwrap()
+        .dispatch_event(&event)
+        .unwrap();
+}
+
+/// Simulate a click on an element.
+fn simulate_click(el: &web_sys::Element) {
+    let event = web_sys::MouseEvent::new("click").unwrap();
+    el.dyn_ref::<web_sys::EventTarget>()
+        .unwrap()
+        .dispatch_event(&event)
+        .unwrap();
 }
 
 // ── Signal & Reactivity Tests ───────────────────────────────────────────────
@@ -256,14 +290,7 @@ async fn input_captures_value() {
         .unchecked_into();
 
     // Simulate typing by setting value and dispatching input event.
-    input.set_value("hello");
-    let event = web_sys::InputEvent::new("input").unwrap();
-    input
-        .dyn_ref::<web_sys::EventTarget>()
-        .unwrap()
-        .dispatch_event(&event)
-        .unwrap();
-
+    simulate_type(&input, "hello");
     tick().await;
 
     assert_eq!(value.get_untracked(), "hello");
@@ -275,7 +302,7 @@ async fn input_sends_on_enter() {
     let (input_text, set_input_text) = signal(String::new());
 
     let container = mount_test(move || {
-        let on_send = set_sent.clone();
+        let on_send = set_sent;
         view! {
             <input
                 type="text"
@@ -302,13 +329,7 @@ async fn input_sends_on_enter() {
         .unchecked_into();
 
     // Type "hello".
-    input.set_value("hello");
-    let input_event = web_sys::InputEvent::new("input").unwrap();
-    input
-        .dyn_ref::<web_sys::EventTarget>()
-        .unwrap()
-        .dispatch_event(&input_event)
-        .unwrap();
+    simulate_type(&input, "hello");
     tick().await;
 
     // Press Enter.
@@ -397,4 +418,1026 @@ async fn peer_count_displays_correctly() {
     set_count.set(5);
     tick().await;
     assert_eq!(text(&query(&container, ".peer-count").unwrap()), "5 peers");
+}
+
+// ── Sidebar Tests ───────────────────────────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn sidebar_shows_server_name_in_user_area() {
+    let container = mount_test(move || {
+        view! {
+            <div class="sidebar">
+                <div class="sidebar-header">"Willow"</div>
+                <div class="user-area">
+                    <div class="status-dot"></div>
+                    <span class="user-display-name">"TestUser"</span>
+                </div>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    let header = query(&container, ".sidebar-header").unwrap();
+    assert_eq!(text(&header), "Willow");
+
+    let user_name = query(&container, ".user-display-name").unwrap();
+    assert_eq!(text(&user_name), "TestUser");
+
+    // User area should be present
+    assert!(query(&container, ".user-area").is_some());
+}
+
+#[wasm_bindgen_test]
+async fn channel_click_switches_active_channel() {
+    let (current, set_current) = signal("general".to_string());
+    let (channels, _) = signal(vec!["general".to_string(), "random".to_string()]);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="channel-list">
+                <For
+                    each=move || channels.get()
+                    key=|ch| ch.clone()
+                    let:channel
+                >
+                    {
+                        let ch_active = channel.clone();
+                        let ch_click = channel.clone();
+                        let active = move || current.get() == ch_active;
+                        view! {
+                            <div
+                                class=move || if active() { "channel-item active" } else { "channel-item" }
+                                on:click=move |_| set_current.set(ch_click.clone())
+                            >
+                                <span>{"# "} {channel.clone()}</span>
+                            </div>
+                        }
+                    }
+                </For>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    // Initially "general" is active.
+    let active = query_all(&container, ".channel-item.active");
+    assert_eq!(active.len(), 1);
+    assert!(text(&active[0]).contains("general"));
+
+    // Click "random".
+    let items = query_all(&container, ".channel-item");
+    assert_eq!(items.len(), 2);
+    simulate_click(&items[1]);
+    tick().await;
+
+    // Now "random" should be active.
+    let active = query_all(&container, ".channel-item.active");
+    assert_eq!(active.len(), 1);
+    assert!(text(&active[0]).contains("random"));
+}
+
+#[wasm_bindgen_test]
+async fn unread_badge_shows_count() {
+    let (unread, set_unread) = signal(HashMap::<String, usize>::new());
+
+    let container = mount_test(move || {
+        let channel_name = "random".to_string();
+        view! {
+            <div class="channel-item">
+                <span>{"# random"}</span>
+                <span class="channel-item-right">
+                    {
+                        let ch = channel_name.clone();
+                        move || {
+                            let counts = unread.get();
+                            counts.get(&ch).copied().filter(|c| *c > 0).map(|c| {
+                                view! {
+                                    <span class="unread-badge">{c.to_string()}</span>
+                                }
+                            })
+                        }
+                    }
+                </span>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    // No unread badge initially.
+    assert!(query(&container, ".unread-badge").is_none());
+
+    // Set unread count for "random".
+    let mut map = HashMap::new();
+    map.insert("random".to_string(), 3);
+    set_unread.set(map);
+    tick().await;
+
+    let badge = query(&container, ".unread-badge").unwrap();
+    assert_eq!(text(&badge), "3");
+
+    // Clear unread.
+    set_unread.set(HashMap::new());
+    tick().await;
+    assert!(query(&container, ".unread-badge").is_none());
+}
+
+// ── Settings Panel Tests ────────────────────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn settings_displays_peer_id() {
+    let peer_id = "12D3KooWTestPeerId123456789";
+
+    let container = mount_test(move || {
+        view! {
+            <div class="settings-panel">
+                <div class="settings-section">
+                    <label>"Your Peer ID"</label>
+                    <div class="peer-id-display">
+                        <code class="peer-id-text">{peer_id}</code>
+                        <button class="btn btn-sm">"Copy"</button>
+                    </div>
+                </div>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    let peer_id_el = query(&container, ".peer-id-text").unwrap();
+    assert_eq!(text(&peer_id_el), "12D3KooWTestPeerId123456789");
+
+    // The settings panel itself should exist.
+    assert!(query(&container, ".settings-panel").is_some());
+    // Copy button should exist.
+    assert!(query(&container, ".peer-id-display .btn").is_some());
+}
+
+#[wasm_bindgen_test]
+async fn display_name_input_captures_text() {
+    let (display_name, set_display_name) = signal(String::new());
+
+    let container = mount_test(move || {
+        view! {
+            <div class="settings-section">
+                <label>"Display Name"</label>
+                <input
+                    type="text"
+                    class="display-name-input"
+                    placeholder="Enter display name..."
+                    prop:value=move || display_name.get()
+                    on:input=move |ev| set_display_name.set(event_target_value(&ev))
+                />
+            </div>
+        }
+    });
+
+    tick().await;
+
+    let input: web_sys::HtmlInputElement = query(&container, ".display-name-input")
+        .unwrap()
+        .unchecked_into();
+
+    simulate_type(&input, "Alice");
+    tick().await;
+
+    assert_eq!(display_name.get_untracked(), "Alice");
+}
+
+// ── Message Detail Tests ────────────────────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn edited_message_shows_badge() {
+    let mut msg = make_msg("Alice", "Updated text", 5_400_000);
+    msg.edited = true;
+
+    let show_edited = msg.edited && !msg.deleted;
+    let author = msg.author.clone();
+    let body = msg.body.clone();
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                <div class="meta">
+                    <span class="author">{author}</span>
+                    {if show_edited {
+                        Some(view! { <span class="edited">"(edited)"</span> })
+                    } else {
+                        None
+                    }}
+                </div>
+                <div class="body">{body}</div>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    let edited = query(&container, ".edited").unwrap();
+    assert_eq!(text(&edited), "(edited)");
+}
+
+#[wasm_bindgen_test]
+async fn deleted_message_shows_placeholder() {
+    let mut msg = make_msg("Bob", "[message deleted]", 5_400_000);
+    msg.deleted = true;
+    msg.body = "[message deleted]".to_string();
+
+    let body_class = if msg.deleted { "body deleted" } else { "body" };
+    let body = msg.body.clone();
+    // An edited+deleted message should NOT show the (edited) badge.
+    let show_edited = msg.edited && !msg.deleted;
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                <div class="meta">
+                    {if show_edited {
+                        Some(view! { <span class="edited">"(edited)"</span> })
+                    } else {
+                        None
+                    }}
+                </div>
+                <div class=body_class>{body}</div>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    let body_el = query(&container, ".body.deleted").unwrap();
+    assert_eq!(text(&body_el), "[message deleted]");
+
+    // No edited badge on a deleted message.
+    assert!(query(&container, ".edited").is_none());
+}
+
+#[wasm_bindgen_test]
+async fn reply_preview_renders() {
+    let mut msg = make_msg("Charlie", "My reply", 5_400_000);
+    msg.reply_preview = Some("Alice: original message".to_string());
+
+    let reply_preview = msg.reply_preview.clone();
+    let body = msg.body.clone();
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                {reply_preview.clone().map(|preview| {
+                    view! {
+                        <div class="reply-preview">{format!("> {preview}")}</div>
+                    }
+                })}
+                <div class="body">{body}</div>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    let preview = query(&container, ".reply-preview").unwrap();
+    assert_eq!(text(&preview), "> Alice: original message");
+
+    let body_el = query(&container, ".body").unwrap();
+    assert_eq!(text(&body_el), "My reply");
+}
+
+#[wasm_bindgen_test]
+async fn reactions_render_with_count() {
+    let mut msg = make_msg("Dave", "Nice!", 5_400_000);
+    msg.reactions
+        .insert("thumbsup".to_string(), vec!["Alice".to_string(), "Bob".to_string()]);
+    msg.reactions
+        .insert("heart".to_string(), vec!["Charlie".to_string()]);
+
+    let reactions: Vec<(String, usize)> = msg
+        .reactions
+        .iter()
+        .map(|(emoji, authors)| (emoji.clone(), authors.len()))
+        .collect();
+    let has_reactions = !reactions.is_empty();
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                {if has_reactions {
+                    Some(view! {
+                        <div class="reactions">
+                            {reactions.clone().into_iter().map(|(emoji, count)| {
+                                view! {
+                                    <span class="reaction">
+                                        {emoji} " " {count.to_string()}
+                                    </span>
+                                }
+                            }).collect::<Vec<_>>()}
+                        </div>
+                    })
+                } else {
+                    None
+                }}
+            </div>
+        }
+    });
+
+    tick().await;
+
+    let reaction_els = query_all(&container, ".reaction");
+    assert_eq!(reaction_els.len(), 2);
+
+    // Collect all reaction texts.
+    let mut reaction_texts: Vec<String> = reaction_els.iter().map(text).collect();
+    reaction_texts.sort();
+
+    // Should contain "heart 1" and "thumbsup 2" (sorted).
+    assert!(reaction_texts.iter().any(|t| t.contains("heart") && t.contains("1")));
+    assert!(reaction_texts.iter().any(|t| t.contains("thumbsup") && t.contains("2")));
+}
+
+#[wasm_bindgen_test]
+async fn message_timestamp_displays() {
+    // 1 hour 30 minutes = 5400 seconds = 5_400_000 ms => "01:30"
+    let msg = make_msg("Eve", "Hello!", 5_400_000);
+    let timestamp = willow_client::util::format_timestamp(msg.timestamp_ms);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                <div class="meta">
+                    <span class="author">"Eve"</span>
+                    <span class="timestamp">{timestamp.clone()}</span>
+                </div>
+                <div class="body">"Hello!"</div>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    let ts = query(&container, ".timestamp").unwrap();
+    assert_eq!(text(&ts), "01:30");
+}
+
+#[wasm_bindgen_test]
+async fn message_shows_timestamp() {
+    // Use a realistic timestamp: 2024-03-23 14:22:47 UTC = 1711199567 * 1000
+    let msg = make_msg("Tester", "timestamp test", 1_711_199_567_000);
+    let timestamp = willow_client::util::format_timestamp(msg.timestamp_ms);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                <div class="meta">
+                    <span class="timestamp">{timestamp.clone()}</span>
+                </div>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    let ts_el = query(&container, ".timestamp").unwrap();
+    let ts_text = text(&ts_el);
+    // Should be an "HH:MM" formatted string, not empty.
+    assert!(!ts_text.is_empty(), "timestamp should not be empty");
+    assert!(
+        ts_text.contains(':'),
+        "timestamp should contain a colon separator, got: {ts_text}"
+    );
+}
+
+// ── Member List Tests ───────────────────────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn member_list_shows_peers_with_names() {
+    let (peers, _) = signal(vec![
+        ("peer-id-1".to_string(), "Alice".to_string()),
+        ("peer-id-2".to_string(), "Bob".to_string()),
+        ("peer-id-3".to_string(), "Charlie".to_string()),
+    ]);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="member-list">
+                <h3>"Online"</h3>
+                <For
+                    each=move || peers.get()
+                    key=|(id, _)| id.clone()
+                    let:peer
+                >
+                    {
+                        let (_pid, name) = peer;
+                        view! {
+                            <div class="member-item">
+                                <div class="status-dot"></div>
+                                <span class="member-name">{name}</span>
+                            </div>
+                        }
+                    }
+                </For>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    let items = query_all(&container, ".member-item");
+    assert_eq!(items.len(), 3);
+
+    let names: Vec<String> = query_all(&container, ".member-name")
+        .iter()
+        .map(text)
+        .collect();
+    assert_eq!(names, vec!["Alice", "Bob", "Charlie"]);
+}
+
+#[wasm_bindgen_test]
+async fn empty_member_list_shows_placeholder() {
+    let (peers, _) = signal(Vec::<(String, String)>::new());
+
+    let container = mount_test(move || {
+        view! {
+            <div class="member-list">
+                <h3>"Online"</h3>
+                {move || {
+                    if peers.get().is_empty() {
+                        Some(view! { <div class="empty-state">"No peers connected"</div> })
+                    } else {
+                        None
+                    }
+                }}
+            </div>
+        }
+    });
+
+    tick().await;
+
+    let placeholder = query(&container, ".empty-state").unwrap();
+    assert_eq!(text(&placeholder), "No peers connected");
+}
+
+// ── Server List Tests ───────────────────────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn server_list_shows_server_icons() {
+    let (servers, _) = signal(vec![
+        ("srv-1".to_string(), "Gaming".to_string()),
+        ("srv-2".to_string(), "Work".to_string()),
+    ]);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="server-rail">
+                <For
+                    each=move || servers.get()
+                    key=|(id, _)| id.clone()
+                    let:server
+                >
+                    {
+                        let (_id, name) = server;
+                        let initial = name
+                            .chars()
+                            .next()
+                            .unwrap_or('?')
+                            .to_uppercase()
+                            .to_string();
+                        view! {
+                            <div class="server-icon" title=name.clone()>
+                                {initial}
+                            </div>
+                        }
+                    }
+                </For>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    let icons = query_all(&container, ".server-icon");
+    assert_eq!(icons.len(), 2);
+    assert_eq!(text(&icons[0]), "G");
+    assert_eq!(text(&icons[1]), "W");
+}
+
+#[wasm_bindgen_test]
+async fn active_server_highlighted() {
+    let (servers, _) = signal(vec![
+        ("srv-1".to_string(), "Gaming".to_string()),
+        ("srv-2".to_string(), "Work".to_string()),
+    ]);
+    let (active_id, set_active_id) = signal("srv-1".to_string());
+
+    let container = mount_test(move || {
+        view! {
+            <div class="server-rail">
+                <For
+                    each=move || servers.get()
+                    key=|(id, _)| id.clone()
+                    let:server
+                >
+                    {
+                        let (id, name) = server;
+                        let id_check = id.clone();
+                        let id_click = id.clone();
+                        let initial = name
+                            .chars()
+                            .next()
+                            .unwrap_or('?')
+                            .to_uppercase()
+                            .to_string();
+                        view! {
+                            <div
+                                class=move || {
+                                    if active_id.get() == id_check {
+                                        "server-icon active"
+                                    } else {
+                                        "server-icon"
+                                    }
+                                }
+                                on:click=move |_| set_active_id.set(id_click.clone())
+                            >
+                                {initial}
+                            </div>
+                        }
+                    }
+                </For>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    // srv-1 should be active initially.
+    let active = query_all(&container, ".server-icon.active");
+    assert_eq!(active.len(), 1);
+    assert_eq!(text(&active[0]), "G");
+
+    // Click srv-2 ("Work").
+    let icons = query_all(&container, ".server-icon");
+    simulate_click(&icons[1]);
+    tick().await;
+
+    let active = query_all(&container, ".server-icon.active");
+    assert_eq!(active.len(), 1);
+    assert_eq!(text(&active[0]), "W");
+}
+
+// ── Connection Status Tests ─────────────────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn connection_status_indicator() {
+    let (status, set_status) = signal("connecting".to_string());
+    let (peer_count, set_peer_count) = signal(0usize);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="connection-status">
+                <span class=move || {
+                    let s = status.get();
+                    match s.as_str() {
+                        "connected" => "status-dot connected",
+                        "connecting" => "status-dot connecting",
+                        _ => "status-dot disconnected",
+                    }
+                }></span>
+                <span class="connection-text">{move || {
+                    let s = status.get();
+                    let n = peer_count.get();
+                    match s.as_str() {
+                        "connected" => {
+                            if n == 1 {
+                                "Connected (1 peer)".to_string()
+                            } else {
+                                format!("Connected ({n} peers)")
+                            }
+                        }
+                        "connecting" => "Connecting...".to_string(),
+                        _ => "Disconnected".to_string(),
+                    }
+                }}</span>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    // Initially connecting.
+    let dot = query(&container, ".status-dot").unwrap();
+    assert!(dot.class_list().contains("connecting"));
+    let txt = query(&container, ".connection-text").unwrap();
+    assert_eq!(text(&txt), "Connecting...");
+
+    // Transition to connected with 3 peers.
+    set_status.set("connected".to_string());
+    set_peer_count.set(3);
+    tick().await;
+
+    let dot = query(&container, ".status-dot").unwrap();
+    assert!(dot.class_list().contains("connected"));
+    let txt = query(&container, ".connection-text").unwrap();
+    assert_eq!(text(&txt), "Connected (3 peers)");
+
+    // Connected with 1 peer (singular).
+    set_peer_count.set(1);
+    tick().await;
+    let txt = query(&container, ".connection-text").unwrap();
+    assert_eq!(text(&txt), "Connected (1 peer)");
+
+    // Transition to disconnected.
+    set_status.set("disconnected".to_string());
+    tick().await;
+
+    let dot = query(&container, ".status-dot").unwrap();
+    assert!(dot.class_list().contains("disconnected"));
+    let txt = query(&container, ".connection-text").unwrap();
+    assert_eq!(text(&txt), "Disconnected");
+}
+
+#[wasm_bindgen_test]
+async fn connection_status_dot_css_class_changes() {
+    let (status, set_status) = signal("disconnected".to_string());
+
+    let container = mount_test(move || {
+        view! {
+            <span class=move || {
+                let s = status.get();
+                match s.as_str() {
+                    "connected" => "status-dot connected",
+                    "connecting" => "status-dot connecting",
+                    _ => "status-dot disconnected",
+                }
+            }></span>
+        }
+    });
+
+    tick().await;
+
+    let dot = query(&container, ".status-dot").unwrap();
+    assert!(dot.class_list().contains("disconnected"));
+
+    set_status.set("connecting".to_string());
+    tick().await;
+
+    let dot = query(&container, ".status-dot").unwrap();
+    assert!(dot.class_list().contains("connecting"));
+    assert!(!dot.class_list().contains("disconnected"));
+
+    set_status.set("connected".to_string());
+    tick().await;
+
+    let dot = query(&container, ".status-dot").unwrap();
+    assert!(dot.class_list().contains("connected"));
+    assert!(!dot.class_list().contains("connecting"));
+}
+
+// ── Timestamp Rendering Tests ───────────────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn zero_timestamp_renders_empty() {
+    let ts = willow_client::util::format_timestamp(0);
+    assert_eq!(ts, "");
+
+    let container = mount_test(move || {
+        view! {
+            <span class="timestamp">{ts.clone()}</span>
+        }
+    });
+
+    tick().await;
+
+    let el = query(&container, ".timestamp").unwrap();
+    assert_eq!(text(&el), "");
+}
+
+#[wasm_bindgen_test]
+async fn timestamp_wraps_24h() {
+    // 25 hours = 90_000_000 ms => wraps to "01:00"
+    let ts = willow_client::util::format_timestamp(90_000_000);
+    assert_eq!(ts, "01:00");
+}
+
+// ── Unread Badge Tests ──────────────────────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn unread_badge_not_shown_for_zero() {
+    let (unread, _) = signal({
+        let mut m = HashMap::<String, usize>::new();
+        m.insert("general".to_string(), 0);
+        m
+    });
+
+    let container = mount_test(move || {
+        let ch = "general".to_string();
+        view! {
+            <div class="channel-item">
+                {
+                    let ch = ch.clone();
+                    move || {
+                        let counts = unread.get();
+                        counts.get(&ch).copied().filter(|c| *c > 0).map(|c| {
+                            view! {
+                                <span class="unread-badge">{c.to_string()}</span>
+                            }
+                        })
+                    }
+                }
+            </div>
+        }
+    });
+
+    tick().await;
+
+    // Zero unread should not show a badge.
+    assert!(query(&container, ".unread-badge").is_none());
+}
+
+#[wasm_bindgen_test]
+async fn unread_badge_updates_reactively() {
+    let (unread, set_unread) = signal(HashMap::<String, usize>::new());
+
+    let container = mount_test(move || {
+        let ch = "random".to_string();
+        view! {
+            <div class="channel-item">
+                {
+                    let ch = ch.clone();
+                    move || {
+                        let counts = unread.get();
+                        counts.get(&ch).copied().filter(|c| *c > 0).map(|c| {
+                            view! {
+                                <span class="unread-badge">{c.to_string()}</span>
+                            }
+                        })
+                    }
+                }
+            </div>
+        }
+    });
+
+    tick().await;
+    assert!(query(&container, ".unread-badge").is_none());
+
+    // Add 5 unread.
+    set_unread.set({
+        let mut m = HashMap::new();
+        m.insert("random".to_string(), 5);
+        m
+    });
+    tick().await;
+
+    let badge = query(&container, ".unread-badge").unwrap();
+    assert_eq!(text(&badge), "5");
+
+    // Update to 10 unread.
+    set_unread.set({
+        let mut m = HashMap::new();
+        m.insert("random".to_string(), 10);
+        m
+    });
+    tick().await;
+
+    let badge = query(&container, ".unread-badge").unwrap();
+    assert_eq!(text(&badge), "10");
+}
+
+// ── MessageView Component Tests ─────────────────────────────────────────────
+// These tests mirror the real MessageView component's rendering logic exactly.
+
+#[wasm_bindgen_test]
+async fn message_view_local_author_class() {
+    let mut msg = make_msg("LocalUser", "my message", 1000);
+    msg.is_local = true;
+
+    let author_class = if msg.is_local {
+        "author local"
+    } else {
+        "author remote"
+    };
+    let author = msg.author.clone();
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                <span class=author_class>{author}</span>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    let author_el = query(&container, ".author.local").unwrap();
+    assert_eq!(text(&author_el), "LocalUser");
+    assert!(query(&container, ".author.remote").is_none());
+}
+
+#[wasm_bindgen_test]
+async fn message_view_remote_author_class() {
+    let msg = make_msg("RemoteUser", "their message", 1000);
+
+    let author_class = if msg.is_local {
+        "author local"
+    } else {
+        "author remote"
+    };
+    let author = msg.author.clone();
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                <span class=author_class>{author}</span>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    let author_el = query(&container, ".author.remote").unwrap();
+    assert_eq!(text(&author_el), "RemoteUser");
+    assert!(query(&container, ".author.local").is_none());
+}
+
+#[wasm_bindgen_test]
+async fn message_without_reactions_has_no_reactions_div() {
+    let msg = make_msg("User", "plain message", 1000);
+
+    let reactions: Vec<(String, usize)> = msg
+        .reactions
+        .iter()
+        .map(|(emoji, authors)| (emoji.clone(), authors.len()))
+        .collect();
+    let has_reactions = !reactions.is_empty();
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                {if has_reactions {
+                    Some(view! { <div class="reactions">"reactions here"</div> })
+                } else {
+                    None
+                }}
+            </div>
+        }
+    });
+
+    tick().await;
+
+    assert!(query(&container, ".reactions").is_none());
+}
+
+#[wasm_bindgen_test]
+async fn message_without_reply_has_no_preview() {
+    let msg = make_msg("User", "standalone message", 1000);
+
+    let reply_preview = msg.reply_preview.clone();
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                {reply_preview.clone().map(|preview| {
+                    view! {
+                        <div class="reply-preview">{format!("> {preview}")}</div>
+                    }
+                })}
+            </div>
+        }
+    });
+
+    tick().await;
+
+    assert!(query(&container, ".reply-preview").is_none());
+}
+
+// ── Settings Section Tests ──────────────────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn settings_status_message_shows_and_hides() {
+    let (status_msg, set_status_msg) = signal(String::new());
+
+    let container = mount_test(move || {
+        view! {
+            <div class="settings-panel">
+                {move || {
+                    let msg = status_msg.get();
+                    if msg.is_empty() {
+                        None
+                    } else {
+                        Some(view! {
+                            <div class="settings-status">{msg}</div>
+                        })
+                    }
+                }}
+            </div>
+        }
+    });
+
+    tick().await;
+
+    // No status initially.
+    assert!(query(&container, ".settings-status").is_none());
+
+    // Show status.
+    set_status_msg.set("Saved.".to_string());
+    tick().await;
+
+    let status = query(&container, ".settings-status").unwrap();
+    assert_eq!(text(&status), "Saved.");
+
+    // Clear status.
+    set_status_msg.set(String::new());
+    tick().await;
+    assert!(query(&container, ".settings-status").is_none());
+}
+
+#[wasm_bindgen_test]
+async fn settings_shows_invite_section() {
+    let container = mount_test(move || {
+        view! {
+            <div class="settings-panel">
+                <div class="settings-section invite-section">
+                    <h3>"Invite a Peer"</h3>
+                    <label>"Recipient Peer ID"</label>
+                    <input type="text" placeholder="12D3KooW..." />
+                    <button class="btn btn-primary">"Generate Invite"</button>
+                </div>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    assert!(query(&container, ".invite-section").is_some());
+    let heading = query(&container, ".invite-section h3").unwrap();
+    assert_eq!(text(&heading), "Invite a Peer");
+}
+
+// ── Channel Create Input Tests ──────────────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn channel_create_input_toggles() {
+    let (creating, set_creating) = signal(false);
+
+    let container = mount_test(move || {
+        view! {
+            <div>
+                <button
+                    class="channel-add-btn"
+                    on:click=move |_| set_creating.set(true)
+                >
+                    "+"
+                </button>
+                {move || {
+                    if creating.get() {
+                        Some(view! {
+                            <div class="channel-create-input">
+                                <input type="text" placeholder="channel name" />
+                            </div>
+                        })
+                    } else {
+                        None
+                    }
+                }}
+            </div>
+        }
+    });
+
+    tick().await;
+
+    // Not visible initially.
+    assert!(query(&container, ".channel-create-input").is_none());
+
+    // Click the add button.
+    let btn = query(&container, ".channel-add-btn").unwrap();
+    simulate_click(&btn);
+    tick().await;
+
+    // Now the input should be visible.
+    assert!(query(&container, ".channel-create-input").is_some());
+}
+
+// ── Mobile Sidebar Toggle Tests ─────────────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn sidebar_open_class_toggles() {
+    let (open, set_open) = signal(false);
+
+    let container = mount_test(move || {
+        view! {
+            <div class=move || if open.get() { "sidebar open" } else { "sidebar" }>
+                "sidebar content"
+            </div>
+        }
+    });
+
+    tick().await;
+
+    let sidebar = query(&container, ".sidebar").unwrap();
+    assert!(!sidebar.class_list().contains("open"));
+
+    set_open.set(true);
+    tick().await;
+
+    let sidebar = query(&container, ".sidebar").unwrap();
+    assert!(sidebar.class_list().contains("open"));
 }

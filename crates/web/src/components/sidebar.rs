@@ -11,6 +11,8 @@ pub fn Sidebar(
     current_channel: ReadSignal<String>,
     open: ReadSignal<bool>,
     unread: ReadSignal<HashMap<String, usize>>,
+    connection_status: ReadSignal<String>,
+    peer_count: ReadSignal<usize>,
     client: ClientHandle,
     on_channel_click: impl Fn(String) + Send + Clone + 'static,
     on_settings_click: impl Fn(()) + Send + Clone + 'static,
@@ -134,6 +136,31 @@ pub fn Sidebar(
                         }
                     }
                 </For>
+            </div>
+            <div class="connection-status">
+                <span class=move || {
+                    let status = connection_status.get();
+                    match status.as_str() {
+                        "connected" => "status-dot connected",
+                        "connecting" => "status-dot connecting",
+                        _ => "status-dot disconnected",
+                    }
+                }></span>
+                <span class="connection-text">{move || {
+                    let status = connection_status.get();
+                    let n = peer_count.get();
+                    match status.as_str() {
+                        "connected" => {
+                            if n == 1 {
+                                "Connected (1 peer)".to_string()
+                            } else {
+                                format!("Connected ({n} peers)")
+                            }
+                        }
+                        "connecting" => "Connecting...".to_string(),
+                        _ => "Disconnected".to_string(),
+                    }
+                }}</span>
             </div>
             <div class="user-area">
                 <div class="status-dot"></div>
