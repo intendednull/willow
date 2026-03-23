@@ -10,6 +10,9 @@ use crate::components::{
     ChannelHeader, ChatInput, MemberList, MessageList, ServerList, SettingsPanel, Sidebar,
 };
 
+/// How many milliseconds to wait before clearing the loading state automatically.
+const LOADING_TIMEOUT_MS: u32 = 5_000;
+
 /// Wrapper around `Rc<RefCell<Client>>` that is `Send` for single-threaded WASM.
 pub type ClientHandle = SendWrapper<Rc<RefCell<Client>>>;
 
@@ -50,6 +53,19 @@ pub fn App() -> impl IntoView {
     let (active_server_id, set_active_server_id) = signal(String::new());
     let (unread, set_unread) = signal(HashMap::<String, usize>::new());
     let (connection_status, set_connection_status) = signal("connecting".to_string());
+    let (replying_to, set_replying_to) = signal(Option::<ChatMessage>::None);
+    let (loading, set_loading) = signal(true);
+
+    // Auto-clear loading after LOADING_TIMEOUT_MS even if no peer connects.
+    {
+        let set_loading = set_loading.clone();
+        set_timeout(
+            move || {
+                set_loading.set(false);
+            },
+            std::time::Duration::from_millis(LOADING_TIMEOUT_MS as u64),
+        );
+    }
 
     // Populate initial state from the client.
     {
@@ -84,6 +100,7 @@ pub fn App() -> impl IntoView {
                     ClientEvent::PeerConnected(_) => {
                         needs_peer_refresh = true;
                         set_connection_status.set("connected".to_string());
+                        set_loading.set(false);
                     }
                     ClientEvent::PeerDisconnected(_) => {
                         needs_peer_refresh = true;
@@ -172,12 +189,17 @@ pub fn App() -> impl IntoView {
         });
     };
 
-    // Send message handler.
+    // Send message handler -- supports replies when replying_to is set.
     let client_send = client.clone();
     let on_send = move |body: String| {
         let ch = current_channel.get_untracked();
         let mut c = client_send.borrow_mut();
-        let _ = c.send_message(&ch, &body);
+        if let Some(reply_msg) = replying_to.get_untracked() {
+            let _ = c.send_reply(&ch, &reply_msg.id, &body);
+            set_replying_to.set(None);
+        } else {
+            let _ = c.send_message(&ch, &body);
+        }
         set_messages.set(c.messages(&ch).into_iter().cloned().collect());
     };
 
@@ -254,8 +276,20 @@ pub fn App() -> impl IntoView {
                                     peer_count=peer_count
                                     on_menu_click=move |_| set_show_sidebar.update(|v| *v = !*v)
                                 />
-                                <MessageList messages=messages />
-                                <ChatInput on_send=on_send.clone() />
+                                <MessageList
+                                    messages=messages
+                                    loading=Signal::from(loading)
+                                    on_message_click=Callback::new(move |msg: ChatMessage| {
+                                        set_replying_to.set(Some(msg));
+                                    })
+                                />
+                                <ChatInput
+                                    on_send=on_send.clone()
+                                    replying_to=replying_to
+                                    on_cancel_reply=Callback::new(move |_| {
+                                        set_replying_to.set(None);
+                                    })
+                                />
                             </div>
                         }.into_any()
                     }

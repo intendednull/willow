@@ -28,10 +28,20 @@ pub fn ChannelHeader(
 
 /// Scrollable message list for the current channel.
 /// Auto-scrolls to bottom when new messages arrive if the user
-/// is already at (or near) the bottom.
+/// is already at (or near) the bottom. Shows a floating
+/// "scroll to bottom" pill when the user has scrolled up.
 #[component]
-pub fn MessageList(messages: ReadSignal<Vec<ChatMessage>>) -> impl IntoView {
+pub fn MessageList(
+    messages: ReadSignal<Vec<ChatMessage>>,
+    /// Whether the app is still in its initial loading state.
+    #[prop(optional, into)]
+    loading: Signal<bool>,
+    /// Callback fired when the user clicks a message (to start a reply).
+    #[prop(optional, into)]
+    on_message_click: Option<Callback<ChatMessage>>,
+) -> impl IntoView {
     let list_ref = NodeRef::<leptos::html::Div>::new();
+    let (show_scroll_btn, set_show_scroll_btn) = signal(false);
 
     // When messages change, check if we should auto-scroll.
     Effect::new(move |prev_len: Option<usize>| {
@@ -52,31 +62,86 @@ pub fn MessageList(messages: ReadSignal<Vec<ChatMessage>>) -> impl IntoView {
             if was_at_bottom || is_new {
                 el.set_scroll_top(el.scroll_height());
             }
+
+            // Update scroll-to-bottom button visibility.
+            let distance = scroll_height - scroll_top - client_height;
+            set_show_scroll_btn.set(distance > 200.0);
         }
 
         len
     });
 
+    let scroll_to_bottom = move |_| {
+        if let Some(el) = list_ref.get() {
+            let el: &web_sys::HtmlElement = &el;
+            el.set_scroll_top(el.scroll_height());
+            set_show_scroll_btn.set(false);
+        }
+    };
+
+    let on_scroll = move |_| {
+        if let Some(el) = list_ref.get() {
+            let el: &web_sys::HtmlElement = &el;
+            let scroll_top = el.scroll_top() as f64;
+            let scroll_height = el.scroll_height() as f64;
+            let client_height = el.client_height() as f64;
+            let distance = scroll_height - scroll_top - client_height;
+            set_show_scroll_btn.set(distance > 200.0);
+        }
+    };
+
+    let on_msg_click = on_message_click.clone();
+
     view! {
-        <div class="message-list" node_ref=list_ref>
+        <div class="message-list-container">
+            <div class="message-list" node_ref=list_ref on:scroll=on_scroll>
+                {move || {
+                    let msgs = messages.get();
+                    let is_loading = loading.get();
+                    if is_loading && msgs.is_empty() {
+                        view! {
+                            <div class="loading-spinner" role="status">
+                                <div class="spinner"></div>
+                                <span>"Connecting..."</span>
+                            </div>
+                        }.into_any()
+                    } else if msgs.is_empty() {
+                        view! {
+                            <div class="empty-state">
+                                "No messages yet. Say hello!"
+                            </div>
+                        }.into_any()
+                    } else {
+                        // Build grouped message views: consecutive messages from
+                        // the same author collapse the header.
+                        let on_click = on_msg_click.clone();
+                        let views: Vec<_> = msgs.iter().enumerate().map(|(i, msg)| {
+                            let show_header = if i == 0 {
+                                true
+                            } else {
+                                msgs[i - 1].author != msg.author
+                            };
+                            let m = msg.clone();
+                            if let Some(ref cb) = on_click {
+                                let cb = cb.clone();
+                                view! { <MessageView message=m show_header=show_header on_click=cb /> }.into_any()
+                            } else {
+                                view! { <MessageView message=m show_header=show_header /> }.into_any()
+                            }
+                        }).collect();
+                        view! { <div>{views}</div> }.into_any()
+                    }
+                }}
+            </div>
             {move || {
-                let msgs = messages.get();
-                if msgs.is_empty() {
-                    view! {
-                        <div class="empty-state">
-                            "No messages yet. Say hello!"
-                        </div>
-                    }.into_any()
+                if show_scroll_btn.get() {
+                    Some(view! {
+                        <button class="scroll-to-bottom" on:click=scroll_to_bottom>
+                            "New messages"
+                        </button>
+                    })
                 } else {
-                    view! {
-                        <For
-                            each=move || messages.get()
-                            key=|m| m.id.clone()
-                            let:msg
-                        >
-                            <MessageView message=msg />
-                        </For>
-                    }.into_any()
+                    None
                 }
             }}
         </div>

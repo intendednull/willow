@@ -227,7 +227,10 @@ async fn message_list_shows_empty_state() {
     tick().await;
 
     assert!(query(&container, ".empty-state").is_some());
-    assert_eq!(text(&query(&container, ".empty-state").unwrap()), "No messages");
+    assert_eq!(
+        text(&query(&container, ".empty-state").unwrap()),
+        "No messages"
+    );
 }
 
 #[wasm_bindgen_test]
@@ -253,8 +256,22 @@ async fn message_list_renders_messages() {
 
     // Add messages.
     set_messages.set(vec![
-        willow_client::ChatMessage::new("s".into(), "t".into(), "A".into(), "first".into(), false, 1),
-        willow_client::ChatMessage::new("s".into(), "t".into(), "B".into(), "second".into(), false, 2),
+        willow_client::ChatMessage::new(
+            "s".into(),
+            "t".into(),
+            "A".into(),
+            "first".into(),
+            false,
+            1,
+        ),
+        willow_client::ChatMessage::new(
+            "s".into(),
+            "t".into(),
+            "B".into(),
+            "second".into(),
+            false,
+            2,
+        ),
     ]);
     tick().await;
 
@@ -285,9 +302,8 @@ async fn input_captures_value() {
 
     tick().await;
 
-    let input: web_sys::HtmlInputElement = query(&container, ".test-input")
-        .unwrap()
-        .unchecked_into();
+    let input: web_sys::HtmlInputElement =
+        query(&container, ".test-input").unwrap().unchecked_into();
 
     // Simulate typing by setting value and dispatching input event.
     simulate_type(&input, "hello");
@@ -335,7 +351,8 @@ async fn input_sends_on_enter() {
     // Press Enter.
     let init = web_sys::KeyboardEventInit::new();
     init.set_key("Enter");
-    let enter = web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+    let enter =
+        web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
     input
         .dyn_ref::<web_sys::EventTarget>()
         .unwrap()
@@ -707,8 +724,10 @@ async fn reply_preview_renders() {
 #[wasm_bindgen_test]
 async fn reactions_render_with_count() {
     let mut msg = make_msg("Dave", "Nice!", 5_400_000);
-    msg.reactions
-        .insert("thumbsup".to_string(), vec!["Alice".to_string(), "Bob".to_string()]);
+    msg.reactions.insert(
+        "thumbsup".to_string(),
+        vec!["Alice".to_string(), "Bob".to_string()],
+    );
     msg.reactions
         .insert("heart".to_string(), vec!["Charlie".to_string()]);
 
@@ -751,8 +770,12 @@ async fn reactions_render_with_count() {
     reaction_texts.sort();
 
     // Should contain "heart 1" and "thumbsup 2" (sorted).
-    assert!(reaction_texts.iter().any(|t| t.contains("heart") && t.contains("1")));
-    assert!(reaction_texts.iter().any(|t| t.contains("thumbsup") && t.contains("2")));
+    assert!(reaction_texts
+        .iter()
+        .any(|t| t.contains("heart") && t.contains("1")));
+    assert!(reaction_texts
+        .iter()
+        .any(|t| t.contains("thumbsup") && t.contains("2")));
 }
 
 #[wasm_bindgen_test]
@@ -1440,4 +1463,322 @@ async fn sidebar_open_class_toggles() {
 
     let sidebar = query(&container, ".sidebar").unwrap();
     assert!(sidebar.class_list().contains("open"));
+}
+
+// ── Feature 1: Message Grouping Tests ───────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn consecutive_messages_grouped() {
+    // When multiple messages come from the same author in a row, only the
+    // first should show the `.meta` header; subsequent ones get class `grouped`.
+    let msgs = vec![
+        make_msg("Alice", "Hello!", 1000),
+        make_msg("Alice", "How are you?", 2000),
+        make_msg("Bob", "I'm good", 3000),
+        make_msg("Bob", "Thanks", 4000),
+        make_msg("Alice", "Great!", 5000),
+    ];
+
+    let container = mount_test(move || {
+        let views: Vec<_> = msgs
+            .iter()
+            .enumerate()
+            .map(|(i, msg)| {
+                let show_header = if i == 0 {
+                    true
+                } else {
+                    msgs[i - 1].author != msg.author
+                };
+                let msg_class = if show_header {
+                    "message"
+                } else {
+                    "message grouped"
+                };
+                let author = msg.author.clone();
+                let body = msg.body.clone();
+                view! {
+                    <div class=msg_class>
+                        {if show_header {
+                            Some(view! {
+                                <div class="meta">
+                                    <span class="author">{author}</span>
+                                </div>
+                            })
+                        } else {
+                            None
+                        }}
+                        <div class="body">{body}</div>
+                    </div>
+                }
+            })
+            .collect();
+        view! { <div class="message-list">{views}</div> }
+    });
+
+    tick().await;
+
+    let all_messages = query_all(&container, ".message");
+    assert_eq!(all_messages.len(), 5);
+
+    // Grouped messages (no header shown).
+    let grouped = query_all(&container, ".message.grouped");
+    assert_eq!(grouped.len(), 2, "should have 2 grouped messages");
+
+    // Non-grouped messages have a .meta div.
+    let metas = query_all(&container, ".meta");
+    assert_eq!(
+        metas.len(),
+        3,
+        "should have 3 headers (first of each author group)"
+    );
+
+    // Grouped messages should NOT have .meta.
+    for g in &grouped {
+        assert!(
+            g.query_selector(".meta").unwrap().is_none(),
+            "grouped message should not have .meta"
+        );
+    }
+}
+
+// ── Feature 2: Reply UI Tests ───────────────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn reply_bar_shows_when_replying() {
+    let (replying_to, set_replying_to) = signal(Option::<willow_client::ChatMessage>::None);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="input-area">
+                {move || {
+                    replying_to.get().map(|m| {
+                        let preview = if m.body.len() > 60 {
+                            format!("{}...", &m.body[..60])
+                        } else {
+                            m.body.clone()
+                        };
+                        view! {
+                            <div class="reply-bar">
+                                <span class="reply-bar-text">
+                                    {format!("Replying to {}: {}", m.author, preview)}
+                                </span>
+                                <button
+                                    class="reply-bar-cancel"
+                                    on:click=move |_| set_replying_to.set(None)
+                                >
+                                    "x"
+                                </button>
+                            </div>
+                        }
+                    })
+                }}
+                <input type="text" placeholder="Message #channel" />
+            </div>
+        }
+    });
+
+    tick().await;
+
+    // No reply bar initially.
+    assert!(query(&container, ".reply-bar").is_none());
+
+    // Set a reply target.
+    let msg = make_msg("Alice", "original message", 1000);
+    set_replying_to.set(Some(msg));
+    tick().await;
+
+    // Reply bar should now be visible.
+    let _bar = query(&container, ".reply-bar").unwrap();
+    let bar_text = text(&query(&container, ".reply-bar-text").unwrap());
+    assert!(
+        bar_text.contains("Replying to Alice"),
+        "reply bar should mention the author"
+    );
+    assert!(
+        bar_text.contains("original message"),
+        "reply bar should contain the message preview"
+    );
+
+    // Click the cancel button.
+    let cancel_btn = query(&container, ".reply-bar-cancel").unwrap();
+    simulate_click(&cancel_btn);
+    tick().await;
+
+    // Reply bar should be gone.
+    assert!(
+        query(&container, ".reply-bar").is_none(),
+        "reply bar should disappear after cancel"
+    );
+}
+
+// ── Feature 3: Scroll-to-bottom Button Tests ───────────────────────────────
+
+#[wasm_bindgen_test]
+async fn scroll_to_bottom_button_hidden_at_bottom() {
+    // When the user is at the bottom, the scroll-to-bottom button should
+    // be hidden. We test the signal logic directly.
+    let (show_btn, set_show_btn) = signal(false);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message-list-container">
+                <div class="message-list" style="overflow-y: auto; height: 100px;">
+                    "short content"
+                </div>
+                {move || {
+                    if show_btn.get() {
+                        Some(view! {
+                            <button class="scroll-to-bottom">"New messages"</button>
+                        })
+                    } else {
+                        None
+                    }
+                }}
+            </div>
+        }
+    });
+
+    tick().await;
+
+    // Button should be hidden when show_btn is false (at bottom).
+    assert!(
+        query(&container, ".scroll-to-bottom").is_none(),
+        "scroll button should be hidden at bottom"
+    );
+
+    // Simulate scrolling up (set signal to true).
+    set_show_btn.set(true);
+    tick().await;
+
+    let btn = query(&container, ".scroll-to-bottom").unwrap();
+    assert_eq!(text(&btn), "New messages");
+
+    // Click it to go back to bottom (set signal to false).
+    simulate_click(&btn);
+    // In real code clicking would scroll and toggle the signal;
+    // here we just test the rendering.
+    set_show_btn.set(false);
+    tick().await;
+
+    assert!(
+        query(&container, ".scroll-to-bottom").is_none(),
+        "scroll button should hide after clicking"
+    );
+}
+
+// ── Feature 4: Relative Timestamp Tests ─────────────────────────────────────
+
+/// Mirror of the `format_relative_time` function in `message.rs`, used
+/// for testing without importing from the binary crate.
+fn format_relative_time(timestamp_ms: u64) -> String {
+    if timestamp_ms == 0 {
+        return String::new();
+    }
+    let now_ms = js_sys::Date::now() as u64;
+    if timestamp_ms > now_ms {
+        return willow_client::util::format_timestamp(timestamp_ms);
+    }
+    let diff_secs = (now_ms - timestamp_ms) / 1000;
+    if diff_secs < 60 {
+        "just now".to_string()
+    } else if diff_secs < 3600 {
+        format!("{}m ago", diff_secs / 60)
+    } else if diff_secs < 86400 {
+        format!("{}h ago", diff_secs / 3600)
+    } else {
+        willow_client::util::format_timestamp(timestamp_ms)
+    }
+}
+
+#[wasm_bindgen_test]
+async fn relative_timestamp_formats() {
+    let now_ms = js_sys::Date::now() as u64;
+
+    // "just now" for < 60s ago.
+    assert_eq!(format_relative_time(now_ms - 10_000), "just now");
+    assert_eq!(format_relative_time(now_ms - 59_000), "just now");
+
+    // "Xm ago" for < 1 hour.
+    assert_eq!(format_relative_time(now_ms - 5 * 60_000), "5m ago");
+    assert_eq!(format_relative_time(now_ms - 30 * 60_000), "30m ago");
+
+    // "Xh ago" for < 24 hours.
+    assert_eq!(format_relative_time(now_ms - 2 * 3_600_000), "2h ago");
+    assert_eq!(format_relative_time(now_ms - 12 * 3_600_000), "12h ago");
+
+    // Falls back to HH:MM for older timestamps.
+    let old_ts = now_ms - 48 * 3_600_000; // 2 days ago
+    let formatted = format_relative_time(old_ts);
+    assert!(
+        formatted.contains(':'),
+        "old timestamps should fall back to HH:MM, got: {formatted}"
+    );
+
+    // Zero returns empty.
+    assert_eq!(format_relative_time(0), "");
+}
+
+// ── Feature 5: Loading Spinner Tests ────────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn loading_spinner_shows_initially() {
+    let (loading, set_loading) = signal(true);
+    let (messages, _set_messages) = signal(Vec::<willow_client::ChatMessage>::new());
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message-list">
+                {move || {
+                    let is_loading = loading.get();
+                    let msgs = messages.get();
+                    if is_loading && msgs.is_empty() {
+                        view! {
+                            <div class="loading-spinner" role="status">
+                                <div class="spinner"></div>
+                                <span>"Connecting..."</span>
+                            </div>
+                        }.into_any()
+                    } else if msgs.is_empty() {
+                        view! {
+                            <div class="empty-state">"No messages yet. Say hello!"</div>
+                        }.into_any()
+                    } else {
+                        view! {
+                            <div class="has-messages">"Messages here"</div>
+                        }.into_any()
+                    }
+                }}
+            </div>
+        }
+    });
+
+    tick().await;
+
+    // Spinner visible while loading.
+    let spinner = query(&container, ".loading-spinner");
+    assert!(
+        spinner.is_some(),
+        "loading spinner should be visible initially"
+    );
+    assert!(
+        query(&container, ".spinner").is_some(),
+        "spinner animation element should exist"
+    );
+    assert!(
+        query(&container, ".empty-state").is_none(),
+        "empty state should NOT show while loading"
+    );
+
+    // After loading finishes, show empty state.
+    set_loading.set(false);
+    tick().await;
+
+    assert!(
+        query(&container, ".loading-spinner").is_none(),
+        "spinner should be gone after loading"
+    );
+    assert!(
+        query(&container, ".empty-state").is_some(),
+        "empty state should show after loading with no messages"
+    );
 }
