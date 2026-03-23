@@ -102,6 +102,15 @@ pub fn handle_network_events(
                         .unwrap_or_default();
                     if chat_msg.topic != current_topic {
                         *unread.counts.entry(chat_msg.topic.clone()).or_insert(0) += 1;
+
+                        // Show OS notification for messages on other channels.
+                        let channel_name = server_state
+                            .name_for_topic(&chat_msg.topic)
+                            .unwrap_or("unknown");
+                        crate::notify::send_notification(
+                            &format!("#{channel_name}"),
+                            &format!("{}: {}", chat_msg.author, chat_msg.body),
+                        );
                     }
 
                     state.messages.push(chat_msg);

@@ -27,6 +27,7 @@ tokio = { workspace = true }
 dirs = "6"
 rusqlite = { version = "0.31", features = ["bundled"] }
 arboard = "3"
+notify-rust = "4"
 
 [dev-dependencies]
 tempfile = "3"
@@ -34,4 +35,4 @@ tempfile = "3"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4"
 futures = "0.3"
-web-sys = { version = "0.3", features = ["Window", "Storage", "Navigator", "Clipboard"] }
+web-sys = { version = "0.3", features = ["Window", "Storage", "Navigator", "Clipboard", "Notification", "NotificationPermission", "NotificationOptions"] }
