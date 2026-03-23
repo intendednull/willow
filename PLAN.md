@@ -195,18 +195,21 @@ A native desktop app where you and your friends can:
 
 ## Test Coverage
 
-290+ tests across all crates covering:
-- Serialization round-trips, encryption/decryption, key exchange
-- Key ratcheting, forward secrecy, key rotation
-- Network integration (14 tests with real libp2p nodes, including 3-node topology)
-- Server state sync: StampedOp round-trip, SyncRequest/SyncBatch, dedup, trust
-- Catch-up flow: missing op detection, HLC filtering, untrusted rejection
-- Headless Bevy UI (input, sending, receiving, settings, permissions)
-- File chunking, reassembly, chunk store, chunk request/response over network
-- Secure invite generate/accept/tamper-detection
-- Full end-to-end invite flow (owner → recipient → decrypt → chat)
-- Emoji shortcode expansion, reactions, edits, deletes, replies
-- Profile persistence, message persistence, op log persistence
+420+ tests across 7 tiers:
+
+| Tier | Tests | Scope |
+|------|-------|-------|
+| Pure state machine | 64 | Determinism, permissions, merges, stress, replay |
+| Client library | 93 | API methods, event store, bridge, state accessors |
+| Bevy headless UI | 99 | Keyboard, chat, settings, invites, permissions |
+| Network integration | 14 | Real libp2p, 3-node topology, file chunks |
+| Scaling | 7 | 5/10/20 peers, message flood, 532k events/sec |
+| Relay history | 3 | Store events, serve to new peers, multi-peer |
+| Browser (Leptos) | 39 | Real DOM, signals, events, all components |
+| Other crates | ~100 | Transport, identity, crypto, channel, files |
+
+Run: `just test` (cargo), `just test-browser` (headless Firefox),
+`just test-all` (both), `just test-scale` (with output)
 
 ## Honest Tradeoffs
 

@@ -53,19 +53,28 @@ crates/
 ```bash
 just check          # run ALL checks (fmt, clippy, test, wasm) — use before committing
 just fmt            # format code
-just clippy         # lint with warnings as errors
-just test           # run all tests
-just test-crate willow-messaging  # test a specific crate
+just clippy         # lint with warnings as errors (workspace-wide)
+just test           # run all cargo tests (unit + integration)
+just test-browser   # run in-browser Leptos tests (needs Firefox + geckodriver)
+just test-all       # run ALL tests including browser
+just test-state     # test the pure state machine
+just test-client    # test the client library
+just test-app       # test the Bevy app (headless + integration)
+just test-relay     # test relay history sync
+just test-scale     # run scaling/performance tests with output
+just test-crate X   # test a specific crate
 just check-wasm     # verify WASM compilation
 just build          # build native desktop app
-just build-wasm     # build WASM web app
-just serve-wasm     # build + serve on localhost:8080
+just build-web      # build Leptos web app (crates/web via trunk)
+just serve-web      # serve Leptos web app locally
+just build-relay    # build relay server (release)
 just run            # run native desktop app
 just relay          # run the relay server
 ```
 
 **All code must pass `just check` (fmt + clippy + test + WASM) with zero
-warnings before being committed.**
+warnings before being committed.** Browser tests (`just test-browser`)
+require Firefox and geckodriver installed.
 
 ### Dual-Target Support (Native + WASM)
 
@@ -81,23 +90,71 @@ When adding new code, ensure WASM compatibility:
 - Use `#[cfg(target_arch = "wasm32")]` / `#[cfg(not(target_arch = "wasm32"))]`
   for platform-specific code paths
 
-### Headless UI Testing
+### Testing Strategy (420+ tests)
 
-The Bevy app is tested programmatically using headless `MinimalPlugins` — no
-window or GPU required. Tests live in `crates/app/src/tests.rs` and cover
-keyboard input, message sending, network event handling, and serialization.
+Willow uses a multi-tier testing strategy:
 
-To add a new UI test:
+**1. Pure state machine tests** (`just test-state`, 64 tests):
+- Determinism, idempotency, permission enforcement
+- Event replay from genesis, merge convergence
+- Stress: 1000 messages, 100-event replay, 3-way merge
+- No I/O, no networking — tests run instantly
 
-1. Use `test_app()` to get a headless `App` and a network command receiver.
-2. Inject input via `send_key()` or write messages directly with
-   `app.world_mut().write_message(...)`.
-3. Call `app.update()` to run one frame of systems.
-4. Assert on `ChatState`, `InputState`, or the network command receiver.
+**2. Client library tests** (`just test-client`, 93 tests):
+- Client API methods (send, create channel, trust, kick)
+- Event store persistence, bridge conversion
+- State accessors, display name resolution
 
-Note: `handle_keyboard_input` and `send_message` run in the same `Update`
-schedule but as separate systems. Setting `send_requested = true` takes effect
-on the *next* `app.update()` call.
+**3. Bevy headless UI tests** (`just test-app`, 99 tests):
+- Keyboard input, message sending, chat state
+- Settings, profiles, invites, permissions
+- Uses `test_app()` with `MinimalPlugins` — no window/GPU
+
+**4. Network integration tests** (`just test-app`, 14 tests):
+- Real libp2p nodes on localhost TCP
+- Message round-trips, channel isolation, encryption
+- Server op sync, file chunks, 3-node propagation
+
+**5. Scaling tests** (`just test-scale`, 7 tests):
+- 5/10/20 peer connections (~150ms/peer)
+- Message flood delivery (100% at 10 peers)
+- Event throughput (532k events/sec)
+- Merge throughput (1000 events in 2.6ms)
+
+**6. Relay history tests** (`just test-relay`, 3 tests):
+- Relay stores events, serves to new peers
+- Multi-peer history aggregation
+- Offline peer recovery via relay
+
+**7. In-browser Leptos tests** (`just test-browser`, 39 tests):
+- Real DOM rendering in headless Firefox via wasm-pack
+- Signal reactivity, event handling, Effects
+- All components: sidebar, messages, input, channels,
+  settings, member list, server list, connection status
+- Requires: Firefox + geckodriver + wasm-pack
+
+### Adding Tests
+
+**State machine test** (fastest):
+1. Add to `crates/state/src/tests.rs`
+2. Use `make_event(state, author, kind)` helper
+3. `cargo test -p willow-state`
+
+**Client API test**:
+1. Add to `crates/client/src/lib.rs` test module
+2. Use `test_client()` helper — creates Client without networking
+3. `cargo test -p willow-client`
+
+**Bevy headless test**:
+1. Add to `crates/app/src/tests.rs`
+2. Use `test_app()` for headless App + command receiver
+3. `cargo test -p willow-app --lib`
+
+**Browser test**:
+1. Add to `crates/web/tests/browser.rs`
+2. Use `mount_test(|| view! { ... })` to render into DOM
+3. Use `tick().await` to flush reactive effects
+4. `wasm-pack test --headless --firefox crates/web`
 
 ## Code Conventions
 

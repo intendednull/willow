@@ -1,6 +1,6 @@
 # Willow — P2P encrypted chat
 
-# Run all checks (fmt, clippy, test, wasm). Use before committing.
+# Run ALL checks (fmt, clippy, test, wasm, browser). Use before committing.
 check: fmt clippy test check-wasm
 
 # Format all code
@@ -13,15 +13,42 @@ fmt-check:
 
 # Run clippy with warnings as errors
 clippy:
-    cargo clippy -- -D warnings
+    cargo clippy --workspace -- -D warnings
 
-# Run all tests
+# Run all cargo tests (unit + integration, excludes browser)
 test:
-    cargo test
+    cargo test --workspace
 
 # Run tests for a specific crate
 test-crate crate:
     cargo test -p {{crate}}
+
+# Run the state machine tests
+test-state:
+    cargo test -p willow-state
+
+# Run the client library tests
+test-client:
+    cargo test -p willow-client
+
+# Run the Bevy app headless + integration tests
+test-app:
+    cargo test -p willow-app
+
+# Run the relay history sync tests
+test-relay:
+    cargo test -p willow-relay
+
+# Run the scaling / performance tests with output
+test-scale:
+    cargo test -p willow-app --test peer_scale -- --nocapture
+
+# Run in-browser Leptos component tests (requires Firefox + geckodriver)
+test-browser:
+    wasm-pack test --headless --firefox crates/web
+
+# Run ALL tests including browser tests
+test-all: test test-browser
 
 # Check native compilation
 check-native:
@@ -43,7 +70,15 @@ build-release:
 run:
     cargo run -p willow-app
 
-# Build the WASM web app
+# Build the Leptos web app (WASM)
+build-web:
+    cd crates/web && trunk build --release
+
+# Serve the Leptos web app locally
+serve-web:
+    cd crates/web && trunk serve
+
+# Build the legacy Bevy WASM app
 build-wasm:
     cargo build --release --target wasm32-unknown-unknown -p willow-app
     wasm-bindgen \
@@ -52,7 +87,7 @@ build-wasm:
         --no-typescript \
         target/wasm32-unknown-unknown/release/willow-app.wasm
 
-# Build and serve the WASM web app on localhost:8080
+# Build and serve the legacy Bevy WASM app on localhost:8080
 serve-wasm: build-wasm
     python3 -m http.server 8080 --directory web
 
@@ -67,4 +102,4 @@ relay *args:
 # Clean build artifacts
 clean:
     cargo clean
-    rm -rf web/pkg
+    rm -rf web/pkg crates/web/dist
