@@ -592,14 +592,19 @@ pub fn sync_input_text(
     }
 }
 
-/// Poll the WASM paste buffer. On native this is a no-op because
-/// `read_clipboard()` returns `None` without a prior `request_paste()`.
+/// Poll the WASM paste buffer. On native, paste is handled synchronously
+/// in `handle_keyboard_input` via Ctrl+V, so this system is a no-op.
 pub fn poll_paste_buffer(
     mut input: ResMut<InputState>,
     view: Res<AppView>,
     mut settings_input: ResMut<SettingsInput>,
     mut channel_mgmt: ResMut<ChannelManagement>,
 ) {
+    // On native, read_clipboard() always returns the current clipboard
+    // contents, which would cause infinite pasting. Only poll on WASM.
+    if cfg!(not(target_arch = "wasm32")) {
+        return;
+    }
     if let Some(text) = crate::clipboard::read_clipboard() {
         if *view == AppView::Settings {
             let mut cursor = settings_input.cursor;
