@@ -101,7 +101,12 @@ pub enum SyncMessage {
     /// A single server operation.
     Op(StampedOp),
     /// Request ops newer than the given HLC timestamp.
-    SyncRequest { latest_hlc: HlcTimestamp },
+    /// If `topic` is set, request chat messages for that specific channel.
+    SyncRequest {
+        latest_hlc: HlcTimestamp,
+        #[serde(default)]
+        topic: Option<String>,
+    },
     /// Batch of ops in response to a sync request.
     SyncBatch { ops: Vec<StampedOp> },
 }

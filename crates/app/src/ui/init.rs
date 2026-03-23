@@ -134,13 +134,28 @@ pub fn subscribe_channels(
         );
     }
 
-    // Request missing ops from peers.
+    // Request missing server ops from peers.
     let _ = net_cmd
         .0
         .send(crate::network_bridge::NetworkBridgeCommand::RequestSync {
             latest_hlc: op_log.latest_hlc(),
+            topic: None,
         });
     info!("requested server state sync");
+
+    // Request chat history for each channel.
+    for topic in server_state.topic_map.keys() {
+        let _ = net_cmd
+            .0
+            .send(crate::network_bridge::NetworkBridgeCommand::RequestSync {
+                latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
+                topic: Some(topic.clone()),
+            });
+    }
+    info!(
+        "requested chat history for {} channels",
+        server_state.topic_map.len()
+    );
 
     info!("subscribed to {} channels", server_state.topic_map.len());
 }

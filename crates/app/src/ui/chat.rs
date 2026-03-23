@@ -252,6 +252,7 @@ pub fn handle_network_events(
                             &stamped_op.author,
                             &stamped_op.op_id,
                             stamped_op.hlc.millis,
+                            stamped_op,
                             &mut key_store,
                             &mut state,
                             &db,
@@ -262,7 +263,11 @@ pub fn handle_network_events(
                     }
                 }
             }
-            NetworkBridgeEvent::SyncRequested { latest_hlc, from } => {
+            NetworkBridgeEvent::SyncRequested {
+                latest_hlc,
+                from,
+                topic,
+            } => {
                 // Only respond to trusted peers.
                 let owner = server_state
                     .server
@@ -270,20 +275,44 @@ pub fn handle_network_events(
                     .map(|s| s.owner.to_string())
                     .unwrap_or_default();
                 if op_log.is_trusted(from, &owner) {
-                    let missing: Vec<_> = op_log
-                        .ops
-                        .iter()
-                        .filter(|op| op.hlc > *latest_hlc)
-                        .cloned()
-                        .collect();
-                    let count = missing.len();
-                    if !missing.is_empty() {
-                        let _ = net_cmd.0.send(
-                            crate::network_bridge::NetworkBridgeCommand::SendSyncBatch {
-                                ops: missing,
-                            },
-                        );
-                        info!("sent {count} ops to sync peer {from}");
+                    if let Some(ref req_topic) = topic {
+                        // Channel-specific: return chat messages from MessageDb.
+                        if let Some(ref db_arc) = db.0 {
+                            if let Ok(db_lock) = db_arc.lock() {
+                                let chat_ops = db_lock.load_chat_ops_since(
+                                    req_topic,
+                                    latest_hlc.millis,
+                                    latest_hlc.counter,
+                                    500,
+                                );
+                                if !chat_ops.is_empty() {
+                                    let count = chat_ops.len();
+                                    let _ = net_cmd.0.send(
+                                        crate::network_bridge::NetworkBridgeCommand::SendSyncBatch {
+                                            ops: chat_ops,
+                                        },
+                                    );
+                                    info!("sent {count} chat ops for {req_topic} to {from}");
+                                }
+                            }
+                        }
+                    } else {
+                        // Server ops: return from OpLog (existing behavior).
+                        let missing: Vec<_> = op_log
+                            .ops
+                            .iter()
+                            .filter(|op| op.hlc > *latest_hlc)
+                            .cloned()
+                            .collect();
+                        let count = missing.len();
+                        if !missing.is_empty() {
+                            let _ = net_cmd.0.send(
+                                crate::network_bridge::NetworkBridgeCommand::SendSyncBatch {
+                                    ops: missing,
+                                },
+                            );
+                            info!("sent {count} ops to sync peer {from}");
+                        }
                     }
                 }
             }
@@ -324,6 +353,7 @@ pub fn handle_network_events(
                                 &stamped_op.author,
                                 &stamped_op.op_id,
                                 stamped_op.hlc.millis,
+                                stamped_op,
                                 &mut key_store,
                                 &mut state,
                                 &db,
@@ -817,6 +847,8 @@ fn handle_op(
 
 /// Process a ChatMessage op for display: deserialize content, decrypt if
 /// needed, and add to ChatState / persist to MessageDb.
+///
+/// Also stores the stamped op in the chat ops table for catch-up sync.
 #[allow(clippy::too_many_arguments)]
 fn process_chat_message(
     topic: &str,
@@ -824,6 +856,7 @@ fn process_chat_message(
     author_peer_id: &str,
     op_id: &str,
     hlc_millis: u64,
+    stamped: &crate::server_sync::StampedOp,
     key_store: &mut ResMut<ChannelKeyStore>,
     state: &mut ResMut<ChatState>,
     db: &Res<MessageDbRes>,
@@ -831,6 +864,13 @@ fn process_chat_message(
     server_state: &ResMut<ServerState>,
     unread: &mut ResMut<UnreadCounts>,
 ) {
+    // Store the stamped op for catch-up sync.
+    if let Some(ref db_arc) = db.0 {
+        if let Ok(db_lock) = db_arc.lock() {
+            db_lock.insert_chat_op(stamped, topic);
+        }
+    }
+
     let Ok(content) = willow_transport::unpack::<Content>(content_data) else {
         warn!("failed to deserialize ChatMessage content");
         return;

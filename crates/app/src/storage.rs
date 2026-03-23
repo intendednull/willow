@@ -141,7 +141,15 @@ impl MessageDb {
                 is_local INTEGER NOT NULL DEFAULT 0,
                 timestamp_ms INTEGER NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS idx_messages_topic ON messages(topic, timestamp_ms);",
+            CREATE INDEX IF NOT EXISTS idx_messages_topic ON messages(topic, timestamp_ms);
+            CREATE TABLE IF NOT EXISTS chat_ops (
+                op_id TEXT PRIMARY KEY,
+                topic TEXT NOT NULL,
+                hlc_millis INTEGER NOT NULL,
+                hlc_counter INTEGER NOT NULL,
+                op_data BLOB NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_chat_ops_topic_hlc ON chat_ops(topic, hlc_millis, hlc_counter);",
         )
         .ok()?;
         Some(Self { conn })
@@ -199,6 +207,44 @@ impl MessageDb {
                 |row| row.get::<_, i64>(0),
             )
             .unwrap_or(0) as usize
+    }
+
+    /// Store a chat message StampedOp for catch-up sync.
+    pub fn insert_chat_op(&self, stamped: &crate::server_sync::StampedOp, topic: &str) {
+        let op_data = willow_transport::pack(stamped).unwrap_or_default();
+        let _ = self.conn.execute(
+            "INSERT OR IGNORE INTO chat_ops (op_id, topic, hlc_millis, hlc_counter, op_data) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![stamped.op_id, topic, stamped.hlc.millis as i64, stamped.hlc.counter as i32, op_data],
+        );
+    }
+
+    /// Load chat ops for a topic newer than the given HLC, up to a limit.
+    pub fn load_chat_ops_since(
+        &self,
+        topic: &str,
+        hlc_millis: u64,
+        hlc_counter: u32,
+        limit: usize,
+    ) -> Vec<crate::server_sync::StampedOp> {
+        let mut stmt = match self.conn.prepare(
+            "SELECT op_data FROM chat_ops WHERE topic = ?1 AND (hlc_millis > ?2 OR (hlc_millis = ?2 AND hlc_counter > ?3)) ORDER BY hlc_millis ASC, hlc_counter ASC LIMIT ?4",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map(
+            rusqlite::params![topic, hlc_millis as i64, hlc_counter as i32, limit as i64],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .ok()
+        .map(|rows| {
+            rows.filter_map(|r| r.ok())
+                .filter_map(|data| {
+                    willow_transport::unpack::<crate::server_sync::StampedOp>(&data).ok()
+                })
+                .collect()
+        })
+        .unwrap_or_default()
     }
 }
 
@@ -261,6 +307,58 @@ impl MessageDb {
 
     pub fn count_topic(&self, topic: &str) -> usize {
         Self::load_all(topic).len()
+    }
+
+    fn chatops_key(topic: &str) -> String {
+        // Same hash as msg_key but with a different prefix.
+        let mut h: u64 = 5381;
+        for b in topic.bytes() {
+            h = h.wrapping_mul(33).wrapping_add(b as u64);
+        }
+        format!("willow_chatops_{h:x}")
+    }
+
+    fn load_chat_ops_raw(key: &str) -> Vec<crate::server_sync::StampedOp> {
+        load_raw(key)
+            .and_then(|bytes| willow_transport::unpack(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    /// Store a chat message StampedOp for catch-up sync.
+    pub fn insert_chat_op(&self, stamped: &crate::server_sync::StampedOp, topic: &str) {
+        let key = Self::chatops_key(topic);
+        let mut ops = Self::load_chat_ops_raw(&key);
+        // Dedup by op_id.
+        if ops.iter().any(|op| op.op_id == stamped.op_id) {
+            return;
+        }
+        ops.push(stamped.clone());
+        // Cap at 500 ops per topic.
+        if ops.len() > 500 {
+            ops.drain(..ops.len() - 500);
+        }
+        if let Ok(bytes) = willow_transport::pack(&ops) {
+            save_raw(&key, &bytes);
+        }
+    }
+
+    /// Load chat ops for a topic newer than the given HLC, up to a limit.
+    pub fn load_chat_ops_since(
+        &self,
+        topic: &str,
+        hlc_millis: u64,
+        hlc_counter: u32,
+        limit: usize,
+    ) -> Vec<crate::server_sync::StampedOp> {
+        let key = Self::chatops_key(topic);
+        let ops = Self::load_chat_ops_raw(&key);
+        ops.into_iter()
+            .filter(|op| {
+                op.hlc.millis > hlc_millis
+                    || (op.hlc.millis == hlc_millis && op.hlc.counter > hlc_counter)
+            })
+            .take(limit)
+            .collect()
     }
 }
 

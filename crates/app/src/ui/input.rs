@@ -344,6 +344,13 @@ pub fn send_message(
     // Record for dedup (in-memory only — chat messages are not persisted to op log file).
     op_log.record(stamped.clone());
 
+    // Persist the stamped op for catch-up sync.
+    if let Some(ref db_arc) = db.0 {
+        if let Ok(db_lock) = db_arc.lock() {
+            db_lock.insert_chat_op(&stamped, &topic);
+        }
+    }
+
     // Broadcast via the unified op pipeline.
     let _ = net_cmd
         .0

@@ -69,6 +69,7 @@ pub enum NetworkBridgeEvent {
     SyncRequested {
         latest_hlc: willow_messaging::hlc::HlcTimestamp,
         from: String,
+        topic: Option<String>,
     },
     /// A batch of ops was received as a sync response.
     SyncBatchReceived {
@@ -99,8 +100,10 @@ pub enum NetworkBridgeCommand {
     /// Broadcast a server state operation.
     BroadcastOp(crate::server_sync::StampedOp),
     /// Request missing ops from peers.
+    /// If `topic` is set, request chat messages for that specific channel.
     RequestSync {
         latest_hlc: willow_messaging::hlc::HlcTimestamp,
+        topic: Option<String>,
     },
     /// Send a batch of ops as a sync response.
     SendSyncBatch {
@@ -303,10 +306,11 @@ async fn run_network(
                                         });
                                     }
                                 }
-                                crate::server_sync::SyncMessage::SyncRequest { latest_hlc } => {
+                                crate::server_sync::SyncMessage::SyncRequest { latest_hlc, topic } => {
                                     let _ = event_tx.send(NetworkBridgeEvent::SyncRequested {
                                         latest_hlc,
                                         from,
+                                        topic,
                                     });
                                 }
                                 crate::server_sync::SyncMessage::SyncBatch { ops } => {
@@ -395,13 +399,17 @@ async fn run_network(
                                 let _ = node.publish(&publish_topic, data);
                             }
                         }
-                        NetworkBridgeCommand::RequestSync { latest_hlc } => {
+                        NetworkBridgeCommand::RequestSync { latest_hlc, topic } => {
                             let identity = willow_identity::Identity::from_ed25519_bytes(
                                 &crate::storage::load_identity_bytes().unwrap_or_default(),
                             ).unwrap_or_else(willow_identity::Identity::generate);
-                            let msg = crate::server_sync::SyncMessage::SyncRequest { latest_hlc };
+                            let msg = crate::server_sync::SyncMessage::SyncRequest { latest_hlc, topic: topic.clone() };
                             if let Some(data) = crate::server_sync::pack_sync(&msg, &identity) {
-                                let _ = node.publish(crate::server_sync::SERVER_OPS_TOPIC, data);
+                                // Channel-specific requests go to the channel topic;
+                                // server-wide requests go to the server ops topic.
+                                let publish_topic = topic.as_deref()
+                                    .unwrap_or(crate::server_sync::SERVER_OPS_TOPIC);
+                                let _ = node.publish(publish_topic, data);
                             }
                         }
                         NetworkBridgeCommand::SendSyncBatch { ops } => {
@@ -471,10 +479,11 @@ async fn run_network_wasm(
                                         });
                                     }
                                 }
-                                crate::server_sync::SyncMessage::SyncRequest { latest_hlc } => {
+                                crate::server_sync::SyncMessage::SyncRequest { latest_hlc, topic } => {
                                     let _ = event_tx.send(NetworkBridgeEvent::SyncRequested {
                                         latest_hlc,
                                         from,
+                                        topic,
                                     });
                                 }
                                 crate::server_sync::SyncMessage::SyncBatch { ops } => {
@@ -546,14 +555,16 @@ async fn run_network_wasm(
                                 let _ = node.publish(&publish_topic, data);
                             }
                         }
-                        NetworkBridgeCommand::RequestSync { latest_hlc } => {
+                        NetworkBridgeCommand::RequestSync { latest_hlc, topic } => {
                             let identity = willow_identity::Identity::from_ed25519_bytes(
                                 &crate::storage::load_identity_bytes().unwrap_or_default(),
                             )
                             .unwrap_or_else(willow_identity::Identity::generate);
-                            let msg = crate::server_sync::SyncMessage::SyncRequest { latest_hlc };
+                            let msg = crate::server_sync::SyncMessage::SyncRequest { latest_hlc, topic: topic.clone() };
                             if let Some(data) = crate::server_sync::pack_sync(&msg, &identity) {
-                                let _ = node.publish(crate::server_sync::SERVER_OPS_TOPIC, data);
+                                let publish_topic = topic.as_deref()
+                                    .unwrap_or(crate::server_sync::SERVER_OPS_TOPIC);
+                                let _ = node.publish(publish_topic, data);
                             }
                         }
                         NetworkBridgeCommand::SendSyncBatch { ops } => {

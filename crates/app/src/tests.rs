@@ -1970,6 +1970,7 @@ fn sync_message_round_trip() {
     // Test SyncRequest variant
     let req = SyncMessage::SyncRequest {
         latest_hlc: hlc.now(),
+        topic: None,
     };
     let data = crate::server_sync::pack_sync(&req, &id).unwrap();
     let (decoded, _) = crate::server_sync::unpack_sync(&data).unwrap();
@@ -2075,6 +2076,7 @@ fn catchup_sync_applies_missing_ops() {
         .write_message(NetworkBridgeEvent::SyncRequested {
             latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
             from: owner_str.clone(), // from a trusted peer (owner trusts self)
+            topic: None,
         });
     app_a.update();
 
@@ -2182,6 +2184,7 @@ fn catchup_filters_by_hlc() {
         .write_message(NetworkBridgeEvent::SyncRequested {
             latest_hlc: old_hlc,
             from: owner_str.clone(),
+            topic: None,
         });
     app.update();
 
@@ -2224,6 +2227,7 @@ fn catchup_rejects_untrusted_sync_request() {
         .write_message(NetworkBridgeEvent::SyncRequested {
             latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
             from: stranger.peer_id().to_string(),
+            topic: None,
         });
     app.update();
 
@@ -2235,4 +2239,345 @@ fn catchup_rejects_untrusted_sync_request() {
         }
     }
     assert!(!found_batch, "should not respond to untrusted sync request");
+}
+
+// ───── Chat History Catch-Up Tests ──────────────────────────────────────────
+
+/// Build a headless app with a real (temporary) MessageDb for testing chat ops.
+fn test_app_with_db() -> (
+    App,
+    std_mpsc::Receiver<NetworkBridgeCommand>,
+    std::path::PathBuf,
+) {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+
+    let identity = Identity::generate();
+    let (cmd_tx, cmd_rx) = std_mpsc::channel();
+
+    app.insert_resource(LocalIdentity(identity));
+    app.insert_resource(NetworkCommandSender(cmd_tx));
+    app.insert_resource(ChatState::default());
+    app.insert_resource(InputState::default());
+    app.insert_resource(ChannelKeyStore::default());
+    app.insert_resource(ServerState::default());
+    app.insert_resource(AppView::default());
+    app.insert_resource(SettingsInput::default());
+    app.insert_resource(ProfileStore::default());
+    app.insert_resource(UnreadCounts::default());
+    app.insert_resource(OpLog::default());
+    app.insert_resource(SearchFilter::default());
+    app.insert_resource(ChannelManagement::default());
+    app.insert_resource(ButtonInput::<KeyCode>::default());
+
+    // Create a temporary SQLite database.
+    let tmp_dir = std::env::temp_dir().join(format!("willow_test_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&tmp_dir);
+    let db_path = tmp_dir.join("messages.db");
+    let db = crate::storage::MessageDb::open_path(&db_path).expect("open test db");
+    let db_res = crate::ui::MessageDbRes(Some(std::sync::Arc::new(std::sync::Mutex::new(db))));
+    app.insert_resource(db_res);
+
+    app.add_message::<NetworkBridgeEvent>();
+    app.add_message::<KeyboardInput>();
+    app.add_systems(
+        Update,
+        (
+            crate::ui::handle_keyboard_input,
+            crate::ui::send_message,
+            crate::ui::handle_network_events,
+        ),
+    );
+
+    (app, cmd_rx, tmp_dir)
+}
+
+#[test]
+fn chat_ops_stored_on_send() {
+    let (mut app, _cmd_rx, tmp_dir) = test_app_with_db();
+
+    // Set up a topic in ServerState.
+    let topic = "test-topic-send";
+    app.world_mut()
+        .resource_mut::<ServerState>()
+        .topic_map
+        .insert(
+            topic.to_string(),
+            (
+                "general".to_string(),
+                willow_channel::ChannelId(uuid::Uuid::new_v4()),
+            ),
+        );
+    app.world_mut().resource_mut::<ChatState>().current_channel = "general".to_string();
+
+    // Type and send a message.
+    send_key(&mut app, KeyCode::KeyH, Some("h"));
+    send_key(&mut app, KeyCode::KeyI, Some("i"));
+    app.update();
+    send_key(&mut app, KeyCode::Enter, None);
+    app.update();
+    app.update();
+
+    // Verify chat op was stored in the DB.
+    let db_res = app.world().resource::<crate::ui::MessageDbRes>();
+    let db_arc = db_res.0.as_ref().expect("db should exist");
+    let db_lock = db_arc.lock().unwrap();
+    let ops = db_lock.load_chat_ops_since(topic, 0, 0, 100);
+    assert_eq!(ops.len(), 1, "should have stored one chat op");
+    assert!(
+        matches!(&ops[0].op, crate::server_sync::Op::ChatMessage { topic: t, .. } if t == topic)
+    );
+
+    // Clean up.
+    drop(db_lock);
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+#[test]
+fn chat_ops_stored_on_receive() {
+    let (mut app, _cmd_rx, tmp_dir) = test_app_with_db();
+
+    let topic = "test-topic-recv";
+
+    // Set up a server with an owner so trust checks pass.
+    let owner_id = app.world().resource::<LocalIdentity>().0.peer_id();
+    let owner_str = owner_id.to_string();
+    let server = willow_channel::Server::new("Test", owner_id);
+    app.world_mut().resource_mut::<ServerState>().server = Some(server);
+    app.world_mut()
+        .resource_mut::<ServerState>()
+        .topic_map
+        .insert(
+            topic.to_string(),
+            (
+                "general".to_string(),
+                willow_channel::ChannelId(uuid::Uuid::new_v4()),
+            ),
+        );
+
+    // Create a chat message op.
+    let content = Content::Text {
+        body: "hello from remote".into(),
+    };
+    let (stamped, _op_id) = make_chat_op(topic, content, &owner_str);
+
+    // Inject as OpReceived.
+    app.world_mut()
+        .write_message(NetworkBridgeEvent::OpReceived {
+            stamped_op: stamped,
+            from: owner_str,
+        });
+    app.update();
+
+    // Verify chat op was stored in the DB.
+    let db_res = app.world().resource::<crate::ui::MessageDbRes>();
+    let db_arc = db_res.0.as_ref().expect("db should exist");
+    let db_lock = db_arc.lock().unwrap();
+    let ops = db_lock.load_chat_ops_since(topic, 0, 0, 100);
+    assert_eq!(ops.len(), 1, "should have stored one chat op on receive");
+
+    drop(db_lock);
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+#[test]
+fn sync_request_with_topic_returns_chat_ops() {
+    let (mut app, cmd_rx, tmp_dir) = test_app_with_db();
+
+    let topic = "test-topic-sync";
+
+    // Set up a server with an owner.
+    let owner_id = app.world().resource::<LocalIdentity>().0.peer_id();
+    let owner_str = owner_id.to_string();
+    let server = willow_channel::Server::new("Test", owner_id);
+    app.world_mut().resource_mut::<ServerState>().server = Some(server);
+    app.world_mut()
+        .resource_mut::<ServerState>()
+        .topic_map
+        .insert(
+            topic.to_string(),
+            (
+                "general".to_string(),
+                willow_channel::ChannelId(uuid::Uuid::new_v4()),
+            ),
+        );
+
+    // Store a chat op in the DB.
+    let content = Content::Text {
+        body: "catchup msg".into(),
+    };
+    let (stamped, _op_id) = make_chat_op(topic, content, &owner_str);
+    {
+        let db_res = app.world().resource::<crate::ui::MessageDbRes>();
+        let db_arc = db_res.0.as_ref().unwrap();
+        let db_lock = db_arc.lock().unwrap();
+        db_lock.insert_chat_op(&stamped, topic);
+    }
+
+    // Inject a SyncRequested event WITH a topic.
+    app.world_mut()
+        .write_message(NetworkBridgeEvent::SyncRequested {
+            latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
+            from: owner_str,
+            topic: Some(topic.to_string()),
+        });
+    app.update();
+
+    // Should respond with a SendSyncBatch containing the chat op.
+    let mut found_batch = false;
+    while let Ok(cmd) = cmd_rx.try_recv() {
+        if let NetworkBridgeCommand::SendSyncBatch { ops } = cmd {
+            assert_eq!(ops.len(), 1, "batch should contain one chat op");
+            assert!(
+                matches!(&ops[0].op, crate::server_sync::Op::ChatMessage { topic: t, .. } if t == topic)
+            );
+            found_batch = true;
+        }
+    }
+    assert!(found_batch, "should have sent a SyncBatch with chat ops");
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+#[test]
+fn sync_request_without_topic_returns_server_ops() {
+    let (mut app, cmd_rx, tmp_dir) = test_app_with_db();
+
+    // Set up a server with an owner.
+    let owner_id = app.world().resource::<LocalIdentity>().0.peer_id();
+    let owner_str = owner_id.to_string();
+    let server = willow_channel::Server::new("Test", owner_id);
+    app.world_mut().resource_mut::<ServerState>().server = Some(server);
+
+    // Add a server op to the OpLog.
+    let mut hlc = HLC::new();
+    let server_op = crate::server_sync::StampedOp::new(
+        crate::server_sync::Op::CreateChannel {
+            name: "catchup-ch".into(),
+            channel_id: uuid::Uuid::new_v4().to_string(),
+        },
+        &mut hlc,
+        &owner_str,
+    );
+    app.world_mut()
+        .resource_mut::<OpLog>()
+        .record(server_op.clone());
+
+    // SyncRequest without topic (None) should return server ops from OpLog.
+    app.world_mut()
+        .write_message(NetworkBridgeEvent::SyncRequested {
+            latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
+            from: owner_str,
+            topic: None,
+        });
+    app.update();
+
+    let mut found_batch = false;
+    while let Ok(cmd) = cmd_rx.try_recv() {
+        if let NetworkBridgeCommand::SendSyncBatch { ops } = cmd {
+            assert!(
+                ops.iter().any(|op| {
+                    matches!(&op.op, crate::server_sync::Op::CreateChannel { name, .. } if name == "catchup-ch")
+                }),
+                "batch should contain the server op"
+            );
+            found_batch = true;
+        }
+    }
+    assert!(found_batch, "should have sent a SyncBatch with server ops");
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+#[test]
+fn chat_ops_hlc_filtering() {
+    // Test that load_chat_ops_since correctly filters by HLC.
+    let tmp_dir = std::env::temp_dir().join(format!("willow_test_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&tmp_dir);
+    let db_path = tmp_dir.join("messages.db");
+    let db = crate::storage::MessageDb::open_path(&db_path).expect("open test db");
+
+    let topic = "filter-test";
+
+    // Create ops with known HLC timestamps.
+    let mut hlc = HLC::new();
+    let op1 = crate::server_sync::StampedOp::new(
+        crate::server_sync::Op::ChatMessage {
+            topic: topic.into(),
+            content_data: willow_transport::pack(&Content::Text {
+                body: "msg1".into(),
+            })
+            .unwrap(),
+        },
+        &mut hlc,
+        "peer-a",
+    );
+    let hlc1 = op1.hlc;
+
+    let op2 = crate::server_sync::StampedOp::new(
+        crate::server_sync::Op::ChatMessage {
+            topic: topic.into(),
+            content_data: willow_transport::pack(&Content::Text {
+                body: "msg2".into(),
+            })
+            .unwrap(),
+        },
+        &mut hlc,
+        "peer-a",
+    );
+
+    let op3 = crate::server_sync::StampedOp::new(
+        crate::server_sync::Op::ChatMessage {
+            topic: topic.into(),
+            content_data: willow_transport::pack(&Content::Text {
+                body: "msg3".into(),
+            })
+            .unwrap(),
+        },
+        &mut hlc,
+        "peer-a",
+    );
+
+    db.insert_chat_op(&op1, topic);
+    db.insert_chat_op(&op2, topic);
+    db.insert_chat_op(&op3, topic);
+
+    // Request ops since ZERO — should return all 3.
+    let all = db.load_chat_ops_since(topic, 0, 0, 100);
+    assert_eq!(all.len(), 3, "should return all 3 ops");
+
+    // Request ops since hlc1 — should skip op1, return 2.
+    let after_first = db.load_chat_ops_since(topic, hlc1.millis, hlc1.counter, 100);
+    assert_eq!(after_first.len(), 2, "should skip first op");
+
+    // Request with limit 1 — should return only 1.
+    let limited = db.load_chat_ops_since(topic, 0, 0, 1);
+    assert_eq!(limited.len(), 1, "limit should cap results");
+
+    // Request for a different topic — should return 0.
+    let other = db.load_chat_ops_since("other-topic", 0, 0, 100);
+    assert_eq!(other.len(), 0, "different topic should return nothing");
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+#[test]
+fn chat_op_dedup_on_insert() {
+    // Inserting the same op_id twice should not duplicate.
+    let tmp_dir = std::env::temp_dir().join(format!("willow_test_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&tmp_dir);
+    let db_path = tmp_dir.join("messages.db");
+    let db = crate::storage::MessageDb::open_path(&db_path).expect("open test db");
+
+    let topic = "dedup-test";
+    let content = Content::Text { body: "dup".into() };
+    let (stamped, _) = make_chat_op(topic, content, "peer-a");
+
+    db.insert_chat_op(&stamped, topic);
+    db.insert_chat_op(&stamped, topic); // duplicate
+
+    let ops = db.load_chat_ops_since(topic, 0, 0, 100);
+    assert_eq!(ops.len(), 1, "duplicate insert should be ignored");
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
 }

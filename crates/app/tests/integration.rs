@@ -462,6 +462,7 @@ async fn sync_request_and_batch_over_network() {
     // A publishes a SyncRequest.
     let sync_req = SyncMessage::SyncRequest {
         latest_hlc: HlcTimestamp::ZERO,
+        topic: None,
     };
     let signed_req = server_sync::pack_sync(&sync_req, &id_a).expect("pack_sync request");
     node_a.publish(topic, signed_req).expect("publish request");
@@ -471,7 +472,7 @@ async fn sync_request_and_batch_over_network() {
     let (msg, req_signer) = server_sync::unpack_sync(&data).expect("unpack request");
     assert_eq!(req_signer, id_a.peer_id());
     assert!(
-        matches!(msg, SyncMessage::SyncRequest { latest_hlc } if latest_hlc == HlcTimestamp::ZERO)
+        matches!(msg, SyncMessage::SyncRequest { latest_hlc, .. } if latest_hlc == HlcTimestamp::ZERO)
     );
 
     // B creates a SyncBatch with one op and publishes.
