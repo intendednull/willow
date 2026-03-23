@@ -108,6 +108,21 @@ pub struct SearchFilter {
     pub active: bool,
 }
 
+/// Tracks channel management state (creating new channels, invites, etc.)
+#[derive(Resource, Default)]
+pub struct ChannelManagement {
+    /// When true, the sidebar shows a text input for a new channel name.
+    pub creating_channel: bool,
+    /// The name being typed for a new channel.
+    pub new_channel_name: String,
+    /// When set, contains a generated invite code to display to the user.
+    pub invite_code: Option<String>,
+    /// When set, the user is pasting an invite code to join a server.
+    pub joining: bool,
+    /// The invite code being pasted.
+    pub join_code: String,
+}
+
 /// Per-channel symmetric encryption keys, keyed by gossipsub topic.
 #[derive(Resource, Default)]
 pub struct ChannelKeyStore {

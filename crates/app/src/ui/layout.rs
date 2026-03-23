@@ -103,16 +103,44 @@ fn spawn_sidebar(
                 ));
             });
 
-        // Channel section header
-        sidebar.spawn((
-            Text::new("TEXT CHANNELS"),
-            TextFont::from_font_size(11.0),
-            TextColor(theme::TEXT_HEADER),
-            Node {
+        // Channel section header with "+" button
+        sidebar
+            .spawn(Node {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
                 padding: UiRect::new(Val::Px(16.0), Val::Px(8.0), Val::Px(16.0), Val::Px(4.0)),
                 ..default()
-            },
-        ));
+            })
+            .with_children(|row| {
+                row.spawn((
+                    Text::new("TEXT CHANNELS"),
+                    TextFont::from_font_size(11.0),
+                    TextColor(theme::TEXT_HEADER),
+                    Node {
+                        flex_grow: 1.0,
+                        ..default()
+                    },
+                ));
+                row.spawn((
+                    Button,
+                    Node {
+                        width: Val::Px(20.0),
+                        height: Val::Px(20.0),
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::Center,
+                        ..default()
+                    },
+                    BackgroundColor(Color::NONE),
+                    CreateChannelButton,
+                ))
+                .with_children(|btn| {
+                    btn.spawn((
+                        Text::new("+"),
+                        TextFont::from_font_size(16.0),
+                        TextColor(theme::TEXT_HEADER),
+                    ));
+                });
+            });
 
         // Channel list
         sidebar

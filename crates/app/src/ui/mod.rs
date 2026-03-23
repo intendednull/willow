@@ -14,6 +14,7 @@
 //! - [`settings`] — settings view systems
 //! - [`files`] — file sharing UI
 
+pub mod channels;
 pub mod chat;
 pub mod components;
 pub mod constants;
@@ -59,9 +60,13 @@ impl Plugin for UiPlugin {
                     .map(|db| std::sync::Arc::new(std::sync::Mutex::new(db))),
             ))
             .add_systems(Startup, (init::init_server, layout::setup_ui).chain())
+            .insert_resource(ChannelManagement::default())
             .add_systems(
                 Update,
                 (
+                    channels::handle_create_channel_button,
+                    channels::handle_new_channel_input,
+                    channels::sync_new_channel_input,
                     input::handle_keyboard_input,
                     input::send_message,
                     chat::handle_network_events,

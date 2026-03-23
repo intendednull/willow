@@ -61,3 +61,11 @@ pub struct ShareFileButton;
 /// Container for a settings input field. Stores which field it wraps.
 #[derive(Component)]
 pub struct SettingsFieldContainer(pub super::resources::SettingsField);
+
+/// "+" button to create a new channel.
+#[derive(Component)]
+pub struct CreateChannelButton;
+
+/// Text display for the new channel name input.
+#[derive(Component)]
+pub struct NewChannelInput;

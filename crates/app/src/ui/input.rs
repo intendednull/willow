@@ -25,9 +25,15 @@ pub fn handle_keyboard_input(
     mut settings_input: ResMut<SettingsInput>,
     mut search: ResMut<SearchFilter>,
     keys: Res<ButtonInput<KeyCode>>,
+    channel_mgmt: Res<ChannelManagement>,
 ) {
     for event in key_events.read() {
         if !event.state.is_pressed() {
+            continue;
+        }
+
+        // Skip when channel creation input is active.
+        if channel_mgmt.creating_channel {
             continue;
         }
 
