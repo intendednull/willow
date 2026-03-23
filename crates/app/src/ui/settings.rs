@@ -103,7 +103,7 @@ pub fn toggle_view(
     }
 }
 
-/// Reactively sync the settings text fields from SettingsInput resource.
+/// Reactively sync the settings text fields and focus indicator from SettingsInput.
 #[allow(clippy::type_complexity)]
 pub fn sync_settings_fields(
     settings_input: Res<SettingsInput>,
@@ -123,11 +123,13 @@ pub fn sync_settings_fields(
             Without<SettingsNameText>,
         ),
     >,
+    mut container_query: Query<(&SettingsFieldContainer, &mut BorderColor)>,
 ) {
     if !settings_input.is_changed() {
         return;
     }
 
+    // Update text values.
     for (mut text, mut color) in &mut name_query {
         if settings_input.display_name.is_empty() {
             **text = constants::NAME_PLACEHOLDER.to_string();
@@ -146,5 +148,14 @@ pub fn sync_settings_fields(
             **text = settings_input.relay_addr.clone();
             *color = TextColor(theme::TEXT_PRIMARY);
         }
+    }
+
+    // Highlight the focused field container with a border.
+    for (container, mut border) in &mut container_query {
+        *border = if container.0 == settings_input.focused_field {
+            BorderColor::all(theme::ACCENT)
+        } else {
+            BorderColor::all(Color::NONE)
+        };
     }
 }

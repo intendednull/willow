@@ -76,6 +76,7 @@ impl Plugin for UiPlugin {
                     chat::update_peer_count,
                     chat::update_channel_header,
                     chat::update_channel_highlights,
+                    chat::prune_messages,
                 ),
             )
             .add_systems(

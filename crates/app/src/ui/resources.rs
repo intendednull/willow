@@ -9,6 +9,9 @@ use willow_messaging::hlc::HLC;
 
 use super::constants;
 
+/// Maximum messages kept in memory per topic to avoid unbounded growth.
+const MAX_MESSAGES_IN_MEMORY: usize = 1000;
+
 /// The local server instance. Each peer auto-creates a server on first launch.
 #[derive(Resource, Default)]
 pub struct ServerState {
@@ -61,6 +64,16 @@ impl Default for ChatState {
             peers: Vec::new(),
             hlc: HLC::new(),
             messages_dirty: true,
+        }
+    }
+}
+
+impl ChatState {
+    /// Prune old messages if total count exceeds the limit.
+    pub fn prune_if_needed(&mut self) {
+        if self.messages.len() > MAX_MESSAGES_IN_MEMORY {
+            let excess = self.messages.len() - MAX_MESSAGES_IN_MEMORY;
+            self.messages.drain(..excess);
         }
     }
 }

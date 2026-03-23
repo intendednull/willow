@@ -350,6 +350,7 @@ pub fn spawn_settings_panel(parent: &mut ChildSpawnerCommands, settings: &Settin
                 &settings.display_name,
                 constants::NAME_PLACEHOLDER,
                 SettingsNameText,
+                SettingsFieldContainer(super::resources::SettingsField::DisplayName),
             );
 
             panel.spawn(Node {
@@ -379,6 +380,7 @@ pub fn spawn_settings_panel(parent: &mut ChildSpawnerCommands, settings: &Settin
                 &settings.relay_addr,
                 constants::RELAY_PLACEHOLDER,
                 SettingsRelayText,
+                SettingsFieldContainer(super::resources::SettingsField::RelayAddr),
             );
 
             panel.spawn(Node {
@@ -430,13 +432,14 @@ fn spawn_settings_field(
     value: &str,
     placeholder: &str,
     marker: impl Component,
+    container: SettingsFieldContainer,
 ) {
     panel.spawn((
         Text::new(label),
         TextFont::from_font_size(13.0),
         TextColor(theme::TEXT_SECONDARY),
     ));
-    spawn_settings_input_field(panel, value, placeholder, marker);
+    spawn_settings_input_field(panel, value, placeholder, marker, container);
 }
 
 fn spawn_settings_input_field(
@@ -444,6 +447,7 @@ fn spawn_settings_input_field(
     value: &str,
     placeholder: &str,
     marker: impl Component,
+    container: SettingsFieldContainer,
 ) {
     let (display, color) = if value.is_empty() {
         (placeholder, theme::TEXT_PLACEHOLDER)
@@ -459,9 +463,12 @@ fn spawn_settings_input_field(
                 padding: UiRect::horizontal(Val::Px(12.0)),
                 align_items: AlignItems::Center,
                 margin: UiRect::vertical(Val::Px(4.0)),
+                border: UiRect::all(Val::Px(1.0)),
                 ..default()
             },
             BackgroundColor(theme::INPUT_FIELD_BG),
+            BorderColor::all(Color::NONE),
+            container,
         ))
         .with_children(|field| {
             field.spawn((

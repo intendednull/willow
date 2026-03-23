@@ -250,6 +250,11 @@ pub fn update_channel_header(
     }
 }
 
+/// Prune old messages to prevent unbounded memory growth.
+pub fn prune_messages(mut state: ResMut<ChatState>) {
+    state.prune_if_needed();
+}
+
 /// Highlight the active channel and show unread counts.
 pub fn update_channel_highlights(
     state: Res<ChatState>,

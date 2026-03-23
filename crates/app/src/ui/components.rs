@@ -57,3 +57,7 @@ pub struct LocalUserDisplay;
 /// "Share File" button in the input area.
 #[derive(Component)]
 pub struct ShareFileButton;
+
+/// Container for a settings input field. Stores which field it wraps.
+#[derive(Component)]
+pub struct SettingsFieldContainer(pub super::resources::SettingsField);

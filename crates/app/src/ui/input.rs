@@ -21,7 +21,7 @@ use super::resources::*;
 pub fn handle_keyboard_input(
     mut key_events: MessageReader<KeyboardInput>,
     mut input: ResMut<InputState>,
-    view: Res<AppView>,
+    mut view: ResMut<AppView>,
     mut settings_input: ResMut<SettingsInput>,
 ) {
     for event in key_events.read() {
@@ -44,7 +44,9 @@ pub fn handle_keyboard_input(
                     };
                     target.pop();
                 }
-                KeyCode::Escape => {} // handled by toggle_view
+                KeyCode::Escape => {
+                    *view = AppView::Chat;
+                }
                 _ => {
                     if let Some(ref s) = event.text {
                         let target = match settings_input.focused_field {
