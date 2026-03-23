@@ -427,14 +427,12 @@ pub fn App() -> impl IntoView {
                                             <div class="typing-indicator">
                                                 {move || {
                                                     let names = typing_names.get();
-                                                    if names.is_empty() {
-                                                        String::new()
-                                                    } else if names.len() == 1 {
-                                                        format!("{} is typing...", names[0])
-                                                    } else if names.len() == 2 {
-                                                        format!("{} and {} are typing...", names[0], names[1])
-                                                    } else {
-                                                        format!("{} and {} others are typing...", names[0], names.len() - 1)
+                                                    match names.len() {
+                                                        0 => String::new(),
+                                                        1 => format!("{} is typing...", names[0]),
+                                                        2 => format!("{} and {} are typing...", names[0], names[1]),
+                                                        3 => format!("{}, {}, and {} are typing...", names[0], names[1], names[2]),
+                                                        _ => "Multiple people are typing...".to_string(),
                                                     }
                                                 }}
                                             </div>
