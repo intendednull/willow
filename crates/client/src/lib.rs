@@ -19,6 +19,7 @@
 //! ```
 
 pub mod base64;
+pub mod bridge;
 pub mod emoji;
 pub mod events;
 pub mod files;
@@ -30,7 +31,7 @@ pub mod storage;
 pub mod util;
 
 // Re-export key types at crate root for convenience.
-pub use events::ClientEvent;
+pub use events::{ClientEvent, ClientNotification};
 pub use ops::{Op, StampedOp, SyncMessage};
 pub use state::{
     ChannelKeyStore, ChatMessage, ChatState, ClientState, OpLog, ProfileStore, ServerContext,
@@ -45,6 +46,7 @@ use std::sync::mpsc as std_mpsc;
 
 use willow_identity::Identity;
 use willow_messaging::Content;
+use willow_state::EventStore as _;
 
 /// Configuration for creating a [`Client`].
 pub struct ClientConfig {
@@ -76,6 +78,10 @@ type DeferredPair = (
 /// Wraps identity, networking, and all chat state. Call [`Client::poll()`]
 /// each frame (or in a loop) to drain network events and receive
 /// [`ClientEvent`]s.
+///
+/// Optionally accepts a push notification channel via
+/// [`Client::with_notifications`] for reactive UIs that prefer push over
+/// poll.
 pub struct Client {
     pub(crate) state: ClientState,
     pub(crate) identity: Identity,
@@ -89,6 +95,8 @@ pub struct Client {
     pub(crate) connected_subscribed: bool,
     /// Counter for throttled profile re-broadcasts.
     pub(crate) profile_broadcast_counter: u32,
+    /// Optional push notification sender for reactive UIs.
+    pub(crate) notification_tx: Option<std_mpsc::Sender<events::ClientNotification>>,
 }
 
 impl Client {
@@ -210,6 +218,26 @@ impl Client {
             }
         }
 
+        // Initialize event-sourced state from the active server.
+        if let Some(sid) = &state.active_server {
+            if let Some(ctx) = state.servers.get(sid) {
+                let owner = ctx.server.owner.to_string();
+                state.event_state =
+                    willow_state::ServerState::new(sid.clone(), ctx.server.name.clone(), owner);
+                // Seed event_state with existing channels so lookups work.
+                for (topic, (name, ch_id)) in &ctx.topic_map {
+                    let _ = topic; // topic is gossipsub-level, not used in event_state
+                    state.event_state.channels.insert(
+                        ch_id.to_string(),
+                        willow_state::Channel {
+                            id: ch_id.to_string(),
+                            name: name.clone(),
+                        },
+                    );
+                }
+            }
+        }
+
         // Save in multi-server format.
         if config.persistence {
             Self::persist_servers(&state);
@@ -272,7 +300,37 @@ impl Client {
             deferred_channels: Some(deferred),
             connected_subscribed: false,
             profile_broadcast_counter: 0,
+            notification_tx: None,
         }
+    }
+
+    /// Attach a push notification channel. Notifications are sent whenever
+    /// an event is applied to the event-sourced state, a peer connects or
+    /// disconnects, etc.
+    ///
+    /// This is an **addition** to the existing `poll()` model -- both work
+    /// simultaneously.
+    pub fn with_notifications(mut self, tx: std_mpsc::Sender<events::ClientNotification>) -> Self {
+        self.notification_tx = Some(tx);
+        self
+    }
+
+    /// Helper: send a push notification if the channel is configured.
+    fn notify(&self, notification: events::ClientNotification) {
+        if let Some(ref tx) = self.notification_tx {
+            let _ = tx.send(notification);
+        }
+    }
+
+    /// Helper: apply an event to the event-sourced state and store it.
+    /// Sends a push notification if the channel is configured.
+    fn apply_event(&mut self, event: &willow_state::Event) {
+        willow_state::apply_lenient(&mut self.state.event_state, event);
+        self.state.event_store.append(event.clone());
+        self.state
+            .event_store
+            .set_latest_hash(self.state.event_state.hash());
+        self.notify(events::ClientNotification::EventApplied(event.clone()));
     }
 
     /// Persist all servers to storage.
@@ -351,6 +409,17 @@ impl Client {
 
                     tracing::info!(applied, "op apply result");
                     if applied {
+                        // Apply to event-sourced state via bridge.
+                        if let Some(event) = bridge::op_to_event(
+                            &stamped_op.op,
+                            &stamped_op.author,
+                            stamped_op.hlc.millis,
+                            &stamped_op.op_id,
+                            self.state.event_state.hash(),
+                        ) {
+                            self.apply_event(&event);
+                        }
+
                         // Emit op-specific events.
                         match &stamped_op.op {
                             ops::Op::ChatMessage {
@@ -365,6 +434,29 @@ impl Client {
                                     stamped_op.hlc.millis,
                                     &stamped_op,
                                 );
+
+                                // Also apply to event-sourced state for chat
+                                // messages (op_to_event returns None for these,
+                                // so we handle them here).
+                                if let Some(msg) = self.state.chat.messages.last() {
+                                    let channel_id = self
+                                        .state
+                                        .active()
+                                        .and_then(|ctx| {
+                                            ctx.topic_map.get(topic).map(|(_, cid)| cid.to_string())
+                                        })
+                                        .unwrap_or_else(|| topic.clone());
+                                    let chat_event = bridge::chat_op_to_event(
+                                        &channel_id,
+                                        &msg.body,
+                                        &stamped_op.author,
+                                        stamped_op.hlc.millis,
+                                        &stamped_op.op_id,
+                                        self.state.event_state.hash(),
+                                    );
+                                    self.apply_event(&chat_event);
+                                }
+
                                 // Emit a MessageReceived event for the last
                                 // pushed message.
                                 if let Some(msg) = self.state.chat.messages.last() {
@@ -427,10 +519,12 @@ impl Client {
                             });
                         }
                     }
+                    self.notify(events::ClientNotification::PeerConnected(peer.clone()));
                     events.push(ClientEvent::PeerConnected(peer));
                 }
                 network::NetworkEvent::PeerDisconnected(peer) => {
                     self.state.chat.peers.retain(|p| p != &peer);
+                    self.notify(events::ClientNotification::PeerDisconnected(peer.clone()));
                     events.push(ClientEvent::PeerDisconnected(peer));
                 }
                 network::NetworkEvent::ProfileReceived {
@@ -562,6 +656,17 @@ impl Client {
                         );
 
                         if applied {
+                            // Apply to event-sourced state via bridge.
+                            if let Some(event) = bridge::op_to_event(
+                                &stamped_op.op,
+                                &stamped_op.author,
+                                stamped_op.hlc.millis,
+                                &stamped_op.op_id,
+                                self.state.event_state.hash(),
+                            ) {
+                                self.apply_event(&event);
+                            }
+
                             if let ops::Op::ChatMessage {
                                 topic,
                                 content_data,
@@ -837,6 +942,20 @@ impl Client {
 
         let _ = self.cmd_tx.send(network::NetworkCommand::Subscribe(topic));
 
+        // Apply to event-sourced state.
+        let peer_id_str = self.identity.peer_id().to_string();
+        let event = willow_state::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_hash: self.state.event_state.hash(),
+            author: peer_id_str,
+            timestamp_ms: util::current_time_ms(),
+            kind: willow_state::EventKind::CreateChannel {
+                name: name.to_string(),
+                channel_id: ch_id_str.clone(),
+            },
+        };
+        self.apply_event(&event);
+
         self.broadcast_op(Op::CreateChannel {
             name: name.to_string(),
             channel_id: ch_id_str,
@@ -864,6 +983,8 @@ impl Client {
             anyhow::bail!("channel not found");
         };
 
+        let ch_id_str = ch_id.to_string();
+
         ctx.server.delete_channel(&ch_id)?;
         storage::save_server(&ctx.server, &ctx.keys);
 
@@ -880,6 +1001,19 @@ impl Client {
             self.state.chat.messages_dirty = true;
         }
 
+        // Apply to event-sourced state.
+        let peer_id_str = self.identity.peer_id().to_string();
+        let event = willow_state::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_hash: self.state.event_state.hash(),
+            author: peer_id_str,
+            timestamp_ms: util::current_time_ms(),
+            kind: willow_state::EventKind::DeleteChannel {
+                channel_id: ch_id_str,
+            },
+        };
+        self.apply_event(&event);
+
         self.broadcast_op(Op::DeleteChannel {
             name: name.to_string(),
         });
@@ -888,14 +1022,48 @@ impl Client {
     }
 
     /// Trust a peer for server state operations.
+    ///
+    /// Applies a `GrantPermission(Administrator)` event to the event-sourced
+    /// state and broadcasts a `TrustPeer` op on the wire.
     pub fn trust_peer(&mut self, peer_id: &str) {
+        // Apply to event-sourced state.
+        let author = self.identity.peer_id().to_string();
+        let event = willow_state::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_hash: self.state.event_state.hash(),
+            author,
+            timestamp_ms: util::current_time_ms(),
+            kind: willow_state::EventKind::GrantPermission {
+                peer_id: peer_id.to_string(),
+                permission: willow_state::Permission::Administrator,
+            },
+        };
+        self.apply_event(&event);
+
         self.broadcast_op(Op::TrustPeer {
             peer_id: peer_id.to_string(),
         });
     }
 
     /// Revoke trust from a peer.
+    ///
+    /// Applies a `RevokePermission(Administrator)` event to the event-sourced
+    /// state and broadcasts an `UntrustPeer` op on the wire.
     pub fn untrust_peer(&mut self, peer_id: &str) {
+        // Apply to event-sourced state.
+        let author = self.identity.peer_id().to_string();
+        let event = willow_state::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_hash: self.state.event_state.hash(),
+            author,
+            timestamp_ms: util::current_time_ms(),
+            kind: willow_state::EventKind::RevokePermission {
+                peer_id: peer_id.to_string(),
+                permission: willow_state::Permission::Administrator,
+            },
+        };
+        self.apply_event(&event);
+
         self.broadcast_op(Op::UntrustPeer {
             peer_id: peer_id.to_string(),
         });
@@ -959,6 +1127,19 @@ impl Client {
                 }
             }
         }
+
+        // Apply to event-sourced state.
+        let author = self.identity.peer_id().to_string();
+        let event = willow_state::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_hash: self.state.event_state.hash(),
+            author,
+            timestamp_ms: util::current_time_ms(),
+            kind: willow_state::EventKind::KickMember {
+                peer_id: peer_id.to_string(),
+            },
+        };
+        self.apply_event(&event);
 
         self.broadcast_op(Op::KickMember {
             peer_id: peer_id.to_string(),
@@ -1213,12 +1394,25 @@ impl Client {
     }
 
     /// Get the local display name.
+    ///
+    /// Checks the event-sourced state profiles first, falling back to the
+    /// legacy profile store.
     pub fn display_name(&self) -> String {
-        self.state.profiles.display_name(&self.peer_id())
+        let pid = self.peer_id();
+        if let Some(profile) = self.state.event_state.profiles.get(&pid) {
+            return profile.display_name.clone();
+        }
+        self.state.profiles.display_name(&pid)
     }
 
     /// Get a peer's display name.
+    ///
+    /// Checks the event-sourced state profiles first, falling back to the
+    /// legacy profile store.
     pub fn peer_display_name(&self, peer_id: &str) -> String {
+        if let Some(profile) = self.state.event_state.profiles.get(peer_id) {
+            return profile.display_name.clone();
+        }
         self.state.profiles.display_name(peer_id)
     }
 
@@ -1243,8 +1437,36 @@ impl Client {
     }
 
     /// List all channel names for the active server.
+    ///
+    /// Returns the union of channels from the legacy system and the
+    /// event-sourced state, deduplicated and sorted.
     pub fn channels(&self) -> Vec<String> {
-        self.state.channel_names()
+        let mut names = self.state.channel_names();
+
+        // Merge any channels from event_state that aren't yet in the legacy list.
+        for ch in self.state.event_state.channels.values() {
+            if !names.contains(&ch.name) {
+                names.push(ch.name.clone());
+            }
+        }
+
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    /// Get messages from the event-sourced state for a channel by ID.
+    ///
+    /// Returns all non-deleted messages for the given channel in
+    /// event-sequence order. This reads from `event_state.messages`, which
+    /// is the new source of truth for message history.
+    pub fn event_messages(&self, channel_id: &str) -> Vec<&willow_state::ChatMessage> {
+        self.state
+            .event_state
+            .messages
+            .iter()
+            .filter(|m| m.channel_id == channel_id && !m.deleted)
+            .collect()
     }
 
     /// Get the list of connected peers.
@@ -1305,6 +1527,28 @@ impl Client {
         if let Some(ctx) = self.state.active_mut() {
             ctx.op_log.record(stamped.clone());
         }
+
+        // Apply to event-sourced state: resolve channel_id from topic.
+        let channel_id = self
+            .state
+            .active()
+            .and_then(|ctx| {
+                ctx.topic_map
+                    .get(&topic)
+                    .map(|(_, ch_id)| ch_id.to_string())
+            })
+            .unwrap_or_else(|| channel.to_string());
+        let msg_event = willow_state::Event {
+            id: stamped.op_id.clone(),
+            parent_hash: self.state.event_state.hash(),
+            author: peer_id_str.clone(),
+            timestamp_ms: stamped.hlc.millis,
+            kind: willow_state::EventKind::Message {
+                channel_id,
+                body: body.to_string(),
+            },
+        };
+        self.apply_event(&msg_event);
 
         // Persist the stamped op for catch-up sync.
         if let Some(ref db_arc) = self.state.message_db {
@@ -1502,6 +1746,7 @@ pub(crate) fn test_client() -> (Client, std::sync::mpsc::Receiver<network::Netwo
         deferred_channels: None,
         connected_subscribed: false,
         profile_broadcast_counter: 0,
+        notification_tx: None,
     };
 
     (client, cmd_rx)

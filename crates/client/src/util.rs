@@ -27,6 +27,25 @@ pub fn make_topic(server: &willow_channel::Server, channel_name: &str) -> String
     format!("{}/{}", server.id, channel_name)
 }
 
+/// Get the current wall-clock time in milliseconds since the Unix epoch.
+///
+/// Uses `std::time::SystemTime` on native and `js_sys::Date::now()` on WASM.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn current_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Get the current wall-clock time in milliseconds since the Unix epoch.
+///
+/// Uses `js_sys::Date::now()` on WASM.
+#[cfg(target_arch = "wasm32")]
+pub fn current_time_ms() -> u64 {
+    js_sys::Date::now() as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
