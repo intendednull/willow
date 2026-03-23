@@ -254,7 +254,8 @@ pub fn spawn_chat_panel(parent: &mut ChildSpawnerCommands, channel_names: &[Stri
                 Node {
                     flex_grow: 1.0,
                     width: Val::Percent(100.0),
-                    flex_direction: FlexDirection::ColumnReverse,
+                    flex_direction: FlexDirection::Column,
+                    justify_content: JustifyContent::End,
                     padding: UiRect::new(Val::Px(16.0), Val::Px(16.0), Val::Px(8.0), Val::Px(8.0)),
                     overflow: Overflow::clip_y(),
                     ..default()
