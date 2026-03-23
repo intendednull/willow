@@ -276,7 +276,17 @@ async fn run_network_wasm(
                 let Some(event) = event else { break };
                 match event {
                     NetEvt::Message { topic, data, source } => {
-                        if let Some((sync_msg, signer)) =
+                        // Try parsing as a profile broadcast.
+                        if let Ok((profile, willow_transport::MessageType::Identity)) =
+                            willow_transport::unpack_envelope::<willow_identity::UserProfile>(&data)
+                        {
+                            let _ = event_tx.send(NetworkEvent::ProfileReceived {
+                                peer_id: profile.peer_id.to_string(),
+                                display_name: profile.display_name,
+                            });
+                        }
+                        // Try parsing as a sync message (ops, requests, batches).
+                        else if let Some((sync_msg, signer)) =
                             crate::ops::unpack_sync(&data)
                         {
                             let from = signer.to_string();
