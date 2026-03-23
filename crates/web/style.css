@@ -38,6 +38,67 @@ html, body {
     position: relative;
 }
 
+/* Server rail (Discord-style icon strip) */
+.server-rail {
+    width: 72px;
+    min-width: 72px;
+    background: #111114;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px 0;
+    gap: 8px;
+    overflow-y: auto;
+}
+
+.server-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background: var(--bg-input);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-muted);
+    transition: border-radius 0.15s ease, background 0.15s ease;
+    flex-shrink: 0;
+}
+
+.server-icon:hover {
+    border-radius: 16px;
+    background: var(--accent);
+    color: white;
+}
+
+.server-icon.active {
+    border-radius: 16px;
+    background: var(--accent);
+    color: white;
+}
+
+.server-icon.add-server {
+    background: transparent;
+    border: 2px dashed var(--text-muted);
+    font-size: 24px;
+    color: var(--text-muted);
+}
+
+.server-icon.add-server:hover {
+    border-color: var(--online);
+    color: var(--online);
+    background: transparent;
+}
+
+.server-rail-divider {
+    width: 32px;
+    height: 2px;
+    background: var(--border);
+    border-radius: 1px;
+}
+
 /* Sidebar */
 .sidebar {
     width: 240px;
@@ -646,7 +707,11 @@ html, body {
         padding: 6px 10px;
     }
 
-    /* Member list always hidden on mobile */
+    /* Hide server rail and member list on mobile */
+    .server-rail {
+        display: none;
+    }
+
     .member-list {
         display: none;
     }

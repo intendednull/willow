@@ -7,7 +7,7 @@ use send_wrapper::SendWrapper;
 use willow_client::{ChatMessage, Client, ClientConfig, ClientEvent};
 
 use crate::components::{
-    ChannelHeader, ChatInput, MemberList, MessageList, SettingsPanel, Sidebar,
+    ChannelHeader, ChatInput, MemberList, MessageList, ServerList, SettingsPanel, Sidebar,
 };
 
 /// Wrapper around `Rc<RefCell<Client>>` that is `Send` for single-threaded WASM.
@@ -38,6 +38,7 @@ pub fn App() -> impl IntoView {
     let (show_settings, set_show_settings) = signal(false);
     let (show_sidebar, set_show_sidebar) = signal(false);
     let (peer_id, set_peer_id) = signal(String::new());
+    let (server_name, set_server_name) = signal(String::from("Willow"));
     let (unread, set_unread) = signal(HashMap::<String, usize>::new());
 
     // Populate initial state from the client.
@@ -45,6 +46,9 @@ pub fn App() -> impl IntoView {
         let c = client.borrow();
         set_channels.set(c.channels());
         set_peer_id.set(c.peer_id());
+        if let Some(server) = &c.state().server.server {
+            set_server_name.set(server.name.clone());
+        }
     }
 
     // Poll loop -- drain network events and refresh signals.
@@ -129,6 +133,13 @@ pub fn App() -> impl IntoView {
 
     view! {
         <div class="app">
+            <ServerList
+                server_name=server_name
+                on_settings_click=move |_| {
+                    set_show_settings.update(|v| *v = !*v);
+                    set_show_sidebar.set(false);
+                }
+            />
             // Overlay to close sidebar on mobile tap
             <div
                 class=move || if show_sidebar.get() { "sidebar-overlay open" } else { "sidebar-overlay" }
