@@ -1248,3 +1248,189 @@ fn tampered_invite_code_fails() {
     // Should fail to decrypt.
     assert!(crate::invite::accept_invite(&code, &recipient).is_none());
 }
+
+// ───── Full Invite Flow Tests ───────────────────────────────────────────────
+
+/// End-to-end test: owner creates server → generates invite → recipient
+/// accepts → recipient can decrypt messages sent with the channel key.
+#[test]
+fn full_invite_flow_owner_to_recipient() {
+    use willow_channel::ChannelKind;
+
+    let owner = Identity::generate();
+    let recipient = Identity::generate();
+
+    // Owner creates a server with channels.
+    let mut server = willow_channel::Server::new("E2E Server", owner.peer_id());
+    let ch1 = server.create_channel("general", ChannelKind::Text).unwrap();
+    let ch2 = server.create_channel("random", ChannelKind::Text).unwrap();
+
+    let mut keys = std::collections::HashMap::new();
+    let mut topic_map = std::collections::HashMap::new();
+    for (ch_id, name) in [(ch1, "general"), (ch2, "random")] {
+        let topic = format!("{}/{name}", server.id);
+        if let Some(key) = server.channel_key(&ch_id) {
+            keys.insert(topic.clone(), key.clone());
+        }
+        topic_map.insert(topic, (name.into(), ch_id));
+    }
+
+    // Owner gets recipient's public key from their PeerId.
+    let recipient_peer_str = recipient.peer_id().to_string();
+    let recipient_pub = crate::invite::peer_id_to_ed25519_public(&recipient_peer_str).unwrap();
+
+    // Owner generates an encrypted invite.
+    let code = crate::invite::generate_invite(&server, &keys, &topic_map, &recipient_pub).unwrap();
+
+    // Recipient accepts the invite.
+    let accepted = crate::invite::accept_invite(&code, &recipient).unwrap();
+    assert_eq!(accepted.server_name, "E2E Server");
+    assert_eq!(accepted.channel_keys.len(), 2);
+
+    // Verify recipient's decrypted keys match the originals.
+    for (topic, (_, decrypted_key)) in &accepted.channel_keys {
+        let original_key = &keys[topic];
+        assert_eq!(decrypted_key.as_bytes(), original_key.as_bytes());
+    }
+
+    // Owner sends an encrypted message using the channel key.
+    let general_topic = format!("{}/general", server.id);
+    let owner_key = &keys[&general_topic];
+    let content = Content::Text {
+        body: "hello from owner".into(),
+    };
+    let sealed = willow_crypto::seal_content(&content, owner_key, 0).unwrap();
+
+    // Recipient decrypts with their copy of the key.
+    let (_, recipient_key) = &accepted.channel_keys[&general_topic];
+    let decrypted = willow_crypto::open_content(&sealed, recipient_key).unwrap();
+    assert_eq!(
+        decrypted,
+        Content::Text {
+            body: "hello from owner".into()
+        }
+    );
+}
+
+/// Verify that PeerId extraction works for the invite flow.
+#[test]
+fn invite_flow_peer_id_extraction() {
+    let id = Identity::generate();
+    let peer_str = id.peer_id().to_string();
+
+    // Extract public key from PeerId string.
+    let pub_bytes = crate::invite::peer_id_to_ed25519_public(&peer_str).unwrap();
+
+    // Encrypt something for this public key.
+    let key = generate_channel_key();
+    let encrypted = willow_crypto::encrypt_channel_key_for(&key, &pub_bytes).unwrap();
+
+    // Decrypt with the original identity.
+    let decrypted = willow_crypto::decrypt_channel_key(&encrypted, &id).unwrap();
+    assert_eq!(decrypted.as_bytes(), key.as_bytes());
+}
+
+/// Test that accepting an invite sets up the correct topic → key mapping.
+#[test]
+fn accepted_invite_provides_correct_topic_mapping() {
+    use willow_channel::ChannelKind;
+
+    let owner = Identity::generate();
+    let recipient = Identity::generate();
+
+    let mut server = willow_channel::Server::new("Mapped", owner.peer_id());
+    server.create_channel("alpha", ChannelKind::Text).unwrap();
+    server.create_channel("beta", ChannelKind::Text).unwrap();
+
+    let mut keys = std::collections::HashMap::new();
+    let mut topic_map = std::collections::HashMap::new();
+    for ch in server.channels() {
+        let topic = format!("{}/{}", server.id, ch.name);
+        if let Some(key) = server.channel_key(&ch.id) {
+            keys.insert(topic.clone(), key.clone());
+        }
+        topic_map.insert(topic, (ch.name.clone(), ch.id.clone()));
+    }
+
+    let recipient_pub =
+        crate::invite::peer_id_to_ed25519_public(&recipient.peer_id().to_string()).unwrap();
+
+    let code = crate::invite::generate_invite(&server, &keys, &topic_map, &recipient_pub).unwrap();
+    let accepted = crate::invite::accept_invite(&code, &recipient).unwrap();
+
+    // Each topic in the accepted invite should map to the right channel name.
+    for (topic, (name, _)) in &accepted.channel_keys {
+        assert!(topic.ends_with(name));
+    }
+}
+
+/// Test the headless app can process a joined invite's keys.
+#[test]
+fn app_processes_accepted_invite_keys() {
+    use willow_channel::ChannelKind;
+
+    let (mut app, cmd_rx) = test_app();
+
+    let owner = Identity::generate();
+    let recipient_identity = app.world().resource::<LocalIdentity>().0.clone();
+
+    // Owner creates a server.
+    let mut server = willow_channel::Server::new("AppTest", owner.peer_id());
+    let ch_id = server.create_channel("general", ChannelKind::Text).unwrap();
+
+    let mut keys = std::collections::HashMap::new();
+    let mut topic_map = std::collections::HashMap::new();
+    let topic = format!("{}/general", server.id);
+    if let Some(key) = server.channel_key(&ch_id) {
+        keys.insert(topic.clone(), key.clone());
+    }
+    topic_map.insert(topic.clone(), ("general".into(), ch_id));
+
+    // Generate invite for the app's identity.
+    let recipient_pub =
+        crate::invite::peer_id_to_ed25519_public(&recipient_identity.peer_id().to_string())
+            .unwrap();
+    let code = crate::invite::generate_invite(&server, &keys, &topic_map, &recipient_pub).unwrap();
+
+    // Accept the invite.
+    let accepted = crate::invite::accept_invite(&code, &recipient_identity).unwrap();
+
+    // Install the decrypted keys into the app's ChannelKeyStore.
+    for (topic, (_, key)) in &accepted.channel_keys {
+        app.world_mut()
+            .resource_mut::<ChannelKeyStore>()
+            .keys
+            .insert(topic.clone(), key.clone());
+    }
+
+    // Now the app should be able to decrypt a message encrypted with the owner's key.
+    let owner_key = &keys[&topic];
+    let content = Content::Text {
+        body: "encrypted for app".into(),
+    };
+    let sealed = willow_crypto::seal_content(&content, owner_key, 0).unwrap();
+
+    let mut msg = Message::text(
+        ChannelId::new(),
+        owner.peer_id(),
+        "placeholder",
+        &mut HLC::new(),
+    );
+    msg.content = Content::Encrypted(sealed);
+    let data = sign_envelope(&msg, &owner);
+
+    app.world_mut()
+        .write_message(NetworkBridgeEvent::MessageReceived {
+            topic: topic.clone(),
+            data,
+            source: Some(owner.peer_id().to_string()),
+        });
+    app.update();
+
+    let state = app.world().resource::<ChatState>();
+    assert_eq!(state.messages.len(), 1);
+    assert_eq!(state.messages[0].body, "encrypted for app");
+
+    // Drain any subscribe commands.
+    while cmd_rx.try_recv().is_ok() {}
+}
