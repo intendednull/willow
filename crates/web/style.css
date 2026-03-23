@@ -55,6 +55,52 @@ html, body {
     padding: 8px;
 }
 
+/* Channel list header with title and + button */
+.channel-list-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 12px 8px;
+}
+
+.channel-list-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    letter-spacing: 0.5px;
+    font-weight: 600;
+}
+
+.channel-add-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 0 4px;
+    line-height: 1;
+}
+
+.channel-add-btn:hover {
+    color: var(--text-primary);
+}
+
+/* Inline input for creating a new channel */
+.channel-create-input {
+    padding: 2px 12px 6px;
+}
+
+.channel-create-input input {
+    width: 100%;
+    padding: 4px 8px;
+    background: var(--bg-input);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 13px;
+    outline: none;
+}
+
 .channel-item {
     padding: 6px 12px;
     border-radius: 4px;
@@ -68,12 +114,38 @@ html, body {
 .channel-item:hover { background: var(--bg-message-hover); }
 .channel-item.active { color: var(--text-primary); background: var(--bg-input); }
 
+.channel-item-right {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
 .channel-item .unread-badge {
     background: var(--unread);
     color: #000;
     font-size: 11px;
     padding: 1px 6px;
     border-radius: 10px;
+}
+
+/* Delete button -- hidden by default, visible on hover */
+.channel-item .delete-btn {
+    display: none;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 12px;
+    cursor: pointer;
+    padding: 0 4px;
+    line-height: 1;
+}
+
+.channel-item:hover .delete-btn {
+    display: inline-block;
+}
+
+.channel-item .delete-btn:hover {
+    color: var(--danger);
 }
 
 .user-area {
@@ -106,6 +178,7 @@ html, body {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    flex-shrink: 0;
 }
 
 .channel-header .peer-count {
@@ -122,6 +195,7 @@ html, body {
     display: flex;
     flex-direction: column;
     gap: 4px;
+    min-height: 0;
 }
 
 .message {
@@ -170,6 +244,7 @@ html, body {
 .input-area {
     padding: 16px;
     border-top: 1px solid var(--border);
+    flex-shrink: 0;
 }
 
 .input-area input, .input-area textarea {
@@ -214,10 +289,11 @@ html, body {
 .member-item {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     padding: 4px;
     border-radius: 4px;
     font-size: 13px;
+    flex-wrap: wrap;
 }
 
 .member-item:hover { background: var(--bg-message-hover); }
@@ -229,9 +305,47 @@ html, body {
     flex-shrink: 0;
 }
 
+.member-item .member-name {
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .member-item .badge {
     font-size: 10px;
-    color: var(--text-muted);
+    padding: 1px 5px;
+    border-radius: 8px;
+    flex-shrink: 0;
+}
+
+.member-item .owner-badge {
+    background: var(--accent);
+    color: white;
+}
+
+.member-item .trusted-badge {
+    background: var(--online);
+    color: white;
+}
+
+/* Member action buttons -- visible on hover */
+.member-actions {
+    display: none;
+    gap: 4px;
+    width: 100%;
+    padding-left: 16px;
+    margin-top: 2px;
+}
+
+.member-item:hover .member-actions {
+    display: flex;
+}
+
+.member-actions .btn {
+    font-size: 11px;
+    padding: 2px 6px;
 }
 
 /* Settings panel */
@@ -244,6 +358,12 @@ html, body {
 .settings-panel h2 {
     font-size: 22px;
     margin-bottom: 20px;
+}
+
+.settings-panel h3 {
+    font-size: 15px;
+    margin-bottom: 10px;
+    color: var(--text-primary);
 }
 
 .settings-panel label {
@@ -267,6 +387,65 @@ html, body {
 
 .settings-panel input:focus { border-color: var(--accent); }
 
+.settings-section {
+    margin-bottom: 20px;
+}
+
+.settings-status {
+    background: var(--bg-input);
+    color: var(--accent);
+    padding: 8px 12px;
+    border-radius: 4px;
+    margin-bottom: 16px;
+    font-size: 13px;
+}
+
+/* Peer ID display */
+.peer-id-display {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.peer-id-text {
+    flex: 1;
+    background: var(--bg-input);
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    word-break: break-all;
+    min-width: 0;
+}
+
+/* Invite section */
+.invite-section,
+.join-section {
+    margin-top: 24px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+}
+
+.invite-code-display {
+    margin-top: 8px;
+}
+
+.invite-code-display textarea {
+    width: 100%;
+    height: 60px;
+    padding: 8px 12px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 11px;
+    font-family: monospace;
+    outline: none;
+    resize: none;
+    margin-bottom: 4px;
+}
+
 .btn {
     padding: 8px 16px;
     border: none;
@@ -279,6 +458,7 @@ html, body {
 .btn-primary { background: var(--accent); color: white; }
 .btn-primary:hover { background: var(--accent-hover); }
 .btn-danger { background: var(--danger); color: white; }
+.btn-danger:hover { background: #c73538; }
 .btn-sm { padding: 4px 8px; font-size: 12px; }
 
 .empty-state {

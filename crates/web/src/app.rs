@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use leptos::prelude::*;
@@ -10,7 +11,7 @@ use crate::components::{
 };
 
 /// Wrapper around `Rc<RefCell<Client>>` that is `Send` for single-threaded WASM.
-type ClientHandle = SendWrapper<Rc<RefCell<Client>>>;
+pub type ClientHandle = SendWrapper<Rc<RefCell<Client>>>;
 
 fn new_client_handle() -> ClientHandle {
     SendWrapper::new(Rc::new(RefCell::new(Client::new(ClientConfig::default()))))
@@ -37,6 +38,7 @@ pub fn App() -> impl IntoView {
     let (show_settings, set_show_settings) = signal(false);
     let (show_sidebar, set_show_sidebar) = signal(false);
     let (peer_id, set_peer_id) = signal(String::new());
+    let (unread, set_unread) = signal(HashMap::<String, usize>::new());
 
     // Populate initial state from the client.
     {
@@ -80,6 +82,14 @@ pub fn App() -> impl IntoView {
             if needs_msg_refresh {
                 let ch = current_channel.get_untracked();
                 set_messages.set(c.messages(&ch).into_iter().cloned().collect());
+                // Update unread counts -- map topic-based counts to channel names.
+                let mut unread_map = HashMap::new();
+                for (topic, count) in &c.state().unread.counts {
+                    if let Some(name) = c.state().server.name_for_topic(topic) {
+                        unread_map.insert(name.to_string(), *count);
+                    }
+                }
+                set_unread.set(unread_map);
             }
             if needs_peer_refresh {
                 set_peers.set(c.peers().to_vec());
@@ -100,6 +110,10 @@ pub fn App() -> impl IntoView {
         let mut c = client_switch.borrow_mut();
         c.switch_channel(&name);
         set_messages.set(c.messages(&name).into_iter().cloned().collect());
+        // Clear unread for this channel.
+        set_unread.update(|m| {
+            m.remove(&name);
+        });
     };
 
     // Send message handler.
@@ -110,6 +124,8 @@ pub fn App() -> impl IntoView {
         let _ = c.send_message(&ch, &body);
         set_messages.set(c.messages(&ch).into_iter().cloned().collect());
     };
+
+    let settings_client = client.clone();
 
     view! {
         <div class="app">
@@ -123,6 +139,8 @@ pub fn App() -> impl IntoView {
                 current_channel=current_channel
                 peer_id=peer_id
                 open=show_sidebar
+                unread=unread
+                client=client.clone()
                 on_channel_click=on_channel_click
                 on_settings_click=move |_| {
                     set_show_settings.update(|v| *v = !*v);
@@ -131,22 +149,30 @@ pub fn App() -> impl IntoView {
             />
             <div class="main-content">
                 {move || {
+                    let sc = settings_client.clone();
+                    let pid = peer_id;
                     if show_settings.get() {
-                        view! { <SettingsPanel /> }.into_any()
+                        view! { <SettingsPanel client=sc peer_id=pid /> }.into_any()
                     } else {
                         view! {
-                            <ChannelHeader
-                                channel=current_channel
-                                peer_count=peer_count
-                                on_menu_click=move |_| set_show_sidebar.update(|v| *v = !*v)
-                            />
-                            <MessageList messages=messages />
-                            <ChatInput on_send=on_send.clone() />
+                            <div style="display: flex; flex-direction: column; height: 100%;">
+                                <ChannelHeader
+                                    channel=current_channel
+                                    peer_count=peer_count
+                                    on_menu_click=move |_| set_show_sidebar.update(|v| *v = !*v)
+                                />
+                                <MessageList messages=messages />
+                                <ChatInput on_send=on_send.clone() />
+                            </div>
                         }.into_any()
                     }
                 }}
             </div>
-            <MemberList peers=peers />
+            <MemberList
+                peers=peers
+                client=client.clone()
+                peer_id=peer_id
+            />
         </div>
     }
 }
