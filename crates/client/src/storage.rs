@@ -239,9 +239,7 @@ impl MessageDb {
         .ok()
         .map(|rows| {
             rows.filter_map(|r| r.ok())
-                .filter_map(|data| {
-                    willow_transport::unpack::<crate::ops::StampedOp>(&data).ok()
-                })
+                .filter_map(|data| willow_transport::unpack::<crate::ops::StampedOp>(&data).ok())
                 .collect()
         })
         .unwrap_or_default()

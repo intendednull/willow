@@ -329,9 +329,6 @@ mod tests {
     #[test]
     fn adjacent_shortcodes() {
         let reg = EmojiRegistry::new();
-        assert_eq!(
-            reg.expand(":fire::fire:"),
-            "\u{1f525}\u{1f525}"
-        );
+        assert_eq!(reg.expand(":fire::fire:"), "\u{1f525}\u{1f525}");
     }
 }
