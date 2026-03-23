@@ -15,18 +15,20 @@
 //! - [`UiPlugin`](ui::UiPlugin) — top-level layout: sidebar, channel list,
 //!   message area, input, and chat rendering.
 
-pub mod base64;
 pub mod clipboard;
-pub mod emoji;
-pub mod file_manager;
-pub mod invite;
 pub mod network_bridge;
 pub mod notify;
-pub mod server_sync;
-pub mod storage;
 pub mod text_edit;
 pub mod theme;
 pub mod ui;
+
+// Re-export from willow-client for backward compatibility.
+pub use willow_client::base64;
+pub use willow_client::emoji;
+pub use willow_client::files as file_manager;
+pub use willow_client::invite;
+pub use willow_client::ops as server_sync;
+pub use willow_client::storage;
 
 #[cfg(test)]
 mod tests;

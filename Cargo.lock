@@ -8267,6 +8267,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "willow-channel",
+ "willow-client",
  "willow-crypto",
  "willow-files",
  "willow-identity",

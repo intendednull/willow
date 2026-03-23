@@ -13,6 +13,7 @@ willow-network = { path = "../network" }
 willow-transport = { path = "../transport" }
 willow-crypto = { path = "../crypto" }
 willow-files = { path = "../files" }
+willow-client = { path = "../client" }
 
 bevy = { workspace = true }
 anyhow = { workspace = true }
