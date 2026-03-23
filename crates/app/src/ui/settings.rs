@@ -105,12 +105,19 @@ pub fn toggle_view(
         };
     }
 
-    // When entering settings, reload saved values.
+    // When entering settings, reload saved values and reset cursor.
     if *view == AppView::Settings {
         let saved = crate::storage::load_settings().unwrap_or_default();
         settings_input.relay_addr = saved.relay_addr.unwrap_or_default();
         let saved_profile = crate::storage::load_profile().unwrap_or_default();
         settings_input.display_name = saved_profile.display_name;
+        // Place cursor at end of the focused field.
+        let focused_text = match settings_input.focused_field {
+            SettingsField::DisplayName => &settings_input.display_name,
+            SettingsField::RelayAddr => &settings_input.relay_addr,
+            _ => "",
+        };
+        settings_input.cursor = crate::text_edit::char_len(focused_text);
     }
 }
 
@@ -118,10 +125,19 @@ pub fn toggle_view(
 pub fn handle_settings_field_click(
     query: Query<(&Interaction, &SettingsFieldContainer), Changed<Interaction>>,
     mut settings_input: ResMut<SettingsInput>,
+    channel_mgmt: Res<ChannelManagement>,
 ) {
     for (interaction, container) in &query {
         if *interaction == Interaction::Pressed {
             settings_input.focused_field = container.0;
+            // Place cursor at end of the new field.
+            let field_text = match container.0 {
+                SettingsField::DisplayName => &settings_input.display_name,
+                SettingsField::RelayAddr => &settings_input.relay_addr,
+                SettingsField::InviteRecipient => &channel_mgmt.invite_recipient,
+                SettingsField::JoinCode => &channel_mgmt.join_code,
+            };
+            settings_input.cursor = crate::text_edit::char_len(field_text);
         }
     }
 }
@@ -152,21 +168,39 @@ pub fn sync_settings_fields(
         return;
     }
 
-    // Update text values.
+    // Update text values, showing cursor in the focused field.
+    let name_focused = settings_input.focused_field == SettingsField::DisplayName;
     for (mut text, mut color) in &mut name_query {
         if settings_input.display_name.is_empty() {
-            **text = constants::NAME_PLACEHOLDER.to_string();
+            let cursor_str = if name_focused { "\u{2581}" } else { "" };
+            **text = format!("{}{cursor_str}", constants::NAME_PLACEHOLDER);
             *color = TextColor(theme::TEXT_PLACEHOLDER);
+        } else if name_focused {
+            let (before, after) = crate::text_edit::split_at_cursor(
+                &settings_input.display_name,
+                settings_input.cursor,
+            );
+            **text = format!("{before}\u{2581}{after}");
+            *color = TextColor(theme::TEXT_PRIMARY);
         } else {
             **text = settings_input.display_name.clone();
             *color = TextColor(theme::TEXT_PRIMARY);
         }
     }
 
+    let relay_focused = settings_input.focused_field == SettingsField::RelayAddr;
     for (mut text, mut color) in &mut relay_query {
         if settings_input.relay_addr.is_empty() {
-            **text = constants::RELAY_PLACEHOLDER.to_string();
+            let cursor_str = if relay_focused { "\u{2581}" } else { "" };
+            **text = format!("{}{cursor_str}", constants::RELAY_PLACEHOLDER);
             *color = TextColor(theme::TEXT_PLACEHOLDER);
+        } else if relay_focused {
+            let (before, after) = crate::text_edit::split_at_cursor(
+                &settings_input.relay_addr,
+                settings_input.cursor,
+            );
+            **text = format!("{before}\u{2581}{after}");
+            *color = TextColor(theme::TEXT_PRIMARY);
         } else {
             **text = settings_input.relay_addr.clone();
             *color = TextColor(theme::TEXT_PRIMARY);

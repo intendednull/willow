@@ -662,7 +662,11 @@ fn backspace_in_settings_removes_from_focused_field() {
     let (mut app, _rx) = test_app();
 
     *app.world_mut().resource_mut::<AppView>() = AppView::Settings;
-    app.world_mut().resource_mut::<SettingsInput>().display_name = "abc".to_string();
+    {
+        let mut si = app.world_mut().resource_mut::<SettingsInput>();
+        si.display_name = "abc".to_string();
+        si.cursor = 3; // cursor at end
+    }
 
     send_key(&mut app, KeyCode::Backspace, None);
     app.update();

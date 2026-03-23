@@ -194,6 +194,8 @@ impl OpLog {
 #[derive(Resource, Default)]
 pub struct InputState {
     pub text: String,
+    /// Cursor position in characters (not bytes).
+    pub cursor: usize,
     pub send_requested: bool,
     /// Whether the chat input box is focused (receiving keyboard input).
     pub focused: bool,
@@ -270,6 +272,8 @@ pub struct SettingsInput {
     pub display_name: String,
     /// Which field is currently focused in settings.
     pub focused_field: SettingsField,
+    /// Cursor position (in characters) for the currently focused field.
+    pub cursor: usize,
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
@@ -289,6 +293,7 @@ impl Default for SettingsInput {
             relay_addr: saved_settings.relay_addr.unwrap_or_default(),
             display_name: saved_profile.display_name,
             focused_field: SettingsField::DisplayName,
+            cursor: 0,
         }
     }
 }

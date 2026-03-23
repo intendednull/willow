@@ -37,19 +37,22 @@ pub fn handle_keyboard_input(
             continue;
         }
 
+        let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+
         if *view == AppView::Settings {
             // Ctrl+V pastes into the focused settings field.
-            if event.key_code == KeyCode::KeyV
-                && (keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight))
-            {
+            if event.key_code == KeyCode::KeyV && ctrl {
+                crate::clipboard::request_paste();
                 if let Some(text) = crate::clipboard::read_clipboard() {
+                    let mut cursor = settings_input.cursor;
                     let target = match settings_input.focused_field {
                         SettingsField::DisplayName => &mut settings_input.display_name,
                         SettingsField::RelayAddr => &mut settings_input.relay_addr,
                         SettingsField::InviteRecipient => &mut channel_mgmt.invite_recipient,
                         SettingsField::JoinCode => &mut channel_mgmt.join_code,
                     };
-                    target.push_str(&text);
+                    crate::text_edit::insert_str(target, &mut cursor, &text);
+                    settings_input.cursor = cursor;
                 }
                 continue;
             }
@@ -61,26 +64,95 @@ pub fn handle_keyboard_input(
                         SettingsField::InviteRecipient => SettingsField::JoinCode,
                         SettingsField::JoinCode => SettingsField::DisplayName,
                     };
+                    // Reset cursor to end of new field.
+                    let new_text = match settings_input.focused_field {
+                        SettingsField::DisplayName => &settings_input.display_name,
+                        SettingsField::RelayAddr => &settings_input.relay_addr,
+                        SettingsField::InviteRecipient => &channel_mgmt.invite_recipient,
+                        SettingsField::JoinCode => &channel_mgmt.join_code,
+                    };
+                    settings_input.cursor = crate::text_edit::char_len(new_text);
                 }
-                KeyCode::Backspace => match settings_input.focused_field {
-                    SettingsField::DisplayName => {
-                        settings_input.display_name.pop();
+                KeyCode::Backspace => {
+                    let mut cursor = settings_input.cursor;
+                    let target = match settings_input.focused_field {
+                        SettingsField::DisplayName => &mut settings_input.display_name,
+                        SettingsField::RelayAddr => &mut settings_input.relay_addr,
+                        SettingsField::InviteRecipient => &mut channel_mgmt.invite_recipient,
+                        SettingsField::JoinCode => &mut channel_mgmt.join_code,
+                    };
+                    if ctrl {
+                        crate::text_edit::backspace_word(target, &mut cursor);
+                    } else {
+                        crate::text_edit::backspace(target, &mut cursor);
                     }
-                    SettingsField::RelayAddr => {
-                        settings_input.relay_addr.pop();
+                    settings_input.cursor = cursor;
+                }
+                KeyCode::Delete => {
+                    let mut cursor = settings_input.cursor;
+                    let target = match settings_input.focused_field {
+                        SettingsField::DisplayName => &mut settings_input.display_name,
+                        SettingsField::RelayAddr => &mut settings_input.relay_addr,
+                        SettingsField::InviteRecipient => &mut channel_mgmt.invite_recipient,
+                        SettingsField::JoinCode => &mut channel_mgmt.join_code,
+                    };
+                    if ctrl {
+                        crate::text_edit::delete_word(target, &mut cursor);
+                    } else {
+                        crate::text_edit::delete(target, &mut cursor);
                     }
-                    SettingsField::InviteRecipient => {
-                        channel_mgmt.invite_recipient.pop();
+                    settings_input.cursor = cursor;
+                }
+                KeyCode::ArrowLeft => {
+                    let mut cursor = settings_input.cursor;
+                    if ctrl {
+                        let target = match settings_input.focused_field {
+                            SettingsField::DisplayName => &settings_input.display_name,
+                            SettingsField::RelayAddr => &settings_input.relay_addr,
+                            SettingsField::InviteRecipient => &channel_mgmt.invite_recipient,
+                            SettingsField::JoinCode => &channel_mgmt.join_code,
+                        };
+                        crate::text_edit::move_word_left(target, &mut cursor);
+                    } else {
+                        crate::text_edit::move_left(&mut cursor);
                     }
-                    SettingsField::JoinCode => {
-                        channel_mgmt.join_code.pop();
+                    settings_input.cursor = cursor;
+                }
+                KeyCode::ArrowRight => {
+                    let mut cursor = settings_input.cursor;
+                    let target = match settings_input.focused_field {
+                        SettingsField::DisplayName => &settings_input.display_name,
+                        SettingsField::RelayAddr => &settings_input.relay_addr,
+                        SettingsField::InviteRecipient => &channel_mgmt.invite_recipient,
+                        SettingsField::JoinCode => &channel_mgmt.join_code,
+                    };
+                    if ctrl {
+                        crate::text_edit::move_word_right(target, &mut cursor);
+                    } else {
+                        crate::text_edit::move_right(target, &mut cursor);
                     }
-                },
+                    settings_input.cursor = cursor;
+                }
+                KeyCode::Home => {
+                    crate::text_edit::move_home(&mut settings_input.cursor);
+                }
+                KeyCode::End => {
+                    let mut cursor = settings_input.cursor;
+                    let target = match settings_input.focused_field {
+                        SettingsField::DisplayName => &settings_input.display_name,
+                        SettingsField::RelayAddr => &settings_input.relay_addr,
+                        SettingsField::InviteRecipient => &channel_mgmt.invite_recipient,
+                        SettingsField::JoinCode => &channel_mgmt.join_code,
+                    };
+                    crate::text_edit::move_end(target, &mut cursor);
+                    settings_input.cursor = cursor;
+                }
                 KeyCode::Escape => {
                     *view = AppView::Chat;
                 }
                 _ => {
                     if let Some(ref s) = event.text {
+                        let mut cursor = settings_input.cursor;
                         let target = match settings_input.focused_field {
                             SettingsField::DisplayName => &mut settings_input.display_name,
                             SettingsField::RelayAddr => &mut settings_input.relay_addr,
@@ -89,9 +161,10 @@ pub fn handle_keyboard_input(
                         };
                         for c in s.chars() {
                             if !c.is_control() {
-                                target.push(c);
+                                crate::text_edit::insert_char(target, &mut cursor, c);
                             }
                         }
+                        settings_input.cursor = cursor;
                     }
                 }
             }
@@ -121,12 +194,13 @@ pub fn handle_keyboard_input(
                 input.focused = true;
             }
 
-            let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
-
             // Ctrl+V pastes from clipboard.
             if event.key_code == KeyCode::KeyV && ctrl {
+                crate::clipboard::request_paste();
                 if let Some(text) = crate::clipboard::read_clipboard() {
-                    input.text.push_str(&text);
+                    let mut cursor = input.cursor;
+                    crate::text_edit::insert_str(&mut input.text, &mut cursor, &text);
+                    input.cursor = cursor;
                 }
                 continue;
             }
@@ -138,7 +212,7 @@ pub fn handle_keyboard_input(
                 continue;
             }
 
-            // Ctrl+R → reply to last message.
+            // Ctrl+R -> reply to last message.
             if event.key_code == KeyCode::KeyR && ctrl && input.replying_to.is_none() {
                 if let Some(last_msg) = state.messages.iter().rev().find(|m| !m.deleted) {
                     let preview = if last_msg.body.len() > 40 {
@@ -157,7 +231,7 @@ pub fn handle_keyboard_input(
                 continue;
             }
 
-            // Up arrow with empty input → edit last own message.
+            // Up arrow with empty input -> edit last own message.
             if event.key_code == KeyCode::ArrowUp
                 && input.text.is_empty()
                 && input.editing_message_id.is_none()
@@ -170,47 +244,83 @@ pub fn handle_keyboard_input(
                 {
                     input.editing_message_id = Some(last_own.id.clone());
                     input.text = last_own.body.clone();
+                    input.cursor = crate::text_edit::char_len(&input.text);
                 }
                 continue;
             }
 
-            // Ctrl+Backspace while editing → delete the message.
+            // Ctrl+Backspace while editing -> delete the message.
             if event.key_code == KeyCode::Backspace && ctrl && input.editing_message_id.is_some() {
-                // Mark as delete request — send_message will handle it.
+                // Mark as delete request -- send_message will handle it.
                 input.send_requested = true;
                 input.text = "$$DELETE$$".to_string();
+                input.cursor = 0;
                 continue;
             }
 
-            // Escape while editing → cancel edit.
+            // Escape while editing -> cancel edit.
             if event.key_code == KeyCode::Escape && input.editing_message_id.is_some() {
                 input.editing_message_id = None;
                 input.text.clear();
+                input.cursor = 0;
                 continue;
             }
 
+            let mut cursor = input.cursor;
             match event.key_code {
                 KeyCode::Enter => {
                     if !input.text.is_empty() {
                         input.send_requested = true;
                     } else if input.editing_message_id.is_some() {
-                        // Enter with empty text while editing → cancel.
+                        // Enter with empty text while editing -> cancel.
                         input.editing_message_id = None;
                     }
                 }
                 KeyCode::Backspace => {
-                    input.text.pop();
+                    if ctrl {
+                        crate::text_edit::backspace_word(&mut input.text, &mut cursor);
+                    } else {
+                        crate::text_edit::backspace(&mut input.text, &mut cursor);
+                    }
+                }
+                KeyCode::Delete => {
+                    if ctrl {
+                        crate::text_edit::delete_word(&mut input.text, &mut cursor);
+                    } else {
+                        crate::text_edit::delete(&mut input.text, &mut cursor);
+                    }
+                }
+                KeyCode::ArrowLeft => {
+                    if ctrl {
+                        crate::text_edit::move_word_left(&input.text, &mut cursor);
+                    } else {
+                        crate::text_edit::move_left(&mut cursor);
+                    }
+                }
+                KeyCode::ArrowRight => {
+                    if ctrl {
+                        crate::text_edit::move_word_right(&input.text, &mut cursor);
+                    } else {
+                        crate::text_edit::move_right(&input.text, &mut cursor);
+                    }
+                }
+                KeyCode::Home => {
+                    crate::text_edit::move_home(&mut cursor);
+                }
+                KeyCode::End => {
+                    crate::text_edit::move_end(&input.text, &mut cursor);
                 }
                 _ => {
                     if let Some(ref s) = event.text {
                         for c in s.chars() {
                             if !c.is_control() {
-                                input.text.push(c);
+                                crate::text_edit::insert_char(&mut input.text, &mut cursor, c);
                             }
                         }
                     }
                 }
             }
+            input.cursor = cursor;
         }
     }
 }
@@ -237,6 +347,7 @@ pub fn send_message(
         return;
     }
     input.send_requested = false;
+    input.cursor = 0;
 
     let body = input.text.drain(..).collect::<String>();
     let editing_id = input.editing_message_id.take();
@@ -328,7 +439,7 @@ pub fn send_message(
 
     let replying = input.replying_to.take();
 
-    // Build content — either a reply or a regular text message.
+    // Build content -- either a reply or a regular text message.
     let content = if let Some((ref parent_id, _)) = replying {
         let parent =
             willow_messaging::MessageId(uuid::Uuid::parse_str(parent_id).unwrap_or_default());
@@ -362,7 +473,7 @@ pub fn send_message(
         &peer_id_str,
     );
 
-    // Record for dedup (in-memory only — chat messages are not persisted to op log file).
+    // Record for dedup (in-memory only -- chat messages are not persisted to op log file).
     op_log.record(stamped.clone());
 
     // Persist the stamped op for catch-up sync.
@@ -449,24 +560,63 @@ pub fn sync_input_text(
     }
     for (mut text, mut color) in &mut query {
         if input.editing_message_id.is_some() {
-            **text = format!("[editing] {}", input.text);
+            if input.focused {
+                let (before, after) = crate::text_edit::split_at_cursor(&input.text, input.cursor);
+                **text = format!("[editing] {before}\u{25cf}{after}");
+            } else {
+                **text = format!("[editing] {}", input.text);
+            }
             *color = TextColor(theme::UNREAD_HIGHLIGHT);
         } else if let Some((_, ref preview)) = input.replying_to {
             if input.text.is_empty() {
-                **text = format!("↳ replying to {preview}");
+                **text = format!("\u{21b3} replying to {preview}");
                 *color = TextColor(theme::TEXT_MUTED);
+            } else if input.focused {
+                let (before, after) = crate::text_edit::split_at_cursor(&input.text, input.cursor);
+                **text = format!("\u{21b3} {before}\u{25cf}{after}");
+                *color = TextColor(theme::TEXT_PRIMARY);
             } else {
-                **text = format!("↳ {}", input.text);
+                **text = format!("\u{21b3} {}", input.text);
                 *color = TextColor(theme::TEXT_PRIMARY);
             }
         } else if input.text.is_empty() {
-            let cursor = if input.focused { "▏" } else { "" };
-            **text = format!("{}{cursor}", constants::CHAT_PLACEHOLDER);
+            let cursor_str = if input.focused { "\u{2581}" } else { "" };
+            **text = format!("{}{cursor_str}", constants::CHAT_PLACEHOLDER);
             *color = TextColor(theme::TEXT_PLACEHOLDER);
-        } else {
-            let cursor = if input.focused { "▏" } else { "" };
-            **text = format!("{}{cursor}", input.text);
+        } else if input.focused {
+            let (before, after) = crate::text_edit::split_at_cursor(&input.text, input.cursor);
+            **text = format!("{before}\u{2581}{after}");
             *color = TextColor(theme::TEXT_PRIMARY);
+        } else {
+            **text = input.text.clone();
+            *color = TextColor(theme::TEXT_PRIMARY);
+        }
+    }
+}
+
+/// Poll the WASM paste buffer. On native this is a no-op because
+/// `read_clipboard()` returns `None` without a prior `request_paste()`.
+pub fn poll_paste_buffer(
+    mut input: ResMut<InputState>,
+    view: Res<AppView>,
+    mut settings_input: ResMut<SettingsInput>,
+    mut channel_mgmt: ResMut<ChannelManagement>,
+) {
+    if let Some(text) = crate::clipboard::read_clipboard() {
+        if *view == AppView::Settings {
+            let mut cursor = settings_input.cursor;
+            let target = match settings_input.focused_field {
+                SettingsField::DisplayName => &mut settings_input.display_name,
+                SettingsField::RelayAddr => &mut settings_input.relay_addr,
+                SettingsField::InviteRecipient => &mut channel_mgmt.invite_recipient,
+                SettingsField::JoinCode => &mut channel_mgmt.join_code,
+            };
+            crate::text_edit::insert_str(target, &mut cursor, &text);
+            settings_input.cursor = cursor;
+        } else if input.focused {
+            let mut cursor = input.cursor;
+            crate::text_edit::insert_str(&mut input.text, &mut cursor, &text);
+            input.cursor = cursor;
         }
     }
 }

@@ -24,6 +24,7 @@ pub mod network_bridge;
 pub mod notify;
 pub mod server_sync;
 pub mod storage;
+pub mod text_edit;
 pub mod theme;
 pub mod ui;
 

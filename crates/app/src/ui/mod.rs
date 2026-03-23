@@ -118,6 +118,7 @@ impl Plugin for UiPlugin {
                     channels::handle_copy_invite,
                     files::handle_share_file_button,
                     files::poll_file_picker,
+                    input::poll_paste_buffer,
                 ),
             );
     }
