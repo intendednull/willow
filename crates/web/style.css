@@ -133,6 +133,8 @@ html, body {
 }
 
 .sidebar-header {
+    display: flex;
+    align-items: center;
     padding: 16px;
     font-size: 18px;
     font-weight: 600;
@@ -1418,6 +1420,47 @@ html, body {
 }
 
 /* ── Settings per-server label ────────────────────────────────────── */
+
+.server-settings-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.server-settings-header h2 {
+    margin: 0;
+}
+
+.settings-hint {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin: -4px 0 8px;
+}
+
+.server-gear-btn {
+    margin-left: auto;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 16px;
+    padding: 2px 6px;
+}
+
+.server-gear-btn:hover {
+    color: var(--text-primary);
+}
+
+.server-settings-link {
+    width: 100%;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+}
+
+.server-settings-link:hover {
+    background: var(--accent);
+    color: white;
+}
 
 .settings-server-label {
     margin-bottom: 12px;

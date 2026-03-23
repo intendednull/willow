@@ -16,6 +16,7 @@ pub fn Sidebar(
     client: ClientHandle,
     on_channel_click: impl Fn(String) + Send + Clone + 'static,
     on_settings_click: impl Fn(()) + Send + Clone + 'static,
+    on_server_settings_click: impl Fn(()) + Send + Clone + 'static,
 ) -> impl IntoView {
     let (creating, set_creating) = signal(false);
     let (new_name, set_new_name) = signal(String::new());
@@ -49,7 +50,16 @@ pub fn Sidebar(
 
     view! {
         <div class=move || if open.get() { "sidebar open" } else { "sidebar" }>
-            <div class="sidebar-header">"Willow"</div>
+            <div class="sidebar-header">
+                <span>"Willow"</span>
+                <button
+                    class="btn btn-sm server-gear-btn"
+                    title="Server Settings"
+                    on:click=move |_| on_server_settings_click(())
+                >
+                    "\u{2699}\u{fe0f}"
+                </button>
+            </div>
             <div class="channel-list">
                 <div class="channel-list-header">
                     <span class="channel-list-title">"CHANNELS"</span>

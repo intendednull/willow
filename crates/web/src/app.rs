@@ -7,8 +7,8 @@ use send_wrapper::SendWrapper;
 use willow_client::{ChatMessage, Client, ClientConfig, ClientEvent};
 
 use crate::components::{
-    ChannelHeader, ChatInput, FileShareButton, MemberList, MessageList, ServerList, SettingsPanel,
-    Sidebar, WelcomeScreen,
+    ChannelHeader, ChatInput, FileShareButton, MemberList, MessageList, ServerList,
+    ServerSettingsPanel, SettingsPanel, Sidebar, WelcomeScreen,
 };
 
 fn play_notification_sound() {
@@ -68,6 +68,7 @@ pub fn App() -> impl IntoView {
     let (current_channel, set_current_channel) = signal(String::from("general"));
     let (peer_count, set_peer_count) = signal(0usize);
     let (show_settings, set_show_settings) = signal(false);
+    let (show_server_settings, set_show_server_settings) = signal(false);
     let (show_sidebar, set_show_sidebar) = signal(false);
     let (peer_id, set_peer_id) = signal(String::new());
     let (servers, set_servers) = signal(Vec::<(String, String)>::new());
@@ -105,6 +106,7 @@ pub fn App() -> impl IntoView {
         set_current_channel.set(ch.clone());
         set_messages.set(c.messages(&ch).into_iter().cloned().collect());
         set_show_settings.set(false);
+        set_show_server_settings.set(false);
     };
 
     // Populate initial state from the client.
@@ -268,19 +270,6 @@ pub fn App() -> impl IntoView {
     };
 
     let settings_client = client.clone();
-    let joined_client = client.clone();
-    let on_joined = move |_: ()| {
-        let c = joined_client.borrow();
-        set_servers.set(c.server_list());
-        if let Some(id) = c.active_server_id() {
-            set_active_server_id.set(id.to_string());
-        }
-        set_channels.set(c.channels());
-        let ch = c.state().chat.current_channel.clone();
-        set_current_channel.set(ch.clone());
-        set_messages.set(c.messages(&ch).into_iter().cloned().collect());
-        set_show_settings.set(false);
-    };
 
     // Edit message handler -- called when the user submits an edited message.
     let client_edit = client.clone();
@@ -350,7 +339,6 @@ pub fn App() -> impl IntoView {
                 let edit_send = on_edit_send.clone();
                 let del_msg = on_delete_msg.clone();
                 let react = on_react.clone();
-                let joined = on_joined.clone();
                 view! {
                     <div class="app">
                         <ServerList
@@ -378,6 +366,12 @@ pub fn App() -> impl IntoView {
                             on_channel_click=ch_click
                             on_settings_click=move |_| {
                                 set_show_settings.update(|v| *v = !*v);
+                                set_show_server_settings.set(false);
+                                set_show_sidebar.set(false);
+                            }
+                            on_server_settings_click=move |_| {
+                                set_show_server_settings.update(|v| *v = !*v);
+                                set_show_settings.set(false);
                                 set_show_sidebar.set(false);
                             }
                         />
@@ -385,9 +379,14 @@ pub fn App() -> impl IntoView {
                             {move || {
                                 let sc2 = sc.clone();
                                 let pid = peer_id;
-                                if show_settings.get() {
-                                    let joined2 = joined.clone();
-                                    view! { <SettingsPanel client=sc2 peer_id=pid roles=Signal::from(roles) on_joined=joined2 /> }.into_any()
+                                if show_server_settings.get() {
+                                    let sc3 = sc2.clone();
+                                    view! { <ServerSettingsPanel client=sc3 peer_id=pid roles=Signal::from(roles) on_back=move |_| set_show_server_settings.set(false) /> }.into_any()
+                                } else if show_settings.get() {
+                                    view! { <SettingsPanel client=sc2 peer_id=pid on_server_settings=move |_| {
+                                        set_show_settings.set(false);
+                                        set_show_server_settings.set(true);
+                                    } /> }.into_any()
                                 } else {
                                     let fc2 = fc.clone();
                                     let send2 = send.clone();
