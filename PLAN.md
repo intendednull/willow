@@ -67,7 +67,7 @@ A native desktop app where you and your friends can:
 - [x] Message rendering with timestamps and author names
 - [x] Channel switching in the sidebar
 - [x] Bevy 0.18 upgrade with modern component-based API
-- [x] Headless UI testing with MinimalPlugins (236 tests)
+- [x] Headless UI testing with MinimalPlugins
 - [x] Full integration tests with real libp2p network nodes
 
 ### Phase 3 — E2E Encryption (COMPLETE)
@@ -102,13 +102,25 @@ A native desktop app where you and your friends can:
 - [x] File announcements displayed in chat
 - [x] Received chunks seeded to other peers
 
-### Phase 7 — Voice & Video (FUTURE)
+### Phase 7 — Server State Sync (COMPLETE)
+- [x] StampedOp wrapper: UUID dedup, HLC ordering, author verification
+- [x] OpLog resource with persistence (save/load to disk)
+- [x] Trust model: owner + TrustPeer/UntrustPeer ops
+- [x] Trust management UI (Trust/Untrust buttons in member list)
+- [x] Idempotent ops: SetPermission, deterministic channel/role IDs
+- [x] SyncMessage protocol: Op, SyncRequest, SyncBatch
+- [x] Catch-up on connect: exchange missing ops via HLC comparison
+- [x] Key rotation distribution on kick (encrypted per-member)
+- [x] Author verification in network bridge (stamped_op.author == signer)
+- [x] Integration tests: server sync, 3-node propagation, file chunks
+
+### Phase 8 — Voice & Video (FUTURE)
 - [ ] WebRTC-like media transport
 - [ ] Voice channels with Opus audio
 - [ ] Video with VP8/VP9
 - [ ] Screen sharing
 
-### Phase 8 — Polish (MOSTLY COMPLETE)
+### Phase 9 — Polish (COMPLETE)
 - [x] Discord-style dark theme (theme.rs color palette)
 - [x] Message timestamps (HH:MM)
 - [x] Unread channel indicators with count badges
@@ -125,9 +137,12 @@ A native desktop app where you and your friends can:
 - [x] Message memory pruning (1000 cap)
 - [x] Peer count grammar ("1 peer" vs "3 peers")
 - [x] UI module split (10 focused files)
-- [ ] OS notifications
-- [ ] Member list with kick button
-- [ ] Role management UI
+- [x] OS notifications (notify-rust native, Notification API WASM)
+- [x] Member list with online indicators and kick button
+- [x] Role management UI (create, delete, assign, permission toggles)
+- [x] Message editing and deletion
+- [x] Reply threads with parent preview
+- [x] Trust badges in member list ([owner], [trusted])
 
 ### Infrastructure (COMPLETE)
 - [x] WASM dual-target support (all crates compile for wasm32)
@@ -156,16 +171,18 @@ A native desktop app where you and your friends can:
 
 ## Test Coverage
 
-236+ tests across all crates covering:
+290+ tests across all crates covering:
 - Serialization round-trips, encryption/decryption, key exchange
 - Key ratcheting, forward secrecy, key rotation
-- Network integration (real libp2p nodes)
-- Headless Bevy UI (input, sending, receiving, settings)
-- File chunking, reassembly, chunk store
+- Network integration (14 tests with real libp2p nodes, including 3-node topology)
+- Server state sync: StampedOp round-trip, SyncRequest/SyncBatch, dedup, trust
+- Catch-up flow: missing op detection, HLC filtering, untrusted rejection
+- Headless Bevy UI (input, sending, receiving, settings, permissions)
+- File chunking, reassembly, chunk store, chunk request/response over network
 - Secure invite generate/accept/tamper-detection
 - Full end-to-end invite flow (owner → recipient → decrypt → chat)
-- Emoji shortcode expansion
-- Profile persistence, message persistence
+- Emoji shortcode expansion, reactions, edits, deletes, replies
+- Profile persistence, message persistence, op log persistence
 
 ## Honest Tradeoffs
 

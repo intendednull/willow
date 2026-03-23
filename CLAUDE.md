@@ -27,6 +27,7 @@ crates/
         ├── file_manager.rs  — File sharing and chunk management
         ├── invite.rs        — Secure per-recipient invite codes
         ├── network_bridge.rs — Async/sync bridge (tokio ↔ Bevy)
+        ├── server_sync.rs   — Server state sync: StampedOp, SyncMessage, pack/unpack
         ├── storage.rs       — Cross-platform persistence (filesystem / localStorage)
         ├── theme.rs         — Discord-style dark color palette
         ├── tests.rs         — Headless UI tests
@@ -39,7 +40,7 @@ crates/
             ├── init.rs       — Server init, channel subscription
             ├── input.rs      — Keyboard handling, message sending
             ├── chat.rs       — Network events, message rendering
-            ├── channels.rs   — Channel create/delete, invites, clipboard
+            ├── channels.rs   — Channel/role/member management, invites, trust
             ├── settings.rs   — Settings view systems
             └── files.rs      — File picker systems
 ```
@@ -141,6 +142,28 @@ willow-app → willow-crypto   → willow-identity → willow-transport
 9. If `Content::Encrypted`, `open_content()` decrypts
 10. Emoji shortcodes expanded → message rendered in UI
 
+### Server State Sync
+
+Server mutations (channels, roles, permissions, kicks) are synchronized
+via `StampedOp` over gossipsub topic `_willow_server_ops`.
+
+- **StampedOp**: wraps a `ServerOp` with UUID (dedup), HLC timestamp
+  (ordering), and author PeerId (verified against Ed25519 signature).
+- **OpLog**: Bevy resource tracking all ops, seen IDs, and trusted peers.
+  Persisted to disk via `storage::save_op_log`.
+- **Trust model**: server owner is implicitly trusted. Other peers must
+  be explicitly trusted via `TrustPeer` ops. Only ops from trusted peers
+  are applied; untrusted ops are rejected but their IDs are recorded.
+- **SyncMessage**: wire-level enum wrapping `Op(StampedOp)`,
+  `SyncRequest { latest_hlc }`, and `SyncBatch { ops }` for catch-up.
+- **Catch-up**: on connect, peers broadcast `SyncRequest` with their
+  latest HLC. Trusted peers respond with `SyncBatch` of newer ops.
+  Ops are sorted by HLC and deduplicated before applying.
+- **Idempotent ops**: `SetPermission { granted: bool }` instead of
+  toggle. `CreateChannel` and `CreateRole` carry deterministic IDs.
+- **Key rotation on kick**: `KickMember` op carries encrypted rotated
+  channel keys per remaining member (X25519 DH + ChaCha20-Poly1305).
+
 ### Hybrid Logical Clocks (HLC)
 
 Messages are ordered using HLCs (`willow-messaging/src/hlc.rs`). Every node
@@ -176,6 +199,14 @@ consistent ordering even when system clocks drift.
 3. If it needs new resources, add to `ui/resources.rs` and register in `build()`
 4. If it needs new components, add to `ui/components.rs`
 5. Add a test in `tests.rs` using `test_app()`
+
+### Adding a new server operation
+
+1. Add a variant to `ServerOp` in `crates/app/src/server_sync.rs`
+2. Handle it in `handle_server_op()` in `crates/app/src/ui/chat.rs`
+3. Broadcast it from the appropriate UI handler in `crates/app/src/ui/channels.rs`
+   using `broadcast_op()` to stamp, record, persist, and send
+4. Add tests for dedup, trust rejection, and application
 
 ### Adding a custom emoji
 
