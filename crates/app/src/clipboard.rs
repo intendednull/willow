@@ -17,11 +17,7 @@ pub fn read_clipboard() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// No-op on native (read_clipboard is synchronous).
-#[cfg(not(target_arch = "wasm32"))]
-pub fn request_paste() {}
-
-/// Copy text to the clipboard (WASM -- uses navigator.clipboard API).
+/// Copy text to the clipboard (WASM — uses navigator.clipboard API).
 #[cfg(target_arch = "wasm32")]
 pub fn copy_to_clipboard(text: &str) {
     if let Some(window) = web_sys::window() {
@@ -30,42 +26,22 @@ pub fn copy_to_clipboard(text: &str) {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-use std::cell::RefCell;
-
-#[cfg(target_arch = "wasm32")]
-thread_local! {
-    static PASTE_BUFFER: RefCell<Option<String>> = const { RefCell::new(None) };
-}
-
-/// Request an async clipboard read (WASM). The result will be available
-/// on the next call to `read_clipboard()`.
-#[cfg(target_arch = "wasm32")]
-pub fn request_paste() {
-    wasm_bindgen_futures::spawn_local(async {
-        let Some(window) = web_sys::window() else {
-            return;
-        };
-        let clipboard = window.navigator().clipboard();
-        let promise = clipboard.read_text();
-        match wasm_bindgen_futures::JsFuture::from(promise).await {
-            Ok(val) => {
-                if let Some(text) = val.as_string() {
-                    if !text.is_empty() {
-                        PASTE_BUFFER.with(|buf| {
-                            *buf.borrow_mut() = Some(text);
-                        });
-                    }
-                }
-            }
-            Err(_) => {}
-        }
-    });
-}
-
 /// Read text from the clipboard (WASM).
-/// Returns the result of the last `request_paste()` call, if available.
+///
+/// Reads from `window.__willow_paste`, set by a JS paste event listener
+/// in index.html. The JS side intercepts Ctrl+V before Bevy can prevent
+/// it, allowing the browser's native paste event to fire. No permission
+/// popup required.
 #[cfg(target_arch = "wasm32")]
 pub fn read_clipboard() -> Option<String> {
-    PASTE_BUFFER.with(|buf| buf.borrow_mut().take())
+    use web_sys::js_sys;
+    use web_sys::wasm_bindgen::JsValue;
+    let window = web_sys::window()?;
+    let key = JsValue::from_str("__willow_paste");
+    let val = js_sys::Reflect::get(&window, &key).ok()?;
+    if val.is_undefined() || val.is_null() {
+        return None;
+    }
+    let _ = js_sys::Reflect::set(&window, &key, &JsValue::NULL);
+    val.as_string().filter(|s: &String| !s.is_empty())
 }

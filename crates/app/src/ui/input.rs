@@ -42,7 +42,6 @@ pub fn handle_keyboard_input(
         if *view == AppView::Settings {
             // Ctrl+V pastes into the focused settings field.
             if event.key_code == KeyCode::KeyV && ctrl {
-                crate::clipboard::request_paste();
                 if let Some(text) = crate::clipboard::read_clipboard() {
                     let mut cursor = settings_input.cursor;
                     let target = match settings_input.focused_field {
@@ -196,7 +195,6 @@ pub fn handle_keyboard_input(
 
             // Ctrl+V pastes from clipboard.
             if event.key_code == KeyCode::KeyV && ctrl {
-                crate::clipboard::request_paste();
                 if let Some(text) = crate::clipboard::read_clipboard() {
                     let mut cursor = input.cursor;
                     crate::text_edit::insert_str(&mut input.text, &mut cursor, &text);
