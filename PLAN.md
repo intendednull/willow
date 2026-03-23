@@ -114,13 +114,30 @@ A native desktop app where you and your friends can:
 - [x] Author verification in network bridge (stamped_op.author == signer)
 - [x] Integration tests: server sync, 3-node propagation, file chunks
 
-### Phase 8 — Voice & Video (FUTURE)
+### Phase 8 — Event-Sourced State Machine (IN PROGRESS)
+- [x] willow-state crate: pure deterministic state machine (zero I/O)
+- [x] Event + EventKind with 17 mutation variants
+- [x] StateHash (SHA-256) for divergence detection
+- [x] apply() with permission enforcement and dedup
+- [x] Fine-grained Permission model (replaces binary trust)
+- [x] EventStore trait + InMemoryStore
+- [x] merge() for divergent history resolution
+- [x] 50 tests covering determinism, permissions, merge convergence
+- [x] Invite payload carries owner + sync provider hints (unverified)
+- [x] willow-client integrates willow-state (event_state + event_store)
+- [ ] Full migration: Client actions create Events, not Ops
+- [ ] Push-based notification (mpsc channel, no polling)
+- [ ] SQLite/localStorage EventStore implementations
+- [ ] Relay as trusted EventStore client
+- [ ] Multi-peer state verification (consensus on hash)
+
+### Phase 9 — Voice & Video (FUTURE)
 - [ ] WebRTC-like media transport
 - [ ] Voice channels with Opus audio
 - [ ] Video with VP8/VP9
 - [ ] Screen sharing
 
-### Phase 9 — Polish (COMPLETE)
+### Phase 10 — Polish (COMPLETE)
 - [x] Discord-style dark theme (theme.rs color palette)
 - [x] Message timestamps (HH:MM)
 - [x] Unread channel indicators with count badges

@@ -20,12 +20,27 @@ use std::collections::HashMap;
 use willow_crypto::ChannelKey;
 
 /// The data embedded in a secure invite code.
+///
+/// **Security note:** The `owner` and `sync_providers` fields are
+/// *suggestions* from the invite creator, NOT guaranteed truths. A
+/// malicious actor could forge an invite with fake trusted users.
+/// The joining peer should verify state from multiple sources and use
+/// the event log (GrantPermission events from the owner) as the
+/// canonical source of trust.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InvitePayload {
     /// Server name (for display to the recipient).
     pub server_name: String,
     /// Server ID (for constructing gossipsub topics).
     pub server_id: String,
+    /// PeerId of the server owner (root of trust chain).
+    /// This is a *hint* — verify by checking event history.
+    #[serde(default)]
+    pub owner: String,
+    /// Suggested peers that can provide full history (SyncProvider permission).
+    /// These are *hints* — the joining peer should verify from multiple sources.
+    #[serde(default)]
+    pub sync_providers: Vec<String>,
     /// Per-channel encrypted keys. Each channel key is encrypted for the
     /// specific recipient -- only they can decrypt with their Ed25519 key.
     pub channels: Vec<EncryptedChannel>,
@@ -71,6 +86,8 @@ pub fn generate_invite(
     let payload = InvitePayload {
         server_name: server.name.clone(),
         server_id: server.id.to_string(),
+        owner: server.owner.to_string(),
+        sync_providers: Vec::new(), // populated by caller if known
         channels,
     };
 
@@ -98,14 +115,23 @@ pub fn accept_invite(
     Some(AcceptedInvite {
         server_name: payload.server_name,
         server_id: payload.server_id,
+        owner: payload.owner,
+        sync_providers: payload.sync_providers,
         channel_keys,
     })
 }
 
 /// Result of successfully accepting an invite.
+///
+/// The `owner` and `sync_providers` are *hints* from the invite creator.
+/// They should be verified against the event log from multiple sources.
 pub struct AcceptedInvite {
     pub server_name: String,
     pub server_id: String,
+    /// Suggested owner PeerId (verify via event history).
+    pub owner: String,
+    /// Suggested sync providers (verify via event history).
+    pub sync_providers: Vec<String>,
     /// topic -> (channel_name, decrypted key)
     pub channel_keys: HashMap<String, (String, ChannelKey)>,
 }

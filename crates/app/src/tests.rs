@@ -1273,15 +1273,18 @@ fn tampered_invite_code_fails() {
     let mut pub_bytes = [0u8; 32];
     pub_bytes.copy_from_slice(&full[32..]);
 
-    let mut code = crate::invite::generate_invite(&server, &keys, &topic_map, &pub_bytes).unwrap();
+    let code = crate::invite::generate_invite(&server, &keys, &topic_map, &pub_bytes).unwrap();
 
-    // Tamper with the code.
-    if let Some(byte) = unsafe { code.as_bytes_mut().last_mut() } {
-        *byte = if *byte == b'A' { b'B' } else { b'A' };
+    // Tamper with the code (flip multiple bytes to ensure breakage).
+    let mut bytes: Vec<u8> = code.bytes().collect();
+    let mid = bytes.len() / 2;
+    for i in mid..mid.saturating_add(4).min(bytes.len()) {
+        bytes[i] = if bytes[i] == b'A' { b'B' } else { b'A' };
     }
+    let tampered = String::from_utf8(bytes).unwrap();
 
     // Should fail to decrypt.
-    assert!(crate::invite::accept_invite(&code, &recipient).is_none());
+    assert!(crate::invite::accept_invite(&tampered, &recipient).is_none());
 }
 
 // ───── Full Invite Flow Tests ───────────────────────────────────────────────

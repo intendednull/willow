@@ -9,6 +9,8 @@ networking, Bevy for the desktop UI, and Ed25519 cryptography for identity.
 
 ```
 crates/
+├── state/       — Pure event-sourced state machine, zero I/O (willow-state)
+├── client/      — UI-agnostic client library wrapping state + networking (willow-client)
 ├── transport/   — Binary serialization & protocol framing (willow-transport)
 ├── identity/    — Ed25519 identity, message signing, profiles (willow-identity)
 ├── messaging/   — Chat messages, HLC ordering, message store (willow-messaging)
@@ -17,6 +19,7 @@ crates/
 ├── files/       — Content-addressed file chunking and reassembly (willow-files)
 ├── network/     — libp2p P2P networking layer (willow-network)
 ├── relay/       — Relay server for bridging TCP and WebSocket peers (willow-relay)
+├── web/         — Leptos web UI application (willow-web)
 └── app/         — Bevy desktop UI application (willow-app)
     └── src/
         ├── main.rs          — App entry point
@@ -163,6 +166,37 @@ via `StampedOp` over gossipsub topic `_willow_server_ops`.
   toggle. `CreateChannel` and `CreateRole` carry deterministic IDs.
 - **Key rotation on kick**: `KickMember` op carries encrypted rotated
   channel keys per remaining member (X25519 DH + ChaCha20-Poly1305).
+
+### Event-Sourced State (willow-state)
+
+All shared state is derived from an ordered sequence of deterministic
+events. The `willow-state` crate is pure — zero I/O, zero networking.
+
+- **Event**: carries unique ID, parent state hash, author PeerId,
+  timestamp hint, and an `EventKind` mutation variant.
+- **EventKind**: 17 variants covering server structure, roles,
+  fine-grained permissions, chat, identity, and encryption.
+- **ServerState**: complete shared state derivable from event replay.
+  Computes a `StateHash` (SHA-256) for divergence detection.
+- **apply()**: the ONLY way to mutate state. Pure function.
+  Enforces permissions, dedup, and parent hash verification.
+- **Permission model**: Owner is root of trust. Fine-grained permissions
+  (SyncProvider, ManageChannels, ManageRoles, KickMembers, SendMessages,
+  CreateInvite, Administrator) granted via GrantPermission events.
+- **merge()**: resolves divergent histories by finding common ancestor,
+  sorting divergent events by timestamp, and replaying.
+- **EventStore trait**: append-only event log abstraction.
+
+### Trust Model
+
+- Owner has implicit all-permissions (root of trust chain).
+- Permissions are granted via `GrantPermission` events from owner/admin.
+- Invite trust lists are *suggestions* — joining peers verify state from
+  multiple sources and use majority-agreed state.
+- The relay is a regular client — trusted only if explicitly granted
+  SyncProvider permission by the owner.
+- State verification: get state hash from multiple peers, use the hash
+  agreed upon by the most trusted sources.
 
 ### Hybrid Logical Clocks (HLC)
 
