@@ -10,8 +10,16 @@ willow-client = { path = "../client" }
 leptos = { version = "0.7", features = ["csr"] }
 tracing = { workspace = true }
 wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["Window"] }
+web-sys = { version = "0.3", features = [
+    "Window", "Document", "Element", "HtmlElement", "HtmlInputElement",
+    "HtmlCollection", "NodeList", "KeyboardEvent", "KeyboardEventInit",
+    "EventTarget", "InputEvent", "InputEventInit",
+] }
 js-sys = "0.3"
 console_error_panic_hook = "0.1"
 tracing-wasm = "0.2"
 send_wrapper = "0.6"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+gloo-timers = { version = "0.3", features = ["futures"] }
