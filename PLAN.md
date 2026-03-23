@@ -132,9 +132,11 @@ A native desktop app where you and your friends can:
 - [x] PersistentEventStore enum with platform dispatch
 - [x] Event replay on startup to rebuild state from stored events
 - [x] Invite carries owner + sync provider hints (unverified suggestions)
-- [ ] Relay as trusted EventStore client (deployment pattern — run Client alongside relay)
+- [x] Full wire format migration: WireMessage(Event) replaces SyncMessage(Op)
+- [x] Dual-format network layer (new Event + legacy Op) for interop
+- [x] Bevy app uses legacy format via bridge (deprecated but functional)
+- [ ] Relay as trusted EventStore client (deployment pattern)
 - [ ] Multi-peer state verification (consensus on hash)
-- [ ] Full wire format migration (transmit Events directly, retire Op)
 
 ### Phase 9 — Voice & Video (FUTURE)
 - [ ] WebRTC-like media transport
