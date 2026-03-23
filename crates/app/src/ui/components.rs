@@ -86,6 +86,18 @@ pub struct CreateRoleButton;
 #[derive(Component)]
 pub struct RoleNameInput;
 
+/// Permission toggle button. Stores (RoleId string, Permission variant name).
+#[derive(Component)]
+pub struct TogglePermButton(pub String, pub String);
+
+/// Button to assign a role to a member. Stores (peer_id, role_id).
+#[derive(Component)]
+pub struct AssignRoleButton(pub String, pub String);
+
+/// Delete role button. Stores the RoleId string.
+#[derive(Component)]
+pub struct DeleteRoleButton(pub String);
+
 /// "Copy PeerId" button in the user area.
 #[derive(Component)]
 pub struct CopyPeerIdButton;

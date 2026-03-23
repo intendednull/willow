@@ -476,6 +476,41 @@ impl Server {
         id
     }
 
+    /// Toggle a permission on a role. Adds if missing, removes if present.
+    pub fn toggle_permission(
+        &mut self,
+        role_id: &RoleId,
+        perm: Permission,
+    ) -> Result<(), ChannelError> {
+        let role = self
+            .roles
+            .get_mut(role_id)
+            .ok_or_else(|| ChannelError::RoleNotFound(role_id.clone()))?;
+        if role.permissions.contains(&perm) {
+            role.permissions.remove(&perm);
+        } else {
+            role.permissions.insert(perm);
+        }
+        Ok(())
+    }
+
+    /// Delete a role by ID.
+    pub fn delete_role(&mut self, role_id: &RoleId) -> Result<(), ChannelError> {
+        self.roles
+            .remove(role_id)
+            .ok_or_else(|| ChannelError::RoleNotFound(role_id.clone()))?;
+        // Remove the role from all members.
+        for member in self.members.values_mut() {
+            member.roles.remove(role_id);
+        }
+        Ok(())
+    }
+
+    /// Get a role by ID.
+    pub fn role(&self, id: &RoleId) -> Option<&Role> {
+        self.roles.get(id)
+    }
+
     /// Assign a role to a member.
     pub fn assign_role(&mut self, peer: &PeerId, role_id: &RoleId) -> Result<(), ChannelError> {
         if !self.roles.contains_key(role_id) {

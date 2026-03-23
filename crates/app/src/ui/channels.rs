@@ -437,10 +437,11 @@ pub fn sync_member_list(
     mut commands: Commands,
     state: Res<ChatState>,
     profiles: Res<ProfileStore>,
+    server_state: Res<ServerState>,
     list_query: Query<Entity, With<MemberList>>,
     identity: Res<LocalIdentity>,
 ) {
-    if !state.is_changed() {
+    if !state.is_changed() && !server_state.is_changed() {
         return;
     }
 
@@ -694,47 +695,111 @@ pub fn sync_role_list(
             ));
         }
 
-        for role in &roles {
-            let perms: Vec<&str> = role
-                .permissions
-                .iter()
-                .map(|p| match p {
-                    willow_channel::Permission::Administrator => "Admin",
-                    willow_channel::Permission::SendMessages => "Send",
-                    willow_channel::Permission::ReadMessages => "Read",
-                    willow_channel::Permission::ManageMessages => "ManageMsgs",
-                    willow_channel::Permission::ManageChannels => "ManageCh",
-                    willow_channel::Permission::ManageRoles => "ManageRoles",
-                    willow_channel::Permission::KickMembers => "Kick",
-                    willow_channel::Permission::BanMembers => "Ban",
-                    willow_channel::Permission::CreateInvite => "Invite",
-                    willow_channel::Permission::AttachFiles => "Files",
-                    _ => "Other",
-                })
-                .collect();
+        let key_perms = [
+            ("Admin", willow_channel::Permission::Administrator),
+            ("Send", willow_channel::Permission::SendMessages),
+            ("Read", willow_channel::Permission::ReadMessages),
+            ("Kick", willow_channel::Permission::KickMembers),
+            ("Invite", willow_channel::Permission::CreateInvite),
+            ("Files", willow_channel::Permission::AttachFiles),
+            ("ManageCh", willow_channel::Permission::ManageChannels),
+        ];
 
-            let perm_str = if perms.is_empty() {
-                "no permissions".to_string()
-            } else {
-                perms.join(", ")
-            };
+        for role in &roles {
+            let role_id_str = role.id.to_string();
 
             list.spawn(Node {
-                margin: UiRect::bottom(Val::Px(4.0)),
+                margin: UiRect::bottom(Val::Px(8.0)),
                 flex_direction: FlexDirection::Column,
                 ..default()
             })
-            .with_children(|row| {
-                row.spawn((
-                    Text::new(&role.name),
-                    TextFont::from_font_size(13.0),
-                    TextColor(theme::TEXT_PRIMARY),
-                ));
-                row.spawn((
-                    Text::new(perm_str),
-                    TextFont::from_font_size(10.0),
-                    TextColor(theme::TEXT_MUTED),
-                ));
+            .with_children(|col| {
+                // Role name + delete button row
+                col.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    margin: UiRect::bottom(Val::Px(2.0)),
+                    ..default()
+                })
+                .with_children(|name_row| {
+                    name_row.spawn((
+                        Text::new(&role.name),
+                        TextFont::from_font_size(13.0),
+                        TextColor(theme::TEXT_PRIMARY),
+                        Node {
+                            flex_grow: 1.0,
+                            ..default()
+                        },
+                    ));
+                    name_row
+                        .spawn((
+                            Button,
+                            Node {
+                                padding: UiRect::horizontal(Val::Px(4.0)),
+                                ..default()
+                            },
+                            BackgroundColor(Color::NONE),
+                            DeleteRoleButton(role_id_str.clone()),
+                        ))
+                        .with_children(|btn| {
+                            btn.spawn((
+                                Text::new("×"),
+                                TextFont::from_font_size(14.0),
+                                TextColor(theme::DANGER),
+                            ));
+                        });
+                });
+
+                // Permission toggle badges
+                col.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    flex_wrap: FlexWrap::Wrap,
+                    ..default()
+                })
+                .with_children(|perm_row| {
+                    for (label, perm) in &key_perms {
+                        let active = role.permissions.contains(perm);
+                        let bg = if active {
+                            theme::ACCENT
+                        } else {
+                            theme::INPUT_FIELD_BG
+                        };
+                        let text_color = if active {
+                            theme::TEXT_PRIMARY
+                        } else {
+                            theme::TEXT_MUTED
+                        };
+
+                        perm_row
+                            .spawn((
+                                Button,
+                                Node {
+                                    padding: UiRect::new(
+                                        Val::Px(6.0),
+                                        Val::Px(6.0),
+                                        Val::Px(2.0),
+                                        Val::Px(2.0),
+                                    ),
+                                    margin: UiRect::new(
+                                        Val::Px(0.0),
+                                        Val::Px(4.0),
+                                        Val::Px(0.0),
+                                        Val::Px(4.0),
+                                    ),
+                                    ..default()
+                                },
+                                BackgroundColor(bg),
+                                TogglePermButton(role_id_str.clone(), format!("{perm:?}")),
+                            ))
+                            .with_children(|btn| {
+                                btn.spawn((
+                                    Text::new(*label),
+                                    TextFont::from_font_size(10.0),
+                                    TextColor(text_color),
+                                ));
+                            });
+                    }
+                });
             });
         }
 
@@ -769,6 +834,103 @@ pub fn sync_role_list(
             });
         }
     });
+}
+
+/// Handle permission toggle button clicks.
+pub fn handle_toggle_permission(
+    query: Query<(&Interaction, &TogglePermButton), Changed<Interaction>>,
+    mut server_state: ResMut<ServerState>,
+    key_store: Res<ChannelKeyStore>,
+) {
+    for (interaction, button) in &query {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+
+        let Some(server) = &mut server_state.server else {
+            continue;
+        };
+
+        let role_id = willow_channel::RoleId(uuid::Uuid::parse_str(&button.0).unwrap_or_default());
+        let perm = match button.1.as_str() {
+            "Administrator" => willow_channel::Permission::Administrator,
+            "SendMessages" => willow_channel::Permission::SendMessages,
+            "ReadMessages" => willow_channel::Permission::ReadMessages,
+            "KickMembers" => willow_channel::Permission::KickMembers,
+            "CreateInvite" => willow_channel::Permission::CreateInvite,
+            "AttachFiles" => willow_channel::Permission::AttachFiles,
+            "ManageChannels" => willow_channel::Permission::ManageChannels,
+            _ => continue,
+        };
+
+        if let Err(e) = server.toggle_permission(&role_id, perm) {
+            warn!("failed to toggle permission: {e}");
+        } else {
+            crate::storage::save_server(server, &key_store.keys);
+        }
+    }
+}
+
+/// Handle delete role button clicks.
+pub fn handle_delete_role(
+    query: Query<(&Interaction, &DeleteRoleButton), Changed<Interaction>>,
+    mut server_state: ResMut<ServerState>,
+    key_store: Res<ChannelKeyStore>,
+) {
+    for (interaction, button) in &query {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+
+        let Some(server) = &mut server_state.server else {
+            continue;
+        };
+
+        let role_id = willow_channel::RoleId(uuid::Uuid::parse_str(&button.0).unwrap_or_default());
+        if let Err(e) = server.delete_role(&role_id) {
+            warn!("failed to delete role: {e}");
+        } else {
+            crate::storage::save_server(server, &key_store.keys);
+            info!("deleted role");
+        }
+    }
+}
+
+/// Handle role assignment button clicks — assigns the role to the member.
+pub fn handle_assign_role(
+    query: Query<(&Interaction, &AssignRoleButton), Changed<Interaction>>,
+    mut server_state: ResMut<ServerState>,
+    key_store: Res<ChannelKeyStore>,
+) {
+    for (interaction, button) in &query {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+
+        let Some(server) = &mut server_state.server else {
+            continue;
+        };
+
+        let peer_id_str = &button.0;
+        let role_id = willow_channel::RoleId(uuid::Uuid::parse_str(&button.1).unwrap_or_default());
+
+        let member_peer = server
+            .members()
+            .iter()
+            .find(|m| m.peer_id.to_string() == *peer_id_str)
+            .map(|m| m.peer_id.clone());
+
+        let Some(peer) = member_peer else {
+            continue;
+        };
+
+        if let Err(e) = server.assign_role(&peer, &role_id) {
+            warn!("failed to assign role: {e}");
+        } else {
+            crate::storage::save_server(server, &key_store.keys);
+            info!("assigned role to {peer_id_str}");
+        }
+    }
 }
 
 // ───── Clipboard Systems ────────────────────────────────────────────────────
