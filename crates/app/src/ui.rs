@@ -1530,7 +1530,6 @@ fn handle_share_file_button(
 fn poll_file_picker(
     picker: Res<FilePicker>,
     net_cmd: Res<NetworkCommandSender>,
-    state: Res<ChatState>,
     server_state: Res<ServerState>,
     mut chat_state: ResMut<ChatState>,
     profiles: Res<ProfileStore>,
@@ -1551,7 +1550,7 @@ fn poll_file_picker(
     // Drop the receiver since we got the file.
     *guard = None;
 
-    let channel_name = state.current_channel.clone();
+    let channel_name = chat_state.current_channel.clone();
     let topic = server_state
         .topic_for_name(&channel_name)
         .unwrap_or(channel_name);
