@@ -39,7 +39,7 @@ pub fn App() -> impl IntoView {
     // Reactive state signals.
     let (messages, set_messages) = signal(Vec::<ChatMessage>::new());
     let (channels, set_channels) = signal(Vec::<String>::new());
-    let (peers, set_peers) = signal(Vec::<String>::new());
+    let (peers, set_peers) = signal(Vec::<(String, String)>::new());
     let (current_channel, set_current_channel) = signal(String::from("general"));
     let (peer_count, set_peer_count) = signal(0usize);
     let (show_settings, set_show_settings) = signal(false);
@@ -116,7 +116,15 @@ pub fn App() -> impl IntoView {
                 set_unread.set(unread_map);
             }
             if needs_peer_refresh {
-                set_peers.set(c.peers().to_vec());
+                set_peers.set(
+                    c.peers()
+                        .iter()
+                        .map(|id| {
+                            let name = c.peer_display_name(id);
+                            (id.clone(), name)
+                        })
+                        .collect(),
+                );
                 set_peer_count.set(c.peers().len());
             }
             if needs_channel_refresh {

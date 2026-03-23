@@ -3,9 +3,11 @@ use leptos::prelude::*;
 use crate::app::ClientHandle;
 
 /// Right sidebar showing connected peers with trust/kick actions.
+/// Right sidebar showing connected peers with trust/kick actions.
+/// Accepts `(peer_id, display_name)` tuples so names update reactively.
 #[component]
 pub fn MemberList(
-    peers: ReadSignal<Vec<String>>,
+    peers: ReadSignal<Vec<(String, String)>>,
     client: ClientHandle,
     peer_id: ReadSignal<String>,
 ) -> impl IntoView {
@@ -14,42 +16,44 @@ pub fn MemberList(
             <h3>"Online"</h3>
             <For
                 each=move || peers.get()
-                key=|p| p.clone()
+                key=|(id, _)| id.clone()
                 let:peer
             >
                 {
-                    let peer_display = peer.clone();
-                    let peer_name_client = client.clone();
-                    let peer_trust = peer.clone();
-                    let peer_untrust = peer.clone();
-                    let peer_kick = peer.clone();
-                    let peer_badge = peer.clone();
+                    let (pid, name) = peer;
+                    let pid_badge = pid.clone();
+                    let pid_trust = pid.clone();
+                    let pid_untrust = pid.clone();
+                    let pid_kick = pid.clone();
+                    let pid_self = pid.clone();
+                    let client_badge = client.clone();
                     let client_trust = client.clone();
                     let client_untrust = client.clone();
                     let client_kick = client.clone();
-                    let client_badge = client.clone();
                     view! {
                         <div class="member-item">
                             <div class="status-dot"></div>
-                            <span class="member-name">{
-                                let pd = peer_display.clone();
-                                let nc = peer_name_client.clone();
-                                move || {
-                                    let c = nc.borrow();
-                                    c.peer_display_name(&pd)
-                                }
-                            }</span>
+                            <span class="member-name">
+                                {name}
+                                <span class="member-peer-id">{
+                                    let short = if pid.len() > 8 { format!("{}...", &pid[..8]) } else { pid.clone() };
+                                    format!(" ({short})")
+                                }</span>
+                            </span>
                             {
-                                let pb = peer_badge.clone();
+                                let pb = pid_badge.clone();
                                 let cb = client_badge.clone();
                                 move || {
                                     let c = cb.borrow();
-                                    let owner = c.state().server.server.as_ref()
-                                        .map(|s| s.owner.to_string())
+                                    let owner = c.state().active()
+                                        .map(|ctx| ctx.server.owner.to_string())
                                         .unwrap_or_default();
                                     if pb == owner {
                                         Some(view! { <span class="badge owner-badge">"Owner"</span> })
-                                    } else if c.state().op_log.trusted_peers.contains(&pb) {
+                                    } else if c.state().active()
+                                        .map(|ctx| ctx.op_log.trusted_peers.contains(&pb))
+                                        .unwrap_or(false)
+                                    {
                                         Some(view! { <span class="badge trusted-badge">"Trusted"</span> })
                                     } else {
                                         None
@@ -59,14 +63,14 @@ pub fn MemberList(
                             <div class="member-actions">
                                 {
                                     let is_self = {
-                                        let p = peer_display.clone();
+                                        let p = pid_self.clone();
                                         move || peer_id.get() == p
                                     };
-                                    let pt = peer_trust.clone();
+                                    let pt = pid_trust.clone();
                                     let ct = client_trust.clone();
-                                    let pu = peer_untrust.clone();
+                                    let pu = pid_untrust.clone();
                                     let cu = client_untrust.clone();
-                                    let pk = peer_kick.clone();
+                                    let pk = pid_kick.clone();
                                     let ck = client_kick.clone();
                                     move || {
                                         if is_self() {
@@ -79,27 +83,9 @@ pub fn MemberList(
                                             let pk = pk.clone();
                                             let ck = ck.clone();
                                             Some(view! {
-                                                <button
-                                                    class="btn btn-sm"
-                                                    title="Trust peer"
-                                                    on:click=move |_| {
-                                                        ct.borrow_mut().trust_peer(&pt);
-                                                    }
-                                                >"Trust"</button>
-                                                <button
-                                                    class="btn btn-sm"
-                                                    title="Untrust peer"
-                                                    on:click=move |_| {
-                                                        cu.borrow_mut().untrust_peer(&pu);
-                                                    }
-                                                >"Untrust"</button>
-                                                <button
-                                                    class="btn btn-sm btn-danger"
-                                                    title="Kick member"
-                                                    on:click=move |_| {
-                                                        let _ = ck.borrow_mut().kick_member(&pk);
-                                                    }
-                                                >"Kick"</button>
+                                                <button class="btn btn-sm" on:click=move |_| { ct.borrow_mut().trust_peer(&pt); }>"Trust"</button>
+                                                <button class="btn btn-sm" on:click=move |_| { cu.borrow_mut().untrust_peer(&pu); }>"Untrust"</button>
+                                                <button class="btn btn-sm btn-danger" on:click=move |_| { let _ = ck.borrow_mut().kick_member(&pk); }>"Kick"</button>
                                             })
                                         }
                                     }

@@ -401,6 +401,12 @@ html, body {
     white-space: nowrap;
 }
 
+.member-peer-id {
+    font-size: 10px;
+    color: var(--text-placeholder);
+    font-weight: normal;
+}
+
 .member-item .badge {
     font-size: 10px;
     padding: 1px 5px;
