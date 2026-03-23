@@ -127,6 +127,7 @@ pub fn load_server_list() -> Option<Vec<String>> {
 }
 
 /// Save an op log for a specific server.
+#[allow(deprecated)]
 pub fn save_op_log_for(id: &str, ops: &[crate::ops::StampedOp]) {
     if let Ok(bytes) = willow_transport::pack(&ops.to_vec()) {
         save_raw(&format!("oplog_{id}"), &bytes);
@@ -134,16 +135,19 @@ pub fn save_op_log_for(id: &str, ops: &[crate::ops::StampedOp]) {
 }
 
 /// Load an op log for a specific server.
+#[allow(deprecated)]
 pub fn load_op_log_for(id: &str) -> Option<Vec<crate::ops::StampedOp>> {
     willow_transport::unpack(&load_raw(&format!("oplog_{id}"))?).ok()
 }
 
+#[allow(deprecated)]
 pub fn save_op_log(ops: &[crate::ops::StampedOp]) {
     if let Ok(bytes) = willow_transport::pack(&ops.to_vec()) {
         save_raw("oplog", &bytes);
     }
 }
 
+#[allow(deprecated)]
 pub fn load_op_log() -> Option<Vec<crate::ops::StampedOp>> {
     willow_transport::unpack(&load_raw("oplog")?).ok()
 }
@@ -177,6 +181,7 @@ pub struct MessageDb {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(deprecated)]
 impl MessageDb {
     /// Open a database at a specific path (used by tests and `open_message_db`).
     pub fn open_path(path: impl AsRef<std::path::Path>) -> Option<Self> {
@@ -308,6 +313,7 @@ impl MessageDb {
 pub struct MessageDb;
 
 #[cfg(target_arch = "wasm32")]
+#[allow(deprecated)]
 impl MessageDb {
     fn msg_key(topic: &str) -> String {
         // Simple hash to keep keys short. Not cryptographic -- just for storage.

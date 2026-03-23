@@ -32,6 +32,8 @@ pub mod util;
 
 // Re-export key types at crate root for convenience.
 pub use events::{ClientEvent, ClientNotification};
+pub use ops::{pack_wire, unpack_wire, WireMessage};
+#[allow(deprecated)]
 pub use ops::{Op, StampedOp, SyncMessage};
 pub use state::{
     ChannelKeyStore, ChatMessage, ChatState, ClientState, OpLog, PersistentEventStore,
@@ -99,6 +101,7 @@ pub struct Client {
     pub(crate) notification_tx: Option<std_mpsc::Sender<events::ClientNotification>>,
 }
 
+#[allow(deprecated)]
 impl Client {
     /// Create a new client. Loads or generates identity, loads or creates
     /// the server with default channels, loads persisted messages and op log.
@@ -399,6 +402,7 @@ impl Client {
 
     /// Drain network events, apply them to state, and return a list of
     /// [`ClientEvent`]s for the caller to handle.
+    #[allow(deprecated)]
     pub fn poll(&mut self) -> Vec<ClientEvent> {
         let mut events = Vec::new();
 
@@ -420,18 +424,127 @@ impl Client {
 
         while let Ok(net_event) = self.event_rx.try_recv() {
             match net_event {
+                // ── New wire format: EventReceived ──────────────────
+                network::NetworkEvent::EventReceived { event, from } => {
+                    tracing::info!(
+                        kind = ?std::mem::discriminant(&event.kind),
+                        from = %from,
+                        event_id = %event.id,
+                        "received event"
+                    );
+
+                    // Verify author matches signer.
+                    if event.author != from {
+                        tracing::warn!("event author mismatch: {} != {}", event.author, from);
+                        continue;
+                    }
+
+                    // Apply to event-sourced state.
+                    let result = willow_state::apply_lenient(&mut self.state.event_state, &event);
+                    if matches!(result, willow_state::ApplyResult::Applied) {
+                        self.state.event_store.append(event.clone());
+                        self.state
+                            .event_store
+                            .set_latest_hash(self.state.event_state.hash());
+                        self.notify(events::ClientNotification::EventApplied(event.clone()));
+
+                        // Also apply to legacy state for backward compat
+                        // (this will be removed once willow-app migrates).
+                        if let Some(op) = bridge::event_to_op(&event) {
+                            let stamped_op = ops::StampedOp {
+                                op_id: event.id.clone(),
+                                hlc: willow_messaging::hlc::HlcTimestamp {
+                                    millis: event.timestamp_ms,
+                                    counter: 0,
+                                },
+                                author: event.author.clone(),
+                                op,
+                            };
+                            self.state
+                                .apply_op(&stamped_op, &from, &self.identity, &self.cmd_tx);
+                        }
+
+                        // Emit ClientEvents based on event kind.
+                        self.emit_client_events_for(&event, &mut events);
+                    }
+                }
+
+                // ── New wire format: SyncRequested ──────────────────
+                network::NetworkEvent::SyncRequested {
+                    state_hash,
+                    from,
+                    topic,
+                } => {
+                    tracing::info!(%from, ?topic, "sync requested (event-sourced)");
+                    let missing = self.state.event_store.events_since(&state_hash);
+                    if !missing.is_empty() {
+                        let count = missing.len();
+                        tracing::info!(count, "sending event sync batch");
+                        let _ = self
+                            .cmd_tx
+                            .send(network::NetworkCommand::SendSyncBatch { events: missing });
+                    }
+                }
+
+                // ── New wire format: SyncBatchReceived ──────────────
+                network::NetworkEvent::SyncBatchReceived {
+                    events: batch_events,
+                    from,
+                } => {
+                    tracing::info!(count = batch_events.len(), %from, "received event sync batch");
+                    let mut sorted = batch_events;
+                    sorted.sort_by_key(|e| e.timestamp_ms);
+                    let count = sorted.len();
+                    for event in &sorted {
+                        let result =
+                            willow_state::apply_lenient(&mut self.state.event_state, event);
+                        if matches!(result, willow_state::ApplyResult::Applied) {
+                            self.state.event_store.append(event.clone());
+                            self.state
+                                .event_store
+                                .set_latest_hash(self.state.event_state.hash());
+                            self.notify(events::ClientNotification::EventApplied(event.clone()));
+
+                            // Also apply to legacy state for backward compat.
+                            if let Some(op) = bridge::event_to_op(event) {
+                                let stamped_op = ops::StampedOp {
+                                    op_id: event.id.clone(),
+                                    hlc: willow_messaging::hlc::HlcTimestamp {
+                                        millis: event.timestamp_ms,
+                                        counter: 0,
+                                    },
+                                    author: event.author.clone(),
+                                    op,
+                                };
+                                self.state.apply_op(
+                                    &stamped_op,
+                                    &event.author,
+                                    &self.identity,
+                                    &self.cmd_tx,
+                                );
+                            }
+
+                            self.emit_client_events_for(event, &mut events);
+                        }
+                    }
+                    if count > 0 {
+                        events.push(ClientEvent::SyncCompleted { ops_applied: count });
+                    }
+                }
+
+                // ── Legacy wire format: OpReceived ──────────────────
                 network::NetworkEvent::OpReceived { stamped_op, from } => {
                     tracing::info!(
                         op = ?std::mem::discriminant(&stamped_op.op),
                         from = %from,
                         op_id = %stamped_op.op_id,
-                        "received op"
+                        "received legacy op"
                     );
                     let applied =
                         self.state
                             .apply_op(&stamped_op, &from, &self.identity, &self.cmd_tx);
 
-                    tracing::info!(applied, "op apply result");
+                    tracing::info!(applied, "legacy op apply result");
                     if applied {
                         // Apply to event-sourced state via bridge.
                         if let Some(event) = bridge::op_to_event(
@@ -526,6 +639,105 @@ impl Client {
                         }
                     }
                 }
+
+                // ── Legacy wire format: SyncRequested ───────────────
+                network::NetworkEvent::LegacySyncRequested {
+                    latest_hlc,
+                    from,
+                    topic,
+                } => {
+                    tracing::info!(%from, ?topic, "legacy sync requested");
+                    if let Some(ref req_topic) = topic {
+                        if let Some(ref db_arc) = self.state.message_db {
+                            if let Ok(db_lock) = db_arc.lock() {
+                                let chat_ops = db_lock.load_chat_ops_since(
+                                    req_topic,
+                                    latest_hlc.millis,
+                                    latest_hlc.counter,
+                                    500,
+                                );
+                                if !chat_ops.is_empty() {
+                                    let _ = self.cmd_tx.send(
+                                        network::NetworkCommand::LegacySendSyncBatch {
+                                            ops: chat_ops,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    } else {
+                        let missing: Vec<_> = self
+                            .state
+                            .active()
+                            .map(|ctx| {
+                                ctx.op_log
+                                    .ops
+                                    .iter()
+                                    .filter(|op| op.hlc > latest_hlc)
+                                    .cloned()
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        if !missing.is_empty() {
+                            let count = missing.len();
+                            tracing::info!(count, "sending legacy server ops sync batch");
+                            let _ =
+                                self.cmd_tx
+                                    .send(network::NetworkCommand::LegacySendSyncBatch {
+                                        ops: missing,
+                                    });
+                        }
+                    }
+                }
+
+                // ── Legacy wire format: SyncBatchReceived ───────────
+                network::NetworkEvent::LegacySyncBatchReceived { ops, from } => {
+                    tracing::info!(count = ops.len(), %from, "received legacy sync batch");
+                    let mut sorted_ops = ops;
+                    sorted_ops.sort_by(|a, b| a.hlc.cmp(&b.hlc));
+                    let count = sorted_ops.len();
+                    for stamped_op in &sorted_ops {
+                        let applied = self.state.apply_op(
+                            stamped_op,
+                            &stamped_op.author,
+                            &self.identity,
+                            &self.cmd_tx,
+                        );
+
+                        if applied {
+                            // Apply to event-sourced state via bridge.
+                            if let Some(event) = bridge::op_to_event(
+                                &stamped_op.op,
+                                &stamped_op.author,
+                                stamped_op.hlc.millis,
+                                &stamped_op.op_id,
+                                self.state.event_state.hash(),
+                            ) {
+                                self.apply_event(&event);
+                            }
+
+                            if let ops::Op::ChatMessage {
+                                topic,
+                                content_data,
+                            } = &stamped_op.op
+                            {
+                                self.state.process_chat_message(
+                                    topic,
+                                    content_data,
+                                    &stamped_op.author,
+                                    &stamped_op.op_id,
+                                    stamped_op.hlc.millis,
+                                    stamped_op,
+                                );
+                            }
+                        }
+                    }
+                    if count > 0 {
+                        events.push(ClientEvent::SyncCompleted { ops_applied: count });
+                    }
+                }
+
+                // ── Common events ───────────────────────────────────
                 network::NetworkEvent::PeerConnected(peer) => {
                     if !self.state.chat.peers.contains(&peer) {
                         self.state.chat.peers.push(peer.clone());
@@ -615,109 +827,90 @@ impl Client {
                 network::NetworkEvent::FileDownloaded { .. } => {
                     // no-op for now
                 }
-                network::NetworkEvent::SyncRequested {
-                    latest_hlc,
-                    from,
-                    topic,
-                } => {
-                    tracing::info!(%from, ?topic, "sync requested");
-                    // Respond to any peer that can reach us -- they already
-                    // have the channel key (via invite) so withholding
-                    // history doesn't add security.
-                    {
-                        if let Some(ref req_topic) = topic {
-                            if let Some(ref db_arc) = self.state.message_db {
-                                if let Ok(db_lock) = db_arc.lock() {
-                                    let chat_ops = db_lock.load_chat_ops_since(
-                                        req_topic,
-                                        latest_hlc.millis,
-                                        latest_hlc.counter,
-                                        500,
-                                    );
-                                    if !chat_ops.is_empty() {
-                                        let _ = self.cmd_tx.send(
-                                            network::NetworkCommand::SendSyncBatch {
-                                                ops: chat_ops,
-                                            },
-                                        );
-                                    }
-                                }
-                            }
-                        } else {
-                            let missing: Vec<_> = self
-                                .state
-                                .active()
-                                .map(|ctx| {
-                                    ctx.op_log
-                                        .ops
-                                        .iter()
-                                        .filter(|op| op.hlc > latest_hlc)
-                                        .cloned()
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            if !missing.is_empty() {
-                                let count = missing.len();
-                                tracing::info!(count, "sending server ops sync batch");
-                                let _ = self
-                                    .cmd_tx
-                                    .send(network::NetworkCommand::SendSyncBatch { ops: missing });
-                            }
-                        }
-                    }
-                }
-                network::NetworkEvent::SyncBatchReceived { ops, from } => {
-                    tracing::info!(count = ops.len(), %from, "received sync batch");
-                    let mut sorted_ops = ops;
-                    sorted_ops.sort_by(|a, b| a.hlc.cmp(&b.hlc));
-                    let count = sorted_ops.len();
-                    for stamped_op in &sorted_ops {
-                        let applied = self.state.apply_op(
-                            stamped_op,
-                            &stamped_op.author,
-                            &self.identity,
-                            &self.cmd_tx,
-                        );
-
-                        if applied {
-                            // Apply to event-sourced state via bridge.
-                            if let Some(event) = bridge::op_to_event(
-                                &stamped_op.op,
-                                &stamped_op.author,
-                                stamped_op.hlc.millis,
-                                &stamped_op.op_id,
-                                self.state.event_state.hash(),
-                            ) {
-                                self.apply_event(&event);
-                            }
-
-                            if let ops::Op::ChatMessage {
-                                topic,
-                                content_data,
-                            } = &stamped_op.op
-                            {
-                                self.state.process_chat_message(
-                                    topic,
-                                    content_data,
-                                    &stamped_op.author,
-                                    &stamped_op.op_id,
-                                    stamped_op.hlc.millis,
-                                    stamped_op,
-                                );
-                            }
-                        }
-                    }
-                    if count > 0 {
-                        events.push(ClientEvent::SyncCompleted { ops_applied: count });
-                    }
-                }
                 network::NetworkEvent::MessageReceived { .. } => {
-                    // Legacy message path -- all messages now go through OpReceived.
+                    // Legacy message path -- all messages now go through
+                    // EventReceived or OpReceived.
                 }
             }
         }
 
         events
+    }
+
+    /// Convert a [`willow_state::Event`] into [`ClientEvent`]s for the caller.
+    fn emit_client_events_for(&self, event: &willow_state::Event, events: &mut Vec<ClientEvent>) {
+        match &event.kind {
+            willow_state::EventKind::Message { channel_id, body } => {
+                // Look up the channel name from the channel_id.
+                let channel = self
+                    .state
+                    .event_state
+                    .channels
+                    .get(channel_id)
+                    .map(|ch| ch.name.clone())
+                    .unwrap_or_else(|| channel_id.clone());
+                let author = self.state.profiles.display_name(&event.author);
+                let server_id = self.state.active_server.clone().unwrap_or_default();
+                // Resolve topic from channel_id for the ChatMessage.
+                let topic = self
+                    .state
+                    .active()
+                    .and_then(|ctx| {
+                        ctx.topic_map
+                            .iter()
+                            .find(|(_, (_, cid))| cid.to_string() == *channel_id)
+                            .map(|(t, _)| t.clone())
+                    })
+                    .unwrap_or_else(|| channel_id.clone());
+                let msg = ChatMessage::new(
+                    server_id,
+                    topic,
+                    author,
+                    body.clone(),
+                    false,
+                    event.timestamp_ms,
+                );
+                events.push(ClientEvent::MessageReceived {
+                    channel,
+                    message: msg,
+                });
+            }
+            willow_state::EventKind::CreateChannel { name, .. } => {
+                events.push(ClientEvent::ChannelCreated(name.clone()));
+            }
+            willow_state::EventKind::DeleteChannel { channel_id } => {
+                // Look up channel name from state before deletion.
+                let name = self
+                    .state
+                    .event_state
+                    .channels
+                    .get(channel_id)
+                    .map(|ch| ch.name.clone())
+                    .unwrap_or_else(|| channel_id.clone());
+                events.push(ClientEvent::ChannelDeleted(name));
+            }
+            willow_state::EventKind::CreateRole { name, role_id } => {
+                events.push(ClientEvent::RoleCreated {
+                    name: name.clone(),
+                    role_id: role_id.clone(),
+                });
+            }
+            willow_state::EventKind::DeleteRole { role_id } => {
+                events.push(ClientEvent::RoleDeleted {
+                    role_id: role_id.clone(),
+                });
+            }
+            willow_state::EventKind::KickMember { peer_id } => {
+                events.push(ClientEvent::MemberKicked(peer_id.clone()));
+            }
+            willow_state::EventKind::GrantPermission { peer_id, .. } => {
+                events.push(ClientEvent::PeerTrusted(peer_id.clone()));
+            }
+            willow_state::EventKind::RevokePermission { peer_id, .. } => {
+                events.push(ClientEvent::PeerUntrusted(peer_id.clone()));
+            }
+            _ => {}
+        }
     }
 
     // ───── Server management ──────────────────────────────────────────────────
@@ -966,7 +1159,7 @@ impl Client {
 
         let _ = self.cmd_tx.send(network::NetworkCommand::Subscribe(topic));
 
-        // Apply to event-sourced state.
+        // Create and apply event, then broadcast it.
         let peer_id_str = self.identity.peer_id().to_string();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
@@ -979,7 +1172,9 @@ impl Client {
             },
         };
         self.apply_event(&event);
+        self.broadcast_event(event, None);
 
+        // Also broadcast legacy op for backward compat with old peers.
         self.broadcast_op(Op::CreateChannel {
             name: name.to_string(),
             channel_id: ch_id_str,
@@ -1025,7 +1220,7 @@ impl Client {
             self.state.chat.messages_dirty = true;
         }
 
-        // Apply to event-sourced state.
+        // Create and apply event, then broadcast it.
         let peer_id_str = self.identity.peer_id().to_string();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
@@ -1037,7 +1232,9 @@ impl Client {
             },
         };
         self.apply_event(&event);
+        self.broadcast_event(event, None);
 
+        // Also broadcast legacy op for backward compat with old peers.
         self.broadcast_op(Op::DeleteChannel {
             name: name.to_string(),
         });
@@ -1048,9 +1245,8 @@ impl Client {
     /// Trust a peer for server state operations.
     ///
     /// Applies a `GrantPermission(Administrator)` event to the event-sourced
-    /// state and broadcasts a `TrustPeer` op on the wire.
+    /// state and broadcasts the event on the wire.
     pub fn trust_peer(&mut self, peer_id: &str) {
-        // Apply to event-sourced state.
         let author = self.identity.peer_id().to_string();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
@@ -1063,7 +1259,9 @@ impl Client {
             },
         };
         self.apply_event(&event);
+        self.broadcast_event(event, None);
 
+        // Also broadcast legacy op for backward compat with old peers.
         self.broadcast_op(Op::TrustPeer {
             peer_id: peer_id.to_string(),
         });
@@ -1072,9 +1270,8 @@ impl Client {
     /// Revoke trust from a peer.
     ///
     /// Applies a `RevokePermission(Administrator)` event to the event-sourced
-    /// state and broadcasts an `UntrustPeer` op on the wire.
+    /// state and broadcasts the event on the wire.
     pub fn untrust_peer(&mut self, peer_id: &str) {
-        // Apply to event-sourced state.
         let author = self.identity.peer_id().to_string();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
@@ -1087,7 +1284,9 @@ impl Client {
             },
         };
         self.apply_event(&event);
+        self.broadcast_event(event, None);
 
+        // Also broadcast legacy op for backward compat with old peers.
         self.broadcast_op(Op::UntrustPeer {
             peer_id: peer_id.to_string(),
         });
@@ -1152,7 +1351,7 @@ impl Client {
             }
         }
 
-        // Apply to event-sourced state.
+        // Create and apply event, then broadcast it.
         let author = self.identity.peer_id().to_string();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
@@ -1164,7 +1363,9 @@ impl Client {
             },
         };
         self.apply_event(&event);
+        self.broadcast_event(event, None);
 
+        // Also broadcast legacy op for backward compat with old peers.
         self.broadcast_op(Op::KickMember {
             peer_id: peer_id.to_string(),
             rotated_keys: rotated_key_entries,
@@ -1354,18 +1555,35 @@ impl Client {
         // Persist all servers so the joined server survives refresh.
         Self::persist_servers(&self.state);
 
-        // Request sync for the new server — get all ops and chat history
-        // from peers since we have nothing.
+        // Request sync for the new server — get all events from peers.
         let _ = self.cmd_tx.send(network::NetworkCommand::RequestSync {
-            latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
+            state_hash: willow_state::StateHash::ZERO,
             topic: None,
         });
         if let Some(ctx) = self.state.servers.get(&server_id) {
             for topic in ctx.topic_map.keys() {
                 let _ = self.cmd_tx.send(network::NetworkCommand::RequestSync {
-                    latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
+                    state_hash: willow_state::StateHash::ZERO,
                     topic: Some(topic.clone()),
                 });
+            }
+        }
+
+        // Also request via legacy sync for backward compat.
+        let _ = self
+            .cmd_tx
+            .send(network::NetworkCommand::LegacyRequestSync {
+                latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
+                topic: None,
+            });
+        if let Some(ctx) = self.state.servers.get(&server_id) {
+            for topic in ctx.topic_map.keys() {
+                let _ = self
+                    .cmd_tx
+                    .send(network::NetworkCommand::LegacyRequestSync {
+                        latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
+                        topic: Some(topic.clone()),
+                    });
             }
         }
 
@@ -1505,7 +1723,18 @@ impl Client {
 
     // ───── Internal helpers ─────────────────────────────────────────────────
 
-    /// Stamp, record, persist, and broadcast a server op.
+    /// Broadcast a `willow_state::Event` to the network.
+    ///
+    /// If `topic` is `Some`, the event is published on that specific topic
+    /// (used for chat messages). If `None`, it goes on the server ops topic.
+    fn broadcast_event(&self, event: willow_state::Event, topic: Option<String>) {
+        let _ = self
+            .cmd_tx
+            .send(network::NetworkCommand::BroadcastEvent { event, topic });
+    }
+
+    /// Stamp, record, persist, and broadcast a legacy server op.
+    #[allow(deprecated)]
     fn broadcast_op(&mut self, op: Op) {
         let peer_id_str = self.identity.peer_id().to_string();
         let stamped = StampedOp::new(op, &mut self.state.chat.hlc, &peer_id_str);
@@ -1574,6 +1803,9 @@ impl Client {
         };
         self.apply_event(&msg_event);
 
+        // Broadcast the event on the channel topic.
+        self.broadcast_event(msg_event, Some(topic.clone()));
+
         // Persist the stamped op for catch-up sync.
         if let Some(ref db_arc) = self.state.message_db {
             if let Ok(db_lock) = db_arc.lock() {
@@ -1581,6 +1813,7 @@ impl Client {
             }
         }
 
+        // Also broadcast legacy op for backward compat with old peers.
         let _ = self
             .cmd_tx
             .send(network::NetworkCommand::BroadcastOp(stamped.clone()));
@@ -1660,27 +1893,45 @@ impl Client {
             });
         }
 
-        // Request missing server ops and chat history for ALL servers.
+        // Request missing events via event-sourced sync.
+        let state_hash = self.state.event_store.latest_hash();
+        let _ = self.cmd_tx.send(network::NetworkCommand::RequestSync {
+            state_hash: state_hash.clone(),
+            topic: None,
+        });
         for ctx in self.state.servers.values() {
-            // Server ops sync.
-            let _ = self.cmd_tx.send(network::NetworkCommand::RequestSync {
-                latest_hlc: ctx.op_log.latest_hlc(),
-                topic: None,
-            });
-            // Chat history per channel.
             for topic in ctx.topic_map.keys() {
                 let _ = self.cmd_tx.send(network::NetworkCommand::RequestSync {
-                    latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
+                    state_hash: state_hash.clone(),
                     topic: Some(topic.clone()),
                 });
             }
         }
-        // Also request with ZERO if we have no servers yet (first launch).
+
+        // Also request via legacy sync for backward compat with old peers.
+        for ctx in self.state.servers.values() {
+            let _ = self
+                .cmd_tx
+                .send(network::NetworkCommand::LegacyRequestSync {
+                    latest_hlc: ctx.op_log.latest_hlc(),
+                    topic: None,
+                });
+            for topic in ctx.topic_map.keys() {
+                let _ = self
+                    .cmd_tx
+                    .send(network::NetworkCommand::LegacyRequestSync {
+                        latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
+                        topic: Some(topic.clone()),
+                    });
+            }
+        }
         if self.state.servers.is_empty() {
-            let _ = self.cmd_tx.send(network::NetworkCommand::RequestSync {
-                latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
-                topic: None,
-            });
+            let _ = self
+                .cmd_tx
+                .send(network::NetworkCommand::LegacyRequestSync {
+                    latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
+                    topic: None,
+                });
         }
     }
 }
@@ -1777,6 +2028,7 @@ pub(crate) fn test_client() -> (Client, std::sync::mpsc::Receiver<network::Netwo
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 
@@ -1808,12 +2060,25 @@ mod tests {
     }
 
     #[test]
-    fn send_message_broadcasts_op() {
+    fn send_message_broadcasts_event_and_op() {
         let (mut client, rx) = test_client();
         client.send_message("general", "test").unwrap();
 
-        let cmd = rx.try_recv().unwrap();
-        assert!(matches!(cmd, network::NetworkCommand::BroadcastOp(_)));
+        // First command is the new BroadcastEvent.
+        let cmd1 = rx.try_recv().unwrap();
+        assert!(
+            matches!(cmd1, network::NetworkCommand::BroadcastEvent { .. }),
+            "expected BroadcastEvent, got {:?}",
+            std::mem::discriminant(&cmd1),
+        );
+
+        // Second command is the legacy BroadcastOp.
+        let cmd2 = rx.try_recv().unwrap();
+        assert!(
+            matches!(cmd2, network::NetworkCommand::BroadcastOp(_)),
+            "expected BroadcastOp, got {:?}",
+            std::mem::discriminant(&cmd2),
+        );
     }
 
     #[test]
@@ -1898,19 +2163,33 @@ mod tests {
     }
 
     #[test]
-    fn trust_untrust_broadcasts_ops() {
+    fn trust_untrust_broadcasts_events_and_ops() {
         let (mut client, rx) = test_client();
         client.trust_peer("some-peer");
 
-        let cmd = rx.try_recv().unwrap();
+        // First: BroadcastEvent (new wire format).
+        let cmd1 = rx.try_recv().unwrap();
+        assert!(matches!(
+            cmd1,
+            network::NetworkCommand::BroadcastEvent { .. }
+        ));
+        // Second: BroadcastOp (legacy wire format).
+        let cmd2 = rx.try_recv().unwrap();
         assert!(
-            matches!(cmd, network::NetworkCommand::BroadcastOp(ref s) if matches!(s.op, Op::TrustPeer { .. }))
+            matches!(cmd2, network::NetworkCommand::BroadcastOp(ref s) if matches!(s.op, Op::TrustPeer { .. }))
         );
 
         client.untrust_peer("some-peer");
-        let cmd = rx.try_recv().unwrap();
+        // First: BroadcastEvent.
+        let cmd3 = rx.try_recv().unwrap();
+        assert!(matches!(
+            cmd3,
+            network::NetworkCommand::BroadcastEvent { .. }
+        ));
+        // Second: BroadcastOp.
+        let cmd4 = rx.try_recv().unwrap();
         assert!(
-            matches!(cmd, network::NetworkCommand::BroadcastOp(ref s) if matches!(s.op, Op::UntrustPeer { .. }))
+            matches!(cmd4, network::NetworkCommand::BroadcastOp(ref s) if matches!(s.op, Op::UntrustPeer { .. }))
         );
     }
 

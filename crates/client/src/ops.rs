@@ -1,9 +1,8 @@
 //! # Server State Sync
 //!
-//! Broadcasts server mutations as signed, HLC-stamped operations over
-//! gossipsub so all members converge on the same state. Each operation is
-//! wrapped in a [`StampedOp`] with a unique ID (for deduplication) and an
-//! HLC timestamp (for causal ordering), then signed with Ed25519.
+//! Wire-level message types for broadcasting server state mutations over
+//! gossipsub. The primary wire format is [`WireMessage`], which wraps
+//! [`willow_state::Event`]s directly.
 //!
 //! ## Topic
 //!
@@ -11,18 +10,73 @@
 //!
 //! ## Security
 //!
-//! Each op is wrapped in a signed envelope via `willow_identity::pack()`.
-//! The receiver verifies the signature, checks that the op hasn't been
-//! seen before, and validates that the signer is a trusted peer before
-//! applying the operation.
+//! Each message is wrapped in a signed envelope via `willow_identity::pack()`.
+//! The receiver verifies the signature, checks that the event hasn't been
+//! seen before, and validates permissions before applying.
+//!
+//! ## Legacy types
+//!
+//! The [`Op`], [`StampedOp`], and [`SyncMessage`] types are kept for backward
+//! compatibility with `willow-app`. New code should use [`WireMessage`]
+//! instead.
 
 use serde::{Deserialize, Serialize};
 use willow_messaging::hlc::HlcTimestamp;
 
+// ───── New wire format ─────────────────────────────────────────────────────
+
+/// Wire-level message format. Replaces the legacy [`SyncMessage`].
+///
+/// All network communication now uses `WireMessage` wrappers around
+/// [`willow_state::Event`]s instead of the legacy `Op`/`StampedOp` types.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum WireMessage {
+    /// A single event.
+    Event(willow_state::Event),
+    /// Request events since a state hash.
+    SyncRequest {
+        /// The state hash the sender has — the responder returns events
+        /// that the sender is missing.
+        state_hash: willow_state::StateHash,
+        /// If set, request events for a specific topic (channel).
+        topic: Option<String>,
+    },
+    /// Batch of events in response to a sync request.
+    SyncBatch {
+        /// The events the responder is sending.
+        events: Vec<willow_state::Event>,
+    },
+}
+
+/// Serialize a [`WireMessage`] into a signed envelope ready for gossipsub.
+pub fn pack_wire(msg: &WireMessage, identity: &willow_identity::Identity) -> Option<Vec<u8>> {
+    let envelope =
+        willow_transport::pack_envelope(willow_transport::MessageType::Channel, msg).ok()?;
+    willow_identity::pack(&envelope, identity).ok()
+}
+
+/// Verify and deserialize a [`WireMessage`] from a signed envelope.
+pub fn unpack_wire(data: &[u8]) -> Option<(WireMessage, willow_identity::PeerId)> {
+    let (envelope_bytes, signer) = willow_identity::unpack::<Vec<u8>>(data).ok()?;
+    let (msg, willow_transport::MessageType::Channel) =
+        willow_transport::unpack_envelope::<WireMessage>(&envelope_bytes).ok()?
+    else {
+        return None;
+    };
+    Some((msg, signer))
+}
+
+/// Re-export `willow_state::Event` for convenience.
+pub use willow_state::Event;
+
+// ───── Legacy types (deprecated, kept for willow-app compat) ───────────────
+
 /// A signed, timestamped server state mutation.
 ///
 /// Wraps an [`Op`] with metadata for deduplication and ordering.
+#[deprecated(note = "use WireMessage with willow_state::Event instead")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(deprecated)]
 pub struct StampedOp {
     /// Unique ID for deduplication.
     pub op_id: String,
@@ -34,6 +88,7 @@ pub struct StampedOp {
     pub op: Op,
 }
 
+#[allow(deprecated)]
 impl StampedOp {
     /// Create a new stamped op with a fresh UUID and HLC timestamp.
     pub fn new(op: Op, hlc: &mut willow_messaging::hlc::HLC, author_peer_id: &str) -> Self {
@@ -47,6 +102,7 @@ impl StampedOp {
 }
 
 /// A state mutation (server ops and chat messages).
+#[deprecated(note = "use willow_state::EventKind instead")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Op {
     CreateChannel {
@@ -96,7 +152,9 @@ pub enum Op {
 }
 
 /// Wire-level message on the server ops topic.
+#[deprecated(note = "use WireMessage instead")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(deprecated)]
 pub enum SyncMessage {
     /// A single server operation.
     Op(StampedOp),
@@ -115,6 +173,8 @@ pub enum SyncMessage {
 pub const SERVER_OPS_TOPIC: &str = "_willow_server_ops";
 
 /// Serialize a SyncMessage into a signed envelope ready for gossipsub.
+#[deprecated(note = "use pack_wire instead")]
+#[allow(deprecated)]
 pub fn pack_sync(msg: &SyncMessage, identity: &willow_identity::Identity) -> Option<Vec<u8>> {
     let envelope =
         willow_transport::pack_envelope(willow_transport::MessageType::Channel, msg).ok()?;
@@ -122,6 +182,8 @@ pub fn pack_sync(msg: &SyncMessage, identity: &willow_identity::Identity) -> Opt
 }
 
 /// Verify and deserialize a SyncMessage from a signed envelope.
+#[deprecated(note = "use unpack_wire instead")]
+#[allow(deprecated)]
 pub fn unpack_sync(data: &[u8]) -> Option<(SyncMessage, willow_identity::PeerId)> {
     let (envelope_bytes, signer) = willow_identity::unpack::<Vec<u8>>(data).ok()?;
     let (msg, willow_transport::MessageType::Channel) =
@@ -133,11 +195,15 @@ pub fn unpack_sync(data: &[u8]) -> Option<(SyncMessage, willow_identity::PeerId)
 }
 
 /// Pack a single op as a SyncMessage::Op.
+#[deprecated(note = "use pack_wire with WireMessage::Event instead")]
+#[allow(deprecated)]
 pub fn pack_op(stamped: &StampedOp, identity: &willow_identity::Identity) -> Option<Vec<u8>> {
     pack_sync(&SyncMessage::Op(stamped.clone()), identity)
 }
 
 /// Unpack a single op (returns None if the message is not a SyncMessage::Op).
+#[deprecated(note = "use unpack_wire instead")]
+#[allow(deprecated)]
 pub fn unpack_op(data: &[u8]) -> Option<(StampedOp, willow_identity::PeerId)> {
     let (msg, signer) = unpack_sync(data)?;
     match msg {
@@ -147,6 +213,7 @@ pub fn unpack_op(data: &[u8]) -> Option<(StampedOp, willow_identity::PeerId)> {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use willow_identity::Identity;
@@ -291,5 +358,123 @@ mod tests {
             "peer",
         );
         assert!(b.hlc > a.hlc);
+    }
+
+    // ───── WireMessage tests ───────────────────────────────────────────────
+
+    #[test]
+    fn wire_message_event_round_trip() {
+        let id = Identity::generate();
+        let event = willow_state::Event {
+            id: "evt-1".to_string(),
+            parent_hash: willow_state::StateHash::ZERO,
+            author: id.peer_id().to_string(),
+            timestamp_ms: 1000,
+            kind: willow_state::EventKind::CreateChannel {
+                name: "general".to_string(),
+                channel_id: "ch-1".to_string(),
+            },
+        };
+
+        let msg = WireMessage::Event(event.clone());
+        let data = pack_wire(&msg, &id).unwrap();
+        let (decoded, signer) = unpack_wire(&data).unwrap();
+
+        assert_eq!(signer, id.peer_id());
+        match decoded {
+            WireMessage::Event(e) => {
+                assert_eq!(e.id, "evt-1");
+                assert_eq!(e.author, id.peer_id().to_string());
+            }
+            _ => panic!("expected WireMessage::Event"),
+        }
+    }
+
+    #[test]
+    fn wire_message_sync_request_round_trip() {
+        let id = Identity::generate();
+        let msg = WireMessage::SyncRequest {
+            state_hash: willow_state::StateHash::from_bytes(b"test-hash"),
+            topic: Some("my-topic".to_string()),
+        };
+
+        let data = pack_wire(&msg, &id).unwrap();
+        let (decoded, _) = unpack_wire(&data).unwrap();
+
+        match decoded {
+            WireMessage::SyncRequest { state_hash, topic } => {
+                assert_eq!(
+                    state_hash,
+                    willow_state::StateHash::from_bytes(b"test-hash")
+                );
+                assert_eq!(topic, Some("my-topic".to_string()));
+            }
+            _ => panic!("expected WireMessage::SyncRequest"),
+        }
+    }
+
+    #[test]
+    fn wire_message_sync_batch_round_trip() {
+        let id = Identity::generate();
+        let events = vec![
+            willow_state::Event {
+                id: "e1".to_string(),
+                parent_hash: willow_state::StateHash::ZERO,
+                author: "peer-1".to_string(),
+                timestamp_ms: 100,
+                kind: willow_state::EventKind::CreateChannel {
+                    name: "ch1".to_string(),
+                    channel_id: "cid1".to_string(),
+                },
+            },
+            willow_state::Event {
+                id: "e2".to_string(),
+                parent_hash: willow_state::StateHash::ZERO,
+                author: "peer-1".to_string(),
+                timestamp_ms: 200,
+                kind: willow_state::EventKind::Message {
+                    channel_id: "cid1".to_string(),
+                    body: "hello".to_string(),
+                },
+            },
+        ];
+
+        let msg = WireMessage::SyncBatch {
+            events: events.clone(),
+        };
+        let data = pack_wire(&msg, &id).unwrap();
+        let (decoded, _) = unpack_wire(&data).unwrap();
+
+        match decoded {
+            WireMessage::SyncBatch {
+                events: decoded_events,
+            } => {
+                assert_eq!(decoded_events.len(), 2);
+                assert_eq!(decoded_events[0].id, "e1");
+                assert_eq!(decoded_events[1].id, "e2");
+            }
+            _ => panic!("expected WireMessage::SyncBatch"),
+        }
+    }
+
+    #[test]
+    fn wire_message_tampered_fails() {
+        let id = Identity::generate();
+        let event = willow_state::Event {
+            id: "evt-x".to_string(),
+            parent_hash: willow_state::StateHash::ZERO,
+            author: "peer".to_string(),
+            timestamp_ms: 500,
+            kind: willow_state::EventKind::DeleteChannel {
+                channel_id: "ch-1".to_string(),
+            },
+        };
+
+        let mut data = pack_wire(&WireMessage::Event(event), &id).unwrap();
+        if let Some(byte) = data.last_mut() {
+            *byte ^= 0xFF;
+        }
+
+        assert!(unpack_wire(&data).is_none());
     }
 }

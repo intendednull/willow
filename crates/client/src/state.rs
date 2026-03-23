@@ -265,6 +265,7 @@ pub struct UnreadCounts {
 
 /// Ordered log of server operations for deduplication, replay, and trust.
 #[derive(Default)]
+#[allow(deprecated)]
 pub struct OpLog {
     /// All recorded operations in HLC order.
     pub ops: Vec<crate::ops::StampedOp>,
@@ -274,6 +275,7 @@ pub struct OpLog {
     pub trusted_peers: HashSet<String>,
 }
 
+#[allow(deprecated)]
 impl OpLog {
     /// Record a stamped op. Returns true if it was new (not a duplicate).
     ///
@@ -442,6 +444,7 @@ impl ClientState {
     /// rejected). Chat messages bypass the trust check -- anyone who can
     /// subscribe to a channel topic can chat. Trust is enforced only for
     /// server state mutations.
+    #[allow(deprecated)]
     pub fn apply_op(
         &mut self,
         stamped: &crate::ops::StampedOp,
@@ -632,6 +635,7 @@ impl ClientState {
 
     /// Process a ChatMessage op for display: deserialize content, decrypt if
     /// needed, and add to ChatState / persist to MessageDb.
+    #[allow(deprecated)]
     pub fn process_chat_message(
         &mut self,
         topic: &str,

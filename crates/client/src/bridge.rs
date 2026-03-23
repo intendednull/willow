@@ -7,6 +7,7 @@
 
 use willow_state::{Event, EventKind};
 
+#[allow(deprecated)]
 use crate::ops::Op;
 
 /// Convert a [`willow_state::Event`] to the wire-format [`Op`] for network
@@ -14,6 +15,7 @@ use crate::ops::Op;
 ///
 /// Returns `None` for event kinds that have no `Op` equivalent (e.g.
 /// `RenameChannel`), since those ops don't exist in the legacy protocol.
+#[allow(deprecated)]
 pub fn event_to_op(event: &Event) -> Option<Op> {
     match &event.kind {
         EventKind::CreateChannel { name, channel_id } => Some(Op::CreateChannel {
@@ -87,6 +89,7 @@ pub fn event_to_op(event: &Event) -> Option<Op> {
 ///
 /// Returns `None` for op kinds that don't map to an event (e.g.
 /// `ChatMessage`, which is handled separately).
+#[allow(deprecated)]
 pub fn op_to_event(
     op: &Op,
     author: &str,
@@ -179,6 +182,7 @@ pub fn chat_op_to_event(
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use willow_state::StateHash;

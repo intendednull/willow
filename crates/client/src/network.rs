@@ -40,19 +40,37 @@ pub enum NetworkEvent {
         peer_id: String,
         display_name: String,
     },
-    /// A server operation was received from a peer.
+    /// An event was received from a peer (new wire format).
+    EventReceived {
+        event: willow_state::Event,
+        from: String,
+    },
+    /// A sync request was received from a peer (new wire format).
+    SyncRequested {
+        state_hash: willow_state::StateHash,
+        from: String,
+        topic: Option<String>,
+    },
+    /// A batch of events was received as a sync response (new wire format).
+    SyncBatchReceived {
+        events: Vec<willow_state::Event>,
+        from: String,
+    },
+    /// A server operation was received from a peer (legacy wire format).
+    #[allow(deprecated)]
     OpReceived {
         stamped_op: crate::ops::StampedOp,
         from: String,
     },
-    /// A sync request was received from a peer.
-    SyncRequested {
+    /// A sync request in legacy format.
+    LegacySyncRequested {
         latest_hlc: willow_messaging::hlc::HlcTimestamp,
         from: String,
         topic: Option<String>,
     },
-    /// A batch of ops was received as a sync response.
-    SyncBatchReceived {
+    /// A batch of ops in legacy format.
+    #[allow(deprecated)]
+    LegacySyncBatchReceived {
         ops: Vec<crate::ops::StampedOp>,
         from: String,
     },
@@ -77,16 +95,32 @@ pub enum NetworkCommand {
     BroadcastProfile {
         display_name: String,
     },
-    /// Broadcast a server state operation.
-    BroadcastOp(crate::ops::StampedOp),
-    /// Request missing ops from peers.
-    /// If `topic` is set, request chat messages for that specific channel.
+    /// Broadcast an event (new wire format).
+    BroadcastEvent {
+        event: willow_state::Event,
+        topic: Option<String>,
+    },
+    /// Request missing events from peers (new wire format).
     RequestSync {
+        state_hash: willow_state::StateHash,
+        topic: Option<String>,
+    },
+    /// Send a batch of events as a sync response (new wire format).
+    SendSyncBatch {
+        events: Vec<willow_state::Event>,
+    },
+    /// Broadcast a server state operation (legacy wire format).
+    #[allow(deprecated)]
+    BroadcastOp(crate::ops::StampedOp),
+    /// Request missing ops from peers (legacy wire format).
+    #[allow(deprecated)]
+    LegacyRequestSync {
         latest_hlc: willow_messaging::hlc::HlcTimestamp,
         topic: Option<String>,
     },
-    /// Send a batch of ops as a sync response.
-    SendSyncBatch {
+    /// Send a batch of ops as a sync response (legacy wire format).
+    #[allow(deprecated)]
+    LegacySendSyncBatch {
         ops: Vec<crate::ops::StampedOp>,
     },
 }
@@ -126,6 +160,7 @@ pub fn spawn_network(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(deprecated)]
 async fn run_network(
     identity: willow_identity::Identity,
     event_tx: std::sync::mpsc::Sender<NetworkEvent>,
@@ -163,7 +198,36 @@ async fn run_network(
                                 peer_id: profile.peer_id.to_string(),
                                 display_name: profile.display_name,
                             });
-                        } else if let Some((sync_msg, signer)) =
+                        }
+                        // Try new wire format first.
+                        else if let Some((wire_msg, signer)) =
+                            crate::ops::unpack_wire(&data)
+                        {
+                            let from = signer.to_string();
+                            match wire_msg {
+                                crate::ops::WireMessage::Event(event) => {
+                                    let _ = event_tx.send(NetworkEvent::EventReceived {
+                                        event,
+                                        from,
+                                    });
+                                }
+                                crate::ops::WireMessage::SyncRequest { state_hash, topic } => {
+                                    let _ = event_tx.send(NetworkEvent::SyncRequested {
+                                        state_hash,
+                                        from,
+                                        topic,
+                                    });
+                                }
+                                crate::ops::WireMessage::SyncBatch { events } => {
+                                    let _ = event_tx.send(NetworkEvent::SyncBatchReceived {
+                                        events,
+                                        from,
+                                    });
+                                }
+                            }
+                        }
+                        // Fall back to legacy wire format.
+                        else if let Some((sync_msg, signer)) =
                             crate::ops::unpack_sync(&data)
                         {
                             let from = signer.to_string();
@@ -177,14 +241,14 @@ async fn run_network(
                                     }
                                 }
                                 crate::ops::SyncMessage::SyncRequest { latest_hlc, topic } => {
-                                    let _ = event_tx.send(NetworkEvent::SyncRequested {
+                                    let _ = event_tx.send(NetworkEvent::LegacySyncRequested {
                                         latest_hlc,
                                         from,
                                         topic,
                                     });
                                 }
                                 crate::ops::SyncMessage::SyncBatch { ops } => {
-                                    let _ = event_tx.send(NetworkEvent::SyncBatchReceived {
+                                    let _ = event_tx.send(NetworkEvent::LegacySyncBatchReceived {
                                         ops,
                                         from,
                                     });
@@ -251,6 +315,7 @@ pub fn spawn_network(
 }
 
 #[cfg(target_arch = "wasm32")]
+#[allow(deprecated)]
 async fn run_network_wasm(
     identity: willow_identity::Identity,
     event_tx: std::sync::mpsc::Sender<NetworkEvent>,
@@ -285,7 +350,34 @@ async fn run_network_wasm(
                                 display_name: profile.display_name,
                             });
                         }
-                        // Try parsing as a sync message (ops, requests, batches).
+                        // Try new wire format first.
+                        else if let Some((wire_msg, signer)) =
+                            crate::ops::unpack_wire(&data)
+                        {
+                            let from = signer.to_string();
+                            match wire_msg {
+                                crate::ops::WireMessage::Event(event) => {
+                                    let _ = event_tx.send(NetworkEvent::EventReceived {
+                                        event,
+                                        from,
+                                    });
+                                }
+                                crate::ops::WireMessage::SyncRequest { state_hash, topic } => {
+                                    let _ = event_tx.send(NetworkEvent::SyncRequested {
+                                        state_hash,
+                                        from,
+                                        topic,
+                                    });
+                                }
+                                crate::ops::WireMessage::SyncBatch { events } => {
+                                    let _ = event_tx.send(NetworkEvent::SyncBatchReceived {
+                                        events,
+                                        from,
+                                    });
+                                }
+                            }
+                        }
+                        // Fall back to legacy wire format.
                         else if let Some((sync_msg, signer)) =
                             crate::ops::unpack_sync(&data)
                         {
@@ -300,14 +392,14 @@ async fn run_network_wasm(
                                     }
                                 }
                                 crate::ops::SyncMessage::SyncRequest { latest_hlc, topic } => {
-                                    let _ = event_tx.send(NetworkEvent::SyncRequested {
+                                    let _ = event_tx.send(NetworkEvent::LegacySyncRequested {
                                         latest_hlc,
                                         from,
                                         topic,
                                     });
                                 }
                                 crate::ops::SyncMessage::SyncBatch { ops } => {
-                                    let _ = event_tx.send(NetworkEvent::SyncBatchReceived {
+                                    let _ = event_tx.send(NetworkEvent::LegacySyncBatchReceived {
                                         ops,
                                         from,
                                     });
@@ -351,6 +443,7 @@ async fn run_network_wasm(
 
 // ───── Shared command handler ───────────────────────────────────────────────
 
+#[allow(deprecated)]
 fn handle_network_command(
     cmd: &NetworkCommand,
     node: &willow_network::NetworkNode,
@@ -386,6 +479,45 @@ fn handle_network_command(
                 let _ = node.publish(PROFILE_TOPIC, data);
             }
         }
+        NetworkCommand::BroadcastEvent { event, topic } => {
+            let identity = willow_identity::Identity::from_ed25519_bytes(
+                &crate::storage::load_identity_bytes().unwrap_or_default(),
+            )
+            .unwrap_or_else(willow_identity::Identity::generate);
+            let publish_topic = topic.as_deref().unwrap_or(crate::ops::SERVER_OPS_TOPIC);
+            if let Some(data) =
+                crate::ops::pack_wire(&crate::ops::WireMessage::Event(event.clone()), &identity)
+            {
+                let _ = node.publish(publish_topic, data);
+            }
+        }
+        NetworkCommand::RequestSync { state_hash, topic } => {
+            let identity = willow_identity::Identity::from_ed25519_bytes(
+                &crate::storage::load_identity_bytes().unwrap_or_default(),
+            )
+            .unwrap_or_else(willow_identity::Identity::generate);
+            let msg = crate::ops::WireMessage::SyncRequest {
+                state_hash: state_hash.clone(),
+                topic: topic.clone(),
+            };
+            if let Some(data) = crate::ops::pack_wire(&msg, &identity) {
+                let publish_topic = topic.as_deref().unwrap_or(crate::ops::SERVER_OPS_TOPIC);
+                let _ = node.publish(publish_topic, data);
+            }
+        }
+        NetworkCommand::SendSyncBatch { events } => {
+            let identity = willow_identity::Identity::from_ed25519_bytes(
+                &crate::storage::load_identity_bytes().unwrap_or_default(),
+            )
+            .unwrap_or_else(willow_identity::Identity::generate);
+            let msg = crate::ops::WireMessage::SyncBatch {
+                events: events.clone(),
+            };
+            if let Some(data) = crate::ops::pack_wire(&msg, &identity) {
+                let _ = node.publish(crate::ops::SERVER_OPS_TOPIC, data);
+            }
+        }
+        // Legacy command handlers (kept for willow-app backward compat).
         NetworkCommand::BroadcastOp(stamped_op) => {
             let identity = willow_identity::Identity::from_ed25519_bytes(
                 &crate::storage::load_identity_bytes().unwrap_or_default(),
@@ -401,7 +533,7 @@ fn handle_network_command(
                 let _ = node.publish(&publish_topic, data);
             }
         }
-        NetworkCommand::RequestSync { latest_hlc, topic } => {
+        NetworkCommand::LegacyRequestSync { latest_hlc, topic } => {
             let identity = willow_identity::Identity::from_ed25519_bytes(
                 &crate::storage::load_identity_bytes().unwrap_or_default(),
             )
@@ -415,7 +547,7 @@ fn handle_network_command(
                 let _ = node.publish(publish_topic, data);
             }
         }
-        NetworkCommand::SendSyncBatch { ops } => {
+        NetworkCommand::LegacySendSyncBatch { ops } => {
             let identity = willow_identity::Identity::from_ed25519_bytes(
                 &crate::storage::load_identity_bytes().unwrap_or_default(),
             )
