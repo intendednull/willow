@@ -34,6 +34,23 @@ use libp2p::{
 };
 use tracing::{debug, info, warn};
 
+mod event_store;
+use event_store::RelayEventStore;
+
+/// Wire message format — mirrors willow_client::WireMessage but defined
+/// locally to avoid pulling in the full client dependency.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+enum WireMessage {
+    Event(willow_state::Event),
+    SyncRequest {
+        state_hash: willow_state::StateHash,
+        topic: Option<String>,
+    },
+    SyncBatch {
+        events: Vec<willow_state::Event>,
+    },
+}
+
 #[derive(Parser)]
 #[command(name = "willow-relay", about = "Willow P2P relay server")]
 struct Args {
@@ -49,6 +66,11 @@ struct Args {
     /// If not set, a new identity is generated each run.
     #[arg(long)]
     identity: Option<std::path::PathBuf>,
+
+    /// Directory for the event store database.
+    /// Defaults to ~/.local/share/willow-relay/
+    #[arg(long)]
+    data_dir: Option<std::path::PathBuf>,
 }
 
 #[tokio::main]
@@ -139,6 +161,19 @@ async fn main() -> Result<()> {
         "relay listening"
     );
 
+    // Open the event store for history persistence.
+    let data_dir = args
+        .data_dir
+        .unwrap_or_else(|| {
+            dirs::data_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join("willow-relay")
+        });
+    std::fs::create_dir_all(&data_dir).ok();
+    let mut event_store =
+        RelayEventStore::open(&data_dir.join("events.db")).expect("failed to open event store");
+    info!(path = ?data_dir.join("events.db"), events = event_store.count(), "event store ready");
+
     // Run the swarm event loop.
     loop {
         match swarm.select_next_some().await {
@@ -184,10 +219,43 @@ async fn main() -> Result<()> {
                 message,
                 ..
             })) => {
+                let topic_str = message.topic.to_string();
+                let data = &message.data;
+
+                // Try to parse and store events as they pass through.
+                // The relay is just another peer that remembers everything.
+                if let Ok((envelope_bytes, _signer)) =
+                    willow_identity::unpack::<Vec<u8>>(data)
+                {
+                    if let Ok((wire_msg, willow_transport::MessageType::Channel)) =
+                        willow_transport::unpack_envelope::<WireMessage>(&envelope_bytes)
+                    {
+                        match wire_msg {
+                            WireMessage::Event(ref event) => {
+                                event_store.store_event(&topic_str, event, data);
+                                debug!(
+                                    id = %event.id,
+                                    author = %event.author,
+                                    topic = %topic_str,
+                                    "stored event"
+                                );
+                            }
+                            WireMessage::SyncBatch { ref events } => {
+                                for event in events {
+                                    event_store.store_event(&topic_str, event, &[]);
+                                }
+                                debug!(count = events.len(), "cached sync batch");
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
                 debug!(
-                    topic = %message.topic,
+                    topic = %topic_str,
                     source = ?message.source,
-                    bytes = message.data.len(),
+                    bytes = data.len(),
+                    stored = event_store.count(),
                     "relaying message"
                 );
             }

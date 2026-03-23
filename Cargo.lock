@@ -9138,10 +9138,16 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "dirs",
  "libp2p",
+ "rusqlite",
+ "serde",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "willow-identity",
+ "willow-state",
+ "willow-transport",
 ]
 
 [[package]]

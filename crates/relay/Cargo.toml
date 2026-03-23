@@ -20,8 +20,14 @@ libp2p = { version = "0.53", features = [
     "ed25519",
     "websocket",
 ] }
+willow-state = { path = "../state" }
+willow-identity = { path = "../identity" }
+willow-transport = { path = "../transport" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
+serde = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { version = "4", features = ["derive"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+dirs = "6"
