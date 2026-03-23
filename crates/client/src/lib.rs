@@ -1189,12 +1189,15 @@ impl Client {
             return vec![];
         };
         let topic = ctx.topic_for_name(channel).unwrap_or_default();
-        self.state
+        let mut msgs: Vec<&ChatMessage> = self
+            .state
             .chat
             .messages
             .iter()
             .filter(|m| m.server_id == *server_id && m.topic == topic)
-            .collect()
+            .collect();
+        msgs.sort_by_key(|m| m.timestamp_ms);
+        msgs
     }
 
     /// List all channel names for the active server.

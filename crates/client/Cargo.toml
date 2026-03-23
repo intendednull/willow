@@ -29,6 +29,7 @@ wasm-bindgen-futures = "0.4"
 futures = "0.3"
 web-sys = { version = "0.3", features = ["Window", "Storage"] }
 js-sys = "0.3"
+gloo-timers = { version = "0.3", features = ["futures"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -263,6 +263,13 @@ async fn run_network_wasm(
     let (node, mut events) = NetworkNode::start(identity, config).await?;
     let mut file_mgr = crate::files::FileManager::new();
 
+    // Create a 16ms interval for polling commands (like native's tokio::time::sleep).
+    let mut tick = Box::pin(futures::stream::unfold((), |_| async {
+        gloo_timers::future::TimeoutFuture::new(16).await;
+        Some(((), ()))
+    }))
+    .fuse();
+
     loop {
         futures::select! {
             event = events.next() => {
@@ -315,13 +322,17 @@ async fn run_network_wasm(
                     }
                     _ => {}
                 }
-
-                while let Ok(cmd) = cmd_rx.try_recv() {
-                    handle_network_command(&cmd, &node, &mut file_mgr)?;
-                }
             }
 
+            // Poll commands every 16ms so messages get sent promptly.
+            _ = tick.next() => {}
+
             complete => break,
+        }
+
+        // Process any queued commands after either arm fires.
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            handle_network_command(&cmd, &node, &mut file_mgr)?;
         }
     }
 
