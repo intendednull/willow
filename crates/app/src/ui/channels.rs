@@ -5,6 +5,7 @@ use bevy::prelude::*;
 
 use crate::network_bridge::{LocalIdentity, NetworkCommandSender};
 use crate::theme;
+#[allow(unused_imports)]
 use willow_channel::ChannelKind;
 
 use super::components::*;
@@ -367,6 +368,37 @@ pub fn sync_invite_fields(
         } else {
             **text = mgmt.join_code.clone();
             *color = TextColor(theme::TEXT_PRIMARY);
+        }
+    }
+}
+
+// ───── Clipboard Systems ────────────────────────────────────────────────────
+
+/// Copy the local PeerId to clipboard when the "ID" button is clicked.
+pub fn handle_copy_peer_id(
+    query: Query<&Interaction, (Changed<Interaction>, With<CopyPeerIdButton>)>,
+    identity: Res<LocalIdentity>,
+) {
+    for interaction in &query {
+        if *interaction == Interaction::Pressed {
+            let peer_id = identity.0.peer_id().to_string();
+            crate::clipboard::copy_to_clipboard(&peer_id);
+            info!("copied PeerId to clipboard");
+        }
+    }
+}
+
+/// Copy the generated invite code to clipboard.
+pub fn handle_copy_invite(
+    query: Query<&Interaction, (Changed<Interaction>, With<CopyInviteButton>)>,
+    mgmt: Res<ChannelManagement>,
+) {
+    for interaction in &query {
+        if *interaction == Interaction::Pressed {
+            if let Some(ref code) = mgmt.invite_code {
+                crate::clipboard::copy_to_clipboard(code);
+                info!("copied invite code to clipboard");
+            }
         }
     }
 }

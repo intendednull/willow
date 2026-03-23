@@ -215,6 +215,29 @@ fn spawn_user_area(sidebar: &mut ChildSpawnerCommands, peer_display: &str) {
                     ));
                 });
 
+            // Copy PeerId button
+            user_area
+                .spawn((
+                    Button,
+                    Node {
+                        width: Val::Px(32.0),
+                        height: Val::Px(32.0),
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::Center,
+                        margin: UiRect::right(Val::Px(4.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::NONE),
+                    CopyPeerIdButton,
+                ))
+                .with_children(|btn| {
+                    btn.spawn((
+                        Text::new("ID"),
+                        TextFont::from_font_size(10.0),
+                        TextColor(theme::TEXT_MUTED),
+                    ));
+                });
+
             // Settings gear
             user_area
                 .spawn((
@@ -545,7 +568,29 @@ pub fn spawn_settings_panel(parent: &mut ChildSpawnerCommands, settings: &Settin
                         TextFont::from_font_size(11.0),
                         TextColor(theme::STATUS_ONLINE),
                         InviteCodeDisplay,
+                        Node {
+                            flex_grow: 1.0,
+                            ..default()
+                        },
                     ));
+
+                    row.spawn((
+                        Button,
+                        Node {
+                            padding: UiRect::horizontal(Val::Px(8.0)),
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        BackgroundColor(Color::NONE),
+                        CopyInviteButton,
+                    ))
+                    .with_children(|btn| {
+                        btn.spawn((
+                            Text::new("Copy"),
+                            TextFont::from_font_size(11.0),
+                            TextColor(theme::TEXT_MUTED),
+                        ));
+                    });
                 });
 
             // Join server section

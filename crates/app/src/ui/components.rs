@@ -62,6 +62,14 @@ pub struct ShareFileButton;
 #[derive(Component)]
 pub struct SettingsFieldContainer(pub super::resources::SettingsField);
 
+/// "Copy PeerId" button in the user area.
+#[derive(Component)]
+pub struct CopyPeerIdButton;
+
+/// "Copy" button for the invite code.
+#[derive(Component)]
+pub struct CopyInviteButton;
+
 /// "+" button to create a new channel.
 #[derive(Component)]
 pub struct CreateChannelButton;
