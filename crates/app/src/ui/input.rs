@@ -501,6 +501,7 @@ pub fn send_message(
                 body,
                 is_local: true,
                 timestamp_ms: ts,
+                msg_id: String::new(),
             });
         }
     }

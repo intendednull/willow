@@ -163,6 +163,9 @@ pub struct StoredMessage {
     pub body: String,
     pub is_local: bool,
     pub timestamp_ms: u64,
+    /// Unique message ID (op_id) for deduplication.
+    #[serde(default)]
+    pub msg_id: String,
 }
 
 /// Open (or create) the message database and return a handle.
@@ -197,8 +200,10 @@ impl MessageDb {
                 author TEXT NOT NULL,
                 body TEXT NOT NULL,
                 is_local INTEGER NOT NULL DEFAULT 0,
-                timestamp_ms INTEGER NOT NULL
+                timestamp_ms INTEGER NOT NULL,
+                msg_id TEXT NOT NULL DEFAULT ''
             );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_msg_id ON messages(msg_id) WHERE msg_id != '';
             CREATE INDEX IF NOT EXISTS idx_messages_topic ON messages(topic, timestamp_ms);
             CREATE TABLE IF NOT EXISTS chat_ops (
                 op_id TEXT PRIMARY KEY,
@@ -210,21 +215,31 @@ impl MessageDb {
             CREATE INDEX IF NOT EXISTS idx_chat_ops_topic_hlc ON chat_ops(topic, hlc_millis, hlc_counter);",
         )
         .ok()?;
+        // Migration: add msg_id column if it doesn't exist (existing DBs).
+        let _ =
+            conn.execute_batch("ALTER TABLE messages ADD COLUMN msg_id TEXT NOT NULL DEFAULT '';");
         Some(Self { conn })
     }
 
-    /// Insert a message.
+    /// Insert a message, deduplicating by msg_id.
     pub fn insert(&self, msg: &StoredMessage) {
-        let _ = self.conn.execute(
-            "INSERT INTO messages (topic, author, body, is_local, timestamp_ms) VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![msg.topic, msg.author, msg.body, msg.is_local as i32, msg.timestamp_ms],
-        );
+        if msg.msg_id.is_empty() {
+            let _ = self.conn.execute(
+                "INSERT INTO messages (topic, author, body, is_local, timestamp_ms) VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![msg.topic, msg.author, msg.body, msg.is_local as i32, msg.timestamp_ms],
+            );
+        } else {
+            let _ = self.conn.execute(
+                "INSERT OR IGNORE INTO messages (topic, author, body, is_local, timestamp_ms, msg_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![msg.topic, msg.author, msg.body, msg.is_local as i32, msg.timestamp_ms, msg.msg_id],
+            );
+        }
     }
 
     /// Load messages for a topic, ordered by timestamp.
     pub fn load_topic(&self, topic: &str, limit: usize) -> Vec<StoredMessage> {
         let mut stmt = match self.conn.prepare(
-            "SELECT topic, author, body, is_local, timestamp_ms FROM messages WHERE topic = ?1 ORDER BY timestamp_ms ASC LIMIT ?2",
+            "SELECT topic, author, body, is_local, timestamp_ms, msg_id FROM messages WHERE topic = ?1 ORDER BY timestamp_ms ASC LIMIT ?2",
         ) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
@@ -237,6 +252,7 @@ impl MessageDb {
                 body: row.get(2)?,
                 is_local: row.get::<_, i32>(3)? != 0,
                 timestamp_ms: row.get(4)?,
+                msg_id: row.get::<_, String>(5).unwrap_or_default(),
             })
         })
         .ok()
@@ -339,6 +355,10 @@ impl MessageDb {
 
     pub fn insert(&self, msg: &StoredMessage) {
         let mut messages = Self::load_all(&msg.topic);
+        // Dedup by msg_id.
+        if !msg.msg_id.is_empty() && messages.iter().any(|m| m.msg_id == msg.msg_id) {
+            return;
+        }
         messages.push(msg.clone());
         // Keep at most 500 messages per topic to avoid localStorage limits.
         if messages.len() > 500 {

@@ -80,6 +80,7 @@ pub fn App() -> impl IntoView {
     let (loading, set_loading) = signal(true);
     let (display_name, set_display_name) = signal(String::new());
     let (roles, set_roles) = signal(Vec::<(String, String, Vec<String>)>::new());
+    let (typing_names, set_typing_names) = signal(Vec::<String>::new());
 
     // Auto-clear loading after LOADING_TIMEOUT_MS even if no peer connects.
     set_timeout(
@@ -216,6 +217,11 @@ pub fn App() -> impl IntoView {
                 // Roles may change via sync events, so refresh on any state change.
                 set_roles.set(extract_roles(&c));
             }
+
+            // Always refresh typing state (it auto-expires).
+            let ch = current_channel.get_untracked();
+            let typers = c.typing_in(&ch);
+            set_typing_names.set(typers);
         },
         std::time::Duration::from_millis(50),
     );
@@ -295,6 +301,7 @@ pub fn App() -> impl IntoView {
     let sidebar_client = client.clone();
     let file_client = client.clone();
     let member_client = client.clone();
+    let typing_client = client.clone();
 
     // Welcome screen callbacks that refresh all signals.
     let welcome_client = client.clone();
@@ -326,6 +333,7 @@ pub fn App() -> impl IntoView {
                 let fc = file_client.clone();
                 let sbc = sidebar_client.clone();
                 let mc = member_client.clone();
+                let tc = typing_client.clone();
                 let ch_click = on_channel_click.clone();
                 let srv_click = on_server_click.clone();
                 let send = on_send.clone();
@@ -386,6 +394,10 @@ pub fn App() -> impl IntoView {
                                     let edit_send2 = edit_send.clone();
                                     let del_msg2 = del_msg.clone();
                                     let react2 = react.clone();
+                                    let tc2 = tc.clone();
+                                    let on_typing_cb = Callback::new(move |_: ()| {
+                                        tc2.borrow_mut().send_typing();
+                                    });
                                     view! {
                                         <div class="chat-container">
                                             <ChannelHeader
@@ -406,6 +418,20 @@ pub fn App() -> impl IntoView {
                                                 on_delete=Callback::new(del_msg2)
                                                 on_react=Callback::new(react2)
                                             />
+                                            <div class="typing-indicator">
+                                                {move || {
+                                                    let names = typing_names.get();
+                                                    if names.is_empty() {
+                                                        String::new()
+                                                    } else if names.len() == 1 {
+                                                        format!("{} is typing...", names[0])
+                                                    } else if names.len() == 2 {
+                                                        format!("{} and {} are typing...", names[0], names[1])
+                                                    } else {
+                                                        format!("{} and {} others are typing...", names[0], names.len() - 1)
+                                                    }
+                                                }}
+                                            </div>
                                             <div class="input-row">
                                                 <FileShareButton
                                                     client=fc2
@@ -422,6 +448,7 @@ pub fn App() -> impl IntoView {
                                                     on_cancel_edit=Callback::new(move |_| {
                                                         set_editing.set(None);
                                                     })
+                                                    on_typing=on_typing_cb
                                                 />
                                             </div>
                                         </div>

@@ -184,6 +184,8 @@ pub struct ChatState {
     pub peers: Vec<String>,
     pub hlc: HLC,
     pub messages_dirty: bool,
+    /// Seen message/op IDs for deduplication.
+    pub seen_message_ids: std::collections::HashSet<String>,
 }
 
 impl Default for ChatState {
@@ -194,6 +196,7 @@ impl Default for ChatState {
             peers: Vec::new(),
             hlc: HLC::new(),
             messages_dirty: true,
+            seen_message_ids: std::collections::HashSet::new(),
         }
     }
 }
@@ -645,6 +648,12 @@ impl ClientState {
         hlc_millis: u64,
         stamped: &crate::ops::StampedOp,
     ) {
+        // Dedup: skip if we already have a message/event with this op_id.
+        if self.chat.seen_message_ids.contains(op_id) {
+            return;
+        }
+        self.chat.seen_message_ids.insert(op_id.to_string());
+
         // Determine which server this topic belongs to.
         let server_id = self
             .find_server_for_topic(topic)
@@ -796,6 +805,7 @@ impl ClientState {
                         body: body.clone(),
                         is_local: false,
                         timestamp_ms: hlc_millis,
+                        msg_id: op_id.to_string(),
                     });
                 }
             }

@@ -46,6 +46,11 @@ pub enum WireMessage {
         /// The events the responder is sending.
         events: Vec<willow_state::Event>,
     },
+    /// Ephemeral typing indicator — not stored or persisted.
+    TypingIndicator {
+        /// The channel name the peer is typing in.
+        channel: String,
+    },
 }
 
 /// Serialize a [`WireMessage`] into a signed envelope ready for gossipsub.

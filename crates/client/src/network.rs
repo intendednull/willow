@@ -56,6 +56,11 @@ pub enum NetworkEvent {
         events: Vec<willow_state::Event>,
         from: String,
     },
+    /// A typing indicator was received from a peer.
+    TypingReceived {
+        peer_id: String,
+        channel: String,
+    },
     /// A server operation was received from a peer (legacy wire format).
     #[allow(deprecated)]
     OpReceived {
@@ -94,6 +99,10 @@ pub enum NetworkCommand {
     /// Broadcast our profile to peers.
     BroadcastProfile {
         display_name: String,
+    },
+    /// Broadcast a typing indicator on the server ops topic.
+    SendTyping {
+        channel: String,
     },
     /// Broadcast an event (new wire format).
     BroadcastEvent {
@@ -222,6 +231,12 @@ async fn run_network(
                                     let _ = event_tx.send(NetworkEvent::SyncBatchReceived {
                                         events,
                                         from,
+                                    });
+                                }
+                                crate::ops::WireMessage::TypingIndicator { channel } => {
+                                    let _ = event_tx.send(NetworkEvent::TypingReceived {
+                                        peer_id: from,
+                                        channel,
                                     });
                                 }
                             }
@@ -375,6 +390,12 @@ async fn run_network_wasm(
                                         from,
                                     });
                                 }
+                                crate::ops::WireMessage::TypingIndicator { channel } => {
+                                    let _ = event_tx.send(NetworkEvent::TypingReceived {
+                                        peer_id: from,
+                                        channel,
+                                    });
+                                }
                             }
                         }
                         // Fall back to legacy wire format.
@@ -466,6 +487,18 @@ fn handle_network_command(
                 file_mgr.share_file(data, filename.clone(), mime_type.clone())
             {
                 node.publish(topic, envelope)?;
+            }
+        }
+        NetworkCommand::SendTyping { channel } => {
+            let identity = willow_identity::Identity::from_ed25519_bytes(
+                &crate::storage::load_identity_bytes().unwrap_or_default(),
+            )
+            .unwrap_or_else(willow_identity::Identity::generate);
+            let msg = crate::ops::WireMessage::TypingIndicator {
+                channel: channel.clone(),
+            };
+            if let Some(data) = crate::ops::pack_wire(&msg, &identity) {
+                let _ = node.publish(crate::ops::SERVER_OPS_TOPIC, data);
             }
         }
         NetworkCommand::BroadcastProfile { display_name } => {

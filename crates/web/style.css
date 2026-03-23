@@ -1495,6 +1495,14 @@ html, body {
     font-weight: 600;
 }
 
+.typing-indicator {
+    padding: 4px 16px;
+    font-size: 12px;
+    color: var(--text-muted);
+    font-style: italic;
+    min-height: 20px;
+}
+
 @media (max-width: 640px) {
     .welcome-options {
         grid-template-columns: 1fr;

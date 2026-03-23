@@ -106,6 +106,7 @@ pub fn poll_file_picker(
                 body,
                 is_local: true,
                 timestamp_ms: chat_state.hlc.latest().millis,
+                msg_id: String::new(),
             });
         }
     }

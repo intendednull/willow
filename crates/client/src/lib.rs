@@ -101,6 +101,10 @@ pub struct Client {
     pub(crate) notification_tx: Option<std_mpsc::Sender<events::ClientNotification>>,
     /// Tracks what state hash each peer has reported via StateVerification events.
     pub(crate) state_verification_results: HashMap<String, willow_state::StateHash>,
+    /// Timestamp (ms) when we last broadcast a typing indicator (for debouncing).
+    pub(crate) last_typing_sent_ms: u64,
+    /// Maps peer_id -> (channel_name, timestamp_ms) for typing indicators.
+    pub(crate) typing_peers: HashMap<String, (String, u64)>,
 }
 
 #[allow(deprecated)]
@@ -265,14 +269,24 @@ impl Client {
                     for topic in ctx.topic_map.keys() {
                         let stored = db_lock.load_topic(topic, 500);
                         for sm in stored {
-                            state.chat.messages.push(ChatMessage::new(
+                            // Dedup by msg_id.
+                            if !sm.msg_id.is_empty()
+                                && !state.chat.seen_message_ids.insert(sm.msg_id.clone())
+                            {
+                                continue;
+                            }
+                            let mut msg = ChatMessage::new(
                                 sid.clone(),
                                 sm.topic,
                                 sm.author,
                                 sm.body,
                                 sm.is_local,
                                 sm.timestamp_ms,
-                            ));
+                            );
+                            if !sm.msg_id.is_empty() {
+                                msg.id = sm.msg_id;
+                            }
+                            state.chat.messages.push(msg);
                         }
                     }
                 }
@@ -317,6 +331,8 @@ impl Client {
             profile_broadcast_counter: 0,
             notification_tx: None,
             state_verification_results: HashMap::new(),
+            last_typing_sent_ms: 0,
+            typing_peers: HashMap::new(),
         }
     }
 
@@ -827,6 +843,15 @@ impl Client {
                 }
                 network::NetworkEvent::FileDownloaded { .. } => {
                     // no-op for now
+                }
+                network::NetworkEvent::TypingReceived { peer_id, channel } => {
+                    let now = util::current_time_ms();
+                    self.typing_peers.insert(peer_id.clone(), (channel, now));
+                    // Also track as online peer.
+                    if !self.state.chat.peers.contains(&peer_id) {
+                        self.state.chat.peers.push(peer_id.clone());
+                        events.push(ClientEvent::PeerConnected(peer_id));
+                    }
                 }
                 network::NetworkEvent::MessageReceived { .. } => {
                     // Legacy message path -- all messages now go through
@@ -1849,6 +1874,43 @@ impl Client {
         }
     }
 
+    // ───── Typing indicator methods ──────────────────────────────────────────
+
+    /// Notify peers that we are typing in the current channel.
+    ///
+    /// Debounced — will not send more than once per 3 seconds.
+    pub fn send_typing(&mut self) {
+        let now = util::current_time_ms();
+        if now - self.last_typing_sent_ms < 3000 {
+            return; // debounce
+        }
+        self.last_typing_sent_ms = now;
+
+        let channel = self.state.chat.current_channel.clone();
+        if !channel.is_empty() {
+            let _ = self
+                .cmd_tx
+                .send(network::NetworkCommand::SendTyping { channel });
+        }
+    }
+
+    /// Get display names of peers currently typing in the given channel.
+    ///
+    /// Automatically expires entries older than 5 seconds and excludes the
+    /// local user.
+    pub fn typing_in(&mut self, channel: &str) -> Vec<String> {
+        let now = util::current_time_ms();
+        // Remove expired entries (older than 5 seconds).
+        self.typing_peers.retain(|_, (_, ts)| now - *ts < 5000);
+
+        let my_id = self.identity.peer_id().to_string();
+        self.typing_peers
+            .iter()
+            .filter(|(pid, (ch, _))| ch == channel && *pid != &my_id)
+            .map(|(pid, _)| self.peer_display_name(pid))
+            .collect()
+    }
+
     // ───── Accessor methods ─────────────────────────────────────────────────
 
     /// Get a reference to the full client state.
@@ -2115,6 +2177,7 @@ impl Client {
                     body: body.to_string(),
                     is_local: true,
                     timestamp_ms: ts,
+                    msg_id: stamped.op_id.clone(),
                 });
             }
         }
@@ -2302,6 +2365,8 @@ pub(crate) fn test_client() -> (Client, std::sync::mpsc::Receiver<network::Netwo
         profile_broadcast_counter: 0,
         notification_tx: None,
         state_verification_results: HashMap::new(),
+        last_typing_sent_ms: 0,
+        typing_peers: HashMap::new(),
     };
 
     (client, cmd_rx)

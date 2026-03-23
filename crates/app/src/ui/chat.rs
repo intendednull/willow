@@ -165,6 +165,7 @@ pub fn handle_network_events(
                                 body: body.clone(),
                                 is_local: false,
                                 timestamp_ms: msg.hlc.millis,
+                                msg_id: String::new(),
                             });
                         }
                     }
@@ -991,6 +992,7 @@ fn process_chat_message(
                     body: body.clone(),
                     is_local: false,
                     timestamp_ms: hlc_millis,
+                    msg_id: String::new(),
                 });
             }
         }

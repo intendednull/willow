@@ -25,6 +25,9 @@ pub fn ChatInput(
     /// Callback to cancel the current edit.
     #[prop(optional, into)]
     on_cancel_edit: Option<Callback<()>>,
+    /// Callback fired when the user types (for typing indicators).
+    #[prop(optional, into)]
+    on_typing: Option<Callback<()>>,
 ) -> impl IntoView {
     let (input_text, set_input_text) = signal(String::new());
 
@@ -159,6 +162,9 @@ pub fn ChatInput(
                 prop:value=move || input_text.get()
                 on:input=move |ev| {
                     set_input_text.set(event_target_value(&ev));
+                    if let Some(ref cb) = on_typing {
+                        cb.run(());
+                    }
                 }
                 on:keydown=on_keydown
             />
