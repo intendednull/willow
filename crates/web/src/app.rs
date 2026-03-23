@@ -70,6 +70,7 @@ pub fn App() -> impl IntoView {
     let (show_settings, set_show_settings) = signal(false);
     let (show_server_settings, set_show_server_settings) = signal(false);
     let (show_sidebar, set_show_sidebar) = signal(false);
+    let (show_members, set_show_members) = signal(false);
     let (peer_id, set_peer_id) = signal(String::new());
     let (servers, set_servers) = signal(Vec::<(String, String)>::new());
     let (active_server_id, set_active_server_id) = signal(String::new());
@@ -408,6 +409,7 @@ pub fn App() -> impl IntoView {
                                                 channel=current_channel
                                                 peer_count=peer_count
                                                 on_menu_click=move |_| set_show_sidebar.update(|v| *v = !*v)
+                                                on_members_click=move |_| set_show_members.update(|v| *v = !*v)
                                             />
                                             <MessageList
                                                 messages=messages
@@ -460,11 +462,17 @@ pub fn App() -> impl IntoView {
                                 }
                             }}
                         </div>
-                        <MemberList
-                            peers=peers
-                            client=mc
-                            peer_id=peer_id
+                        <div
+                            class=move || if show_members.get() { "members-overlay open" } else { "members-overlay" }
+                            on:click=move |_| set_show_members.set(false)
                         />
+                        <div class=move || if show_members.get() { "member-list-wrapper open" } else { "member-list-wrapper" }>
+                            <MemberList
+                                peers=peers
+                                client=mc
+                                peer_id=peer_id
+                            />
+                        </div>
                     </div>
                 }.into_any()
             }

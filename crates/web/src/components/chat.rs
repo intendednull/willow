@@ -9,6 +9,7 @@ pub fn ChannelHeader(
     channel: ReadSignal<String>,
     peer_count: ReadSignal<usize>,
     on_menu_click: impl Fn(()) + Send + Clone + 'static,
+    on_members_click: impl Fn(()) + Send + Clone + 'static,
 ) -> impl IntoView {
     view! {
         <div class="channel-header">
@@ -16,11 +17,19 @@ pub fn ChannelHeader(
                 "="
             </button>
             <span>"# " {move || channel.get()}</span>
-            <span class="peer-count">
-                {move || {
-                    let n = peer_count.get();
-                    if n == 1 { "1 peer".to_string() } else { format!("{n} peers") }
-                }}
+            <span class="channel-header-right">
+                <span class="peer-count">
+                    {move || {
+                        let n = peer_count.get();
+                        if n == 1 { "1 peer".to_string() } else { format!("{n} peers") }
+                    }}
+                </span>
+                <button class="mobile-members-toggle" on:click=move |_| on_members_click(())>
+                    {move || {
+                        let n = peer_count.get();
+                        format!("\u{1f465} {n}")
+                    }}
+                </button>
             </span>
         </div>
     }

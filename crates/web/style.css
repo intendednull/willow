@@ -807,6 +807,38 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
 
 /* ── Member List (right sidebar) ─────────────────────────────────── */
 
+/* On desktop, the wrapper is transparent — member-list renders normally */
+.member-list-wrapper {
+    display: contents;
+}
+
+.members-overlay {
+    display: none;
+}
+
+.mobile-members-toggle {
+    display: none;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 13px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+    transition: color 0.15s ease, background 0.15s ease;
+}
+
+.mobile-members-toggle:hover {
+    color: var(--text-primary);
+    background: var(--bg-input);
+}
+
+.channel-header-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
 .member-list {
     width: 220px;
     min-width: 220px;
@@ -1507,8 +1539,47 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
 /* ── Responsive: Tablet (< 900px) ───────────────────────────────── */
 
 @media (max-width: 900px) {
-    .member-list {
+    .mobile-members-toggle {
+        display: inline-flex;
+    }
+
+    .member-list-wrapper {
+        display: block;
+        position: fixed;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 10;
+        width: 260px;
+        max-width: 85vw;
+        transform: translateX(100%);
+        transition: transform 0.2s ease;
+        background: var(--bg-sidebar);
+        box-shadow: none;
+    }
+
+    .member-list-wrapper.open {
+        transform: translateX(0);
+        box-shadow: -4px 0 20px rgba(0, 0, 0, 0.5);
+    }
+
+    .member-list-wrapper .member-list {
+        width: 100%;
+        min-width: 0;
+        height: 100%;
+        border-left: none;
+    }
+
+    .members-overlay {
         display: none;
+        position: fixed;
+        inset: 0;
+        z-index: 9;
+        background: rgba(0, 0, 0, 0.4);
+    }
+
+    .members-overlay.open {
+        display: block;
     }
 }
 
@@ -1675,10 +1746,6 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
         width: 2px;
         height: 24px;
         min-width: 2px;
-    }
-
-    .member-list {
-        display: none;
     }
 
     /* Mobile hamburger button visual treatment */
