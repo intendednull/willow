@@ -468,7 +468,7 @@ pub fn sync_message_list(
                         })
                         .with_children(|reply_row| {
                             reply_row.spawn((
-                                Text::new(format!("↳ {preview}")),
+                                Text::new(format!("> {preview}")),
                                 TextFont::from_font_size(11.0),
                                 TextColor(theme::TEXT_MUTED),
                             ));

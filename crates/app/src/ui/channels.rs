@@ -880,7 +880,7 @@ pub fn sync_role_list(
                         ))
                         .with_children(|btn| {
                             btn.spawn((
-                                Text::new("×"),
+                                Text::new("x"),
                                 TextFont::from_font_size(14.0),
                                 TextColor(theme::DANGER),
                             ));

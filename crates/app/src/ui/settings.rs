@@ -172,7 +172,7 @@ pub fn sync_settings_fields(
     let name_focused = settings_input.focused_field == SettingsField::DisplayName;
     for (mut text, mut color) in &mut name_query {
         if settings_input.display_name.is_empty() {
-            let cursor_str = if name_focused { "\u{2581}" } else { "" };
+            let cursor_str = if name_focused { "|" } else { "" };
             **text = format!("{}{cursor_str}", constants::NAME_PLACEHOLDER);
             *color = TextColor(theme::TEXT_PLACEHOLDER);
         } else if name_focused {
@@ -191,7 +191,7 @@ pub fn sync_settings_fields(
     let relay_focused = settings_input.focused_field == SettingsField::RelayAddr;
     for (mut text, mut color) in &mut relay_query {
         if settings_input.relay_addr.is_empty() {
-            let cursor_str = if relay_focused { "\u{2581}" } else { "" };
+            let cursor_str = if relay_focused { "|" } else { "" };
             **text = format!("{}{cursor_str}", constants::RELAY_PLACEHOLDER);
             *color = TextColor(theme::TEXT_PLACEHOLDER);
         } else if relay_focused {

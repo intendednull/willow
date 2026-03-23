@@ -254,7 +254,7 @@ fn spawn_user_area(sidebar: &mut ChildSpawnerCommands, peer_display: &str) {
                 ))
                 .with_children(|btn| {
                     btn.spawn((
-                        Text::new("⚙"),
+                        Text::new("Settings"),
                         TextFont::from_font_size(18.0),
                         TextColor(theme::TEXT_MUTED),
                     ));
@@ -790,7 +790,7 @@ pub fn spawn_channel_button(parent: &mut ChildSpawnerCommands, name: &str) {
             ))
             .with_children(|btn| {
                 btn.spawn((
-                    Text::new("×"),
+                    Text::new("x"),
                     TextFont::from_font_size(14.0),
                     TextColor(theme::TEXT_PLACEHOLDER),
                 ));

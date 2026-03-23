@@ -562,7 +562,7 @@ pub fn sync_input_text(
             *color = TextColor(theme::UNREAD_HIGHLIGHT);
         } else if let Some((_, ref preview)) = input.replying_to {
             if input.text.is_empty() {
-                **text = format!("\u{21b3} replying to {preview}");
+                **text = format!("> replying to {preview}");
                 *color = TextColor(theme::TEXT_MUTED);
             } else if input.focused {
                 let (before, after) = crate::text_edit::split_at_cursor(&input.text, input.cursor);
@@ -573,7 +573,7 @@ pub fn sync_input_text(
                 *color = TextColor(theme::TEXT_PRIMARY);
             }
         } else if input.text.is_empty() {
-            let cursor_str = if input.focused { "\u{2581}" } else { "" };
+            let cursor_str = if input.focused { "|" } else { "" };
             **text = format!("{}{cursor_str}", constants::CHAT_PLACEHOLDER);
             *color = TextColor(theme::TEXT_PLACEHOLDER);
         } else if input.focused {
