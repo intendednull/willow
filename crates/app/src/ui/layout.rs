@@ -693,6 +693,60 @@ pub fn spawn_settings_panel(parent: &mut ChildSpawnerCommands, settings: &Settin
                 },
                 MemberList,
             ));
+
+            // ── Roles Section ──
+            panel.spawn(Node {
+                height: Val::Px(24.0),
+                ..default()
+            });
+
+            panel
+                .spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    ..default()
+                })
+                .with_children(|row| {
+                    row.spawn((
+                        Text::new("Roles"),
+                        TextFont::from_font_size(13.0),
+                        TextColor(theme::TEXT_SECONDARY),
+                        Node {
+                            flex_grow: 1.0,
+                            ..default()
+                        },
+                    ));
+                    row.spawn((
+                        Button,
+                        Node {
+                            padding: UiRect::horizontal(Val::Px(8.0)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::NONE),
+                        CreateRoleButton,
+                    ))
+                    .with_children(|btn| {
+                        btn.spawn((
+                            Text::new("+"),
+                            TextFont::from_font_size(16.0),
+                            TextColor(theme::TEXT_HEADER),
+                        ));
+                    });
+                });
+
+            panel.spawn(Node {
+                height: Val::Px(4.0),
+                ..default()
+            });
+
+            // Role list — populated dynamically by sync_role_list.
+            panel.spawn((
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    ..default()
+                },
+                RoleList,
+            ));
         });
 }
 

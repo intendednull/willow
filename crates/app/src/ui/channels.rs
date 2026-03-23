@@ -598,6 +598,179 @@ pub fn handle_kick_member(
     }
 }
 
+// ───── Role Management ──────────────────────────────────────────────────────
+
+/// Handle "Create Role" button click.
+pub fn handle_create_role_button(
+    query: Query<&Interaction, (Changed<Interaction>, With<CreateRoleButton>)>,
+    mut mgmt: ResMut<ChannelManagement>,
+) {
+    for interaction in &query {
+        if *interaction == Interaction::Pressed {
+            mgmt.creating_role = !mgmt.creating_role;
+            mgmt.new_role_name.clear();
+        }
+    }
+}
+
+/// Handle keyboard input for new role creation.
+pub fn handle_new_role_input(
+    mut key_events: MessageReader<bevy::input::keyboard::KeyboardInput>,
+    mut mgmt: ResMut<ChannelManagement>,
+    mut server_state: ResMut<ServerState>,
+    key_store: Res<ChannelKeyStore>,
+) {
+    if !mgmt.creating_role {
+        return;
+    }
+
+    for event in key_events.read() {
+        if !event.state.is_pressed() {
+            continue;
+        }
+
+        match event.key_code {
+            KeyCode::Enter => {
+                let name = mgmt.new_role_name.trim().to_string();
+                if !name.is_empty() {
+                    if let Some(server) = &mut server_state.server {
+                        let role = willow_channel::Role::new(&name);
+                        server.create_role(role);
+                        crate::storage::save_server(server, &key_store.keys);
+                        info!("created role '{name}'");
+                    }
+                }
+                mgmt.creating_role = false;
+                mgmt.new_role_name.clear();
+            }
+            KeyCode::Escape => {
+                mgmt.creating_role = false;
+                mgmt.new_role_name.clear();
+            }
+            KeyCode::Backspace => {
+                mgmt.new_role_name.pop();
+            }
+            _ => {
+                if let Some(ref s) = event.text {
+                    for c in s.chars() {
+                        if !c.is_control() {
+                            mgmt.new_role_name.push(c);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Rebuild the role list display in settings.
+pub fn sync_role_list(
+    mut commands: Commands,
+    server_state: Res<ServerState>,
+    mgmt: Res<ChannelManagement>,
+    list_query: Query<Entity, With<RoleList>>,
+) {
+    if !server_state.is_changed() && !mgmt.is_changed() {
+        return;
+    }
+
+    let Ok(list_entity) = list_query.single() else {
+        return;
+    };
+
+    commands.entity(list_entity).detach_all_children();
+
+    let Some(server) = &server_state.server else {
+        return;
+    };
+
+    commands.entity(list_entity).with_children(|list| {
+        let roles = server.roles();
+        if roles.is_empty() {
+            list.spawn((
+                Text::new("No roles defined"),
+                TextFont::from_font_size(11.0),
+                TextColor(theme::TEXT_PLACEHOLDER),
+            ));
+        }
+
+        for role in &roles {
+            let perms: Vec<&str> = role
+                .permissions
+                .iter()
+                .map(|p| match p {
+                    willow_channel::Permission::Administrator => "Admin",
+                    willow_channel::Permission::SendMessages => "Send",
+                    willow_channel::Permission::ReadMessages => "Read",
+                    willow_channel::Permission::ManageMessages => "ManageMsgs",
+                    willow_channel::Permission::ManageChannels => "ManageCh",
+                    willow_channel::Permission::ManageRoles => "ManageRoles",
+                    willow_channel::Permission::KickMembers => "Kick",
+                    willow_channel::Permission::BanMembers => "Ban",
+                    willow_channel::Permission::CreateInvite => "Invite",
+                    willow_channel::Permission::AttachFiles => "Files",
+                    _ => "Other",
+                })
+                .collect();
+
+            let perm_str = if perms.is_empty() {
+                "no permissions".to_string()
+            } else {
+                perms.join(", ")
+            };
+
+            list.spawn(Node {
+                margin: UiRect::bottom(Val::Px(4.0)),
+                flex_direction: FlexDirection::Column,
+                ..default()
+            })
+            .with_children(|row| {
+                row.spawn((
+                    Text::new(&role.name),
+                    TextFont::from_font_size(13.0),
+                    TextColor(theme::TEXT_PRIMARY),
+                ));
+                row.spawn((
+                    Text::new(perm_str),
+                    TextFont::from_font_size(10.0),
+                    TextColor(theme::TEXT_MUTED),
+                ));
+            });
+        }
+
+        // Show new role input if creating.
+        if mgmt.creating_role {
+            let display = if mgmt.new_role_name.is_empty() {
+                "Role name...".to_string()
+            } else {
+                mgmt.new_role_name.clone()
+            };
+            let color = if mgmt.new_role_name.is_empty() {
+                theme::TEXT_PLACEHOLDER
+            } else {
+                theme::TEXT_PRIMARY
+            };
+
+            list.spawn((
+                Node {
+                    padding: UiRect::all(Val::Px(4.0)),
+                    margin: UiRect::top(Val::Px(4.0)),
+                    ..default()
+                },
+                BackgroundColor(theme::INPUT_FIELD_BG),
+            ))
+            .with_children(|field| {
+                field.spawn((
+                    Text::new(display),
+                    TextFont::from_font_size(13.0),
+                    TextColor(color),
+                    RoleNameInput,
+                ));
+            });
+        }
+    });
+}
+
 // ───── Clipboard Systems ────────────────────────────────────────────────────
 
 /// Copy the local PeerId to clipboard when the "ID" button is clicked.

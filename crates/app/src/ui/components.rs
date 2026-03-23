@@ -74,6 +74,18 @@ pub struct MemberList;
 #[derive(Component)]
 pub struct KickMemberButton(pub String);
 
+/// Container for the role list in settings.
+#[derive(Component)]
+pub struct RoleList;
+
+/// "Create Role" button.
+#[derive(Component)]
+pub struct CreateRoleButton;
+
+/// Text input for new role name.
+#[derive(Component)]
+pub struct RoleNameInput;
+
 /// "Copy PeerId" button in the user area.
 #[derive(Component)]
 pub struct CopyPeerIdButton;

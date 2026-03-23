@@ -162,6 +162,10 @@ pub struct ChannelManagement {
     pub invite_code: Option<String>,
     /// The invite code being pasted to join a server.
     pub join_code: String,
+    /// Name for a new role being created.
+    pub new_role_name: String,
+    /// Whether the role creation input is active.
+    pub creating_role: bool,
 }
 
 /// Per-channel symmetric encryption keys, keyed by gossipsub topic.
