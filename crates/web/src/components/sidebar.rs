@@ -6,11 +6,12 @@ pub fn Sidebar(
     channels: ReadSignal<Vec<String>>,
     current_channel: ReadSignal<String>,
     peer_id: ReadSignal<String>,
+    open: ReadSignal<bool>,
     on_channel_click: impl Fn(String) + Send + Clone + 'static,
     on_settings_click: impl Fn(()) + Send + Clone + 'static,
 ) -> impl IntoView {
     view! {
-        <div class="sidebar">
+        <div class=move || if open.get() { "sidebar open" } else { "sidebar" }>
             <div class="sidebar-header">"Willow"</div>
             <div class="channel-list">
                 <For

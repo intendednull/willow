@@ -35,6 +35,7 @@ pub fn App() -> impl IntoView {
     let (current_channel, set_current_channel) = signal(String::from("general"));
     let (peer_count, set_peer_count) = signal(0usize);
     let (show_settings, set_show_settings) = signal(false);
+    let (show_sidebar, set_show_sidebar) = signal(false);
     let (peer_id, set_peer_id) = signal(String::new());
 
     // Populate initial state from the client.
@@ -95,6 +96,7 @@ pub fn App() -> impl IntoView {
     let client_switch = client.clone();
     let on_channel_click = move |name: String| {
         set_current_channel.set(name.clone());
+        set_show_sidebar.set(false); // close sidebar on mobile
         let mut c = client_switch.borrow_mut();
         c.switch_channel(&name);
         set_messages.set(c.messages(&name).into_iter().cloned().collect());
@@ -111,12 +113,21 @@ pub fn App() -> impl IntoView {
 
     view! {
         <div class="app">
+            // Overlay to close sidebar on mobile tap
+            <div
+                class=move || if show_sidebar.get() { "sidebar-overlay open" } else { "sidebar-overlay" }
+                on:click=move |_| set_show_sidebar.set(false)
+            />
             <Sidebar
                 channels=channels
                 current_channel=current_channel
                 peer_id=peer_id
+                open=show_sidebar
                 on_channel_click=on_channel_click
-                on_settings_click=move |_| set_show_settings.update(|v| *v = !*v)
+                on_settings_click=move |_| {
+                    set_show_settings.update(|v| *v = !*v);
+                    set_show_sidebar.set(false);
+                }
             />
             <div class="main-content">
                 {move || {
@@ -127,6 +138,7 @@ pub fn App() -> impl IntoView {
                             <ChannelHeader
                                 channel=current_channel
                                 peer_count=peer_count
+                                on_menu_click=move |_| set_show_sidebar.update(|v| *v = !*v)
                             />
                             <MessageList messages=messages />
                             <ChatInput on_send=on_send.clone() />

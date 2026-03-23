@@ -2,3 +2,4 @@
 dist
 project/.obsidian/
 web/pkg/
+.claude/settings.local.json

@@ -5,9 +5,16 @@ use super::MessageView;
 
 /// Header bar showing the current channel name and connected peer count.
 #[component]
-pub fn ChannelHeader(channel: ReadSignal<String>, peer_count: ReadSignal<usize>) -> impl IntoView {
+pub fn ChannelHeader(
+    channel: ReadSignal<String>,
+    peer_count: ReadSignal<usize>,
+    on_menu_click: impl Fn(()) + Send + Clone + 'static,
+) -> impl IntoView {
     view! {
         <div class="channel-header">
+            <button class="mobile-nav-toggle" on:click=move |_| on_menu_click(())>
+                "="
+            </button>
             <span>"# " {move || channel.get()}</span>
             <span class="peer-count">
                 {move || {
