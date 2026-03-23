@@ -466,6 +466,7 @@ pub fn sync_invite_fields(
 // ───── Member List ──────────────────────────────────────────────────────────
 
 /// Rebuild the member list in settings when peers change.
+#[allow(clippy::too_many_arguments)]
 pub fn sync_member_list(
     mut commands: Commands,
     state: Res<ChatState>,
@@ -473,8 +474,9 @@ pub fn sync_member_list(
     server_state: Res<ServerState>,
     list_query: Query<Entity, With<MemberList>>,
     identity: Res<LocalIdentity>,
+    op_log: Res<OpLog>,
 ) {
-    if !state.is_changed() && !server_state.is_changed() {
+    if !state.is_changed() && !server_state.is_changed() && !op_log.is_changed() {
         return;
     }
 
@@ -486,20 +488,34 @@ pub fn sync_member_list(
 
     let local_peer = identity.0.peer_id().to_string();
     let local_name = profiles.display_name(&local_peer);
+    let owner = server_state
+        .server
+        .as_ref()
+        .map(|s| s.owner.to_string())
+        .unwrap_or_default();
 
     commands.entity(list_entity).with_children(|list| {
         // Show the local user first.
-        spawn_member_row(list, &local_name, &local_peer, true);
+        spawn_member_row(list, &local_name, &local_peer, true, true, true);
 
         // Show connected peers.
         for peer_id in &state.peers {
             let name = profiles.display_name(peer_id);
-            spawn_member_row(list, &name, peer_id, false);
+            let is_owner = *peer_id == owner;
+            let is_trusted = op_log.is_trusted(peer_id, &owner);
+            spawn_member_row(list, &name, peer_id, false, is_owner, is_trusted);
         }
     });
 }
 
-fn spawn_member_row(parent: &mut ChildSpawnerCommands, name: &str, peer_id: &str, is_self: bool) {
+fn spawn_member_row(
+    parent: &mut ChildSpawnerCommands,
+    name: &str,
+    peer_id: &str,
+    is_self: bool,
+    is_owner: bool,
+    is_trusted: bool,
+) {
     parent
         .spawn(Node {
             flex_direction: FlexDirection::Row,
@@ -520,13 +536,18 @@ fn spawn_member_row(parent: &mut ChildSpawnerCommands, name: &str, peer_id: &str
                 BackgroundColor(theme::STATUS_ONLINE),
             ));
 
-            // Name
+            // Name + trust badge
+            let label = if is_self {
+                format!("{name} (you)")
+            } else if is_owner {
+                format!("{name} [owner]")
+            } else if is_trusted {
+                format!("{name} [trusted]")
+            } else {
+                name.to_string()
+            };
             row.spawn((
-                Text::new(if is_self {
-                    format!("{name} (you)")
-                } else {
-                    name.to_string()
-                }),
+                Text::new(label),
                 TextFont::from_font_size(13.0),
                 TextColor(theme::TEXT_PRIMARY),
                 Node {
@@ -534,6 +555,31 @@ fn spawn_member_row(parent: &mut ChildSpawnerCommands, name: &str, peer_id: &str
                     ..default()
                 },
             ));
+
+            // Trust/Untrust button (not for self or owner)
+            if !is_self && !is_owner {
+                let (trust_label, trust_color) = if is_trusted {
+                    ("Untrust", theme::TEXT_MUTED)
+                } else {
+                    ("Trust", theme::ACCENT)
+                };
+                row.spawn((
+                    Button,
+                    Node {
+                        padding: UiRect::horizontal(Val::Px(6.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::NONE),
+                    TrustMemberButton(peer_id.to_string()),
+                ))
+                .with_children(|btn| {
+                    btn.spawn((
+                        Text::new(trust_label),
+                        TextFont::from_font_size(11.0),
+                        TextColor(trust_color),
+                    ));
+                });
+            }
 
             // Kick button (only for others, not self)
             if !is_self {
@@ -1074,6 +1120,50 @@ pub fn handle_copy_invite(
                 crate::clipboard::copy_to_clipboard(code);
                 info!("copied invite code to clipboard");
             }
+        }
+    }
+}
+
+/// Handle trust/untrust button clicks.
+pub fn handle_trust_member(
+    query: Query<(&Interaction, &TrustMemberButton), Changed<Interaction>>,
+    mut state: ResMut<ChatState>,
+    identity: Res<LocalIdentity>,
+    mut op_log: ResMut<OpLog>,
+    net_cmd: Res<NetworkCommandSender>,
+) {
+    for (interaction, button) in &query {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+
+        let peer_id = &button.0;
+        let owner = identity.0.peer_id().to_string();
+
+        if op_log.is_trusted(peer_id, &owner) {
+            // Untrust
+            broadcast_op(
+                crate::server_sync::ServerOp::UntrustPeer {
+                    peer_id: peer_id.clone(),
+                },
+                &mut state,
+                &identity,
+                &mut op_log,
+                &net_cmd,
+            );
+            info!("untrusted peer {peer_id}");
+        } else {
+            // Trust
+            broadcast_op(
+                crate::server_sync::ServerOp::TrustPeer {
+                    peer_id: peer_id.clone(),
+                },
+                &mut state,
+                &identity,
+                &mut op_log,
+                &net_cmd,
+            );
+            info!("trusted peer {peer_id}");
         }
     }
 }

@@ -1690,3 +1690,303 @@ fn reply_shows_parent_preview() {
         .unwrap()
         .contains("parent message"));
 }
+
+// ───── OpLog & Server Sync Tests ──────────────────────────────────────────
+
+#[test]
+fn oplog_dedup_rejects_duplicate() {
+    use crate::server_sync::{ServerOp, StampedOp};
+    use willow_messaging::hlc::HLC;
+
+    let mut log = OpLog::default();
+    let mut hlc = HLC::new();
+
+    let op = StampedOp::new(
+        ServerOp::CreateChannel {
+            name: "test".into(),
+            channel_id: uuid::Uuid::new_v4().to_string(),
+        },
+        &mut hlc,
+        "peer-a",
+    );
+
+    assert!(log.record(op.clone()));
+    assert!(!log.record(op)); // duplicate
+    assert_eq!(log.ops.len(), 1);
+}
+
+#[test]
+fn oplog_trust_peer_updates_set() {
+    use crate::server_sync::{ServerOp, StampedOp};
+    use willow_messaging::hlc::HLC;
+
+    let mut log = OpLog::default();
+    let mut hlc = HLC::new();
+
+    assert!(!log.is_trusted("alice", "owner"));
+
+    log.record(StampedOp::new(
+        ServerOp::TrustPeer {
+            peer_id: "alice".into(),
+        },
+        &mut hlc,
+        "owner",
+    ));
+    assert!(log.is_trusted("alice", "owner"));
+
+    log.record(StampedOp::new(
+        ServerOp::UntrustPeer {
+            peer_id: "alice".into(),
+        },
+        &mut hlc,
+        "owner",
+    ));
+    assert!(!log.is_trusted("alice", "owner"));
+}
+
+#[test]
+fn oplog_owner_always_trusted() {
+    let log = OpLog::default();
+    assert!(log.is_trusted("owner-peer", "owner-peer"));
+    assert!(!log.is_trusted("stranger", "owner-peer"));
+}
+
+#[test]
+fn oplog_rebuild_restores_state() {
+    use crate::server_sync::{ServerOp, StampedOp};
+    use willow_messaging::hlc::HLC;
+
+    let mut log = OpLog::default();
+    let mut hlc = HLC::new();
+
+    log.record(StampedOp::new(
+        ServerOp::TrustPeer {
+            peer_id: "alice".into(),
+        },
+        &mut hlc,
+        "owner",
+    ));
+    log.record(StampedOp::new(
+        ServerOp::CreateChannel {
+            name: "general".into(),
+            channel_id: uuid::Uuid::new_v4().to_string(),
+        },
+        &mut hlc,
+        "owner",
+    ));
+
+    // Simulate reload: clear runtime state, rebuild
+    log.seen_ids.clear();
+    log.trusted_peers.clear();
+    log.rebuild();
+
+    assert_eq!(log.ops.len(), 2);
+    assert!(log.is_trusted("alice", "owner"));
+    assert!(log.seen_ids.len() == 2);
+}
+
+#[test]
+fn oplog_latest_hlc_tracks_most_recent() {
+    use crate::server_sync::{ServerOp, StampedOp};
+    use willow_messaging::hlc::{HlcTimestamp, HLC};
+
+    let mut log = OpLog::default();
+    let mut hlc = HLC::new();
+
+    assert_eq!(log.latest_hlc(), HlcTimestamp::ZERO);
+
+    let op1 = StampedOp::new(
+        ServerOp::CreateChannel {
+            name: "a".into(),
+            channel_id: uuid::Uuid::new_v4().to_string(),
+        },
+        &mut hlc,
+        "peer",
+    );
+    let t1 = op1.hlc;
+    log.record(op1);
+    assert_eq!(log.latest_hlc(), t1);
+
+    let op2 = StampedOp::new(
+        ServerOp::CreateChannel {
+            name: "b".into(),
+            channel_id: uuid::Uuid::new_v4().to_string(),
+        },
+        &mut hlc,
+        "peer",
+    );
+    let t2 = op2.hlc;
+    log.record(op2);
+    assert_eq!(log.latest_hlc(), t2);
+    assert!(t2 > t1);
+}
+
+#[test]
+fn untrusted_op_rejected_by_handler() {
+    let (mut app, _cmd_rx) = test_app();
+
+    // Set up a server with known owner
+    let owner = app.world().resource::<LocalIdentity>().0.peer_id().clone();
+    let server = willow_channel::Server::new("Test", owner.clone());
+    app.world_mut().resource_mut::<ServerState>().server = Some(server);
+
+    // Create a signed op from a different (untrusted) identity
+    let untrusted = Identity::generate();
+    let mut hlc = HLC::new();
+    let stamped = crate::server_sync::StampedOp::new(
+        crate::server_sync::ServerOp::CreateChannel {
+            name: "hacked".into(),
+            channel_id: uuid::Uuid::new_v4().to_string(),
+        },
+        &mut hlc,
+        &untrusted.peer_id().to_string(),
+    );
+    let data = crate::server_sync::pack_op(&stamped, &untrusted).unwrap();
+    let (sync_msg, _) = crate::server_sync::unpack_sync(&data).unwrap();
+
+    // Inject the op event
+    match sync_msg {
+        crate::server_sync::SyncMessage::Op(stamped_op) => {
+            app.world_mut()
+                .write_message(NetworkBridgeEvent::ServerOpReceived {
+                    stamped_op: stamped_op.clone(),
+                    from: stamped_op.author.clone(),
+                });
+        }
+        _ => panic!("expected Op"),
+    }
+    app.update();
+
+    // Channel should NOT have been created
+    let server_state = app.world().resource::<ServerState>();
+    let server = server_state.server.as_ref().unwrap();
+    assert!(
+        !server.channels().iter().any(|ch| ch.name == "hacked"),
+        "untrusted op should be rejected"
+    );
+
+    // But the op_id should be recorded for dedup
+    let op_log = app.world().resource::<OpLog>();
+    assert!(op_log.seen_ids.contains(&stamped.op_id));
+}
+
+#[test]
+fn trusted_op_applied_by_handler() {
+    let (mut app, _cmd_rx) = test_app();
+
+    let owner = app.world().resource::<LocalIdentity>().0.peer_id().clone();
+    let server = willow_channel::Server::new("Test", owner.clone());
+    app.world_mut().resource_mut::<ServerState>().server = Some(server);
+
+    // Create a signed op from the owner (always trusted)
+    let owner_identity = app.world().resource::<LocalIdentity>().0.clone();
+    let mut hlc = HLC::new();
+    let stamped = crate::server_sync::StampedOp::new(
+        crate::server_sync::ServerOp::CreateChannel {
+            name: "legit".into(),
+            channel_id: uuid::Uuid::new_v4().to_string(),
+        },
+        &mut hlc,
+        &owner_identity.peer_id().to_string(),
+    );
+
+    app.world_mut()
+        .write_message(NetworkBridgeEvent::ServerOpReceived {
+            stamped_op: stamped.clone(),
+            from: owner_identity.peer_id().to_string(),
+        });
+    app.update();
+
+    // Channel SHOULD have been created
+    let server_state = app.world().resource::<ServerState>();
+    let server = server_state.server.as_ref().unwrap();
+    assert!(
+        server.channels().iter().any(|ch| ch.name == "legit"),
+        "trusted op should be applied"
+    );
+}
+
+#[test]
+fn sync_message_round_trip() {
+    use crate::server_sync::{ServerOp, StampedOp, SyncMessage};
+    use willow_messaging::hlc::HLC;
+
+    let id = Identity::generate();
+    let mut hlc = HLC::new();
+
+    // Test Op variant
+    let stamped = StampedOp::new(
+        ServerOp::CreateChannel {
+            name: "ch".into(),
+            channel_id: uuid::Uuid::new_v4().to_string(),
+        },
+        &mut hlc,
+        "peer",
+    );
+    let msg = SyncMessage::Op(stamped.clone());
+    let data = crate::server_sync::pack_sync(&msg, &id).unwrap();
+    let (decoded, signer) = crate::server_sync::unpack_sync(&data).unwrap();
+    assert_eq!(signer, id.peer_id());
+    assert!(matches!(decoded, SyncMessage::Op(ref s) if s.op_id == stamped.op_id));
+
+    // Test SyncRequest variant
+    let req = SyncMessage::SyncRequest {
+        latest_hlc: hlc.now(),
+    };
+    let data = crate::server_sync::pack_sync(&req, &id).unwrap();
+    let (decoded, _) = crate::server_sync::unpack_sync(&data).unwrap();
+    assert!(matches!(decoded, SyncMessage::SyncRequest { .. }));
+
+    // Test SyncBatch variant
+    let batch = SyncMessage::SyncBatch { ops: vec![stamped] };
+    let data = crate::server_sync::pack_sync(&batch, &id).unwrap();
+    let (decoded, _) = crate::server_sync::unpack_sync(&data).unwrap();
+    match decoded {
+        SyncMessage::SyncBatch { ops } => assert_eq!(ops.len(), 1),
+        _ => panic!("expected SyncBatch"),
+    }
+}
+
+#[test]
+fn set_permission_is_idempotent() {
+    let (mut app, _cmd_rx) = test_app();
+
+    let owner = app.world().resource::<LocalIdentity>().0.peer_id().clone();
+    let mut server = willow_channel::Server::new("Test", owner.clone());
+    let role = willow_channel::Role::new("mod");
+    let role_id = server.create_role(role);
+    app.world_mut().resource_mut::<ServerState>().server = Some(server);
+
+    let owner_id_str = owner.to_string();
+    let mut hlc = HLC::new();
+
+    // Apply SetPermission { granted: true } twice — should be idempotent
+    for _ in 0..2 {
+        let stamped = crate::server_sync::StampedOp::new(
+            crate::server_sync::ServerOp::SetPermission {
+                role_id: role_id.to_string(),
+                permission: "SendMessages".into(),
+                granted: true,
+            },
+            &mut hlc,
+            &owner_id_str,
+        );
+        app.world_mut()
+            .write_message(NetworkBridgeEvent::ServerOpReceived {
+                stamped_op: stamped.clone(),
+                from: owner_id_str.clone(),
+            });
+        app.update();
+    }
+
+    let server = app
+        .world()
+        .resource::<ServerState>()
+        .server
+        .as_ref()
+        .unwrap();
+    let role = server.role(&role_id).unwrap();
+    assert!(role
+        .permissions
+        .contains(&willow_channel::Permission::SendMessages));
+}

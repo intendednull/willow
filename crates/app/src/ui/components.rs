@@ -129,3 +129,7 @@ pub struct JoinServerButton;
 /// Text input for pasting an invite code.
 #[derive(Component)]
 pub struct JoinCodeInput;
+
+/// Trust/Untrust button for a peer. Stores the peer ID string.
+#[derive(Component)]
+pub struct TrustMemberButton(pub String);

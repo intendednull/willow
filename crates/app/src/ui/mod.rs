@@ -106,6 +106,7 @@ impl Plugin for UiPlugin {
                     channels::handle_toggle_permission,
                     channels::handle_delete_role,
                     channels::handle_assign_role,
+                    channels::handle_trust_member,
                     channels::handle_copy_peer_id,
                     channels::handle_copy_invite,
                     files::handle_share_file_button,
