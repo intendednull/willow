@@ -55,6 +55,7 @@ impl Plugin for UiPlugin {
             .insert_resource(FilePicker::default())
             .insert_resource(UnreadCounts::default())
             .insert_resource(SearchFilter::default())
+            .insert_resource(EmojiRegistryRes(crate::emoji::EmojiRegistry::new()))
             .insert_resource(MessageDbRes(
                 crate::storage::open_message_db()
                     .map(|db| std::sync::Arc::new(std::sync::Mutex::new(db))),

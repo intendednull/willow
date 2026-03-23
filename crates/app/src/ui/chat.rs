@@ -175,6 +175,7 @@ pub fn sync_message_list(
     list_query: Query<Entity, With<MessageList>>,
     server_state: Res<ServerState>,
     search: Res<SearchFilter>,
+    emoji_reg: Res<EmojiRegistryRes>,
 ) {
     if !state.messages_dirty && !search.is_changed() {
         return;
@@ -249,7 +250,7 @@ pub fn sync_message_list(
                             TextColor(author_color),
                         ))
                         .with_child((
-                            TextSpan::new(&msg.body),
+                            TextSpan::new(emoji_reg.0.expand(&msg.body)),
                             TextFont::from_font_size(14.0),
                             TextColor(theme::TEXT_PRIMARY),
                         ));

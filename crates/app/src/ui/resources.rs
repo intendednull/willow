@@ -113,6 +113,10 @@ impl ChatMessage {
     }
 }
 
+/// Emoji shortcode registry.
+#[derive(Resource)]
+pub struct EmojiRegistryRes(pub crate::emoji::EmojiRegistry);
+
 /// Tracks unread message counts per channel topic.
 #[derive(Resource, Default)]
 pub struct UnreadCounts {

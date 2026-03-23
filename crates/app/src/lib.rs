@@ -16,6 +16,7 @@
 //!   message area, input, and chat rendering.
 
 pub mod clipboard;
+pub mod emoji;
 pub mod file_manager;
 pub mod invite;
 pub mod network_bridge;
