@@ -188,7 +188,6 @@ pub fn App() -> impl IntoView {
             <Sidebar
                 channels=channels
                 current_channel=current_channel
-                peer_id=peer_id
                 open=show_sidebar
                 unread=unread
                 client=client.clone()

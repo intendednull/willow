@@ -9,7 +9,6 @@ use crate::app::ClientHandle;
 pub fn Sidebar(
     channels: ReadSignal<Vec<String>>,
     current_channel: ReadSignal<String>,
-    peer_id: ReadSignal<String>,
     open: ReadSignal<bool>,
     unread: ReadSignal<HashMap<String, usize>>,
     client: ClientHandle,
@@ -43,6 +42,8 @@ pub fn Sidebar(
             }
         }
     };
+
+    let client_user = client.clone();
 
     view! {
         <div class=move || if open.get() { "sidebar open" } else { "sidebar" }>
@@ -137,10 +138,14 @@ pub fn Sidebar(
             <div class="user-area">
                 <div class="status-dot"></div>
                 <span style="font-size: 12px; color: var(--text-muted);">
-                    {move || {
-                        let id = peer_id.get();
-                        if id.len() > 12 { format!("{}...", &id[..12]) } else { id }
-                    }}
+                    {
+                        let client_name = client_user.clone();
+                        move || {
+                            let c = client_name.borrow();
+                            let name = c.display_name();
+                            if name.len() > 20 { format!("{}...", &name[..20]) } else { name }
+                        }
+                    }
                 </span>
                 <button
                     class="btn btn-sm"

@@ -18,7 +18,10 @@ pub fn MemberList(
                 let:peer
             >
                 {
-                    let peer_display = peer.clone();
+                    let peer_display = {
+                        let c = client.borrow();
+                        c.peer_display_name(&peer)
+                    };
                     let peer_trust = peer.clone();
                     let peer_untrust = peer.clone();
                     let peer_kick = peer.clone();
@@ -30,13 +33,7 @@ pub fn MemberList(
                     view! {
                         <div class="member-item">
                             <div class="status-dot"></div>
-                            <span class="member-name">{
-                                if peer_display.len() > 12 {
-                                    format!("{}...", &peer_display[..12])
-                                } else {
-                                    peer_display.clone()
-                                }
-                            }</span>
+                            <span class="member-name">{peer_display.clone()}</span>
                             {
                                 let pb = peer_badge.clone();
                                 let cb = client_badge.clone();

@@ -232,16 +232,24 @@ impl Client {
             }
         }
 
-        // Set display name if provided.
+        // Load saved display name, or use config override.
+        let peer_id_str = identity.peer_id().to_string();
         if let Some(ref name) = config.display_name {
             state
                 .profiles
                 .names
-                .insert(identity.peer_id().to_string(), name.clone());
+                .insert(peer_id_str.clone(), name.clone());
             if config.persistence {
                 storage::save_profile(&storage::LocalProfile {
                     display_name: name.clone(),
                 });
+            }
+        } else if let Some(profile) = storage::load_profile() {
+            if !profile.display_name.is_empty() {
+                state
+                    .profiles
+                    .names
+                    .insert(peer_id_str, profile.display_name);
             }
         }
 
