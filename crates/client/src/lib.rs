@@ -34,8 +34,8 @@ pub mod util;
 pub use events::{ClientEvent, ClientNotification};
 pub use ops::{Op, StampedOp, SyncMessage};
 pub use state::{
-    ChannelKeyStore, ChatMessage, ChatState, ClientState, OpLog, ProfileStore, ServerContext,
-    ServerState, UnreadCounts,
+    ChannelKeyStore, ChatMessage, ChatState, ClientState, OpLog, PersistentEventStore,
+    ProfileStore, ServerContext, ServerState, UnreadCounts,
 };
 
 /// Re-export the event-sourced state crate for use by downstream consumers.
@@ -224,16 +224,40 @@ impl Client {
                 let owner = ctx.server.owner.to_string();
                 state.event_state =
                     willow_state::ServerState::new(sid.clone(), ctx.server.name.clone(), owner);
-                // Seed event_state with existing channels so lookups work.
-                for (topic, (name, ch_id)) in &ctx.topic_map {
-                    let _ = topic; // topic is gossipsub-level, not used in event_state
-                    state.event_state.channels.insert(
-                        ch_id.to_string(),
-                        willow_state::Channel {
-                            id: ch_id.to_string(),
-                            name: name.clone(),
-                        },
-                    );
+
+                // Open persistent event store and replay stored events.
+                if config.persistence {
+                    if let Some(store) = storage::open_event_store(sid) {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            state.event_store = state::PersistentEventStore::Sqlite(store);
+                        }
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            state.event_store = state::PersistentEventStore::LocalStorage(store);
+                        }
+                    }
+                }
+
+                // Replay persisted events to rebuild event_state.
+                let stored_events = state.event_store.all_events();
+                if !stored_events.is_empty() {
+                    for event in &stored_events {
+                        willow_state::apply_lenient(&mut state.event_state, event);
+                    }
+                } else {
+                    // No persisted events -- seed event_state with existing
+                    // channels from legacy storage so lookups work.
+                    for (topic, (name, ch_id)) in &ctx.topic_map {
+                        let _ = topic;
+                        state.event_state.channels.insert(
+                            ch_id.to_string(),
+                            willow_state::Channel {
+                                id: ch_id.to_string(),
+                                name: name.clone(),
+                            },
+                        );
+                    }
                 }
             }
         }

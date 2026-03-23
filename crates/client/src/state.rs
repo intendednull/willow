@@ -12,6 +12,89 @@ use willow_messaging::hlc::HLC;
 /// Maximum messages kept in memory per topic to avoid unbounded growth.
 pub const MAX_MESSAGES_IN_MEMORY: usize = 1000;
 
+/// Platform-aware event store that delegates to the appropriate backend.
+///
+/// Uses SQLite on native and localStorage on WASM. Falls back to the
+/// in-memory store when persistence is disabled or unavailable.
+pub enum PersistentEventStore {
+    /// In-memory store for testing and ephemeral use.
+    InMemory(willow_state::InMemoryStore),
+    /// SQLite-backed store (native only).
+    #[cfg(not(target_arch = "wasm32"))]
+    Sqlite(crate::storage::SqliteEventStore),
+    /// localStorage-backed store (WASM only).
+    #[cfg(target_arch = "wasm32")]
+    LocalStorage(crate::storage::LocalStorageEventStore),
+}
+
+impl Default for PersistentEventStore {
+    fn default() -> Self {
+        Self::InMemory(willow_state::InMemoryStore::new())
+    }
+}
+
+impl willow_state::EventStore for PersistentEventStore {
+    fn append(&mut self, event: willow_state::Event) {
+        match self {
+            Self::InMemory(s) => s.append(event),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Sqlite(s) => s.append(event),
+            #[cfg(target_arch = "wasm32")]
+            Self::LocalStorage(s) => s.append(event),
+        }
+    }
+
+    fn events_since(&self, hash: &willow_state::StateHash) -> Vec<willow_state::Event> {
+        match self {
+            Self::InMemory(s) => s.events_since(hash),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Sqlite(s) => s.events_since(hash),
+            #[cfg(target_arch = "wasm32")]
+            Self::LocalStorage(s) => s.events_since(hash),
+        }
+    }
+
+    fn all_events(&self) -> Vec<willow_state::Event> {
+        match self {
+            Self::InMemory(s) => s.all_events(),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Sqlite(s) => s.all_events(),
+            #[cfg(target_arch = "wasm32")]
+            Self::LocalStorage(s) => s.all_events(),
+        }
+    }
+
+    fn latest_hash(&self) -> willow_state::StateHash {
+        match self {
+            Self::InMemory(s) => s.latest_hash(),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Sqlite(s) => s.latest_hash(),
+            #[cfg(target_arch = "wasm32")]
+            Self::LocalStorage(s) => s.latest_hash(),
+        }
+    }
+
+    fn set_latest_hash(&mut self, hash: willow_state::StateHash) {
+        match self {
+            Self::InMemory(s) => s.set_latest_hash(hash),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Sqlite(s) => s.set_latest_hash(hash),
+            #[cfg(target_arch = "wasm32")]
+            Self::LocalStorage(s) => s.set_latest_hash(hash),
+        }
+    }
+
+    fn contains(&self, event_id: &str) -> bool {
+        match self {
+            Self::InMemory(s) => s.contains(event_id),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Sqlite(s) => s.contains(event_id),
+            #[cfg(target_arch = "wasm32")]
+            Self::LocalStorage(s) => s.contains(event_id),
+        }
+    }
+}
+
 /// The default channel name used when no channels exist.
 pub const DEFAULT_CHANNEL: &str = "general";
 
@@ -280,8 +363,8 @@ pub struct ClientState {
     // --- Event-sourced state (willow-state) ---
     /// Event-sourced server state, running alongside the legacy system.
     pub event_state: willow_state::ServerState,
-    /// In-memory event store for the event-sourced model.
-    pub event_store: willow_state::InMemoryStore,
+    /// Persistent event store for the event-sourced model.
+    pub event_store: PersistentEventStore,
 
     // --- Legacy fields kept for backward compatibility with willow-app ---
     /// The local server instance and topic map (legacy, prefer `servers`).
@@ -304,7 +387,7 @@ impl Default for ClientState {
             emoji: crate::emoji::EmojiRegistry::new(),
             message_db: None,
             event_state: willow_state::ServerState::default(),
-            event_store: willow_state::InMemoryStore::new(),
+            event_store: PersistentEventStore::default(),
             server: ServerState::default(),
             op_log: OpLog::default(),
             key_store: ChannelKeyStore::default(),

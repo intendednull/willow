@@ -25,6 +25,9 @@ pub trait EventStore {
     /// The hash of the state after the most recent event was applied.
     fn latest_hash(&self) -> StateHash;
 
+    /// Update the latest hash (called after applying an event).
+    fn set_latest_hash(&mut self, hash: StateHash);
+
     /// Check whether an event with the given ID exists in the store.
     fn contains(&self, event_id: &str) -> bool;
 }
@@ -70,15 +73,12 @@ impl EventStore for InMemoryStore {
         self.latest_hash.clone()
     }
 
+    fn set_latest_hash(&mut self, hash: StateHash) {
+        self.latest_hash = hash;
+    }
+
     fn contains(&self, event_id: &str) -> bool {
         self.events.iter().any(|e| e.id == event_id)
-    }
-}
-
-impl InMemoryStore {
-    /// Update the latest hash (called after applying an event).
-    pub fn set_latest_hash(&mut self, hash: StateHash) {
-        self.latest_hash = hash;
     }
 }
 

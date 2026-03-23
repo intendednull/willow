@@ -418,6 +418,256 @@ pub fn open_message_db() -> Option<MessageDb> {
     Some(MessageDb)
 }
 
+// ---- Persistent EventStore backends -----------------------------------------
+
+/// SQLite-backed event store for persistent event-sourced state (native only).
+///
+/// Events are stored in an `events` table with deduplication by event ID.
+/// The `latest_hash` is stored as a single-row metadata table.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct SqliteEventStore {
+    conn: rusqlite::Connection,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SqliteEventStore {
+    /// Open or create an event store database at the given path.
+    pub fn open(path: &std::path::Path) -> Option<Self> {
+        let conn = rusqlite::Connection::open(path).ok()?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS events (
+                id TEXT PRIMARY KEY,
+                parent_hash BLOB NOT NULL,
+                author TEXT NOT NULL,
+                timestamp_ms INTEGER NOT NULL,
+                event_data BLOB NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_events_parent ON events(parent_hash);
+            CREATE TABLE IF NOT EXISTS event_meta (
+                key TEXT PRIMARY KEY,
+                value BLOB NOT NULL
+            );",
+        )
+        .ok()?;
+        Some(Self { conn })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl willow_state::EventStore for SqliteEventStore {
+    fn append(&mut self, event: willow_state::Event) {
+        let event_data = willow_transport::pack(&event).unwrap_or_default();
+        let _ = self.conn.execute(
+            "INSERT OR IGNORE INTO events (id, parent_hash, author, timestamp_ms, event_data) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                event.id,
+                event.parent_hash.0.as_slice(),
+                event.author,
+                event.timestamp_ms as i64,
+                event_data,
+            ],
+        );
+    }
+
+    fn events_since(&self, hash: &willow_state::StateHash) -> Vec<willow_state::Event> {
+        // Find the rowid of the first event whose parent_hash matches,
+        // then return that event and everything after it.
+        let start_rowid: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT MIN(rowid) FROM events WHERE parent_hash = ?1",
+                rusqlite::params![hash.0.as_slice()],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+
+        let Some(start) = start_rowid else {
+            return Vec::new();
+        };
+
+        let mut stmt = match self
+            .conn
+            .prepare("SELECT event_data FROM events WHERE rowid >= ?1 ORDER BY rowid")
+        {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        stmt.query_map(rusqlite::params![start], |row| row.get::<_, Vec<u8>>(0))
+            .ok()
+            .map(|rows| {
+                rows.filter_map(|r| r.ok())
+                    .filter_map(|data| willow_transport::unpack::<willow_state::Event>(&data).ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn all_events(&self) -> Vec<willow_state::Event> {
+        let mut stmt = match self
+            .conn
+            .prepare("SELECT event_data FROM events ORDER BY rowid")
+        {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        stmt.query_map([], |row| row.get::<_, Vec<u8>>(0))
+            .ok()
+            .map(|rows| {
+                rows.filter_map(|r| r.ok())
+                    .filter_map(|data| willow_transport::unpack::<willow_state::Event>(&data).ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn latest_hash(&self) -> willow_state::StateHash {
+        self.conn
+            .query_row(
+                "SELECT value FROM event_meta WHERE key = 'latest_hash'",
+                [],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .ok()
+            .and_then(|bytes| {
+                if bytes.len() == 32 {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    Some(willow_state::StateHash(arr))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(willow_state::StateHash::ZERO)
+    }
+
+    fn set_latest_hash(&mut self, hash: willow_state::StateHash) {
+        let _ = self.conn.execute(
+            "INSERT OR REPLACE INTO event_meta (key, value) VALUES ('latest_hash', ?1)",
+            rusqlite::params![hash.0.as_slice()],
+        );
+    }
+
+    fn contains(&self, event_id: &str) -> bool {
+        self.conn
+            .query_row(
+                "SELECT 1 FROM events WHERE id = ?1",
+                rusqlite::params![event_id],
+                |_| Ok(()),
+            )
+            .is_ok()
+    }
+}
+
+/// Open (or create) the event store database and return a handle.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn open_event_store(server_id: &str) -> Option<SqliteEventStore> {
+    let dir = data_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(format!("events_{server_id}.db"));
+    SqliteEventStore::open(&path)
+}
+
+/// localStorage-backed event store for persistent event-sourced state (WASM only).
+///
+/// Events are serialized as a `Vec<Event>` under a single localStorage key.
+/// Capped at 2000 events to stay within browser storage limits.
+#[cfg(target_arch = "wasm32")]
+pub struct LocalStorageEventStore {
+    /// localStorage key for this store's event data.
+    key: String,
+    /// localStorage key for this store's latest hash.
+    hash_key: String,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl LocalStorageEventStore {
+    /// Maximum events stored to avoid exceeding localStorage limits.
+    const MAX_EVENTS: usize = 2000;
+
+    /// Create a new store for the given server ID.
+    pub fn new(server_id: &str) -> Self {
+        Self {
+            key: format!("willow_events_{server_id}"),
+            hash_key: format!("willow_events_hash_{server_id}"),
+        }
+    }
+
+    /// Load all stored events from localStorage.
+    fn load_all(&self) -> Vec<willow_state::Event> {
+        load_raw(&self.key)
+            .and_then(|bytes| willow_transport::unpack(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    /// Save all events to localStorage.
+    fn save_all(&self, events: &[willow_state::Event]) {
+        if let Ok(bytes) = willow_transport::pack(&events.to_vec()) {
+            save_raw(&self.key, &bytes);
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl willow_state::EventStore for LocalStorageEventStore {
+    fn append(&mut self, event: willow_state::Event) {
+        let mut events = self.load_all();
+        // Dedup by event ID.
+        if events.iter().any(|e| e.id == event.id) {
+            return;
+        }
+        events.push(event);
+        // Cap to avoid exceeding localStorage limits.
+        if events.len() > Self::MAX_EVENTS {
+            events.drain(..events.len() - Self::MAX_EVENTS);
+        }
+        self.save_all(&events);
+    }
+
+    fn events_since(&self, hash: &willow_state::StateHash) -> Vec<willow_state::Event> {
+        let events = self.load_all();
+        let start = events
+            .iter()
+            .position(|e| e.parent_hash == *hash)
+            .unwrap_or(events.len());
+        events[start..].to_vec()
+    }
+
+    fn all_events(&self) -> Vec<willow_state::Event> {
+        self.load_all()
+    }
+
+    fn latest_hash(&self) -> willow_state::StateHash {
+        load_raw(&self.hash_key)
+            .and_then(|bytes| {
+                if bytes.len() == 32 {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    Some(willow_state::StateHash(arr))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(willow_state::StateHash::ZERO)
+    }
+
+    fn set_latest_hash(&mut self, hash: willow_state::StateHash) {
+        save_raw(&self.hash_key, &hash.0);
+    }
+
+    fn contains(&self, event_id: &str) -> bool {
+        self.load_all().iter().any(|e| e.id == event_id)
+    }
+}
+
+/// Open (or create) the localStorage event store.
+#[cfg(target_arch = "wasm32")]
+pub fn open_event_store(server_id: &str) -> Option<LocalStorageEventStore> {
+    Some(LocalStorageEventStore::new(server_id))
+}
+
 /// Save a downloaded file to the downloads directory. Returns the path.
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)]
@@ -470,4 +720,142 @@ fn load_raw(key: &str) -> Option<Vec<u8>> {
     let storage = local_storage()?;
     let encoded = storage.get_item(&format!("willow_{key}")).ok()??;
     crate::base64::decode(&encoded)
+}
+
+// ---- Tests ------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use willow_state::{Event, EventKind, EventStore, StateHash};
+
+    fn make_event(id: &str, parent: StateHash) -> Event {
+        Event {
+            id: id.to_string(),
+            parent_hash: parent,
+            author: "peer-1".to_string(),
+            timestamp_ms: 1000,
+            kind: EventKind::CreateChannel {
+                name: "general".to_string(),
+                channel_id: "ch-1".to_string(),
+            },
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    mod sqlite_event_store {
+        use super::*;
+
+        fn temp_store() -> SqliteEventStore {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("test_events.db");
+            // Keep the dir alive by leaking it (test only).
+            let store = SqliteEventStore::open(&path).unwrap();
+            std::mem::forget(dir);
+            store
+        }
+
+        #[test]
+        fn append_and_all_events() {
+            let mut store = temp_store();
+            let e1 = make_event("e1", StateHash::ZERO);
+            let e2 = make_event("e2", StateHash::from_bytes(b"state-a"));
+
+            store.append(e1);
+            store.append(e2);
+
+            let all = store.all_events();
+            assert_eq!(all.len(), 2);
+            assert_eq!(all[0].id, "e1");
+            assert_eq!(all[1].id, "e2");
+        }
+
+        #[test]
+        fn append_deduplicates() {
+            let mut store = temp_store();
+            let event = make_event("e1", StateHash::ZERO);
+            store.append(event.clone());
+            store.append(event);
+
+            assert_eq!(store.all_events().len(), 1);
+        }
+
+        #[test]
+        fn contains_check() {
+            let mut store = temp_store();
+            assert!(!store.contains("e1"));
+
+            store.append(make_event("e1", StateHash::ZERO));
+            assert!(store.contains("e1"));
+            assert!(!store.contains("e2"));
+        }
+
+        #[test]
+        fn latest_hash_default_is_zero() {
+            let store = temp_store();
+            assert_eq!(store.latest_hash(), StateHash::ZERO);
+        }
+
+        #[test]
+        fn set_and_get_latest_hash() {
+            let mut store = temp_store();
+            let hash = StateHash::from_bytes(b"new-state");
+            store.set_latest_hash(hash.clone());
+            assert_eq!(store.latest_hash(), hash);
+        }
+
+        #[test]
+        fn events_since_returns_from_matching_parent() {
+            let mut store = temp_store();
+            let hash_a = StateHash::from_bytes(b"state-a");
+            let hash_b = StateHash::from_bytes(b"state-b");
+
+            store.append(make_event("e1", StateHash::ZERO));
+            store.append(make_event("e2", hash_a.clone()));
+            store.append(make_event("e3", hash_b));
+
+            let since = store.events_since(&hash_a);
+            assert_eq!(since.len(), 2);
+            assert_eq!(since[0].id, "e2");
+            assert_eq!(since[1].id, "e3");
+        }
+
+        #[test]
+        fn events_since_missing_hash_returns_empty() {
+            let mut store = temp_store();
+            store.append(make_event("e1", StateHash::ZERO));
+
+            let since = store.events_since(&StateHash::from_bytes(b"unknown"));
+            assert!(since.is_empty());
+        }
+
+        #[test]
+        fn persistent_event_store_enum_delegates() {
+            let inner = temp_store();
+            let mut store = crate::state::PersistentEventStore::Sqlite(inner);
+
+            store.append(make_event("e1", StateHash::ZERO));
+            assert_eq!(store.all_events().len(), 1);
+            assert!(store.contains("e1"));
+
+            let hash = StateHash::from_bytes(b"test");
+            store.set_latest_hash(hash.clone());
+            assert_eq!(store.latest_hash(), hash);
+        }
+    }
+
+    #[test]
+    fn persistent_event_store_in_memory_default() {
+        let mut store = crate::state::PersistentEventStore::default();
+        let event = make_event("e1", StateHash::ZERO);
+
+        store.append(event);
+        assert_eq!(store.all_events().len(), 1);
+        assert!(store.contains("e1"));
+        assert_eq!(store.latest_hash(), StateHash::ZERO);
+
+        let hash = StateHash::from_bytes(b"test-hash");
+        store.set_latest_hash(hash.clone());
+        assert_eq!(store.latest_hash(), hash);
+    }
 }
