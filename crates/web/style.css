@@ -20,8 +20,10 @@
     --accent-subtle: rgba(88, 101, 242, 0.08);
     --accent-green: #3ba55c;
     --accent-green-hover: #2d8049;
+    --accent-green-glow: rgba(59, 165, 92, 0.15);
     --danger: #ed4245;
     --danger-hover: #c73538;
+    --danger-glow: rgba(237, 66, 69, 0.15);
     --online: #3ba55c;
     --unread: #f0b232;
     --border: #2a2a30;
@@ -33,6 +35,11 @@
     --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.4);
     --shadow-inset: inset 0 1px 3px rgba(0, 0, 0, 0.2);
     --focus-ring: 0 0 0 2px var(--accent-glow), 0 0 0 1px var(--accent);
+    --overlay-bg: rgba(0, 0, 0, 0.6);
+    --backdrop-blur: blur(4px);
+    --transition-fast: 0.12s ease;
+    --transition-normal: 0.18s ease;
+    --transition-smooth: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* ── CSS Variables: Light theme ──────────────────────────────────── */
@@ -54,8 +61,10 @@
     --accent-subtle: rgba(88, 101, 242, 0.06);
     --accent-green: #3ba55c;
     --accent-green-hover: #2d8049;
+    --accent-green-glow: rgba(59, 165, 92, 0.12);
     --danger: #ed4245;
     --danger-hover: #c73538;
+    --danger-glow: rgba(237, 66, 69, 0.12);
     --online: #3ba55c;
     --unread: #f0b232;
     --border: #e3e5e8;
@@ -67,6 +76,11 @@
     --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.12);
     --shadow-inset: inset 0 1px 3px rgba(0, 0, 0, 0.06);
     --focus-ring: 0 0 0 2px var(--accent-glow), 0 0 0 1px var(--accent);
+    --overlay-bg: rgba(0, 0, 0, 0.35);
+    --backdrop-blur: blur(4px);
+    --transition-fast: 0.12s ease;
+    --transition-normal: 0.18s ease;
+    --transition-smooth: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* ── Reset & Base ────────────────────────────────────────────────── */
@@ -90,6 +104,22 @@ html, body {
 
 code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     font-family: 'IBM Plex Mono', 'SF Mono', 'Fira Code', monospace;
+}
+
+/* ── Focus Visible (accessibility) ───────────────────────────────── */
+
+:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    box-shadow: var(--focus-ring);
 }
 
 /* ── App Layout ──────────────────────────────────────────────────── */
@@ -129,9 +159,11 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     font-size: 18px;
     font-weight: 600;
     color: var(--text-muted);
-    transition: border-radius 0.2s ease, background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+    transition: border-radius var(--transition-normal), background var(--transition-normal), color var(--transition-normal), box-shadow var(--transition-normal);
     flex-shrink: 0;
     position: relative;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .server-icon:hover {
@@ -156,6 +188,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     height: 40px;
     background: var(--text-primary);
     border-radius: 0 4px 4px 0;
+    transition: height var(--transition-normal);
 }
 
 .server-icon:hover:not(.active)::before {
@@ -166,7 +199,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     height: 20px;
     background: var(--text-primary);
     border-radius: 0 4px 4px 0;
-    transition: height 0.2s ease;
+    transition: height var(--transition-normal);
 }
 
 .server-icon.add-server {
@@ -174,7 +207,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     border: 2px dashed var(--text-muted);
     font-size: 24px;
     color: var(--text-muted);
-    transition: border-color 0.2s ease, color 0.2s ease, background 0.2s ease;
+    transition: border-color var(--transition-normal), color var(--transition-normal), background var(--transition-normal);
 }
 
 .server-icon.add-server:hover {
@@ -192,6 +225,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     height: 2px;
     background: var(--border);
     border-radius: 1px;
+    flex-shrink: 0;
 }
 
 /* ── Sidebar ─────────────────────────────────────────────────────── */
@@ -213,6 +247,18 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     font-weight: 600;
     border-bottom: 1px solid var(--border);
     letter-spacing: -0.01em;
+    min-height: 52px;
+    overflow: hidden;
+}
+
+/* Truncate long server names in sidebar header */
+.sidebar-header span,
+.sidebar-header .server-name-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    flex: 1;
 }
 
 /* ── Channel List ────────────────────────────────────────────────── */
@@ -244,13 +290,16 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     color: var(--text-muted);
     font-size: 18px;
     cursor: pointer;
-    padding: 0 4px;
+    padding: 4px 6px;
     line-height: 1;
-    transition: color 0.15s ease;
+    border-radius: 4px;
+    transition: color var(--transition-fast), background var(--transition-fast);
+    -webkit-tap-highlight-color: transparent;
 }
 
 .channel-add-btn:hover {
     color: var(--text-primary);
+    background: var(--bg-message-hover);
 }
 
 .channel-create-input {
@@ -265,14 +314,18 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
 
 .type-btn {
     flex: 1;
-    padding: 4px 8px;
-    font-size: 11px;
+    padding: 6px 8px;
+    font-size: 12px;
     background: transparent;
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: 6px;
     color: var(--text-muted);
     cursor: pointer;
-    transition: all 0.12s ease;
+    transition: all var(--transition-fast);
+    min-height: 32px;
+    font-family: inherit;
+    font-weight: 500;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .type-btn.active {
@@ -283,11 +336,12 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
 
 .type-btn:hover:not(.active) {
     border-color: var(--text-muted);
+    background: var(--bg-message-hover);
 }
 
 .channel-create-input input {
     width: 100%;
-    padding: 6px 10px;
+    padding: 8px 10px;
     background: var(--bg-input);
     border: 1px solid var(--accent);
     border-radius: 6px;
@@ -295,7 +349,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     font-size: 13px;
     font-family: inherit;
     outline: none;
-    transition: box-shadow 0.2s ease;
+    transition: box-shadow var(--transition-normal);
 }
 
 .channel-create-input input:focus {
@@ -312,14 +366,20 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    transition: background 0.15s ease, color 0.15s ease;
+    transition: background var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
     position: relative;
     margin-left: 4px;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
 }
 
 .channel-item:hover {
     background: var(--bg-message-hover);
     color: var(--text-secondary);
+}
+
+.channel-item:active {
+    transform: scale(0.99);
 }
 
 .channel-item.active {
@@ -338,6 +398,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     height: 60%;
     background: var(--accent);
     border-radius: 0 2px 2px 0;
+    transition: height var(--transition-normal);
 }
 
 .channel-item-right {
@@ -363,9 +424,10 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     color: var(--text-muted);
     font-size: 12px;
     cursor: pointer;
-    padding: 0 4px;
+    padding: 2px 6px;
     line-height: 1;
-    transition: color 0.15s ease;
+    border-radius: 4px;
+    transition: color var(--transition-fast), background var(--transition-fast);
 }
 
 .channel-item:hover .delete-btn {
@@ -374,6 +436,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
 
 .channel-item .delete-btn:hover {
     color: var(--danger);
+    background: var(--danger-glow);
 }
 
 /* ── User Area & Connection Status ───────────────────────────────── */
@@ -390,10 +453,11 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     width: 8px; height: 8px;
     border-radius: 50%;
     background: var(--online);
+    flex-shrink: 0;
 }
 
 .connection-status {
-    padding: 12px 14px;
+    padding: 10px 14px;
     display: flex;
     align-items: center;
     gap: 10px;
@@ -409,6 +473,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     flex-shrink: 0;
     border: 2px solid var(--bg-sidebar);
     box-shadow: 0 0 0 1px var(--border);
+    transition: background var(--transition-normal), box-shadow var(--transition-normal);
 }
 
 .connection-status .status-dot.connected {
@@ -474,12 +539,15 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     align-items: center;
     flex-shrink: 0;
     letter-spacing: -0.01em;
+    min-height: 48px;
+    gap: 8px;
 }
 
 .channel-header .peer-count {
     font-size: 12px;
     color: var(--text-muted);
     font-weight: 400;
+    white-space: nowrap;
 }
 
 /* ── Messages ────────────────────────────────────────────────────── */
@@ -498,8 +566,9 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     padding: 4px 8px;
     position: relative;
     border-left: 2px solid transparent;
-    border-radius: 4px;
-    transition: background 0.12s ease, border-color 0.12s ease;
+    border-radius: 6px;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+    cursor: pointer;
 }
 
 .message:hover {
@@ -528,26 +597,53 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
 .message .timestamp { font-size: 11px; color: var(--text-muted); }
 .message .edited { font-size: 10px; color: var(--text-placeholder); font-style: italic; }
 
-.message .body { margin-top: 2px; line-height: 1.5; }
+.message .body { margin-top: 2px; line-height: 1.5; word-break: break-word; }
 .message .body.deleted { color: var(--text-muted); font-style: italic; }
+
+/* ── Reply Preview (Discord-style connected quote) ───────────────── */
 
 .message .reply-preview {
     font-size: 12px;
     color: var(--text-muted);
-    padding-left: 16px;
-    margin-bottom: 2px;
-    border-left: 2px solid var(--border);
+    padding: 4px 12px 4px 16px;
+    margin-bottom: 4px;
     margin-left: 2px;
+    border-left: 2px solid var(--border);
+    border-radius: 0 4px 4px 0;
+    background: var(--accent-subtle);
+    position: relative;
+    line-height: 1.4;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
+}
+
+/* Connected curve indicator for reply */
+.message .reply-preview::before {
+    content: '';
+    position: absolute;
+    left: -2px;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--accent);
+    opacity: 0;
+    transition: opacity var(--transition-fast);
 }
 
 .message .reply-clickable {
     cursor: pointer;
-    transition: color 0.12s ease;
+    transition: color var(--transition-fast), border-left-color var(--transition-fast);
 }
 
 .message .reply-clickable:hover {
     color: var(--accent);
     border-left-color: var(--accent);
+}
+
+.message .reply-clickable:hover::before {
+    opacity: 1;
 }
 
 /* ── Message Grouping ────────────────────────────────────────────── */
@@ -556,6 +652,15 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     margin-top: 2px;
 }
 
+/* First message in a group gets extra top rounding */
+.message:not(.grouped) {
+    margin-top: 8px;
+    border-radius: 6px 6px 4px 4px;
+}
+
+.message:not(.grouped) + .message.grouped {
+    border-radius: 4px;
+}
 
 /* ── Reactions ───────────────────────────────────────────────────── */
 
@@ -564,6 +669,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     gap: 6px;
     margin-top: 6px;
     flex-wrap: wrap;
+    align-items: center;
 }
 
 .message .reaction {
@@ -574,14 +680,21 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     color: var(--text-secondary);
     border: 1px solid var(--border);
     cursor: pointer;
-    transition: background 0.15s ease, border-color 0.15s ease;
+    transition: background var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast);
     line-height: 1.4;
     font-family: inherit;
+    -webkit-tap-highlight-color: transparent;
+    white-space: nowrap;
 }
 
 .message .reaction:hover {
     background: var(--accent-subtle, rgba(88,101,242,0.15));
     border-color: var(--accent);
+    transform: scale(1.05);
+}
+
+.message .reaction:active {
+    transform: scale(0.95);
 }
 
 /* ── Message Action Bar (dropdown) ────────────────────────────────── */
@@ -601,10 +714,12 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     border: 1px solid var(--border);
     color: var(--text-muted);
     font-size: 16px;
-    padding: 2px 6px;
+    padding: 4px 8px;
     cursor: pointer;
     border-radius: 6px;
     box-shadow: var(--shadow-md);
+    transition: background var(--transition-fast), color var(--transition-fast);
+    -webkit-tap-highlight-color: transparent;
 }
 
 .action-trigger:hover {
@@ -618,17 +733,23 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     right: 0;
     background: var(--bg-sidebar);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: 8px;
     padding: 4px;
-    min-width: 140px;
+    min-width: 160px;
     z-index: 10;
-    box-shadow: var(--shadow-md, 0 4px 12px rgba(0,0,0,0.3));
+    box-shadow: var(--shadow-lg);
+    animation: dropdownFadeIn 0.12s ease-out;
+}
+
+@keyframes dropdownFadeIn {
+    from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 .dropdown-item {
     display: block;
     width: 100%;
-    padding: 6px 12px;
+    padding: 8px 12px;
     background: transparent;
     border: none;
     color: var(--text-primary);
@@ -636,6 +757,9 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     text-align: left;
     cursor: pointer;
     border-radius: 4px;
+    font-family: inherit;
+    transition: background var(--transition-fast);
+    -webkit-tap-highlight-color: transparent;
 }
 
 .dropdown-item:hover {
@@ -647,7 +771,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
 }
 
 .dropdown-danger:hover {
-    background: rgba(237, 66, 69, 0.1);
+    background: var(--danger-glow);
 }
 
 .dropdown-emoji-row {
@@ -661,13 +785,16 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     background: transparent;
     border: none;
     font-size: 18px;
-    padding: 4px;
+    padding: 6px;
     cursor: pointer;
-    border-radius: 4px;
+    border-radius: 6px;
+    transition: background var(--transition-fast), transform var(--transition-fast);
+    -webkit-tap-highlight-color: transparent;
 }
 
 .dropdown-emoji-row button:hover {
     background: var(--bg-input);
+    transform: scale(1.15);
 }
 
 /* ── Edit Bar (above input, similar to reply bar) ────────────────── */
@@ -699,15 +826,16 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     color: var(--text-muted);
     cursor: pointer;
     font-size: 14px;
-    padding: 2px 6px;
+    padding: 4px 8px;
     margin-left: 8px;
     border-radius: 4px;
-    transition: color 0.15s ease, background 0.15s ease;
+    transition: color var(--transition-fast), background var(--transition-fast);
+    -webkit-tap-highlight-color: transparent;
 }
 
 .edit-bar-cancel:hover {
     color: var(--danger);
-    background: rgba(237, 66, 69, 0.1);
+    background: var(--danger-glow);
 }
 
 /* ── Reply Bar (above input) ─────────────────────────────────────── */
@@ -739,15 +867,16 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     color: var(--text-muted);
     cursor: pointer;
     font-size: 14px;
-    padding: 2px 6px;
+    padding: 4px 8px;
     margin-left: 8px;
     border-radius: 4px;
-    transition: color 0.15s ease, background 0.15s ease;
+    transition: color var(--transition-fast), background var(--transition-fast);
+    -webkit-tap-highlight-color: transparent;
 }
 
 .reply-bar-cancel:hover {
     color: var(--danger);
-    background: rgba(237, 66, 69, 0.1);
+    background: var(--danger-glow);
 }
 
 @keyframes slideDown {
@@ -776,7 +905,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     outline: none;
     resize: none;
     box-shadow: var(--shadow-inset);
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    transition: border-color var(--transition-normal), box-shadow var(--transition-normal);
 }
 
 .input-area input:focus, .input-area textarea:focus {
@@ -810,7 +939,9 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     cursor: pointer;
     line-height: 1;
     flex-shrink: 0;
-    transition: color 0.15s ease, transform 0.15s ease;
+    transition: color var(--transition-fast), transform var(--transition-fast);
+    -webkit-tap-highlight-color: transparent;
+    border-radius: 8px;
 }
 
 .file-share-btn:hover {
@@ -830,11 +961,12 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     gap: 12px;
     max-width: 400px;
     margin-top: 4px;
-    transition: border-color 0.15s ease;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .file-card:hover {
     border-color: var(--accent);
+    box-shadow: var(--shadow-sm);
 }
 
 .file-card .file-icon {
@@ -871,7 +1003,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
 
 /* ── Member List (right sidebar) ─────────────────────────────────── */
 
-/* On desktop, the wrapper is transparent — member-list renders normally */
+/* On desktop, the wrapper is transparent -- member-list renders normally */
 .member-list-wrapper {
     display: contents;
 }
@@ -887,9 +1019,13 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     color: var(--text-muted);
     font-size: 13px;
     cursor: pointer;
-    padding: 4px 8px;
-    border-radius: 4px;
-    transition: color 0.15s ease, background 0.15s ease;
+    padding: 6px 10px;
+    border-radius: 6px;
+    transition: color var(--transition-fast), background var(--transition-fast);
+    -webkit-tap-highlight-color: transparent;
+    min-height: 36px;
+    align-items: center;
+    justify-content: center;
 }
 
 .mobile-members-toggle:hover {
@@ -900,7 +1036,8 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
 .channel-header-right {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
+    flex-shrink: 0;
 }
 
 .member-list {
@@ -934,7 +1071,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     border-radius: 6px;
     font-size: 13px;
     flex-wrap: wrap;
-    transition: background 0.12s ease;
+    transition: background var(--transition-fast);
     cursor: default;
 }
 
@@ -1056,7 +1193,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     font-family: inherit;
     margin-bottom: 16px;
     outline: none;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    transition: border-color var(--transition-normal), box-shadow var(--transition-normal);
 }
 
 .settings-panel input:focus {
@@ -1064,14 +1201,23 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     box-shadow: var(--focus-ring);
 }
 
+/* ── Settings Section Cards ──────────────────────────────────────── */
+
 .settings-section {
     margin-bottom: 24px;
-    padding-bottom: 24px;
-    border-bottom: 1px solid var(--border-subtle);
+    padding: 20px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    background: var(--bg-sidebar);
+    transition: border-color var(--transition-normal);
+}
+
+.settings-section:hover {
+    border-color: var(--border);
 }
 
 .settings-section:last-child {
-    border-bottom: none;
+    margin-bottom: 0;
 }
 
 .settings-status {
@@ -1083,6 +1229,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     font-size: 13px;
     font-weight: 500;
     border-left: 3px solid var(--accent);
+    animation: slideDown 0.15s ease-out;
 }
 
 /* ── Peer ID Display ─────────────────────────────────────────────── */
@@ -1097,13 +1244,20 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
 .peer-id-text {
     flex: 1;
     background: var(--bg-input);
-    padding: 8px 12px;
+    padding: 10px 12px;
     border-radius: 6px;
     font-size: 11px;
     color: var(--text-secondary);
     word-break: break-all;
     min-width: 0;
     border: 1px solid var(--border-subtle);
+    user-select: all;
+    cursor: text;
+    transition: border-color var(--transition-normal);
+}
+
+.peer-id-text:hover {
+    border-color: var(--border);
 }
 
 /* ── Invite Section ──────────────────────────────────────────────── */
@@ -1123,7 +1277,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     width: 100%;
     height: 60px;
     padding: 10px 14px;
-    background: var(--bg-input);
+    background: var(--bg-server-rail);
     border: 1px solid var(--border);
     border-radius: 6px;
     color: var(--text-primary);
@@ -1131,7 +1285,8 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     outline: none;
     resize: none;
     margin-bottom: 4px;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    transition: border-color var(--transition-normal), box-shadow var(--transition-normal);
+    user-select: all;
 }
 
 .invite-code-display textarea:focus {
@@ -1149,12 +1304,14 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     font-size: 14px;
     font-weight: 500;
     font-family: inherit;
-    transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease, transform 0.1s ease;
+    transition: background var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast), transform 0.1s ease;
     position: relative;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
 }
 
 .btn:active {
-    transform: scale(0.98);
+    transform: scale(0.97);
 }
 
 .btn-primary {
@@ -1165,7 +1322,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
 
 .btn-primary:hover {
     background: var(--accent-hover);
-    box-shadow: 0 2px 6px rgba(88, 101, 242, 0.4);
+    box-shadow: 0 2px 8px rgba(88, 101, 242, 0.4);
 }
 
 .btn-danger {
@@ -1176,7 +1333,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
 
 .btn-danger:hover {
     background: var(--danger-hover);
-    box-shadow: 0 2px 6px rgba(237, 66, 69, 0.4);
+    box-shadow: 0 2px 8px rgba(237, 66, 69, 0.4);
 }
 
 .btn-sm {
@@ -1220,13 +1377,16 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     color: var(--text-muted);
     font-size: 18px;
     cursor: pointer;
-    padding: 0 4px;
+    padding: 4px 6px;
     line-height: 1;
-    transition: color 0.15s ease;
+    border-radius: 4px;
+    transition: color var(--transition-fast), background var(--transition-fast);
+    -webkit-tap-highlight-color: transparent;
 }
 
 .role-add-btn:hover {
     color: var(--text-primary);
+    background: var(--bg-message-hover);
 }
 
 .role-create-input {
@@ -1235,7 +1395,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
 
 .role-create-input input {
     width: 100%;
-    padding: 6px 10px;
+    padding: 8px 10px;
     background: var(--bg-input);
     border: 1px solid var(--accent);
     border-radius: 6px;
@@ -1243,7 +1403,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     font-size: 13px;
     font-family: inherit;
     outline: none;
-    transition: box-shadow 0.2s ease;
+    transition: box-shadow var(--transition-normal);
 }
 
 .role-create-input input:focus {
@@ -1278,15 +1438,16 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     color: var(--text-muted);
     font-size: 14px;
     cursor: pointer;
-    padding: 2px 6px;
+    padding: 4px 8px;
     line-height: 1;
     border-radius: 4px;
-    transition: color 0.15s ease, background 0.15s ease;
+    transition: color var(--transition-fast), background var(--transition-fast);
+    -webkit-tap-highlight-color: transparent;
 }
 
 .role-delete-btn:hover {
     color: var(--danger);
-    background: rgba(237, 66, 69, 0.1);
+    background: var(--danger-glow);
 }
 
 .permission-toggles {
@@ -1336,7 +1497,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     font-size: 12px;
     font-family: inherit;
     outline: none;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    transition: border-color var(--transition-normal), box-shadow var(--transition-normal);
 }
 
 .role-assign-input:focus {
@@ -1375,7 +1536,15 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     cursor: pointer;
     z-index: 5;
     box-shadow: var(--shadow-lg);
-    transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+    transition: background var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
+    font-family: inherit;
+    -webkit-tap-highlight-color: transparent;
+    animation: fadeInUp 0.2s ease-out;
+}
+
+@keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
 }
 
 .scroll-to-bottom:hover {
@@ -1410,16 +1579,14 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     to { transform: rotate(360deg); }
 }
 
-/* Clickable message for reply */
-.message { cursor: pointer; }
-
 /* ── Scrollbar Theming ───────────────────────────────────────────── */
 
-::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: var(--scrollbar-track); }
 ::-webkit-scrollbar-thumb {
     background: var(--scrollbar-thumb);
     border-radius: 3px;
+    transition: background 0.2s;
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
@@ -1437,16 +1604,23 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     color: var(--text-muted);
     font-size: 18px;
     cursor: pointer;
-    padding: 4px 6px;
+    padding: 6px 8px;
     line-height: 1;
     flex-shrink: 0;
-    border-radius: 4px;
-    transition: color 0.15s ease, background 0.15s ease;
+    border-radius: 6px;
+    transition: color var(--transition-fast), background var(--transition-fast), transform var(--transition-normal);
+    -webkit-tap-highlight-color: transparent;
+    min-width: 36px;
+    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .theme-toggle:hover {
     color: var(--text-primary);
     background: var(--bg-input);
+    transform: rotate(15deg);
 }
 
 /* ── Mute Toggle (settings) ──────────────────────────────────────── */
@@ -1477,7 +1651,8 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     cursor: pointer;
     line-height: 1;
     border-radius: 6px;
-    transition: background 0.15s ease;
+    transition: background var(--transition-fast), color var(--transition-fast);
+    -webkit-tap-highlight-color: transparent;
 }
 
 .mobile-nav-toggle:hover {
@@ -1490,8 +1665,10 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     display: none;
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.5);
+    background: var(--overlay-bg);
     z-index: 9;
+    -webkit-backdrop-filter: var(--backdrop-blur);
+    backdrop-filter: var(--backdrop-blur);
 }
 
 /* ── Message links & embeds ─────────────────────────────────────── */
@@ -1500,10 +1677,12 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     color: var(--accent);
     text-decoration: none;
     word-break: break-all;
+    transition: color var(--transition-fast);
 }
 
 .message-link:hover {
     text-decoration: underline;
+    color: var(--accent-hover);
 }
 
 .message-embeds {
@@ -1519,11 +1698,12 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     border-radius: 8px;
     overflow: hidden;
     border: 1px solid var(--border);
-    transition: border-color 0.15s ease;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .embed-link:hover {
     border-color: var(--accent);
+    box-shadow: var(--shadow-sm);
 }
 
 .embed-image {
@@ -1535,16 +1715,6 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     border-radius: 8px;
 }
 
-
-@media (max-width: 640px) {
-    .message-embeds {
-        max-width: 100%;
-    }
-    .embed-image {
-        max-height: 200px;
-    }
-}
-
 /* ── Typing Indicator ────────────────────────────────────────────── */
 
 .typing-indicator {
@@ -1552,10 +1722,14 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     font-size: 12px;
     color: var(--text-muted);
     font-style: italic;
+    height: 24px;
     min-height: 24px;
+    max-height: 24px;
     display: flex;
     align-items: center;
     gap: 4px;
+    flex-shrink: 0;
+    overflow: hidden;
 }
 
 /* Animated typing dots -- applied via CSS when text is present */
@@ -1568,6 +1742,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     background-size: 7px 6px;
     background-position: 0 0;
     animation: typingDots 1.4s steps(3) infinite;
+    flex-shrink: 0;
 }
 
 @keyframes typingDots {
@@ -1584,17 +1759,23 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     background: transparent;
     color: var(--text-muted);
     font-size: 16px;
-    padding: 4px 8px;
+    padding: 6px 8px;
     border: none;
-    border-radius: 4px;
+    border-radius: 6px;
     cursor: pointer;
-    transition: color 0.15s ease, background 0.15s ease, transform 0.2s ease;
+    transition: color var(--transition-fast), background var(--transition-fast), transform var(--transition-normal);
+    -webkit-tap-highlight-color: transparent;
+    min-width: 32px;
+    min-height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .server-gear-btn:hover {
     color: var(--text-primary);
     background: var(--bg-input);
-    transform: rotate(45deg);
+    transform: rotate(60deg);
 }
 
 /* ── Server Settings Link Button ─────────────────────────────────── */
@@ -1609,7 +1790,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     align-items: center;
     justify-content: center;
     gap: 8px;
-    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
 }
 
 .server-settings-link:hover {
@@ -1668,14 +1849,14 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
         width: 260px;
         max-width: 85vw;
         transform: translateX(100%);
-        transition: transform 0.2s ease;
+        transition: transform var(--transition-smooth);
         background: var(--bg-sidebar);
         box-shadow: none;
     }
 
     .member-list-wrapper.open {
         transform: translateX(0);
-        box-shadow: -4px 0 20px rgba(0, 0, 0, 0.5);
+        box-shadow: -4px 0 24px rgba(0, 0, 0, 0.5);
     }
 
     .member-list-wrapper .member-list {
@@ -1690,11 +1871,18 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
         position: fixed;
         inset: 0;
         z-index: 9;
-        background: rgba(0, 0, 0, 0.4);
+        background: var(--overlay-bg);
+        -webkit-backdrop-filter: var(--backdrop-blur);
+        backdrop-filter: var(--backdrop-blur);
     }
 
     .members-overlay.open {
         display: block;
+    }
+
+    /* Member actions always visible on tablet (no hover) */
+    .member-actions {
+        display: flex;
     }
 }
 
@@ -1721,20 +1909,20 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     /* Sidebar becomes a slide-over drawer below the server rail */
     .sidebar {
         position: fixed;
-        top: 52px; /* below the horizontal server rail */
+        top: 48px; /* below the compact horizontal server rail */
         left: 0;
         bottom: 0;
         z-index: 10;
         width: 280px;
         max-width: 85vw;
         transform: translateX(-100%);
-        transition: transform 0.2s ease;
+        transition: transform var(--transition-smooth);
         box-shadow: none;
     }
 
     .sidebar.open {
         transform: translateX(0);
-        box-shadow: 4px 0 20px rgba(0, 0, 0, 0.5);
+        box-shadow: 4px 0 24px rgba(0, 0, 0, 0.5);
     }
 
     .sidebar-overlay.open {
@@ -1756,24 +1944,36 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
 
     /* Larger touch targets (min 44px) */
     .channel-item {
-        padding: 12px 12px;
+        padding: 10px 12px;
         font-size: 15px;
         min-height: 44px;
     }
 
+    /* Always show delete button on mobile (no hover) */
+    .channel-item .delete-btn {
+        display: inline-block;
+    }
+
     .user-area {
         padding: 14px 12px;
+        min-height: 44px;
     }
 
     /* Channel header with hamburger */
     .channel-header {
-        padding: 10px 12px;
-        gap: 8px;
+        padding: 8px 10px;
+        gap: 6px;
+        min-height: 44px;
+        font-size: 15px;
     }
 
     /* Message layout */
     .message-list {
-        padding: 10px;
+        padding: 8px;
+    }
+
+    .message {
+        padding: 6px 8px;
     }
 
     .message .meta {
@@ -1789,7 +1989,41 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
         word-break: break-word;
     }
 
-    /* Input -- reduce padding on mobile */
+    /* Always show message actions trigger on mobile (no hover) */
+    .message-actions {
+        display: flex;
+    }
+
+    .action-trigger {
+        padding: 6px 10px;
+        font-size: 18px;
+        min-width: 36px;
+        min-height: 36px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    /* Dropdown: prevent overflow on mobile */
+    .message-dropdown {
+        right: 0;
+        left: auto;
+        max-width: calc(100vw - 32px);
+    }
+
+    /* Reply preview compact on mobile */
+    .message .reply-preview {
+        font-size: 11px;
+        padding: 3px 10px 3px 12px;
+    }
+
+    /* Reactions flow nicely */
+    .message .reaction {
+        padding: 4px 10px;
+        font-size: 12px;
+    }
+
+    /* Input -- larger padding on mobile */
     .input-area {
         padding: 8px 10px;
         padding-bottom: calc(8px + env(safe-area-inset-bottom));
@@ -1799,6 +2033,30 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
         padding: 12px 14px;
         font-size: 16px; /* prevents iOS zoom on focus */
         border-radius: 20px;
+    }
+
+    /* File share button -- larger touch target */
+    .file-share-btn {
+        padding: 12px;
+        font-size: 22px;
+        min-width: 44px;
+        min-height: 44px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    /* File card full width */
+    .file-card {
+        max-width: 100%;
+    }
+
+    /* Image embeds full width */
+    .message-embeds {
+        max-width: 100%;
+    }
+    .embed-image {
+        max-height: 200px;
     }
 
     /* Settings */
@@ -1813,6 +2071,11 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     .settings-panel input {
         font-size: 16px;
         padding: 10px 12px;
+    }
+
+    .settings-section {
+        padding: 16px;
+        border-radius: 8px;
     }
 
     /* Buttons -- min 44px touch target */
@@ -1833,28 +2096,48 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     .server-rail {
         width: 100%;
         min-width: unset;
-        height: 52px;
-        min-height: 52px;
+        height: 48px;
+        min-height: 48px;
         flex-direction: row;
-        padding: 6px 8px;
+        padding: 4px 8px;
         gap: 6px;
         overflow-x: auto;
         overflow-y: hidden;
         border-right: none;
         border-bottom: 1px solid var(--border);
+        /* Hide scrollbar on mobile server rail */
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+    }
+
+    .server-rail::-webkit-scrollbar {
+        display: none;
     }
 
     .server-icon {
-        width: 38px;
-        height: 38px;
-        min-width: 38px;
-        font-size: 15px;
+        width: 36px;
+        height: 36px;
+        min-width: 36px;
+        font-size: 14px;
     }
 
     /* Hide the left-side indicator pip on mobile horizontal rail */
     .server-icon.active::before,
     .server-icon:hover:not(.active)::before {
         display: none;
+    }
+
+    /* Active indicator: bottom border on mobile */
+    .server-icon.active::after {
+        content: '';
+        position: absolute;
+        bottom: -4px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 60%;
+        height: 3px;
+        background: var(--text-primary);
+        border-radius: 3px 3px 0 0;
     }
 
     .server-rail-divider {
@@ -1872,18 +2155,172 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
         justify-content: center;
     }
 
+    /* Mobile members toggle: larger touch target */
+    .mobile-members-toggle {
+        min-height: 44px;
+        padding: 8px 10px;
+        font-size: 14px;
+    }
+
     /* Welcome screen mobile adjustments */
+    .welcome-screen {
+        padding: 12px;
+        align-items: flex-start;
+        padding-top: 24px;
+    }
+
+    .welcome-card {
+        padding: 24px 20px;
+        border-radius: 12px;
+    }
+
+    .welcome-card h1 {
+        font-size: 24px;
+    }
+
+    .welcome-card .tagline {
+        font-size: 14px;
+        margin-bottom: 24px;
+    }
+
     .welcome-options {
         grid-template-columns: 1fr;
         gap: 16px;
     }
 
+    .welcome-option {
+        padding: 20px;
+    }
+
+    .welcome-option input {
+        font-size: 16px; /* prevent iOS zoom */
+        padding: 12px 14px;
+    }
+
+    .welcome-invite-input {
+        font-size: 13px;
+        height: 100px; /* more room on mobile for paste */
+    }
+
+    .welcome-peer-id .peer-id-text {
+        font-size: 10px;
+    }
+
+    /* Pinned panel: full width on mobile */
+    .pinned-panel {
+        max-height: 240px;
+    }
+
+    .pinned-header {
+        padding: 8px 12px;
+    }
+
+    .pinned-item {
+        padding: 8px 10px;
+    }
+
+    /* Typing indicator: compact on mobile */
+    .typing-indicator {
+        padding: 2px 10px;
+        font-size: 11px;
+        height: 20px;
+        min-height: 20px;
+        max-height: 20px;
+    }
+
+    /* Voice controls: larger touch targets */
+    .voice-controls {
+        padding: 10px 12px;
+    }
+
+    .voice-btn {
+        padding: 8px 12px;
+        font-size: 18px;
+        min-width: 44px;
+        min-height: 44px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 8px;
+    }
+
+    /* Voice channel items: larger touch targets */
+    .voice-channel {
+        padding: 10px 12px;
+        min-height: 44px;
+    }
+
+    /* Permission toggles: stack on mobile */
+    .permission-toggles {
+        gap: 8px 12px;
+    }
+
+    .permission-toggle {
+        min-height: 36px;
+        padding: 4px 0;
+    }
+
+    /* Scroll-to-bottom pill: centered on mobile */
+    .scroll-to-bottom {
+        right: 50%;
+        transform: translateX(50%);
+        bottom: 12px;
+    }
+
+    .scroll-to-bottom:hover {
+        transform: translateX(50%) translateY(-2px);
+    }
+
+    /* Role assign: stack on small screens */
+    .role-assign {
+        flex-wrap: wrap;
+    }
+
+    .role-assign-input {
+        min-width: 0;
+        flex: 1 1 auto;
+    }
+
+    /* Channel type toggle: larger buttons on mobile */
+    .type-btn {
+        padding: 8px 10px;
+        font-size: 13px;
+        min-height: 40px;
+    }
+
+    /* Member actions always visible on mobile */
+    .member-actions {
+        display: flex;
+    }
+
+    /* Member items: larger touch targets */
+    .member-item {
+        padding: 8px;
+        min-height: 40px;
+    }
+}
+
+/* ── Extra small screens (< 380px) ──────────────────────────────── */
+
+@media (max-width: 380px) {
     .welcome-card {
-        padding: 24px;
+        padding: 20px 16px;
     }
 
     .welcome-card h1 {
-        font-size: 24px;
+        font-size: 22px;
+    }
+
+    .welcome-option {
+        padding: 16px;
+    }
+
+    .channel-header {
+        font-size: 14px;
+    }
+
+    .settings-panel {
+        padding: 12px;
     }
 }
 
@@ -1896,11 +2333,33 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     min-height: 100vh;
     min-height: 100dvh;
     padding: 20px;
-    /* Subtle radial gradient background */
+    /* Animated subtle radial gradient background */
     background:
         radial-gradient(ellipse at 20% 50%, var(--accent-glow) 0%, transparent 50%),
         radial-gradient(ellipse at 80% 50%, rgba(59, 165, 92, 0.06) 0%, transparent 50%),
         var(--bg-main);
+    animation: welcomeGlow 8s ease-in-out infinite alternate;
+}
+
+@keyframes welcomeGlow {
+    0% {
+        background:
+            radial-gradient(ellipse at 20% 50%, var(--accent-glow) 0%, transparent 50%),
+            radial-gradient(ellipse at 80% 50%, rgba(59, 165, 92, 0.06) 0%, transparent 50%),
+            var(--bg-main);
+    }
+    50% {
+        background:
+            radial-gradient(ellipse at 30% 40%, var(--accent-glow) 0%, transparent 55%),
+            radial-gradient(ellipse at 70% 60%, rgba(59, 165, 92, 0.08) 0%, transparent 55%),
+            var(--bg-main);
+    }
+    100% {
+        background:
+            radial-gradient(ellipse at 25% 55%, var(--accent-glow) 0%, transparent 50%),
+            radial-gradient(ellipse at 75% 45%, rgba(59, 165, 92, 0.06) 0%, transparent 50%),
+            var(--bg-main);
+    }
 }
 
 .welcome-card {
@@ -1917,6 +2376,12 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
         linear-gradient(135deg, var(--accent-glow), transparent 40%, transparent 60%, rgba(59, 165, 92, 0.1));
     background-origin: border-box;
     background-clip: padding-box, border-box;
+    animation: cardFadeIn 0.4s ease-out;
+}
+
+@keyframes cardFadeIn {
+    from { opacity: 0; transform: translateY(12px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 .welcome-card h1 {
@@ -1947,12 +2412,13 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     border-radius: 12px;
     padding: 24px;
     border: 1px solid var(--border);
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    transition: border-color var(--transition-normal), box-shadow var(--transition-normal), transform var(--transition-normal);
 }
 
 .welcome-option:hover {
     border-color: var(--border);
     box-shadow: var(--shadow-md);
+    transform: translateY(-2px);
 }
 
 /* Create option -- accent blue tint on hover */
@@ -2004,7 +2470,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     margin-bottom: 12px;
     outline: none;
     font-family: inherit;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    transition: border-color var(--transition-normal), box-shadow var(--transition-normal);
 }
 
 .welcome-option input:focus {
@@ -2020,7 +2486,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     width: 100%;
     height: 80px;
     padding: 10px 14px;
-    background: var(--bg-input);
+    background: var(--bg-server-rail);
     border: 1px solid var(--border);
     border-radius: 6px;
     color: var(--text-primary);
@@ -2028,7 +2494,8 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     outline: none;
     resize: none;
     margin-bottom: 12px;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    transition: border-color var(--transition-normal), box-shadow var(--transition-normal);
+    user-select: all;
 }
 
 .welcome-invite-input:focus {
@@ -2052,7 +2519,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
 
 .welcome-option:last-child .btn-primary:hover {
     background: var(--accent-green-hover);
-    box-shadow: 0 2px 6px rgba(59, 165, 92, 0.4);
+    box-shadow: 0 2px 8px rgba(59, 165, 92, 0.4);
 }
 
 .welcome-status {
@@ -2064,12 +2531,20 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     font-size: 13px;
     font-weight: 500;
     border-left: 3px solid var(--accent);
+    animation: slideDown 0.15s ease-out;
 }
 
 .welcome-status-error {
     color: var(--danger);
     border-left-color: var(--danger);
-    background: rgba(237, 66, 69, 0.08);
+    background: var(--danger-glow);
+    animation: errorShake 0.3s ease-out;
+}
+
+@keyframes errorShake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-4px); }
+    75% { transform: translateX(4px); }
 }
 
 .welcome-hint {
@@ -2088,6 +2563,12 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     border-radius: 6px;
     padding: 10px 14px;
     margin-bottom: 16px;
+    transition: border-color var(--transition-normal);
+    cursor: text;
+}
+
+.welcome-peer-id:hover {
+    border-color: var(--accent);
 }
 
 .join-profile-step {
@@ -2121,6 +2602,12 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     border-bottom: 1px solid var(--border);
     max-height: 300px;
     overflow-y: auto;
+    animation: pinnedSlideDown 0.2s ease-out;
+}
+
+@keyframes pinnedSlideDown {
+    from { max-height: 0; opacity: 0; }
+    to { max-height: 300px; opacity: 1; }
 }
 
 .pinned-header {
@@ -2150,9 +2637,19 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
 .pinned-item {
     background: var(--bg-main);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: 8px;
     padding: 10px 12px;
     margin-bottom: 8px;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.pinned-item:hover {
+    border-color: var(--accent);
+    box-shadow: var(--shadow-sm);
+}
+
+.pinned-item:last-child {
+    margin-bottom: 0;
 }
 
 .pinned-meta {
@@ -2172,6 +2669,19 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     margin-bottom: 8px;
     max-height: 80px;
     overflow: hidden;
+    position: relative;
+}
+
+/* Fade out overflow text */
+.pinned-body::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 20px;
+    background: linear-gradient(transparent, var(--bg-main));
+    pointer-events: none;
 }
 
 .pinned-body .message-link {
@@ -2180,6 +2690,17 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
 
 .pinned-jump {
     font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-subtle);
+    padding: 4px 10px;
+    border-radius: 4px;
+    transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.pinned-jump:hover {
+    background: var(--accent);
+    color: white;
 }
 
 .pinned-toggle {
@@ -2188,9 +2709,15 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     color: var(--text-muted);
     font-size: 16px;
     cursor: pointer;
-    padding: 4px 8px;
-    border-radius: 4px;
-    transition: color 0.15s ease;
+    padding: 6px 8px;
+    border-radius: 6px;
+    transition: color var(--transition-fast), background var(--transition-fast);
+    -webkit-tap-highlight-color: transparent;
+    min-width: 32px;
+    min-height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .pinned-toggle:hover {
@@ -2201,13 +2728,25 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
 /* ── Voice Controls ──────────────────────────────────────────────── */
 
 .voice-controls {
-    padding: 8px 12px;
-    background: var(--bg-input);
+    padding: 10px 12px;
+    background: var(--accent-green-glow);
     border-top: 1px solid var(--border);
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
+    border-radius: 0;
+    position: relative;
+}
+
+/* Connected state: subtle green glow */
+.voice-controls::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, var(--accent-green-glow), transparent);
+    pointer-events: none;
+    border-radius: inherit;
 }
 
 .voice-status {
@@ -2216,55 +2755,71 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     gap: 6px;
     font-size: 12px;
     color: var(--online);
-    font-weight: 500;
+    font-weight: 600;
+    position: relative;
+    z-index: 1;
 }
 
 .voice-channel-name {
     color: var(--text-secondary);
+    font-weight: 400;
 }
 
 .voice-buttons {
     display: flex;
     gap: 4px;
+    position: relative;
+    z-index: 1;
 }
 
 .voice-btn {
-    background: transparent;
-    border: none;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
     font-size: 16px;
-    padding: 4px 8px;
-    border-radius: 4px;
+    padding: 6px 10px;
+    border-radius: 6px;
     cursor: pointer;
-    transition: background 0.12s ease;
+    transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
+    color: var(--text-secondary);
+    -webkit-tap-highlight-color: transparent;
 }
 
 .voice-btn:hover {
     background: var(--bg-message-hover);
+    border-color: var(--text-muted);
 }
 
 .voice-btn.muted, .voice-btn.deafened {
     color: var(--danger);
+    border-color: var(--danger);
+    background: var(--danger-glow);
+    box-shadow: 0 0 8px var(--danger-glow);
 }
 
 .voice-btn.disconnect {
     color: var(--danger);
+    border-color: var(--danger);
 }
 
 .voice-btn.disconnect:hover {
-    background: rgba(237, 66, 69, 0.15);
+    background: var(--danger-glow);
+    box-shadow: 0 0 8px var(--danger-glow);
 }
 
 /* Voice channel in sidebar */
 .voice-channel {
-    padding: 6px 12px;
+    padding: 7px 12px;
     cursor: pointer;
     color: var(--text-muted);
-    border-radius: 4px;
-    transition: background 0.12s ease;
+    border-radius: 6px;
+    transition: background var(--transition-fast), color var(--transition-fast);
+    margin-left: 4px;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .voice-channel:hover {
     background: var(--bg-message-hover);
+    color: var(--text-secondary);
 }
 
 .voice-channel-header {
@@ -2300,4 +2855,26 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     height: 6px;
     border-radius: 50%;
     background: var(--online);
+}
+
+/* ── Selection highlight (for tap-to-select-all on peer ID) ─────── */
+
+::selection {
+    background: var(--accent-glow);
+    color: var(--text-primary);
+}
+
+::-moz-selection {
+    background: var(--accent-glow);
+    color: var(--text-primary);
+}
+
+/* ── Reduced Motion ──────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
 }
