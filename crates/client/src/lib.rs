@@ -929,19 +929,10 @@ impl Client {
                     willow_state::apply_lenient(&mut self.state.event_state, event);
                 }
             } else {
-                // Seed event_state with channels from legacy storage.
-                let ctx = self.state.servers.get(server_id).unwrap();
-                for (name, ch_id) in ctx.topic_map.values() {
-                    self.state.event_state.channels.insert(
-                        ch_id.to_string(),
-                        willow_state::Channel {
-                            id: ch_id.to_string(),
-                            name: name.clone(),
-                            pinned_messages: std::collections::HashSet::new(),
-                            kind: "text".to_string(),
-                        },
-                    );
-                }
+                // Don't seed channels from topic_map — the IDs won't match
+                // the owner's IDs. Let sync deliver the correct CreateChannel
+                // events which will populate event_state.channels with the
+                // right IDs.
             }
         }
     }
