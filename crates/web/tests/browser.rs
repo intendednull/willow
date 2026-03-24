@@ -2270,3 +2270,1396 @@ async fn regular_message_does_not_render_file_card() {
     let body_el = query(&container, ".body").unwrap();
     assert_eq!(text(&body_el), "just a normal message");
 }
+
+// ── Voice Controls Tests ────────────────────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn voice_controls_renders_mute_deafen_disconnect() {
+    let (muted, _) = signal(false);
+    let (deafened, _) = signal(false);
+    let (channel_name, _) = signal("voice-chat".to_string());
+
+    let container = mount_test(move || {
+        view! {
+            <div class="voice-controls">
+                <div class="voice-status">
+                    <span class="voice-status-icon">{"\u{1F50A}"}</span>
+                    <span class="voice-channel-name">{move || channel_name.get()}</span>
+                </div>
+                <div class="voice-buttons">
+                    <button
+                        class=move || if muted.get() { "voice-btn muted" } else { "voice-btn" }
+                        title=move || if muted.get() { "Unmute" } else { "Mute" }
+                    >
+                        {move || if muted.get() { "\u{1F507}" } else { "\u{1F3A4}" }}
+                    </button>
+                    <button
+                        class=move || if deafened.get() { "voice-btn deafened" } else { "voice-btn" }
+                        title=move || if deafened.get() { "Undeafen" } else { "Deafen" }
+                    >
+                        {move || if deafened.get() { "\u{1F515}" } else { "\u{1F514}" }}
+                    </button>
+                    <button class="voice-btn disconnect" title="Disconnect">
+                        {"\u{1F4F5}"}
+                    </button>
+                </div>
+            </div>
+        }
+    });
+    tick().await;
+
+    // Should show voice controls with 3 buttons.
+    let buttons = query_all(&container, ".voice-btn");
+    assert!(buttons.len() >= 3, "expected at least 3 voice buttons");
+
+    // Should show channel name.
+    let name = query(&container, ".voice-channel-name");
+    assert!(name.is_some(), "voice channel name element should exist");
+    assert!(
+        text(&name.unwrap()).contains("voice-chat"),
+        "channel name should contain 'voice-chat'"
+    );
+
+    // Disconnect button should have the correct class.
+    let disconnect = query(&container, ".voice-btn.disconnect");
+    assert!(disconnect.is_some(), "disconnect button should exist");
+}
+
+#[wasm_bindgen_test]
+async fn voice_controls_mute_toggles_class() {
+    let (muted, set_muted) = signal(false);
+    let (deafened, _) = signal(false);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="voice-controls">
+                <div class="voice-buttons">
+                    <button
+                        class=move || if muted.get() { "voice-btn muted" } else { "voice-btn" }
+                        on:click=move |_| set_muted.update(|v| *v = !*v)
+                    >
+                        {move || if muted.get() { "\u{1F507}" } else { "\u{1F3A4}" }}
+                    </button>
+                    <button
+                        class=move || if deafened.get() { "voice-btn deafened" } else { "voice-btn" }
+                    >
+                        {move || if deafened.get() { "\u{1F515}" } else { "\u{1F514}" }}
+                    </button>
+                    <button class="voice-btn disconnect">{"\u{1F4F5}"}</button>
+                </div>
+            </div>
+        }
+    });
+    tick().await;
+
+    // First button should not have "muted" class initially.
+    let buttons = query_all(&container, ".voice-btn");
+    assert!(
+        !buttons[0].class_list().contains("muted"),
+        "mute button should not be muted initially"
+    );
+
+    // Click mute button.
+    simulate_click(&buttons[0]);
+    tick().await;
+
+    // Should now have "muted" class.
+    let buttons = query_all(&container, ".voice-btn");
+    assert!(
+        buttons[0].class_list().contains("muted"),
+        "mute button should have 'muted' class after click"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn voice_controls_deafen_toggles_class() {
+    let (deafened, set_deafened) = signal(false);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="voice-controls">
+                <div class="voice-buttons">
+                    <button class="voice-btn">{"\u{1F3A4}"}</button>
+                    <button
+                        class=move || if deafened.get() { "voice-btn deafened" } else { "voice-btn" }
+                        on:click=move |_| set_deafened.update(|v| *v = !*v)
+                    >
+                        {move || if deafened.get() { "\u{1F515}" } else { "\u{1F514}" }}
+                    </button>
+                    <button class="voice-btn disconnect">{"\u{1F4F5}"}</button>
+                </div>
+            </div>
+        }
+    });
+    tick().await;
+
+    let buttons = query_all(&container, ".voice-btn");
+    assert!(
+        !buttons[1].class_list().contains("deafened"),
+        "deafen button should not be deafened initially"
+    );
+
+    simulate_click(&buttons[1]);
+    tick().await;
+
+    let buttons = query_all(&container, ".voice-btn");
+    assert!(
+        buttons[1].class_list().contains("deafened"),
+        "deafen button should have 'deafened' class after click"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn voice_controls_disconnect_fires_callback() {
+    let (disconnected, set_disconnected) = signal(false);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="voice-controls">
+                <div class="voice-buttons">
+                    <button class="voice-btn">{"\u{1F3A4}"}</button>
+                    <button class="voice-btn">{"\u{1F514}"}</button>
+                    <button
+                        class="voice-btn disconnect"
+                        on:click=move |_| set_disconnected.set(true)
+                    >
+                        {"\u{1F4F5}"}
+                    </button>
+                </div>
+            </div>
+        }
+    });
+    tick().await;
+
+    let disconnect_btn = query(&container, ".voice-btn.disconnect").unwrap();
+    simulate_click(&disconnect_btn);
+    tick().await;
+
+    assert!(
+        disconnected.get_untracked(),
+        "disconnect callback should have fired"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn voice_controls_channel_name_updates_reactively() {
+    let (channel_name, set_channel_name) = signal("general-voice".to_string());
+
+    let container = mount_test(move || {
+        view! {
+            <div class="voice-controls">
+                <span class="voice-channel-name">{move || channel_name.get()}</span>
+            </div>
+        }
+    });
+    tick().await;
+
+    let name = query(&container, ".voice-channel-name").unwrap();
+    assert_eq!(text(&name), "general-voice");
+
+    set_channel_name.set("music-room".to_string());
+    tick().await;
+
+    let name = query(&container, ".voice-channel-name").unwrap();
+    assert_eq!(text(&name), "music-room");
+}
+
+// ── Welcome Screen / Add Server Panel Tests ─────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn welcome_screen_shows_create_and_join() {
+    // Test that the welcome-options structure renders create and join sections.
+    // WelcomeScreen itself needs a ClientHandle, so we replicate the UI inline.
+    let container = mount_test(|| {
+        view! {
+            <div class="welcome-screen">
+                <div class="welcome-card">
+                    <h1>"Welcome to Willow"</h1>
+                    <p class="tagline">
+                        "P2P encrypted chat \u{2014} no accounts, no servers, no middlemen."
+                    </p>
+                    <div class="welcome-options">
+                        <div class="welcome-option">
+                            <h3>"Create a Server"</h3>
+                            <input type="text" placeholder="My Server" />
+                            <button class="btn btn-primary welcome-btn">"Create Server"</button>
+                        </div>
+                        <div class="welcome-option">
+                            <h3>"Join a Server"</h3>
+                            <textarea class="welcome-invite-input" placeholder="Paste invite code here..."></textarea>
+                            <button class="btn btn-primary welcome-btn">"Next \u{2192}"</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
+    });
+    tick().await;
+
+    let options = query_all(&container, ".welcome-option");
+    assert_eq!(options.len(), 2, "should have 2 welcome options");
+    assert!(
+        text(&options[0]).contains("Create"),
+        "first option should be 'Create a Server'"
+    );
+    assert!(
+        text(&options[1]).contains("Join"),
+        "second option should be 'Join a Server'"
+    );
+
+    // Welcome card should exist.
+    assert!(query(&container, ".welcome-card").is_some());
+
+    // Heading should exist.
+    let heading = query(&container, "h1").unwrap();
+    assert!(text(&heading).contains("Welcome to Willow"));
+}
+
+#[wasm_bindgen_test]
+async fn welcome_screen_peer_id_display() {
+    let peer_id = "12D3KooWTestPeerId123";
+
+    let container = mount_test(move || {
+        view! {
+            <div class="welcome-screen">
+                <div class="welcome-card">
+                    <div class="welcome-peer-id">
+                        <code class="peer-id-text">{peer_id}</code>
+                        <button class="btn btn-sm">"Copy"</button>
+                    </div>
+                </div>
+            </div>
+        }
+    });
+    tick().await;
+
+    let peer_el = query(&container, ".peer-id-text").unwrap();
+    assert_eq!(text(&peer_el), "12D3KooWTestPeerId123");
+
+    // Copy button should exist.
+    assert!(
+        query(&container, ".welcome-peer-id .btn").is_some(),
+        "copy button should exist in the peer ID display"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn welcome_create_server_validates_empty_name() {
+    let (status_msg, set_status_msg) = signal(String::new());
+    let (server_name, _) = signal(String::new());
+
+    let container = mount_test(move || {
+        let on_create = move |_| {
+            let name = server_name.get_untracked();
+            if name.trim().is_empty() {
+                set_status_msg.set("Please enter a server name.".to_string());
+            }
+        };
+        view! {
+            <div class="welcome-option">
+                {move || {
+                    let msg = status_msg.get();
+                    if msg.is_empty() {
+                        None
+                    } else {
+                        Some(view! { <div class="settings-status">{msg}</div> })
+                    }
+                }}
+                <h3>"Create a Server"</h3>
+                <input type="text" placeholder="My Server" />
+                <button class="btn btn-primary welcome-btn" on:click=on_create>
+                    "Create Server"
+                </button>
+            </div>
+        }
+    });
+    tick().await;
+
+    // No status message initially.
+    assert!(query(&container, ".settings-status").is_none());
+
+    // Click create with empty name.
+    let create_btn = query(&container, ".welcome-btn").unwrap();
+    simulate_click(&create_btn);
+    tick().await;
+
+    // Should show validation error.
+    let status = query(&container, ".settings-status").unwrap();
+    assert!(
+        text(&status).contains("Please enter a server name"),
+        "should show validation message for empty name"
+    );
+}
+
+// ── Pinned Messages Panel Tests ─────────────────────────────────────────────
+
+/// Check if a URL points to an image based on extension (mirrors message.rs).
+fn is_image_url(url: &str) -> bool {
+    let lower = url.to_lowercase();
+    let path = lower.split('?').next().unwrap_or(&lower);
+    [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico"]
+        .iter()
+        .any(|ext| path.ends_with(ext))
+}
+
+/// Extract URLs from text (mirrors message.rs). Returns (segments, image_urls).
+fn extract_urls(body: &str) -> (Vec<(String, bool)>, Vec<String>) {
+    let mut segments = Vec::new();
+    let mut images = Vec::new();
+    let mut last_end = 0;
+
+    let mut url_starts: Vec<usize> = body
+        .match_indices("https://")
+        .chain(body.match_indices("http://"))
+        .map(|(i, _)| i)
+        .collect();
+    url_starts.sort_unstable();
+    url_starts.dedup();
+
+    for &url_start in &url_starts {
+        if url_start < last_end {
+            continue;
+        }
+        let rest = &body[url_start..];
+        let url_end = rest
+            .find(|c: char| c.is_whitespace() || c == '>' || c == ')' || c == ']')
+            .map(|i| url_start + i)
+            .unwrap_or(body.len());
+        let url = &body[url_start..url_end];
+
+        if url_start > last_end {
+            segments.push((body[last_end..url_start].to_string(), false));
+        }
+        segments.push((url.to_string(), true));
+
+        if is_image_url(url) {
+            images.push(url.to_string());
+        }
+
+        last_end = url_end;
+    }
+
+    if last_end < body.len() {
+        segments.push((body[last_end..].to_string(), false));
+    }
+
+    if segments.is_empty() {
+        segments.push((body.to_string(), false));
+    }
+
+    (segments, images)
+}
+
+#[wasm_bindgen_test]
+async fn pinned_panel_renders_messages() {
+    let msg1 = make_msg("Alice", "pinned message one", 1000);
+    let msg2 = make_msg("Bob", "pinned message two", 2000);
+    let (msgs, _) = signal(vec![msg1, msg2]);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="pinned-panel">
+                <div class="pinned-header">
+                    <h3>"Pinned Messages"</h3>
+                    <button class="btn btn-sm">"\u{00D7}"</button>
+                </div>
+                <div class="pinned-list">
+                    <For
+                        each=move || msgs.get()
+                        key=|msg| msg.id.clone()
+                        let:msg
+                    >
+                        {
+                            let author = msg.author_display_name.clone();
+                            let body = msg.body.clone();
+                            view! {
+                                <div class="pinned-item">
+                                    <div class="pinned-meta">
+                                        <span class="pinned-author">{author}</span>
+                                    </div>
+                                    <div class="pinned-body">{body}</div>
+                                    <button class="btn btn-sm pinned-jump">"Jump"</button>
+                                </div>
+                            }
+                        }
+                    </For>
+                </div>
+            </div>
+        }
+    });
+    tick().await;
+
+    let items = query_all(&container, ".pinned-item");
+    assert_eq!(items.len(), 2, "should render 2 pinned messages");
+    assert!(
+        text(&items[0]).contains("pinned message one"),
+        "first pinned message should contain its body"
+    );
+    assert!(
+        text(&items[1]).contains("pinned message two"),
+        "second pinned message should contain its body"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn pinned_panel_shows_empty_state() {
+    let (msgs, _) = signal(Vec::<willow_client::DisplayMessage>::new());
+
+    let container = mount_test(move || {
+        view! {
+            <div class="pinned-panel">
+                <div class="pinned-header">
+                    <h3>"Pinned Messages"</h3>
+                </div>
+                <div class="pinned-list">
+                    <For
+                        each=move || msgs.get()
+                        key=|msg| msg.id.clone()
+                        let:msg
+                    >
+                        {
+                            let body = msg.body.clone();
+                            view! { <div class="pinned-item">{body}</div> }
+                        }
+                    </For>
+                    {move || {
+                        if msgs.get().is_empty() {
+                            Some(view! { <div class="empty-state">"No pinned messages"</div> })
+                        } else {
+                            None
+                        }
+                    }}
+                </div>
+            </div>
+        }
+    });
+    tick().await;
+
+    let empty = query(&container, ".empty-state");
+    assert!(empty.is_some(), "empty state should be shown when no pins");
+    assert!(
+        text(&empty.unwrap()).contains("No pinned"),
+        "empty state should mention 'No pinned'"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn pinned_panel_has_jump_buttons() {
+    let msg = make_msg("Alice", "jump to me", 1000);
+    let (msgs, _) = signal(vec![msg]);
+    let (jumped_to, set_jumped_to) = signal(Option::<String>::None);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="pinned-panel">
+                <div class="pinned-list">
+                    <For
+                        each=move || msgs.get()
+                        key=|msg| msg.id.clone()
+                        let:msg
+                    >
+                        {
+                            let msg_id = msg.id.clone();
+                            let body = msg.body.clone();
+                            view! {
+                                <div class="pinned-item">
+                                    <div class="pinned-body">{body}</div>
+                                    <button
+                                        class="btn btn-sm pinned-jump"
+                                        on:click=move |_| set_jumped_to.set(Some(msg_id.clone()))
+                                    >
+                                        "Jump"
+                                    </button>
+                                </div>
+                            }
+                        }
+                    </For>
+                </div>
+            </div>
+        }
+    });
+    tick().await;
+
+    let jump_btn = query(&container, ".pinned-jump");
+    assert!(jump_btn.is_some(), "jump button should exist");
+    assert!(
+        text(&jump_btn.as_ref().unwrap()).contains("Jump"),
+        "jump button should say 'Jump'"
+    );
+
+    // Click the jump button.
+    simulate_click(&jump_btn.unwrap());
+    tick().await;
+
+    assert!(
+        jumped_to.get_untracked().is_some(),
+        "jump callback should have fired"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn pinned_panel_renders_urls_as_links() {
+    let msg = make_msg("Alice", "check https://example.com please", 1000);
+    let (msgs, _) = signal(vec![msg]);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="pinned-panel">
+                <div class="pinned-list">
+                    <For
+                        each=move || msgs.get()
+                        key=|msg| msg.id.clone()
+                        let:msg
+                    >
+                        {
+                            let body = msg.body.clone();
+                            let (segments, _images) = extract_urls(&body);
+                            view! {
+                                <div class="pinned-item">
+                                    <div class="pinned-body">
+                                        {segments.into_iter().map(|(txt, is_url)| {
+                                            if is_url {
+                                                let display = txt.clone();
+                                                view! {
+                                                    <a href=txt target="_blank" rel="noopener noreferrer" class="message-link">{display}</a>
+                                                }.into_any()
+                                            } else {
+                                                view! { <span>{txt}</span> }.into_any()
+                                            }
+                                        }).collect::<Vec<_>>()}
+                                    </div>
+                                </div>
+                            }
+                        }
+                    </For>
+                </div>
+            </div>
+        }
+    });
+    tick().await;
+
+    let links = query_all(&container, ".pinned-body a.message-link");
+    assert!(
+        !links.is_empty(),
+        "URL should be rendered as a clickable link in pinned body"
+    );
+    assert!(
+        text(&links[0]).contains("https://example.com"),
+        "link text should contain the URL"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn pinned_panel_close_button_fires_callback() {
+    let (closed, set_closed) = signal(false);
+    let (msgs, _) = signal(Vec::<willow_client::DisplayMessage>::new());
+
+    let container = mount_test(move || {
+        view! {
+            <div class="pinned-panel">
+                <div class="pinned-header">
+                    <h3>"Pinned Messages"</h3>
+                    <button class="btn btn-sm pinned-close" on:click=move |_| set_closed.set(true)>
+                        "\u{00D7}"
+                    </button>
+                </div>
+                <div class="pinned-list">
+                    {move || {
+                        if msgs.get().is_empty() {
+                            Some(view! { <div class="empty-state">"No pinned messages"</div> })
+                        } else {
+                            None
+                        }
+                    }}
+                </div>
+            </div>
+        }
+    });
+    tick().await;
+
+    let close_btn = query(&container, ".pinned-close").unwrap();
+    simulate_click(&close_btn);
+    tick().await;
+
+    assert!(
+        closed.get_untracked(),
+        "close callback should have fired"
+    );
+}
+
+// ── Typing Indicator Tests ──────────────────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn typing_indicator_shows_single_typer() {
+    let (typers, _) = signal(vec!["Alice".to_string()]);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="typing-indicator">
+                {move || {
+                    let names = typers.get();
+                    if names.is_empty() {
+                        String::new()
+                    } else if names.len() == 1 {
+                        format!("{} is typing...", names[0])
+                    } else {
+                        format!("{} are typing...", names.join(", "))
+                    }
+                }}
+            </div>
+        }
+    });
+    tick().await;
+
+    let indicator = query(&container, ".typing-indicator");
+    assert!(indicator.is_some(), "typing indicator should exist");
+    assert!(
+        text(&indicator.unwrap()).contains("Alice is typing"),
+        "should show 'Alice is typing...'"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn typing_indicator_shows_multiple_typers() {
+    let (typers, _) = signal(vec!["Alice".to_string(), "Bob".to_string()]);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="typing-indicator">
+                {move || {
+                    let names = typers.get();
+                    if names.is_empty() {
+                        String::new()
+                    } else if names.len() == 1 {
+                        format!("{} is typing...", names[0])
+                    } else {
+                        format!("{} are typing...", names.join(", "))
+                    }
+                }}
+            </div>
+        }
+    });
+    tick().await;
+
+    let indicator = query(&container, ".typing-indicator").unwrap();
+    let t = text(&indicator);
+    assert!(
+        t.contains("Alice") && t.contains("Bob") && t.contains("are typing"),
+        "should show multiple typers, got: {t}"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn typing_indicator_empty_when_no_typers() {
+    let (typers, _) = signal(Vec::<String>::new());
+
+    let container = mount_test(move || {
+        view! {
+            <div class="typing-indicator">
+                {move || {
+                    let names = typers.get();
+                    if names.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{} is typing...", names[0])
+                    }
+                }}
+            </div>
+        }
+    });
+    tick().await;
+
+    let indicator = query(&container, ".typing-indicator").unwrap();
+    assert!(
+        text(&indicator).is_empty(),
+        "typing indicator should be empty when no one is typing"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn typing_indicator_updates_reactively() {
+    let (typers, set_typers) = signal(Vec::<String>::new());
+
+    let container = mount_test(move || {
+        view! {
+            <div class="typing-indicator">
+                {move || {
+                    let names = typers.get();
+                    if names.is_empty() {
+                        String::new()
+                    } else if names.len() == 1 {
+                        format!("{} is typing...", names[0])
+                    } else {
+                        format!("{} are typing...", names.join(", "))
+                    }
+                }}
+            </div>
+        }
+    });
+    tick().await;
+
+    let indicator = query(&container, ".typing-indicator").unwrap();
+    assert!(text(&indicator).is_empty());
+
+    // Someone starts typing.
+    set_typers.set(vec!["Charlie".to_string()]);
+    tick().await;
+
+    let indicator = query(&container, ".typing-indicator").unwrap();
+    assert!(text(&indicator).contains("Charlie is typing"));
+
+    // They stop typing.
+    set_typers.set(vec![]);
+    tick().await;
+
+    let indicator = query(&container, ".typing-indicator").unwrap();
+    assert!(text(&indicator).is_empty());
+}
+
+// ── Message Mention Highlighting Tests ──────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn mentioned_message_has_highlight_class() {
+    let mut msg = make_msg("Bob", "hey check this", 1000);
+    msg.reply_preview = Some("Alice: original message".to_string());
+    msg.reply_to = Some("parent-id".to_string());
+
+    let local_name = "Alice";
+    let is_mention = !msg.is_local
+        && msg
+            .reply_preview
+            .as_ref()
+            .map(|p| p.starts_with(&format!("{local_name}:")))
+            .unwrap_or(false);
+
+    let msg_class = if is_mention {
+        "message mentioned"
+    } else {
+        "message"
+    };
+    let body = msg.body.clone();
+    let reply_preview = msg.reply_preview.clone();
+
+    let container = mount_test(move || {
+        view! {
+            <div class=msg_class>
+                {reply_preview.clone().map(|preview| {
+                    view! { <div class="reply-preview">{format!("> {preview}")}</div> }
+                })}
+                <div class="body">{body}</div>
+            </div>
+        }
+    });
+    tick().await;
+
+    let mentioned = query(&container, ".message.mentioned");
+    assert!(
+        mentioned.is_some(),
+        "reply to local user should have .mentioned class"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn non_mentioned_message_has_no_highlight() {
+    let mut msg = make_msg("Bob", "hey check this", 1000);
+    msg.reply_preview = Some("Charlie: some other message".to_string());
+    msg.reply_to = Some("parent-id".to_string());
+
+    let local_name = "Alice";
+    let is_mention = !msg.is_local
+        && msg
+            .reply_preview
+            .as_ref()
+            .map(|p| p.starts_with(&format!("{local_name}:")))
+            .unwrap_or(false);
+
+    let msg_class = if is_mention {
+        "message mentioned"
+    } else {
+        "message"
+    };
+    let body = msg.body.clone();
+
+    let container = mount_test(move || {
+        view! {
+            <div class=msg_class>
+                <div class="body">{body}</div>
+            </div>
+        }
+    });
+    tick().await;
+
+    assert!(
+        query(&container, ".message.mentioned").is_none(),
+        "reply to a different user should NOT have .mentioned class"
+    );
+}
+
+// ── Reply Preview Clickable Tests ───────────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn reply_preview_is_clickable_when_reply_to_present() {
+    let mut msg = make_msg("Bob", "replying", 2000);
+    msg.reply_preview = Some("Alice: original".to_string());
+    msg.reply_to = Some("parent-123".to_string());
+
+    let reply_preview = msg.reply_preview.clone();
+    let reply_to = msg.reply_to.clone();
+    let body = msg.body.clone();
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                {reply_preview.clone().map(|preview| {
+                    let has_reply_to = reply_to.is_some();
+                    let cls = if has_reply_to { "reply-preview reply-clickable" } else { "reply-preview" };
+                    view! {
+                        <div class=cls>
+                            {format!("> {preview}")}
+                        </div>
+                    }
+                })}
+                <div class="body">{body}</div>
+            </div>
+        }
+    });
+    tick().await;
+
+    let preview = query(&container, ".reply-clickable");
+    assert!(
+        preview.is_some(),
+        "reply preview with reply_to should be clickable"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn reply_preview_not_clickable_without_reply_to() {
+    let mut msg = make_msg("Bob", "replying", 2000);
+    msg.reply_preview = Some("Alice: original".to_string());
+    msg.reply_to = None;
+
+    let reply_preview = msg.reply_preview.clone();
+    let reply_to = msg.reply_to.clone();
+    let body = msg.body.clone();
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                {reply_preview.clone().map(|preview| {
+                    let has_reply_to = reply_to.is_some();
+                    let cls = if has_reply_to { "reply-preview reply-clickable" } else { "reply-preview" };
+                    view! {
+                        <div class=cls>
+                            {format!("> {preview}")}
+                        </div>
+                    }
+                })}
+                <div class="body">{body}</div>
+            </div>
+        }
+    });
+    tick().await;
+
+    assert!(
+        query(&container, ".reply-clickable").is_none(),
+        "reply preview without reply_to should NOT be clickable"
+    );
+    assert!(
+        query(&container, ".reply-preview").is_some(),
+        "reply preview should still render"
+    );
+}
+
+// ── Time-Gap Grouping Tests ─────────────────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn messages_with_time_gap_show_separate_headers() {
+    let now = js_sys::Date::now() as u64;
+    let msg1 = make_msg("Alice", "first", now - 600_000); // 10 min ago
+    let msg2 = make_msg("Alice", "second", now); // now
+
+    let msgs = vec![msg1, msg2];
+
+    let container = mount_test(move || {
+        let views: Vec<_> = msgs
+            .iter()
+            .enumerate()
+            .map(|(i, msg)| {
+                let show_header = if i == 0 {
+                    true
+                } else {
+                    let prev = &msgs[i - 1];
+                    prev.author_display_name != msg.author_display_name
+                        || msg.timestamp_ms.saturating_sub(prev.timestamp_ms) > 300_000
+                };
+                let msg_class = if show_header {
+                    "message"
+                } else {
+                    "message grouped"
+                };
+                let author = msg.author_display_name.clone();
+                let body = msg.body.clone();
+                view! {
+                    <div class=msg_class>
+                        {if show_header {
+                            Some(view! {
+                                <div class="meta">
+                                    <span class="author">{author}</span>
+                                </div>
+                            })
+                        } else {
+                            None
+                        }}
+                        <div class="body">{body}</div>
+                    </div>
+                }
+            })
+            .collect();
+        view! { <div class="message-list">{views}</div> }
+    });
+    tick().await;
+
+    // Both messages from same author but >5 min gap (300_000 ms).
+    // Should show 2 headers (not grouped).
+    let headers = query_all(&container, ".meta");
+    assert_eq!(
+        headers.len(),
+        2,
+        "should show 2 headers for 10-minute gap between same-author messages"
+    );
+
+    let grouped = query_all(&container, ".message.grouped");
+    assert_eq!(
+        grouped.len(),
+        0,
+        "no messages should be grouped with a 10-minute gap"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn consecutive_messages_within_gap_are_grouped() {
+    let now = js_sys::Date::now() as u64;
+    let msg1 = make_msg("Alice", "first", now - 1000); // 1 sec ago
+    let msg2 = make_msg("Alice", "second", now); // now
+
+    let msgs = vec![msg1, msg2];
+
+    let container = mount_test(move || {
+        let views: Vec<_> = msgs
+            .iter()
+            .enumerate()
+            .map(|(i, msg)| {
+                let show_header = if i == 0 {
+                    true
+                } else {
+                    let prev = &msgs[i - 1];
+                    prev.author_display_name != msg.author_display_name
+                        || msg.timestamp_ms.saturating_sub(prev.timestamp_ms) > 300_000
+                };
+                let msg_class = if show_header {
+                    "message"
+                } else {
+                    "message grouped"
+                };
+                let author = msg.author_display_name.clone();
+                let body = msg.body.clone();
+                view! {
+                    <div class=msg_class>
+                        {if show_header {
+                            Some(view! {
+                                <div class="meta">
+                                    <span class="author">{author}</span>
+                                </div>
+                            })
+                        } else {
+                            None
+                        }}
+                        <div class="body">{body}</div>
+                    </div>
+                }
+            })
+            .collect();
+        view! { <div class="message-list">{views}</div> }
+    });
+    tick().await;
+
+    // Same author, <5 min gap -- should show 1 header (grouped).
+    let headers = query_all(&container, ".meta");
+    assert_eq!(
+        headers.len(),
+        1,
+        "should show 1 header for grouped messages"
+    );
+
+    let grouped = query_all(&container, ".message.grouped");
+    assert_eq!(
+        grouped.len(),
+        1,
+        "second message should be grouped"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn different_authors_never_grouped() {
+    let now = js_sys::Date::now() as u64;
+    let msg1 = make_msg("Alice", "hello", now - 1000);
+    let msg2 = make_msg("Bob", "hi", now);
+
+    let msgs = vec![msg1, msg2];
+
+    let container = mount_test(move || {
+        let views: Vec<_> = msgs
+            .iter()
+            .enumerate()
+            .map(|(i, msg)| {
+                let show_header = if i == 0 {
+                    true
+                } else {
+                    let prev = &msgs[i - 1];
+                    prev.author_display_name != msg.author_display_name
+                        || msg.timestamp_ms.saturating_sub(prev.timestamp_ms) > 300_000
+                };
+                let msg_class = if show_header {
+                    "message"
+                } else {
+                    "message grouped"
+                };
+                let author = msg.author_display_name.clone();
+                let body = msg.body.clone();
+                view! {
+                    <div class=msg_class>
+                        {if show_header {
+                            Some(view! {
+                                <div class="meta">
+                                    <span class="author">{author}</span>
+                                </div>
+                            })
+                        } else {
+                            None
+                        }}
+                        <div class="body">{body}</div>
+                    </div>
+                }
+            })
+            .collect();
+        view! { <div class="message-list">{views}</div> }
+    });
+    tick().await;
+
+    let headers = query_all(&container, ".meta");
+    assert_eq!(
+        headers.len(),
+        2,
+        "different authors should always show separate headers"
+    );
+
+    let grouped = query_all(&container, ".message.grouped");
+    assert_eq!(
+        grouped.len(),
+        0,
+        "different authors should never be grouped"
+    );
+}
+
+// ── Image Embedding Tests ───────────────────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn url_with_image_extension_embeds_inline() {
+    let body = "look https://example.com/cat.png";
+    let (segments, images) = extract_urls(body);
+    let has_images = !images.is_empty();
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                <div class="body">
+                    {segments.clone().into_iter().map(|(txt, url)| {
+                        if url {
+                            let display = txt.clone();
+                            view! {
+                                <a href=txt target="_blank" rel="noopener noreferrer" class="message-link">{display}</a>
+                            }.into_any()
+                        } else {
+                            view! { <span>{txt}</span> }.into_any()
+                        }
+                    }).collect::<Vec<_>>()}
+                </div>
+                {if has_images {
+                    let imgs = images.clone();
+                    Some(view! {
+                        <div class="message-embeds">
+                            {imgs.into_iter().map(|url| {
+                                let url_clone = url.clone();
+                                view! {
+                                    <a href=url target="_blank" rel="noopener noreferrer" class="embed-link">
+                                        <img class="embed-image" src=url_clone alt="embedded image" loading="lazy" />
+                                    </a>
+                                }
+                            }).collect::<Vec<_>>()}
+                        </div>
+                    })
+                } else {
+                    None
+                }}
+            </div>
+        }
+    });
+    tick().await;
+
+    let imgs = query_all(&container, ".embed-image");
+    assert!(
+        !imgs.is_empty(),
+        "image URL should render as embedded image"
+    );
+
+    // The image src should point to the URL.
+    let img = &imgs[0];
+    assert_eq!(
+        img.get_attribute("src").unwrap_or_default(),
+        "https://example.com/cat.png"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn url_without_image_extension_renders_as_link() {
+    let body = "check https://example.com/page";
+    let (segments, images) = extract_urls(body);
+    let has_images = !images.is_empty();
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                <div class="body">
+                    {segments.clone().into_iter().map(|(txt, url)| {
+                        if url {
+                            let display = txt.clone();
+                            view! {
+                                <a href=txt target="_blank" rel="noopener noreferrer" class="message-link">{display}</a>
+                            }.into_any()
+                        } else {
+                            view! { <span>{txt}</span> }.into_any()
+                        }
+                    }).collect::<Vec<_>>()}
+                </div>
+                {if has_images {
+                    Some(view! {
+                        <div class="message-embeds">"images"</div>
+                    })
+                } else {
+                    None
+                }}
+            </div>
+        }
+    });
+    tick().await;
+
+    let links = query_all(&container, "a.message-link");
+    assert!(
+        !links.is_empty(),
+        "non-image URL should render as link"
+    );
+
+    let imgs = query_all(&container, ".embed-image");
+    assert!(
+        imgs.is_empty(),
+        "non-image URL should NOT render as image embed"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn multiple_image_urls_all_embedded() {
+    let body = "pics: https://example.com/a.jpg https://example.com/b.gif";
+    let (_segments, images) = extract_urls(body);
+
+    assert_eq!(
+        images.len(),
+        2,
+        "should detect 2 image URLs"
+    );
+    assert!(is_image_url(&images[0]));
+    assert!(is_image_url(&images[1]));
+}
+
+// ── Dropdown Action Menu Tests ──────────────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn message_action_dropdown_toggles() {
+    let (show_dropdown, set_show_dropdown) = signal(false);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                <div class="body">"hello"</div>
+                <div class="message-actions">
+                    <button class="action-trigger" on:click=move |ev| {
+                        ev.stop_propagation();
+                        set_show_dropdown.update(|v| *v = !*v);
+                    }>"\u{22EF}"</button>
+                    {move || {
+                        if show_dropdown.get() {
+                            Some(view! {
+                                <div class="message-dropdown">
+                                    <button class="dropdown-item">"Reply"</button>
+                                    <button class="dropdown-item">"Pin"</button>
+                                    <button class="dropdown-item">"React"</button>
+                                </div>
+                            })
+                        } else {
+                            None
+                        }
+                    }}
+                </div>
+            </div>
+        }
+    });
+    tick().await;
+
+    // Dropdown should not be visible initially.
+    let dropdown = query(&container, ".message-dropdown");
+    assert!(
+        dropdown.is_none(),
+        "dropdown should be hidden initially"
+    );
+
+    // Click the action trigger.
+    let trigger = query(&container, ".action-trigger");
+    assert!(
+        trigger.is_some(),
+        "action trigger button should exist"
+    );
+    simulate_click(&trigger.unwrap());
+    tick().await;
+
+    // Dropdown should now be visible.
+    let dropdown = query(&container, ".message-dropdown");
+    assert!(
+        dropdown.is_some(),
+        "dropdown should appear after click"
+    );
+
+    let items = query_all(&container, ".dropdown-item");
+    assert_eq!(
+        items.len(),
+        3,
+        "dropdown should have 3 items"
+    );
+
+    // Click trigger again to close.
+    let trigger = query(&container, ".action-trigger").unwrap();
+    simulate_click(&trigger);
+    tick().await;
+
+    assert!(
+        query(&container, ".message-dropdown").is_none(),
+        "dropdown should close after second click"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn dropdown_reply_fires_callback() {
+    let (replied, set_replied) = signal(false);
+    let (show_dropdown, _) = signal(true); // Start open.
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                <div class="message-actions">
+                    {move || {
+                        if show_dropdown.get() {
+                            Some(view! {
+                                <div class="message-dropdown">
+                                    <button
+                                        class="dropdown-item reply-item"
+                                        on:click=move |_| set_replied.set(true)
+                                    >
+                                        "Reply"
+                                    </button>
+                                </div>
+                            })
+                        } else {
+                            None
+                        }
+                    }}
+                </div>
+            </div>
+        }
+    });
+    tick().await;
+
+    let reply_btn = query(&container, ".reply-item").unwrap();
+    simulate_click(&reply_btn);
+    tick().await;
+
+    assert!(
+        replied.get_untracked(),
+        "reply callback should have fired"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn dropdown_pin_fires_callback() {
+    let (pinned, set_pinned) = signal(false);
+    let (show_dropdown, _) = signal(true);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                <div class="message-actions">
+                    {move || {
+                        if show_dropdown.get() {
+                            Some(view! {
+                                <div class="message-dropdown">
+                                    <button
+                                        class="dropdown-item pin-item"
+                                        on:click=move |_| set_pinned.set(true)
+                                    >
+                                        "Pin"
+                                    </button>
+                                </div>
+                            })
+                        } else {
+                            None
+                        }
+                    }}
+                </div>
+            </div>
+        }
+    });
+    tick().await;
+
+    let pin_btn = query(&container, ".pin-item").unwrap();
+    simulate_click(&pin_btn);
+    tick().await;
+
+    assert!(
+        pinned.get_untracked(),
+        "pin callback should have fired"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn dropdown_delete_has_danger_class() {
+    let container = mount_test(move || {
+        view! {
+            <div class="message">
+                <div class="message-dropdown">
+                    <button class="dropdown-item">"Reply"</button>
+                    <button class="dropdown-item">"Edit"</button>
+                    <button class="dropdown-item dropdown-danger">"Delete"</button>
+                </div>
+            </div>
+        }
+    });
+    tick().await;
+
+    let danger = query(&container, ".dropdown-danger");
+    assert!(
+        danger.is_some(),
+        "delete button should have .dropdown-danger class"
+    );
+    assert_eq!(
+        text(&danger.unwrap()),
+        "Delete",
+        "danger button should say 'Delete'"
+    );
+}
