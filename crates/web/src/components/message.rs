@@ -441,3 +441,106 @@ pub fn MessageView(
         </div>
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_image_url_recognizes_common_formats() {
+        assert!(is_image_url("https://example.com/photo.png"));
+        assert!(is_image_url("https://example.com/photo.JPG"));
+        assert!(is_image_url("https://example.com/anim.gif"));
+        assert!(is_image_url("https://example.com/photo.webp"));
+        assert!(!is_image_url("https://example.com/doc.pdf"));
+        assert!(!is_image_url("https://example.com/page"));
+    }
+
+    #[test]
+    fn is_image_url_handles_query_params() {
+        assert!(is_image_url("https://example.com/photo.png?w=200"));
+        assert!(!is_image_url("https://example.com/api?file=photo.png"));
+        // The second one should be false because the path doesn't end in .png
+    }
+
+    #[test]
+    fn is_image_file_works() {
+        assert!(is_image_file("photo.png"));
+        assert!(is_image_file("animation.GIF"));
+        assert!(is_image_file("icon.svg"));
+        assert!(!is_image_file("document.pdf"));
+        assert!(!is_image_file("archive.zip"));
+    }
+
+    #[test]
+    fn extract_urls_no_urls() {
+        let (segments, images) = extract_urls("hello world");
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].0, "hello world");
+        assert!(!segments[0].1);
+        assert!(images.is_empty());
+    }
+
+    #[test]
+    fn extract_urls_single_url() {
+        let (segments, images) = extract_urls("check https://example.com please");
+        assert_eq!(segments.len(), 3);
+        assert_eq!(segments[0].0, "check ");
+        assert!(!segments[0].1);
+        assert_eq!(segments[1].0, "https://example.com");
+        assert!(segments[1].1);
+        assert_eq!(segments[2].0, " please");
+        assert!(!segments[2].1);
+        assert!(images.is_empty());
+    }
+
+    #[test]
+    fn extract_urls_image_url() {
+        let (segments, images) = extract_urls("look https://example.com/cat.gif");
+        assert_eq!(segments.len(), 2);
+        assert!(segments[1].1); // is URL
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0], "https://example.com/cat.gif");
+    }
+
+    #[test]
+    fn extract_urls_multiple_urls() {
+        let (segments, images) =
+            extract_urls("a https://one.com b https://two.com/pic.png c");
+        // Should have 5 segments: text, url, text, url, text
+        assert_eq!(segments.len(), 5);
+        assert!(segments[1].1);
+        assert!(segments[3].1);
+        assert_eq!(images.len(), 1); // only the .png one
+    }
+
+    #[test]
+    fn extract_urls_url_only() {
+        let (segments, images) = extract_urls("https://example.com");
+        assert_eq!(segments.len(), 1);
+        assert!(segments[0].1);
+        assert!(images.is_empty());
+    }
+
+    #[test]
+    fn extract_urls_https_not_doubled() {
+        // https:// should not be matched twice (once as http:// prefix)
+        let (segments, _) = extract_urls("https://example.com");
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].0, "https://example.com");
+    }
+
+    #[test]
+    fn mime_for_image_returns_correct_types() {
+        assert_eq!(mime_for_image("photo.png"), "image/png");
+        assert_eq!(mime_for_image("photo.jpg"), "image/jpeg");
+        assert_eq!(mime_for_image("photo.jpeg"), "image/jpeg");
+        assert_eq!(mime_for_image("anim.gif"), "image/gif");
+        assert_eq!(mime_for_image("photo.webp"), "image/webp");
+        assert_eq!(mime_for_image("icon.svg"), "image/svg+xml");
+        assert_eq!(mime_for_image("icon.bmp"), "image/bmp");
+        assert_eq!(mime_for_image("icon.ico"), "image/x-icon");
+        // Unknown extension defaults to jpeg
+        assert_eq!(mime_for_image("photo.xyz"), "image/jpeg");
+    }
+}

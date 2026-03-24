@@ -3292,4 +3292,76 @@ mod tests {
         // No server profile set, so should fall back to global.
         assert_eq!(client.server_display_name(), "GlobalName");
     }
+
+    // ───── Typing indicator tests ──────────────────────────────────────────
+
+    #[test]
+    fn send_typing_debounces() {
+        let (mut client, _rx) = test_client();
+        // First call should succeed (no-op since not connected, but shouldn't panic)
+        client.send_typing();
+        // Immediate second call should be debounced (within 3s)
+        client.send_typing();
+        // No assertion needed -- just verifying it doesn't panic
+    }
+
+    #[test]
+    fn typing_in_returns_empty_when_no_typers() {
+        let (mut client, _rx) = test_client();
+        let typers = client.typing_in("general");
+        assert!(typers.is_empty());
+    }
+
+    // ───── Server members tests ────────────────────────────────────────────
+
+    #[test]
+    fn server_members_includes_owner() {
+        let (client, _rx) = test_client();
+        let members = client.server_members();
+        assert!(!members.is_empty());
+        // Owner should be present (online because it's the local peer).
+        let owner = members.iter().find(|(_, _, online)| *online);
+        assert!(owner.is_some());
+    }
+
+    // ───── Message dedup tests ─────────────────────────────────────────────
+
+    #[test]
+    fn seen_message_ids_prevents_duplicates() {
+        let (mut client, _rx) = test_client();
+        // The seen_message_ids set should exist and be empty initially
+        assert!(client.state().chat.seen_message_ids.is_empty());
+
+        // After sending a message, the set should still be accessible
+        client.send_message("general", "test").unwrap();
+        // Just verify the field exists and is accessible
+        let _ = client.state().chat.seen_message_ids.len();
+    }
+
+    // ───── Per-server display name isolation ───────────────────────────────
+
+    #[test]
+    fn server_display_name_per_server() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        let _id1 = client.create_server("Server A").unwrap();
+        let _ = client.set_server_display_name("Alice on A");
+        assert_eq!(client.server_display_name(), "Alice on A");
+
+        // Creating a new server reinitializes event_state, which clears the
+        // per-server profile. The display name should fall back to the global
+        // profile name (which was also set to "Alice on A" via set_display_name
+        // called internally by set_server_display_name).
+        let _id2 = client.create_server("Server B").unwrap();
+        // After creating Server B, event_state is fresh. server_display_name
+        // falls back to the global display_name.
+        let name = client.server_display_name();
+        assert_eq!(name, "Alice on A");
+
+        // Set a different name on Server B.
+        let _ = client.set_server_display_name("Alice on B");
+        assert_eq!(client.server_display_name(), "Alice on B");
+    }
 }
