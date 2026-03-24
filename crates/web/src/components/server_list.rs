@@ -6,7 +6,7 @@ pub fn ServerList(
     servers: ReadSignal<Vec<(String, String)>>,
     active_server_id: ReadSignal<String>,
     on_server_click: impl Fn(String) + Send + Clone + 'static,
-    on_settings_click: impl Fn(()) + Send + Clone + 'static,
+    on_add_server_click: impl Fn(()) + Send + Clone + 'static,
 ) -> impl IntoView {
     view! {
         <div class="server-rail">
@@ -50,7 +50,7 @@ pub fn ServerList(
             <div
                 class="server-icon add-server"
                 title="Join or Create Server"
-                on:click=move |_| on_settings_click(())
+                on:click=move |_| on_add_server_click(())
             >
                 "+"
             </div>

@@ -12,10 +12,12 @@ tracing = { workspace = true }
 wasm-bindgen = "0.2"
 web-sys = { version = "0.3", features = [
     "Window", "Document", "Element", "HtmlElement", "HtmlInputElement",
-    "HtmlCollection", "NodeList", "KeyboardEvent", "KeyboardEventInit",
+    "HtmlTextAreaElement", "HtmlCollection", "NodeList",
+    "KeyboardEvent", "KeyboardEventInit",
     "EventTarget", "InputEvent", "InputEventInit",
     "MouseEvent", "DomTokenList",
     "Blob", "File", "FileList", "FileReader", "Url",
+    "Clipboard", "Navigator", "CssStyleDeclaration", "HtmlDocument",
 ] }
 js-sys = "0.3"
 console_error_panic_hook = "0.1"

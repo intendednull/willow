@@ -111,6 +111,7 @@ pub fn App() -> impl IntoView {
             set_messages.set(c.messages(&ch).into_iter().cloned().collect());
             set_show_settings.set(false);
             set_show_server_settings.set(false);
+            set_show_add_server.set(false);
         }));
 
     // Populate initial state from the client.
@@ -273,6 +274,7 @@ pub fn App() -> impl IntoView {
         set_current_channel.set(first_ch.clone());
         set_messages.set(c.messages(&first_ch).into_iter().cloned().collect());
         set_show_settings.set(false);
+        set_show_add_server.set(false);
     };
 
     let settings_client = client.clone();
@@ -310,15 +312,11 @@ pub fn App() -> impl IntoView {
     let member_client = client.clone();
     let typing_client = client.clone();
 
-    // Welcome screen callbacks that refresh all signals.
+    // Welcome screen callback that refreshes all signals.
     let welcome_client = client.clone();
-    let refresh_for_created = refresh_all_signals.clone();
-    let on_welcome_created = move |_: ()| {
-        refresh_for_created();
-    };
-    let refresh_for_joined = refresh_all_signals.clone();
-    let on_welcome_joined = move |_: ()| {
-        refresh_for_joined();
+    let refresh_for_welcome = refresh_all_signals.clone();
+    let on_welcome_done = move |_: ()| {
+        refresh_for_welcome();
     };
 
     // Store the refresh function so reactive closures can access it without moving.
@@ -329,13 +327,11 @@ pub fn App() -> impl IntoView {
             let srv = servers.get();
             if srv.is_empty() {
                 let wc = welcome_client.clone();
-                let on_created = on_welcome_created.clone();
-                let on_join = on_welcome_joined.clone();
+                let on_done = on_welcome_done.clone();
                 view! {
                     <WelcomeScreen
                         client=wc
-                        on_server_created=on_created
-                        on_joined=on_join
+                        on_done=on_done
                     />
                 }.into_any()
             } else {
@@ -356,7 +352,7 @@ pub fn App() -> impl IntoView {
                             servers=servers
                             active_server_id=active_server_id
                             on_server_click=srv_click
-                            on_settings_click=move |_| {
+                            on_add_server_click=move |_| {
                                 set_show_add_server.update(|v| *v = !*v);
                                 set_show_settings.set(false);
                                 set_show_server_settings.set(false);

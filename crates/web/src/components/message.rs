@@ -4,6 +4,9 @@ use willow_client::ChatMessage;
 use super::file_share::{parse_inline_file, FileCard};
 
 /// Image file extensions for URL and upload embedding.
+/// SAFETY: SVG is included but must ONLY be rendered via `<img>` tags
+/// (which sandbox scripts). Never use `<object>`, `<embed>`, or innerHTML
+/// for SVG rendering as that would allow XSS.
 const IMAGE_EXTENSIONS: &[&str] = &[
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico",
 ];
@@ -47,19 +50,33 @@ fn download_blob(data: &[u8], filename: &str) {
     let array = js_sys::Uint8Array::from(data);
     let parts = js_sys::Array::new();
     parts.push(&array.buffer());
-    let blob = web_sys::Blob::new_with_u8_array_sequence(&parts).unwrap();
-    let url = web_sys::Url::create_object_url_with_blob(&blob).unwrap();
-    let window = web_sys::window().unwrap();
-    let document = window.document().unwrap();
-    let a = document.create_element("a").unwrap();
-    a.set_attribute("href", &url).unwrap();
-    a.set_attribute("download", filename).unwrap();
-    a.set_attribute("style", "display:none").unwrap();
-    document.body().unwrap().append_child(&a).unwrap();
-    let html_a: web_sys::HtmlElement = a.clone().dyn_into().unwrap();
-    html_a.click();
-    document.body().unwrap().remove_child(&a).unwrap();
-    web_sys::Url::revoke_object_url(&url).unwrap();
+    let Ok(blob) = web_sys::Blob::new_with_u8_array_sequence(&parts) else {
+        return;
+    };
+    let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else {
+        return;
+    };
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(document) = window.document() else {
+        return;
+    };
+    let Some(body) = document.body() else {
+        return;
+    };
+    let Ok(a) = document.create_element("a") else {
+        return;
+    };
+    let _ = a.set_attribute("href", &url);
+    let _ = a.set_attribute("download", filename);
+    let _ = a.set_attribute("style", "display:none");
+    let _ = body.append_child(&a);
+    if let Ok(html_a) = a.clone().dyn_into::<web_sys::HtmlElement>() {
+        html_a.click();
+    }
+    let _ = body.remove_child(&a);
+    let _ = web_sys::Url::revoke_object_url(&url);
 }
 
 /// Extract URLs from text. Returns (segments, image_urls).
