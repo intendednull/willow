@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use leptos::prelude::*;
 use send_wrapper::SendWrapper;
-use willow_client::{ChatMessage, Client, ClientConfig, ClientEvent};
+use willow_client::{Client, ClientConfig, ClientEvent, DisplayMessage};
 
 use crate::components::{
     AddServerPanel, ChannelHeader, ChatInput, FileShareButton, MemberList, MessageList,
@@ -62,7 +62,7 @@ pub fn App() -> impl IntoView {
     }
 
     // Reactive state signals.
-    let (messages, set_messages) = signal(Vec::<ChatMessage>::new());
+    let (messages, set_messages) = signal(Vec::<DisplayMessage>::new());
     let (channels, set_channels) = signal(Vec::<String>::new());
     let (peers, set_peers) = signal(Vec::<(String, String, bool)>::new());
     let (current_channel, set_current_channel) = signal(String::from("general"));
@@ -78,14 +78,14 @@ pub fn App() -> impl IntoView {
     let (active_server_name, set_active_server_name) = signal(String::new());
     let (unread, set_unread) = signal(HashMap::<String, usize>::new());
     let (connection_status, set_connection_status) = signal("connecting".to_string());
-    let (replying_to, set_replying_to) = signal(Option::<ChatMessage>::None);
-    let (editing, set_editing) = signal(Option::<ChatMessage>::None);
+    let (replying_to, set_replying_to) = signal(Option::<DisplayMessage>::None);
+    let (editing, set_editing) = signal(Option::<DisplayMessage>::None);
     let (loading, set_loading) = signal(true);
     let (display_name, set_display_name) = signal(String::new());
     let (roles, set_roles) = signal(Vec::<(String, String, Vec<String>)>::new());
     let (typing_names, set_typing_names) = signal(Vec::<String>::new());
     let (show_pinned, set_show_pinned) = signal(false);
-    let (pinned_messages, set_pinned_messages) = signal(Vec::<ChatMessage>::new());
+    let (pinned_messages, set_pinned_messages) = signal(Vec::<DisplayMessage>::new());
     let (pin_labels, set_pin_labels) = signal(HashMap::<String, String>::new());
 
     // Auto-clear loading after LOADING_TIMEOUT_MS even if no peer connects.
@@ -113,7 +113,7 @@ pub fn App() -> impl IntoView {
             set_active_server_name.set(c.active_server_name());
             let ch = c.state().chat.current_channel.clone();
             set_current_channel.set(ch.clone());
-            set_messages.set(c.messages(&ch).into_iter().cloned().collect());
+            set_messages.set(c.messages(&ch));
             set_show_settings.set(false);
             set_show_server_settings.set(false);
             set_show_add_server.set(false);
@@ -134,9 +134,9 @@ pub fn App() -> impl IntoView {
 
             for event in events {
                 match event {
-                    ClientEvent::MessageReceived { ref message, .. } => {
+                    ClientEvent::MessageReceived { is_local, .. } => {
                         needs_msg_refresh = true;
-                        if !message.is_local {
+                        if !is_local {
                             let hidden = js_sys::eval("document.hidden")
                                 .ok()
                                 .and_then(|v| v.as_bool())
@@ -172,19 +172,8 @@ pub fn App() -> impl IntoView {
                     ClientEvent::ChannelCreated(_) | ClientEvent::ChannelDeleted(_) => {
                         needs_channel_refresh = true;
                     }
-                    ClientEvent::ProfileUpdated {
-                        ref peer_id,
-                        ref display_name,
-                    } => {
-                        // Update author names on all existing messages from this peer.
-                        for msg in &mut c.state_mut().chat.messages {
-                            if msg.author == *peer_id
-                                || msg.author == willow_client::util::truncate_peer_id(peer_id)
-                            {
-                                msg.author = display_name.clone();
-                            }
-                        }
-                        // Refresh local display name in case it was us.
+                    ClientEvent::ProfileUpdated { .. } => {
+                        // Display names are resolved at render time now.
                         set_display_name.set(c.display_name());
                         needs_msg_refresh = true;
                         needs_peer_refresh = true;
@@ -195,9 +184,9 @@ pub fn App() -> impl IntoView {
 
             if needs_msg_refresh {
                 let ch = current_channel.get_untracked();
-                set_messages.set(c.messages(&ch).into_iter().cloned().collect());
+                set_messages.set(c.messages(&ch));
                 // Refresh pinned messages and labels.
-                set_pinned_messages.set(c.pinned_messages(&ch).into_iter().cloned().collect());
+                set_pinned_messages.set(c.pinned_messages(&ch));
                 let mut labels = HashMap::new();
                 for msg in c.messages(&ch) {
                     let label = if c.is_pinned(&ch, &msg.id) {
@@ -255,8 +244,8 @@ pub fn App() -> impl IntoView {
         set_show_pinned.set(false); // close pinned panel on channel switch
         let c = client_switch.borrow();
         // Use immutable borrow first for reads.
-        set_messages.set(c.messages(&name).into_iter().cloned().collect());
-        set_pinned_messages.set(c.pinned_messages(&name).into_iter().cloned().collect());
+        set_messages.set(c.messages(&name));
+        set_pinned_messages.set(c.pinned_messages(&name));
         let mut labels = HashMap::new();
         for msg in c.messages(&name) {
             let label = if c.is_pinned(&name, &msg.id) {
@@ -287,7 +276,7 @@ pub fn App() -> impl IntoView {
         } else {
             let _ = c.send_message(&ch, &body);
         }
-        set_messages.set(c.messages(&ch).into_iter().cloned().collect());
+        set_messages.set(c.messages(&ch));
     };
 
     // Server switch handler.
@@ -304,7 +293,7 @@ pub fn App() -> impl IntoView {
             .cloned()
             .unwrap_or_else(|| "general".to_string());
         set_current_channel.set(first_ch.clone());
-        set_messages.set(c.messages(&first_ch).into_iter().cloned().collect());
+        set_messages.set(c.messages(&first_ch));
         set_active_server_name.set(c.active_server_name());
         set_show_settings.set(false);
         set_show_add_server.set(false);
@@ -319,25 +308,25 @@ pub fn App() -> impl IntoView {
         let mut c = client_edit.borrow_mut();
         let _ = c.edit_message(&ch, &message_id, &new_body);
         set_editing.set(None);
-        set_messages.set(c.messages(&ch).into_iter().cloned().collect());
+        set_messages.set(c.messages(&ch));
     };
 
     // Delete message handler.
     let client_delete = client.clone();
-    let on_delete_msg = move |msg: ChatMessage| {
+    let on_delete_msg = move |msg: DisplayMessage| {
         let ch = current_channel.get_untracked();
         let mut c = client_delete.borrow_mut();
         let _ = c.delete_message(&ch, &msg.id);
-        set_messages.set(c.messages(&ch).into_iter().cloned().collect());
+        set_messages.set(c.messages(&ch));
     };
 
     // React handler.
     let client_react = client.clone();
-    let on_react = move |(msg, emoji): (ChatMessage, String)| {
+    let on_react = move |(msg, emoji): (DisplayMessage, String)| {
         let ch = current_channel.get_untracked();
         let mut c = client_react.borrow_mut();
         let _ = c.react(&ch, &msg.id, &emoji);
-        set_messages.set(c.messages(&ch).into_iter().cloned().collect());
+        set_messages.set(c.messages(&ch));
     };
 
     let sidebar_client = client.clone();
@@ -462,7 +451,7 @@ pub fn App() -> impl IntoView {
                                     let on_typing_cb = Callback::new(move |_: ()| {
                                         tc2.borrow_mut().send_typing();
                                     });
-                                    let on_pin_cb = Callback::new(move |msg: ChatMessage| {
+                                    let on_pin_cb = Callback::new(move |msg: DisplayMessage| {
                                         let ch = current_channel.get_untracked();
                                         let mut c = pc2.borrow_mut();
                                         if c.is_pinned(&ch, &msg.id) {
@@ -470,7 +459,7 @@ pub fn App() -> impl IntoView {
                                         } else {
                                             let _ = c.pin_message(&ch, &msg.id);
                                         }
-                                        set_pinned_messages.set(c.pinned_messages(&ch).into_iter().cloned().collect());
+                                        set_pinned_messages.set(c.pinned_messages(&ch));
                                         let mut labels = HashMap::new();
                                         for m in c.messages(&ch) {
                                             let label = if c.is_pinned(&ch, &m.id) { "Unpin" } else { "Pin" };
@@ -510,12 +499,12 @@ pub fn App() -> impl IntoView {
                                                 messages=messages
                                                 loading=Signal::from(loading)
                                                 local_display_name={let s: Signal<String> = Signal::from(display_name); s}
-                                                on_message_click=Callback::new(move |msg: ChatMessage| {
+                                                on_message_click=Callback::new(move |msg: DisplayMessage| {
                                                     set_replying_to.set(Some(msg));
                                                     // Auto-focus the input field so keyboard opens on mobile.
                                                     let _ = js_sys::eval("setTimeout(function(){var i=document.querySelector('.input-area input,.input-area textarea');if(i)i.focus();},50)");
                                                 })
-                                                on_edit=Callback::new(move |msg: ChatMessage| {
+                                                on_edit=Callback::new(move |msg: DisplayMessage| {
                                                     set_editing.set(Some(msg));
                                                     let _ = js_sys::eval("setTimeout(function(){var i=document.querySelector('.input-area input,.input-area textarea');if(i)i.focus();},50)");
                                                 })

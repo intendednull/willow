@@ -33,7 +33,7 @@ pub mod util;
 pub use events::{ClientEvent, ClientNotification};
 pub use ops::{pack_wire, unpack_wire, WireMessage};
 pub use state::{
-    ChatMessage, ChatState, ClientState, PersistentEventStore, ProfileStore, ServerContext,
+    ChatState, ClientState, DisplayMessage, PersistentEventStore, ProfileStore, ServerContext,
 };
 
 /// Re-export the event-sourced state crate for use by downstream consumers.
@@ -250,60 +250,9 @@ impl Client {
             Self::persist_servers(&state);
         }
 
-        // Load messages from event_state (authoritative source with reactions/edits).
-        {
-            let peer_id_for_msgs = identity.peer_id().to_string();
-            let active_sid = state.active_server.clone().unwrap_or_default();
-            for es_msg in &state.event_state.messages {
-                if state.chat.seen_message_ids.insert(es_msg.id.clone()) {
-                    // Resolve topic from channel_id.
-                    let topic = state
-                        .active()
-                        .and_then(|ctx| {
-                            ctx.topic_map
-                                .iter()
-                                .find(|(_, (_, cid))| cid.to_string() == es_msg.channel_id)
-                                .map(|(t, _)| t.clone())
-                        })
-                        .unwrap_or_default();
-                    let is_local = es_msg.author == peer_id_for_msgs;
-                    let author = state.profiles.display_name(&es_msg.author);
-                    let mut msg = ChatMessage::new(
-                        active_sid.clone(),
-                        topic,
-                        author,
-                        es_msg.body.clone(),
-                        is_local,
-                        es_msg.timestamp_ms,
-                    );
-                    msg.id = es_msg.id.clone();
-                    msg.edited = es_msg.edited;
-                    msg.deleted = es_msg.deleted;
-                    msg.reply_to = es_msg.reply_to.clone();
-                    // Reconstruct reply preview from parent message.
-                    if let Some(ref parent_id) = es_msg.reply_to {
-                        msg.reply_preview = state
-                            .event_state
-                            .messages
-                            .iter()
-                            .find(|m| m.id == *parent_id)
-                            .map(|m| {
-                                let text = if m.body.len() > 50 {
-                                    format!("{}...", &m.body[..50])
-                                } else {
-                                    m.body.clone()
-                                };
-                                let author_name = state.profiles.display_name(&m.author);
-                                format!("{author_name}: {text}")
-                            });
-                    }
-                    // Copy reactions directly.
-                    for (emoji, authors) in &es_msg.reactions {
-                        msg.reactions.insert(emoji.clone(), authors.clone());
-                    }
-                    state.chat.messages.push(msg);
-                }
-            }
+        // Populate seen_message_ids from event_state for dedup.
+        for es_msg in &state.event_state.messages {
+            state.chat.seen_message_ids.insert(es_msg.id.clone());
         }
 
         // Load saved display name, or use config override.
@@ -327,7 +276,7 @@ impl Client {
             }
         }
 
-        let mut client = Self {
+        Self {
             state,
             identity,
             cmd_tx,
@@ -341,11 +290,7 @@ impl Client {
             state_verification_results: HashMap::new(),
             last_typing_sent_ms: 0,
             typing_peers: HashMap::new(),
-        };
-
-        // Merge reaction/edit/delete data from saved state into chat messages.
-        client.merge_event_state_into_chat();
-        client
+        }
     }
 
     /// Attach a push notification channel. Notifications are sent whenever
@@ -478,9 +423,6 @@ impl Client {
                             }
                         }
 
-                        // Process chat messages into ChatState.
-                        self.process_event_message(&event, &mut events);
-
                         // Emit ClientEvents based on event kind.
                         self.emit_client_events_for(&event, &mut events);
                     }
@@ -526,9 +468,6 @@ impl Client {
                                 .event_store
                                 .set_latest_hash(self.state.event_state.hash());
                             self.notify(events::ClientNotification::EventApplied(event.clone()));
-
-                            // Process chat messages into ChatState.
-                            self.process_event_message(event, &mut events);
 
                             self.emit_client_events_for(event, &mut events);
                         }
@@ -600,26 +539,6 @@ impl Client {
                     topic,
                     ..
                 } => {
-                    let author = self.state.profiles.display_name(&from);
-                    let size_kb = size / 1024;
-                    let body = format!("[shared file: {filename} ({size_kb} KB)]");
-                    let ts = self.state.chat.hlc.latest().millis;
-                    let server_id = self
-                        .state
-                        .find_server_for_topic(&topic)
-                        .map(|s| s.to_string())
-                        .or_else(|| self.state.active_server.clone())
-                        .unwrap_or_default();
-                    self.state.chat.messages.push(ChatMessage::new(
-                        server_id,
-                        topic.clone(),
-                        author,
-                        body,
-                        false,
-                        ts,
-                    ));
-                    self.state.chat.messages_dirty = true;
-
                     let channel = self
                         .state
                         .active()
@@ -654,19 +573,20 @@ impl Client {
         events
     }
 
-    /// Process an incoming event that represents a chat message, edit, delete,
-    /// or reaction. Updates `ChatState` and persists to `MessageDb`.
-    fn process_event_message(
+    /// Convert a [`willow_state::Event`] into [`ClientEvent`]s for the caller.
+    fn emit_client_events_for(
         &mut self,
         event: &willow_state::Event,
         events: &mut Vec<ClientEvent>,
     ) {
         match &event.kind {
-            willow_state::EventKind::Message {
-                ref channel_id,
-                ref body,
-            } => {
-                let server_id = self.state.active_server.clone().unwrap_or_default();
+            willow_state::EventKind::Message { ref channel_id, .. } => {
+                let is_local = event.author == self.identity.peer_id().to_string();
+
+                // Track seen IDs for dedup.
+                self.state.chat.seen_message_ids.insert(event.id.clone());
+
+                // Update unread counts.
                 let topic = self
                     .state
                     .active()
@@ -677,116 +597,31 @@ impl Client {
                             .map(|(t, _)| t.clone())
                     })
                     .unwrap_or_default();
-                let channel_name = self
-                    .state
-                    .active()
-                    .and_then(|ctx| ctx.name_for_topic(&topic))
-                    .unwrap_or("unknown")
-                    .to_string();
-
-                let author = self.state.profiles.display_name(&event.author);
-                let is_local = event.author == self.identity.peer_id().to_string();
-
-                let mut msg = ChatMessage::new(
-                    server_id,
-                    topic.clone(),
-                    author.clone(),
-                    body.clone(),
-                    is_local,
-                    event.timestamp_ms,
-                );
-                msg.id = event.id.clone();
-
-                // Dedup
-                if !self.state.chat.seen_message_ids.insert(event.id.clone()) {
-                    return;
-                }
-
-                // Store in message DB
-                if let Some(ref db_arc) = self.state.message_db {
-                    if let Ok(db_lock) = db_arc.lock() {
-                        db_lock.insert(&storage::StoredMessage {
-                            topic: msg.topic.clone(),
-                            author,
-                            body: body.clone(),
-                            is_local,
-                            timestamp_ms: event.timestamp_ms,
-                            msg_id: event.id.clone(),
-                        });
-                    }
-                }
-
-                // Update unread counts.
                 let current_topic = self
                     .state
                     .active()
                     .and_then(|ctx| ctx.topic_for_name(&self.state.chat.current_channel))
                     .unwrap_or_default();
-                if !is_local && msg.topic != current_topic {
+                if !is_local && topic != current_topic {
                     let sid = self.state.active_server.clone().unwrap_or_default();
                     if let Some(ctx) = self.state.servers.get_mut(&sid) {
-                        *ctx.unread.entry(msg.topic.clone()).or_insert(0) += 1;
+                        *ctx.unread.entry(topic).or_insert(0) += 1;
                     }
                 }
 
-                self.state.chat.messages.push(msg.clone());
-                self.state.chat.messages_dirty = true;
+                let channel_name = self
+                    .state
+                    .event_state
+                    .channels
+                    .get(channel_id)
+                    .map(|ch| ch.name.clone())
+                    .unwrap_or_else(|| channel_id.clone());
 
                 events.push(ClientEvent::MessageReceived {
                     channel: channel_name,
-                    message: msg,
+                    message_id: event.id.clone(),
+                    is_local,
                 });
-            }
-            willow_state::EventKind::EditMessage {
-                ref message_id,
-                ref new_body,
-            } => {
-                for m in &mut self.state.chat.messages {
-                    if m.id == *message_id {
-                        m.body = new_body.clone();
-                        m.edited = true;
-                        self.state.chat.messages_dirty = true;
-                        break;
-                    }
-                }
-            }
-            willow_state::EventKind::DeleteMessage { ref message_id } => {
-                for m in &mut self.state.chat.messages {
-                    if m.id == *message_id {
-                        m.body = "[message deleted]".to_string();
-                        m.deleted = true;
-                        m.reactions.clear();
-                        self.state.chat.messages_dirty = true;
-                        break;
-                    }
-                }
-            }
-            willow_state::EventKind::Reaction {
-                ref message_id,
-                ref emoji,
-            } => {
-                let author = self.state.profiles.display_name(&event.author);
-                for m in &mut self.state.chat.messages {
-                    if m.id == *message_id {
-                        m.reactions.entry(emoji.clone()).or_default().push(author);
-                        self.state.chat.messages_dirty = true;
-                        break;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Convert a [`willow_state::Event`] into [`ClientEvent`]s for the caller.
-    fn emit_client_events_for(
-        &mut self,
-        event: &willow_state::Event,
-        events: &mut Vec<ClientEvent>,
-    ) {
-        match &event.kind {
-            willow_state::EventKind::Message { .. } => {
-                // Already handled by process_event_message.
             }
             willow_state::EventKind::CreateChannel { name, .. } => {
                 events.push(ClientEvent::ChannelCreated(name.clone()));
@@ -887,37 +722,6 @@ impl Client {
         if self.state.servers.contains_key(server_id) {
             self.state.active_server = Some(server_id.to_string());
             self.init_event_state_for_server(server_id);
-            self.merge_event_state_into_chat();
-        }
-    }
-
-    /// Merge reaction/edit/delete data from event_state.messages into chat.messages.
-    fn merge_event_state_into_chat(&mut self) {
-        for es_msg in &self.state.event_state.messages {
-            if let Some(chat_msg) = self
-                .state
-                .chat
-                .messages
-                .iter_mut()
-                .find(|m| m.id == es_msg.id)
-            {
-                for (emoji, authors) in &es_msg.reactions {
-                    let entry = chat_msg.reactions.entry(emoji.clone()).or_default();
-                    for author in authors {
-                        if !entry.contains(author) {
-                            entry.push(author.clone());
-                        }
-                    }
-                }
-                if es_msg.edited {
-                    chat_msg.body = es_msg.body.clone();
-                    chat_msg.edited = true;
-                }
-                if es_msg.deleted {
-                    chat_msg.body = "[message deleted]".to_string();
-                    chat_msg.deleted = true;
-                }
-            }
         }
     }
 
@@ -957,27 +761,6 @@ impl Client {
             if !stored_events.is_empty() {
                 for event in &stored_events {
                     willow_state::apply_lenient(&mut self.state.event_state, event);
-                }
-                // Merge reaction data from replayed event_state into chat messages.
-                for es_msg in &self.state.event_state.messages {
-                    if !es_msg.reactions.is_empty() {
-                        if let Some(chat_msg) = self
-                            .state
-                            .chat
-                            .messages
-                            .iter_mut()
-                            .find(|m| m.id == es_msg.id)
-                        {
-                            for (emoji, authors) in &es_msg.reactions {
-                                let entry = chat_msg.reactions.entry(emoji.clone()).or_default();
-                                for author in authors {
-                                    if !entry.contains(author) {
-                                        entry.push(author.clone());
-                                    }
-                                }
-                            }
-                        }
-                    }
                 }
             } else {
                 // Seed event_state with channels from legacy storage.
@@ -1153,10 +936,10 @@ impl Client {
             body: body.to_string(),
         };
 
-        // Build reply preview from existing messages.
+        // Build reply preview from event_state messages.
         let preview = self
             .state
-            .chat
+            .event_state
             .messages
             .iter()
             .find(|m| m.id == parent_id)
@@ -1166,7 +949,14 @@ impl Client {
                 } else {
                     m.body.clone()
                 };
-                format!("{}: {text}", m.author)
+                let author_name = self
+                    .state
+                    .event_state
+                    .profiles
+                    .get(&m.author)
+                    .map(|p| p.display_name.clone())
+                    .unwrap_or_else(|| self.state.profiles.display_name(&m.author));
+                format!("{author_name}: {text}")
             });
 
         self.send_content(channel, content, body, preview, Some(parent_id.to_string()))
@@ -1218,16 +1008,6 @@ impl Client {
         self.apply_event(&event);
         self.broadcast_event(event, None);
 
-        // Apply locally.
-        for m in &mut self.state.chat.messages {
-            if m.id == message_id {
-                m.body = new_body.to_string();
-                m.edited = true;
-                self.state.chat.messages_dirty = true;
-                break;
-            }
-        }
-
         Ok(())
     }
 
@@ -1250,17 +1030,6 @@ impl Client {
         };
         self.apply_event(&event);
         self.broadcast_event(event, None);
-
-        // Apply locally.
-        for m in &mut self.state.chat.messages {
-            if m.id == message_id {
-                m.body = "[message deleted]".to_string();
-                m.deleted = true;
-                m.reactions.clear();
-                self.state.chat.messages_dirty = true;
-                break;
-            }
-        }
 
         Ok(())
     }
@@ -1286,19 +1055,6 @@ impl Client {
         self.apply_event(&reaction_event);
         self.broadcast_event(reaction_event, None);
 
-        // Apply locally to chat messages.
-        let author = self.display_name();
-        for m in &mut self.state.chat.messages {
-            if m.id == message_id {
-                m.reactions
-                    .entry(emoji.to_string())
-                    .or_default()
-                    .push(author);
-                self.state.chat.messages_dirty = true;
-                break;
-            }
-        }
-
         Ok(())
     }
 
@@ -1322,16 +1078,6 @@ impl Client {
         self.apply_event(&event);
         self.broadcast_event(event, None);
 
-        // Also update legacy pinned list for backward compat.
-        let pinned = self
-            .state
-            .chat
-            .pinned
-            .entry(channel.to_string())
-            .or_default();
-        if !pinned.contains(&message_id.to_string()) {
-            pinned.push(message_id.to_string());
-        }
         Ok(())
     }
 
@@ -1355,10 +1101,6 @@ impl Client {
         self.apply_event(&event);
         self.broadcast_event(event, None);
 
-        // Also update legacy pinned list for backward compat.
-        if let Some(pinned) = self.state.chat.pinned.get_mut(channel) {
-            pinned.retain(|id| id != message_id);
-        }
         Ok(())
     }
 
@@ -1391,46 +1133,24 @@ impl Client {
 
     /// Get pinned messages for a channel.
     ///
-    /// Returns messages whose IDs are in the event-sourced pinned set,
-    /// falling back to the legacy in-memory list if the event-sourced
-    /// state has no pinned messages.
-    pub fn pinned_messages(&self, channel: &str) -> Vec<&ChatMessage> {
+    /// Returns messages whose IDs are in the event-sourced pinned set.
+    pub fn pinned_messages(&self, channel: &str) -> Vec<state::DisplayMessage> {
         let pinned_ids = self.pinned_message_ids(channel);
-        if !pinned_ids.is_empty() {
-            let pinned_set: std::collections::HashSet<&str> =
-                pinned_ids.iter().map(|s| s.as_str()).collect();
-            return self
-                .messages(channel)
-                .into_iter()
-                .filter(|m| pinned_set.contains(m.id.as_str()))
-                .collect();
-        }
-
-        // Fall back to legacy pinned list.
-        let Some(legacy_ids) = self.state.chat.pinned.get(channel) else {
+        if pinned_ids.is_empty() {
             return vec![];
-        };
-        self.state
-            .chat
-            .messages
-            .iter()
-            .filter(|m| legacy_ids.contains(&m.id))
+        }
+        let pinned_set: std::collections::HashSet<&str> =
+            pinned_ids.iter().map(|s| s.as_str()).collect();
+        self.messages(channel)
+            .into_iter()
+            .filter(|m| pinned_set.contains(m.id.as_str()))
             .collect()
     }
 
     /// Check if a message is pinned in a channel.
     pub fn is_pinned(&self, channel: &str, message_id: &str) -> bool {
         let pinned_ids = self.pinned_message_ids(channel);
-        if !pinned_ids.is_empty() {
-            return pinned_ids.iter().any(|id| id == message_id);
-        }
-        // Fall back to legacy.
-        self.state
-            .chat
-            .pinned
-            .get(channel)
-            .map(|ids| ids.contains(&message_id.to_string()))
-            .unwrap_or(false)
+        pinned_ids.iter().any(|id| id == message_id)
     }
 
     /// Resolve a channel name to its channel ID via the active server context.
@@ -1485,7 +1205,6 @@ impl Client {
         self.broadcast_event(event, None);
 
         self.state.chat.current_channel = name.to_string();
-        self.state.chat.messages_dirty = true;
 
         Ok(())
     }
@@ -1521,7 +1240,6 @@ impl Client {
                 .map(|ctx| ctx.channel_names())
                 .unwrap_or_default();
             self.state.chat.current_channel = names.first().cloned().unwrap_or_default();
-            self.state.chat.messages_dirty = true;
         }
 
         // Create and apply event, then broadcast it.
@@ -1905,7 +1623,6 @@ impl Client {
 
         if let Some((_, (name, _))) = accepted.channel_keys.iter().next() {
             self.state.chat.current_channel = name.clone();
-            self.state.chat.messages_dirty = true;
         }
 
         // Persist all servers so the joined server survives refresh.
@@ -1946,7 +1663,6 @@ impl Client {
     pub fn switch_channel(&mut self, name: &str) {
         if self.state.chat.current_channel != name {
             self.state.chat.current_channel = name.to_string();
-            self.state.chat.messages_dirty = true;
 
             if let Some(ctx) = self.state.active_mut() {
                 if let Some(topic) = ctx.topic_for_name(name) {
@@ -2033,22 +1749,101 @@ impl Client {
         self.state.profiles.display_name(peer_id)
     }
 
-    /// Get messages for a channel, filtered by active server and topic.
-    pub fn messages(&self, channel: &str) -> Vec<&ChatMessage> {
-        let Some(server_id) = &self.state.active_server else {
-            return vec![];
-        };
-        let Some(ctx) = self.state.servers.get(server_id) else {
-            return vec![];
-        };
-        let topic = ctx.topic_for_name(channel).unwrap_or_default();
-        let mut msgs: Vec<&ChatMessage> = self
+    /// Get messages for a channel, computed from the event-sourced state.
+    pub fn messages(&self, channel: &str) -> Vec<state::DisplayMessage> {
+        // Resolve channel name to channel_id.
+        let channel_id = self
             .state
-            .chat
+            .active()
+            .and_then(|ctx| {
+                ctx.topic_map
+                    .values()
+                    .find(|(n, _)| n == channel)
+                    .map(|(_, cid)| cid.to_string())
+            })
+            .unwrap_or_default();
+
+        if channel_id.is_empty() {
+            return vec![];
+        }
+
+        let local_peer_id = self.identity.peer_id().to_string();
+
+        let mut msgs: Vec<state::DisplayMessage> = self
+            .state
+            .event_state
             .messages
             .iter()
-            .filter(|m| m.server_id == *server_id && m.topic == topic)
+            .filter(|m| m.channel_id == channel_id)
+            .map(|m| {
+                let author_name = self
+                    .state
+                    .event_state
+                    .profiles
+                    .get(&m.author)
+                    .map(|p| p.display_name.clone())
+                    .unwrap_or_else(|| self.state.profiles.display_name(&m.author));
+
+                let reply_preview = m.reply_to.as_ref().and_then(|parent_id| {
+                    self.state
+                        .event_state
+                        .messages
+                        .iter()
+                        .find(|pm| pm.id == *parent_id)
+                        .map(|pm| {
+                            let parent_name = self
+                                .state
+                                .event_state
+                                .profiles
+                                .get(&pm.author)
+                                .map(|p| p.display_name.clone())
+                                .unwrap_or_else(|| self.state.profiles.display_name(&pm.author));
+                            let text = if pm.body.len() > 50 {
+                                format!("{}...", &pm.body[..50])
+                            } else {
+                                pm.body.clone()
+                            };
+                            format!("{parent_name}: {text}")
+                        })
+                });
+
+                // Resolve reaction author names.
+                let reactions = m
+                    .reactions
+                    .iter()
+                    .map(|(emoji, peer_ids)| {
+                        let names: Vec<String> = peer_ids
+                            .iter()
+                            .map(|pid| {
+                                self.state
+                                    .event_state
+                                    .profiles
+                                    .get(pid)
+                                    .map(|p| p.display_name.clone())
+                                    .unwrap_or_else(|| self.state.profiles.display_name(pid))
+                            })
+                            .collect();
+                        (emoji.clone(), names)
+                    })
+                    .collect();
+
+                state::DisplayMessage {
+                    id: m.id.clone(),
+                    channel_id: m.channel_id.clone(),
+                    author_peer_id: m.author.clone(),
+                    author_display_name: author_name,
+                    body: m.body.clone(),
+                    is_local: m.author == local_peer_id,
+                    timestamp_ms: m.timestamp_ms,
+                    reactions,
+                    edited: m.edited,
+                    deleted: m.deleted,
+                    reply_to: m.reply_to.clone(),
+                    reply_preview,
+                }
+            })
             .collect();
+
         msgs.sort_by_key(|m| m.timestamp_ms);
         msgs
     }
@@ -2156,7 +1951,7 @@ impl Client {
         channel: &str,
         _content: Content,
         body: &str,
-        reply_preview: Option<String>,
+        _reply_preview: Option<String>,
         reply_to: Option<String>,
     ) -> anyhow::Result<()> {
         let ctx = self
@@ -2166,7 +1961,6 @@ impl Client {
         let topic = ctx
             .topic_for_name(channel)
             .unwrap_or_else(|| channel.to_string());
-        let server_id = self.state.active_server.clone().unwrap_or_default();
 
         let peer_id_str = self.identity.peer_id().to_string();
 
@@ -2191,46 +1985,16 @@ impl Client {
             kind: willow_state::EventKind::Message {
                 channel_id,
                 body: body.to_string(),
+                reply_to,
             },
         };
         self.apply_event(&msg_event);
 
         // Broadcast the event on the channel topic.
-        self.broadcast_event(msg_event, Some(topic.clone()));
-
-        // Add to local display.
-        let author = self.state.profiles.display_name(&peer_id_str);
-        let mut chat_msg = ChatMessage::new(
-            server_id,
-            topic.clone(),
-            author.clone(),
-            body.to_string(),
-            true,
-            ts,
-        );
-        chat_msg.id = event_id.clone();
-        chat_msg.reply_preview = reply_preview;
-        chat_msg.reply_to = reply_to;
+        self.broadcast_event(msg_event, Some(topic));
 
         // Dedup
-        self.state.chat.seen_message_ids.insert(event_id.clone());
-
-        // Persist to MessageDb.
-        if let Some(ref db_arc) = self.state.message_db {
-            if let Ok(db_lock) = db_arc.lock() {
-                db_lock.insert(&storage::StoredMessage {
-                    topic: topic.clone(),
-                    author,
-                    body: body.to_string(),
-                    is_local: true,
-                    timestamp_ms: ts,
-                    msg_id: event_id,
-                });
-            }
-        }
-
-        self.state.chat.messages.push(chat_msg);
-        self.state.chat.messages_dirty = true;
+        self.state.chat.seen_message_ids.insert(event_id);
 
         Ok(())
     }
@@ -2692,44 +2456,24 @@ mod tests {
 
         let server1_id = client.state.active_server.clone().unwrap();
 
-        // Create a second server context with a "general" channel.
-        let server2 = willow_channel::Server::new("Server 2", client.identity.peer_id());
-        let server2_id = server2.id.to_string();
-        let topic2 = util::make_topic(&server2, "general");
-        let mut topic_map2 = HashMap::new();
-        topic_map2.insert(
-            topic2.clone(),
-            ("general".to_string(), willow_channel::ChannelId::new()),
-        );
-        let ctx2 = ServerContext {
-            server: server2,
-            topic_map: topic_map2,
-            keys: HashMap::new(),
-            unread: HashMap::new(),
-        };
-        client.state.servers.insert(server2_id.clone(), ctx2);
-
-        // Add a message that belongs to server 2.
-        client.state.chat.messages.push(ChatMessage::new(
-            server2_id.clone(),
-            topic2,
-            "Bob".to_string(),
-            "server2 msg".to_string(),
-            false,
-            1000,
-        ));
-
-        // When viewing server 1, only see server 1 messages.
-        client.switch_server(&server1_id);
+        // When viewing server 1, see server 1 messages.
         let msgs = client.messages("general");
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].body, "server1 msg");
 
-        // When viewing server 2, only see server 2 messages.
-        client.switch_server(&server2_id);
+        // Create a second server and switch to it.
+        let server2_id = client.create_server("Server 2").unwrap();
+        assert_ne!(server1_id, server2_id);
+
+        // Server 2 should have no messages yet.
+        let msgs = client.messages("general");
+        assert!(msgs.is_empty());
+
+        // Switch back to server 1 and verify messages are still there.
+        client.switch_server(&server1_id);
         let msgs = client.messages("general");
         assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0].body, "server2 msg");
+        assert_eq!(msgs[0].body, "server1 msg");
     }
 
     #[test]

@@ -148,6 +148,7 @@ mod tests {
                 kind: willow_state::EventKind::Message {
                     channel_id: "cid1".to_string(),
                     body: "hello".to_string(),
+                    reply_to: None,
                 },
             },
         ];

@@ -210,6 +210,7 @@ fn make_test_event(id: &str, author: &str, channel_id: &str, body: &str) -> Even
         kind: EventKind::Message {
             channel_id: channel_id.to_string(),
             body: body.to_string(),
+            reply_to: None,
         },
     }
 }
@@ -393,7 +394,7 @@ async fn relay_serves_history_to_new_peer() {
     let msg1 = batch_events.iter().find(|e| e.id == "evt-msg-1").unwrap();
     assert!(matches!(
         &msg1.kind,
-        EventKind::Message { body, channel_id }
+        EventKind::Message { body, channel_id, .. }
         if body == "hello from A" && channel_id == "ch-1"
     ));
 }

@@ -248,6 +248,7 @@ async fn scale_event_application_throughput() {
             kind: EventKind::Message {
                 channel_id: "ch-1".to_string(),
                 body: format!("Message number {i}"),
+                reply_to: None,
             },
         };
         apply_lenient(&mut state, &event);
@@ -297,6 +298,7 @@ async fn scale_merge_throughput() {
             kind: EventKind::Message {
                 channel_id: "ch-1".to_string(),
                 body: format!("From A: {i}"),
+                reply_to: None,
             },
         });
         events_b.push(Event {
@@ -307,6 +309,7 @@ async fn scale_merge_throughput() {
             kind: EventKind::Message {
                 channel_id: "ch-1".to_string(),
                 body: format!("From B: {i}"),
+                reply_to: None,
             },
         });
     }

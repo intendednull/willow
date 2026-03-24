@@ -58,16 +58,26 @@ fn text(el: &web_sys::Element) -> String {
     el.text_content().unwrap_or_default()
 }
 
-/// Create a test `ChatMessage` with minimal arguments.
-fn make_msg(author: &str, body: &str, timestamp_ms: u64) -> willow_client::ChatMessage {
-    willow_client::ChatMessage::new(
-        "test-server".into(),
-        "test-topic".into(),
-        author.into(),
-        body.into(),
-        false,
+/// Counter for generating unique test message IDs.
+static MSG_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Create a test `DisplayMessage` with minimal arguments.
+fn make_msg(author: &str, body: &str, timestamp_ms: u64) -> willow_client::DisplayMessage {
+    let id = MSG_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    willow_client::DisplayMessage {
+        id: format!("test-msg-{id}"),
+        channel_id: "test-channel".into(),
+        author_peer_id: author.into(),
+        author_display_name: author.into(),
+        body: body.into(),
+        is_local: false,
         timestamp_ms,
-    )
+        reactions: std::collections::HashMap::new(),
+        edited: false,
+        deleted: false,
+        reply_to: None,
+        reply_preview: None,
+    }
 }
 
 /// Simulate typing text into an input element (set value + dispatch input event).
@@ -176,18 +186,11 @@ async fn conditional_rendering() {
 
 #[wasm_bindgen_test]
 async fn message_renders_author_and_body() {
-    let msg = willow_client::ChatMessage::new(
-        "server-1".into(),
-        "topic".into(),
-        "Alice".into(),
-        "Hello world!".into(),
-        false,
-        1000,
-    );
+    let msg = make_msg("Alice", "Hello world!", 1000);
 
     let container = mount_test(move || {
         // Inline a simplified message view for testing
-        let author = msg.author.clone();
+        let author = msg.author_display_name.clone();
         let body = msg.body.clone();
         view! {
             <div class="message">
@@ -208,7 +211,7 @@ async fn message_renders_author_and_body() {
 
 #[wasm_bindgen_test]
 async fn message_list_shows_empty_state() {
-    let (messages, _set_messages) = signal(Vec::<willow_client::ChatMessage>::new());
+    let (messages, _set_messages) = signal(Vec::<willow_client::DisplayMessage>::new());
 
     let container = mount_test(move || {
         view! {
@@ -235,7 +238,7 @@ async fn message_list_shows_empty_state() {
 
 #[wasm_bindgen_test]
 async fn message_list_renders_messages() {
-    let (messages, set_messages) = signal(Vec::<willow_client::ChatMessage>::new());
+    let (messages, set_messages) = signal(Vec::<willow_client::DisplayMessage>::new());
 
     let container = mount_test(move || {
         view! {
@@ -255,24 +258,7 @@ async fn message_list_renders_messages() {
     assert_eq!(query_all(&container, ".msg").len(), 0);
 
     // Add messages.
-    set_messages.set(vec![
-        willow_client::ChatMessage::new(
-            "s".into(),
-            "t".into(),
-            "A".into(),
-            "first".into(),
-            false,
-            1,
-        ),
-        willow_client::ChatMessage::new(
-            "s".into(),
-            "t".into(),
-            "B".into(),
-            "second".into(),
-            false,
-            2,
-        ),
-    ]);
+    set_messages.set(vec![make_msg("A", "first", 1), make_msg("B", "second", 2)]);
     tick().await;
 
     let msgs = query_all(&container, ".msg");
@@ -631,7 +617,7 @@ async fn edited_message_shows_badge() {
     msg.edited = true;
 
     let show_edited = msg.edited && !msg.deleted;
-    let author = msg.author.clone();
+    let author = msg.author_display_name.clone();
     let body = msg.body.clone();
 
     let container = mount_test(move || {
@@ -1238,7 +1224,7 @@ async fn message_view_local_author_class() {
     } else {
         "author remote"
     };
-    let author = msg.author.clone();
+    let author = msg.author_display_name.clone();
 
     let container = mount_test(move || {
         view! {
@@ -1264,7 +1250,7 @@ async fn message_view_remote_author_class() {
     } else {
         "author remote"
     };
-    let author = msg.author.clone();
+    let author = msg.author_display_name.clone();
 
     let container = mount_test(move || {
         view! {
@@ -1487,14 +1473,14 @@ async fn consecutive_messages_grouped() {
                 let show_header = if i == 0 {
                     true
                 } else {
-                    msgs[i - 1].author != msg.author
+                    msgs[i - 1].author_display_name != msg.author_display_name
                 };
                 let msg_class = if show_header {
                     "message"
                 } else {
                     "message grouped"
                 };
-                let author = msg.author.clone();
+                let author = msg.author_display_name.clone();
                 let body = msg.body.clone();
                 view! {
                     <div class=msg_class>
@@ -1545,7 +1531,7 @@ async fn consecutive_messages_grouped() {
 
 #[wasm_bindgen_test]
 async fn reply_bar_shows_when_replying() {
-    let (replying_to, set_replying_to) = signal(Option::<willow_client::ChatMessage>::None);
+    let (replying_to, set_replying_to) = signal(Option::<willow_client::DisplayMessage>::None);
 
     let container = mount_test(move || {
         view! {
@@ -1560,7 +1546,7 @@ async fn reply_bar_shows_when_replying() {
                         view! {
                             <div class="reply-bar">
                                 <span class="reply-bar-text">
-                                    {format!("Replying to {}: {}", m.author, preview)}
+                                    {format!("Replying to {}: {}", m.author_display_name, preview)}
                                 </span>
                                 <button
                                     class="reply-bar-cancel"
@@ -1723,7 +1709,7 @@ async fn relative_timestamp_formats() {
 #[wasm_bindgen_test]
 async fn loading_spinner_shows_initially() {
     let (loading, set_loading) = signal(true);
-    let (messages, _set_messages) = signal(Vec::<willow_client::ChatMessage>::new());
+    let (messages, _set_messages) = signal(Vec::<willow_client::DisplayMessage>::new());
 
     let container = mount_test(move || {
         view! {
@@ -1865,7 +1851,7 @@ async fn other_message_hides_action_buttons() {
 #[wasm_bindgen_test]
 async fn editing_bar_shows_when_editing() {
     // When editing is set, an edit bar should appear above the input.
-    let (editing, set_editing) = signal(Option::<willow_client::ChatMessage>::None);
+    let (editing, set_editing) = signal(Option::<willow_client::DisplayMessage>::None);
 
     let container = mount_test(move || {
         view! {

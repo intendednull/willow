@@ -9,9 +9,6 @@ use willow_channel::Server;
 use willow_crypto::ChannelKey;
 use willow_messaging::hlc::HLC;
 
-/// Maximum messages kept in memory per topic to avoid unbounded growth.
-pub const MAX_MESSAGES_IN_MEMORY: usize = 1000;
-
 /// Platform-aware event store that delegates to the appropriate backend.
 ///
 /// Uses SQLite on native and localStorage on WASM. Falls back to the
@@ -137,94 +134,44 @@ impl ServerContext {
     }
 }
 
-/// Chat state holding messages, current channel, peers, and the HLC clock.
+/// Chat state holding current channel, peers, and the HLC clock.
 pub struct ChatState {
-    pub messages: Vec<ChatMessage>,
     /// The current channel *name* (human-readable, e.g. "general").
     pub current_channel: String,
     pub peers: Vec<String>,
     pub hlc: HLC,
-    pub messages_dirty: bool,
     /// Seen message/op IDs for deduplication.
     pub seen_message_ids: std::collections::HashSet<String>,
-    /// Pinned message IDs per channel name.
-    pub pinned: HashMap<String, Vec<String>>,
 }
 
 impl Default for ChatState {
     fn default() -> Self {
         Self {
-            messages: Vec::new(),
             current_channel: DEFAULT_CHANNEL.to_string(),
             peers: Vec::new(),
             hlc: HLC::new(),
-            messages_dirty: true,
             seen_message_ids: std::collections::HashSet::new(),
-            pinned: HashMap::new(),
         }
     }
 }
 
-impl ChatState {
-    /// Prune old messages if total count exceeds the limit.
-    pub fn prune_if_needed(&mut self) {
-        if self.messages.len() > MAX_MESSAGES_IN_MEMORY {
-            let excess = self.messages.len() - MAX_MESSAGES_IN_MEMORY;
-            self.messages.drain(..excess);
-        }
-    }
-}
-
-/// A single chat message with metadata.
+/// A message prepared for display. Computed on-the-fly from
+/// event_state, never stored. Display names are resolved at
+/// construction time so they're never stale.
 #[derive(Debug, Clone)]
-pub struct ChatMessage {
-    /// The server this message belongs to.
-    pub server_id: String,
-    /// The gossipsub topic this message belongs to.
-    pub topic: String,
-    /// Unique ID for this message (for reactions/edit/delete to target).
+pub struct DisplayMessage {
     pub id: String,
-    pub author: String,
+    pub channel_id: String,
+    pub author_peer_id: String,
+    pub author_display_name: String,
     pub body: String,
     pub is_local: bool,
-    /// HLC timestamp in milliseconds (for display).
     pub timestamp_ms: u64,
-    /// Reactions: emoji -> list of author names.
     pub reactions: HashMap<String, Vec<String>>,
-    /// Whether this message has been edited.
     pub edited: bool,
-    /// Whether this message has been deleted (shows "[deleted]").
     pub deleted: bool,
-    /// If this is a reply, the parent message preview ("Author: text...").
-    pub reply_preview: Option<String>,
-    /// If this is a reply, the parent message ID (for jump-to-message).
     pub reply_to: Option<String>,
-}
-
-impl ChatMessage {
-    pub fn new(
-        server_id: String,
-        topic: String,
-        author: String,
-        body: String,
-        is_local: bool,
-        timestamp_ms: u64,
-    ) -> Self {
-        Self {
-            server_id,
-            topic,
-            id: uuid::Uuid::new_v4().to_string(),
-            author,
-            body,
-            is_local,
-            timestamp_ms,
-            reactions: HashMap::new(),
-            edited: false,
-            deleted: false,
-            reply_preview: None,
-            reply_to: None,
-        }
-    }
+    pub reply_preview: Option<String>,
 }
 
 /// Maps PeerId strings -> display names. Updated from profile broadcasts.
@@ -246,7 +193,7 @@ impl ProfileStore {
 /// Aggregate client state bundle. Holds all runtime state for the client
 /// without any UI framework dependency.
 pub struct ClientState {
-    /// Chat messages, current channel, peers, and HLC clock.
+    /// Current channel, peers, and HLC clock.
     pub chat: ChatState,
     /// All servers, keyed by ServerId string.
     pub servers: HashMap<String, ServerContext>,

@@ -179,6 +179,7 @@ fn e2e_invite_chat_sync_state_machine() {
         kind: EventKind::Message {
             channel_id: "ch-general".to_string(),
             body: "Hello from Alice!".to_string(),
+            reply_to: None,
         },
     };
     apply_lenient(&mut alice_state, &alice_msg);
@@ -201,6 +202,7 @@ fn e2e_invite_chat_sync_state_machine() {
         kind: EventKind::Message {
             channel_id: "ch-general".to_string(),
             body: "Hi Alice!".to_string(),
+            reply_to: None,
         },
     };
     apply_lenient(&mut alice_state, &bob_msg);
@@ -253,6 +255,7 @@ fn e2e_invite_chat_sync_state_machine() {
         kind: EventKind::Message {
             channel_id: "ch-general".to_string(),
             body: "Alice offline msg".to_string(),
+            reply_to: None,
         },
     };
     let bob_offline = Event {
@@ -263,6 +266,7 @@ fn e2e_invite_chat_sync_state_machine() {
         kind: EventKind::Message {
             channel_id: "ch-general".to_string(),
             body: "Bob offline msg".to_string(),
+            reply_to: None,
         },
     };
 
@@ -350,6 +354,7 @@ fn e2e_permission_enforcement() {
         kind: EventKind::Message {
             channel_id: "ch-1".to_string(),
             body: "hello".to_string(),
+            reply_to: None,
         },
     };
     assert_eq!(apply(&mut state, &chat_msg), ApplyResult::Applied);
@@ -535,6 +540,7 @@ fn e2e_roles_and_channel_management() {
         kind: EventKind::Message {
             channel_id: "ch-2".to_string(),
             body: "will be deleted".to_string(),
+            reply_to: None,
         },
     };
     assert_eq!(apply(&mut state, &msg_in_ch2), ApplyResult::Applied);
@@ -627,6 +633,7 @@ fn e2e_profile_and_reactions() {
         kind: EventKind::Message {
             channel_id: "ch-1".to_string(),
             body: "hello world".to_string(),
+            reply_to: None,
         },
     };
     assert_eq!(apply(&mut state, &msg), ApplyResult::Applied);

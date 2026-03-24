@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use willow_client::ChatMessage;
+use willow_client::DisplayMessage;
 
 use super::message::extract_urls;
 
@@ -27,7 +27,7 @@ fn render_body_with_links(body: &str) -> impl IntoView {
 /// author, and a "Jump" button.
 #[component]
 pub fn PinnedPanel(
-    messages: ReadSignal<Vec<ChatMessage>>,
+    messages: ReadSignal<Vec<DisplayMessage>>,
     on_jump: impl Fn(String) + Send + Clone + 'static,
     on_close: impl Fn(()) + Send + Clone + 'static,
 ) -> impl IntoView {
@@ -45,7 +45,7 @@ pub fn PinnedPanel(
                 >
                     {
                         let msg_id = msg.id.clone();
-                        let author = msg.author.clone();
+                        let author = msg.author_display_name.clone();
                         let body = msg.body.clone();
                         let on_jump = on_jump.clone();
                         view! {

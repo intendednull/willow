@@ -178,6 +178,7 @@ fn send_and_edit_message() {
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "Hello, world!".into(),
+            reply_to: None,
         },
     );
     assert_eq!(apply(&mut state, &msg), ApplyResult::Applied);
@@ -221,6 +222,7 @@ fn delete_message_is_soft() {
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "to be deleted".into(),
+            reply_to: None,
         },
     );
     assert_eq!(apply(&mut state, &msg), ApplyResult::Applied);
@@ -263,6 +265,7 @@ fn reaction_added_to_message() {
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "react to me".into(),
+            reply_to: None,
         },
     );
     assert_eq!(apply(&mut state, &msg), ApplyResult::Applied);
@@ -382,6 +385,7 @@ fn unpermitted_peer_can_send_messages() {
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "hi from stranger".into(),
+            reply_to: None,
         },
     );
     assert_eq!(apply(&mut state, &msg), ApplyResult::Applied);
@@ -537,6 +541,7 @@ fn fine_grained_permissions() {
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "hello from alice".into(),
+            reply_to: None,
         },
     );
     assert_eq!(apply(&mut state, &msg), ApplyResult::Applied);
@@ -636,6 +641,7 @@ fn full_replay_from_genesis() {
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "Hello".into(),
+            reply_to: None,
         },
     );
     assert_eq!(apply(&mut state, &e3), ApplyResult::Applied);
@@ -936,6 +942,7 @@ fn delete_channel_removes_messages() {
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "will be removed".into(),
+            reply_to: None,
         },
     );
     assert_eq!(apply(&mut state, &msg), ApplyResult::Applied);
@@ -1103,6 +1110,7 @@ fn five_peers_concurrent_messages() {
             EventKind::Message {
                 channel_id: "ch1".into(),
                 body: format!("Hello from {peer} #{i}"),
+                reply_to: None,
             },
         );
         assert_eq!(apply(&mut state, &msg), ApplyResult::Applied);
@@ -1277,6 +1285,7 @@ fn edit_and_delete_message_lifecycle() {
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "original text".into(),
+            reply_to: None,
         },
     );
     assert_eq!(apply(&mut state, &msg), ApplyResult::Applied);
@@ -1348,6 +1357,7 @@ fn merge_with_concurrent_mutations() {
         EventKind::Message {
             channel_id: "ch-dev".into(),
             body: "First dev message".into(),
+            reply_to: None,
         },
     );
 
@@ -1504,6 +1514,7 @@ fn replay_100_events_produces_correct_state() {
             EventKind::Message {
                 channel_id,
                 body: format!("Message #{i}"),
+                reply_to: None,
             },
         );
         assert_eq!(apply(&mut state, &evt), ApplyResult::Applied);
@@ -1559,6 +1570,7 @@ fn stress_1000_messages_same_channel() {
             EventKind::Message {
                 channel_id: "ch-stress".into(),
                 body: format!("msg-{i}"),
+                reply_to: None,
             },
         );
         assert_eq!(apply(&mut state, &msg), ApplyResult::Applied);
@@ -1650,6 +1662,7 @@ fn untrusted_peer_cant_escalate() {
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "I can only send messages".into(),
+            reply_to: None,
         },
     );
     assert_eq!(apply(&mut state, &msg), ApplyResult::Applied);
@@ -1730,10 +1743,12 @@ fn state_hash_changes_on_every_mutation() {
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "hello".into(),
+            reply_to: None,
         },
         EventKind::Message {
             channel_id: "ch2".into(),
             body: "world".into(),
+            reply_to: None,
         },
         EventKind::SetProfile {
             display_name: "Owner".into(),
@@ -1808,6 +1823,7 @@ fn idempotency_across_all_event_kinds() {
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "test".into(),
+            reply_to: None,
         },
     );
     assert_eq!(apply(&mut state, &msg_evt), ApplyResult::Applied);
@@ -1852,6 +1868,7 @@ fn idempotency_across_all_event_kinds() {
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "duplicate test".into(),
+            reply_to: None,
         },
         EventKind::EditMessage {
             message_id: "msg-idem".into(),
@@ -1922,6 +1939,7 @@ fn merge_three_way_divergence() {
             EventKind::Message {
                 channel_id: "ch-alpha".into(),
                 body: "msg from A".into(),
+                reply_to: None,
             },
         ),
     ];
@@ -1946,6 +1964,7 @@ fn merge_three_way_divergence() {
             EventKind::Message {
                 channel_id: "ch-beta".into(),
                 body: "msg from B".into(),
+                reply_to: None,
             },
         ),
     ];
@@ -2311,6 +2330,7 @@ fn pin_message_adds_to_channel() {
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "hello".into(),
+            reply_to: None,
         },
     );
     assert_eq!(apply(&mut state, &e2), ApplyResult::Applied);
@@ -2354,6 +2374,7 @@ fn unpin_message_removes_from_channel() {
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "hello".into(),
+            reply_to: None,
         },
     );
     assert_eq!(apply(&mut state, &e2), ApplyResult::Applied);
@@ -2423,6 +2444,7 @@ fn pin_duplicate_is_idempotent() {
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "hello".into(),
+            reply_to: None,
         },
     );
     assert_eq!(apply(&mut state, &e2), ApplyResult::Applied);
@@ -2537,6 +2559,7 @@ fn pin_survives_state_replay() {
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "important".into(),
+            reply_to: None,
         },
     );
     assert_eq!(apply(&mut state, &e2), ApplyResult::Applied);
@@ -2595,6 +2618,7 @@ fn multiple_pins_per_channel() {
             EventKind::Message {
                 channel_id: "ch1".into(),
                 body: format!("message {}", i),
+                reply_to: None,
             },
         );
         assert_eq!(apply(&mut state, &e), ApplyResult::Applied);

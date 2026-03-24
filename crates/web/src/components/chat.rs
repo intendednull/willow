@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use willow_client::ChatMessage;
+use willow_client::DisplayMessage;
 
 use super::MessageView;
 
@@ -47,7 +47,7 @@ pub fn ChannelHeader(
 /// "scroll to bottom" pill when the user has scrolled up.
 #[component]
 pub fn MessageList(
-    messages: ReadSignal<Vec<ChatMessage>>,
+    messages: ReadSignal<Vec<DisplayMessage>>,
     /// Whether the app is still in its initial loading state.
     #[prop(optional, into)]
     loading: Signal<bool>,
@@ -56,19 +56,19 @@ pub fn MessageList(
     local_display_name: Option<Signal<String>>,
     /// Callback fired when the user clicks a message (to start a reply).
     #[prop(optional, into)]
-    on_message_click: Option<Callback<ChatMessage>>,
+    on_message_click: Option<Callback<DisplayMessage>>,
     /// Callback fired when the user wants to edit a message.
     #[prop(optional, into)]
-    on_edit: Option<Callback<ChatMessage>>,
+    on_edit: Option<Callback<DisplayMessage>>,
     /// Callback fired when the user wants to delete a message.
     #[prop(optional, into)]
-    on_delete: Option<Callback<ChatMessage>>,
+    on_delete: Option<Callback<DisplayMessage>>,
     /// Callback fired when the user picks an emoji reaction.
     #[prop(optional, into)]
-    on_react: Option<Callback<(ChatMessage, String)>>,
+    on_react: Option<Callback<(DisplayMessage, String)>>,
     /// Callback fired when the user pins/unpins a message.
     #[prop(optional, into)]
-    on_pin: Option<Callback<ChatMessage>>,
+    on_pin: Option<Callback<DisplayMessage>>,
     /// Signal mapping message IDs to pin labels ("Pin" or "Unpin").
     #[prop(optional, into)]
     pin_labels: Option<Signal<std::collections::HashMap<String, String>>>,
@@ -167,12 +167,12 @@ pub fn MessageList(
                                 true
                             } else {
                                 let prev = &msgs[i - 1];
-                                prev.author != msg.author
+                                prev.author_display_name != msg.author_display_name
                                     || msg.timestamp_ms.saturating_sub(prev.timestamp_ms)
                                         > 300_000
                             };
                             let m = msg.clone();
-                            let is_own = msg.is_local || msg.author == local_name;
+                            let is_own = msg.is_local;
                             // Check if this is a reply targeting the local user.
                             let is_mention = !is_own
                                 && msg

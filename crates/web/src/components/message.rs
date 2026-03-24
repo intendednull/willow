@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use willow_client::ChatMessage;
+use willow_client::DisplayMessage;
 
 use super::file_share::{parse_inline_file, FileCard};
 
@@ -175,7 +175,7 @@ pub fn format_relative_time(timestamp_ms: u64) -> String {
 /// which is used for consecutive messages from the same author (grouping).
 #[component]
 pub fn MessageView(
-    message: ChatMessage,
+    message: DisplayMessage,
     /// Whether to display the author + timestamp header.
     /// Set to `false` for grouped (consecutive same-author) messages.
     #[prop(default = true)]
@@ -185,19 +185,19 @@ pub fn MessageView(
     is_own: bool,
     /// Optional callback fired when the user clicks Reply in the dropdown.
     #[prop(optional, into)]
-    on_click: Option<Callback<ChatMessage>>,
+    on_click: Option<Callback<DisplayMessage>>,
     /// Callback fired when the user wants to edit this message.
     #[prop(optional, into)]
-    on_edit: Option<Callback<ChatMessage>>,
+    on_edit: Option<Callback<DisplayMessage>>,
     /// Callback fired when the user wants to delete this message.
     #[prop(optional, into)]
-    on_delete: Option<Callback<ChatMessage>>,
+    on_delete: Option<Callback<DisplayMessage>>,
     /// Callback fired when the user picks an emoji reaction (message, emoji).
     #[prop(optional, into)]
-    on_react: Option<Callback<(ChatMessage, String)>>,
+    on_react: Option<Callback<(DisplayMessage, String)>>,
     /// Callback fired when the user pins/unpins this message.
     #[prop(optional, into)]
-    on_pin: Option<Callback<ChatMessage>>,
+    on_pin: Option<Callback<DisplayMessage>>,
     /// Label for the pin button ("Pin" or "Unpin").
     #[prop(default = "Pin".to_string(), into)]
     pin_label: String,
@@ -220,7 +220,7 @@ pub fn MessageView(
     let reply_preview = message.reply_preview.clone();
     let reply_to_id = message.reply_to.clone();
     let show_edited = message.edited && !message.deleted;
-    let author = message.author.clone();
+    let author = message.author_display_name.clone();
     let body = message.body.clone();
     let reactions: Vec<(String, usize)> = message
         .reactions

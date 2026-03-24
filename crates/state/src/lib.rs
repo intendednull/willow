@@ -153,6 +153,8 @@ pub enum EventKind {
         channel_id: String,
         /// Message body text.
         body: String,
+        /// If this is a reply, the parent message ID.
+        reply_to: Option<String>,
     },
     /// Edit a previously sent message.
     EditMessage {
@@ -437,7 +439,11 @@ fn apply_inner(state: &mut ServerState, event: &Event) -> ApplyResult {
             }
         }
 
-        EventKind::Message { channel_id, body } => {
+        EventKind::Message {
+            channel_id,
+            body,
+            reply_to,
+        } => {
             state.messages.push(ChatMessage {
                 id: event.id.clone(),
                 channel_id: channel_id.clone(),
@@ -447,7 +453,7 @@ fn apply_inner(state: &mut ServerState, event: &Event) -> ApplyResult {
                 edited: false,
                 deleted: false,
                 reactions: std::collections::HashMap::new(),
-                reply_to: None,
+                reply_to: reply_to.clone(),
             });
         }
 

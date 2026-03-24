@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use willow_client::ChatMessage;
+use willow_client::DisplayMessage;
 
 /// Chat input field. Sends a message on Enter (without Shift).
 /// When `replying_to` is set, shows a reply preview bar above the input and
@@ -12,13 +12,13 @@ pub fn ChatInput(
     on_send: impl Fn(String) + Send + Clone + 'static,
     /// The message being replied to (if any).
     #[prop(optional, into)]
-    replying_to: Option<ReadSignal<Option<ChatMessage>>>,
+    replying_to: Option<ReadSignal<Option<DisplayMessage>>>,
     /// Callback to cancel the current reply.
     #[prop(optional, into)]
     on_cancel_reply: Option<Callback<()>>,
     /// The message currently being edited (if any).
     #[prop(optional, into)]
-    editing: Option<ReadSignal<Option<ChatMessage>>>,
+    editing: Option<ReadSignal<Option<DisplayMessage>>>,
     /// Callback fired when the user submits the edited message (message_id, new_body).
     #[prop(optional, into)]
     on_edit_send: Option<Callback<(String, String)>>,
@@ -139,7 +139,7 @@ pub fn ChatInput(
                         view! {
                             <div class="reply-bar">
                                 <span class="reply-bar-text">
-                                    {format!("Replying to {}: {}", m.author, preview)}
+                                    {format!("Replying to {}: {}", m.author_display_name, preview)}
                                 </span>
                                 <button
                                     class="reply-bar-cancel"
