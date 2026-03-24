@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use send_wrapper::SendWrapper;
 use willow_client::ChatMessage;
 
 use super::file_share::{parse_inline_file, FileCard};
@@ -249,8 +250,68 @@ pub fn MessageView(
     // Clone on_react for use in the reactions display.
     let on_react_for_reactions = on_react;
 
+    // Swipe-to-reply state (mobile).
+    let (swipe_x, set_swipe_x) = signal(0.0f64);
+    let (swiping, set_swiping) = signal(false);
+    let touch_start_x = std::cell::Cell::new(0.0f64);
+    let touch_start_x = SendWrapper::new(touch_start_x);
+    let msg_for_swipe = message.clone();
+    let reply_cb_swipe = on_click;
+
+    let on_touchstart = {
+        let tsx = touch_start_x.clone();
+        move |ev: web_sys::TouchEvent| {
+            if let Some(touch) = ev.touches().get(0) {
+                tsx.set(touch.client_x() as f64);
+                set_swiping.set(true);
+                set_swipe_x.set(0.0);
+            }
+        }
+    };
+
+    let on_touchmove = {
+        let tsx = touch_start_x.clone();
+        move |ev: web_sys::TouchEvent| {
+            if swiping.get_untracked() {
+                if let Some(touch) = ev.touches().get(0) {
+                    let dx = (touch.client_x() as f64) - tsx.get();
+                    // Only allow right swipe, cap at 80px.
+                    set_swipe_x.set(dx.clamp(0.0, 80.0));
+                }
+            }
+        }
+    };
+
+    let on_touchend = {
+        let msg = msg_for_swipe.clone();
+        let cb = reply_cb_swipe;
+        move |_: web_sys::TouchEvent| {
+            let dx = swipe_x.get_untracked();
+            set_swiping.set(false);
+            set_swipe_x.set(0.0);
+            if dx > 60.0 {
+                if let Some(ref cb) = cb {
+                    cb.run(msg.clone());
+                }
+            }
+        }
+    };
+
     view! {
-        <div class=msg_class>
+        <div
+            class=msg_class
+            style=move || {
+                let dx = swipe_x.get();
+                if dx > 0.0 {
+                    format!("transform: translateX({dx}px); transition: none;")
+                } else {
+                    "transition: transform 0.2s ease;".to_string()
+                }
+            }
+            on:touchstart=on_touchstart
+            on:touchmove=on_touchmove
+            on:touchend=on_touchend
+        >
             {reply_preview.map(|preview| {
                 view! {
                     <div class="reply-preview">{format!("> {preview}")}</div>
