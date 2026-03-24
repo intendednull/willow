@@ -1,3 +1,4 @@
+mod add_server;
 mod chat;
 mod file_share;
 mod input;
@@ -10,6 +11,7 @@ mod settings;
 mod sidebar;
 mod welcome;
 
+pub use add_server::*;
 pub use chat::*;
 pub use file_share::*;
 pub use input::*;

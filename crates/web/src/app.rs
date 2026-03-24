@@ -7,7 +7,7 @@ use send_wrapper::SendWrapper;
 use willow_client::{ChatMessage, Client, ClientConfig, ClientEvent};
 
 use crate::components::{
-    ChannelHeader, ChatInput, FileShareButton, MemberList, MessageList, ServerList,
+    AddServerPanel, ChannelHeader, ChatInput, FileShareButton, MemberList, MessageList, ServerList,
     ServerSettingsPanel, SettingsPanel, Sidebar, WelcomeScreen,
 };
 
@@ -71,6 +71,7 @@ pub fn App() -> impl IntoView {
     let (show_server_settings, set_show_server_settings) = signal(false);
     let (show_sidebar, set_show_sidebar) = signal(false);
     let (show_members, set_show_members) = signal(false);
+    let (show_add_server, set_show_add_server) = signal(false);
     let (peer_id, set_peer_id) = signal(String::new());
     let (servers, set_servers) = signal(Vec::<(String, String)>::new());
     let (active_server_id, set_active_server_id) = signal(String::new());
@@ -94,22 +95,23 @@ pub fn App() -> impl IntoView {
     // Closure that refreshes all signals from the client state. Used after
     // server creation, joining, and on initial load.
     let refresh_client = client.clone();
-    let refresh_all_signals = move || {
-        let c = refresh_client.borrow();
-        set_servers.set(c.server_list());
-        set_channels.set(c.channels());
-        set_peer_id.set(c.peer_id());
-        set_display_name.set(c.display_name());
-        set_roles.set(extract_roles(&c));
-        if let Some(id) = c.active_server_id() {
-            set_active_server_id.set(id.to_string());
-        }
-        let ch = c.state().chat.current_channel.clone();
-        set_current_channel.set(ch.clone());
-        set_messages.set(c.messages(&ch).into_iter().cloned().collect());
-        set_show_settings.set(false);
-        set_show_server_settings.set(false);
-    };
+    let refresh_all_signals: SendWrapper<std::rc::Rc<dyn Fn()>> =
+        SendWrapper::new(std::rc::Rc::new(move || {
+            let c = refresh_client.borrow();
+            set_servers.set(c.server_list());
+            set_channels.set(c.channels());
+            set_peer_id.set(c.peer_id());
+            set_display_name.set(c.display_name());
+            set_roles.set(extract_roles(&c));
+            if let Some(id) = c.active_server_id() {
+                set_active_server_id.set(id.to_string());
+            }
+            let ch = c.state().chat.current_channel.clone();
+            set_current_channel.set(ch.clone());
+            set_messages.set(c.messages(&ch).into_iter().cloned().collect());
+            set_show_settings.set(false);
+            set_show_server_settings.set(false);
+        }));
 
     // Populate initial state from the client.
     refresh_all_signals();
@@ -319,6 +321,9 @@ pub fn App() -> impl IntoView {
         refresh_for_joined();
     };
 
+    // Store the refresh function so reactive closures can access it without moving.
+    let refresh_stored = StoredValue::new(refresh_all_signals);
+
     view! {
         {move || {
             let srv = servers.get();
@@ -352,7 +357,9 @@ pub fn App() -> impl IntoView {
                             active_server_id=active_server_id
                             on_server_click=srv_click
                             on_settings_click=move |_| {
-                                set_show_settings.update(|v| *v = !*v);
+                                set_show_add_server.update(|v| *v = !*v);
+                                set_show_settings.set(false);
+                                set_show_server_settings.set(false);
                                 set_show_sidebar.set(false);
                             }
                         />
@@ -385,7 +392,26 @@ pub fn App() -> impl IntoView {
                             {move || {
                                 let sc2 = sc.clone();
                                 let pid = peer_id;
-                                if show_server_settings.get() {
+                                if show_add_server.get() {
+                                    let add_client = sc2.clone();
+                                    view! {
+                                        <div class="settings-panel">
+                                            <div class="server-settings-header">
+                                                <button class="btn btn-sm" on:click=move |_| set_show_add_server.set(false)>
+                                                    "\u{2190} Back"
+                                                </button>
+                                                <h2>"Add a Server"</h2>
+                                            </div>
+                                            <AddServerPanel
+                                                client=add_client
+                                                on_done=move |_| {
+                                                    refresh_stored.with_value(|f| f());
+                                                    set_show_add_server.set(false);
+                                                }
+                                            />
+                                        </div>
+                                    }.into_any()
+                                } else if show_server_settings.get() {
                                     let sc3 = sc2.clone();
                                     view! { <ServerSettingsPanel client=sc3 peer_id=pid roles=Signal::from(roles) on_back=move |_| set_show_server_settings.set(false) /> }.into_any()
                                 } else if show_settings.get() {
