@@ -1123,7 +1123,7 @@ impl Client {
         let content = Content::Text {
             body: body.to_string(),
         };
-        self.send_content(channel, content, body, None)
+        self.send_content(channel, content, body, None, None)
     }
 
     /// Send a reply to a specific message.
@@ -1151,7 +1151,7 @@ impl Client {
                 format!("{}: {text}", m.author)
             });
 
-        self.send_content(channel, content, body, preview)
+        self.send_content(channel, content, body, preview, Some(parent_id.to_string()))
     }
 
     /// Share a small file inline by base64-encoding it into a text message.
@@ -2139,6 +2139,7 @@ impl Client {
         _content: Content,
         body: &str,
         reply_preview: Option<String>,
+        reply_to: Option<String>,
     ) -> anyhow::Result<()> {
         let ctx = self
             .state
@@ -2191,6 +2192,7 @@ impl Client {
         );
         chat_msg.id = event_id.clone();
         chat_msg.reply_preview = reply_preview;
+        chat_msg.reply_to = reply_to;
 
         // Dedup
         self.state.chat.seen_message_ids.insert(event_id.clone());

@@ -218,6 +218,7 @@ pub fn MessageView(
     let timestamp = format_relative_time(message.timestamp_ms);
 
     let reply_preview = message.reply_preview.clone();
+    let reply_to_id = message.reply_to.clone();
     let show_edited = message.edited && !message.deleted;
     let author = message.author.clone();
     let body = message.body.clone();
@@ -268,8 +269,22 @@ pub fn MessageView(
             id=msg_dom_id
         >
             {reply_preview.map(|preview| {
+                let jump_id = reply_to_id.clone();
                 view! {
-                    <div class="reply-preview">{format!("> {preview}")}</div>
+                    <div
+                        class={if jump_id.is_some() { "reply-preview reply-clickable" } else { "reply-preview" }}
+                        on:click=move |ev| {
+                            ev.stop_propagation();
+                            if let Some(ref id) = jump_id {
+                                let _ = js_sys::eval(&format!(
+                                    "document.getElementById('msg-{}')?.scrollIntoView({{behavior:'smooth',block:'center'}})",
+                                    id
+                                ));
+                            }
+                        }
+                    >
+                        {format!("> {preview}")}
+                    </div>
                 }
             })}
             {if show_header {

@@ -197,6 +197,8 @@ pub struct ChatMessage {
     pub deleted: bool,
     /// If this is a reply, the parent message preview ("Author: text...").
     pub reply_preview: Option<String>,
+    /// If this is a reply, the parent message ID (for jump-to-message).
+    pub reply_to: Option<String>,
 }
 
 impl ChatMessage {
@@ -220,6 +222,7 @@ impl ChatMessage {
             edited: false,
             deleted: false,
             reply_preview: None,
+            reply_to: None,
         }
     }
 }

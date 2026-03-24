@@ -512,6 +512,16 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     margin-left: 2px;
 }
 
+.message .reply-clickable {
+    cursor: pointer;
+    transition: color 0.12s ease;
+}
+
+.message .reply-clickable:hover {
+    color: var(--accent);
+    border-left-color: var(--accent);
+}
+
 /* ── Message Grouping ────────────────────────────────────────────── */
 
 .message.grouped {
