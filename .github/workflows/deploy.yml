@@ -1,0 +1,65 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: deploy-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: deploy-
+
+      - name: Install trunk
+        run: cargo install trunk --locked
+
+      - name: Install sshpass
+        run: sudo apt-get update && sudo apt-get install -y sshpass
+
+      - name: Build relay server
+        run: cargo build --release -p willow-relay
+
+      - name: Build web app
+        run: cd crates/web && trunk build --release
+
+      - name: Upload relay binary
+        run: >
+          sshpass -p '${{ secrets.DEPLOY_PASSWORD }}'
+          scp -o StrictHostKeyChecking=no
+          target/release/willow-relay
+          root@172.234.217.219:/usr/local/bin/willow-relay
+
+      - name: Upload web app
+        run: >
+          sshpass -p '${{ secrets.DEPLOY_PASSWORD }}'
+          scp -o StrictHostKeyChecking=no
+          crates/web/dist/*
+          root@172.234.217.219:/var/www/willow/
+
+      - name: Fix permissions and restart relay
+        run: >
+          sshpass -p '${{ secrets.DEPLOY_PASSWORD }}'
+          ssh -o StrictHostKeyChecking=no
+          root@172.234.217.219
+          'chmod 644 /var/www/willow/* && systemctl restart willow-relay'
+
+      - name: Verify deployment
+        run: |
+          sleep 3
+          curl -sf -o /dev/null -w "Web: HTTP %{http_code}\n" http://172.234.217.219/
+          sshpass -p '${{ secrets.DEPLOY_PASSWORD }}' ssh -o StrictHostKeyChecking=no root@172.234.217.219 'systemctl is-active willow-relay'

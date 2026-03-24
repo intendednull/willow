@@ -562,6 +562,14 @@ pub fn App() -> impl IntoView {
                             on_voice_mute=Callback::new(on_mute)
                             on_voice_deafen=Callback::new(on_deafen)
                             on_voice_disconnect=Callback::new(on_disconnect)
+                            on_channel_created={
+                                let ch_client = client.clone();
+                                move |_| {
+                                    let c = ch_client.borrow();
+                                    set_channels.set(c.channels());
+                                    set_roles.set(extract_roles(&c));
+                                }
+                            }
                         />
                         <div class="main-content">
                             {move || {

@@ -20,6 +20,7 @@ pub fn Sidebar(
     on_settings_click: impl Fn(()) + Send + Clone + 'static,
     on_server_settings_click: impl Fn(()) + Send + Clone + 'static,
     on_voice_join: impl Fn(String) + Send + Clone + 'static,
+    on_channel_created: impl Fn(()) + Send + Clone + 'static,
     /// Voice channel the user is currently in, if any.
     #[prop(optional)]
     voice_channel: Option<ReadSignal<Option<String>>>,
@@ -58,6 +59,8 @@ pub fn Sidebar(
             } else {
                 let _ = c.create_channel(&name);
             }
+            drop(c);
+            on_channel_created(());
         }
         set_new_name.set(String::new());
         set_creating.set(false);
@@ -153,24 +156,30 @@ pub fn Sidebar(
                         let client_kind = client.clone();
                         let active = move || current_channel.get() == ch_active;
 
-                        // Check if this is a voice channel.
+                        // Reactively check if this is a voice channel.
                         let is_voice = {
-                            let c = client_kind.borrow();
-                            c.channel_kinds().iter().any(|(n, k)| n == &ch_kind && k == "voice")
+                            let ck = client_kind.clone();
+                            let name = ch_kind.clone();
+                            move || {
+                                let c = ck.borrow();
+                                c.channel_kinds().iter().any(|(n, k)| n == &name && k == "voice")
+                            }
                         };
-                        let prefix = if is_voice { "\u{1F50A} " } else { "# " };
+
+                        let is_voice_for_class = is_voice.clone();
+                        let is_voice_for_prefix = is_voice.clone();
 
                         view! {
                             <div
                                 class=move || {
-                                    let base = if is_voice { "channel-item voice-channel" } else { "channel-item" };
+                                    let base = if is_voice_for_class() { "channel-item voice-channel" } else { "channel-item" };
                                     if active() { format!("{base} active") } else { base.to_string() }
                                 }
                                 on:click={
                                     let ch_text = ch_click.clone();
                                     let ch_vc = ch_voice_join.clone();
                                     move |_| {
-                                        if is_voice {
+                                        if is_voice() {
                                             on_voice(ch_vc.clone());
                                         } else {
                                             on_click(ch_text.clone());
@@ -178,7 +187,7 @@ pub fn Sidebar(
                                     }
                                 }
                             >
-                                <span>{prefix} {channel.clone()}</span>
+                                <span>{move || if is_voice_for_prefix() { "\u{1F50A} " } else { "# " }} {channel.clone()}</span>
                                 <span class="channel-item-right">
                                     {
                                         let ch_u = ch_unread.clone();

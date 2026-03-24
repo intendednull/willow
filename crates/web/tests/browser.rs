@@ -2597,9 +2597,11 @@ async fn welcome_create_server_validates_empty_name() {
 fn is_image_url(url: &str) -> bool {
     let lower = url.to_lowercase();
     let path = lower.split('?').next().unwrap_or(&lower);
-    [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico"]
-        .iter()
-        .any(|ext| path.ends_with(ext))
+    [
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico",
+    ]
+    .iter()
+    .any(|ext| path.ends_with(ext))
 }
 
 /// Extract URLs from text (mirrors message.rs). Returns (segments, image_urls).
@@ -2881,10 +2883,7 @@ async fn pinned_panel_close_button_fires_callback() {
     simulate_click(&close_btn);
     tick().await;
 
-    assert!(
-        closed.get_untracked(),
-        "close callback should have fired"
-    );
+    assert!(closed.get_untracked(), "close callback should have fired");
 }
 
 // ── Typing Indicator Tests ──────────────────────────────────────────────────
@@ -3292,11 +3291,7 @@ async fn consecutive_messages_within_gap_are_grouped() {
     );
 
     let grouped = query_all(&container, ".message.grouped");
-    assert_eq!(
-        grouped.len(),
-        1,
-        "second message should be grouped"
-    );
+    assert_eq!(grouped.len(), 1, "second message should be grouped");
 }
 
 #[wasm_bindgen_test]
@@ -3454,10 +3449,7 @@ async fn url_without_image_extension_renders_as_link() {
     tick().await;
 
     let links = query_all(&container, "a.message-link");
-    assert!(
-        !links.is_empty(),
-        "non-image URL should render as link"
-    );
+    assert!(!links.is_empty(), "non-image URL should render as link");
 
     let imgs = query_all(&container, ".embed-image");
     assert!(
@@ -3471,11 +3463,7 @@ async fn multiple_image_urls_all_embedded() {
     let body = "pics: https://example.com/a.jpg https://example.com/b.gif";
     let (_segments, images) = extract_urls(body);
 
-    assert_eq!(
-        images.len(),
-        2,
-        "should detect 2 image URLs"
-    );
+    assert_eq!(images.len(), 2, "should detect 2 image URLs");
     assert!(is_image_url(&images[0]));
     assert!(is_image_url(&images[1]));
 }
@@ -3516,33 +3504,20 @@ async fn message_action_dropdown_toggles() {
 
     // Dropdown should not be visible initially.
     let dropdown = query(&container, ".message-dropdown");
-    assert!(
-        dropdown.is_none(),
-        "dropdown should be hidden initially"
-    );
+    assert!(dropdown.is_none(), "dropdown should be hidden initially");
 
     // Click the action trigger.
     let trigger = query(&container, ".action-trigger");
-    assert!(
-        trigger.is_some(),
-        "action trigger button should exist"
-    );
+    assert!(trigger.is_some(), "action trigger button should exist");
     simulate_click(&trigger.unwrap());
     tick().await;
 
     // Dropdown should now be visible.
     let dropdown = query(&container, ".message-dropdown");
-    assert!(
-        dropdown.is_some(),
-        "dropdown should appear after click"
-    );
+    assert!(dropdown.is_some(), "dropdown should appear after click");
 
     let items = query_all(&container, ".dropdown-item");
-    assert_eq!(
-        items.len(),
-        3,
-        "dropdown should have 3 items"
-    );
+    assert_eq!(items.len(), 3, "dropdown should have 3 items");
 
     // Click trigger again to close.
     let trigger = query(&container, ".action-trigger").unwrap();
@@ -3590,10 +3565,7 @@ async fn dropdown_reply_fires_callback() {
     simulate_click(&reply_btn);
     tick().await;
 
-    assert!(
-        replied.get_untracked(),
-        "reply callback should have fired"
-    );
+    assert!(replied.get_untracked(), "reply callback should have fired");
 }
 
 #[wasm_bindgen_test]
@@ -3631,10 +3603,7 @@ async fn dropdown_pin_fires_callback() {
     simulate_click(&pin_btn);
     tick().await;
 
-    assert!(
-        pinned.get_untracked(),
-        "pin callback should have fired"
-    );
+    assert!(pinned.get_untracked(), "pin callback should have fired");
 }
 
 #[wasm_bindgen_test]
