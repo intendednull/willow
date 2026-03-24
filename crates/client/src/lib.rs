@@ -279,6 +279,24 @@ impl Client {
                     msg.id = es_msg.id.clone();
                     msg.edited = es_msg.edited;
                     msg.deleted = es_msg.deleted;
+                    msg.reply_to = es_msg.reply_to.clone();
+                    // Reconstruct reply preview from parent message.
+                    if let Some(ref parent_id) = es_msg.reply_to {
+                        msg.reply_preview = state
+                            .event_state
+                            .messages
+                            .iter()
+                            .find(|m| m.id == *parent_id)
+                            .map(|m| {
+                                let text = if m.body.len() > 50 {
+                                    format!("{}...", &m.body[..50])
+                                } else {
+                                    m.body.clone()
+                                };
+                                let author_name = state.profiles.display_name(&m.author);
+                                format!("{author_name}: {text}")
+                            });
+                    }
                     // Copy reactions directly.
                     for (emoji, authors) in &es_msg.reactions {
                         msg.reactions.insert(emoji.clone(), authors.clone());
