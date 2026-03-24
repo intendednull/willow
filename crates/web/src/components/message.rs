@@ -3,7 +3,7 @@ use willow_client::ChatMessage;
 
 use super::file_share::{parse_inline_file, FileCard};
 
-/// Image file extensions for URL embedding.
+/// Image file extensions for URL and upload embedding.
 const IMAGE_EXTENSIONS: &[&str] = &[
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico",
 ];
@@ -11,9 +11,55 @@ const IMAGE_EXTENSIONS: &[&str] = &[
 /// Check if a URL points to an image based on extension.
 fn is_image_url(url: &str) -> bool {
     let lower = url.to_lowercase();
-    // Strip query params for extension check.
     let path = lower.split('?').next().unwrap_or(&lower);
     IMAGE_EXTENSIONS.iter().any(|ext| path.ends_with(ext))
+}
+
+/// Check if a filename is an image.
+fn is_image_file(filename: &str) -> bool {
+    let lower = filename.to_lowercase();
+    IMAGE_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
+}
+
+/// Get MIME type for an image filename.
+fn mime_for_image(filename: &str) -> &'static str {
+    let lower = filename.to_lowercase();
+    if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".gif") {
+        "image/gif"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else if lower.ends_with(".svg") {
+        "image/svg+xml"
+    } else if lower.ends_with(".bmp") {
+        "image/bmp"
+    } else if lower.ends_with(".ico") {
+        "image/x-icon"
+    } else {
+        "image/jpeg"
+    }
+}
+
+/// Trigger a browser download for binary data.
+fn download_blob(data: &[u8], filename: &str) {
+    use wasm_bindgen::JsCast;
+    let array = js_sys::Uint8Array::from(data);
+    let parts = js_sys::Array::new();
+    parts.push(&array.buffer());
+    let blob = web_sys::Blob::new_with_u8_array_sequence(&parts).unwrap();
+    let url = web_sys::Url::create_object_url_with_blob(&blob).unwrap();
+    let window = web_sys::window().unwrap();
+    let document = window.document().unwrap();
+    let a = document.create_element("a").unwrap();
+    a.set_attribute("href", &url).unwrap();
+    a.set_attribute("download", filename).unwrap();
+    a.set_attribute("style", "display:none").unwrap();
+    document.body().unwrap().append_child(&a).unwrap();
+    let html_a: web_sys::HtmlElement = a.clone().dyn_into().unwrap();
+    html_a.click();
+    document.body().unwrap().remove_child(&a).unwrap();
+    web_sys::Url::revoke_object_url(&url).unwrap();
 }
 
 /// Extract URLs from text. Returns (segments, image_urls).
@@ -207,7 +253,30 @@ pub fn MessageView(
                 None
             }}
             {if let Some((filename, data)) = parse_inline_file(&body) {
-                view! { <FileCard filename=filename data=data /> }.into_any()
+                if is_image_file(&filename) {
+                    // Render uploaded images inline as embeds.
+                    let mime = mime_for_image(&filename);
+                    let b64 = willow_client::base64::encode(&data);
+                    let src = format!("data:{mime};base64,{b64}");
+                    let alt = filename.clone();
+                    let dl_data = data.clone();
+                    let dl_name = filename.clone();
+                    let on_download = move |_| {
+                        download_blob(&dl_data, &dl_name);
+                    };
+                    view! {
+                        <div class="message-embeds">
+                            <div class="embed-uploaded">
+                                <img class="embed-image" src=src alt=alt loading="lazy" />
+                                <button class="embed-download-btn btn btn-sm" title="Download" on:click=on_download>
+                                    "\u{2B07}"
+                                </button>
+                            </div>
+                        </div>
+                    }.into_any()
+                } else {
+                    view! { <FileCard filename=filename data=data /> }.into_any()
+                }
             } else {
                 let (segments, images) = extract_urls(&body);
                 let has_images = !images.is_empty();

@@ -80,6 +80,7 @@ pub fn FileShareButton(client: ClientHandle, channel: ReadSignal<String>) -> imp
         <input
             node_ref=input_ref
             type="file"
+            accept="image/*,*/*"
             style="display:none"
             on:change=on_change
         />

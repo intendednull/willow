@@ -1471,12 +1471,35 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     border-radius: 8px;
 }
 
+.embed-uploaded {
+    position: relative;
+    display: inline-block;
+}
+
+.embed-download-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    background: var(--bg-sidebar);
+    border: 1px solid var(--border);
+    font-size: 14px;
+}
+
+.embed-uploaded:hover .embed-download-btn {
+    opacity: 1;
+}
+
 @media (max-width: 640px) {
     .message-embeds {
         max-width: 100%;
     }
     .embed-image {
         max-height: 200px;
+    }
+    .embed-download-btn {
+        opacity: 1;
     }
 }
 
