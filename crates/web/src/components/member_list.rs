@@ -47,9 +47,8 @@ pub fn MemberList(
                                     let owner = c.state().event_state.owner.clone();
                                     if pb == owner {
                                         Some(view! { <span class="badge owner-badge">"Owner"</span> })
-                                    } else if c.state().active()
-                                        .map(|ctx| ctx.op_log.trusted_peers.contains(&pb))
-                                        .unwrap_or(false)
+                                    } else if c.state().event_state
+                                        .has_permission(&pb, &willow_client::willow_state::Permission::Administrator)
                                     {
                                         Some(view! { <span class="badge trusted-badge">"Trusted"</span> })
                                     } else {

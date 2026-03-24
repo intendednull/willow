@@ -19,7 +19,6 @@
 //! ```
 
 pub mod base64;
-pub mod bridge;
 pub mod emoji;
 pub mod events;
 pub mod files;
@@ -33,11 +32,8 @@ pub mod util;
 // Re-export key types at crate root for convenience.
 pub use events::{ClientEvent, ClientNotification};
 pub use ops::{pack_wire, unpack_wire, WireMessage};
-#[allow(deprecated)]
-pub use ops::{Op, StampedOp, SyncMessage};
 pub use state::{
-    ChannelKeyStore, ChatMessage, ChatState, ClientState, OpLog, PersistentEventStore,
-    ProfileStore, ServerContext, ServerState, UnreadCounts,
+    ChatMessage, ChatState, ClientState, PersistentEventStore, ProfileStore, ServerContext,
 };
 
 /// Re-export the event-sourced state crate for use by downstream consumers.
@@ -107,10 +103,9 @@ pub struct Client {
     pub(crate) typing_peers: HashMap<String, (String, u64)>,
 }
 
-#[allow(deprecated)]
 impl Client {
     /// Create a new client. Loads or generates identity, loads or creates
-    /// the server with default channels, loads persisted messages and op log.
+    /// the server with default channels, loads persisted messages.
     ///
     /// Does **not** connect to the network -- call [`Client::connect()`] for that.
     pub fn new(config: ClientConfig) -> Self {
@@ -146,18 +141,10 @@ impl Client {
                         topic_map.insert(topic, (ch.name.clone(), ch.id.clone()));
                     }
 
-                    let mut op_log = OpLog::default();
-                    if let Some(ops) = storage::load_op_log_for(id) {
-                        for op in ops {
-                            op_log.record(op);
-                        }
-                    }
-
                     let ctx = ServerContext {
                         server,
                         topic_map,
                         keys,
-                        op_log,
                         unread: HashMap::new(),
                     };
                     state.servers.insert(id.clone(), ctx);
@@ -178,18 +165,10 @@ impl Client {
                     topic_map.insert(topic, (ch.name.clone(), ch.id.clone()));
                 }
 
-                let mut op_log = OpLog::default();
-                if let Some(ops) = storage::load_op_log() {
-                    for op in ops {
-                        op_log.record(op);
-                    }
-                }
-
                 let ctx = ServerContext {
                     server,
                     topic_map,
                     keys,
-                    op_log,
                     unread: HashMap::new(),
                 };
                 state.servers.insert(sid.clone(), ctx);
@@ -200,27 +179,57 @@ impl Client {
 
         state.active_server = first_server_id.clone();
 
-        // Populate legacy fields from the active server.
-        if let Some(sid) = &state.active_server {
-            if let Some(ctx) = state.servers.get(sid) {
-                state.server.topic_map = ctx.topic_map.clone();
-                state.key_store.keys = ctx.keys.clone();
-                let ops: Vec<_> = ctx.op_log.ops.clone();
-                state.op_log = OpLog::default();
-                for op in ops {
-                    state.op_log.record(op);
-                }
-            }
-        }
-
         // Initialize event-sourced state from the active server.
         if let Some(sid) = &state.active_server {
             if let Some(ctx) = state.servers.get(sid) {
-                let owner = ctx.server.owner.to_string();
-                state.event_state =
-                    willow_state::ServerState::new(sid.clone(), ctx.server.name.clone(), owner);
+                // Try loading saved state first.
+                if let Some(saved_state) = storage::load_server_state(sid) {
+                    state.event_state = saved_state;
+                } else {
+                    let owner = ctx.server.owner.to_string();
+                    state.event_state =
+                        willow_state::ServerState::new(sid.clone(), ctx.server.name.clone(), owner);
 
-                // Open persistent event store and replay stored events.
+                    // No saved state — seed from legacy channels.
+                    // Open persistent event store and replay stored events.
+                    if config.persistence {
+                        if let Some(store) = storage::open_event_store(sid) {
+                            #[cfg(not(target_arch = "wasm32"))]
+                            {
+                                state.event_store = state::PersistentEventStore::Sqlite(store);
+                            }
+                            #[cfg(target_arch = "wasm32")]
+                            {
+                                state.event_store =
+                                    state::PersistentEventStore::LocalStorage(store);
+                            }
+                        }
+                    }
+
+                    // Replay persisted events to rebuild event_state.
+                    let stored_events = state.event_store.all_events();
+                    if !stored_events.is_empty() {
+                        for event in &stored_events {
+                            willow_state::apply_lenient(&mut state.event_state, event);
+                        }
+                    } else {
+                        // No persisted events -- seed event_state with existing
+                        // channels from legacy storage so lookups work.
+                        for (topic, (name, ch_id)) in &ctx.topic_map {
+                            let _ = topic;
+                            state.event_state.channels.insert(
+                                ch_id.to_string(),
+                                willow_state::Channel {
+                                    id: ch_id.to_string(),
+                                    name: name.clone(),
+                                    pinned_messages: std::collections::HashSet::new(),
+                                },
+                            );
+                        }
+                    }
+                }
+
+                // Still open the event store even if we loaded saved state.
                 if config.persistence {
                     if let Some(store) = storage::open_event_store(sid) {
                         #[cfg(not(target_arch = "wasm32"))]
@@ -231,28 +240,6 @@ impl Client {
                         {
                             state.event_store = state::PersistentEventStore::LocalStorage(store);
                         }
-                    }
-                }
-
-                // Replay persisted events to rebuild event_state.
-                let stored_events = state.event_store.all_events();
-                if !stored_events.is_empty() {
-                    for event in &stored_events {
-                        willow_state::apply_lenient(&mut state.event_state, event);
-                    }
-                } else {
-                    // No persisted events -- seed event_state with existing
-                    // channels from legacy storage so lookups work.
-                    for (topic, (name, ch_id)) in &ctx.topic_map {
-                        let _ = topic;
-                        state.event_state.channels.insert(
-                            ch_id.to_string(),
-                            willow_state::Channel {
-                                id: ch_id.to_string(),
-                                name: name.clone(),
-                                pinned_messages: std::collections::HashSet::new(),
-                            },
-                        );
                     }
                 }
             }
@@ -315,11 +302,6 @@ impl Client {
             }
         }
 
-        // Set legacy server field from active context.
-        if let Some(ctx) = state.active() {
-            state.server.server = Some(ctx.server.clone());
-        }
-
         Self {
             state,
             identity,
@@ -357,6 +339,7 @@ impl Client {
 
     /// Helper: apply an event to the event-sourced state and store it.
     /// Sends a push notification if the channel is configured.
+    /// Persists the full state after every mutation.
     fn apply_event(&mut self, event: &willow_state::Event) {
         willow_state::apply_lenient(&mut self.state.event_state, event);
         self.state.event_store.append(event.clone());
@@ -364,6 +347,13 @@ impl Client {
             .event_store
             .set_latest_hash(self.state.event_state.hash());
         self.notify(events::ClientNotification::EventApplied(event.clone()));
+
+        // Persist full state after every mutation.
+        if self.config.persistence {
+            if let Some(sid) = &self.state.active_server {
+                storage::save_server_state(sid, &self.state.event_state);
+            }
+        }
     }
 
     /// Persist all servers to storage.
@@ -372,7 +362,6 @@ impl Client {
         storage::save_server_list(&ids);
         for (id, ctx) in &state.servers {
             storage::save_server_by_id(id, &ctx.server, &ctx.keys);
-            storage::save_op_log_for(id, &ctx.op_log.ops);
         }
     }
 
@@ -408,7 +397,6 @@ impl Client {
 
     /// Drain network events, apply them to state, and return a list of
     /// [`ClientEvent`]s for the caller to handle.
-    #[allow(deprecated)]
     pub fn poll(&mut self) -> Vec<ClientEvent> {
         let mut events = Vec::new();
 
@@ -430,7 +418,7 @@ impl Client {
 
         while let Ok(net_event) = self.event_rx.try_recv() {
             match net_event {
-                // ── New wire format: EventReceived ──────────────────
+                // ── EventReceived ────────────────────────────────────
                 network::NetworkEvent::EventReceived { event, from } => {
                     tracing::info!(
                         kind = ?std::mem::discriminant(&event.kind),
@@ -454,34 +442,28 @@ impl Client {
                             .set_latest_hash(self.state.event_state.hash());
                         self.notify(events::ClientNotification::EventApplied(event.clone()));
 
-                        // Also apply to legacy state for backward compat
-                        // (this will be removed once willow-app migrates).
-                        if let Some(op) = bridge::event_to_op(&event) {
-                            let stamped_op = ops::StampedOp {
-                                op_id: event.id.clone(),
-                                hlc: willow_messaging::hlc::HlcTimestamp {
-                                    millis: event.timestamp_ms,
-                                    counter: 0,
-                                },
-                                author: event.author.clone(),
-                                op,
-                            };
-                            self.state
-                                .apply_op(&stamped_op, &from, &self.identity, &self.cmd_tx);
+                        // Persist full state.
+                        if self.config.persistence {
+                            if let Some(sid) = &self.state.active_server {
+                                storage::save_server_state(sid, &self.state.event_state);
+                            }
                         }
+
+                        // Process chat messages into ChatState.
+                        self.process_event_message(&event, &mut events);
 
                         // Emit ClientEvents based on event kind.
                         self.emit_client_events_for(&event, &mut events);
                     }
                 }
 
-                // ── New wire format: SyncRequested ──────────────────
+                // ── SyncRequested ────────────────────────────────────
                 network::NetworkEvent::SyncRequested {
                     state_hash,
                     from,
                     topic,
                 } => {
-                    tracing::info!(%from, ?topic, "sync requested (event-sourced)");
+                    tracing::info!(%from, ?topic, "sync requested");
                     let missing = self.state.event_store.events_since(&state_hash);
                     if !missing.is_empty() {
                         let count = missing.len();
@@ -492,7 +474,7 @@ impl Client {
                     }
                 }
 
-                // ── New wire format: SyncBatchReceived ──────────────
+                // ── SyncBatchReceived ────────────────────────────────
                 network::NetworkEvent::SyncBatchReceived {
                     events: batch_events,
                     from,
@@ -516,242 +498,22 @@ impl Client {
                                 .set_latest_hash(self.state.event_state.hash());
                             self.notify(events::ClientNotification::EventApplied(event.clone()));
 
-                            // Also apply to legacy state for backward compat.
-                            if let Some(op) = bridge::event_to_op(event) {
-                                let stamped_op = ops::StampedOp {
-                                    op_id: event.id.clone(),
-                                    hlc: willow_messaging::hlc::HlcTimestamp {
-                                        millis: event.timestamp_ms,
-                                        counter: 0,
-                                    },
-                                    author: event.author.clone(),
-                                    op,
-                                };
-                                self.state.apply_op(
-                                    &stamped_op,
-                                    &event.author,
-                                    &self.identity,
-                                    &self.cmd_tx,
-                                );
-                            }
+                            // Process chat messages into ChatState.
+                            self.process_event_message(event, &mut events);
 
                             self.emit_client_events_for(event, &mut events);
                         }
                     }
                     if count > 0 {
+                        // Persist full state after sync batch.
+                        if self.config.persistence {
+                            if let Some(sid) = &self.state.active_server {
+                                storage::save_server_state(sid, &self.state.event_state);
+                            }
+                        }
                         events.push(ClientEvent::SyncCompleted { ops_applied: count });
                         // Trigger state verification after sync completion.
                         let _ = self.verify_state();
-                    }
-                }
-
-                // ── Legacy wire format: OpReceived ──────────────────
-                network::NetworkEvent::OpReceived { stamped_op, from } => {
-                    // Track message authors as online (they may be behind a relay).
-                    if !from.is_empty() && !self.state.chat.peers.contains(&from) {
-                        self.state.chat.peers.push(from.clone());
-                        events.push(ClientEvent::PeerConnected(from.clone()));
-                    }
-                    tracing::info!(
-                        op = ?std::mem::discriminant(&stamped_op.op),
-                        from = %from,
-                        op_id = %stamped_op.op_id,
-                        "received legacy op"
-                    );
-                    let applied =
-                        self.state
-                            .apply_op(&stamped_op, &from, &self.identity, &self.cmd_tx);
-
-                    tracing::info!(applied, "legacy op apply result");
-                    if applied {
-                        // Apply to event-sourced state via bridge.
-                        if let Some(event) = bridge::op_to_event(
-                            &stamped_op.op,
-                            &stamped_op.author,
-                            stamped_op.hlc.millis,
-                            &stamped_op.op_id,
-                            self.state.event_state.hash(),
-                        ) {
-                            self.apply_event(&event);
-                        }
-
-                        // Emit op-specific events.
-                        match &stamped_op.op {
-                            ops::Op::ChatMessage {
-                                topic,
-                                content_data,
-                            } => {
-                                self.state.process_chat_message(
-                                    topic,
-                                    content_data,
-                                    &stamped_op.author,
-                                    &stamped_op.op_id,
-                                    stamped_op.hlc.millis,
-                                    &stamped_op,
-                                );
-
-                                // Also apply to event-sourced state for chat
-                                // messages (op_to_event returns None for these,
-                                // so we handle them here).
-                                if let Some(msg) = self.state.chat.messages.last() {
-                                    let channel_id = self
-                                        .state
-                                        .active()
-                                        .and_then(|ctx| {
-                                            ctx.topic_map.get(topic).map(|(_, cid)| cid.to_string())
-                                        })
-                                        .unwrap_or_else(|| topic.clone());
-                                    let chat_event = bridge::chat_op_to_event(
-                                        &channel_id,
-                                        &msg.body,
-                                        &stamped_op.author,
-                                        stamped_op.hlc.millis,
-                                        &stamped_op.op_id,
-                                        self.state.event_state.hash(),
-                                    );
-                                    self.apply_event(&chat_event);
-                                }
-
-                                // Emit a MessageReceived event for the last
-                                // pushed message.
-                                if let Some(msg) = self.state.chat.messages.last() {
-                                    let channel = self
-                                        .state
-                                        .active()
-                                        .and_then(|ctx| ctx.name_for_topic(&msg.topic))
-                                        .unwrap_or("unknown")
-                                        .to_string();
-                                    events.push(ClientEvent::MessageReceived {
-                                        channel,
-                                        message: msg.clone(),
-                                    });
-                                }
-                            }
-                            ops::Op::CreateChannel { name, .. } => {
-                                events.push(ClientEvent::ChannelCreated(name.clone()));
-                            }
-                            ops::Op::DeleteChannel { name } => {
-                                events.push(ClientEvent::ChannelDeleted(name.clone()));
-                            }
-                            ops::Op::CreateRole { name, role_id } => {
-                                events.push(ClientEvent::RoleCreated {
-                                    name: name.clone(),
-                                    role_id: role_id.clone(),
-                                });
-                            }
-                            ops::Op::DeleteRole { role_id } => {
-                                events.push(ClientEvent::RoleDeleted {
-                                    role_id: role_id.clone(),
-                                });
-                            }
-                            ops::Op::KickMember { peer_id, .. } => {
-                                events.push(ClientEvent::MemberKicked(peer_id.clone()));
-                            }
-                            ops::Op::TrustPeer { peer_id } => {
-                                events.push(ClientEvent::PeerTrusted(peer_id.clone()));
-                            }
-                            ops::Op::UntrustPeer { peer_id } => {
-                                events.push(ClientEvent::PeerUntrusted(peer_id.clone()));
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-
-                // ── Legacy wire format: SyncRequested ───────────────
-                network::NetworkEvent::LegacySyncRequested {
-                    latest_hlc,
-                    from,
-                    topic,
-                } => {
-                    tracing::info!(%from, ?topic, "legacy sync requested");
-                    if let Some(ref req_topic) = topic {
-                        if let Some(ref db_arc) = self.state.message_db {
-                            if let Ok(db_lock) = db_arc.lock() {
-                                let chat_ops = db_lock.load_chat_ops_since(
-                                    req_topic,
-                                    latest_hlc.millis,
-                                    latest_hlc.counter,
-                                    500,
-                                );
-                                if !chat_ops.is_empty() {
-                                    let _ = self.cmd_tx.send(
-                                        network::NetworkCommand::LegacySendSyncBatch {
-                                            ops: chat_ops,
-                                        },
-                                    );
-                                }
-                            }
-                        }
-                    } else {
-                        let missing: Vec<_> = self
-                            .state
-                            .active()
-                            .map(|ctx| {
-                                ctx.op_log
-                                    .ops
-                                    .iter()
-                                    .filter(|op| op.hlc > latest_hlc)
-                                    .cloned()
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        if !missing.is_empty() {
-                            let count = missing.len();
-                            tracing::info!(count, "sending legacy server ops sync batch");
-                            let _ =
-                                self.cmd_tx
-                                    .send(network::NetworkCommand::LegacySendSyncBatch {
-                                        ops: missing,
-                                    });
-                        }
-                    }
-                }
-
-                // ── Legacy wire format: SyncBatchReceived ───────────
-                network::NetworkEvent::LegacySyncBatchReceived { ops, from } => {
-                    tracing::info!(count = ops.len(), %from, "received legacy sync batch");
-                    let mut sorted_ops = ops;
-                    sorted_ops.sort_by(|a, b| a.hlc.cmp(&b.hlc));
-                    let count = sorted_ops.len();
-                    for stamped_op in &sorted_ops {
-                        let applied = self.state.apply_op(
-                            stamped_op,
-                            &stamped_op.author,
-                            &self.identity,
-                            &self.cmd_tx,
-                        );
-
-                        if applied {
-                            // Apply to event-sourced state via bridge.
-                            if let Some(event) = bridge::op_to_event(
-                                &stamped_op.op,
-                                &stamped_op.author,
-                                stamped_op.hlc.millis,
-                                &stamped_op.op_id,
-                                self.state.event_state.hash(),
-                            ) {
-                                self.apply_event(&event);
-                            }
-
-                            if let ops::Op::ChatMessage {
-                                topic,
-                                content_data,
-                            } = &stamped_op.op
-                            {
-                                self.state.process_chat_message(
-                                    topic,
-                                    content_data,
-                                    &stamped_op.author,
-                                    &stamped_op.op_id,
-                                    stamped_op.hlc.millis,
-                                    stamped_op,
-                                );
-                            }
-                        }
-                    }
-                    if count > 0 {
-                        events.push(ClientEvent::SyncCompleted { ops_applied: count });
                     }
                 }
 
@@ -855,8 +617,7 @@ impl Client {
                     }
                 }
                 network::NetworkEvent::MessageReceived { .. } => {
-                    // Legacy message path -- all messages now go through
-                    // EventReceived or OpReceived.
+                    // All messages now go through EventReceived.
                 }
             }
         }
@@ -864,25 +625,19 @@ impl Client {
         events
     }
 
-    /// Convert a [`willow_state::Event`] into [`ClientEvent`]s for the caller.
-    fn emit_client_events_for(
+    /// Process an incoming event that represents a chat message, edit, delete,
+    /// or reaction. Updates `ChatState` and persists to `MessageDb`.
+    fn process_event_message(
         &mut self,
         event: &willow_state::Event,
         events: &mut Vec<ClientEvent>,
     ) {
         match &event.kind {
-            willow_state::EventKind::Message { channel_id, body } => {
-                // Look up the channel name from the channel_id.
-                let channel = self
-                    .state
-                    .event_state
-                    .channels
-                    .get(channel_id)
-                    .map(|ch| ch.name.clone())
-                    .unwrap_or_else(|| channel_id.clone());
-                let author = self.state.profiles.display_name(&event.author);
+            willow_state::EventKind::Message {
+                ref channel_id,
+                ref body,
+            } => {
                 let server_id = self.state.active_server.clone().unwrap_or_default();
-                // Resolve topic from channel_id for the ChatMessage.
                 let topic = self
                     .state
                     .active()
@@ -892,19 +647,117 @@ impl Client {
                             .find(|(_, (_, cid))| cid.to_string() == *channel_id)
                             .map(|(t, _)| t.clone())
                     })
-                    .unwrap_or_else(|| channel_id.clone());
-                let msg = ChatMessage::new(
+                    .unwrap_or_default();
+                let channel_name = self
+                    .state
+                    .active()
+                    .and_then(|ctx| ctx.name_for_topic(&topic))
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                let author = self.state.profiles.display_name(&event.author);
+                let is_local = event.author == self.identity.peer_id().to_string();
+
+                let mut msg = ChatMessage::new(
                     server_id,
-                    topic,
-                    author,
+                    topic.clone(),
+                    author.clone(),
                     body.clone(),
-                    false,
+                    is_local,
                     event.timestamp_ms,
                 );
+                msg.id = event.id.clone();
+
+                // Dedup
+                if !self.state.chat.seen_message_ids.insert(event.id.clone()) {
+                    return;
+                }
+
+                // Store in message DB
+                if let Some(ref db_arc) = self.state.message_db {
+                    if let Ok(db_lock) = db_arc.lock() {
+                        db_lock.insert(&storage::StoredMessage {
+                            topic: msg.topic.clone(),
+                            author,
+                            body: body.clone(),
+                            is_local,
+                            timestamp_ms: event.timestamp_ms,
+                            msg_id: event.id.clone(),
+                        });
+                    }
+                }
+
+                // Update unread counts.
+                let current_topic = self
+                    .state
+                    .active()
+                    .and_then(|ctx| ctx.topic_for_name(&self.state.chat.current_channel))
+                    .unwrap_or_default();
+                if !is_local && msg.topic != current_topic {
+                    let sid = self.state.active_server.clone().unwrap_or_default();
+                    if let Some(ctx) = self.state.servers.get_mut(&sid) {
+                        *ctx.unread.entry(msg.topic.clone()).or_insert(0) += 1;
+                    }
+                }
+
+                self.state.chat.messages.push(msg.clone());
+                self.state.chat.messages_dirty = true;
+
                 events.push(ClientEvent::MessageReceived {
-                    channel,
+                    channel: channel_name,
                     message: msg,
                 });
+            }
+            willow_state::EventKind::EditMessage {
+                ref message_id,
+                ref new_body,
+            } => {
+                for m in &mut self.state.chat.messages {
+                    if m.id == *message_id {
+                        m.body = new_body.clone();
+                        m.edited = true;
+                        self.state.chat.messages_dirty = true;
+                        break;
+                    }
+                }
+            }
+            willow_state::EventKind::DeleteMessage { ref message_id } => {
+                for m in &mut self.state.chat.messages {
+                    if m.id == *message_id {
+                        m.body = "[message deleted]".to_string();
+                        m.deleted = true;
+                        m.reactions.clear();
+                        self.state.chat.messages_dirty = true;
+                        break;
+                    }
+                }
+            }
+            willow_state::EventKind::Reaction {
+                ref message_id,
+                ref emoji,
+            } => {
+                let author = self.state.profiles.display_name(&event.author);
+                for m in &mut self.state.chat.messages {
+                    if m.id == *message_id {
+                        m.reactions.entry(emoji.clone()).or_default().push(author);
+                        self.state.chat.messages_dirty = true;
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Convert a [`willow_state::Event`] into [`ClientEvent`]s for the caller.
+    fn emit_client_events_for(
+        &mut self,
+        event: &willow_state::Event,
+        events: &mut Vec<ClientEvent>,
+    ) {
+        match &event.kind {
+            willow_state::EventKind::Message { .. } => {
+                // Already handled by process_event_message.
             }
             willow_state::EventKind::CreateChannel { name, .. } => {
                 events.push(ClientEvent::ChannelCreated(name.clone()));
@@ -1009,15 +862,20 @@ impl Client {
     }
 
     /// Initialize (or re-initialize) the event-sourced state for a specific server.
-    /// Opens the event store and replays persisted events. If no events exist,
-    /// seeds channels from the legacy ServerContext.
+    /// Tries loading saved state first, then falls back to replaying events.
     fn init_event_state_for_server(&mut self, server_id: &str) {
         let Some(ctx) = self.state.servers.get(server_id) else {
             return;
         };
-        let owner = ctx.server.owner.to_string();
-        self.state.event_state =
-            willow_state::ServerState::new(server_id, ctx.server.name.clone(), owner);
+
+        // Try loading saved state first.
+        if let Some(saved_state) = storage::load_server_state(server_id) {
+            self.state.event_state = saved_state;
+        } else {
+            let owner = ctx.server.owner.to_string();
+            self.state.event_state =
+                willow_state::ServerState::new(server_id, ctx.server.name.clone(), owner);
+        }
 
         // Open persistent event store for this server.
         if self.config.persistence {
@@ -1033,44 +891,47 @@ impl Client {
             }
         }
 
-        // Replay persisted events.
-        let stored_events = self.state.event_store.all_events();
-        if !stored_events.is_empty() {
-            for event in &stored_events {
-                willow_state::apply_lenient(&mut self.state.event_state, event);
-            }
-            // Merge reaction data from replayed event_state into chat messages.
-            for es_msg in &self.state.event_state.messages {
-                if !es_msg.reactions.is_empty() {
-                    if let Some(chat_msg) = self
-                        .state
-                        .chat
-                        .messages
-                        .iter_mut()
-                        .find(|m| m.id == es_msg.id)
-                    {
-                        for (emoji, authors) in &es_msg.reactions {
-                            let entry = chat_msg.reactions.entry(emoji.clone()).or_default();
-                            for author in authors {
-                                if !entry.contains(author) {
-                                    entry.push(author.clone());
+        // If we didn't load a saved state, replay persisted events.
+        if storage::load_server_state(server_id).is_none() {
+            let stored_events = self.state.event_store.all_events();
+            if !stored_events.is_empty() {
+                for event in &stored_events {
+                    willow_state::apply_lenient(&mut self.state.event_state, event);
+                }
+                // Merge reaction data from replayed event_state into chat messages.
+                for es_msg in &self.state.event_state.messages {
+                    if !es_msg.reactions.is_empty() {
+                        if let Some(chat_msg) = self
+                            .state
+                            .chat
+                            .messages
+                            .iter_mut()
+                            .find(|m| m.id == es_msg.id)
+                        {
+                            for (emoji, authors) in &es_msg.reactions {
+                                let entry = chat_msg.reactions.entry(emoji.clone()).or_default();
+                                for author in authors {
+                                    if !entry.contains(author) {
+                                        entry.push(author.clone());
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-        } else {
-            // Seed event_state with channels from legacy storage.
-            for (name, ch_id) in ctx.topic_map.values() {
-                self.state.event_state.channels.insert(
-                    ch_id.to_string(),
-                    willow_state::Channel {
-                        id: ch_id.to_string(),
-                        name: name.clone(),
-                        pinned_messages: std::collections::HashSet::new(),
-                    },
-                );
+            } else {
+                // Seed event_state with channels from legacy storage.
+                let ctx = self.state.servers.get(server_id).unwrap();
+                for (name, ch_id) in ctx.topic_map.values() {
+                    self.state.event_state.channels.insert(
+                        ch_id.to_string(),
+                        willow_state::Channel {
+                            id: ch_id.to_string(),
+                            name: name.clone(),
+                            pinned_messages: std::collections::HashSet::new(),
+                        },
+                    );
+                }
             }
         }
     }
@@ -1128,7 +989,6 @@ impl Client {
             server,
             topic_map,
             keys,
-            op_log: OpLog::default(),
             unread: HashMap::new(),
         };
 
@@ -1275,48 +1135,32 @@ impl Client {
     /// Edit an existing message.
     pub fn edit_message(
         &mut self,
-        channel: &str,
+        _channel: &str,
         message_id: &str,
         new_body: &str,
     ) -> anyhow::Result<()> {
-        let target =
-            willow_messaging::MessageId(uuid::Uuid::parse_str(message_id).unwrap_or_default());
-        let content = Content::Edit {
-            target: target.clone(),
-            new_body: new_body.to_string(),
-        };
-
-        let ctx = self
+        let _ = self
             .state
             .active()
             .ok_or_else(|| anyhow::anyhow!("no active server"))?;
-        let topic = ctx
-            .topic_for_name(channel)
-            .unwrap_or_else(|| channel.to_string());
-
-        let wire_content = self.encrypt_content(&content, &topic);
-        let content_data = willow_transport::pack(&wire_content).unwrap_or_default();
 
         let peer_id_str = self.identity.peer_id().to_string();
-        let stamped = StampedOp::new(
-            Op::ChatMessage {
-                topic,
-                content_data,
+        let event = willow_state::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_hash: self.state.event_state.hash(),
+            author: peer_id_str,
+            timestamp_ms: util::current_time_ms(),
+            kind: willow_state::EventKind::EditMessage {
+                message_id: message_id.to_string(),
+                new_body: new_body.to_string(),
             },
-            &mut self.state.chat.hlc,
-            &peer_id_str,
-        );
-        if let Some(ctx) = self.state.active_mut() {
-            ctx.op_log.record(stamped.clone());
-        }
-        let _ = self
-            .cmd_tx
-            .send(network::NetworkCommand::BroadcastOp(stamped));
+        };
+        self.apply_event(&event);
+        self.broadcast_event(event, None);
 
         // Apply locally.
-        let target_str = target.to_string();
         for m in &mut self.state.chat.messages {
-            if m.id == target_str {
+            if m.id == message_id {
                 m.body = new_body.to_string();
                 m.edited = true;
                 self.state.chat.messages_dirty = true;
@@ -1328,44 +1172,28 @@ impl Client {
     }
 
     /// Delete a message.
-    pub fn delete_message(&mut self, channel: &str, message_id: &str) -> anyhow::Result<()> {
-        let target =
-            willow_messaging::MessageId(uuid::Uuid::parse_str(message_id).unwrap_or_default());
-        let content = Content::Delete {
-            target: target.clone(),
-        };
-
-        let ctx = self
+    pub fn delete_message(&mut self, _channel: &str, message_id: &str) -> anyhow::Result<()> {
+        let _ = self
             .state
             .active()
             .ok_or_else(|| anyhow::anyhow!("no active server"))?;
-        let topic = ctx
-            .topic_for_name(channel)
-            .unwrap_or_else(|| channel.to_string());
-
-        let wire_content = self.encrypt_content(&content, &topic);
-        let content_data = willow_transport::pack(&wire_content).unwrap_or_default();
 
         let peer_id_str = self.identity.peer_id().to_string();
-        let stamped = StampedOp::new(
-            Op::ChatMessage {
-                topic,
-                content_data,
+        let event = willow_state::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_hash: self.state.event_state.hash(),
+            author: peer_id_str,
+            timestamp_ms: util::current_time_ms(),
+            kind: willow_state::EventKind::DeleteMessage {
+                message_id: message_id.to_string(),
             },
-            &mut self.state.chat.hlc,
-            &peer_id_str,
-        );
-        if let Some(ctx) = self.state.active_mut() {
-            ctx.op_log.record(stamped.clone());
-        }
-        let _ = self
-            .cmd_tx
-            .send(network::NetworkCommand::BroadcastOp(stamped));
+        };
+        self.apply_event(&event);
+        self.broadcast_event(event, None);
 
         // Apply locally.
-        let target_str = target.to_string();
         for m in &mut self.state.chat.messages {
-            if m.id == target_str {
+            if m.id == message_id {
                 m.body = "[message deleted]".to_string();
                 m.deleted = true;
                 m.reactions.clear();
@@ -1378,47 +1206,17 @@ impl Client {
     }
 
     /// Add a reaction to a message.
-    pub fn react(&mut self, channel: &str, message_id: &str, emoji: &str) -> anyhow::Result<()> {
-        let target =
-            willow_messaging::MessageId(uuid::Uuid::parse_str(message_id).unwrap_or_default());
-        let content = Content::Reaction {
-            target: target.clone(),
-            emoji: emoji.to_string(),
-        };
-
-        let ctx = self
+    pub fn react(&mut self, _channel: &str, message_id: &str, emoji: &str) -> anyhow::Result<()> {
+        let _ = self
             .state
             .active()
             .ok_or_else(|| anyhow::anyhow!("no active server"))?;
-        let topic = ctx
-            .topic_for_name(channel)
-            .unwrap_or_else(|| channel.to_string());
-
-        let wire_content = self.encrypt_content(&content, &topic);
-        let content_data = willow_transport::pack(&wire_content).unwrap_or_default();
 
         let peer_id_str = self.identity.peer_id().to_string();
-        let stamped = StampedOp::new(
-            Op::ChatMessage {
-                topic,
-                content_data,
-            },
-            &mut self.state.chat.hlc,
-            &peer_id_str,
-        );
-        if let Some(ctx) = self.state.active_mut() {
-            ctx.op_log.record(stamped.clone());
-        }
-        let _ = self
-            .cmd_tx
-            .send(network::NetworkCommand::BroadcastOp(stamped));
-
-        // Persist as event for replay on restart.
-        let peer_id_event = self.identity.peer_id().to_string();
         let reaction_event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
             parent_hash: self.state.event_state.hash(),
-            author: peer_id_event,
+            author: peer_id_str,
             timestamp_ms: util::current_time_ms(),
             kind: willow_state::EventKind::Reaction {
                 message_id: message_id.to_string(),
@@ -1426,12 +1224,12 @@ impl Client {
             },
         };
         self.apply_event(&reaction_event);
+        self.broadcast_event(reaction_event, None);
 
         // Apply locally to chat messages.
-        let target_str = target.to_string();
         let author = self.display_name();
         for m in &mut self.state.chat.messages {
-            if m.id == target_str {
+            if m.id == message_id {
                 m.reactions
                     .entry(emoji.to_string())
                     .or_default()
@@ -1447,8 +1245,7 @@ impl Client {
     /// Pin a message in a channel.
     ///
     /// Creates a `PinMessage` event in the event-sourced state and broadcasts
-    /// it to peers. Also updates the legacy in-memory pinned list for backward
-    /// compatibility.
+    /// it to peers.
     pub fn pin_message(&mut self, channel: &str, message_id: &str) -> anyhow::Result<()> {
         let channel_id = self.resolve_channel_id(channel)?;
         let peer_id = self.identity.peer_id().to_string();
@@ -1481,7 +1278,7 @@ impl Client {
     /// Unpin a message from a channel.
     ///
     /// Creates an `UnpinMessage` event in the event-sourced state and
-    /// broadcasts it to peers. Also updates the legacy in-memory pinned list.
+    /// broadcasts it to peers.
     pub fn unpin_message(&mut self, channel: &str, message_id: &str) -> anyhow::Result<()> {
         let channel_id = self.resolve_channel_id(channel)?;
         let peer_id = self.identity.peer_id().to_string();
@@ -1621,17 +1418,11 @@ impl Client {
             timestamp_ms: util::current_time_ms(),
             kind: willow_state::EventKind::CreateChannel {
                 name: name.to_string(),
-                channel_id: ch_id_str.clone(),
+                channel_id: ch_id_str,
             },
         };
         self.apply_event(&event);
         self.broadcast_event(event, None);
-
-        // Also broadcast legacy op for backward compat with old peers.
-        self.broadcast_op(Op::CreateChannel {
-            name: name.to_string(),
-            channel_id: ch_id_str,
-        });
 
         self.state.chat.current_channel = name.to_string();
         self.state.chat.messages_dirty = true;
@@ -1687,11 +1478,6 @@ impl Client {
         self.apply_event(&event);
         self.broadcast_event(event, None);
 
-        // Also broadcast legacy op for backward compat with old peers.
-        self.broadcast_op(Op::DeleteChannel {
-            name: name.to_string(),
-        });
-
         Ok(())
     }
 
@@ -1713,11 +1499,6 @@ impl Client {
         };
         self.apply_event(&event);
         self.broadcast_event(event, None);
-
-        // Also broadcast legacy op for backward compat with old peers.
-        self.broadcast_op(Op::TrustPeer {
-            peer_id: peer_id.to_string(),
-        });
     }
 
     /// Revoke trust from a peer.
@@ -1738,11 +1519,6 @@ impl Client {
         };
         self.apply_event(&event);
         self.broadcast_event(event, None);
-
-        // Also broadcast legacy op for backward compat with old peers.
-        self.broadcast_op(Op::UntrustPeer {
-            peer_id: peer_id.to_string(),
-        });
     }
 
     /// Kick a member, rotating channel keys.
@@ -1778,32 +1554,6 @@ impl Client {
 
         self.state.chat.peers.retain(|p| p != peer_id);
 
-        // Encrypt rotated keys for remaining members.
-        let mut rotated_key_entries = Vec::new();
-        if let Some(ctx) = self.state.active() {
-            for member in ctx.server.members() {
-                let peer_str = member.peer_id.to_string();
-                if let Some(pub_key) = invite::peer_id_to_ed25519_public(&peer_str) {
-                    for (ch_id, key) in &rotated {
-                        for (topic, (_, tid)) in &ctx.topic_map {
-                            if tid == ch_id {
-                                if let Ok(enc) =
-                                    willow_crypto::encrypt_channel_key_for(key, &pub_key)
-                                {
-                                    rotated_key_entries.push((
-                                        peer_str.clone(),
-                                        topic.clone(),
-                                        enc,
-                                    ));
-                                }
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         // Create and apply event, then broadcast it.
         let author = self.identity.peer_id().to_string();
         let event = willow_state::Event {
@@ -1817,12 +1567,6 @@ impl Client {
         };
         self.apply_event(&event);
         self.broadcast_event(event, None);
-
-        // Also broadcast legacy op for backward compat with old peers.
-        self.broadcast_op(Op::KickMember {
-            peer_id: peer_id.to_string(),
-            rotated_keys: rotated_key_entries,
-        });
 
         Ok(())
     }
@@ -1839,10 +1583,19 @@ impl Client {
         ctx.server.create_role(role);
         storage::save_server(&ctx.server, &ctx.keys);
 
-        self.broadcast_op(Op::CreateRole {
-            name: name.to_string(),
-            role_id: role_id.to_string(),
-        });
+        let peer_id_str = self.identity.peer_id().to_string();
+        let event = willow_state::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_hash: self.state.event_state.hash(),
+            author: peer_id_str,
+            timestamp_ms: util::current_time_ms(),
+            kind: willow_state::EventKind::CreateRole {
+                name: name.to_string(),
+                role_id: role_id.to_string(),
+            },
+        };
+        self.apply_event(&event);
+        self.broadcast_event(event, None);
 
         Ok(())
     }
@@ -1858,9 +1611,18 @@ impl Client {
         ctx.server.delete_role(&rid)?;
         storage::save_server(&ctx.server, &ctx.keys);
 
-        self.broadcast_op(Op::DeleteRole {
-            role_id: role_id.to_string(),
-        });
+        let peer_id_str = self.identity.peer_id().to_string();
+        let event = willow_state::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_hash: self.state.event_state.hash(),
+            author: peer_id_str,
+            timestamp_ms: util::current_time_ms(),
+            kind: willow_state::EventKind::DeleteRole {
+                role_id: role_id.to_string(),
+            },
+        };
+        self.apply_event(&event);
+        self.broadcast_event(event, None);
 
         Ok(())
     }
@@ -1882,11 +1644,20 @@ impl Client {
         ctx.server.set_permission(&rid, perm, granted)?;
         storage::save_server(&ctx.server, &ctx.keys);
 
-        self.broadcast_op(Op::SetPermission {
-            role_id: role_id.to_string(),
-            permission: permission.to_string(),
-            granted,
-        });
+        let peer_id_str = self.identity.peer_id().to_string();
+        let event = willow_state::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_hash: self.state.event_state.hash(),
+            author: peer_id_str,
+            timestamp_ms: util::current_time_ms(),
+            kind: willow_state::EventKind::SetPermission {
+                role_id: role_id.to_string(),
+                permission: permission.to_string(),
+                granted,
+            },
+        };
+        self.apply_event(&event);
+        self.broadcast_event(event, None);
 
         Ok(())
     }
@@ -1914,10 +1685,19 @@ impl Client {
         ctx.server.assign_role(&peer, &rid)?;
         storage::save_server(&ctx.server, &ctx.keys);
 
-        self.broadcast_op(Op::AssignRole {
-            peer_id: peer_id.to_string(),
-            role_id: role_id.to_string(),
-        });
+        let peer_id_str_author = self.identity.peer_id().to_string();
+        let event = willow_state::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_hash: self.state.event_state.hash(),
+            author: peer_id_str_author,
+            timestamp_ms: util::current_time_ms(),
+            kind: willow_state::EventKind::AssignRole {
+                peer_id: peer_id.to_string(),
+                role_id: role_id.to_string(),
+            },
+        };
+        self.apply_event(&event);
+        self.broadcast_event(event, None);
 
         Ok(())
     }
@@ -2054,7 +1834,6 @@ impl Client {
                 server,
                 topic_map,
                 keys,
-                op_log: OpLog::default(),
                 unread: HashMap::new(),
             };
 
@@ -2083,24 +1862,6 @@ impl Client {
                     state_hash: willow_state::StateHash::ZERO,
                     topic: Some(topic.clone()),
                 });
-            }
-        }
-
-        // Also request via legacy sync for backward compat.
-        let _ = self
-            .cmd_tx
-            .send(network::NetworkCommand::LegacyRequestSync {
-                latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
-                topic: None,
-            });
-        if let Some(ctx) = self.state.servers.get(&server_id) {
-            for topic in ctx.topic_map.keys() {
-                let _ = self
-                    .cmd_tx
-                    .send(network::NetworkCommand::LegacyRequestSync {
-                        latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
-                        topic: Some(topic.clone()),
-                    });
             }
         }
 
@@ -2234,12 +1995,12 @@ impl Client {
 
     /// List all channel names for the active server.
     ///
-    /// Returns the union of channels from the legacy system and the
+    /// Returns the union of channels from the server context and the
     /// event-sourced state, deduplicated and sorted.
     pub fn channels(&self) -> Vec<String> {
         let mut names = self.state.channel_names();
 
-        // Merge any channels from event_state that aren't yet in the legacy list.
+        // Merge any channels from event_state that aren't yet in the list.
         for ch in self.state.event_state.channels.values() {
             if !names.contains(&ch.name) {
                 names.push(ch.name.clone());
@@ -2254,8 +2015,7 @@ impl Client {
     /// Get messages from the event-sourced state for a channel by ID.
     ///
     /// Returns all non-deleted messages for the given channel in
-    /// event-sequence order. This reads from `event_state.messages`, which
-    /// is the new source of truth for message history.
+    /// event-sequence order.
     pub fn event_messages(&self, channel_id: &str) -> Vec<&willow_state::ChatMessage> {
         self.state
             .event_state
@@ -2330,25 +2090,11 @@ impl Client {
             .send(network::NetworkCommand::BroadcastEvent { event, topic });
     }
 
-    /// Stamp, record, persist, and broadcast a legacy server op.
-    #[allow(deprecated)]
-    fn broadcast_op(&mut self, op: Op) {
-        let peer_id_str = self.identity.peer_id().to_string();
-        let stamped = StampedOp::new(op, &mut self.state.chat.hlc, &peer_id_str);
-        if let Some(ctx) = self.state.active_mut() {
-            ctx.op_log.record(stamped.clone());
-            storage::save_op_log(&ctx.op_log.ops);
-        }
-        let _ = self
-            .cmd_tx
-            .send(network::NetworkCommand::BroadcastOp(stamped));
-    }
-
-    /// Send chat content (text, reply, edit, delete, reaction) on a channel.
+    /// Send chat content (text, reply) on a channel.
     fn send_content(
         &mut self,
         channel: &str,
-        content: Content,
+        _content: Content,
         body: &str,
         reply_preview: Option<String>,
     ) -> anyhow::Result<()> {
@@ -2361,24 +2107,9 @@ impl Client {
             .unwrap_or_else(|| channel.to_string());
         let server_id = self.state.active_server.clone().unwrap_or_default();
 
-        let wire_content = self.encrypt_content(&content, &topic);
-        let content_data = willow_transport::pack(&wire_content).unwrap_or_default();
-
         let peer_id_str = self.identity.peer_id().to_string();
-        let stamped = StampedOp::new(
-            Op::ChatMessage {
-                topic: topic.clone(),
-                content_data,
-            },
-            &mut self.state.chat.hlc,
-            &peer_id_str,
-        );
 
-        if let Some(ctx) = self.state.active_mut() {
-            ctx.op_log.record(stamped.clone());
-        }
-
-        // Apply to event-sourced state: resolve channel_id from topic.
+        // Resolve channel_id from topic.
         let channel_id = self
             .state
             .active()
@@ -2388,11 +2119,14 @@ impl Client {
                     .map(|(_, ch_id)| ch_id.to_string())
             })
             .unwrap_or_else(|| channel.to_string());
+
+        let ts = util::current_time_ms();
+        let event_id = uuid::Uuid::new_v4().to_string();
         let msg_event = willow_state::Event {
-            id: stamped.op_id.clone(),
+            id: event_id.clone(),
             parent_hash: self.state.event_state.hash(),
             author: peer_id_str.clone(),
-            timestamp_ms: stamped.hlc.millis,
+            timestamp_ms: ts,
             kind: willow_state::EventKind::Message {
                 channel_id,
                 body: body.to_string(),
@@ -2403,21 +2137,8 @@ impl Client {
         // Broadcast the event on the channel topic.
         self.broadcast_event(msg_event, Some(topic.clone()));
 
-        // Persist the stamped op for catch-up sync.
-        if let Some(ref db_arc) = self.state.message_db {
-            if let Ok(db_lock) = db_arc.lock() {
-                db_lock.insert_chat_op(&stamped, &topic);
-            }
-        }
-
-        // Also broadcast legacy op for backward compat with old peers.
-        let _ = self
-            .cmd_tx
-            .send(network::NetworkCommand::BroadcastOp(stamped.clone()));
-
         // Add to local display.
         let author = self.state.profiles.display_name(&peer_id_str);
-        let ts = stamped.hlc.millis;
         let mut chat_msg = ChatMessage::new(
             server_id,
             topic.clone(),
@@ -2426,8 +2147,11 @@ impl Client {
             true,
             ts,
         );
-        chat_msg.id = stamped.op_id.clone();
+        chat_msg.id = event_id.clone();
         chat_msg.reply_preview = reply_preview;
+
+        // Dedup
+        self.state.chat.seen_message_ids.insert(event_id.clone());
 
         // Persist to MessageDb.
         if let Some(ref db_arc) = self.state.message_db {
@@ -2438,7 +2162,7 @@ impl Client {
                     body: body.to_string(),
                     is_local: true,
                     timestamp_ms: ts,
-                    msg_id: stamped.op_id.clone(),
+                    msg_id: event_id,
                 });
             }
         }
@@ -2447,17 +2171,6 @@ impl Client {
         self.state.chat.messages_dirty = true;
 
         Ok(())
-    }
-
-    /// Encrypt content if a channel key exists for the topic.
-    fn encrypt_content(&self, content: &Content, topic: &str) -> Content {
-        let key = self.state.active().and_then(|ctx| ctx.keys.get(topic));
-        if let Some(key) = key {
-            if let Ok(sealed) = willow_crypto::seal_content(content, key, 0) {
-                return Content::Encrypted(sealed);
-            }
-        }
-        content.clone()
     }
 
     /// Called when we first hear from the network (Listening or PeerConnected).
@@ -2504,32 +2217,6 @@ impl Client {
                     topic: Some(topic.clone()),
                 });
             }
-        }
-
-        // Also request via legacy sync for backward compat with old peers.
-        for ctx in self.state.servers.values() {
-            let _ = self
-                .cmd_tx
-                .send(network::NetworkCommand::LegacyRequestSync {
-                    latest_hlc: ctx.op_log.latest_hlc(),
-                    topic: None,
-                });
-            for topic in ctx.topic_map.keys() {
-                let _ = self
-                    .cmd_tx
-                    .send(network::NetworkCommand::LegacyRequestSync {
-                        latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
-                        topic: Some(topic.clone()),
-                    });
-            }
-        }
-        if self.state.servers.is_empty() {
-            let _ = self
-                .cmd_tx
-                .send(network::NetworkCommand::LegacyRequestSync {
-                    latest_hlc: willow_messaging::hlc::HlcTimestamp::ZERO,
-                    topic: None,
-                });
         }
     }
 }
@@ -2590,16 +2277,10 @@ pub(crate) fn test_client() -> (Client, std::sync::mpsc::Receiver<network::Netwo
     }
     topic_map.insert(topic, ("general".to_string(), ch_id));
 
-    // Also populate legacy fields.
-    state.server.topic_map = topic_map.clone();
-    state.key_store.keys = keys.clone();
-    state.server.server = Some(server.clone());
-
     let ctx = ServerContext {
         server,
         topic_map,
         keys,
-        op_log: OpLog::default(),
         unread: HashMap::new(),
     };
 
@@ -2655,7 +2336,6 @@ pub(crate) fn test_client() -> (Client, std::sync::mpsc::Receiver<network::Netwo
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
 
@@ -2687,24 +2367,16 @@ mod tests {
     }
 
     #[test]
-    fn send_message_broadcasts_event_and_op() {
+    fn send_message_broadcasts_event() {
         let (mut client, rx) = test_client();
         client.send_message("general", "test").unwrap();
 
-        // First command is the new BroadcastEvent.
+        // Should broadcast a BroadcastEvent command.
         let cmd1 = rx.try_recv().unwrap();
         assert!(
             matches!(cmd1, network::NetworkCommand::BroadcastEvent { .. }),
             "expected BroadcastEvent, got {:?}",
             std::mem::discriminant(&cmd1),
-        );
-
-        // Second command is the legacy BroadcastOp.
-        let cmd2 = rx.try_recv().unwrap();
-        assert!(
-            matches!(cmd2, network::NetworkCommand::BroadcastOp(_)),
-            "expected BroadcastOp, got {:?}",
-            std::mem::discriminant(&cmd2),
         );
     }
 
@@ -2790,34 +2462,24 @@ mod tests {
     }
 
     #[test]
-    fn trust_untrust_broadcasts_events_and_ops() {
+    fn trust_untrust_broadcasts_events() {
         let (mut client, rx) = test_client();
         client.trust_peer("some-peer");
 
-        // First: BroadcastEvent (new wire format).
+        // Should broadcast BroadcastEvent.
         let cmd1 = rx.try_recv().unwrap();
         assert!(matches!(
             cmd1,
             network::NetworkCommand::BroadcastEvent { .. }
         ));
-        // Second: BroadcastOp (legacy wire format).
-        let cmd2 = rx.try_recv().unwrap();
-        assert!(
-            matches!(cmd2, network::NetworkCommand::BroadcastOp(ref s) if matches!(s.op, Op::TrustPeer { .. }))
-        );
 
         client.untrust_peer("some-peer");
-        // First: BroadcastEvent.
-        let cmd3 = rx.try_recv().unwrap();
+        // Should broadcast BroadcastEvent.
+        let cmd2 = rx.try_recv().unwrap();
         assert!(matches!(
-            cmd3,
+            cmd2,
             network::NetworkCommand::BroadcastEvent { .. }
         ));
-        // Second: BroadcastOp.
-        let cmd4 = rx.try_recv().unwrap();
-        assert!(
-            matches!(cmd4, network::NetworkCommand::BroadcastOp(ref s) if matches!(s.op, Op::UntrustPeer { .. }))
-        );
     }
 
     #[test]
@@ -2857,37 +2519,6 @@ mod tests {
     }
 
     #[test]
-    fn apply_op_deduplicates() {
-        let (mut client, _rx) = test_client();
-
-        let mut hlc = willow_messaging::hlc::HLC::new();
-        let stamped = StampedOp::new(
-            Op::CreateChannel {
-                name: "dedup-test".into(),
-                channel_id: uuid::Uuid::new_v4().to_string(),
-            },
-            &mut hlc,
-            &client.peer_id(),
-        );
-
-        let applied1 = client.state.apply_op(
-            &stamped,
-            &client.peer_id(),
-            &client.identity.clone(),
-            &client.cmd_tx,
-        );
-        let applied2 = client.state.apply_op(
-            &stamped,
-            &client.peer_id(),
-            &client.identity.clone(),
-            &client.cmd_tx,
-        );
-
-        assert!(applied1);
-        assert!(!applied2);
-    }
-
-    #[test]
     fn generate_accept_invite_round_trip() {
         let (client, _rx) = test_client();
         let recipient = Identity::generate();
@@ -2914,7 +2545,6 @@ mod tests {
             server: server2,
             topic_map: HashMap::new(),
             keys: HashMap::new(),
-            op_log: OpLog::default(),
             unread: HashMap::new(),
         };
         client.state.servers.insert(server2_id.clone(), ctx2);
@@ -3013,7 +2643,6 @@ mod tests {
             server: server2,
             topic_map: topic_map2,
             keys: HashMap::new(),
-            op_log: OpLog::default(),
             unread: HashMap::new(),
         };
         client.state.servers.insert(server2_id.clone(), ctx2);
@@ -3058,7 +2687,6 @@ mod tests {
                 server: server2,
                 topic_map: HashMap::new(),
                 keys: HashMap::new(),
-                op_log: OpLog::default(),
                 unread: HashMap::new(),
             },
         );
@@ -3382,7 +3010,6 @@ mod tests {
     #[test]
     fn no_servers_returns_empty_channels() {
         let (mut client, _rx) = test_client();
-        // Manually clear all servers to simulate no-server state.
         client.state.servers.clear();
         client.state.active_server = None;
         client.state.event_state.channels.clear();
@@ -3581,11 +3208,8 @@ mod tests {
     #[test]
     fn send_typing_debounces() {
         let (mut client, _rx) = test_client();
-        // First call should succeed (no-op since not connected, but shouldn't panic)
         client.send_typing();
-        // Immediate second call should be debounced (within 3s)
         client.send_typing();
-        // No assertion needed -- just verifying it doesn't panic
     }
 
     #[test]
@@ -3602,7 +3226,6 @@ mod tests {
         let (client, _rx) = test_client();
         let members = client.server_members();
         assert!(!members.is_empty());
-        // Owner should be present (online because it's the local peer).
         let owner = members.iter().find(|(_, _, online)| *online);
         assert!(owner.is_some());
     }
@@ -3612,12 +3235,9 @@ mod tests {
     #[test]
     fn seen_message_ids_prevents_duplicates() {
         let (mut client, _rx) = test_client();
-        // The seen_message_ids set should exist and be empty initially
         assert!(client.state().chat.seen_message_ids.is_empty());
 
-        // After sending a message, the set should still be accessible
         client.send_message("general", "test").unwrap();
-        // Just verify the field exists and is accessible
         let _ = client.state().chat.seen_message_ids.len();
     }
 
@@ -3633,17 +3253,10 @@ mod tests {
         let _ = client.set_server_display_name("Alice on A");
         assert_eq!(client.server_display_name(), "Alice on A");
 
-        // Creating a new server reinitializes event_state, which clears the
-        // per-server profile. The display name should fall back to the global
-        // profile name (which was also set to "Alice on A" via set_display_name
-        // called internally by set_server_display_name).
         let _id2 = client.create_server("Server B").unwrap();
-        // After creating Server B, event_state is fresh. server_display_name
-        // falls back to the global display_name.
         let name = client.server_display_name();
         assert_eq!(name, "Alice on A");
 
-        // Set a different name on Server B.
         let _ = client.set_server_display_name("Alice on B");
         assert_eq!(client.server_display_name(), "Alice on B");
     }
@@ -3657,7 +3270,6 @@ mod tests {
         client.state.active_server = None;
 
         let id1 = client.create_server("Server A").unwrap();
-        // Server A should have "general" channel in event_state.
         assert!(client
             .state
             .event_state
@@ -3666,10 +3278,8 @@ mod tests {
             .any(|c| c.name == "general"));
 
         let _id2 = client.create_server("Server B").unwrap();
-        // Now on Server B, event_state should be for Server B.
         assert_eq!(client.state.event_state.server_name, "Server B");
 
-        // Switch back to Server A.
         client.switch_server(&id1);
         assert_eq!(client.state.event_state.server_name, "Server A");
     }
@@ -3686,326 +3296,17 @@ mod tests {
         let _id2 = client.create_server("Server B").unwrap();
         client.create_channel("beta").unwrap();
 
-        // On Server B, legacy channel_names should include "beta" but not "alpha".
-        let legacy_b = client.state.channel_names();
-        assert!(legacy_b.contains(&"general".to_string()));
-        assert!(legacy_b.contains(&"beta".to_string()));
-        assert!(!legacy_b.contains(&"alpha".to_string()));
+        // On Server B, channel_names should include "beta" but not "alpha".
+        let names_b = client.state.channel_names();
+        assert!(names_b.contains(&"general".to_string()));
+        assert!(names_b.contains(&"beta".to_string()));
+        assert!(!names_b.contains(&"alpha".to_string()));
 
-        // Switch to Server A, legacy channel_names should include "alpha" but not "beta".
+        // Switch to Server A, channel_names should include "alpha" but not "beta".
         client.switch_server(&id1);
-        let legacy_a = client.state.channel_names();
-        assert!(legacy_a.contains(&"general".to_string()));
-        assert!(legacy_a.contains(&"alpha".to_string()));
-        assert!(!legacy_a.contains(&"beta".to_string()));
-    }
-
-    #[test]
-    fn switch_server_isolates_members() {
-        let (mut client, _rx) = test_client();
-        client.state.servers.clear();
-        client.state.active_server = None;
-
-        let _id1 = client.create_server("Server A").unwrap();
-        let owner_a = client.state.event_state.owner.clone();
-
-        let _id2 = client.create_server("Server B").unwrap();
-        let owner_b = client.state.event_state.owner.clone();
-
-        // Both servers owned by same peer.
-        assert_eq!(owner_a, owner_b);
-
-        // Members should contain owner in both.
-        let members = client.server_members();
-        assert!(!members.is_empty());
-    }
-
-    #[test]
-    fn switch_server_preserves_messages() {
-        let (mut client, _rx) = test_client();
-        client.state.servers.clear();
-        client.state.active_server = None;
-
-        let id1 = client.create_server("Server A").unwrap();
-        client.send_message("general", "Hello from A").unwrap();
-
-        let _id2 = client.create_server("Server B").unwrap();
-        client.send_message("general", "Hello from B").unwrap();
-
-        // Messages on Server B.
-        let msgs_b = client.messages("general");
-        assert!(msgs_b.iter().any(|m| m.body == "Hello from B"));
-        assert!(!msgs_b.iter().any(|m| m.body == "Hello from A"));
-
-        // Switch to Server A.
-        client.switch_server(&id1);
-        let msgs_a = client.messages("general");
-        assert!(msgs_a.iter().any(|m| m.body == "Hello from A"));
-        assert!(!msgs_a.iter().any(|m| m.body == "Hello from B"));
-    }
-
-    // ───── Event state initialization ───────────────────────────────────
-
-    #[test]
-    fn init_event_state_sets_correct_owner() {
-        let (mut client, _rx) = test_client();
-        client.state.servers.clear();
-        client.state.active_server = None;
-
-        let _ = client.create_server("Test Server");
-        let peer_id = client.peer_id();
-        assert_eq!(client.state.event_state.owner, peer_id);
-    }
-
-    #[test]
-    fn init_event_state_sets_server_name() {
-        let (mut client, _rx) = test_client();
-        client.state.servers.clear();
-        client.state.active_server = None;
-
-        let _ = client.create_server("My Cool Server");
-        assert_eq!(client.state.event_state.server_name, "My Cool Server");
-    }
-
-    #[test]
-    fn init_event_state_seeds_general_channel() {
-        let (mut client, _rx) = test_client();
-        client.state.servers.clear();
-        client.state.active_server = None;
-
-        let _ = client.create_server("Seed Test");
-        // event_state should have a "general" channel after init.
-        assert!(
-            client
-                .state
-                .event_state
-                .channels
-                .values()
-                .any(|c| c.name == "general"),
-            "init_event_state should seed 'general' channel"
-        );
-    }
-
-    #[test]
-    fn init_event_state_server_id_matches() {
-        let (mut client, _rx) = test_client();
-        client.state.servers.clear();
-        client.state.active_server = None;
-
-        let server_id = client.create_server("ID Test").unwrap();
-        assert_eq!(client.state.event_state.server_id, server_id);
-    }
-
-    // ───── Active server name on switch ─────────────────────────────────
-
-    #[test]
-    fn active_server_name_changes_on_switch() {
-        let (mut client, _rx) = test_client();
-        client.state.servers.clear();
-        client.state.active_server = None;
-
-        let id1 = client.create_server("Alpha").unwrap();
-        let id2 = client.create_server("Beta").unwrap();
-
-        assert_eq!(client.active_server_name(), "Beta"); // Last created is active.
-
-        client.switch_server(&id1);
-        assert_eq!(client.active_server_name(), "Alpha");
-
-        client.switch_server(&id2);
-        assert_eq!(client.active_server_name(), "Beta");
-    }
-
-    // ───── Invite generation ────────────────────────────────────────────
-
-    #[test]
-    fn generate_invite_works_for_owner() {
-        let (client, _rx) = test_client();
-        let recipient = willow_identity::Identity::generate();
-        let recipient_peer_id = recipient.peer_id().to_string();
-
-        let result = client.generate_invite(&recipient_peer_id);
-        assert!(result.is_ok());
-        assert!(!result.unwrap().is_empty());
-    }
-
-    #[test]
-    fn generate_invite_fails_without_server() {
-        let (mut client, _rx) = test_client();
-        client.state.servers.clear();
-        client.state.active_server = None;
-
-        let recipient = willow_identity::Identity::generate();
-        let result = client.generate_invite(&recipient.peer_id().to_string());
-        assert!(result.is_err());
-    }
-
-    // ───── Channel operations per server ────────────────────────────────
-
-    #[test]
-    fn create_channel_on_active_server_legacy_only() {
-        let (mut client, _rx) = test_client();
-        client.state.servers.clear();
-        client.state.active_server = None;
-
-        let id1 = client.create_server("Server A").unwrap();
-        let _id2 = client.create_server("Server B").unwrap();
-
-        // Create channel on Server B (active).
-        client.create_channel("new-channel").unwrap();
-        let legacy_b = client.state.channel_names();
-        assert!(legacy_b.contains(&"new-channel".to_string()));
-
-        // Switch to Server A — legacy channels should NOT have "new-channel".
-        client.switch_server(&id1);
-        let legacy_a = client.state.channel_names();
-        assert!(!legacy_a.contains(&"new-channel".to_string()));
-    }
-
-    // ───── Message dedup across server switch ───────────────────────────
-
-    #[test]
-    fn message_dedup_works_across_switch() {
-        let (mut client, _rx) = test_client();
-        client.state.servers.clear();
-        client.state.active_server = None;
-
-        let id1 = client.create_server("Server A").unwrap();
-        client.send_message("general", "unique msg").unwrap();
-
-        let msg_count_before = client.messages("general").len();
-
-        // Switch away and back.
-        let _id2 = client.create_server("Server B").unwrap();
-        client.switch_server(&id1);
-
-        // Message count should be the same (no duplicates).
-        let msg_count_after = client.messages("general").len();
-        assert_eq!(msg_count_before, msg_count_after);
-    }
-
-    #[test]
-    fn pin_and_unpin_message() {
-        let (mut client, _rx) = test_client();
-        client.send_message("general", "hello world").unwrap();
-
-        let msgs = client.messages("general");
-        assert_eq!(msgs.len(), 1);
-        let msg_id = msgs[0].id.clone();
-
-        // Pin.
-        client.pin_message("general", &msg_id).unwrap();
-        let pinned_ids = client.pinned_message_ids("general");
-        assert_eq!(pinned_ids.len(), 1);
-        assert_eq!(pinned_ids[0], msg_id);
-        assert!(client.is_pinned("general", &msg_id));
-
-        // Unpin.
-        client.unpin_message("general", &msg_id).unwrap();
-        let pinned_ids = client.pinned_message_ids("general");
-        assert!(pinned_ids.is_empty());
-        assert!(!client.is_pinned("general", &msg_id));
-    }
-
-    #[test]
-    fn pinned_messages_returns_pinned_only() {
-        let (mut client, _rx) = test_client();
-        client.send_message("general", "first").unwrap();
-        client.send_message("general", "second").unwrap();
-        client.send_message("general", "third").unwrap();
-
-        let msgs = client.messages("general");
-        assert_eq!(msgs.len(), 3);
-        let first_id = msgs[0].id.clone();
-        let third_id = msgs[2].id.clone();
-
-        // Pin only first and third.
-        client.pin_message("general", &first_id).unwrap();
-        client.pin_message("general", &third_id).unwrap();
-
-        let pinned = client.pinned_messages("general");
-        assert_eq!(pinned.len(), 2);
-        let pinned_bodies: Vec<&str> = pinned.iter().map(|m| m.body.as_str()).collect();
-        assert!(pinned_bodies.contains(&"first"));
-        assert!(pinned_bodies.contains(&"third"));
-        assert!(!pinned_bodies.contains(&"second"));
-    }
-
-    #[test]
-    fn pin_nonexistent_message_id() {
-        let (mut client, _rx) = test_client();
-
-        // Pin a message ID that doesn't exist in messages — should still succeed
-        // since pin is by ID.
-        client.pin_message("general", "fake-id").unwrap();
-        assert!(client.is_pinned("general", "fake-id"));
-
-        // But pinned_messages returns empty since no matching message exists.
-        assert!(client.pinned_messages("general").is_empty());
-    }
-
-    #[test]
-    fn pin_duplicate_is_idempotent_client() {
-        let (mut client, _rx) = test_client();
-        client.send_message("general", "hello").unwrap();
-
-        let msg_id = client.messages("general")[0].id.clone();
-
-        client.pin_message("general", &msg_id).unwrap();
-        client.pin_message("general", &msg_id).unwrap();
-
-        let pinned = client.pinned_messages("general");
-        assert_eq!(pinned.len(), 1);
-    }
-
-    #[test]
-    fn pinned_messages_isolated_per_channel() {
-        let (mut client, _rx) = test_client();
-        client.create_channel("random").unwrap();
-
-        client.send_message("general", "gen msg").unwrap();
-        let gen_id = client.messages("general")[0].id.clone();
-
-        client.pin_message("general", &gen_id).unwrap();
-
-        // "random" channel should have no pins.
-        assert!(client.pinned_messages("random").is_empty());
-        assert!(!client.is_pinned("random", &gen_id));
-    }
-
-    #[test]
-    fn pin_without_server_fails() {
-        let (mut client, _rx) = test_client();
-
-        // Remove the active server to simulate no server state.
-        client.state.active_server = None;
-
-        let result = client.pin_message("general", "msg-1");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn multiple_pins_in_channel() {
-        let (mut client, _rx) = test_client();
-        client.send_message("general", "first").unwrap();
-        client.send_message("general", "second").unwrap();
-        client.send_message("general", "third").unwrap();
-
-        let msgs = client.messages("general");
-        let id1 = msgs[0].id.clone();
-        let id2 = msgs[1].id.clone();
-        let id3 = msgs[2].id.clone();
-
-        // Pin first and third only.
-        client.pin_message("general", &id1).unwrap();
-        client.pin_message("general", &id3).unwrap();
-
-        let pinned = client.pinned_messages("general");
-        assert_eq!(pinned.len(), 2);
-
-        let pinned_ids: Vec<&str> = pinned.iter().map(|m| m.id.as_str()).collect();
-        assert!(pinned_ids.contains(&id1.as_str()));
-        assert!(pinned_ids.contains(&id3.as_str()));
-        assert!(!pinned_ids.contains(&id2.as_str()));
+        let names_a = client.state.channel_names();
+        assert!(names_a.contains(&"general".to_string()));
+        assert!(names_a.contains(&"alpha".to_string()));
+        assert!(!names_a.contains(&"beta".to_string()));
     }
 }
