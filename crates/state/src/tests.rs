@@ -2505,7 +2505,12 @@ fn unpin_nonexistent_message_is_noop() {
     );
     let result = apply(&mut state, &e2);
     assert_eq!(result, ApplyResult::Applied);
-    assert!(state.channels.get("ch1").unwrap().pinned_messages.is_empty());
+    assert!(state
+        .channels
+        .get("ch1")
+        .unwrap()
+        .pinned_messages
+        .is_empty());
 }
 
 #[test]
@@ -2547,7 +2552,12 @@ fn pin_survives_state_replay() {
         },
     );
     assert_eq!(apply(&mut state, &e3), ApplyResult::Applied);
-    assert!(state.channels.get("ch1").unwrap().pinned_messages.contains("e2"));
+    assert!(state
+        .channels
+        .get("ch1")
+        .unwrap()
+        .pinned_messages
+        .contains("e2"));
 
     // Replay all events on a fresh state.
     let mut replayed = test_state();
