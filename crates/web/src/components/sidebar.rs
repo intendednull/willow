@@ -85,11 +85,17 @@ pub fn Sidebar(
                                 <div class="channel-type-toggle">
                                     <button
                                         class=move || if !create_voice.get() { "type-btn active" } else { "type-btn" }
-                                        on:click=move |_| set_create_voice.set(false)
+                                        on:mousedown=move |ev: web_sys::MouseEvent| {
+                                            ev.prevent_default();
+                                            set_create_voice.set(false);
+                                        }
                                     >"# Text"</button>
                                     <button
                                         class=move || if create_voice.get() { "type-btn active" } else { "type-btn" }
-                                        on:click=move |_| set_create_voice.set(true)
+                                        on:mousedown=move |ev: web_sys::MouseEvent| {
+                                            ev.prevent_default();
+                                            set_create_voice.set(true);
+                                        }
                                     >"\u{1F50A} Voice"</button>
                                 </div>
                                 <input
