@@ -2456,3 +2456,218 @@ fn pin_duplicate_is_idempotent() {
     assert_eq!(ch.pinned_messages.len(), 1);
     assert!(ch.pinned_messages.contains("e2"));
 }
+
+#[test]
+fn pin_message_on_nonexistent_channel_is_noop() {
+    let mut state = test_state();
+
+    // Pin to a channel that doesn't exist — should not panic, still Applied.
+    let e1 = event(
+        &state,
+        "e1",
+        "owner",
+        EventKind::PinMessage {
+            channel_id: "no-such-channel".into(),
+            message_id: "msg1".into(),
+        },
+    );
+    let result = apply(&mut state, &e1);
+    assert_eq!(result, ApplyResult::Applied);
+    // No channel was created or modified.
+    assert!(!state.channels.contains_key("no-such-channel"));
+}
+
+#[test]
+fn unpin_nonexistent_message_is_noop() {
+    let mut state = test_state();
+
+    // Create a channel.
+    let e1 = event(
+        &state,
+        "e1",
+        "owner",
+        EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: "ch1".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &e1), ApplyResult::Applied);
+
+    // Unpin a message that was never pinned — should not panic.
+    let e2 = event(
+        &state,
+        "e2",
+        "owner",
+        EventKind::UnpinMessage {
+            channel_id: "ch1".into(),
+            message_id: "never-pinned".into(),
+        },
+    );
+    let result = apply(&mut state, &e2);
+    assert_eq!(result, ApplyResult::Applied);
+    assert!(state.channels.get("ch1").unwrap().pinned_messages.is_empty());
+}
+
+#[test]
+fn pin_survives_state_replay() {
+    let mut state = test_state();
+
+    // Create a channel.
+    let e1 = event(
+        &state,
+        "e1",
+        "owner",
+        EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: "ch1".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &e1), ApplyResult::Applied);
+
+    // Send a message.
+    let e2 = event(
+        &state,
+        "e2",
+        "owner",
+        EventKind::Message {
+            channel_id: "ch1".into(),
+            body: "important".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &e2), ApplyResult::Applied);
+
+    // Pin it.
+    let e3 = event(
+        &state,
+        "e3",
+        "owner",
+        EventKind::PinMessage {
+            channel_id: "ch1".into(),
+            message_id: "e2".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &e3), ApplyResult::Applied);
+    assert!(state.channels.get("ch1").unwrap().pinned_messages.contains("e2"));
+
+    // Replay all events on a fresh state.
+    let mut replayed = test_state();
+    apply_lenient(&mut replayed, &e1);
+    apply_lenient(&mut replayed, &e2);
+    apply_lenient(&mut replayed, &e3);
+
+    let ch = replayed.channels.get("ch1").unwrap();
+    assert!(ch.pinned_messages.contains("e2"));
+    assert_eq!(ch.pinned_messages.len(), 1);
+}
+
+#[test]
+fn multiple_pins_per_channel() {
+    let mut state = test_state();
+
+    let e1 = event(
+        &state,
+        "e1",
+        "owner",
+        EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: "ch1".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &e1), ApplyResult::Applied);
+
+    // Send 3 messages and pin all of them.
+    for (i, msg_id) in ["m1", "m2", "m3"].iter().enumerate() {
+        let eid = format!("msg{}", i);
+        let e = event(
+            &state,
+            &eid,
+            "owner",
+            EventKind::Message {
+                channel_id: "ch1".into(),
+                body: format!("message {}", i),
+            },
+        );
+        assert_eq!(apply(&mut state, &e), ApplyResult::Applied);
+
+        let pin_eid = format!("pin{}", i);
+        let pin = event(
+            &state,
+            &pin_eid,
+            "owner",
+            EventKind::PinMessage {
+                channel_id: "ch1".into(),
+                message_id: msg_id.to_string(),
+            },
+        );
+        assert_eq!(apply(&mut state, &pin), ApplyResult::Applied);
+    }
+
+    let ch = state.channels.get("ch1").unwrap();
+    assert_eq!(ch.pinned_messages.len(), 3);
+    assert!(ch.pinned_messages.contains("m1"));
+    assert!(ch.pinned_messages.contains("m2"));
+    assert!(ch.pinned_messages.contains("m3"));
+}
+
+#[test]
+fn pin_across_channels() {
+    let mut state = test_state();
+
+    // Create two channels.
+    let e1 = event(
+        &state,
+        "e1",
+        "owner",
+        EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: "ch1".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &e1), ApplyResult::Applied);
+
+    let e2 = event(
+        &state,
+        "e2",
+        "owner",
+        EventKind::CreateChannel {
+            name: "random".into(),
+            channel_id: "ch2".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &e2), ApplyResult::Applied);
+
+    // Pin a message in ch1.
+    let e3 = event(
+        &state,
+        "e3",
+        "owner",
+        EventKind::PinMessage {
+            channel_id: "ch1".into(),
+            message_id: "msg-a".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &e3), ApplyResult::Applied);
+
+    // Pin a different message in ch2.
+    let e4 = event(
+        &state,
+        "e4",
+        "owner",
+        EventKind::PinMessage {
+            channel_id: "ch2".into(),
+            message_id: "msg-b".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &e4), ApplyResult::Applied);
+
+    // Verify pins are isolated per channel.
+    let ch1 = state.channels.get("ch1").unwrap();
+    assert_eq!(ch1.pinned_messages.len(), 1);
+    assert!(ch1.pinned_messages.contains("msg-a"));
+    assert!(!ch1.pinned_messages.contains("msg-b"));
+
+    let ch2 = state.channels.get("ch2").unwrap();
+    assert_eq!(ch2.pinned_messages.len(), 1);
+    assert!(ch2.pinned_messages.contains("msg-b"));
+    assert!(!ch2.pinned_messages.contains("msg-a"));
+}

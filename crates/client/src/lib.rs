@@ -3895,4 +3895,82 @@ mod tests {
         assert!(pinned_bodies.contains(&"third"));
         assert!(!pinned_bodies.contains(&"second"));
     }
+
+    #[test]
+    fn pin_nonexistent_message_id() {
+        let (mut client, _rx) = test_client();
+
+        // Pin a message ID that doesn't exist in messages — should still succeed
+        // since pin is by ID.
+        client.pin_message("general", "fake-id").unwrap();
+        assert!(client.is_pinned("general", "fake-id"));
+
+        // But pinned_messages returns empty since no matching message exists.
+        assert!(client.pinned_messages("general").is_empty());
+    }
+
+    #[test]
+    fn pin_duplicate_is_idempotent_client() {
+        let (mut client, _rx) = test_client();
+        client.send_message("general", "hello").unwrap();
+
+        let msg_id = client.messages("general")[0].id.clone();
+
+        client.pin_message("general", &msg_id).unwrap();
+        client.pin_message("general", &msg_id).unwrap();
+
+        let pinned = client.pinned_messages("general");
+        assert_eq!(pinned.len(), 1);
+    }
+
+    #[test]
+    fn pinned_messages_isolated_per_channel() {
+        let (mut client, _rx) = test_client();
+        client.create_channel("random").unwrap();
+
+        client.send_message("general", "gen msg").unwrap();
+        let gen_id = client.messages("general")[0].id.clone();
+
+        client.pin_message("general", &gen_id).unwrap();
+
+        // "random" channel should have no pins.
+        assert!(client.pinned_messages("random").is_empty());
+        assert!(!client.is_pinned("random", &gen_id));
+    }
+
+    #[test]
+    fn pin_without_server_fails() {
+        let (mut client, _rx) = test_client();
+
+        // Remove the active server to simulate no server state.
+        client.state.active_server = None;
+
+        let result = client.pin_message("general", "msg-1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn multiple_pins_in_channel() {
+        let (mut client, _rx) = test_client();
+        client.send_message("general", "first").unwrap();
+        client.send_message("general", "second").unwrap();
+        client.send_message("general", "third").unwrap();
+
+        let msgs = client.messages("general");
+        let id1 = msgs[0].id.clone();
+        let id2 = msgs[1].id.clone();
+        let id3 = msgs[2].id.clone();
+
+        // Pin first and third only.
+        client.pin_message("general", &id1).unwrap();
+        client.pin_message("general", &id3).unwrap();
+
+        let pinned = client.pinned_messages("general");
+        assert_eq!(pinned.len(), 2);
+
+        let pinned_ids: Vec<&str> = pinned.iter().map(|m| m.id.as_str()).collect();
+        assert!(pinned_ids.contains(&id1.as_str()));
+        assert!(pinned_ids.contains(&id3.as_str()));
+        assert!(!pinned_ids.contains(&id2.as_str()));
+    }
 }
