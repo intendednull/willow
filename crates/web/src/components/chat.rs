@@ -151,7 +151,10 @@ pub fn MessageList(
                             let show_header = if i == 0 {
                                 true
                             } else {
-                                msgs[i - 1].author != msg.author
+                                let prev = &msgs[i - 1];
+                                prev.author != msg.author
+                                    || msg.timestamp_ms.saturating_sub(prev.timestamp_ms)
+                                        > 300_000
                             };
                             let m = msg.clone();
                             let is_own = msg.is_local || msg.author == local_name;

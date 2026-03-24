@@ -529,79 +529,98 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     cursor: pointer;
     transition: background 0.15s ease, border-color 0.15s ease;
     line-height: 1.4;
+    font-family: inherit;
 }
 
 .message .reaction:hover {
-    background: var(--accent-subtle);
+    background: var(--accent-subtle, rgba(88,101,242,0.15));
     border-color: var(--accent);
 }
 
-/* ── Message Action Bar (edit/delete/react) ──────────────────────── */
+/* ── Message Action Bar (dropdown) ────────────────────────────────── */
 
 .message-actions {
     display: none;
     position: absolute;
     top: -14px;
     right: 8px;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 2px;
-    gap: 2px;
     z-index: 2;
-    box-shadow: var(--shadow-md);
 }
 
 .message:hover .message-actions { display: flex; }
 
-.message-actions button {
-    background: transparent;
-    border: none;
-    color: var(--text-muted);
-    font-size: 13px;
-    padding: 4px 8px;
-    cursor: pointer;
-    border-radius: 4px;
-    transition: background 0.12s ease, color 0.12s ease;
-}
-
-.message-actions button:hover { background: var(--bg-input); color: var(--text-primary); }
-
-.message-actions .delete-action:hover { color: var(--danger); }
-
-/* ── Reaction Trigger + Picker ───────────────────────────────────── */
-
-.reaction-trigger {
-    position: relative;
-}
-
-.reaction-picker {
-    position: absolute;
-    bottom: 100%;
-    right: 0;
+.action-trigger {
     background: var(--bg-elevated);
     border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 4px;
-    display: flex;
-    gap: 2px;
-    z-index: 3;
-    box-shadow: var(--shadow-lg);
+    color: var(--text-muted);
+    font-size: 16px;
+    padding: 2px 6px;
+    cursor: pointer;
+    border-radius: 6px;
+    box-shadow: var(--shadow-md);
 }
 
-.reaction-picker button {
+.action-trigger:hover {
+    background: var(--bg-input);
+    color: var(--text-primary);
+}
+
+.message-dropdown {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    background: var(--bg-sidebar);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px;
+    min-width: 140px;
+    z-index: 10;
+    box-shadow: var(--shadow-md, 0 4px 12px rgba(0,0,0,0.3));
+}
+
+.dropdown-item {
+    display: block;
+    width: 100%;
+    padding: 6px 12px;
+    background: transparent;
+    border: none;
+    color: var(--text-primary);
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+    border-radius: 4px;
+}
+
+.dropdown-item:hover {
+    background: var(--bg-input);
+}
+
+.dropdown-danger {
+    color: var(--danger);
+}
+
+.dropdown-danger:hover {
+    background: rgba(237, 66, 69, 0.1);
+}
+
+.dropdown-emoji-row {
+    display: flex;
+    gap: 2px;
+    padding: 4px;
+    flex-wrap: wrap;
+}
+
+.dropdown-emoji-row button {
     background: transparent;
     border: none;
     font-size: 18px;
-    padding: 6px;
+    padding: 4px;
     cursor: pointer;
-    border-radius: 6px;
-    transition: background 0.12s ease, transform 0.12s ease;
+    border-radius: 4px;
 }
 
-.reaction-picker button:hover {
+.dropdown-emoji-row button:hover {
     background: var(--bg-input);
-    transform: scale(1.15);
 }
 
 /* ── Edit Bar (above input, similar to reply bar) ────────────────── */
@@ -1469,25 +1488,6 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     border-radius: 8px;
 }
 
-.embed-uploaded {
-    position: relative;
-    display: inline-block;
-}
-
-.embed-download-btn {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    opacity: 0;
-    transition: opacity 0.15s ease;
-    background: var(--bg-sidebar);
-    border: 1px solid var(--border);
-    font-size: 14px;
-}
-
-.embed-uploaded:hover .embed-download-btn {
-    opacity: 1;
-}
 
 @media (max-width: 640px) {
     .message-embeds {
@@ -1495,9 +1495,6 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     }
     .embed-image {
         max-height: 200px;
-    }
-    .embed-download-btn {
-        opacity: 1;
     }
 }
 

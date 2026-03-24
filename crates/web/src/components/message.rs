@@ -183,7 +183,7 @@ pub fn MessageView(
     /// Whether this message was sent by the local user.
     #[prop(default = false)]
     is_own: bool,
-    /// Optional callback fired when the user clicks this message (used for replies).
+    /// Optional callback fired when the user clicks Reply in the dropdown.
     #[prop(optional, into)]
     on_click: Option<Callback<ChatMessage>>,
     /// Callback fired when the user wants to edit this message.
@@ -225,30 +225,32 @@ pub fn MessageView(
         "message grouped"
     };
 
-    let msg_for_click = message.clone();
-
-    // Signal controlling the reaction picker popup visibility.
-    let (show_picker, set_show_picker) = signal(false);
+    // Signal controlling the dropdown menu visibility.
+    let (show_dropdown, set_show_dropdown) = signal(false);
+    let (show_react_row, set_show_react_row) = signal(false);
 
     // Determine whether to show any action buttons at all.
+    let has_reply = on_click.is_some();
     let has_react = on_react.is_some();
     let has_edit = on_edit.is_some() && is_own && !message.deleted;
     let has_delete = on_delete.is_some() && is_own && !message.deleted;
-    let show_actions = has_react || has_edit || has_delete;
+    let show_actions = has_reply || has_react || has_edit || has_delete;
+
+    // Check if this is a file message (for the download action).
+    let file_info = parse_inline_file(&body);
+    let is_file_message = file_info.is_some();
+    let file_data_for_download = file_info.clone();
 
     // Clones for closures.
+    let msg_for_reply = message.clone();
     let msg_for_edit = message.clone();
     let msg_for_delete = message.clone();
 
+    // Clone on_react for use in the reactions display.
+    let on_react_for_reactions = on_react;
+
     view! {
-        <div
-            class=msg_class
-            on:click=move |_| {
-                if let Some(ref cb) = on_click {
-                    cb.run(msg_for_click.clone());
-                }
-            }
-        >
+        <div class=msg_class>
             {reply_preview.map(|preview| {
                 view! {
                     <div class="reply-preview">{format!("> {preview}")}</div>
@@ -269,26 +271,16 @@ pub fn MessageView(
             } else {
                 None
             }}
-            {if let Some((filename, data)) = parse_inline_file(&body) {
+            {if let Some((filename, data)) = file_info.clone() {
                 if is_image_file(&filename) {
                     // Render uploaded images inline as embeds.
                     let mime = mime_for_image(&filename);
                     let b64 = willow_client::base64::encode(&data);
                     let src = format!("data:{mime};base64,{b64}");
                     let alt = filename.clone();
-                    let dl_data = data.clone();
-                    let dl_name = filename.clone();
-                    let on_download = move |_| {
-                        download_blob(&dl_data, &dl_name);
-                    };
                     view! {
                         <div class="message-embeds">
-                            <div class="embed-uploaded">
-                                <img class="embed-image" src=src alt=alt loading="lazy" />
-                                <button class="embed-download-btn btn btn-sm" title="Download" on:click=on_download>
-                                    "\u{2B07}"
-                                </button>
-                            </div>
+                            <img class="embed-image" src=src alt=alt loading="lazy" />
                         </div>
                     }.into_any()
                 } else {
@@ -328,95 +320,144 @@ pub fn MessageView(
                     }}
                 }.into_any()
             }}
-            // Action bar -- shown on hover via CSS.
+            // Action bar -- single dropdown triggered by "..." button.
             {if show_actions {
                 let edit_cb = on_edit;
                 let edit_msg = msg_for_edit.clone();
                 let delete_cb = on_delete;
                 let delete_msg = msg_for_delete.clone();
                 let react_cb = on_react;
+                let reply_cb = on_click;
+                let reply_msg = msg_for_reply.clone();
+
+                let msg_for_react = message.clone();
 
                 Some(view! {
                     <div class="message-actions">
-                        {if has_react {
-                            let react_cb_inner = react_cb;
-                            Some(view! {
-                                <div class="reaction-trigger">
-                                    <button
-                                        class="react-action"
-                                        on:click=move |ev| {
+                        <button class="action-trigger" on:click=move |ev| {
+                            ev.stop_propagation();
+                            set_show_dropdown.update(|v| *v = !*v);
+                            set_show_react_row.set(false);
+                        }>"\u{22EF}"</button>
+                        {move || {
+                            if show_dropdown.get() {
+                                let reply_view = if has_reply {
+                                    let cb = reply_cb;
+                                    let msg = reply_msg.clone();
+                                    Some(view! {
+                                        <button class="dropdown-item" on:click=move |ev| {
                                             ev.stop_propagation();
-                                            set_show_picker.update(|v| *v = !*v);
+                                            if let Some(ref cb) = cb {
+                                                cb.run(msg.clone());
+                                            }
+                                            set_show_dropdown.set(false);
+                                        }>"Reply"</button>
+                                    })
+                                } else {
+                                    None
+                                };
+
+                                let react_view = if has_react {
+                                    let react_cb_for_row = react_cb;
+                                    let msg_for_emoji = msg_for_react.clone();
+                                    Some(view! {
+                                        <button class="dropdown-item" on:click=move |ev| {
+                                            ev.stop_propagation();
+                                            set_show_react_row.update(|v| *v = !*v);
+                                        }>"React"</button>
+                                        {move || {
+                                            if show_react_row.get() {
+                                                let cb = react_cb_for_row;
+                                                let msg_inner = msg_for_emoji.clone();
+                                                Some(view! {
+                                                    <div class="dropdown-emoji-row">
+                                                        {REACTION_EMOJI.iter().map(|emoji| {
+                                                            let emoji_str = emoji.to_string();
+                                                            let emoji_val = emoji_str.clone();
+                                                            let msg_clone = msg_inner.clone();
+                                                            let cb_clone = cb;
+                                                            view! {
+                                                                <button on:click=move |ev| {
+                                                                    ev.stop_propagation();
+                                                                    if let Some(ref cb) = cb_clone {
+                                                                        cb.run((msg_clone.clone(), emoji_val.clone()));
+                                                                    }
+                                                                    set_show_dropdown.set(false);
+                                                                    set_show_react_row.set(false);
+                                                                }>
+                                                                    {emoji_str}
+                                                                </button>
+                                                            }
+                                                        }).collect::<Vec<_>>()}
+                                                    </div>
+                                                })
+                                            } else {
+                                                None
+                                            }
+                                        }}
+                                    }.into_any())
+                                } else {
+                                    None
+                                };
+
+                                let edit_view = if has_edit {
+                                    let cb = edit_cb;
+                                    let msg = edit_msg.clone();
+                                    Some(view! {
+                                        <button class="dropdown-item" on:click=move |ev| {
+                                            ev.stop_propagation();
+                                            if let Some(ref cb) = cb {
+                                                cb.run(msg.clone());
+                                            }
+                                            set_show_dropdown.set(false);
+                                        }>"Edit"</button>
+                                    })
+                                } else {
+                                    None
+                                };
+
+                                let delete_view = if has_delete {
+                                    let cb = delete_cb;
+                                    let msg = delete_msg.clone();
+                                    Some(view! {
+                                        <button class="dropdown-item dropdown-danger" on:click=move |ev| {
+                                            ev.stop_propagation();
+                                            if let Some(ref cb) = cb {
+                                                cb.run(msg.clone());
+                                            }
+                                            set_show_dropdown.set(false);
+                                        }>"Delete"</button>
+                                    })
+                                } else {
+                                    None
+                                };
+
+                                let download_view = if is_file_message {
+                                    file_data_for_download.clone().map(|(filename, data)| {
+                                        view! {
+                                            <button class="dropdown-item" on:click=move |ev| {
+                                                ev.stop_propagation();
+                                                download_blob(&data, &filename);
+                                                set_show_dropdown.set(false);
+                                            }>"Download"</button>
                                         }
-                                    >
-                                        "+"
-                                    </button>
-                                    {move || {
-                                        if show_picker.get() {
-                                            let cb = react_cb_inner;
-                                            Some(view! {
-                                                <div class="reaction-picker">
-                                                    {REACTION_EMOJI.iter().map(|emoji| {
-                                                        let emoji_str = emoji.to_string();
-                                                        let emoji_val = emoji_str.clone();
-                                                        let msg_clone = message.clone();
-                                                        let cb_clone = cb;
-                                                        view! {
-                                                            <button on:click=move |ev| {
-                                                                ev.stop_propagation();
-                                                                if let Some(ref cb) = cb_clone {
-                                                                    cb.run((msg_clone.clone(), emoji_val.clone()));
-                                                                }
-                                                                set_show_picker.set(false);
-                                                            }>
-                                                                {emoji_str}
-                                                            </button>
-                                                        }
-                                                    }).collect::<Vec<_>>()}
-                                                </div>
-                                            })
-                                        } else {
-                                            None
-                                        }
-                                    }}
-                                </div>
-                            })
-                        } else {
-                            None
-                        }}
-                        {if has_edit {
-                            Some(view! {
-                                <button
-                                    class="edit-action"
-                                    on:click=move |ev| {
-                                        ev.stop_propagation();
-                                        if let Some(ref cb) = edit_cb {
-                                            cb.run(edit_msg.clone());
-                                        }
-                                    }
-                                >
-                                    "Edit"
-                                </button>
-                            })
-                        } else {
-                            None
-                        }}
-                        {if has_delete {
-                            Some(view! {
-                                <button
-                                    class="delete-action"
-                                    on:click=move |ev| {
-                                        ev.stop_propagation();
-                                        if let Some(ref cb) = delete_cb {
-                                            cb.run(delete_msg.clone());
-                                        }
-                                    }
-                                >
-                                    "Delete"
-                                </button>
-                            })
-                        } else {
-                            None
+                                    })
+                                } else {
+                                    None
+                                };
+
+                                Some(view! {
+                                    <div class="message-dropdown">
+                                        {reply_view}
+                                        {react_view}
+                                        {edit_view}
+                                        {delete_view}
+                                        {download_view}
+                                    </div>
+                                })
+                            } else {
+                                None
+                            }
                         }}
                     </div>
                 })
@@ -424,13 +465,22 @@ pub fn MessageView(
                 None
             }}
             {if has_reactions {
+                let react_cb = on_react_for_reactions;
                 Some(view! {
                     <div class="reactions">
                         {reactions.into_iter().map(|(emoji, count)| {
+                            let emoji_for_click = emoji.clone();
+                            let msg_clone = message.clone();
+                            let cb_clone = react_cb;
                             view! {
-                                <span class="reaction">
+                                <button class="reaction" on:click=move |ev| {
+                                    ev.stop_propagation();
+                                    if let Some(ref cb) = cb_clone {
+                                        cb.run((msg_clone.clone(), emoji_for_click.clone()));
+                                    }
+                                }>
                                     {emoji} " " {count.to_string()}
-                                </span>
+                                </button>
                             }
                         }).collect::<Vec<_>>()}
                     </div>
