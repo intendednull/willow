@@ -41,7 +41,7 @@ pub type VoiceManagerHandle = SendWrapper<Rc<RefCell<VoiceManager>>>;
 
 /// Default relay address for the deployed Willow relay server.
 pub const DEFAULT_RELAY: &str =
-    "/ip4/172.234.217.219/tcp/9091/ws/p2p/12D3KooWMBmUF1rHYG5CneKi8JZfKdMAciJd4oCgknTJkbwCUurd";
+    "/dns4/willow.intendednull.com/tcp/9443/wss/p2p/12D3KooWMBmUF1rHYG5CneKi8JZfKdMAciJd4oCgknTJkbwCUurd";
 
 fn new_client_handle() -> ClientHandle {
     let config = ClientConfig {

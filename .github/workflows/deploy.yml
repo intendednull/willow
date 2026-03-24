@@ -42,24 +42,24 @@ jobs:
           sshpass -p '${{ secrets.DEPLOY_PASSWORD }}'
           scp -o StrictHostKeyChecking=no
           target/release/willow-relay
-          root@172.234.217.219:/usr/local/bin/willow-relay
+          root@willow.intendednull.com:/usr/local/bin/willow-relay
 
       - name: Upload web app
         run: >
           sshpass -p '${{ secrets.DEPLOY_PASSWORD }}'
-          scp -o StrictHostKeyChecking=no
+          scp -o StrictHostKeyChecking=no -r
           crates/web/dist/*
-          root@172.234.217.219:/var/www/willow/
+          root@willow.intendednull.com:/var/www/willow/
 
       - name: Fix permissions and restart relay
         run: >
           sshpass -p '${{ secrets.DEPLOY_PASSWORD }}'
           ssh -o StrictHostKeyChecking=no
-          root@172.234.217.219
+          root@willow.intendednull.com
           'chmod 644 /var/www/willow/* && systemctl restart willow-relay'
 
       - name: Verify deployment
         run: |
           sleep 3
-          curl -sf -o /dev/null -w "Web: HTTP %{http_code}\n" http://172.234.217.219/
-          sshpass -p '${{ secrets.DEPLOY_PASSWORD }}' ssh -o StrictHostKeyChecking=no root@172.234.217.219 'systemctl is-active willow-relay'
+          curl -sf -o /dev/null -w "Web: HTTP %{http_code}\n" https://willow.intendednull.com/
+          sshpass -p '${{ secrets.DEPLOY_PASSWORD }}' ssh -o StrictHostKeyChecking=no root@willow.intendednull.com 'systemctl is-active willow-relay'
