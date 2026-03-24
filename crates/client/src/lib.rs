@@ -3411,4 +3411,240 @@ mod tests {
         let _ = client.set_server_display_name("Alice on B");
         assert_eq!(client.server_display_name(), "Alice on B");
     }
+
+    // ───── Server switching & event state isolation ──────────────────────
+
+    #[test]
+    fn switch_server_updates_event_state() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        let id1 = client.create_server("Server A").unwrap();
+        // Server A should have "general" channel in event_state.
+        assert!(client
+            .state
+            .event_state
+            .channels
+            .values()
+            .any(|c| c.name == "general"));
+
+        let _id2 = client.create_server("Server B").unwrap();
+        // Now on Server B, event_state should be for Server B.
+        assert_eq!(client.state.event_state.server_name, "Server B");
+
+        // Switch back to Server A.
+        client.switch_server(&id1);
+        assert_eq!(client.state.event_state.server_name, "Server A");
+    }
+
+    #[test]
+    fn switch_server_isolates_legacy_channels() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        let id1 = client.create_server("Server A").unwrap();
+        client.create_channel("alpha").unwrap();
+
+        let _id2 = client.create_server("Server B").unwrap();
+        client.create_channel("beta").unwrap();
+
+        // On Server B, legacy channel_names should include "beta" but not "alpha".
+        let legacy_b = client.state.channel_names();
+        assert!(legacy_b.contains(&"general".to_string()));
+        assert!(legacy_b.contains(&"beta".to_string()));
+        assert!(!legacy_b.contains(&"alpha".to_string()));
+
+        // Switch to Server A, legacy channel_names should include "alpha" but not "beta".
+        client.switch_server(&id1);
+        let legacy_a = client.state.channel_names();
+        assert!(legacy_a.contains(&"general".to_string()));
+        assert!(legacy_a.contains(&"alpha".to_string()));
+        assert!(!legacy_a.contains(&"beta".to_string()));
+    }
+
+    #[test]
+    fn switch_server_isolates_members() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        let _id1 = client.create_server("Server A").unwrap();
+        let owner_a = client.state.event_state.owner.clone();
+
+        let _id2 = client.create_server("Server B").unwrap();
+        let owner_b = client.state.event_state.owner.clone();
+
+        // Both servers owned by same peer.
+        assert_eq!(owner_a, owner_b);
+
+        // Members should contain owner in both.
+        let members = client.server_members();
+        assert!(!members.is_empty());
+    }
+
+    #[test]
+    fn switch_server_preserves_messages() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        let id1 = client.create_server("Server A").unwrap();
+        client.send_message("general", "Hello from A").unwrap();
+
+        let _id2 = client.create_server("Server B").unwrap();
+        client.send_message("general", "Hello from B").unwrap();
+
+        // Messages on Server B.
+        let msgs_b = client.messages("general");
+        assert!(msgs_b.iter().any(|m| m.body == "Hello from B"));
+        assert!(!msgs_b.iter().any(|m| m.body == "Hello from A"));
+
+        // Switch to Server A.
+        client.switch_server(&id1);
+        let msgs_a = client.messages("general");
+        assert!(msgs_a.iter().any(|m| m.body == "Hello from A"));
+        assert!(!msgs_a.iter().any(|m| m.body == "Hello from B"));
+    }
+
+    // ───── Event state initialization ───────────────────────────────────
+
+    #[test]
+    fn init_event_state_sets_correct_owner() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        let _ = client.create_server("Test Server");
+        let peer_id = client.peer_id();
+        assert_eq!(client.state.event_state.owner, peer_id);
+    }
+
+    #[test]
+    fn init_event_state_sets_server_name() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        let _ = client.create_server("My Cool Server");
+        assert_eq!(client.state.event_state.server_name, "My Cool Server");
+    }
+
+    #[test]
+    fn init_event_state_seeds_general_channel() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        let _ = client.create_server("Seed Test");
+        // event_state should have a "general" channel after init.
+        assert!(
+            client
+                .state
+                .event_state
+                .channels
+                .values()
+                .any(|c| c.name == "general"),
+            "init_event_state should seed 'general' channel"
+        );
+    }
+
+    #[test]
+    fn init_event_state_server_id_matches() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        let server_id = client.create_server("ID Test").unwrap();
+        assert_eq!(client.state.event_state.server_id, server_id);
+    }
+
+    // ───── Active server name on switch ─────────────────────────────────
+
+    #[test]
+    fn active_server_name_changes_on_switch() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        let id1 = client.create_server("Alpha").unwrap();
+        let id2 = client.create_server("Beta").unwrap();
+
+        assert_eq!(client.active_server_name(), "Beta"); // Last created is active.
+
+        client.switch_server(&id1);
+        assert_eq!(client.active_server_name(), "Alpha");
+
+        client.switch_server(&id2);
+        assert_eq!(client.active_server_name(), "Beta");
+    }
+
+    // ───── Invite generation ────────────────────────────────────────────
+
+    #[test]
+    fn generate_invite_works_for_owner() {
+        let (client, _rx) = test_client();
+        let recipient = willow_identity::Identity::generate();
+        let recipient_peer_id = recipient.peer_id().to_string();
+
+        let result = client.generate_invite(&recipient_peer_id);
+        assert!(result.is_ok());
+        assert!(!result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn generate_invite_fails_without_server() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        let recipient = willow_identity::Identity::generate();
+        let result = client.generate_invite(&recipient.peer_id().to_string());
+        assert!(result.is_err());
+    }
+
+    // ───── Channel operations per server ────────────────────────────────
+
+    #[test]
+    fn create_channel_on_active_server_legacy_only() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        let id1 = client.create_server("Server A").unwrap();
+        let _id2 = client.create_server("Server B").unwrap();
+
+        // Create channel on Server B (active).
+        client.create_channel("new-channel").unwrap();
+        let legacy_b = client.state.channel_names();
+        assert!(legacy_b.contains(&"new-channel".to_string()));
+
+        // Switch to Server A — legacy channels should NOT have "new-channel".
+        client.switch_server(&id1);
+        let legacy_a = client.state.channel_names();
+        assert!(!legacy_a.contains(&"new-channel".to_string()));
+    }
+
+    // ───── Message dedup across server switch ───────────────────────────
+
+    #[test]
+    fn message_dedup_works_across_switch() {
+        let (mut client, _rx) = test_client();
+        client.state.servers.clear();
+        client.state.active_server = None;
+
+        let id1 = client.create_server("Server A").unwrap();
+        client.send_message("general", "unique msg").unwrap();
+
+        let msg_count_before = client.messages("general").len();
+
+        // Switch away and back.
+        let _id2 = client.create_server("Server B").unwrap();
+        client.switch_server(&id1);
+
+        // Message count should be the same (no duplicates).
+        let msg_count_after = client.messages("general").len();
+        assert_eq!(msg_count_before, msg_count_after);
+    }
 }
