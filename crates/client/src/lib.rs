@@ -302,7 +302,7 @@ impl Client {
             }
         }
 
-        Self {
+        let mut client = Self {
             state,
             identity,
             cmd_tx,
@@ -316,7 +316,11 @@ impl Client {
             state_verification_results: HashMap::new(),
             last_typing_sent_ms: 0,
             typing_peers: HashMap::new(),
-        }
+        };
+
+        // Merge reaction/edit/delete data from saved state into chat messages.
+        client.merge_event_state_into_chat();
+        client
     }
 
     /// Attach a push notification channel. Notifications are sent whenever
@@ -858,6 +862,37 @@ impl Client {
         if self.state.servers.contains_key(server_id) {
             self.state.active_server = Some(server_id.to_string());
             self.init_event_state_for_server(server_id);
+            self.merge_event_state_into_chat();
+        }
+    }
+
+    /// Merge reaction/edit/delete data from event_state.messages into chat.messages.
+    fn merge_event_state_into_chat(&mut self) {
+        for es_msg in &self.state.event_state.messages {
+            if let Some(chat_msg) = self
+                .state
+                .chat
+                .messages
+                .iter_mut()
+                .find(|m| m.id == es_msg.id)
+            {
+                for (emoji, authors) in &es_msg.reactions {
+                    let entry = chat_msg.reactions.entry(emoji.clone()).or_default();
+                    for author in authors {
+                        if !entry.contains(author) {
+                            entry.push(author.clone());
+                        }
+                    }
+                }
+                if es_msg.edited {
+                    chat_msg.body = es_msg.body.clone();
+                    chat_msg.edited = true;
+                }
+                if es_msg.deleted {
+                    chat_msg.body = "[message deleted]".to_string();
+                    chat_msg.deleted = true;
+                }
+            }
         }
     }
 
