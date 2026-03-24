@@ -44,9 +44,7 @@ pub fn MemberList(
                                 let cb = client_badge.clone();
                                 move || {
                                     let c = cb.borrow();
-                                    let owner = c.state().active()
-                                        .map(|ctx| ctx.server.owner.to_string())
-                                        .unwrap_or_default();
+                                    let owner = c.state().event_state.owner.clone();
                                     if pb == owner {
                                         Some(view! { <span class="badge owner-badge">"Owner"</span> })
                                     } else if c.state().active()
@@ -74,9 +72,7 @@ pub fn MemberList(
                                     move || {
                                         let is_owner = {
                                             let c = client_badge.borrow();
-                                            c.state().active()
-                                                .map(|ctx| ctx.server.owner.to_string())
-                                                .unwrap_or_default() == peer_id.get_untracked()
+                                            c.state().event_state.owner == peer_id.get_untracked()
                                         };
                                         if is_self() || !is_owner {
                                             None
