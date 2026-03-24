@@ -250,33 +250,40 @@ impl Client {
             Self::persist_servers(&state);
         }
 
-        // Load persisted messages for all servers.
-        if let Some(ref db_arc) = state.message_db {
-            if let Ok(db_lock) = db_arc.lock() {
-                for (sid, ctx) in &state.servers {
-                    for topic in ctx.topic_map.keys() {
-                        let stored = db_lock.load_topic(topic, 500);
-                        for sm in stored {
-                            // Dedup by msg_id.
-                            if !sm.msg_id.is_empty()
-                                && !state.chat.seen_message_ids.insert(sm.msg_id.clone())
-                            {
-                                continue;
-                            }
-                            let mut msg = ChatMessage::new(
-                                sid.clone(),
-                                sm.topic,
-                                sm.author,
-                                sm.body,
-                                sm.is_local,
-                                sm.timestamp_ms,
-                            );
-                            if !sm.msg_id.is_empty() {
-                                msg.id = sm.msg_id;
-                            }
-                            state.chat.messages.push(msg);
-                        }
+        // Load messages from event_state (authoritative source with reactions/edits).
+        {
+            let peer_id_for_msgs = identity.peer_id().to_string();
+            let active_sid = state.active_server.clone().unwrap_or_default();
+            for es_msg in &state.event_state.messages {
+                if state.chat.seen_message_ids.insert(es_msg.id.clone()) {
+                    // Resolve topic from channel_id.
+                    let topic = state
+                        .active()
+                        .and_then(|ctx| {
+                            ctx.topic_map
+                                .iter()
+                                .find(|(_, (_, cid))| cid.to_string() == es_msg.channel_id)
+                                .map(|(t, _)| t.clone())
+                        })
+                        .unwrap_or_default();
+                    let is_local = es_msg.author == peer_id_for_msgs;
+                    let author = state.profiles.display_name(&es_msg.author);
+                    let mut msg = ChatMessage::new(
+                        active_sid.clone(),
+                        topic,
+                        author,
+                        es_msg.body.clone(),
+                        is_local,
+                        es_msg.timestamp_ms,
+                    );
+                    msg.id = es_msg.id.clone();
+                    msg.edited = es_msg.edited;
+                    msg.deleted = es_msg.deleted;
+                    // Copy reactions directly.
+                    for (emoji, authors) in &es_msg.reactions {
+                        msg.reactions.insert(emoji.clone(), authors.clone());
                     }
+                    state.chat.messages.push(msg);
                 }
             }
         }
