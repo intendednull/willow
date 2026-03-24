@@ -50,6 +50,11 @@ impl VoiceManager {
         }
     }
 
+    /// Set the local microphone stream (acquired externally to avoid RefCell across await).
+    pub fn set_local_stream(&mut self, stream: MediaStream) {
+        self.local_stream = Some(stream);
+    }
+
     /// Build an `RTCConfiguration` with a public STUN server.
     fn rtc_config() -> RtcConfiguration {
         let config = RtcConfiguration::new();
@@ -287,4 +292,26 @@ impl VoiceManager {
         }
         self.local_stream = None;
     }
+}
+
+/// Acquire the microphone as a standalone async function.
+/// This avoids holding a `RefCell` borrow across an `.await` boundary.
+pub async fn acquire_microphone_async() -> Result<MediaStream, String> {
+    let window = web_sys::window().ok_or("no window")?;
+    let navigator = window.navigator();
+    let media_devices = navigator.media_devices().map_err(|_| "no media devices")?;
+
+    let constraints = web_sys::MediaStreamConstraints::new();
+    constraints.set_audio(&true.into());
+    constraints.set_video(&false.into());
+
+    let promise = media_devices
+        .get_user_media_with_constraints(&constraints)
+        .map_err(|_| "getUserMedia failed")?;
+
+    let stream_js = wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .map_err(|_| "microphone access denied")?;
+
+    Ok(stream_js.unchecked_into())
 }

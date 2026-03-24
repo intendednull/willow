@@ -18,6 +18,7 @@ pub fn Sidebar(
     on_channel_click: impl Fn(String) + Send + Clone + 'static,
     on_settings_click: impl Fn(()) + Send + Clone + 'static,
     on_server_settings_click: impl Fn(()) + Send + Clone + 'static,
+    on_voice_join: impl Fn(String) + Send + Clone + 'static,
 ) -> impl IntoView {
     let (creating, set_creating) = signal(false);
     let (new_name, set_new_name) = signal(String::new());
@@ -27,9 +28,10 @@ pub fn Sidebar(
     let on_create_submit = move || {
         let name = new_name.get_untracked();
         let name = name.trim().to_string();
+        let is_voice = create_voice.get_untracked();
         if !name.is_empty() {
             let mut c = client_create.borrow_mut();
-            if create_voice.get_untracked() {
+            if is_voice {
                 let _ = c.create_voice_channel(&name);
             } else {
                 let _ = c.create_channel(&name);
@@ -122,7 +124,9 @@ pub fn Sidebar(
                         let ch_delete = channel.clone();
                         let ch_unread = channel.clone();
                         let ch_kind = channel.clone();
+                        let ch_voice_join = channel.clone();
                         let on_click = on_channel_click.clone();
+                        let on_voice = on_voice_join.clone();
                         let client_del = client.clone();
                         let client_kind = client.clone();
                         let active = move || current_channel.get() == ch_active;
@@ -140,7 +144,17 @@ pub fn Sidebar(
                                     let base = if is_voice { "channel-item voice-channel" } else { "channel-item" };
                                     if active() { format!("{base} active") } else { base.to_string() }
                                 }
-                                on:click=move |_| on_click(ch_click.clone())
+                                on:click={
+                                    let ch_text = ch_click.clone();
+                                    let ch_vc = ch_voice_join.clone();
+                                    move |_| {
+                                        if is_voice {
+                                            on_voice(ch_vc.clone());
+                                        } else {
+                                            on_click(ch_text.clone());
+                                        }
+                                    }
+                                }
                             >
                                 <span>{prefix} {channel.clone()}</span>
                                 <span class="channel-item-right">

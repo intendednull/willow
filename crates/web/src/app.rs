@@ -527,6 +527,35 @@ pub fn App() -> impl IntoView {
                                 set_show_settings.set(false);
                                 set_show_sidebar.set(false);
                             }
+                            on_voice_join={
+                                let vc_client = client.clone();
+                                let vm = voice_manager.clone();
+                                move |channel_name: String| {
+                                    // Join voice channel via client.
+                                    let mut c = vc_client.borrow_mut();
+                                    c.join_voice(&channel_name);
+                                    set_voice_channel.set(Some(channel_name.clone()));
+                                    set_voice_channel_name.set(channel_name);
+                                    set_show_sidebar.set(false);
+
+                                    // Acquire microphone asynchronously.
+                                    let vm2 = vm.clone();
+                                    wasm_bindgen_futures::spawn_local(async move {
+                                        // Use js_sys to call getUserMedia directly
+                                        // since VoiceManager::acquire_microphone holds RefCell across await.
+                                        let stream = crate::voice::acquire_microphone_async().await;
+                                        match stream {
+                                            Ok(s) => vm2.borrow_mut().set_local_stream(s),
+                                            Err(e) => {
+                                                let _ = js_sys::eval(&format!(
+                                                    "console.error('Mic error: {}')",
+                                                    e
+                                                ));
+                                            }
+                                        }
+                                    });
+                                }
+                            }
                         />
                         {move || {
                             let on_mute = on_mute.clone();
