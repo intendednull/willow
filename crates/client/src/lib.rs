@@ -1039,6 +1039,27 @@ impl Client {
             for event in &stored_events {
                 willow_state::apply_lenient(&mut self.state.event_state, event);
             }
+            // Merge reaction data from replayed event_state into chat messages.
+            for es_msg in &self.state.event_state.messages {
+                if !es_msg.reactions.is_empty() {
+                    if let Some(chat_msg) = self
+                        .state
+                        .chat
+                        .messages
+                        .iter_mut()
+                        .find(|m| m.id == es_msg.id)
+                    {
+                        for (emoji, authors) in &es_msg.reactions {
+                            let entry = chat_msg.reactions.entry(emoji.clone()).or_default();
+                            for author in authors {
+                                if !entry.contains(author) {
+                                    entry.push(author.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         } else {
             // Seed event_state with channels from legacy storage.
             for (name, ch_id) in ctx.topic_map.values() {
@@ -1392,7 +1413,21 @@ impl Client {
             .cmd_tx
             .send(network::NetworkCommand::BroadcastOp(stamped));
 
-        // Apply locally.
+        // Persist as event for replay on restart.
+        let peer_id_event = self.identity.peer_id().to_string();
+        let reaction_event = willow_state::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_hash: self.state.event_state.hash(),
+            author: peer_id_event,
+            timestamp_ms: util::current_time_ms(),
+            kind: willow_state::EventKind::Reaction {
+                message_id: message_id.to_string(),
+                emoji: emoji.to_string(),
+            },
+        };
+        self.apply_event(&reaction_event);
+
+        // Apply locally to chat messages.
         let target_str = target.to_string();
         let author = self.display_name();
         for m in &mut self.state.chat.messages {
