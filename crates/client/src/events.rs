@@ -73,6 +73,22 @@ pub enum ClientEvent {
         channel: String,
         message_id: String,
     },
+    /// A peer joined a voice channel.
+    VoiceJoined {
+        channel_id: String,
+        peer_id: String,
+    },
+    /// A peer left a voice channel.
+    VoiceLeft {
+        channel_id: String,
+        peer_id: String,
+    },
+    /// A voice signaling message was received.
+    VoiceSignal {
+        channel_id: String,
+        from_peer: String,
+        signal: crate::ops::VoiceSignalPayload,
+    },
 }
 
 /// Push notifications sent through the optional notification channel.

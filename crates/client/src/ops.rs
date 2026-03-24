@@ -44,6 +44,40 @@ pub enum WireMessage {
         /// The channel name the peer is typing in.
         channel: String,
     },
+    /// A peer joined a voice channel.
+    VoiceJoin {
+        /// The voice channel being joined.
+        channel_id: String,
+        /// The peer who joined.
+        peer_id: String,
+    },
+    /// A peer left a voice channel.
+    VoiceLeave {
+        /// The voice channel being left.
+        channel_id: String,
+        /// The peer who left.
+        peer_id: String,
+    },
+    /// A WebRTC signaling message for voice chat.
+    VoiceSignal {
+        /// The voice channel this signal relates to.
+        channel_id: String,
+        /// The intended recipient peer.
+        target_peer: String,
+        /// The signaling payload.
+        signal: VoiceSignalPayload,
+    },
+}
+
+/// WebRTC signaling payload for voice chat negotiation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum VoiceSignalPayload {
+    /// SDP offer for initiating a connection.
+    Offer(String),
+    /// SDP answer in response to an offer.
+    Answer(String),
+    /// ICE candidate for connection establishment.
+    IceCandidate(String),
 }
 
 /// Serialize a [`WireMessage`] into a signed envelope ready for gossipsub.

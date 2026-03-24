@@ -61,6 +61,29 @@ pub enum NetworkEvent {
         peer_id: String,
         channel: String,
     },
+    /// A peer joined a voice channel.
+    VoiceJoinReceived {
+        /// The voice channel that was joined.
+        channel_id: String,
+        /// The peer who joined.
+        peer_id: String,
+    },
+    /// A peer left a voice channel.
+    VoiceLeaveReceived {
+        /// The voice channel that was left.
+        channel_id: String,
+        /// The peer who left.
+        peer_id: String,
+    },
+    /// A voice signaling message was received (targeted at us).
+    VoiceSignalReceived {
+        /// The voice channel this signal relates to.
+        channel_id: String,
+        /// The peer who sent the signal.
+        from_peer: String,
+        /// The signaling payload.
+        signal: crate::ops::VoiceSignalPayload,
+    },
 }
 
 /// Commands flowing from the client to the network.
@@ -99,6 +122,25 @@ pub enum NetworkCommand {
     /// Send a batch of events as a sync response.
     SendSyncBatch {
         events: Vec<willow_state::Event>,
+    },
+    /// Broadcast a voice join to all peers.
+    SendVoiceJoin {
+        /// The voice channel being joined.
+        channel_id: String,
+    },
+    /// Broadcast a voice leave to all peers.
+    SendVoiceLeave {
+        /// The voice channel being left.
+        channel_id: String,
+    },
+    /// Send a voice signaling message to a specific peer.
+    SendVoiceSignal {
+        /// The voice channel this signal relates to.
+        channel_id: String,
+        /// The intended recipient peer.
+        target_peer: String,
+        /// The signaling payload.
+        signal: crate::ops::VoiceSignalPayload,
     },
 }
 
@@ -147,6 +189,7 @@ async fn run_network(
 
     let (node, mut events) = NetworkNode::start(identity, config).await?;
     let mut file_mgr = crate::files::FileManager::new();
+    let local_peer_id = node.peer_id().to_string();
 
     loop {
         tokio::select! {
@@ -205,6 +248,27 @@ async fn run_network(
                                         peer_id: from,
                                         channel,
                                     });
+                                }
+                                crate::ops::WireMessage::VoiceJoin { channel_id, peer_id } => {
+                                    let _ = event_tx.send(NetworkEvent::VoiceJoinReceived {
+                                        channel_id,
+                                        peer_id,
+                                    });
+                                }
+                                crate::ops::WireMessage::VoiceLeave { channel_id, peer_id } => {
+                                    let _ = event_tx.send(NetworkEvent::VoiceLeaveReceived {
+                                        channel_id,
+                                        peer_id,
+                                    });
+                                }
+                                crate::ops::WireMessage::VoiceSignal { channel_id, target_peer, signal } => {
+                                    if target_peer == local_peer_id {
+                                        let _ = event_tx.send(NetworkEvent::VoiceSignalReceived {
+                                            channel_id,
+                                            from_peer: from,
+                                            signal,
+                                        });
+                                    }
                                 }
                             }
                         } else {
@@ -279,6 +343,7 @@ async fn run_network_wasm(
 
     let (node, mut events) = NetworkNode::start(identity, config).await?;
     let mut file_mgr = crate::files::FileManager::new();
+    let local_peer_id = node.peer_id().to_string();
 
     // Create a 16ms interval for polling commands (like native's tokio::time::sleep).
     let mut tick = Box::pin(futures::stream::unfold((), |_| async {
@@ -332,6 +397,27 @@ async fn run_network_wasm(
                                         peer_id: from,
                                         channel,
                                     });
+                                }
+                                crate::ops::WireMessage::VoiceJoin { channel_id, peer_id } => {
+                                    let _ = event_tx.send(NetworkEvent::VoiceJoinReceived {
+                                        channel_id,
+                                        peer_id,
+                                    });
+                                }
+                                crate::ops::WireMessage::VoiceLeave { channel_id, peer_id } => {
+                                    let _ = event_tx.send(NetworkEvent::VoiceLeaveReceived {
+                                        channel_id,
+                                        peer_id,
+                                    });
+                                }
+                                crate::ops::WireMessage::VoiceSignal { channel_id, target_peer, signal } => {
+                                    if target_peer == local_peer_id {
+                                        let _ = event_tx.send(NetworkEvent::VoiceSignalReceived {
+                                            channel_id,
+                                            from_peer: from,
+                                            signal,
+                                        });
+                                    }
                                 }
                             }
                         } else {
@@ -452,6 +538,50 @@ fn handle_network_command(
             .unwrap_or_else(willow_identity::Identity::generate);
             let msg = crate::ops::WireMessage::SyncBatch {
                 events: events.clone(),
+            };
+            if let Some(data) = crate::ops::pack_wire(&msg, &identity) {
+                let _ = node.publish(crate::ops::SERVER_OPS_TOPIC, data);
+            }
+        }
+        NetworkCommand::SendVoiceJoin { channel_id } => {
+            let identity = willow_identity::Identity::from_ed25519_bytes(
+                &crate::storage::load_identity_bytes().unwrap_or_default(),
+            )
+            .unwrap_or_else(willow_identity::Identity::generate);
+            let msg = crate::ops::WireMessage::VoiceJoin {
+                channel_id: channel_id.clone(),
+                peer_id: willow_identity::PeerId::from(node.peer_id()).to_string(),
+            };
+            if let Some(data) = crate::ops::pack_wire(&msg, &identity) {
+                let _ = node.publish(crate::ops::SERVER_OPS_TOPIC, data);
+            }
+        }
+        NetworkCommand::SendVoiceLeave { channel_id } => {
+            let identity = willow_identity::Identity::from_ed25519_bytes(
+                &crate::storage::load_identity_bytes().unwrap_or_default(),
+            )
+            .unwrap_or_else(willow_identity::Identity::generate);
+            let msg = crate::ops::WireMessage::VoiceLeave {
+                channel_id: channel_id.clone(),
+                peer_id: willow_identity::PeerId::from(node.peer_id()).to_string(),
+            };
+            if let Some(data) = crate::ops::pack_wire(&msg, &identity) {
+                let _ = node.publish(crate::ops::SERVER_OPS_TOPIC, data);
+            }
+        }
+        NetworkCommand::SendVoiceSignal {
+            channel_id,
+            target_peer,
+            signal,
+        } => {
+            let identity = willow_identity::Identity::from_ed25519_bytes(
+                &crate::storage::load_identity_bytes().unwrap_or_default(),
+            )
+            .unwrap_or_else(willow_identity::Identity::generate);
+            let msg = crate::ops::WireMessage::VoiceSignal {
+                channel_id: channel_id.clone(),
+                target_peer: target_peer.clone(),
+                signal: signal.clone(),
             };
             if let Some(data) = crate::ops::pack_wire(&msg, &identity) {
                 let _ = node.publish(crate::ops::SERVER_OPS_TOPIC, data);

@@ -4,12 +4,14 @@ use std::rc::Rc;
 
 use leptos::prelude::*;
 use send_wrapper::SendWrapper;
-use willow_client::{Client, ClientConfig, ClientEvent, DisplayMessage};
+use willow_client::{Client, ClientConfig, ClientEvent, DisplayMessage, VoiceSignalPayload};
 
 use crate::components::{
     AddServerPanel, ChannelHeader, ChatInput, FileShareButton, MemberList, MessageList,
-    PinnedPanel, ServerList, ServerSettingsPanel, SettingsPanel, Sidebar, WelcomeScreen,
+    PinnedPanel, ServerList, ServerSettingsPanel, SettingsPanel, Sidebar, VoiceControls,
+    WelcomeScreen,
 };
+use crate::voice::VoiceManager;
 
 fn play_notification_sound() {
     let _ = js_sys::eval(
@@ -34,6 +36,9 @@ const LOADING_TIMEOUT_MS: u32 = 5_000;
 
 /// Wrapper around `Rc<RefCell<Client>>` that is `Send` for single-threaded WASM.
 pub type ClientHandle = SendWrapper<Rc<RefCell<Client>>>;
+
+/// Wrapper around `Rc<RefCell<VoiceManager>>` that is `Send` for single-threaded WASM.
+pub type VoiceManagerHandle = SendWrapper<Rc<RefCell<VoiceManager>>>;
 
 /// Default relay address for the deployed Willow relay server.
 pub const DEFAULT_RELAY: &str =
@@ -88,6 +93,32 @@ pub fn App() -> impl IntoView {
     let (pinned_messages, set_pinned_messages) = signal(Vec::<DisplayMessage>::new());
     let (pin_labels, set_pin_labels) = signal(HashMap::<String, String>::new());
 
+    // Voice state signals.
+    let (voice_channel, set_voice_channel) = signal(Option::<String>::None);
+    let (voice_muted, set_voice_muted) = signal(false);
+    let (voice_deafened, set_voice_deafened) = signal(false);
+    let (_voice_participants_map, set_voice_participants_map) =
+        signal(HashMap::<String, Vec<String>>::new());
+    let (voice_channel_name, set_voice_channel_name) = signal(String::new());
+
+    // Create the VoiceManager. The signal callback sends voice signaling
+    // messages back through the client's network.
+    let voice_signal_client = client.clone();
+    let voice_channel_for_signal = voice_channel;
+    let voice_manager: VoiceManagerHandle = SendWrapper::new(Rc::new(RefCell::new(
+        VoiceManager::new(move |target_peer: &str, signal_type: &str, payload: &str| {
+            let ch_id = voice_channel_for_signal.get_untracked().unwrap_or_default();
+            let signal = match signal_type {
+                "offer" => VoiceSignalPayload::Offer(payload.to_string()),
+                "answer" => VoiceSignalPayload::Answer(payload.to_string()),
+                "ice" => VoiceSignalPayload::IceCandidate(payload.to_string()),
+                _ => return,
+            };
+            let c = voice_signal_client.borrow();
+            c.send_voice_signal(&ch_id, target_peer, signal);
+        }),
+    )));
+
     // Auto-clear loading after LOADING_TIMEOUT_MS even if no peer connects.
     set_timeout(
         move || {
@@ -124,6 +155,7 @@ pub fn App() -> impl IntoView {
 
     // Poll loop -- drain network events and refresh signals.
     let client_poll = client.clone();
+    let vm_poll = voice_manager.clone();
     set_interval(
         move || {
             let mut c = client_poll.borrow_mut();
@@ -177,6 +209,55 @@ pub fn App() -> impl IntoView {
                         set_display_name.set(c.display_name());
                         needs_msg_refresh = true;
                         needs_peer_refresh = true;
+                    }
+                    ClientEvent::VoiceJoined {
+                        channel_id,
+                        peer_id,
+                    } => {
+                        set_voice_participants_map.update(|m| {
+                            let participants = m.entry(channel_id.clone()).or_default();
+                            if !participants.contains(&peer_id) {
+                                participants.push(peer_id.clone());
+                            }
+                        });
+                        // If we're in this channel, create offer to new peer.
+                        if voice_channel.get_untracked() == Some(channel_id) {
+                            let vm = vm_poll.clone();
+                            let pid = peer_id;
+                            wasm_bindgen_futures::spawn_local(handle_voice_create_offer(vm, pid));
+                        }
+                    }
+                    ClientEvent::VoiceLeft {
+                        channel_id,
+                        peer_id,
+                    } => {
+                        set_voice_participants_map.update(|m| {
+                            if let Some(v) = m.get_mut(&channel_id) {
+                                v.retain(|p| p != &peer_id);
+                            }
+                        });
+                        vm_poll.borrow_mut().close_connection(&peer_id);
+                    }
+                    ClientEvent::VoiceSignal {
+                        from_peer, signal, ..
+                    } => {
+                        let vm = vm_poll.clone();
+                        let from = from_peer;
+                        match signal {
+                            VoiceSignalPayload::Offer(sdp) => {
+                                wasm_bindgen_futures::spawn_local(handle_voice_offer(
+                                    vm, from, sdp,
+                                ));
+                            }
+                            VoiceSignalPayload::Answer(sdp) => {
+                                wasm_bindgen_futures::spawn_local(handle_voice_answer(
+                                    vm, from, sdp,
+                                ));
+                            }
+                            VoiceSignalPayload::IceCandidate(json) => {
+                                let _ = vm.borrow().handle_ice_candidate(&from, &json);
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -335,6 +416,41 @@ pub fn App() -> impl IntoView {
     let typing_client = client.clone();
     let pin_client = client.clone();
 
+    // Voice mute handler.
+    let vm_mute = voice_manager.clone();
+    let on_voice_mute = move |_: ()| {
+        let new_muted = !voice_muted.get_untracked();
+        set_voice_muted.set(new_muted);
+        vm_mute.borrow().set_muted(new_muted);
+    };
+
+    // Voice deafen handler.
+    let vm_deafen = voice_manager.clone();
+    let on_voice_deafen = move |_: ()| {
+        let new_deafened = !voice_deafened.get_untracked();
+        set_voice_deafened.set(new_deafened);
+        // When deafened, also mute the mic.
+        if new_deafened {
+            set_voice_muted.set(true);
+            vm_deafen.borrow().set_muted(true);
+        } else {
+            set_voice_muted.set(false);
+            vm_deafen.borrow().set_muted(false);
+        }
+    };
+
+    // Voice disconnect handler.
+    let vm_disconnect = voice_manager.clone();
+    let client_voice_leave = client.clone();
+    let on_voice_disconnect = move |_: ()| {
+        client_voice_leave.borrow_mut().leave_voice();
+        vm_disconnect.borrow_mut().close_all();
+        set_voice_channel.set(None);
+        set_voice_channel_name.set(String::new());
+        set_voice_muted.set(false);
+        set_voice_deafened.set(false);
+    };
+
     // Welcome screen callback that refreshes all signals.
     let welcome_client = client.clone();
     let refresh_for_welcome = refresh_all_signals.clone();
@@ -370,6 +486,9 @@ pub fn App() -> impl IntoView {
                 let edit_send = on_edit_send.clone();
                 let del_msg = on_delete_msg.clone();
                 let react = on_react.clone();
+                let on_mute = on_voice_mute.clone();
+                let on_deafen = on_voice_deafen.clone();
+                let on_disconnect = on_voice_disconnect.clone();
                 view! {
                     <div class="app">
                         <ServerList
@@ -409,6 +528,25 @@ pub fn App() -> impl IntoView {
                                 set_show_sidebar.set(false);
                             }
                         />
+                        {move || {
+                            let on_mute = on_mute.clone();
+                            let on_deafen = on_deafen.clone();
+                            let on_disconnect = on_disconnect.clone();
+                            if voice_channel.get().is_some() {
+                                Some(view! {
+                                    <VoiceControls
+                                        channel_name=voice_channel_name
+                                        muted=voice_muted
+                                        deafened=voice_deafened
+                                        on_mute=on_mute
+                                        on_deafen=on_deafen
+                                        on_disconnect=on_disconnect
+                                    />
+                                })
+                            } else {
+                                None
+                            }
+                        }}
                         <div class="main-content">
                             {move || {
                                 let sc2 = sc.clone();
@@ -565,6 +703,36 @@ pub fn App() -> impl IntoView {
             }
         }}
     }
+}
+
+/// Helper to create a WebRTC offer in a spawned future.
+///
+/// The `RefCell` borrow is held across await but this is safe on
+/// single-threaded WASM where there is no preemption.
+#[allow(clippy::await_holding_refcell_ref)]
+async fn handle_voice_create_offer(vm: VoiceManagerHandle, peer_id: String) {
+    let mut mgr = vm.borrow_mut();
+    let _ = mgr.create_offer(&peer_id).await;
+}
+
+/// Helper to handle an incoming WebRTC offer.
+///
+/// The `RefCell` borrow is held across await but this is safe on
+/// single-threaded WASM where there is no preemption.
+#[allow(clippy::await_holding_refcell_ref)]
+async fn handle_voice_offer(vm: VoiceManagerHandle, from: String, sdp: String) {
+    let mut mgr = vm.borrow_mut();
+    let _ = mgr.handle_offer(&from, &sdp).await;
+}
+
+/// Helper to handle an incoming WebRTC answer.
+///
+/// The `RefCell` borrow is held across await but this is safe on
+/// single-threaded WASM where there is no preemption.
+#[allow(clippy::await_holding_refcell_ref)]
+async fn handle_voice_answer(vm: VoiceManagerHandle, from: String, sdp: String) {
+    let mgr = vm.borrow();
+    let _ = mgr.handle_answer(&from, &sdp).await;
 }
 
 /// Extract roles from the client's event-sourced state as a list of

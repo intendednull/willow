@@ -10,6 +10,7 @@ mod server_list;
 mod server_settings;
 mod settings;
 mod sidebar;
+mod voice;
 mod welcome;
 
 pub use add_server::*;
@@ -24,4 +25,5 @@ pub use server_list::*;
 pub use server_settings::*;
 pub use settings::*;
 pub use sidebar::*;
+pub use voice::*;
 pub use welcome::*;

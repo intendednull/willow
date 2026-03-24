@@ -2169,3 +2169,107 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     color: var(--text-primary);
     background: var(--bg-input);
 }
+
+/* ── Voice Controls ──────────────────────────────────────────────── */
+
+.voice-controls {
+    padding: 8px 12px;
+    background: var(--bg-input);
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.voice-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--online);
+    font-weight: 500;
+}
+
+.voice-channel-name {
+    color: var(--text-secondary);
+}
+
+.voice-buttons {
+    display: flex;
+    gap: 4px;
+}
+
+.voice-btn {
+    background: transparent;
+    border: none;
+    font-size: 16px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.12s ease;
+}
+
+.voice-btn:hover {
+    background: var(--bg-message-hover);
+}
+
+.voice-btn.muted, .voice-btn.deafened {
+    color: var(--danger);
+}
+
+.voice-btn.disconnect {
+    color: var(--danger);
+}
+
+.voice-btn.disconnect:hover {
+    background: rgba(237, 66, 69, 0.15);
+}
+
+/* Voice channel in sidebar */
+.voice-channel {
+    padding: 6px 12px;
+    cursor: pointer;
+    color: var(--text-muted);
+    border-radius: 4px;
+    transition: background 0.12s ease;
+}
+
+.voice-channel:hover {
+    background: var(--bg-message-hover);
+}
+
+.voice-channel-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.voice-channel-icon {
+    font-size: 14px;
+}
+
+.voice-channel-name-sidebar {
+    font-size: 14px;
+}
+
+.voice-participants-list {
+    padding-left: 24px;
+    margin-top: 4px;
+}
+
+.voice-participant {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.voice-participant .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--online);
+}

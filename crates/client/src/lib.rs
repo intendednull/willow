@@ -31,7 +31,7 @@ pub mod util;
 
 // Re-export key types at crate root for convenience.
 pub use events::{ClientEvent, ClientNotification};
-pub use ops::{pack_wire, unpack_wire, WireMessage};
+pub use ops::{pack_wire, unpack_wire, VoiceSignalPayload, WireMessage};
 pub use state::{
     ChatState, ClientState, DisplayMessage, PersistentEventStore, ProfileStore, ServerContext,
 };
@@ -101,6 +101,14 @@ pub struct Client {
     pub(crate) last_typing_sent_ms: u64,
     /// Maps peer_id -> (channel_name, timestamp_ms) for typing indicators.
     pub(crate) typing_peers: HashMap<String, (String, u64)>,
+    /// Peers currently in each voice channel: channel_id -> set of peer_ids.
+    pub(crate) voice_participants: HashMap<String, std::collections::HashSet<String>>,
+    /// Which voice channel we are currently in (if any).
+    pub(crate) active_voice_channel: Option<String>,
+    /// Whether we are muted.
+    pub(crate) voice_muted: bool,
+    /// Whether we are deafened.
+    pub(crate) voice_deafened: bool,
 }
 
 impl Client {
@@ -290,6 +298,10 @@ impl Client {
             state_verification_results: HashMap::new(),
             last_typing_sent_ms: 0,
             typing_peers: HashMap::new(),
+            voice_participants: HashMap::new(),
+            active_voice_channel: None,
+            voice_muted: false,
+            voice_deafened: false,
         }
     }
 
@@ -367,6 +379,109 @@ impl Client {
 
         network::spawn_network(self.identity.clone(), event_tx, cmd_rx, config);
         self.connected = true;
+    }
+
+    // ───── Voice chat ────────────────────────────────────────────────────
+
+    /// Join a voice channel. Leaves the current voice channel first if in one.
+    pub fn join_voice(&mut self, channel_id: &str) {
+        // Leave current voice channel if in one.
+        if self.active_voice_channel.is_some() {
+            self.leave_voice();
+        }
+        self.active_voice_channel = Some(channel_id.to_string());
+        // Add ourselves to participants.
+        self.voice_participants
+            .entry(channel_id.to_string())
+            .or_default()
+            .insert(self.identity.peer_id().to_string());
+        // Broadcast join.
+        let _ = self.cmd_tx.send(network::NetworkCommand::SendVoiceJoin {
+            channel_id: channel_id.to_string(),
+        });
+    }
+
+    /// Leave the current voice channel, if in one.
+    pub fn leave_voice(&mut self) {
+        if let Some(ch) = self.active_voice_channel.take() {
+            // Remove ourselves from participants.
+            if let Some(participants) = self.voice_participants.get_mut(&ch) {
+                participants.remove(&self.identity.peer_id().to_string());
+            }
+            let _ = self
+                .cmd_tx
+                .send(network::NetworkCommand::SendVoiceLeave { channel_id: ch });
+        }
+    }
+
+    /// Toggle mute state. Returns the new muted value.
+    pub fn toggle_mute(&mut self) -> bool {
+        self.voice_muted = !self.voice_muted;
+        self.voice_muted
+    }
+
+    /// Toggle deafen state. Returns the new deafened value.
+    pub fn toggle_deafen(&mut self) -> bool {
+        self.voice_deafened = !self.voice_deafened;
+        self.voice_deafened
+    }
+
+    /// Returns the list of peer IDs currently in the given voice channel.
+    pub fn voice_participants(&self, channel_id: &str) -> Vec<String> {
+        self.voice_participants
+            .get(channel_id)
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Returns the voice channel we are currently in, if any.
+    pub fn active_voice_channel(&self) -> Option<&str> {
+        self.active_voice_channel.as_deref()
+    }
+
+    /// Returns whether we are currently muted.
+    pub fn is_voice_muted(&self) -> bool {
+        self.voice_muted
+    }
+
+    /// Returns whether we are currently deafened.
+    pub fn is_voice_deafened(&self) -> bool {
+        self.voice_deafened
+    }
+
+    /// Send a voice signaling message to a specific peer.
+    pub fn send_voice_signal(
+        &self,
+        channel_id: &str,
+        target: &str,
+        signal: ops::VoiceSignalPayload,
+    ) {
+        let _ = self.cmd_tx.send(network::NetworkCommand::SendVoiceSignal {
+            channel_id: channel_id.to_string(),
+            target_peer: target.to_string(),
+            signal,
+        });
+    }
+
+    /// Returns `(channel_name, kind_str)` pairs for the active server's channels.
+    /// `kind_str` is `"text"` or `"voice"`.
+    pub fn channel_kinds(&self) -> Vec<(String, String)> {
+        self.state
+            .active()
+            .map(|ctx| {
+                ctx.server
+                    .channels()
+                    .iter()
+                    .map(|ch| {
+                        let kind = match ch.kind {
+                            willow_channel::ChannelKind::Text => "text",
+                            willow_channel::ChannelKind::Voice => "voice",
+                        };
+                        (ch.name.clone(), kind.to_string())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Drain network events, apply them to state, and return a list of
@@ -566,6 +681,42 @@ impl Client {
                 }
                 network::NetworkEvent::MessageReceived { .. } => {
                     // All messages now go through EventReceived.
+                }
+                network::NetworkEvent::VoiceJoinReceived {
+                    channel_id,
+                    peer_id,
+                } => {
+                    self.voice_participants
+                        .entry(channel_id.clone())
+                        .or_default()
+                        .insert(peer_id.clone());
+                    events.push(ClientEvent::VoiceJoined {
+                        channel_id,
+                        peer_id,
+                    });
+                }
+                network::NetworkEvent::VoiceLeaveReceived {
+                    channel_id,
+                    peer_id,
+                } => {
+                    if let Some(participants) = self.voice_participants.get_mut(&channel_id) {
+                        participants.remove(&peer_id);
+                    }
+                    events.push(ClientEvent::VoiceLeft {
+                        channel_id,
+                        peer_id,
+                    });
+                }
+                network::NetworkEvent::VoiceSignalReceived {
+                    channel_id,
+                    from_peer,
+                    signal,
+                } => {
+                    events.push(ClientEvent::VoiceSignal {
+                        channel_id,
+                        from_peer,
+                        signal,
+                    });
                 }
             }
         }
@@ -2156,6 +2307,10 @@ pub(crate) fn test_client() -> (Client, std::sync::mpsc::Receiver<network::Netwo
         state_verification_results: HashMap::new(),
         last_typing_sent_ms: 0,
         typing_peers: HashMap::new(),
+        voice_participants: HashMap::new(),
+        active_voice_channel: None,
+        voice_muted: false,
+        voice_deafened: false,
     };
 
     (client, cmd_rx)
@@ -3155,13 +3310,11 @@ mod tests {
         assert_eq!(reply.body, "reply body");
         assert_eq!(reply.reply_to, Some(parent_id));
         assert!(reply.reply_preview.is_some());
-        assert!(
-            reply
-                .reply_preview
-                .as_ref()
-                .unwrap()
-                .contains("parent message")
-        );
+        assert!(reply
+            .reply_preview
+            .as_ref()
+            .unwrap()
+            .contains("parent message"));
     }
 
     #[test]
