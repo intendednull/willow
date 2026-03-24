@@ -1308,14 +1308,21 @@ impl Client {
     ///
     /// Returns a sorted `Vec` of message IDs that are pinned in the channel.
     pub fn pinned_message_ids(&self, channel: &str) -> Vec<String> {
+        // Find channel_id from event_state by name (authoritative).
         let channel_id = self
             .state
-            .active()
-            .and_then(|ctx| {
-                ctx.topic_map
-                    .values()
-                    .find(|(n, _)| n == channel)
-                    .map(|(_, cid)| cid.to_string())
+            .event_state
+            .channels
+            .iter()
+            .find(|(_, ch)| ch.name == channel)
+            .map(|(id, _)| id.clone())
+            .or_else(|| {
+                self.state.active().and_then(|ctx| {
+                    ctx.topic_map
+                        .values()
+                        .find(|(n, _)| n == channel)
+                        .map(|(_, cid)| cid.to_string())
+                })
             })
             .unwrap_or_default();
 
@@ -1862,6 +1869,23 @@ impl Client {
 
         self.state.active_server = Some(server_id.clone());
         self.init_event_state_for_server(&server_id);
+
+        // Fix the event_state owner to be the ACTUAL server owner from the invite,
+        // not the joining peer. This is critical for permission checks — without it,
+        // the actual owner's events (CreateChannel, etc.) get rejected.
+        self.state.event_state.owner = accepted.owner.clone();
+        // Also add the owner as a member so permissions work.
+        if !self.state.event_state.members.contains_key(&accepted.owner) {
+            self.state.event_state.members.insert(
+                accepted.owner.clone(),
+                willow_state::Member {
+                    peer_id: accepted.owner.clone(),
+                    roles: std::collections::HashSet::new(),
+                    display_name: None,
+                },
+            );
+        }
+
         self.reconcile_topic_map();
 
         if let Some((_, (name, _))) = accepted.channel_keys.iter().next() {
@@ -1994,19 +2018,27 @@ impl Client {
 
     /// Get messages for a channel, computed from the event-sourced state.
     pub fn messages(&self, channel: &str) -> Vec<state::DisplayMessage> {
-        // Resolve channel name to channel_id.
-        let channel_id = self
-            .state
-            .active()
-            .and_then(|ctx| {
-                ctx.topic_map
-                    .values()
-                    .find(|(n, _)| n == channel)
-                    .map(|(_, cid)| cid.to_string())
-            })
-            .unwrap_or_default();
+        // Collect ALL channel_ids that map to this channel name.
+        // This handles the ID mismatch between owner and joiner.
+        let mut channel_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-        if channel_id.is_empty() {
+        // From topic_map (legacy).
+        if let Some(ctx) = self.state.active() {
+            for (name, cid) in ctx.topic_map.values() {
+                if name == channel {
+                    channel_ids.insert(cid.to_string());
+                }
+            }
+        }
+
+        // From event_state.channels (authoritative).
+        for (id, ch) in &self.state.event_state.channels {
+            if ch.name == channel {
+                channel_ids.insert(id.clone());
+            }
+        }
+
+        if channel_ids.is_empty() {
             return vec![];
         }
 
@@ -2017,7 +2049,7 @@ impl Client {
             .event_state
             .messages
             .iter()
-            .filter(|m| m.channel_id == channel_id)
+            .filter(|m| channel_ids.contains(&m.channel_id))
             .map(|m| {
                 let author_name = self
                     .state
@@ -2693,6 +2725,124 @@ mod tests {
         let active_id = client.state.active_server.clone().unwrap();
         let new_ctx = client.state.servers.get(&active_id).unwrap();
         assert!(!new_ctx.keys.is_empty());
+    }
+
+    #[test]
+    fn invite_joiner_event_state_has_correct_owner() {
+        let (mut client, _rx) = test_client();
+
+        // Create a second identity (the "owner" of the other server).
+        let owner = Identity::generate();
+        let owner_peer_id = owner.peer_id().to_string();
+        let mut owner_server = willow_channel::Server::new("Other Server", owner.peer_id());
+        let ch_id = owner_server
+            .create_channel("lobby", willow_channel::ChannelKind::Text)
+            .unwrap();
+
+        let mut keys = HashMap::new();
+        let mut topic_map = HashMap::new();
+        let topic = format!("{}/lobby", owner_server.id);
+        if let Some(key) = owner_server.channel_key(&ch_id) {
+            keys.insert(topic.clone(), key.clone());
+        }
+        topic_map.insert(topic, ("lobby".into(), ch_id));
+
+        let our_pub = {
+            let ed_kp = client
+                .identity
+                .keypair()
+                .clone()
+                .try_into_ed25519()
+                .unwrap();
+            let full = ed_kp.to_bytes();
+            let mut pub_bytes = [0u8; 32];
+            pub_bytes.copy_from_slice(&full[32..]);
+            pub_bytes
+        };
+        let code = invite::generate_invite(&owner_server, &keys, &topic_map, &our_pub).unwrap();
+
+        client.accept_invite(&code).unwrap();
+
+        // The event_state owner should be the ACTUAL owner, not the joiner.
+        assert_eq!(
+            client.state.event_state.owner, owner_peer_id,
+            "event_state.owner should be the server owner, not the joining peer"
+        );
+    }
+
+    #[test]
+    fn invite_joiner_can_see_owner_messages() {
+        let (mut client, _rx) = test_client();
+
+        // Create a second identity (the "owner" of the other server).
+        let owner = Identity::generate();
+        let owner_peer_id = owner.peer_id().to_string();
+        let mut owner_server = willow_channel::Server::new("Other Server", owner.peer_id());
+        let ch_id = owner_server
+            .create_channel("lobby", willow_channel::ChannelKind::Text)
+            .unwrap();
+
+        let mut keys = HashMap::new();
+        let mut topic_map = HashMap::new();
+        let topic = format!("{}/lobby", owner_server.id);
+        let ch_id_str = ch_id.to_string();
+        if let Some(key) = owner_server.channel_key(&ch_id) {
+            keys.insert(topic.clone(), key.clone());
+        }
+        topic_map.insert(topic, ("lobby".into(), ch_id));
+
+        let our_pub = {
+            let ed_kp = client
+                .identity
+                .keypair()
+                .clone()
+                .try_into_ed25519()
+                .unwrap();
+            let full = ed_kp.to_bytes();
+            let mut pub_bytes = [0u8; 32];
+            pub_bytes.copy_from_slice(&full[32..]);
+            pub_bytes
+        };
+        let code = invite::generate_invite(&owner_server, &keys, &topic_map, &our_pub).unwrap();
+
+        client.accept_invite(&code).unwrap();
+
+        // Simulate sync: apply the owner's CreateChannel event first.
+        let create_ch_event = willow_state::Event {
+            id: "create-lobby".to_string(),
+            parent_hash: willow_state::StateHash::ZERO,
+            author: owner_peer_id.clone(),
+            timestamp_ms: 500,
+            kind: willow_state::EventKind::CreateChannel {
+                name: "lobby".to_string(),
+                channel_id: ch_id_str.clone(),
+                kind: "text".to_string(),
+            },
+        };
+        willow_state::apply_lenient(&mut client.state.event_state, &create_ch_event);
+
+        // Simulate receiving a message from the owner.
+        let msg_event = willow_state::Event {
+            id: "msg-from-owner".to_string(),
+            parent_hash: willow_state::StateHash::ZERO,
+            author: owner_peer_id.clone(),
+            timestamp_ms: 1000,
+            kind: willow_state::EventKind::Message {
+                channel_id: ch_id_str.clone(),
+                body: "hello from owner".to_string(),
+                reply_to: None,
+            },
+        };
+        willow_state::apply_lenient(&mut client.state.event_state, &msg_event);
+
+        // The joiner should be able to see this message via messages("lobby").
+        let msgs = client.messages("lobby");
+        assert_eq!(
+            msgs.len(),
+            1,
+            "joiner should see the owner's message — channel_id must match"
+        );
+        assert_eq!(msgs[0].body, "hello from owner");
     }
 
     #[test]
