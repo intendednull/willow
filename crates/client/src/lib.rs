@@ -766,6 +766,20 @@ impl Client {
                 });
             }
             willow_state::EventKind::CreateChannel { name, .. } => {
+                // Subscribe to the new channel's gossipsub topic and
+                // update the topic_map so messages can be sent/received.
+                if let Some(ctx) = self.state.active_mut() {
+                    let topic = util::make_topic(&ctx.server, name);
+                    if !ctx.topic_map.contains_key(&topic) {
+                        ctx.topic_map.insert(
+                            topic.clone(),
+                            (name.clone(), willow_channel::ChannelId::new()),
+                        );
+                        let _ = self
+                            .cmd_tx
+                            .send(network::NetworkCommand::Subscribe(topic));
+                    }
+                }
                 events.push(ClientEvent::ChannelCreated(name.clone()));
             }
             willow_state::EventKind::DeleteChannel { channel_id } => {
@@ -2176,8 +2190,8 @@ impl Client {
         };
         self.apply_event(&msg_event);
 
-        // Broadcast the event on the channel topic.
-        self.broadcast_event(msg_event, Some(topic));
+        // Broadcast the event on the server ops topic (same as all other events).
+        self.broadcast_event(msg_event, None);
 
         // Dedup
         self.state.chat.seen_message_ids.insert(event_id);
