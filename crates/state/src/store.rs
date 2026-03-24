@@ -96,6 +96,7 @@ mod tests {
             kind: EventKind::CreateChannel {
                 name: "general".to_string(),
                 channel_id: "ch-1".to_string(),
+                kind: "text".to_string(),
             },
         }
     }

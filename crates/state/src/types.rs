@@ -18,6 +18,14 @@ pub struct Channel {
     /// IDs of pinned messages in this channel.
     #[serde(default)]
     pub pinned_messages: HashSet<String>,
+    /// Channel kind: `"text"` or `"voice"`. Defaults to `"text"` for backward compat.
+    #[serde(default = "default_channel_kind")]
+    pub kind: String,
+}
+
+/// Default channel kind for deserialization backward compatibility.
+fn default_channel_kind() -> String {
+    "text".to_string()
 }
 
 /// A named bundle of permissions that can be assigned to members.

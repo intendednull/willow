@@ -231,6 +231,7 @@ impl Client {
                                     id: ch_id.to_string(),
                                     name: name.clone(),
                                     pinned_messages: std::collections::HashSet::new(),
+                                    kind: "text".to_string(),
                                 },
                             );
                         }
@@ -467,21 +468,11 @@ impl Client {
     /// `kind_str` is `"text"` or `"voice"`.
     pub fn channel_kinds(&self) -> Vec<(String, String)> {
         self.state
-            .active()
-            .map(|ctx| {
-                ctx.server
-                    .channels()
-                    .iter()
-                    .map(|ch| {
-                        let kind = match ch.kind {
-                            willow_channel::ChannelKind::Text => "text",
-                            willow_channel::ChannelKind::Voice => "voice",
-                        };
-                        (ch.name.clone(), kind.to_string())
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+            .event_state
+            .channels
+            .values()
+            .map(|ch| (ch.name.clone(), ch.kind.clone()))
+            .collect()
     }
 
     /// Drain network events, apply them to state, and return a list of
@@ -923,6 +914,7 @@ impl Client {
                             id: ch_id.to_string(),
                             name: name.clone(),
                             pinned_messages: std::collections::HashSet::new(),
+                            kind: "text".to_string(),
                         },
                     );
                 }
@@ -1018,6 +1010,7 @@ impl Client {
             kind: willow_state::EventKind::CreateChannel {
                 name: "general".to_string(),
                 channel_id: ch_id_str,
+                kind: "text".to_string(),
             },
         };
         self.apply_event(&create_ch);
@@ -1350,6 +1343,7 @@ impl Client {
             kind: willow_state::EventKind::CreateChannel {
                 name: name.to_string(),
                 channel_id: ch_id_str,
+                kind: "text".to_string(),
             },
         };
         self.apply_event(&event);
@@ -1392,6 +1386,7 @@ impl Client {
             kind: willow_state::EventKind::CreateChannel {
                 name: name.to_string(),
                 channel_id: ch_id_str,
+                kind: "voice".to_string(),
             },
         };
         self.apply_event(&event);
@@ -2327,6 +2322,7 @@ pub(crate) fn test_client() -> (Client, std::sync::mpsc::Receiver<network::Netwo
             id: ch_id_str,
             name: "general".to_string(),
             pinned_messages: std::collections::HashSet::new(),
+            kind: "text".to_string(),
         },
     );
 

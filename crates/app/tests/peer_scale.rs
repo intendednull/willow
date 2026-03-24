@@ -232,6 +232,7 @@ async fn scale_event_application_throughput() {
         kind: EventKind::CreateChannel {
             name: "general".to_string(),
             channel_id: "ch-1".to_string(),
+            kind: "text".to_string(),
         },
     };
     apply_lenient(&mut state, &create_ch);
@@ -281,6 +282,7 @@ async fn scale_merge_throughput() {
         kind: EventKind::CreateChannel {
             name: "general".to_string(),
             channel_id: "ch-1".to_string(),
+            kind: "text".to_string(),
         },
     };
     apply_lenient(&mut state, &create_ch);

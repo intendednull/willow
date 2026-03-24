@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use leptos::prelude::*;
 
 use crate::app::ClientHandle;
+use crate::components::VoiceControls;
 
 /// Left sidebar showing the server name, channel list, and user info.
 #[component]
@@ -19,6 +20,27 @@ pub fn Sidebar(
     on_settings_click: impl Fn(()) + Send + Clone + 'static,
     on_server_settings_click: impl Fn(()) + Send + Clone + 'static,
     on_voice_join: impl Fn(String) + Send + Clone + 'static,
+    /// Voice channel the user is currently in, if any.
+    #[prop(optional)]
+    voice_channel: Option<ReadSignal<Option<String>>>,
+    /// Name of the current voice channel.
+    #[prop(optional)]
+    voice_channel_name: Option<ReadSignal<String>>,
+    /// Whether the local mic is muted.
+    #[prop(optional)]
+    voice_muted: Option<ReadSignal<bool>>,
+    /// Whether the local audio output is deafened.
+    #[prop(optional)]
+    voice_deafened: Option<ReadSignal<bool>>,
+    /// Called when the mute button is clicked.
+    #[prop(optional)]
+    on_voice_mute: Option<Callback<()>>,
+    /// Called when the deafen button is clicked.
+    #[prop(optional)]
+    on_voice_deafen: Option<Callback<()>>,
+    /// Called when the disconnect button is clicked.
+    #[prop(optional)]
+    on_voice_disconnect: Option<Callback<()>>,
 ) -> impl IntoView {
     let (creating, set_creating) = signal(false);
     let (new_name, set_new_name) = signal(String::new());
@@ -217,6 +239,29 @@ pub fn Sidebar(
                     }
                 }}</span>
             </div>
+            {move || {
+                let vc = voice_channel.and_then(|s| s.get());
+                if vc.is_some() {
+                    let vcn = voice_channel_name.expect("voice_channel_name required");
+                    let vm = voice_muted.expect("voice_muted required");
+                    let vd = voice_deafened.expect("voice_deafened required");
+                    let on_m = on_voice_mute.expect("on_voice_mute required");
+                    let on_d = on_voice_deafen.expect("on_voice_deafen required");
+                    let on_dc = on_voice_disconnect.expect("on_voice_disconnect required");
+                    Some(view! {
+                        <VoiceControls
+                            channel_name=vcn
+                            muted=vm
+                            deafened=vd
+                            on_mute=move |v| on_m.run(v)
+                            on_deafen=move |v| on_d.run(v)
+                            on_disconnect=move |v| on_dc.run(v)
+                        />
+                    })
+                } else {
+                    None
+                }
+            }}
             <div class="user-area">
                 <div class="status-dot"></div>
                 <span style="font-size: 12px; color: var(--text-muted);">

@@ -119,6 +119,7 @@ fn e2e_invite_chat_sync_state_machine() {
         kind: EventKind::CreateChannel {
             name: "general".to_string(),
             channel_id: "ch-general".to_string(),
+            kind: "text".to_string(),
         },
     };
     let result = apply(&mut alice_state, &create_general);
@@ -222,6 +223,7 @@ fn e2e_invite_chat_sync_state_machine() {
         kind: EventKind::CreateChannel {
             name: "random".to_string(),
             channel_id: "ch-random".to_string(),
+            kind: "text".to_string(),
         },
     };
     apply_lenient(&mut alice_state, &create_random);
@@ -326,6 +328,7 @@ fn e2e_permission_enforcement() {
         kind: EventKind::CreateChannel {
             name: "general".to_string(),
             channel_id: "ch-1".to_string(),
+            kind: "text".to_string(),
         },
     };
     assert_eq!(apply(&mut state, &create_ch), ApplyResult::Applied);
@@ -339,6 +342,7 @@ fn e2e_permission_enforcement() {
         kind: EventKind::CreateChannel {
             name: "hacker-room".to_string(),
             channel_id: "ch-bad".to_string(),
+            kind: "text".to_string(),
         },
     };
     let result = apply(&mut state, &bad_create);
@@ -381,6 +385,7 @@ fn e2e_permission_enforcement() {
         kind: EventKind::CreateChannel {
             name: "allowed-room".to_string(),
             channel_id: "ch-allowed".to_string(),
+            kind: "text".to_string(),
         },
     };
     assert_eq!(apply(&mut state, &ok_create), ApplyResult::Applied);
@@ -401,6 +406,7 @@ fn e2e_dedup_and_idempotency() {
         kind: EventKind::CreateChannel {
             name: "general".to_string(),
             channel_id: "ch-1".to_string(),
+            kind: "text".to_string(),
         },
     };
 
@@ -500,6 +506,7 @@ fn e2e_roles_and_channel_management() {
         kind: EventKind::CreateChannel {
             name: "general".to_string(),
             channel_id: "ch-1".to_string(),
+            kind: "text".to_string(),
         },
     };
     assert_eq!(apply(&mut state, &create_ch1), ApplyResult::Applied);
@@ -512,6 +519,7 @@ fn e2e_roles_and_channel_management() {
         kind: EventKind::CreateChannel {
             name: "random".to_string(),
             channel_id: "ch-2".to_string(),
+            kind: "text".to_string(),
         },
     };
     assert_eq!(apply(&mut state, &create_ch2), ApplyResult::Applied);
@@ -591,6 +599,7 @@ fn e2e_profile_and_reactions() {
         kind: EventKind::CreateChannel {
             name: "general".to_string(),
             channel_id: "ch-1".to_string(),
+            kind: "text".to_string(),
         },
     };
     assert_eq!(apply(&mut state, &create_ch), ApplyResult::Applied);
@@ -852,6 +861,7 @@ async fn e2e_network_server_op_sync_three_nodes() {
         Op::CreateChannel {
             name: "general".into(),
             channel_id: channel_id.clone(),
+            kind: "text".to_string(),
         },
         &mut hlc,
         &alice.identity.peer_id().to_string(),

@@ -27,6 +27,7 @@
 //!     kind: EventKind::CreateChannel {
 //!         name: "general".to_string(),
 //!         channel_id: "ch-1".to_string(),
+//!         kind: "text".to_string(),
 //!     },
 //! };
 //!
@@ -52,6 +53,11 @@ pub use store::{EventStore, InMemoryStore};
 pub use types::{Channel, ChatMessage, Member, Permission, Profile, Role};
 
 use serde::{Deserialize, Serialize};
+
+/// Default channel kind for deserialization backward compatibility.
+fn default_create_channel_kind() -> String {
+    "text".to_string()
+}
 
 /// An event that deterministically mutates shared state.
 ///
@@ -81,6 +87,9 @@ pub enum EventKind {
         name: String,
         /// Unique channel ID.
         channel_id: String,
+        /// Channel kind: `"text"` or `"voice"`. Defaults to `"text"`.
+        #[serde(default = "default_create_channel_kind")]
+        kind: String,
     },
     /// Delete a channel by ID.
     DeleteChannel {
@@ -326,7 +335,11 @@ fn apply_inner(state: &mut ServerState, event: &Event) -> ApplyResult {
 
     // Apply the mutation.
     match &event.kind {
-        EventKind::CreateChannel { name, channel_id } => {
+        EventKind::CreateChannel {
+            name,
+            channel_id,
+            kind,
+        } => {
             // Skip if channel already exists.
             if !state.channels.contains_key(channel_id) {
                 state.channels.insert(
@@ -335,6 +348,7 @@ fn apply_inner(state: &mut ServerState, event: &Event) -> ApplyResult {
                         id: channel_id.clone(),
                         name: name.clone(),
                         pinned_messages: std::collections::HashSet::new(),
+                        kind: kind.clone(),
                     },
                 );
             }

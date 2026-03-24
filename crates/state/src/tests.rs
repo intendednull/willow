@@ -45,10 +45,12 @@ fn apply_is_deterministic() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
         EventKind::CreateChannel {
             name: "random".into(),
             channel_id: "ch2".into(),
+            kind: "text".to_string(),
         },
         EventKind::GrantPermission {
             peer_id: "alice".into(),
@@ -83,6 +85,7 @@ fn apply_is_idempotent() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
 
@@ -105,6 +108,7 @@ fn create_and_delete_channel() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state, &create), ApplyResult::Applied);
@@ -135,6 +139,7 @@ fn rename_channel() {
         EventKind::CreateChannel {
             name: "old-name".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state, &create), ApplyResult::Applied);
@@ -166,6 +171,7 @@ fn send_and_edit_message() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state, &create_ch), ApplyResult::Applied);
@@ -211,6 +217,7 @@ fn delete_message_is_soft() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state, &create_ch), ApplyResult::Applied);
@@ -254,6 +261,7 @@ fn reaction_added_to_message() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state, &create_ch), ApplyResult::Applied);
@@ -332,6 +340,7 @@ fn parent_hash_mismatch() {
         kind: EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     };
 
@@ -354,6 +363,7 @@ fn unpermitted_author_rejected() {
         EventKind::CreateChannel {
             name: "hacked".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
 
@@ -373,6 +383,7 @@ fn unpermitted_peer_can_send_messages() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state, &create_ch), ApplyResult::Applied);
@@ -416,6 +427,7 @@ fn permission_enforcement() {
         EventKind::CreateChannel {
             name: "unauthorized".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
     let result = apply(&mut state, &create);
@@ -447,6 +459,7 @@ fn admin_permission_grants_all() {
         EventKind::CreateChannel {
             name: "admin-channel".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state, &create), ApplyResult::Applied);
@@ -529,6 +542,7 @@ fn fine_grained_permissions() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state, &create_ch), ApplyResult::Applied);
@@ -555,6 +569,7 @@ fn fine_grained_permissions() {
         EventKind::CreateChannel {
             name: "unauthorized".into(),
             channel_id: "ch2".into(),
+            kind: "text".to_string(),
         },
     );
     assert!(matches!(
@@ -618,6 +633,7 @@ fn full_replay_from_genesis() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     )];
     assert_eq!(apply(&mut state, &events[0]), ApplyResult::Applied);
@@ -680,6 +696,7 @@ fn merge_produces_same_state() {
         EventKind::CreateChannel {
             name: "alpha".into(),
             channel_id: "ch-a".into(),
+            kind: "text".to_string(),
         },
     );
 
@@ -692,6 +709,7 @@ fn merge_produces_same_state() {
         EventKind::CreateChannel {
             name: "beta".into(),
             channel_id: "ch-b".into(),
+            kind: "text".to_string(),
         },
     );
 
@@ -724,6 +742,7 @@ fn event_store_in_memory() {
         kind: EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     };
 
@@ -931,6 +950,7 @@ fn delete_channel_removes_messages() {
         EventKind::CreateChannel {
             name: "temp".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state, &create), ApplyResult::Applied);
@@ -1097,6 +1117,7 @@ fn five_peers_concurrent_messages() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state, &create_ch), ApplyResult::Applied);
@@ -1156,6 +1177,7 @@ fn permission_cascade() {
         EventKind::CreateChannel {
             name: "dev".into(),
             channel_id: "ch-dev".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state, &create_ch), ApplyResult::Applied);
@@ -1215,6 +1237,7 @@ fn kick_revokes_all_permissions() {
         EventKind::CreateChannel {
             name: "sneaky".into(),
             channel_id: "ch-sneaky".into(),
+            kind: "text".to_string(),
         },
     );
     assert!(matches!(
@@ -1238,6 +1261,7 @@ fn concurrent_channel_create_same_name() {
         EventKind::CreateChannel {
             name: "dev".into(),
             channel_id: "ch-dev".into(),
+            kind: "text".to_string(),
         },
     );
 
@@ -1249,6 +1273,7 @@ fn concurrent_channel_create_same_name() {
         EventKind::CreateChannel {
             name: "dev-duplicate".into(),
             channel_id: "ch-dev".into(),
+            kind: "text".to_string(),
         },
     );
 
@@ -1273,6 +1298,7 @@ fn edit_and_delete_message_lifecycle() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state, &create_ch), ApplyResult::Applied);
@@ -1347,6 +1373,7 @@ fn merge_with_concurrent_mutations() {
         EventKind::CreateChannel {
             name: "dev".into(),
             channel_id: "ch-dev".into(),
+            kind: "text".to_string(),
         },
     );
     let evt_a2 = event_with(
@@ -1370,6 +1397,7 @@ fn merge_with_concurrent_mutations() {
         EventKind::CreateChannel {
             name: "staging".into(),
             channel_id: "ch-staging".into(),
+            kind: "text".to_string(),
         },
     );
     let evt_b2 = event_with(
@@ -1408,6 +1436,7 @@ fn merge_with_conflicting_deletes() {
         EventKind::CreateChannel {
             name: "alpha".into(),
             channel_id: "ch-alpha".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut common, &create_a), ApplyResult::Applied);
@@ -1417,6 +1446,7 @@ fn merge_with_conflicting_deletes() {
         EventKind::CreateChannel {
             name: "beta".into(),
             channel_id: "ch-beta".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut common, &create_b), ApplyResult::Applied);
@@ -1470,6 +1500,7 @@ fn replay_100_events_produces_correct_state() {
             EventKind::CreateChannel {
                 name: format!("channel-{i}"),
                 channel_id: format!("ch-{i}"),
+                kind: "text".to_string(),
             },
         );
         assert_eq!(apply(&mut state, &evt), ApplyResult::Applied);
@@ -1556,6 +1587,7 @@ fn stress_1000_messages_same_channel() {
         EventKind::CreateChannel {
             name: "stress-test".into(),
             channel_id: "ch-stress".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state, &create_ch), ApplyResult::Applied);
@@ -1599,6 +1631,7 @@ fn untrusted_peer_cant_escalate() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state, &create_ch), ApplyResult::Applied);
@@ -1621,6 +1654,7 @@ fn untrusted_peer_cant_escalate() {
         EventKind::CreateChannel {
             name: "hacked".into(),
             channel_id: "ch-hacked".into(),
+            kind: "text".to_string(),
         },
     );
     assert!(matches!(
@@ -1723,10 +1757,12 @@ fn state_hash_changes_on_every_mutation() {
         EventKind::CreateChannel {
             name: "ch-1".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
         EventKind::CreateChannel {
             name: "ch-2".into(),
             channel_id: "ch2".into(),
+            kind: "text".to_string(),
         },
         EventKind::GrantPermission {
             peer_id: "alice".into(),
@@ -1791,6 +1827,7 @@ fn idempotency_across_all_event_kinds() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state, &setup_ch), ApplyResult::Applied);
@@ -1833,6 +1870,7 @@ fn idempotency_across_all_event_kinds() {
         EventKind::CreateChannel {
             name: "new-ch".into(),
             channel_id: "ch-new".into(),
+            kind: "text".to_string(),
         },
         EventKind::DeleteChannel {
             channel_id: "ch-new".into(),
@@ -1929,6 +1967,7 @@ fn merge_three_way_divergence() {
             EventKind::CreateChannel {
                 name: "alpha".into(),
                 channel_id: "ch-alpha".into(),
+                kind: "text".to_string(),
             },
         ),
         event_with(
@@ -1954,6 +1993,7 @@ fn merge_three_way_divergence() {
             EventKind::CreateChannel {
                 name: "beta".into(),
                 channel_id: "ch-beta".into(),
+                kind: "text".to_string(),
             },
         ),
         event_with(
@@ -1979,6 +2019,7 @@ fn merge_three_way_divergence() {
             EventKind::CreateChannel {
                 name: "gamma".into(),
                 channel_id: "ch-gamma".into(),
+                kind: "text".to_string(),
             },
         ),
         event_with(
@@ -2086,6 +2127,7 @@ fn identical_states_produce_matching_hashes() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state_a, &create), ApplyResult::Applied);
@@ -2318,6 +2360,7 @@ fn pin_message_adds_to_channel() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state, &e1), ApplyResult::Applied);
@@ -2363,6 +2406,7 @@ fn unpin_message_removes_from_channel() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state, &e1), ApplyResult::Applied);
@@ -2433,6 +2477,7 @@ fn pin_duplicate_is_idempotent() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state, &e1), ApplyResult::Applied);
@@ -2511,6 +2556,7 @@ fn unpin_nonexistent_message_is_noop() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state, &e1), ApplyResult::Applied);
@@ -2547,6 +2593,7 @@ fn pin_survives_state_replay() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state, &e1), ApplyResult::Applied);
@@ -2604,6 +2651,7 @@ fn multiple_pins_per_channel() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state, &e1), ApplyResult::Applied);
@@ -2655,6 +2703,7 @@ fn pin_across_channels() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state, &e1), ApplyResult::Applied);
@@ -2666,6 +2715,7 @@ fn pin_across_channels() {
         EventKind::CreateChannel {
             name: "random".into(),
             channel_id: "ch2".into(),
+            kind: "text".to_string(),
         },
     );
     assert_eq!(apply(&mut state, &e2), ApplyResult::Applied);

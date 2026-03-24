@@ -141,6 +141,7 @@ fn create_channel(
         crate::server_sync::Op::CreateChannel {
             name: name.to_string(),
             channel_id: ch_id_str,
+            kind: "text".to_string(),
         },
         state,
         identity,

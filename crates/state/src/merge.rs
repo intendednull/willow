@@ -112,6 +112,7 @@ mod tests {
             kind: EventKind::CreateChannel {
                 name: format!("ch-{id}"),
                 channel_id: format!("chid-{id}"),
+                kind: "text".to_string(),
             },
         }
     }

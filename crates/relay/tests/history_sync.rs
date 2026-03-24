@@ -224,6 +224,7 @@ fn make_channel_event(id: &str, author: &str, channel_id: &str, name: &str) -> E
         kind: EventKind::CreateChannel {
             name: name.to_string(),
             channel_id: channel_id.to_string(),
+            kind: "text".to_string(),
         },
     }
 }
@@ -387,7 +388,7 @@ async fn relay_serves_history_to_new_peer() {
     let ch_evt = batch_events.iter().find(|e| e.id == "evt-ch-1").unwrap();
     assert!(matches!(
         &ch_evt.kind,
-        EventKind::CreateChannel { name, channel_id }
+        EventKind::CreateChannel { name, channel_id, .. }
         if name == "general" && channel_id == "ch-1"
     ));
 

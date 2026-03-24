@@ -120,6 +120,7 @@ mod tests {
             kind: willow_state::EventKind::CreateChannel {
                 name: "general".to_string(),
                 channel_id: "ch-1".to_string(),
+                kind: "text".to_string(),
             },
         };
 
@@ -172,6 +173,7 @@ mod tests {
                 kind: willow_state::EventKind::CreateChannel {
                     name: "ch1".to_string(),
                     channel_id: "cid1".to_string(),
+                    kind: "text".to_string(),
                 },
             },
             willow_state::Event {

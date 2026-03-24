@@ -374,6 +374,7 @@ async fn server_op_sync_between_peers() {
         Op::CreateChannel {
             name: "general".into(),
             channel_id: channel_id.clone(),
+            kind: "text".to_string(),
         },
         &mut hlc,
         &id_a.peer_id().to_string(),
@@ -420,6 +421,7 @@ async fn server_op_author_verified_against_signer() {
         Op::CreateChannel {
             name: "spoofed".into(),
             channel_id: uuid::Uuid::new_v4().to_string(),
+            kind: "text".to_string(),
         },
         &mut hlc,
         &id_impersonated.peer_id().to_string(), // wrong author
@@ -485,6 +487,7 @@ async fn sync_request_and_batch_over_network() {
         Op::CreateChannel {
             name: "from-batch".into(),
             channel_id: uuid::Uuid::new_v4().to_string(),
+            kind: "text".to_string(),
         },
         &mut hlc,
         &id_b.peer_id().to_string(),
@@ -666,6 +669,7 @@ async fn signed_server_op_tampered_rejected() {
         Op::CreateChannel {
             name: "tamper-test".into(),
             channel_id: uuid::Uuid::new_v4().to_string(),
+            kind: "text".to_string(),
         },
         &mut hlc,
         &id_a.peer_id().to_string(),
@@ -705,6 +709,7 @@ async fn multiple_ops_deduplicated() {
         Op::CreateChannel {
             name: "dedup-test".into(),
             channel_id: uuid::Uuid::new_v4().to_string(),
+            kind: "text".to_string(),
         },
         &mut hlc,
         &id_a.peer_id().to_string(),

@@ -208,6 +208,7 @@ mod tests {
                 id: "ch1".into(),
                 name: "general".into(),
                 pinned_messages: std::collections::HashSet::new(),
+                kind: "text".into(),
             },
         );
         assert_ne!(a.hash(), b.hash());

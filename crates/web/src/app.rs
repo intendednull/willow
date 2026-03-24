@@ -8,8 +8,7 @@ use willow_client::{Client, ClientConfig, ClientEvent, DisplayMessage, VoiceSign
 
 use crate::components::{
     AddServerPanel, ChannelHeader, ChatInput, FileShareButton, MemberList, MessageList,
-    PinnedPanel, ServerList, ServerSettingsPanel, SettingsPanel, Sidebar, VoiceControls,
-    WelcomeScreen,
+    PinnedPanel, ServerList, ServerSettingsPanel, SettingsPanel, Sidebar, WelcomeScreen,
 };
 use crate::voice::VoiceManager;
 
@@ -547,35 +546,20 @@ pub fn App() -> impl IntoView {
                                         match stream {
                                             Ok(s) => vm2.borrow_mut().set_local_stream(s),
                                             Err(e) => {
-                                                let _ = js_sys::eval(&format!(
-                                                    "console.error('Mic error: {}')",
-                                                    e
-                                                ));
+                                                tracing::error!("Mic error: {e}");
                                             }
                                         }
                                     });
                                 }
                             }
+                            voice_channel=voice_channel
+                            voice_channel_name=voice_channel_name
+                            voice_muted=voice_muted
+                            voice_deafened=voice_deafened
+                            on_voice_mute=Callback::new(on_mute)
+                            on_voice_deafen=Callback::new(on_deafen)
+                            on_voice_disconnect=Callback::new(on_disconnect)
                         />
-                        {move || {
-                            let on_mute = on_mute.clone();
-                            let on_deafen = on_deafen.clone();
-                            let on_disconnect = on_disconnect.clone();
-                            if voice_channel.get().is_some() {
-                                Some(view! {
-                                    <VoiceControls
-                                        channel_name=voice_channel_name
-                                        muted=voice_muted
-                                        deafened=voice_deafened
-                                        on_mute=on_mute
-                                        on_deafen=on_deafen
-                                        on_disconnect=on_disconnect
-                                    />
-                                })
-                            } else {
-                                None
-                            }
-                        }}
                         <div class="main-content">
                             {move || {
                                 let sc2 = sc.clone();

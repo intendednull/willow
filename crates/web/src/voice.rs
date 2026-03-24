@@ -136,6 +136,9 @@ impl VoiceManager {
                             audio.set_src_object(Some(&stream));
                             audio.set_autoplay(true);
                             let _ = audio.play();
+                            if let Some(body) = document.body() {
+                                let _ = body.append_child(&audio);
+                            }
                         }
                     }
                 }
