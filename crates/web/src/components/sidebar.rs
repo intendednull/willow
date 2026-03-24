@@ -13,6 +13,7 @@ pub fn Sidebar(
     unread: ReadSignal<HashMap<String, usize>>,
     connection_status: ReadSignal<String>,
     peer_count: ReadSignal<usize>,
+    server_name: ReadSignal<String>,
     client: ClientHandle,
     on_channel_click: impl Fn(String) + Send + Clone + 'static,
     on_settings_click: impl Fn(()) + Send + Clone + 'static,
@@ -51,7 +52,7 @@ pub fn Sidebar(
     view! {
         <div class=move || if open.get() { "sidebar open" } else { "sidebar" }>
             <div class="sidebar-header">
-                <span>"Willow"</span>
+                <span>{move || server_name.get()}</span>
                 <button
                     class="btn btn-sm server-gear-btn"
                     title="Server Settings"

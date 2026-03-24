@@ -75,6 +75,7 @@ pub fn App() -> impl IntoView {
     let (peer_id, set_peer_id) = signal(String::new());
     let (servers, set_servers) = signal(Vec::<(String, String)>::new());
     let (active_server_id, set_active_server_id) = signal(String::new());
+    let (active_server_name, set_active_server_name) = signal(String::new());
     let (unread, set_unread) = signal(HashMap::<String, usize>::new());
     let (connection_status, set_connection_status) = signal("connecting".to_string());
     let (replying_to, set_replying_to) = signal(Option::<ChatMessage>::None);
@@ -106,6 +107,7 @@ pub fn App() -> impl IntoView {
             if let Some(id) = c.active_server_id() {
                 set_active_server_id.set(id.to_string());
             }
+            set_active_server_name.set(c.active_server_name());
             let ch = c.state().chat.current_channel.clone();
             set_current_channel.set(ch.clone());
             set_messages.set(c.messages(&ch).into_iter().cloned().collect());
@@ -273,6 +275,7 @@ pub fn App() -> impl IntoView {
             .unwrap_or_else(|| "general".to_string());
         set_current_channel.set(first_ch.clone());
         set_messages.set(c.messages(&first_ch).into_iter().cloned().collect());
+        set_active_server_name.set(c.active_server_name());
         set_show_settings.set(false);
         set_show_add_server.set(false);
     };
@@ -371,6 +374,7 @@ pub fn App() -> impl IntoView {
                             unread=unread
                             connection_status=connection_status
                             peer_count=peer_count
+                            server_name=active_server_name
                             client=sbc
                             on_channel_click=ch_click
                             on_settings_click=move |_| {

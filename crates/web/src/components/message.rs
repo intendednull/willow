@@ -505,8 +505,7 @@ mod tests {
 
     #[test]
     fn extract_urls_multiple_urls() {
-        let (segments, images) =
-            extract_urls("a https://one.com b https://two.com/pic.png c");
+        let (segments, images) = extract_urls("a https://one.com b https://two.com/pic.png c");
         // Should have 5 segments: text, url, text, url, text
         assert_eq!(segments.len(), 5);
         assert!(segments[1].1);

@@ -971,6 +971,52 @@ impl Client {
     pub fn switch_server(&mut self, server_id: &str) {
         if self.state.servers.contains_key(server_id) {
             self.state.active_server = Some(server_id.to_string());
+            self.init_event_state_for_server(server_id);
+        }
+    }
+
+    /// Initialize (or re-initialize) the event-sourced state for a specific server.
+    /// Opens the event store and replays persisted events. If no events exist,
+    /// seeds channels from the legacy ServerContext.
+    fn init_event_state_for_server(&mut self, server_id: &str) {
+        let Some(ctx) = self.state.servers.get(server_id) else {
+            return;
+        };
+        let owner = ctx.server.owner.to_string();
+        self.state.event_state =
+            willow_state::ServerState::new(server_id, ctx.server.name.clone(), owner);
+
+        // Open persistent event store for this server.
+        if self.config.persistence {
+            if let Some(store) = storage::open_event_store(server_id) {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.state.event_store = state::PersistentEventStore::Sqlite(store);
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    self.state.event_store = state::PersistentEventStore::LocalStorage(store);
+                }
+            }
+        }
+
+        // Replay persisted events.
+        let stored_events = self.state.event_store.all_events();
+        if !stored_events.is_empty() {
+            for event in &stored_events {
+                willow_state::apply_lenient(&mut self.state.event_state, event);
+            }
+        } else {
+            // Seed event_state with channels from legacy storage.
+            for (name, ch_id) in ctx.topic_map.values() {
+                self.state.event_state.channels.insert(
+                    ch_id.to_string(),
+                    willow_state::Channel {
+                        id: ch_id.to_string(),
+                        name: name.clone(),
+                    },
+                );
+            }
         }
     }
 
@@ -1802,6 +1848,7 @@ impl Client {
         }
 
         self.state.active_server = Some(server_id.clone());
+        self.init_event_state_for_server(&server_id);
 
         if let Some((_, (name, _))) = accepted.channel_keys.iter().next() {
             self.state.chat.current_channel = name.clone();
