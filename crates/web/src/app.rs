@@ -532,27 +532,46 @@ pub fn App() -> impl IntoView {
                                 move |channel_name: String| {
                                     set_show_sidebar.set(false);
 
-                                    // Acquire microphone FIRST, then join (broadcast VoiceJoin).
-                                    // This ensures local audio tracks are ready before
-                                    // peers try to create offers with us.
+                                    // Request mic permission SYNCHRONOUSLY in the click handler
+                                    // to preserve the user gesture chain (required on mobile).
+                                    // getUserMedia returns a Promise — we call it here so the
+                                    // browser sees it as user-initiated, then handle the result.
+                                    let window = web_sys::window().unwrap();
+                                    let navigator = window.navigator();
+                                    let Ok(media_devices) = navigator.media_devices() else {
+                                        tracing::error!("No media devices available");
+                                        return;
+                                    };
+                                    let constraints = web_sys::MediaStreamConstraints::new();
+                                    constraints.set_audio(&true.into());
+                                    constraints.set_video(&false.into());
+                                    let Ok(promise) = media_devices.get_user_media_with_constraints(&constraints) else {
+                                        tracing::error!("getUserMedia failed");
+                                        return;
+                                    };
+
+                                    // Show controls immediately (optimistic).
+                                    set_voice_channel.set(Some(channel_name.clone()));
+                                    set_voice_channel_name.set(channel_name.clone());
+
+                                    // Handle the promise result asynchronously.
                                     let vc = vc_client.clone();
                                     let vm2 = vm.clone();
                                     let ch_name = channel_name.clone();
-                                    wasm_bindgen_futures::spawn_local(async move {
-                                        let stream = crate::voice::acquire_microphone_async().await;
-                                        match stream {
-                                            Ok(s) => {
-                                                vm2.borrow_mut().set_local_stream(s);
-                                                // Now join — mic is ready before peers see us.
-                                                vc.borrow_mut().join_voice(&ch_name);
-                                                set_voice_channel.set(Some(ch_name.clone()));
-                                                set_voice_channel_name.set(ch_name);
-                                            }
-                                            Err(e) => {
-                                                tracing::error!("Mic error: {e}");
-                                            }
-                                        }
+                                    let on_success = wasm_bindgen::closure::Closure::once(move |stream: wasm_bindgen::JsValue| {
+                                        use wasm_bindgen::JsCast;
+                                        let stream: web_sys::MediaStream = stream.unchecked_into();
+                                        vm2.borrow_mut().set_local_stream(stream);
+                                        vc.borrow_mut().join_voice(&ch_name);
                                     });
+                                    let on_error = wasm_bindgen::closure::Closure::once(move |_err: wasm_bindgen::JsValue| {
+                                        tracing::error!("Microphone access denied");
+                                        set_voice_channel.set(None);
+                                        set_voice_channel_name.set(String::new());
+                                    });
+                                    let _ = promise.then2(&on_success, &on_error);
+                                    on_success.forget();
+                                    on_error.forget();
                                 }
                             }
                             voice_channel=voice_channel
