@@ -3115,4 +3115,132 @@ mod tests {
         assert!(names_a.contains(&"alpha".to_string()));
         assert!(!names_a.contains(&"beta".to_string()));
     }
+
+    // ───── DisplayMessage computation tests ─────────────────────────────────
+
+    #[test]
+    fn messages_returns_display_messages_with_resolved_names() {
+        let (mut client, _rx) = test_client();
+        client.send_message("general", "hello").unwrap();
+
+        let msgs = client.messages("general");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].body, "hello");
+        assert!(!msgs[0].author_display_name.is_empty());
+        assert!(msgs[0].is_local);
+        assert!(!msgs[0].edited);
+        assert!(!msgs[0].deleted);
+    }
+
+    #[test]
+    fn messages_returns_empty_for_unknown_channel() {
+        let (client, _rx) = test_client();
+        let msgs = client.messages("nonexistent");
+        assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn display_message_reply_has_parent_id() {
+        let (mut client, _rx) = test_client();
+        client.send_message("general", "parent message").unwrap();
+        let parent_id = client.messages("general")[0].id.clone();
+
+        client
+            .send_reply("general", &parent_id, "reply body")
+            .unwrap();
+
+        let msgs = client.messages("general");
+        assert_eq!(msgs.len(), 2);
+        let reply = &msgs[1];
+        assert_eq!(reply.body, "reply body");
+        assert_eq!(reply.reply_to, Some(parent_id));
+        assert!(reply.reply_preview.is_some());
+        assert!(
+            reply
+                .reply_preview
+                .as_ref()
+                .unwrap()
+                .contains("parent message")
+        );
+    }
+
+    #[test]
+    fn display_message_is_local_false_for_remote() {
+        let (mut client, _rx) = test_client();
+
+        // Find the channel_id for "general" in event_state.
+        let channel_id = client
+            .state
+            .event_state
+            .channels
+            .values()
+            .find(|c| c.name == "general")
+            .unwrap()
+            .id
+            .clone();
+
+        // Manually insert a message from a "remote" peer into event_state.
+        let remote_event = willow_state::Event {
+            id: "remote-msg-1".to_string(),
+            parent_hash: client.state.event_state.hash(),
+            author: "remote-peer-id".to_string(),
+            timestamp_ms: 1000,
+            kind: willow_state::EventKind::Message {
+                channel_id,
+                body: "from remote".to_string(),
+                reply_to: None,
+            },
+        };
+        willow_state::apply_lenient(&mut client.state.event_state, &remote_event);
+
+        let msgs = client.messages("general");
+        let remote_msg = msgs.iter().find(|m| m.body == "from remote").unwrap();
+        assert!(!remote_msg.is_local);
+        assert_eq!(remote_msg.author_peer_id, "remote-peer-id");
+    }
+
+    #[test]
+    fn messages_sorted_by_timestamp() {
+        let (mut client, _rx) = test_client();
+        client.send_message("general", "first").unwrap();
+        client.send_message("general", "second").unwrap();
+        client.send_message("general", "third").unwrap();
+
+        let msgs = client.messages("general");
+        assert_eq!(msgs.len(), 3);
+        assert!(msgs[0].timestamp_ms <= msgs[1].timestamp_ms);
+        assert!(msgs[1].timestamp_ms <= msgs[2].timestamp_ms);
+    }
+
+    // ───── Typing indicator timeout test ────────────────────────────────────
+
+    #[test]
+    fn typing_in_expires_after_timeout() {
+        let (mut client, _rx) = test_client();
+
+        // Insert a typing entry with timestamp 0 (very old, > 5 seconds ago).
+        client
+            .typing_peers
+            .insert("peer-1".to_string(), ("general".to_string(), 0));
+
+        // Should be expired (> 5 seconds old).
+        let typers = client.typing_in("general");
+        assert!(typers.is_empty());
+    }
+
+    // ───── Pin persistence test ─────────────────────────────────────────────
+
+    #[test]
+    fn pin_reflected_in_pinned_messages() {
+        let (mut client, _rx) = test_client();
+        client.send_message("general", "pin this").unwrap();
+        let msg_id = client.messages("general")[0].id.clone();
+
+        client.pin_message("general", &msg_id).unwrap();
+
+        let pinned = client.pinned_messages("general");
+        assert_eq!(pinned.len(), 1);
+        assert_eq!(pinned[0].id, msg_id);
+        assert_eq!(pinned[0].body, "pin this");
+    }
 }
