@@ -530,21 +530,24 @@ pub fn App() -> impl IntoView {
                                 let vc_client = client.clone();
                                 let vm = voice_manager.clone();
                                 move |channel_name: String| {
-                                    // Join voice channel via client.
-                                    let mut c = vc_client.borrow_mut();
-                                    c.join_voice(&channel_name);
-                                    set_voice_channel.set(Some(channel_name.clone()));
-                                    set_voice_channel_name.set(channel_name);
                                     set_show_sidebar.set(false);
 
-                                    // Acquire microphone asynchronously.
+                                    // Acquire microphone FIRST, then join (broadcast VoiceJoin).
+                                    // This ensures local audio tracks are ready before
+                                    // peers try to create offers with us.
+                                    let vc = vc_client.clone();
                                     let vm2 = vm.clone();
+                                    let ch_name = channel_name.clone();
                                     wasm_bindgen_futures::spawn_local(async move {
-                                        // Use js_sys to call getUserMedia directly
-                                        // since VoiceManager::acquire_microphone holds RefCell across await.
                                         let stream = crate::voice::acquire_microphone_async().await;
                                         match stream {
-                                            Ok(s) => vm2.borrow_mut().set_local_stream(s),
+                                            Ok(s) => {
+                                                vm2.borrow_mut().set_local_stream(s);
+                                                // Now join — mic is ready before peers see us.
+                                                vc.borrow_mut().join_voice(&ch_name);
+                                                set_voice_channel.set(Some(ch_name.clone()));
+                                                set_voice_channel_name.set(ch_name);
+                                            }
                                             Err(e) => {
                                                 tracing::error!("Mic error: {e}");
                                             }
