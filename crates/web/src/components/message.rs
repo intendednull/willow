@@ -17,18 +17,25 @@ fn is_image_url(url: &str) -> bool {
 }
 
 /// Extract URLs from text. Returns (segments, image_urls).
-/// Segments alternate between plain text and URLs.
 fn extract_urls(text: &str) -> (Vec<(String, bool)>, Vec<String>) {
     let mut segments = Vec::new();
     let mut images = Vec::new();
     let mut last_end = 0;
 
-    for (start, _) in text
-        .match_indices("http://")
-        .chain(text.match_indices("https://"))
-    {
-        // Find end of URL (whitespace or end of string).
-        let url_start = start;
+    // Collect all URL start positions, sorted by position.
+    let mut url_starts: Vec<usize> = text
+        .match_indices("https://")
+        .chain(text.match_indices("http://"))
+        .map(|(i, _)| i)
+        .collect();
+    url_starts.sort_unstable();
+    url_starts.dedup();
+
+    for &url_start in &url_starts {
+        if url_start < last_end {
+            continue; // skip overlapping matches
+        }
+
         let rest = &text[url_start..];
         let url_end = rest
             .find(|c: char| c.is_whitespace() || c == '>' || c == ')' || c == ']')
@@ -36,7 +43,6 @@ fn extract_urls(text: &str) -> (Vec<(String, bool)>, Vec<String>) {
             .unwrap_or(text.len());
         let url = &text[url_start..url_end];
 
-        // Add preceding text.
         if url_start > last_end {
             segments.push((text[last_end..url_start].to_string(), false));
         }
@@ -49,7 +55,6 @@ fn extract_urls(text: &str) -> (Vec<(String, bool)>, Vec<String>) {
         last_end = url_end;
     }
 
-    // Remaining text.
     if last_end < text.len() {
         segments.push((text[last_end..].to_string(), false));
     }
