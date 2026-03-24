@@ -21,6 +21,7 @@ pub fn Sidebar(
 ) -> impl IntoView {
     let (creating, set_creating) = signal(false);
     let (new_name, set_new_name) = signal(String::new());
+    let (create_voice, set_create_voice) = signal(false);
 
     let client_create = client.clone();
     let on_create_submit = move || {
@@ -28,10 +29,15 @@ pub fn Sidebar(
         let name = name.trim().to_string();
         if !name.is_empty() {
             let mut c = client_create.borrow_mut();
-            let _ = c.create_channel(&name);
+            if create_voice.get_untracked() {
+                let _ = c.create_voice_channel(&name);
+            } else {
+                let _ = c.create_channel(&name);
+            }
         }
         set_new_name.set(String::new());
         set_creating.set(false);
+        set_create_voice.set(false);
     };
 
     let on_create_keydown = {
@@ -76,17 +82,22 @@ pub fn Sidebar(
                     if creating.get() {
                         Some(view! {
                             <div class="channel-create-input">
+                                <div class="channel-type-toggle">
+                                    <button
+                                        class=move || if !create_voice.get() { "type-btn active" } else { "type-btn" }
+                                        on:click=move |_| set_create_voice.set(false)
+                                    >"# Text"</button>
+                                    <button
+                                        class=move || if create_voice.get() { "type-btn active" } else { "type-btn" }
+                                        on:click=move |_| set_create_voice.set(true)
+                                    >"\u{1F50A} Voice"</button>
+                                </div>
                                 <input
                                     type="text"
-                                    placeholder="channel name"
+                                    placeholder=move || if create_voice.get() { "voice channel name" } else { "channel name" }
                                     prop:value=move || new_name.get()
                                     on:input=move |ev| set_new_name.set(event_target_value(&ev))
                                     on:keydown=on_create_keydown.clone()
-                                    on:blur=move |_| {
-                                        // Delay to allow click events to fire.
-                                        set_creating.set(false);
-                                        set_new_name.set(String::new());
-                                    }
                                 />
                             </div>
                         })
@@ -104,15 +115,28 @@ pub fn Sidebar(
                         let ch_click = channel.clone();
                         let ch_delete = channel.clone();
                         let ch_unread = channel.clone();
+                        let ch_kind = channel.clone();
                         let on_click = on_channel_click.clone();
                         let client_del = client.clone();
+                        let client_kind = client.clone();
                         let active = move || current_channel.get() == ch_active;
+
+                        // Check if this is a voice channel.
+                        let is_voice = {
+                            let c = client_kind.borrow();
+                            c.channel_kinds().iter().any(|(n, k)| n == &ch_kind && k == "voice")
+                        };
+                        let prefix = if is_voice { "\u{1F50A} " } else { "# " };
+
                         view! {
                             <div
-                                class=move || if active() { "channel-item active" } else { "channel-item" }
+                                class=move || {
+                                    let base = if is_voice { "channel-item voice-channel" } else { "channel-item" };
+                                    if active() { format!("{base} active") } else { base.to_string() }
+                                }
                                 on:click=move |_| on_click(ch_click.clone())
                             >
-                                <span>"# " {channel.clone()}</span>
+                                <span>{prefix} {channel.clone()}</span>
                                 <span class="channel-item-right">
                                     {
                                         let ch_u = ch_unread.clone();

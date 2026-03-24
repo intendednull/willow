@@ -257,6 +257,34 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     padding: 2px 12px 6px;
 }
 
+.channel-type-toggle {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 4px;
+}
+
+.type-btn {
+    flex: 1;
+    padding: 4px 8px;
+    font-size: 11px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.12s ease;
+}
+
+.type-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+}
+
+.type-btn:hover:not(.active) {
+    border-color: var(--text-muted);
+}
+
 .channel-create-input input {
     width: 100%;
     padding: 6px 10px;

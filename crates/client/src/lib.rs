@@ -1360,6 +1360,46 @@ impl Client {
         Ok(())
     }
 
+    /// Create a voice channel.
+    pub fn create_voice_channel(&mut self, name: &str) -> anyhow::Result<()> {
+        let ctx = self
+            .state
+            .active_mut()
+            .ok_or_else(|| anyhow::anyhow!("no active server"))?;
+
+        let ch_id = ctx
+            .server
+            .create_channel(name, willow_channel::ChannelKind::Voice)?;
+        let topic = util::make_topic(&ctx.server, name);
+
+        if let Some(key) = ctx.server.channel_key(&ch_id) {
+            ctx.keys.insert(topic.clone(), key.clone());
+        }
+        storage::save_server(&ctx.server, &ctx.keys);
+
+        let ch_id_str = ch_id.to_string();
+        ctx.topic_map
+            .insert(topic.clone(), (name.to_string(), ch_id));
+
+        let _ = self.cmd_tx.send(network::NetworkCommand::Subscribe(topic));
+
+        let peer_id_str = self.identity.peer_id().to_string();
+        let event = willow_state::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_hash: self.state.event_state.hash(),
+            author: peer_id_str,
+            timestamp_ms: util::current_time_ms(),
+            kind: willow_state::EventKind::CreateChannel {
+                name: name.to_string(),
+                channel_id: ch_id_str,
+            },
+        };
+        self.apply_event(&event);
+        self.broadcast_event(event, None);
+
+        Ok(())
+    }
+
     /// Delete a channel.
     pub fn delete_channel(&mut self, name: &str) -> anyhow::Result<()> {
         let ctx = self
