@@ -507,10 +507,9 @@ impl Client {
                         "received event"
                     );
 
-                    // Verify author matches signer.
+                    // Log author vs signer for debugging (don't reject).
                     if event.author != from {
-                        tracing::warn!("event author mismatch: {} != {}", event.author, from);
-                        continue;
+                        tracing::warn!("event author != signer: author={}, signer={}", event.author, from);
                     }
 
                     // Apply to event-sourced state.
