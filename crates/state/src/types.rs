@@ -15,6 +15,9 @@ pub struct Channel {
     pub id: String,
     /// Display name (e.g. "general").
     pub name: String,
+    /// IDs of pinned messages in this channel.
+    #[serde(default)]
+    pub pinned_messages: HashSet<String>,
 }
 
 /// A named bundle of permissions that can be assigned to members.

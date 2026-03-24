@@ -66,6 +66,14 @@ pub enum ClientEvent {
     ServerDescriptionChanged {
         description: String,
     },
+    MessagePinned {
+        channel: String,
+        message_id: String,
+    },
+    MessageUnpinned {
+        channel: String,
+        message_id: String,
+    },
 }
 
 /// Push notifications sent through the optional notification channel.

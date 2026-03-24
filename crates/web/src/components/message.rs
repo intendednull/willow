@@ -81,7 +81,7 @@ fn download_blob(data: &[u8], filename: &str) {
 }
 
 /// Extract URLs from text. Returns (segments, image_urls).
-fn extract_urls(text: &str) -> (Vec<(String, bool)>, Vec<String>) {
+pub(crate) fn extract_urls(text: &str) -> (Vec<(String, bool)>, Vec<String>) {
     let mut segments = Vec::new();
     let mut images = Vec::new();
     let mut last_end = 0;
@@ -196,6 +196,12 @@ pub fn MessageView(
     /// Callback fired when the user picks an emoji reaction (message, emoji).
     #[prop(optional, into)]
     on_react: Option<Callback<(ChatMessage, String)>>,
+    /// Callback fired when the user pins/unpins this message.
+    #[prop(optional, into)]
+    on_pin: Option<Callback<ChatMessage>>,
+    /// Label for the pin button ("Pin" or "Unpin").
+    #[prop(default = "Pin".to_string(), into)]
+    pin_label: String,
 ) -> impl IntoView {
     let author_class = if message.is_local {
         "author local"
@@ -225,6 +231,7 @@ pub fn MessageView(
     } else {
         "message grouped"
     };
+    let msg_dom_id = format!("msg-{}", message.id);
 
     // Signal controlling the dropdown menu visibility.
     let (show_dropdown, set_show_dropdown) = signal(false);
@@ -233,9 +240,10 @@ pub fn MessageView(
     // Determine whether to show any action buttons at all.
     let has_reply = on_click.is_some();
     let has_react = on_react.is_some();
+    let has_pin = on_pin.is_some();
     let has_edit = on_edit.is_some() && is_own && !message.deleted;
     let has_delete = on_delete.is_some() && is_own && !message.deleted;
-    let show_actions = has_reply || has_react || has_edit || has_delete;
+    let show_actions = has_reply || has_react || has_pin || has_edit || has_delete;
 
     // Check if this is a file message (for the download action).
     let file_info = parse_inline_file(&body);
@@ -246,6 +254,7 @@ pub fn MessageView(
     let msg_for_reply = message.clone();
     let msg_for_edit = message.clone();
     let msg_for_delete = message.clone();
+    let msg_for_pin = message.clone();
 
     // Clone on_react for use in the reactions display.
     let on_react_for_reactions = on_react;
@@ -300,6 +309,7 @@ pub fn MessageView(
     view! {
         <div
             class=msg_class
+            id=msg_dom_id
             style=move || {
                 let dx = swipe_x.get();
                 if dx > 0.0 {
@@ -388,6 +398,9 @@ pub fn MessageView(
                 let delete_cb = on_delete;
                 let delete_msg = msg_for_delete.clone();
                 let react_cb = on_react;
+                let pin_cb = on_pin;
+                let pin_msg = msg_for_pin.clone();
+                let pin_label_text = pin_label.clone();
                 let reply_cb = on_click;
                 let reply_msg = msg_for_reply.clone();
 
@@ -413,6 +426,23 @@ pub fn MessageView(
                                             }
                                             set_show_dropdown.set(false);
                                         }>"Reply"</button>
+                                    })
+                                } else {
+                                    None
+                                };
+
+                                let pin_view = if has_pin {
+                                    let cb = pin_cb;
+                                    let msg = pin_msg.clone();
+                                    let label = pin_label_text.clone();
+                                    Some(view! {
+                                        <button class="dropdown-item" on:click=move |ev| {
+                                            ev.stop_propagation();
+                                            if let Some(ref cb) = cb {
+                                                cb.run(msg.clone());
+                                            }
+                                            set_show_dropdown.set(false);
+                                        }>{label}</button>
                                     })
                                 } else {
                                     None
@@ -510,6 +540,7 @@ pub fn MessageView(
                                 Some(view! {
                                     <div class="message-dropdown">
                                         {reply_view}
+                                        {pin_view}
                                         {react_view}
                                         {edit_view}
                                         {delete_view}

@@ -10,6 +10,7 @@ pub fn ChannelHeader(
     peer_count: ReadSignal<usize>,
     on_menu_click: impl Fn(()) + Send + Clone + 'static,
     on_members_click: impl Fn(()) + Send + Clone + 'static,
+    #[prop(optional, into)] on_pinned_click: Option<Callback<()>>,
 ) -> impl IntoView {
     view! {
         <div class="channel-header">
@@ -18,6 +19,11 @@ pub fn ChannelHeader(
             </button>
             <span>"# " {move || channel.get()}</span>
             <span class="channel-header-right">
+                {on_pinned_click.map(|cb| view! {
+                    <button class="pinned-toggle" title="Pinned Messages" on:click=move |_| cb.run(())>
+                        "\u{1F4CC}"
+                    </button>
+                })}
                 <span class="peer-count">
                     {move || {
                         let n = peer_count.get();
@@ -60,6 +66,12 @@ pub fn MessageList(
     /// Callback fired when the user picks an emoji reaction.
     #[prop(optional, into)]
     on_react: Option<Callback<(ChatMessage, String)>>,
+    /// Callback fired when the user pins/unpins a message.
+    #[prop(optional, into)]
+    on_pin: Option<Callback<ChatMessage>>,
+    /// Signal mapping message IDs to pin labels ("Pin" or "Unpin").
+    #[prop(optional, into)]
+    pin_labels: Option<Signal<std::collections::HashMap<String, String>>>,
 ) -> impl IntoView {
     let list_ref = NodeRef::<leptos::html::Div>::new();
     let (show_scroll_btn, set_show_scroll_btn) = signal(false);
@@ -144,9 +156,12 @@ pub fn MessageList(
                         let on_ed = on_edit;
                         let on_del = on_delete;
                         let on_re = on_react;
+                        let on_pn = on_pin;
+                        let pn_labels = pin_labels;
                         let local_name = local_display_name
                             .map(|sig| sig.get())
                             .unwrap_or_default();
+                        let label_map = pn_labels.map(|s| s.get()).unwrap_or_default();
                         let views: Vec<_> = msgs.iter().enumerate().map(|(i, msg)| {
                             let show_header = if i == 0 {
                                 true
@@ -158,6 +173,10 @@ pub fn MessageList(
                             };
                             let m = msg.clone();
                             let is_own = msg.is_local || msg.author == local_name;
+                            let pin_label = label_map
+                                .get(&msg.id)
+                                .cloned()
+                                .unwrap_or_else(|| "Pin".to_string());
                             let mut builder = view! {
                                 <MessageView
                                     message=m
@@ -167,11 +186,12 @@ pub fn MessageList(
                             };
                             // We need to build with all props. Re-create to pass them.
                             let m2 = msg.clone();
-                            if on_click.is_some() || on_ed.is_some() || on_del.is_some() || on_re.is_some() {
+                            if on_click.is_some() || on_ed.is_some() || on_del.is_some() || on_re.is_some() || on_pn.is_some() {
                                 let click_cb = on_click;
                                 let ed_cb = on_ed;
                                 let del_cb = on_del;
                                 let re_cb = on_re;
+                                let pn_cb = on_pn;
                                 // Unfortunately we need to re-create the view
                                 // to pass all optional props. Using nested if/else
                                 // creates mismatched types, so use into_any().
@@ -184,6 +204,8 @@ pub fn MessageList(
                                         on_edit=ed_cb.unwrap_or_else(|| Callback::new(|_| {}))
                                         on_delete=del_cb.unwrap_or_else(|| Callback::new(|_| {}))
                                         on_react=re_cb.unwrap_or_else(|| Callback::new(|_| {}))
+                                        on_pin=pn_cb.unwrap_or_else(|| Callback::new(|_| {}))
+                                        pin_label=pin_label
                                     />
                                 };
                             }

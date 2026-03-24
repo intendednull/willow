@@ -207,6 +207,7 @@ mod tests {
             Channel {
                 id: "ch1".into(),
                 name: "general".into(),
+                pinned_messages: std::collections::HashSet::new(),
             },
         );
         assert_ne!(a.hash(), b.hash());

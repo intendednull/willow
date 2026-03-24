@@ -2066,3 +2066,87 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     word-break: break-all;
     user-select: all;
 }
+
+/* ── Pinned messages panel ─────────────────────────────────────── */
+
+.pinned-panel {
+    background: var(--bg-sidebar);
+    border-bottom: 1px solid var(--border);
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.pinned-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    background: var(--bg-sidebar);
+    z-index: 1;
+}
+
+.pinned-header h3 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    margin: 0;
+}
+
+.pinned-list {
+    padding: 8px;
+}
+
+.pinned-item {
+    background: var(--bg-main);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+}
+
+.pinned-meta {
+    margin-bottom: 4px;
+}
+
+.pinned-author {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--author-local);
+}
+
+.pinned-body {
+    font-size: 13px;
+    line-height: 1.4;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+    max-height: 80px;
+    overflow: hidden;
+}
+
+.pinned-body .message-link {
+    color: var(--accent);
+}
+
+.pinned-jump {
+    font-size: 11px;
+}
+
+.pinned-toggle {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 16px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+    transition: color 0.15s ease;
+}
+
+.pinned-toggle:hover {
+    color: var(--text-primary);
+    background: var(--bg-input);
+}

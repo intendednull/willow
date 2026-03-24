@@ -2284,3 +2284,175 @@ fn state_verification_round_trip_serialization() {
         EventKind::StateVerification { ref state_hash } if *state_hash == StateHash::from_bytes(b"test")
     ));
 }
+
+// ── Pin / Unpin ────────────────────────────────────────────────────────
+
+#[test]
+fn pin_message_adds_to_channel() {
+    let mut state = test_state();
+
+    // Create a channel.
+    let e1 = event(
+        &state,
+        "e1",
+        "owner",
+        EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: "ch1".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &e1), ApplyResult::Applied);
+
+    // Send a message.
+    let e2 = event(
+        &state,
+        "e2",
+        "owner",
+        EventKind::Message {
+            channel_id: "ch1".into(),
+            body: "hello".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &e2), ApplyResult::Applied);
+
+    // Pin the message.
+    let e3 = event(
+        &state,
+        "e3",
+        "owner",
+        EventKind::PinMessage {
+            channel_id: "ch1".into(),
+            message_id: "e2".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &e3), ApplyResult::Applied);
+
+    let ch = state.channels.get("ch1").unwrap();
+    assert!(ch.pinned_messages.contains("e2"));
+    assert_eq!(ch.pinned_messages.len(), 1);
+}
+
+#[test]
+fn unpin_message_removes_from_channel() {
+    let mut state = test_state();
+
+    let e1 = event(
+        &state,
+        "e1",
+        "owner",
+        EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: "ch1".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &e1), ApplyResult::Applied);
+
+    let e2 = event(
+        &state,
+        "e2",
+        "owner",
+        EventKind::Message {
+            channel_id: "ch1".into(),
+            body: "hello".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &e2), ApplyResult::Applied);
+
+    // Pin.
+    let e3 = event(
+        &state,
+        "e3",
+        "owner",
+        EventKind::PinMessage {
+            channel_id: "ch1".into(),
+            message_id: "e2".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &e3), ApplyResult::Applied);
+    assert!(state
+        .channels
+        .get("ch1")
+        .unwrap()
+        .pinned_messages
+        .contains("e2"));
+
+    // Unpin.
+    let e4 = event(
+        &state,
+        "e4",
+        "owner",
+        EventKind::UnpinMessage {
+            channel_id: "ch1".into(),
+            message_id: "e2".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &e4), ApplyResult::Applied);
+    assert!(!state
+        .channels
+        .get("ch1")
+        .unwrap()
+        .pinned_messages
+        .contains("e2"));
+    assert!(state
+        .channels
+        .get("ch1")
+        .unwrap()
+        .pinned_messages
+        .is_empty());
+}
+
+#[test]
+fn pin_duplicate_is_idempotent() {
+    let mut state = test_state();
+
+    let e1 = event(
+        &state,
+        "e1",
+        "owner",
+        EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: "ch1".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &e1), ApplyResult::Applied);
+
+    let e2 = event(
+        &state,
+        "e2",
+        "owner",
+        EventKind::Message {
+            channel_id: "ch1".into(),
+            body: "hello".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &e2), ApplyResult::Applied);
+
+    // Pin the message.
+    let e3 = event(
+        &state,
+        "e3",
+        "owner",
+        EventKind::PinMessage {
+            channel_id: "ch1".into(),
+            message_id: "e2".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &e3), ApplyResult::Applied);
+
+    // Pin the same message again (different event ID, same message_id).
+    let e4 = event(
+        &state,
+        "e4",
+        "owner",
+        EventKind::PinMessage {
+            channel_id: "ch1".into(),
+            message_id: "e2".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &e4), ApplyResult::Applied);
+
+    // Should still only have one entry (HashSet deduplication).
+    let ch = state.channels.get("ch1").unwrap();
+    assert_eq!(ch.pinned_messages.len(), 1);
+    assert!(ch.pinned_messages.contains("e2"));
+}

@@ -7,8 +7,8 @@ use send_wrapper::SendWrapper;
 use willow_client::{ChatMessage, Client, ClientConfig, ClientEvent};
 
 use crate::components::{
-    AddServerPanel, ChannelHeader, ChatInput, FileShareButton, MemberList, MessageList, ServerList,
-    ServerSettingsPanel, SettingsPanel, Sidebar, WelcomeScreen,
+    AddServerPanel, ChannelHeader, ChatInput, FileShareButton, MemberList, MessageList,
+    PinnedPanel, ServerList, ServerSettingsPanel, SettingsPanel, Sidebar, WelcomeScreen,
 };
 
 fn play_notification_sound() {
@@ -84,6 +84,9 @@ pub fn App() -> impl IntoView {
     let (display_name, set_display_name) = signal(String::new());
     let (roles, set_roles) = signal(Vec::<(String, String, Vec<String>)>::new());
     let (typing_names, set_typing_names) = signal(Vec::<String>::new());
+    let (show_pinned, set_show_pinned) = signal(false);
+    let (pinned_messages, set_pinned_messages) = signal(Vec::<ChatMessage>::new());
+    let (pin_labels, set_pin_labels) = signal(HashMap::<String, String>::new());
 
     // Auto-clear loading after LOADING_TIMEOUT_MS even if no peer connects.
     set_timeout(
@@ -193,6 +196,18 @@ pub fn App() -> impl IntoView {
             if needs_msg_refresh {
                 let ch = current_channel.get_untracked();
                 set_messages.set(c.messages(&ch).into_iter().cloned().collect());
+                // Refresh pinned messages and labels.
+                set_pinned_messages.set(c.pinned_messages(&ch).into_iter().cloned().collect());
+                let mut labels = HashMap::new();
+                for msg in c.messages(&ch) {
+                    let label = if c.is_pinned(&ch, &msg.id) {
+                        "Unpin"
+                    } else {
+                        "Pin"
+                    };
+                    labels.insert(msg.id.clone(), label.to_string());
+                }
+                set_pin_labels.set(labels);
                 // Update unread counts from the active server.
                 let mut unread_map = HashMap::new();
                 if let Some(ctx) = c.state().active() {
@@ -237,9 +252,24 @@ pub fn App() -> impl IntoView {
     let on_channel_click = move |name: String| {
         set_current_channel.set(name.clone());
         set_show_sidebar.set(false); // close sidebar on mobile
+        set_show_pinned.set(false); // close pinned panel on channel switch
+        let c = client_switch.borrow();
+        // Use immutable borrow first for reads.
+        set_messages.set(c.messages(&name).into_iter().cloned().collect());
+        set_pinned_messages.set(c.pinned_messages(&name).into_iter().cloned().collect());
+        let mut labels = HashMap::new();
+        for msg in c.messages(&name) {
+            let label = if c.is_pinned(&name, &msg.id) {
+                "Unpin"
+            } else {
+                "Pin"
+            };
+            labels.insert(msg.id.clone(), label.to_string());
+        }
+        set_pin_labels.set(labels);
+        drop(c);
         let mut c = client_switch.borrow_mut();
         c.switch_channel(&name);
-        set_messages.set(c.messages(&name).into_iter().cloned().collect());
         // Clear unread for this channel.
         set_unread.update(|m| {
             m.remove(&name);
@@ -314,6 +344,7 @@ pub fn App() -> impl IntoView {
     let file_client = client.clone();
     let member_client = client.clone();
     let typing_client = client.clone();
+    let pin_client = client.clone();
 
     // Welcome screen callback that refreshes all signals.
     let welcome_client = client.clone();
@@ -343,6 +374,7 @@ pub fn App() -> impl IntoView {
                 let sbc = sidebar_client.clone();
                 let mc = member_client.clone();
                 let tc = typing_client.clone();
+                let pc = pin_client.clone();
                 let ch_click = on_channel_click.clone();
                 let srv_click = on_server_click.clone();
                 let send = on_send.clone();
@@ -421,6 +453,7 @@ pub fn App() -> impl IntoView {
                                     } /> }.into_any()
                                 } else {
                                     let fc2 = fc.clone();
+                                    let pc2 = pc.clone();
                                     let send2 = send.clone();
                                     let edit_send2 = edit_send.clone();
                                     let del_msg2 = del_msg.clone();
@@ -429,6 +462,22 @@ pub fn App() -> impl IntoView {
                                     let on_typing_cb = Callback::new(move |_: ()| {
                                         tc2.borrow_mut().send_typing();
                                     });
+                                    let on_pin_cb = Callback::new(move |msg: ChatMessage| {
+                                        let ch = current_channel.get_untracked();
+                                        let mut c = pc2.borrow_mut();
+                                        if c.is_pinned(&ch, &msg.id) {
+                                            let _ = c.unpin_message(&ch, &msg.id);
+                                        } else {
+                                            let _ = c.pin_message(&ch, &msg.id);
+                                        }
+                                        set_pinned_messages.set(c.pinned_messages(&ch).into_iter().cloned().collect());
+                                        let mut labels = HashMap::new();
+                                        for m in c.messages(&ch) {
+                                            let label = if c.is_pinned(&ch, &m.id) { "Unpin" } else { "Pin" };
+                                            labels.insert(m.id.clone(), label.to_string());
+                                        }
+                                        set_pin_labels.set(labels);
+                                    });
                                     view! {
                                         <div class="chat-container">
                                             <ChannelHeader
@@ -436,7 +485,27 @@ pub fn App() -> impl IntoView {
                                                 peer_count=peer_count
                                                 on_menu_click=move |_| set_show_sidebar.update(|v| *v = !*v)
                                                 on_members_click=move |_| set_show_members.update(|v| *v = !*v)
+                                                on_pinned_click=Callback::new(move |_| set_show_pinned.update(|v| *v = !*v))
                                             />
+                                            {move || {
+                                                if show_pinned.get() {
+                                                    Some(view! {
+                                                        <PinnedPanel
+                                                            messages=pinned_messages
+                                                            on_jump=move |msg_id: String| {
+                                                                let _ = js_sys::eval(&format!(
+                                                                    "document.getElementById('msg-{}')?.scrollIntoView({{behavior:'smooth',block:'center'}})",
+                                                                    msg_id.replace('\'', "")
+                                                                ));
+                                                                set_show_pinned.set(false);
+                                                            }
+                                                            on_close=move |_| set_show_pinned.set(false)
+                                                        />
+                                                    })
+                                                } else {
+                                                    None
+                                                }
+                                            }}
                                             <MessageList
                                                 messages=messages
                                                 loading=Signal::from(loading)
@@ -449,6 +518,8 @@ pub fn App() -> impl IntoView {
                                                 })
                                                 on_delete=Callback::new(del_msg2)
                                                 on_react=Callback::new(react2)
+                                                on_pin=on_pin_cb
+                                                pin_labels=Signal::from(pin_labels)
                                             />
                                             <div class="typing-indicator">
                                                 {move || {

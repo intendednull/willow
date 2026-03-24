@@ -190,6 +190,22 @@ pub enum EventKind {
         encrypted_keys: Vec<(String, Vec<u8>)>,
     },
 
+    // -- Pinning --
+    /// Pin a message in a channel.
+    PinMessage {
+        /// The channel ID containing the message.
+        channel_id: String,
+        /// The message ID to pin.
+        message_id: String,
+    },
+    /// Unpin a message in a channel.
+    UnpinMessage {
+        /// The channel ID containing the message.
+        channel_id: String,
+        /// The message ID to unpin.
+        message_id: String,
+    },
+
     // -- Server metadata --
     /// Rename the server. Only the owner can do this.
     RenameServer {
@@ -286,6 +302,8 @@ fn apply_inner(state: &mut ServerState, event: &Event) -> ApplyResult {
         | EventKind::Reaction { .. }
         | EventKind::SetProfile { .. }
         | EventKind::RotateChannelKey { .. }
+        | EventKind::PinMessage { .. }
+        | EventKind::UnpinMessage { .. }
         | EventKind::RenameServer { .. }
         | EventKind::SetServerDescription { .. }
         | EventKind::StateVerification { .. } => None,
@@ -314,6 +332,7 @@ fn apply_inner(state: &mut ServerState, event: &Event) -> ApplyResult {
                     Channel {
                         id: channel_id.clone(),
                         name: name.clone(),
+                        pinned_messages: std::collections::HashSet::new(),
                     },
                 );
             }
@@ -505,6 +524,24 @@ fn apply_inner(state: &mut ServerState, event: &Event) -> ApplyResult {
                 ));
             }
             state.description = description.clone();
+        }
+
+        EventKind::PinMessage {
+            channel_id,
+            message_id,
+        } => {
+            if let Some(ch) = state.channels.get_mut(channel_id) {
+                ch.pinned_messages.insert(message_id.clone());
+            }
+        }
+
+        EventKind::UnpinMessage {
+            channel_id,
+            message_id,
+        } => {
+            if let Some(ch) = state.channels.get_mut(channel_id) {
+                ch.pinned_messages.remove(message_id);
+            }
         }
 
         EventKind::StateVerification { .. } => {

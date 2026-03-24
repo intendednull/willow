@@ -186,6 +186,8 @@ pub struct ChatState {
     pub messages_dirty: bool,
     /// Seen message/op IDs for deduplication.
     pub seen_message_ids: std::collections::HashSet<String>,
+    /// Pinned message IDs per channel name.
+    pub pinned: HashMap<String, Vec<String>>,
 }
 
 impl Default for ChatState {
@@ -197,6 +199,7 @@ impl Default for ChatState {
             hlc: HLC::new(),
             messages_dirty: true,
             seen_message_ids: std::collections::HashSet::new(),
+            pinned: HashMap::new(),
         }
     }
 }

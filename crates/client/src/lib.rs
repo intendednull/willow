@@ -250,6 +250,7 @@ impl Client {
                             willow_state::Channel {
                                 id: ch_id.to_string(),
                                 name: name.clone(),
+                                pinned_messages: std::collections::HashSet::new(),
                             },
                         );
                     }
@@ -949,6 +950,38 @@ impl Client {
                     description: description.clone(),
                 });
             }
+            willow_state::EventKind::PinMessage {
+                channel_id,
+                message_id,
+            } => {
+                let channel = self
+                    .state
+                    .event_state
+                    .channels
+                    .get(channel_id)
+                    .map(|ch| ch.name.clone())
+                    .unwrap_or_else(|| channel_id.clone());
+                events.push(ClientEvent::MessagePinned {
+                    channel,
+                    message_id: message_id.clone(),
+                });
+            }
+            willow_state::EventKind::UnpinMessage {
+                channel_id,
+                message_id,
+            } => {
+                let channel = self
+                    .state
+                    .event_state
+                    .channels
+                    .get(channel_id)
+                    .map(|ch| ch.name.clone())
+                    .unwrap_or_else(|| channel_id.clone());
+                events.push(ClientEvent::MessageUnpinned {
+                    channel,
+                    message_id: message_id.clone(),
+                });
+            }
             willow_state::EventKind::StateVerification { state_hash } => {
                 let our_hash = self.state.event_state.hash();
                 self.state_verification_results
@@ -1014,6 +1047,7 @@ impl Client {
                     willow_state::Channel {
                         id: ch_id.to_string(),
                         name: name.clone(),
+                        pinned_messages: std::collections::HashSet::new(),
                     },
                 );
             }
@@ -1373,6 +1407,151 @@ impl Client {
         }
 
         Ok(())
+    }
+
+    /// Pin a message in a channel.
+    ///
+    /// Creates a `PinMessage` event in the event-sourced state and broadcasts
+    /// it to peers. Also updates the legacy in-memory pinned list for backward
+    /// compatibility.
+    pub fn pin_message(&mut self, channel: &str, message_id: &str) -> anyhow::Result<()> {
+        let channel_id = self.resolve_channel_id(channel)?;
+        let peer_id = self.identity.peer_id().to_string();
+        let event = willow_state::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_hash: self.state.event_state.hash(),
+            author: peer_id,
+            timestamp_ms: util::current_time_ms(),
+            kind: willow_state::EventKind::PinMessage {
+                channel_id,
+                message_id: message_id.to_string(),
+            },
+        };
+        self.apply_event(&event);
+        self.broadcast_event(event, None);
+
+        // Also update legacy pinned list for backward compat.
+        let pinned = self
+            .state
+            .chat
+            .pinned
+            .entry(channel.to_string())
+            .or_default();
+        if !pinned.contains(&message_id.to_string()) {
+            pinned.push(message_id.to_string());
+        }
+        Ok(())
+    }
+
+    /// Unpin a message from a channel.
+    ///
+    /// Creates an `UnpinMessage` event in the event-sourced state and
+    /// broadcasts it to peers. Also updates the legacy in-memory pinned list.
+    pub fn unpin_message(&mut self, channel: &str, message_id: &str) -> anyhow::Result<()> {
+        let channel_id = self.resolve_channel_id(channel)?;
+        let peer_id = self.identity.peer_id().to_string();
+        let event = willow_state::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_hash: self.state.event_state.hash(),
+            author: peer_id,
+            timestamp_ms: util::current_time_ms(),
+            kind: willow_state::EventKind::UnpinMessage {
+                channel_id,
+                message_id: message_id.to_string(),
+            },
+        };
+        self.apply_event(&event);
+        self.broadcast_event(event, None);
+
+        // Also update legacy pinned list for backward compat.
+        if let Some(pinned) = self.state.chat.pinned.get_mut(channel) {
+            pinned.retain(|id| id != message_id);
+        }
+        Ok(())
+    }
+
+    /// Get pinned message IDs for a channel from the event-sourced state.
+    ///
+    /// Returns a sorted `Vec` of message IDs that are pinned in the channel.
+    pub fn pinned_message_ids(&self, channel: &str) -> Vec<String> {
+        let channel_id = self
+            .state
+            .active()
+            .and_then(|ctx| {
+                ctx.topic_map
+                    .values()
+                    .find(|(n, _)| n == channel)
+                    .map(|(_, cid)| cid.to_string())
+            })
+            .unwrap_or_default();
+
+        self.state
+            .event_state
+            .channels
+            .get(&channel_id)
+            .map(|ch| {
+                let mut ids: Vec<String> = ch.pinned_messages.iter().cloned().collect();
+                ids.sort();
+                ids
+            })
+            .unwrap_or_default()
+    }
+
+    /// Get pinned messages for a channel.
+    ///
+    /// Returns messages whose IDs are in the event-sourced pinned set,
+    /// falling back to the legacy in-memory list if the event-sourced
+    /// state has no pinned messages.
+    pub fn pinned_messages(&self, channel: &str) -> Vec<&ChatMessage> {
+        let pinned_ids = self.pinned_message_ids(channel);
+        if !pinned_ids.is_empty() {
+            let pinned_set: std::collections::HashSet<&str> =
+                pinned_ids.iter().map(|s| s.as_str()).collect();
+            return self
+                .messages(channel)
+                .into_iter()
+                .filter(|m| pinned_set.contains(m.id.as_str()))
+                .collect();
+        }
+
+        // Fall back to legacy pinned list.
+        let Some(legacy_ids) = self.state.chat.pinned.get(channel) else {
+            return vec![];
+        };
+        self.state
+            .chat
+            .messages
+            .iter()
+            .filter(|m| legacy_ids.contains(&m.id))
+            .collect()
+    }
+
+    /// Check if a message is pinned in a channel.
+    pub fn is_pinned(&self, channel: &str, message_id: &str) -> bool {
+        let pinned_ids = self.pinned_message_ids(channel);
+        if !pinned_ids.is_empty() {
+            return pinned_ids.iter().any(|id| id == message_id);
+        }
+        // Fall back to legacy.
+        self.state
+            .chat
+            .pinned
+            .get(channel)
+            .map(|ids| ids.contains(&message_id.to_string()))
+            .unwrap_or(false)
+    }
+
+    /// Resolve a channel name to its channel ID via the active server context.
+    fn resolve_channel_id(&self, channel: &str) -> anyhow::Result<String> {
+        let ctx = self
+            .state
+            .active()
+            .ok_or_else(|| anyhow::anyhow!("no active server"))?;
+        ctx.topic_map
+            .values()
+            .find(|(n, _)| n == channel)
+            .map(|(_, cid)| cid.to_string())
+            .ok_or_else(|| anyhow::anyhow!("channel not found: {}", channel))
     }
 
     /// Create a new channel.
@@ -2395,7 +2574,28 @@ pub(crate) fn test_client() -> (Client, std::sync::mpsc::Receiver<network::Netwo
     // Initialize event_state with the server's owner (the local identity),
     // mirroring what Client::new() does.
     state.event_state =
-        willow_state::ServerState::new(server_id, "Test Server", identity.peer_id().to_string());
+        willow_state::ServerState::new(&server_id, "Test Server", identity.peer_id().to_string());
+
+    // Seed event_state with the general channel so event-sourced operations
+    // (e.g. pin/unpin) can find the channel.
+    let ch_id_str = state
+        .servers
+        .get(&server_id)
+        .and_then(|ctx| {
+            ctx.topic_map
+                .values()
+                .find(|(n, _)| n == "general")
+                .map(|(_, cid)| cid.to_string())
+        })
+        .unwrap_or_default();
+    state.event_state.channels.insert(
+        ch_id_str.clone(),
+        willow_state::Channel {
+            id: ch_id_str,
+            name: "general".to_string(),
+            pinned_messages: std::collections::HashSet::new(),
+        },
+    );
 
     let client = Client {
         state,
@@ -3150,6 +3350,7 @@ mod tests {
         // Manually clear all servers to simulate no-server state.
         client.state.servers.clear();
         client.state.active_server = None;
+        client.state.event_state.channels.clear();
 
         let channels = client.channels();
         assert!(channels.is_empty());
@@ -3646,5 +3847,52 @@ mod tests {
         // Message count should be the same (no duplicates).
         let msg_count_after = client.messages("general").len();
         assert_eq!(msg_count_before, msg_count_after);
+    }
+
+    #[test]
+    fn pin_and_unpin_message() {
+        let (mut client, _rx) = test_client();
+        client.send_message("general", "hello world").unwrap();
+
+        let msgs = client.messages("general");
+        assert_eq!(msgs.len(), 1);
+        let msg_id = msgs[0].id.clone();
+
+        // Pin.
+        client.pin_message("general", &msg_id).unwrap();
+        let pinned_ids = client.pinned_message_ids("general");
+        assert_eq!(pinned_ids.len(), 1);
+        assert_eq!(pinned_ids[0], msg_id);
+        assert!(client.is_pinned("general", &msg_id));
+
+        // Unpin.
+        client.unpin_message("general", &msg_id).unwrap();
+        let pinned_ids = client.pinned_message_ids("general");
+        assert!(pinned_ids.is_empty());
+        assert!(!client.is_pinned("general", &msg_id));
+    }
+
+    #[test]
+    fn pinned_messages_returns_pinned_only() {
+        let (mut client, _rx) = test_client();
+        client.send_message("general", "first").unwrap();
+        client.send_message("general", "second").unwrap();
+        client.send_message("general", "third").unwrap();
+
+        let msgs = client.messages("general");
+        assert_eq!(msgs.len(), 3);
+        let first_id = msgs[0].id.clone();
+        let third_id = msgs[2].id.clone();
+
+        // Pin only first and third.
+        client.pin_message("general", &first_id).unwrap();
+        client.pin_message("general", &third_id).unwrap();
+
+        let pinned = client.pinned_messages("general");
+        assert_eq!(pinned.len(), 2);
+        let pinned_bodies: Vec<&str> = pinned.iter().map(|m| m.body.as_str()).collect();
+        assert!(pinned_bodies.contains(&"first"));
+        assert!(pinned_bodies.contains(&"third"));
+        assert!(!pinned_bodies.contains(&"second"));
     }
 }

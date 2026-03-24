@@ -73,6 +73,10 @@ pub fn event_to_op(event: &Event) -> Option<Op> {
             // convert them here.
             None
         }
+        EventKind::PinMessage { .. } | EventKind::UnpinMessage { .. } => {
+            // No legacy Op equivalent — pin/unpin is event-sourced only.
+            None
+        }
         EventKind::RenameChannel { .. }
         | EventKind::RotateChannelKey { .. }
         | EventKind::RenameServer { .. }
