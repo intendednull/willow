@@ -479,6 +479,15 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     border-left-color: var(--accent);
 }
 
+.message.mentioned {
+    background: rgba(88, 101, 242, 0.08);
+    border-left-color: var(--accent);
+}
+
+.message.mentioned:hover {
+    background: rgba(88, 101, 242, 0.12);
+}
+
 .message .meta {
     display: flex;
     align-items: baseline;

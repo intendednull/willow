@@ -173,6 +173,13 @@ pub fn MessageList(
                             };
                             let m = msg.clone();
                             let is_own = msg.is_local || msg.author == local_name;
+                            // Check if this is a reply targeting the local user.
+                            let is_mention = !is_own
+                                && msg
+                                    .reply_preview
+                                    .as_ref()
+                                    .map(|p| p.starts_with(&format!("{local_name}:")))
+                                    .unwrap_or(false);
                             let pin_label = label_map
                                 .get(&msg.id)
                                 .cloned()
@@ -182,6 +189,7 @@ pub fn MessageList(
                                     message=m
                                     show_header=show_header
                                     is_own=is_own
+                                    is_mention=is_mention
                                 />
                             };
                             // We need to build with all props. Re-create to pass them.
@@ -200,6 +208,7 @@ pub fn MessageList(
                                         message=m2
                                         show_header=show_header
                                         is_own=is_own
+                                        is_mention=is_mention
                                         on_click=click_cb.unwrap_or_else(|| Callback::new(|_| {}))
                                         on_edit=ed_cb.unwrap_or_else(|| Callback::new(|_| {}))
                                         on_delete=del_cb.unwrap_or_else(|| Callback::new(|_| {}))

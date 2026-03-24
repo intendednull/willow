@@ -201,6 +201,9 @@ pub fn MessageView(
     /// Label for the pin button ("Pin" or "Unpin").
     #[prop(default = "Pin".to_string(), into)]
     pin_label: String,
+    /// Whether this message is a reply to the local user (highlights it).
+    #[prop(default = false)]
+    is_mention: bool,
 ) -> impl IntoView {
     let author_class = if message.is_local {
         "author local"
@@ -225,10 +228,11 @@ pub fn MessageView(
         .collect();
     let has_reactions = !reactions.is_empty();
 
-    let msg_class = if show_header {
-        "message"
-    } else {
-        "message grouped"
+    let msg_class = match (show_header, is_mention) {
+        (true, true) => "message mentioned",
+        (true, false) => "message",
+        (false, true) => "message grouped mentioned",
+        (false, false) => "message grouped",
     };
     let msg_dom_id = format!("msg-{}", message.id);
 

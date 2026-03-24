@@ -512,9 +512,12 @@ pub fn App() -> impl IntoView {
                                                 local_display_name={let s: Signal<String> = Signal::from(display_name); s}
                                                 on_message_click=Callback::new(move |msg: ChatMessage| {
                                                     set_replying_to.set(Some(msg));
+                                                    // Auto-focus the input field so keyboard opens on mobile.
+                                                    let _ = js_sys::eval("setTimeout(function(){var i=document.querySelector('.input-area input,.input-area textarea');if(i)i.focus();},50)");
                                                 })
                                                 on_edit=Callback::new(move |msg: ChatMessage| {
                                                     set_editing.set(Some(msg));
+                                                    let _ = js_sys::eval("setTimeout(function(){var i=document.querySelector('.input-area input,.input-area textarea');if(i)i.focus();},50)");
                                                 })
                                                 on_delete=Callback::new(del_msg2)
                                                 on_react=Callback::new(react2)
