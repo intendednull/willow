@@ -1,5 +1,4 @@
 use leptos::prelude::*;
-use send_wrapper::SendWrapper;
 use willow_client::ChatMessage;
 
 use super::file_share::{parse_inline_file, FileCard};
@@ -259,92 +258,10 @@ pub fn MessageView(
     // Clone on_react for use in the reactions display.
     let on_react_for_reactions = on_react;
 
-    // Swipe-to-reply state (mobile).
-    // Only engages if horizontal movement exceeds vertical (not scrolling).
-    let (swipe_x, set_swipe_x) = signal(0.0f64);
-    let (swiping, set_swiping) = signal(false);
-    let (swipe_locked, set_swipe_locked) = signal(false); // true = scrolling, ignore swipe
-    let touch_start_x = std::cell::Cell::new(0.0f64);
-    let touch_start_y = std::cell::Cell::new(0.0f64);
-    let touch_start_x = SendWrapper::new(touch_start_x);
-    let touch_start_y = SendWrapper::new(touch_start_y);
-    let msg_for_swipe = message.clone();
-    let reply_cb_swipe = on_click;
-
-    let on_touchstart = {
-        let tsx = touch_start_x.clone();
-        let tsy = touch_start_y.clone();
-        move |ev: web_sys::TouchEvent| {
-            if let Some(touch) = ev.touches().get(0) {
-                tsx.set(touch.client_x() as f64);
-                tsy.set(touch.client_y() as f64);
-                set_swiping.set(true);
-                set_swipe_locked.set(false);
-                set_swipe_x.set(0.0);
-            }
-        }
-    };
-
-    let on_touchmove = {
-        let tsx = touch_start_x.clone();
-        let tsy = touch_start_y.clone();
-        move |ev: web_sys::TouchEvent| {
-            if !swiping.get_untracked() || swipe_locked.get_untracked() {
-                return;
-            }
-            if let Some(touch) = ev.touches().get(0) {
-                let dx = (touch.client_x() as f64) - tsx.get();
-                let dy = (touch.client_y() as f64) - tsy.get();
-
-                // Wait for enough movement to decide direction.
-                // Only lock out swipe if clearly scrolling (vertical > 2x horizontal).
-                if swipe_x.get_untracked() == 0.0 && dy.abs() > 15.0 && dy.abs() > dx.abs() * 2.0 {
-                    set_swipe_locked.set(true);
-                    return;
-                }
-
-                // Don't start swiping until horizontal exceeds a minimum threshold.
-                if dx < 10.0 {
-                    return;
-                }
-
-                // Only allow right swipe, cap at 80px.
-                set_swipe_x.set(dx.clamp(0.0, 80.0));
-            }
-        }
-    };
-
-    let on_touchend = {
-        let msg = msg_for_swipe.clone();
-        let cb = reply_cb_swipe;
-        move |_: web_sys::TouchEvent| {
-            let dx = swipe_x.get_untracked();
-            set_swiping.set(false);
-            set_swipe_locked.set(false);
-            set_swipe_x.set(0.0);
-            if dx > 60.0 {
-                if let Some(ref cb) = cb {
-                    cb.run(msg.clone());
-                }
-            }
-        }
-    };
-
     view! {
         <div
             class=msg_class
             id=msg_dom_id
-            style=move || {
-                let dx = swipe_x.get();
-                if dx > 0.0 {
-                    format!("transform: translateX({dx}px); transition: none;")
-                } else {
-                    "transition: transform 0.2s ease;".to_string()
-                }
-            }
-            on:touchstart=on_touchstart
-            on:touchmove=on_touchmove
-            on:touchend=on_touchend
         >
             {reply_preview.map(|preview| {
                 view! {
