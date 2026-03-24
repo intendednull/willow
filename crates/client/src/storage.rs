@@ -384,6 +384,11 @@ impl willow_state::EventStore for SqliteEventStore {
     }
 
     fn events_since(&self, hash: &willow_state::StateHash) -> Vec<willow_state::Event> {
+        // ZERO hash means "give me everything".
+        if *hash == willow_state::StateHash::ZERO {
+            return self.all_events();
+        }
+
         // Find the rowid of the first event whose parent_hash matches,
         // then return that event and everything after it.
         let start_rowid: Option<i64> = self
@@ -541,6 +546,10 @@ impl willow_state::EventStore for LocalStorageEventStore {
     }
 
     fn events_since(&self, hash: &willow_state::StateHash) -> Vec<willow_state::Event> {
+        // ZERO hash means "give me everything".
+        if *hash == willow_state::StateHash::ZERO {
+            return self.all_events();
+        }
         let events = self.load_all();
         let start = events
             .iter()

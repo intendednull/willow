@@ -55,6 +55,10 @@ impl EventStore for InMemoryStore {
     }
 
     fn events_since(&self, hash: &StateHash) -> Vec<Event> {
+        // ZERO hash means "give me everything".
+        if *hash == StateHash::ZERO {
+            return self.events.clone();
+        }
         // Find the first event whose parent_hash matches, then return
         // that event and everything after it.
         let start = self
