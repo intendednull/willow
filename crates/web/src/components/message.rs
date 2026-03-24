@@ -296,13 +296,15 @@ pub fn MessageView(
                 let dx = (touch.client_x() as f64) - tsx.get();
                 let dy = (touch.client_y() as f64) - tsy.get();
 
-                // On first significant movement, decide: scroll or swipe.
-                // If vertical movement dominates, lock out the swipe.
-                if swipe_x.get_untracked() == 0.0
-                    && (dx.abs() > 5.0 || dy.abs() > 5.0)
-                    && dy.abs() > dx.abs()
-                {
+                // Wait for enough movement to decide direction.
+                // Only lock out swipe if clearly scrolling (vertical > 2x horizontal).
+                if swipe_x.get_untracked() == 0.0 && dy.abs() > 15.0 && dy.abs() > dx.abs() * 2.0 {
                     set_swipe_locked.set(true);
+                    return;
+                }
+
+                // Don't start swiping until horizontal exceeds a minimum threshold.
+                if dx < 10.0 {
                     return;
                 }
 
