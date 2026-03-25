@@ -313,10 +313,12 @@ pub fn App() -> impl IntoView {
                 set_roles.set(extract_roles(&c));
             }
 
-            // Always refresh typing state (it auto-expires).
+            // Refresh typing state (only if changed to avoid unnecessary re-renders).
             let ch = current_channel.get_untracked();
             let typers = c.typing_in(&ch);
-            set_typing_names.set(typers);
+            if typers != typing_names.get_untracked() {
+                set_typing_names.set(typers);
+            }
         },
         std::time::Duration::from_millis(50),
     );

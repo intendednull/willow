@@ -53,11 +53,19 @@ test-browser:
 
 # Run Playwright E2E tests against deployed site
 test-e2e-ui:
+    npx playwright test --project=desktop-chrome --project=mobile-chrome
+
+# Run Playwright E2E tests on all browsers
+test-e2e-ui-all:
     npx playwright test
 
-# Run Playwright E2E tests against deployed site (headed, for debugging)
+# Run Playwright E2E tests (headed, for debugging)
 test-e2e-ui-headed:
     npx playwright test --headed
+
+# Run only state sync tests
+test-e2e-sync:
+    npx playwright test e2e/state-sync.spec.ts --project=desktop-chrome
 
 # Run ALL tests including browser and E2E
 test-all: test test-browser test-e2e-ui

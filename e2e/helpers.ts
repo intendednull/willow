@@ -90,3 +90,59 @@ export async function switchChannel(page: Page, channelName: string) {
 export async function waitForMessage(page: Page, text: string, timeout = 15_000) {
   await page.locator('.message .body', { hasText: text }).waitFor({ timeout });
 }
+
+/** Simulate a long-press on an element to open the mobile action sheet. */
+export async function longPress(page: Page, selector: string, durationMs = 600) {
+  const el = page.locator(selector).first();
+  const box = await el.boundingBox();
+  if (!box) throw new Error(`Element not found: ${selector}`);
+
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+
+  // Dispatch real TouchEvent via page.evaluate.
+  await page.evaluate(({ x, y }) => {
+    const target = document.elementFromPoint(x, y);
+    if (!target) return;
+    const touch = new Touch({
+      identifier: 1,
+      target,
+      clientX: x,
+      clientY: y,
+      pageX: x,
+      pageY: y,
+    });
+    target.dispatchEvent(new TouchEvent('touchstart', {
+      bubbles: true,
+      cancelable: true,
+      touches: [touch],
+      targetTouches: [touch],
+      changedTouches: [touch],
+    }));
+  }, { x, y });
+
+  await page.waitForTimeout(durationMs);
+
+  // Dispatch touchend.
+  await page.evaluate(({ x, y }) => {
+    const target = document.elementFromPoint(x, y);
+    if (!target) return;
+    const touch = new Touch({
+      identifier: 1,
+      target,
+      clientX: x,
+      clientY: y,
+      pageX: x,
+      pageY: y,
+    });
+    target.dispatchEvent(new TouchEvent('touchend', {
+      bubbles: true,
+      cancelable: true,
+      touches: [],
+      targetTouches: [],
+      changedTouches: [touch],
+    }));
+  }, { x, y });
+
+  await page.waitForTimeout(300);
+}
