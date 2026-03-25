@@ -194,8 +194,9 @@ pub fn App() -> impl IntoView {
                     }
                     ClientEvent::ProfileUpdated { .. } => {
                         // Display names are resolved at render time now.
+                        // Don't set needs_msg_refresh — it would destroy
+                        // open action sheets by re-rendering the message list.
                         set_display_name.set(c.display_name());
-                        needs_msg_refresh = true;
                         needs_peer_refresh = true;
                     }
                     ClientEvent::VoiceJoined {
@@ -253,7 +254,22 @@ pub fn App() -> impl IntoView {
 
             if needs_msg_refresh {
                 let ch = current_channel.get_untracked();
-                set_messages.set(c.messages(&ch));
+                let new_msgs = c.messages(&ch);
+                // Only update if messages actually changed (avoids destroying
+                // open action sheets by re-rendering the message list).
+                let old_msgs = messages.get_untracked();
+                let changed = new_msgs.len() != old_msgs.len()
+                    || new_msgs.last().map(|m| &m.id) != old_msgs.last().map(|m| &m.id)
+                    || new_msgs.iter().zip(old_msgs.iter()).any(|(a, b)| {
+                        a.id != b.id
+                            || a.body != b.body
+                            || a.edited != b.edited
+                            || a.deleted != b.deleted
+                            || a.reactions.len() != b.reactions.len()
+                    });
+                if changed {
+                    set_messages.set(new_msgs);
+                }
                 // Refresh pinned messages and labels.
                 set_pinned_messages.set(c.pinned_messages(&ch));
                 let mut labels = HashMap::new();
