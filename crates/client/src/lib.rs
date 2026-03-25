@@ -6,16 +6,16 @@
 //! ## Quick start
 //!
 //! ```no_run
-//! use willow_client::{ClientHandle, ClientConfig};
+//! use willow_client::{ClientHandle, ClientConfig, ClientEvent};
 //!
-//! let (client, _event_loop) = ClientHandle::new(ClientConfig::default());
+//! let (client, event_loop) = ClientHandle::new(ClientConfig::default());
 //! client.connect();
-//! loop {
-//!     for event in client.poll() {
-//!         // handle events
-//!     }
-//!     client.send_message("general", "hello!").ok();
-//! }
+//!
+//! // Spawn the event loop; it sends ClientEvents to the receiver.
+//! let (tx, mut rx) = futures::channel::mpsc::unbounded::<ClientEvent>();
+//! // event_loop.run(tx) is an async future — spawn it on your runtime.
+//!
+//! client.send_message("general", "hello!").ok();
 //! ```
 
 pub mod base64;
@@ -95,13 +95,15 @@ pub struct SharedState {
 pub struct ClientHandle {
     pub(crate) shared: Rc<RefCell<SharedState>>,
     pub(crate) cmd_tx: futures_mpsc::UnboundedSender<network::NetworkCommand>,
-    pub(crate) event_rx: Rc<RefCell<futures_mpsc::UnboundedReceiver<network::NetworkEvent>>>,
     /// Holds deferred channel halves until connect() consumes them.
     pub(crate) deferred_channels: Option<Rc<RefCell<Option<DeferredPair>>>>,
 }
 
-/// Async event processing loop. Task 3 fills in the run() method.
-#[allow(dead_code)]
+/// Async event processing loop.
+///
+/// Owns the network event receiver and processes incoming events in a loop,
+/// forwarding [`ClientEvent`]s to the provided sender. Created by
+/// [`ClientHandle::new()`] and consumed by calling [`ClientEventLoop::run()`].
 pub struct ClientEventLoop {
     pub(crate) shared: Rc<RefCell<SharedState>>,
     pub(crate) event_rx: futures_mpsc::UnboundedReceiver<network::NetworkEvent>,
@@ -473,7 +475,6 @@ impl ClientHandle {
         let handle = ClientHandle {
             shared: Rc::clone(&shared),
             cmd_tx: cmd_tx.clone(),
-            event_rx: Rc::new(RefCell::new(event_rx)),
             deferred_channels: Some(deferred),
         };
 
@@ -481,7 +482,7 @@ impl ClientHandle {
 
         let event_loop = ClientEventLoop {
             shared,
-            event_rx: futures_mpsc::unbounded().1, // placeholder, Task 3 wires this up
+            event_rx,
             cmd_tx,
         };
 
@@ -490,7 +491,7 @@ impl ClientHandle {
 
     /// Connect to the P2P network. Spawns the network task in the background.
     ///
-    /// After connecting, call [`ClientHandle::poll()`] regularly to process events.
+    /// After connecting, run [`ClientEventLoop::run()`] to process events.
     pub fn connect(&self) {
         let mut shared = self.shared.borrow_mut();
         if shared.connected {
@@ -627,254 +628,6 @@ impl ClientHandle {
             .values()
             .map(|ch| (ch.name.clone(), ch.kind.clone()))
             .collect()
-    }
-
-    /// Drain network events, apply them to state, and return a list of
-    /// [`ClientEvent`]s for the caller to handle.
-    pub fn poll(&self) -> Vec<ClientEvent> {
-        let mut events = Vec::new();
-
-        loop {
-            let net_event = {
-                let mut rx = self.event_rx.borrow_mut();
-                match rx.try_recv() {
-                    Ok(ev) => ev,
-                    _ => break,
-                }
-            };
-
-            match net_event {
-                // -- EventReceived --
-                network::NetworkEvent::EventReceived { event, from } => {
-                    tracing::info!(
-                        kind = ?std::mem::discriminant(&event.kind),
-                        from = %from,
-                        event_id = %event.id,
-                        "received event"
-                    );
-
-                    // Verify author matches signer.
-                    if event.author != from {
-                        tracing::warn!("event author mismatch: {} != {}", event.author, from);
-                        continue;
-                    }
-
-                    let mut shared = self.shared.borrow_mut();
-                    // Apply to event-sourced state.
-                    let result =
-                        willow_state::apply_lenient(&mut shared.state.event_state, &event);
-                    if matches!(result, willow_state::ApplyResult::Applied) {
-                        shared.state.event_store.append(event.clone());
-                        let hash = shared.state.event_state.hash();
-                        shared.state.event_store.set_latest_hash(hash);
-
-                        // Persist full state.
-                        if shared.config.persistence {
-                            if let Some(sid) = &shared.state.active_server {
-                                storage::save_server_state(sid, &shared.state.event_state);
-                            }
-                        }
-
-                        // Emit ClientEvents based on event kind.
-                        emit_client_events_for(&mut shared, &event, &mut events);
-                    }
-                }
-
-                // -- SyncRequested --
-                network::NetworkEvent::SyncRequested {
-                    state_hash,
-                    from,
-                    topic,
-                } => {
-                    tracing::info!(%from, ?topic, "sync requested");
-                    let shared = self.shared.borrow();
-                    let missing = shared.state.event_store.events_since(&state_hash);
-                    if !missing.is_empty() {
-                        let count = missing.len();
-                        tracing::info!(count, "sending event sync batch");
-                        let _ = self.cmd_tx.unbounded_send(
-                            network::NetworkCommand::SendSyncBatch { events: missing },
-                        );
-                    }
-                }
-
-                // -- SyncBatchReceived --
-                network::NetworkEvent::SyncBatchReceived {
-                    events: batch_events,
-                    from,
-                } => {
-                    let mut shared = self.shared.borrow_mut();
-                    tracing::info!(count = batch_events.len(), %from, "received event sync batch");
-                    // Track the sender as online.
-                    if !from.is_empty() && !shared.state.chat.peers.contains(&from) {
-                        shared.state.chat.peers.push(from.clone());
-                        events.push(ClientEvent::PeerConnected(from.clone()));
-                    }
-                    let mut sorted = batch_events;
-                    sorted.sort_by_key(|e| e.timestamp_ms);
-                    let count = sorted.len();
-                    for event in &sorted {
-                        let result =
-                            willow_state::apply_lenient(&mut shared.state.event_state, event);
-                        if matches!(result, willow_state::ApplyResult::Applied) {
-                            shared.state.event_store.append(event.clone());
-                            let hash = shared.state.event_state.hash();
-                            shared.state.event_store.set_latest_hash(hash);
-
-                            emit_client_events_for(&mut shared, event, &mut events);
-                        }
-                    }
-                    if count > 0 {
-                        // Persist full state after sync batch.
-                        if shared.config.persistence {
-                            if let Some(sid) = &shared.state.active_server {
-                                storage::save_server_state(sid, &shared.state.event_state);
-                            }
-                        }
-                        // Reconcile topic_map with synced event_state channels.
-                        reconcile_topic_map(&mut shared.state);
-                        events.push(ClientEvent::SyncCompleted { ops_applied: count });
-                        // Trigger state verification after sync completion.
-                        // We need to drop the borrow before calling verify_state.
-                        drop(shared);
-                        let _ = self.verify_state();
-                    }
-                }
-
-                // -- Common events --
-                network::NetworkEvent::PeerConnected(peer) => {
-                    let mut shared = self.shared.borrow_mut();
-                    if !shared.state.chat.peers.contains(&peer) {
-                        shared.state.chat.peers.push(peer.clone());
-                    }
-                    // On first peer connect, subscribe to channels.
-                    if !shared.connected_subscribed {
-                        on_connected(&shared.state, &self.cmd_tx);
-                        shared.connected_subscribed = true;
-                    } else {
-                        // Re-broadcast profile so the new peer learns our name.
-                        let saved = storage::load_profile().unwrap_or_default();
-                        if !saved.display_name.is_empty() {
-                            let _ = self.cmd_tx.unbounded_send(
-                                network::NetworkCommand::BroadcastProfile {
-                                    display_name: saved.display_name,
-                                },
-                            );
-                        }
-                    }
-                    events.push(ClientEvent::PeerConnected(peer));
-                }
-                network::NetworkEvent::PeerDisconnected(peer) => {
-                    let mut shared = self.shared.borrow_mut();
-                    shared.state.chat.peers.retain(|p| p != &peer);
-                    events.push(ClientEvent::PeerDisconnected(peer));
-                }
-                network::NetworkEvent::ProfileReceived {
-                    peer_id,
-                    display_name,
-                } => {
-                    let mut shared = self.shared.borrow_mut();
-                    shared
-                        .state
-                        .profiles
-                        .names
-                        .insert(peer_id.clone(), display_name.clone());
-                    events.push(ClientEvent::ProfileUpdated {
-                        peer_id,
-                        display_name,
-                    });
-                }
-                network::NetworkEvent::Listening(addr) => {
-                    let mut shared = self.shared.borrow_mut();
-                    // On receiving a listening event, do initial subscriptions.
-                    if !shared.connected_subscribed {
-                        on_connected(&shared.state, &self.cmd_tx);
-                        shared.connected_subscribed = true;
-                    }
-                    events.push(ClientEvent::Listening(addr));
-                }
-                network::NetworkEvent::FileAnnounced {
-                    filename,
-                    size,
-                    from,
-                    topic,
-                    ..
-                } => {
-                    let shared = self.shared.borrow();
-                    let channel = shared
-                        .state
-                        .active()
-                        .and_then(|ctx| ctx.name_for_topic(&topic))
-                        .unwrap_or("unknown")
-                        .to_string();
-                    events.push(ClientEvent::FileAnnounced {
-                        channel,
-                        filename,
-                        size,
-                        from,
-                    });
-                }
-                network::NetworkEvent::FileDownloaded { .. } => {
-                    // no-op for now
-                }
-                network::NetworkEvent::TypingReceived { peer_id, channel } => {
-                    let mut shared = self.shared.borrow_mut();
-                    let now = util::current_time_ms();
-                    shared
-                        .typing_peers
-                        .insert(peer_id.clone(), (channel, now));
-                    // Also track as online peer.
-                    if !shared.state.chat.peers.contains(&peer_id) {
-                        shared.state.chat.peers.push(peer_id.clone());
-                        events.push(ClientEvent::PeerConnected(peer_id));
-                    }
-                }
-                network::NetworkEvent::MessageReceived { .. } => {
-                    // All messages now go through EventReceived.
-                }
-                network::NetworkEvent::VoiceJoinReceived {
-                    channel_id,
-                    peer_id,
-                } => {
-                    let mut shared = self.shared.borrow_mut();
-                    shared
-                        .voice_participants
-                        .entry(channel_id.clone())
-                        .or_default()
-                        .insert(peer_id.clone());
-                    events.push(ClientEvent::VoiceJoined {
-                        channel_id,
-                        peer_id,
-                    });
-                }
-                network::NetworkEvent::VoiceLeaveReceived {
-                    channel_id,
-                    peer_id,
-                } => {
-                    let mut shared = self.shared.borrow_mut();
-                    if let Some(participants) = shared.voice_participants.get_mut(&channel_id) {
-                        participants.remove(&peer_id);
-                    }
-                    events.push(ClientEvent::VoiceLeft {
-                        channel_id,
-                        peer_id,
-                    });
-                }
-                network::NetworkEvent::VoiceSignalReceived {
-                    channel_id,
-                    from_peer,
-                    signal,
-                } => {
-                    events.push(ClientEvent::VoiceSignal {
-                        channel_id,
-                        from_peer,
-                        signal,
-                    });
-                }
-            }
-        }
-
-        events
     }
 
     // ---- Server management ----
@@ -2386,8 +2139,7 @@ impl ClientHandle {
 /// Convert a [`willow_state::Event`] into [`ClientEvent`]s for the caller.
 ///
 /// This is a free function so it can be called with an already-borrowed
-/// `SharedState`, both from `ClientHandle::poll()` and (later) from
-/// `ClientEventLoop::run()`.
+/// `SharedState` from `ClientEventLoop::process_batch()`.
 fn emit_client_events_for(
     shared: &mut SharedState,
     event: &willow_state::Event,
@@ -2453,7 +2205,7 @@ fn emit_client_events_for(
                             .unwrap_or_else(|_| uuid::Uuid::new_v4()),
                     );
                     ctx.topic_map.insert(topic.clone(), (name.clone(), cid));
-                    // The caller (poll) will handle subscribing via cmd_tx if needed.
+                    // The caller (process_batch) will handle subscribing via cmd_tx if needed.
                 }
             }
             events.push(ClientEvent::ChannelCreated(name.clone()));
@@ -2548,6 +2300,370 @@ fn emit_client_events_for(
     }
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// ClientEventLoop implementation
+// ────────────────────────────────────────────────────────────────────────────
+
+impl ClientEventLoop {
+    /// Run the event processing loop.
+    ///
+    /// Awaits network events, processes them, and sends [`ClientEvent`]s to the
+    /// provided sender. Returns when the event channel closes.
+    ///
+    /// Profile re-broadcasts are scheduled at 3 s, 6 s, 10 s, and 20 s after
+    /// the first event is received, using real async timers rather than tick
+    /// counting.
+    pub async fn run(mut self, tx: futures_mpsc::UnboundedSender<ClientEvent>) {
+        use futures::FutureExt;
+        use futures::StreamExt;
+
+        type TimerFut = std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>;
+
+        #[cfg(target_arch = "wasm32")]
+        let make_timer = |ms: u32| -> TimerFut {
+            Box::pin(async move {
+                gloo_timers::future::TimeoutFuture::new(ms).await;
+            })
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let make_timer = |ms: u32| -> TimerFut {
+            Box::pin(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(ms as u64)).await;
+            })
+        };
+
+        // Profile re-broadcast schedule: 3s, 6s, 10s, 20s after start.
+        let profile_delays = [3000u32, 3000, 4000, 10000];
+        let mut profile_idx = 0;
+        let mut profile_timer = make_timer(profile_delays[0]).fuse();
+
+        loop {
+            futures::select! {
+                net_event = self.event_rx.next() => {
+                    let Some(net_event) = net_event else {
+                        break; // Channel closed
+                    };
+
+                    // Drain additional ready events for batching.
+                    let mut batch = vec![net_event];
+                    while let Ok(more) = self.event_rx.try_recv() {
+                        batch.push(more);
+                    }
+
+                    // Process the batch and check if we need to verify state.
+                    let (client_events, needs_verify) = self.process_batch(batch);
+                    for event in client_events {
+                        if tx.unbounded_send(event).is_err() {
+                            return; // Receiver dropped
+                        }
+                    }
+
+                    // State verification must happen outside process_batch
+                    // because it needs its own shared borrow.
+                    if needs_verify {
+                        self.verify_state_after_sync();
+                    }
+                }
+                _ = profile_timer => {
+                    self.broadcast_profile();
+                    profile_idx += 1;
+                    if profile_idx < profile_delays.len() {
+                        profile_timer = make_timer(profile_delays[profile_idx]).fuse();
+                    } else {
+                        // No more scheduled re-broadcasts; wait forever.
+                        let pending: TimerFut = Box::pin(futures::future::pending::<()>());
+                        profile_timer = pending.fuse();
+                    }
+                }
+                complete => break,
+            }
+        }
+    }
+
+    /// Process a batch of network events, returning the resulting client events
+    /// and a flag indicating whether state verification should be triggered.
+    fn process_batch(
+        &self,
+        net_events: Vec<network::NetworkEvent>,
+    ) -> (Vec<ClientEvent>, bool) {
+        let mut events = Vec::new();
+        let mut needs_verify = false;
+
+        for net_event in net_events {
+            match net_event {
+                // -- EventReceived --
+                network::NetworkEvent::EventReceived { event, from } => {
+                    tracing::info!(
+                        kind = ?std::mem::discriminant(&event.kind),
+                        from = %from,
+                        event_id = %event.id,
+                        "received event"
+                    );
+
+                    // Verify author matches signer.
+                    if event.author != from {
+                        tracing::warn!("event author mismatch: {} != {}", event.author, from);
+                        continue;
+                    }
+
+                    let mut shared = self.shared.borrow_mut();
+                    // Apply to event-sourced state.
+                    let result =
+                        willow_state::apply_lenient(&mut shared.state.event_state, &event);
+                    if matches!(result, willow_state::ApplyResult::Applied) {
+                        shared.state.event_store.append(event.clone());
+                        let hash = shared.state.event_state.hash();
+                        shared.state.event_store.set_latest_hash(hash);
+
+                        // Persist full state.
+                        if shared.config.persistence {
+                            if let Some(sid) = &shared.state.active_server {
+                                storage::save_server_state(sid, &shared.state.event_state);
+                            }
+                        }
+
+                        // Emit ClientEvents based on event kind.
+                        emit_client_events_for(&mut shared, &event, &mut events);
+                    }
+                }
+
+                // -- SyncRequested --
+                network::NetworkEvent::SyncRequested {
+                    state_hash,
+                    from,
+                    topic,
+                } => {
+                    tracing::info!(%from, ?topic, "sync requested");
+                    let shared = self.shared.borrow();
+                    let missing = shared.state.event_store.events_since(&state_hash);
+                    if !missing.is_empty() {
+                        let count = missing.len();
+                        tracing::info!(count, "sending event sync batch");
+                        let _ = self.cmd_tx.unbounded_send(
+                            network::NetworkCommand::SendSyncBatch { events: missing },
+                        );
+                    }
+                }
+
+                // -- SyncBatchReceived --
+                network::NetworkEvent::SyncBatchReceived {
+                    events: batch_events,
+                    from,
+                } => {
+                    let mut shared = self.shared.borrow_mut();
+                    tracing::info!(count = batch_events.len(), %from, "received event sync batch");
+                    // Track the sender as online.
+                    if !from.is_empty() && !shared.state.chat.peers.contains(&from) {
+                        shared.state.chat.peers.push(from.clone());
+                        events.push(ClientEvent::PeerConnected(from.clone()));
+                    }
+                    let mut sorted = batch_events;
+                    sorted.sort_by_key(|e| e.timestamp_ms);
+                    let count = sorted.len();
+                    for event in &sorted {
+                        let result =
+                            willow_state::apply_lenient(&mut shared.state.event_state, event);
+                        if matches!(result, willow_state::ApplyResult::Applied) {
+                            shared.state.event_store.append(event.clone());
+                            let hash = shared.state.event_state.hash();
+                            shared.state.event_store.set_latest_hash(hash);
+
+                            emit_client_events_for(&mut shared, event, &mut events);
+                        }
+                    }
+                    if count > 0 {
+                        // Persist full state after sync batch.
+                        if shared.config.persistence {
+                            if let Some(sid) = &shared.state.active_server {
+                                storage::save_server_state(sid, &shared.state.event_state);
+                            }
+                        }
+                        // Reconcile topic_map with synced event_state channels.
+                        reconcile_topic_map(&mut shared.state);
+                        events.push(ClientEvent::SyncCompleted { ops_applied: count });
+                        // Signal that state verification is needed (done outside borrow).
+                        needs_verify = true;
+                    }
+                }
+
+                // -- Common events --
+                network::NetworkEvent::PeerConnected(peer) => {
+                    let mut shared = self.shared.borrow_mut();
+                    if !shared.state.chat.peers.contains(&peer) {
+                        shared.state.chat.peers.push(peer.clone());
+                    }
+                    // On first peer connect, subscribe to channels.
+                    if !shared.connected_subscribed {
+                        on_connected(&shared.state, &self.cmd_tx);
+                        shared.connected_subscribed = true;
+                    } else {
+                        // Re-broadcast profile so the new peer learns our name.
+                        let saved = storage::load_profile().unwrap_or_default();
+                        if !saved.display_name.is_empty() {
+                            let _ = self.cmd_tx.unbounded_send(
+                                network::NetworkCommand::BroadcastProfile {
+                                    display_name: saved.display_name,
+                                },
+                            );
+                        }
+                    }
+                    events.push(ClientEvent::PeerConnected(peer));
+                }
+                network::NetworkEvent::PeerDisconnected(peer) => {
+                    let mut shared = self.shared.borrow_mut();
+                    shared.state.chat.peers.retain(|p| p != &peer);
+                    events.push(ClientEvent::PeerDisconnected(peer));
+                }
+                network::NetworkEvent::ProfileReceived {
+                    peer_id,
+                    display_name,
+                } => {
+                    let mut shared = self.shared.borrow_mut();
+                    shared
+                        .state
+                        .profiles
+                        .names
+                        .insert(peer_id.clone(), display_name.clone());
+                    events.push(ClientEvent::ProfileUpdated {
+                        peer_id,
+                        display_name,
+                    });
+                }
+                network::NetworkEvent::Listening(addr) => {
+                    let mut shared = self.shared.borrow_mut();
+                    // On receiving a listening event, do initial subscriptions.
+                    if !shared.connected_subscribed {
+                        on_connected(&shared.state, &self.cmd_tx);
+                        shared.connected_subscribed = true;
+                    }
+                    events.push(ClientEvent::Listening(addr));
+                }
+                network::NetworkEvent::FileAnnounced {
+                    filename,
+                    size,
+                    from,
+                    topic,
+                    ..
+                } => {
+                    let shared = self.shared.borrow();
+                    let channel = shared
+                        .state
+                        .active()
+                        .and_then(|ctx| ctx.name_for_topic(&topic))
+                        .unwrap_or("unknown")
+                        .to_string();
+                    events.push(ClientEvent::FileAnnounced {
+                        channel,
+                        filename,
+                        size,
+                        from,
+                    });
+                }
+                network::NetworkEvent::FileDownloaded { .. } => {
+                    // no-op for now
+                }
+                network::NetworkEvent::TypingReceived { peer_id, channel } => {
+                    let mut shared = self.shared.borrow_mut();
+                    let now = util::current_time_ms();
+                    shared
+                        .typing_peers
+                        .insert(peer_id.clone(), (channel, now));
+                    // Also track as online peer.
+                    if !shared.state.chat.peers.contains(&peer_id) {
+                        shared.state.chat.peers.push(peer_id.clone());
+                        events.push(ClientEvent::PeerConnected(peer_id));
+                    }
+                }
+                network::NetworkEvent::MessageReceived { .. } => {
+                    // All messages now go through EventReceived.
+                }
+                network::NetworkEvent::VoiceJoinReceived {
+                    channel_id,
+                    peer_id,
+                } => {
+                    let mut shared = self.shared.borrow_mut();
+                    shared
+                        .voice_participants
+                        .entry(channel_id.clone())
+                        .or_default()
+                        .insert(peer_id.clone());
+                    events.push(ClientEvent::VoiceJoined {
+                        channel_id,
+                        peer_id,
+                    });
+                }
+                network::NetworkEvent::VoiceLeaveReceived {
+                    channel_id,
+                    peer_id,
+                } => {
+                    let mut shared = self.shared.borrow_mut();
+                    if let Some(participants) = shared.voice_participants.get_mut(&channel_id) {
+                        participants.remove(&peer_id);
+                    }
+                    events.push(ClientEvent::VoiceLeft {
+                        channel_id,
+                        peer_id,
+                    });
+                }
+                network::NetworkEvent::VoiceSignalReceived {
+                    channel_id,
+                    from_peer,
+                    signal,
+                } => {
+                    events.push(ClientEvent::VoiceSignal {
+                        channel_id,
+                        from_peer,
+                        signal,
+                    });
+                }
+            }
+        }
+
+        (events, needs_verify)
+    }
+
+    /// Broadcast our profile to the network if connected and profile is set.
+    fn broadcast_profile(&self) {
+        let shared = self.shared.borrow();
+        if !shared.connected_subscribed {
+            return;
+        }
+        let saved = storage::load_profile().unwrap_or_default();
+        if !saved.display_name.is_empty() {
+            let _ = self
+                .cmd_tx
+                .unbounded_send(network::NetworkCommand::BroadcastProfile {
+                    display_name: saved.display_name,
+                });
+        }
+    }
+
+    /// Trigger state verification after a sync batch completes.
+    ///
+    /// This is separated from [`process_batch`] because it needs its own
+    /// mutable borrow of shared state, which cannot overlap with the borrow
+    /// inside `process_batch`.
+    fn verify_state_after_sync(&self) {
+        let mut shared = self.shared.borrow_mut();
+        let author = shared.identity.peer_id().to_string();
+        let state_hash = shared.state.event_state.hash();
+        let event = willow_state::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_hash: shared.state.event_state.hash(),
+            author,
+            timestamp_ms: util::current_time_ms(),
+            kind: willow_state::EventKind::StateVerification { state_hash },
+        };
+        apply_event_on_shared(&mut shared, &event);
+        let _ = self
+            .cmd_tx
+            .unbounded_send(network::NetworkCommand::BroadcastEvent {
+                event,
+                topic: None,
+            });
+    }
+}
+
 /// Resolve a channel name to its channel ID via the active server context.
 fn resolve_channel_id_shared(state: &ClientState, channel: &str) -> anyhow::Result<String> {
     let ctx = state
@@ -2604,7 +2720,7 @@ fn parse_permission(s: &str) -> anyhow::Result<willow_channel::Permission> {
 pub(crate) fn test_client() -> (ClientHandle, futures_mpsc::UnboundedReceiver<network::NetworkCommand>) {
     let identity = Identity::generate();
     let (cmd_tx, cmd_rx) = futures_mpsc::unbounded();
-    let (_event_tx, event_rx) = futures_mpsc::unbounded();
+    let (_event_tx, event_rx) = futures_mpsc::unbounded::<network::NetworkEvent>();
 
     let mut state = ClientState::default();
 
@@ -2681,10 +2797,10 @@ pub(crate) fn test_client() -> (ClientHandle, futures_mpsc::UnboundedReceiver<ne
 
     let shared = Rc::new(RefCell::new(shared_state));
 
+    drop(event_rx); // Consumed by ClientEventLoop in production; not needed in tests.
     let client = ClientHandle {
         shared,
         cmd_tx,
-        event_rx: Rc::new(RefCell::new(event_rx)),
         deferred_channels: None,
     };
 
