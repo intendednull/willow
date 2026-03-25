@@ -272,13 +272,20 @@ pub fn MessageView(
 
     let on_msg_touchstart = move |ev: web_sys::TouchEvent| {
         ev.prevent_default();
-        // Dismiss any other open sheets first.
-        let _ = js_sys::eval("document.querySelectorAll('.mobile-action-sheet.open,.mobile-action-sheet-overlay.open').forEach(function(el){el.classList.remove('open')})");
+        // Dismiss any other open sheets and highlights.
+        let _ = js_sys::eval("document.querySelectorAll('.mobile-action-sheet.open,.mobile-action-sheet-overlay.open').forEach(function(el){el.classList.remove('open')}); document.querySelectorAll('.message.long-press-active').forEach(function(el){el.classList.remove('long-press-active')})");
+        // Highlight the message immediately.
+        let _ = js_sys::eval(&format!(
+            "document.getElementById('{msg_id}')?.classList.add('long-press-active')",
+            msg_id = msg_dom_id_for_lp,
+        ));
         // Show action sheet after 500ms hold.
         let _ = js_sys::eval(&format!(
             "window.{id} = setTimeout(function() {{ \
                 var msg = document.getElementById('{msg_id}'); \
                 if(msg) {{ \
+                    msg.classList.remove('long-press-active'); \
+                    if(navigator.vibrate) navigator.vibrate(25); \
                     var sheet = msg.querySelector('.mobile-action-sheet'); \
                     var overlay = msg.querySelector('.mobile-action-sheet-overlay'); \
                     if(sheet) sheet.classList.add('open'); \
@@ -292,16 +299,17 @@ pub fn MessageView(
     };
 
     let on_msg_touchend = move |_: web_sys::TouchEvent| {
-        // Only clear the timer if it hasn't fired yet.
         let _ = js_sys::eval(&format!(
-            "if(window.{id}!==-1){{ clearTimeout(window.{id}); }} window.{id}=0",
+            "if(window.{id}!==-1){{ clearTimeout(window.{id}); }} window.{id}=0; \
+            document.querySelectorAll('.message.long-press-active').forEach(function(el){{el.classList.remove('long-press-active')}})",
             id = lp_id_end
         ));
     };
 
     let on_msg_touchmove = move |_: web_sys::TouchEvent| {
         let _ = js_sys::eval(&format!(
-            "if(window.{id}!==-1){{ clearTimeout(window.{id}); }} window.{id}=0",
+            "if(window.{id}!==-1){{ clearTimeout(window.{id}); }} window.{id}=0; \
+            document.querySelectorAll('.message.long-press-active').forEach(function(el){{el.classList.remove('long-press-active')}})",
             id = lp_id_move
         ));
     };

@@ -585,6 +585,12 @@ select:focus-visible {
     background: rgba(88, 101, 242, 0.12);
 }
 
+.message.long-press-active {
+    background: var(--bg-message-hover);
+    border-left-color: var(--accent);
+    transition: background 0.15s ease;
+}
+
 .message .meta {
     display: flex;
     align-items: baseline;
@@ -809,19 +815,23 @@ select:focus-visible {
 
 @media (max-width: 900px) {
     .mobile-action-sheet-overlay {
-        display: none;
         position: fixed;
         inset: 0;
         background: rgba(0, 0, 0, 0.5);
         z-index: 99;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.3s ease;
     }
 
     .mobile-action-sheet-overlay.open {
-        display: block;
+        opacity: 1;
+        pointer-events: auto;
     }
 
     .mobile-action-sheet {
-        display: none;
+        display: flex;
+        flex-direction: column;
         position: fixed;
         bottom: 0;
         left: 0;
@@ -833,15 +843,27 @@ select:focus-visible {
         padding: 8px 0;
         padding-bottom: max(8px, env(safe-area-inset-bottom));
         transform: translateY(100%);
-        transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+        visibility: hidden;
+        transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1), visibility 0s 0.3s;
         box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.3);
     }
 
-    .mobile-action-sheet.open {
-        display: flex;
-        flex-direction: column;
-        transform: translateY(0);
+    .mobile-action-sheet::before {
+        content: '';
+        width: 36px;
+        height: 4px;
+        background: var(--text-muted);
+        border-radius: 2px;
+        margin: 4px auto 8px;
+        opacity: 0.4;
     }
+
+    .mobile-action-sheet.open {
+        transform: translateY(0);
+        visibility: visible;
+        transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1), visibility 0s 0s;
+    }
+
 
     .mobile-action-sheet .sheet-item {
         display: block;
