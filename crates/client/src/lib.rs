@@ -113,11 +113,7 @@ pub struct ClientEventLoop {
 /// Helper: apply an event to the event-sourced state and store it.
 /// Callable with explicit parameters to avoid borrow conflicts.
 /// `persistence` is passed separately to avoid double-borrowing SharedState.
-fn apply_event_shared(
-    state: &mut ClientState,
-    persistence: bool,
-    event: &willow_state::Event,
-) {
+fn apply_event_shared(state: &mut ClientState, persistence: bool, event: &willow_state::Event) {
     willow_state::apply_lenient(&mut state.event_state, event);
     state.event_store.append(event.clone());
     let hash = state.event_state.hash();
@@ -553,9 +549,7 @@ impl ClientHandle {
             }
             let _ = self
                 .cmd_tx
-                .unbounded_send(network::NetworkCommand::SendVoiceLeave {
-                    channel_id: ch,
-                });
+                .unbounded_send(network::NetworkCommand::SendVoiceLeave { channel_id: ch });
         }
     }
 
@@ -585,10 +579,7 @@ impl ClientHandle {
 
     /// Returns the voice channel we are currently in, if any.
     pub fn active_voice_channel(&self) -> Option<String> {
-        self.shared
-            .borrow()
-            .active_voice_channel
-            .clone()
+        self.shared.borrow().active_voice_channel.clone()
     }
 
     /// Returns whether we are currently muted.
@@ -637,7 +628,7 @@ impl ClientHandle {
         let mut shared = self.shared.borrow_mut();
         if shared.state.servers.contains_key(server_id) {
             shared.state.active_server = Some(server_id.to_string());
-            init_event_state_on_shared(&mut shared,server_id);
+            init_event_state_on_shared(&mut shared, server_id);
             reconcile_topic_map(&mut shared.state);
         }
     }
@@ -676,8 +667,7 @@ impl ClientHandle {
     /// Returns the server ID.
     pub fn create_server(&self, name: &str) -> anyhow::Result<String> {
         let mut shared = self.shared.borrow_mut();
-        let mut server =
-            willow_channel::Server::new(name, shared.identity.peer_id());
+        let mut server = willow_channel::Server::new(name, shared.identity.peer_id());
         let server_id = server.id.to_string();
 
         // Create default "general" channel.
@@ -708,11 +698,8 @@ impl ClientHandle {
 
         // Initialize event-sourced state for this server.
         let peer_id = shared.identity.peer_id().to_string();
-        shared.state.event_state = willow_state::ServerState::new(
-            server_id.clone(),
-            name.to_string(),
-            peer_id.clone(),
-        );
+        shared.state.event_state =
+            willow_state::ServerState::new(server_id.clone(), name.to_string(), peer_id.clone());
 
         // Open event store.
         if shared.config.persistence {
@@ -775,18 +762,11 @@ impl ClientHandle {
 
         let _ = self
             .cmd_tx
-            .unbounded_send(network::NetworkCommand::BroadcastEvent {
-                event,
-                topic: None,
-            });
+            .unbounded_send(network::NetworkCommand::BroadcastEvent { event, topic: None });
 
         // Also update the global profile for backward compat.
         let pid = shared.identity.peer_id().to_string();
-        shared
-            .state
-            .profiles
-            .names
-            .insert(pid, name.to_string());
+        shared.state.profiles.names.insert(pid, name.to_string());
 
         storage::save_profile(&storage::LocalProfile {
             display_name: name.to_string(),
@@ -831,12 +811,7 @@ impl ClientHandle {
     }
 
     /// Send a reply to a specific message.
-    pub fn send_reply(
-        &self,
-        channel: &str,
-        parent_id: &str,
-        body: &str,
-    ) -> anyhow::Result<()> {
+    pub fn send_reply(&self, channel: &str, parent_id: &str, body: &str) -> anyhow::Result<()> {
         let parent =
             willow_messaging::MessageId(uuid::Uuid::parse_str(parent_id).unwrap_or_default());
         let content = Content::Reply {
@@ -869,13 +844,7 @@ impl ClientHandle {
             });
         drop(shared);
 
-        self.send_content(
-            channel,
-            content,
-            body,
-            preview,
-            Some(parent_id.to_string()),
-        )
+        self.send_content(channel, content, body, preview, Some(parent_id.to_string()))
     }
 
     /// Share a small file inline by base64-encoding it into a text message.
@@ -925,10 +894,7 @@ impl ClientHandle {
         apply_event_on_shared(&mut shared, &event);
         let _ = self
             .cmd_tx
-            .unbounded_send(network::NetworkCommand::BroadcastEvent {
-                event,
-                topic: None,
-            });
+            .unbounded_send(network::NetworkCommand::BroadcastEvent { event, topic: None });
 
         Ok(())
     }
@@ -954,21 +920,13 @@ impl ClientHandle {
         apply_event_on_shared(&mut shared, &event);
         let _ = self
             .cmd_tx
-            .unbounded_send(network::NetworkCommand::BroadcastEvent {
-                event,
-                topic: None,
-            });
+            .unbounded_send(network::NetworkCommand::BroadcastEvent { event, topic: None });
 
         Ok(())
     }
 
     /// Add a reaction to a message.
-    pub fn react(
-        &self,
-        _channel: &str,
-        message_id: &str,
-        emoji: &str,
-    ) -> anyhow::Result<()> {
+    pub fn react(&self, _channel: &str, message_id: &str, emoji: &str) -> anyhow::Result<()> {
         let mut shared = self.shared.borrow_mut();
         let _ = shared
             .state
@@ -987,12 +945,12 @@ impl ClientHandle {
             },
         };
         apply_event_on_shared(&mut shared, &reaction_event);
-        let _ = self.cmd_tx.unbounded_send(
-            network::NetworkCommand::BroadcastEvent {
+        let _ = self
+            .cmd_tx
+            .unbounded_send(network::NetworkCommand::BroadcastEvent {
                 event: reaction_event,
                 topic: None,
-            },
-        );
+            });
 
         Ok(())
     }
@@ -1018,10 +976,7 @@ impl ClientHandle {
         apply_event_on_shared(&mut shared, &event);
         let _ = self
             .cmd_tx
-            .unbounded_send(network::NetworkCommand::BroadcastEvent {
-                event,
-                topic: None,
-            });
+            .unbounded_send(network::NetworkCommand::BroadcastEvent { event, topic: None });
 
         Ok(())
     }
@@ -1047,10 +1002,7 @@ impl ClientHandle {
         apply_event_on_shared(&mut shared, &event);
         let _ = self
             .cmd_tx
-            .unbounded_send(network::NetworkCommand::BroadcastEvent {
-                event,
-                topic: None,
-            });
+            .unbounded_send(network::NetworkCommand::BroadcastEvent { event, topic: None });
 
         Ok(())
     }
@@ -1155,10 +1107,7 @@ impl ClientHandle {
         apply_event_on_shared(&mut shared, &event);
         let _ = self
             .cmd_tx
-            .unbounded_send(network::NetworkCommand::BroadcastEvent {
-                event,
-                topic: None,
-            });
+            .unbounded_send(network::NetworkCommand::BroadcastEvent { event, topic: None });
 
         shared.state.chat.current_channel = name.to_string();
 
@@ -1206,10 +1155,7 @@ impl ClientHandle {
         apply_event_on_shared(&mut shared, &event);
         let _ = self
             .cmd_tx
-            .unbounded_send(network::NetworkCommand::BroadcastEvent {
-                event,
-                topic: None,
-            });
+            .unbounded_send(network::NetworkCommand::BroadcastEvent { event, topic: None });
 
         Ok(())
     }
@@ -1245,8 +1191,7 @@ impl ClientHandle {
                 .active()
                 .map(|ctx| ctx.channel_names())
                 .unwrap_or_default();
-            shared.state.chat.current_channel =
-                names.first().cloned().unwrap_or_default();
+            shared.state.chat.current_channel = names.first().cloned().unwrap_or_default();
         }
 
         // Create and apply event, then broadcast it.
@@ -1263,10 +1208,7 @@ impl ClientHandle {
         apply_event_on_shared(&mut shared, &event);
         let _ = self
             .cmd_tx
-            .unbounded_send(network::NetworkCommand::BroadcastEvent {
-                event,
-                topic: None,
-            });
+            .unbounded_send(network::NetworkCommand::BroadcastEvent { event, topic: None });
 
         Ok(())
     }
@@ -1291,10 +1233,7 @@ impl ClientHandle {
         apply_event_on_shared(&mut shared, &event);
         let _ = self
             .cmd_tx
-            .unbounded_send(network::NetworkCommand::BroadcastEvent {
-                event,
-                topic: None,
-            });
+            .unbounded_send(network::NetworkCommand::BroadcastEvent { event, topic: None });
     }
 
     /// Revoke trust from a peer.
@@ -1317,10 +1256,7 @@ impl ClientHandle {
         apply_event_on_shared(&mut shared, &event);
         let _ = self
             .cmd_tx
-            .unbounded_send(network::NetworkCommand::BroadcastEvent {
-                event,
-                topic: None,
-            });
+            .unbounded_send(network::NetworkCommand::BroadcastEvent { event, topic: None });
     }
 
     /// Kick a member, rotating channel keys.
@@ -1371,10 +1307,7 @@ impl ClientHandle {
         apply_event_on_shared(&mut shared, &event);
         let _ = self
             .cmd_tx
-            .unbounded_send(network::NetworkCommand::BroadcastEvent {
-                event,
-                topic: None,
-            });
+            .unbounded_send(network::NetworkCommand::BroadcastEvent { event, topic: None });
 
         Ok(())
     }
@@ -1406,10 +1339,7 @@ impl ClientHandle {
         apply_event_on_shared(&mut shared, &event);
         let _ = self
             .cmd_tx
-            .unbounded_send(network::NetworkCommand::BroadcastEvent {
-                event,
-                topic: None,
-            });
+            .unbounded_send(network::NetworkCommand::BroadcastEvent { event, topic: None });
 
         Ok(())
     }
@@ -1439,10 +1369,7 @@ impl ClientHandle {
         apply_event_on_shared(&mut shared, &event);
         let _ = self
             .cmd_tx
-            .unbounded_send(network::NetworkCommand::BroadcastEvent {
-                event,
-                topic: None,
-            });
+            .unbounded_send(network::NetworkCommand::BroadcastEvent { event, topic: None });
 
         Ok(())
     }
@@ -1480,10 +1407,7 @@ impl ClientHandle {
         apply_event_on_shared(&mut shared, &event);
         let _ = self
             .cmd_tx
-            .unbounded_send(network::NetworkCommand::BroadcastEvent {
-                event,
-                topic: None,
-            });
+            .unbounded_send(network::NetworkCommand::BroadcastEvent { event, topic: None });
 
         Ok(())
     }
@@ -1526,10 +1450,7 @@ impl ClientHandle {
         apply_event_on_shared(&mut shared, &event);
         let _ = self
             .cmd_tx
-            .unbounded_send(network::NetworkCommand::BroadcastEvent {
-                event,
-                topic: None,
-            });
+            .unbounded_send(network::NetworkCommand::BroadcastEvent { event, topic: None });
 
         Ok(())
     }
@@ -1549,10 +1470,7 @@ impl ClientHandle {
         apply_event_on_shared(&mut shared, &event);
         let _ = self
             .cmd_tx
-            .unbounded_send(network::NetworkCommand::BroadcastEvent {
-                event,
-                topic: None,
-            });
+            .unbounded_send(network::NetworkCommand::BroadcastEvent { event, topic: None });
         Ok(())
     }
 
@@ -1586,10 +1504,7 @@ impl ClientHandle {
         apply_event_on_shared(&mut shared, &event);
         let _ = self
             .cmd_tx
-            .unbounded_send(network::NetworkCommand::BroadcastEvent {
-                event,
-                topic: None,
-            });
+            .unbounded_send(network::NetworkCommand::BroadcastEvent { event, topic: None });
         Ok(())
     }
 
@@ -1609,10 +1524,7 @@ impl ClientHandle {
         apply_event_on_shared(&mut shared, &event);
         let _ = self
             .cmd_tx
-            .unbounded_send(network::NetworkCommand::BroadcastEvent {
-                event,
-                topic: None,
-            });
+            .unbounded_send(network::NetworkCommand::BroadcastEvent { event, topic: None });
         Ok(())
     }
 
@@ -1658,10 +1570,8 @@ impl ClientHandle {
         } else {
             // Create a new server context for this server.
             // Use the ORIGINAL server ID from the invite so topics match.
-            let mut server = willow_channel::Server::new(
-                &accepted.server_name,
-                shared.identity.peer_id(),
-            );
+            let mut server =
+                willow_channel::Server::new(&accepted.server_name, shared.identity.peer_id());
             server.id = willow_channel::ServerId(
                 uuid::Uuid::parse_str(&server_id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
             );
@@ -1696,14 +1606,19 @@ impl ClientHandle {
         }
 
         shared.state.active_server = Some(server_id.clone());
-        init_event_state_on_shared(&mut shared,&server_id);
+        init_event_state_on_shared(&mut shared, &server_id);
 
         // Fix the event_state owner to be the ACTUAL server owner from the invite,
         // not the joining peer. This is critical for permission checks -- without it,
         // the actual owner's events (CreateChannel, etc.) get rejected.
         shared.state.event_state.owner = accepted.owner.clone();
         // Also add the owner as a member so permissions work.
-        if !shared.state.event_state.members.contains_key(&accepted.owner) {
+        if !shared
+            .state
+            .event_state
+            .members
+            .contains_key(&accepted.owner)
+        {
             shared.state.event_state.members.insert(
                 accepted.owner.clone(),
                 willow_state::Member {
@@ -1732,12 +1647,12 @@ impl ClientHandle {
             });
         if let Some(ctx) = shared.state.servers.get(&server_id) {
             for topic in ctx.topic_map.keys() {
-                let _ = self.cmd_tx.unbounded_send(
-                    network::NetworkCommand::RequestSync {
+                let _ = self
+                    .cmd_tx
+                    .unbounded_send(network::NetworkCommand::RequestSync {
                         state_hash: willow_state::StateHash::ZERO,
                         topic: Some(topic.clone()),
-                    },
-                );
+                    });
             }
         }
 
@@ -1853,8 +1768,7 @@ impl ClientHandle {
         let shared = self.shared.borrow();
         // Collect ALL channel_ids that map to this channel name.
         // This handles the ID mismatch between owner and joiner.
-        let mut channel_ids: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let mut channel_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         // From topic_map (legacy).
         if let Some(ctx) = shared.state.active() {
@@ -1907,9 +1821,7 @@ impl ClientHandle {
                                 .profiles
                                 .get(&pm.author)
                                 .map(|p| p.display_name.clone())
-                                .unwrap_or_else(|| {
-                                    shared.state.profiles.display_name(&pm.author)
-                                });
+                                .unwrap_or_else(|| shared.state.profiles.display_name(&pm.author));
                             let text = if pm.body.len() > 50 {
                                 format!("{}...", &pm.body[..50])
                             } else {
@@ -1933,9 +1845,7 @@ impl ClientHandle {
                                     .profiles
                                     .get(pid)
                                     .map(|p| p.display_name.clone())
-                                    .unwrap_or_else(|| {
-                                        shared.state.profiles.display_name(pid)
-                                    })
+                                    .unwrap_or_else(|| shared.state.profiles.display_name(pid))
                             })
                             .collect();
                         (emoji.clone(), names)
@@ -2089,12 +1999,7 @@ impl ClientHandle {
 
     /// Returns the current channel name from the chat state.
     pub fn current_channel(&self) -> String {
-        self.shared
-            .borrow()
-            .state
-            .chat
-            .current_channel
-            .clone()
+        self.shared.borrow().state.chat.current_channel.clone()
     }
 
     /// Returns unread counts keyed by channel name for the active server.
@@ -2239,8 +2144,7 @@ fn emit_client_events_for(
                 let topic = util::make_topic(&ctx.server, name);
                 if !ctx.topic_map.contains_key(&topic) {
                     let cid = willow_channel::ChannelId(
-                        uuid::Uuid::parse_str(channel_id)
-                            .unwrap_or_else(|_| uuid::Uuid::new_v4()),
+                        uuid::Uuid::parse_str(channel_id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
                     );
                     ctx.topic_map.insert(topic.clone(), (name.clone(), cid));
                     // The caller (process_batch) will handle subscribing via cmd_tx if needed.
@@ -2420,10 +2324,7 @@ impl ClientEventLoop {
 
     /// Process a batch of network events, returning the resulting client events
     /// and a flag indicating whether state verification should be triggered.
-    fn process_batch(
-        &self,
-        net_events: Vec<network::NetworkEvent>,
-    ) -> (Vec<ClientEvent>, bool) {
+    fn process_batch(&self, net_events: Vec<network::NetworkEvent>) -> (Vec<ClientEvent>, bool) {
         let mut events = Vec::new();
         let mut needs_verify = false;
 
@@ -2446,8 +2347,7 @@ impl ClientEventLoop {
 
                     let mut shared = self.shared.borrow_mut();
                     // Apply to event-sourced state.
-                    let result =
-                        willow_state::apply_lenient(&mut shared.state.event_state, &event);
+                    let result = willow_state::apply_lenient(&mut shared.state.event_state, &event);
                     if matches!(result, willow_state::ApplyResult::Applied) {
                         shared.state.event_store.append(event.clone());
                         let hash = shared.state.event_state.hash();
@@ -2477,9 +2377,11 @@ impl ClientEventLoop {
                     if !missing.is_empty() {
                         let count = missing.len();
                         tracing::info!(count, "sending event sync batch");
-                        let _ = self.cmd_tx.unbounded_send(
-                            network::NetworkCommand::SendSyncBatch { events: missing },
-                        );
+                        let _ =
+                            self.cmd_tx
+                                .unbounded_send(network::NetworkCommand::SendSyncBatch {
+                                    events: missing,
+                                });
                     }
                 }
 
@@ -2603,9 +2505,7 @@ impl ClientEventLoop {
                 network::NetworkEvent::TypingReceived { peer_id, channel } => {
                     let mut shared = self.shared.borrow_mut();
                     let now = util::current_time_ms();
-                    shared
-                        .typing_peers
-                        .insert(peer_id.clone(), (channel, now));
+                    shared.typing_peers.insert(peer_id.clone(), (channel, now));
                     // Also track as online peer.
                     if !shared.state.chat.peers.contains(&peer_id) {
                         shared.state.chat.peers.push(peer_id.clone());
@@ -2695,10 +2595,7 @@ impl ClientEventLoop {
         apply_event_on_shared(&mut shared, &event);
         let _ = self
             .cmd_tx
-            .unbounded_send(network::NetworkCommand::BroadcastEvent {
-                event,
-                topic: None,
-            });
+            .unbounded_send(network::NetworkCommand::BroadcastEvent { event, topic: None });
     }
 }
 
@@ -2755,7 +2652,10 @@ fn parse_permission(s: &str) -> anyhow::Result<willow_channel::Permission> {
 /// Create a test-only ClientHandle without connecting to the network.
 /// The returned client has mpsc channels wired up but no background task.
 #[cfg(test)]
-pub(crate) fn test_client() -> (ClientHandle, futures_mpsc::UnboundedReceiver<network::NetworkCommand>) {
+pub(crate) fn test_client() -> (
+    ClientHandle,
+    futures_mpsc::UnboundedReceiver<network::NetworkCommand>,
+) {
     let identity = Identity::generate();
     let (cmd_tx, cmd_rx) = futures_mpsc::unbounded();
     let (_event_tx, event_rx) = futures_mpsc::unbounded::<network::NetworkEvent>();
@@ -2971,10 +2871,7 @@ mod tests {
         client.create_channel("other").unwrap();
         client.switch_channel("general");
 
-        assert_eq!(
-            client.shared.borrow().state.chat.current_channel,
-            "general"
-        );
+        assert_eq!(client.shared.borrow().state.chat.current_channel, "general");
     }
 
     #[test]
@@ -3055,10 +2952,8 @@ mod tests {
         let (client, _rx) = test_client();
 
         // Create a second server context.
-        let server2 = willow_channel::Server::new(
-            "Second Server",
-            client.shared.borrow().identity.peer_id(),
-        );
+        let server2 =
+            willow_channel::Server::new("Second Server", client.shared.borrow().identity.peer_id());
         let server2_id = server2.id.to_string();
         let ctx2 = ServerContext {
             server: server2,
@@ -3073,13 +2968,7 @@ mod tests {
             .servers
             .insert(server2_id.clone(), ctx2);
 
-        let original_id = client
-            .shared
-            .borrow()
-            .state
-            .active_server
-            .clone()
-            .unwrap();
+        let original_id = client.shared.borrow().state.active_server.clone().unwrap();
         assert_ne!(original_id, server2_id);
 
         client.switch_server(&server2_id);
@@ -3287,13 +3176,7 @@ mod tests {
         // Send a message on server 1.
         client.send_message("general", "server1 msg").unwrap();
 
-        let server1_id = client
-            .shared
-            .borrow()
-            .state
-            .active_server
-            .clone()
-            .unwrap();
+        let server1_id = client.shared.borrow().state.active_server.clone().unwrap();
 
         // When viewing server 1, see server 1 messages.
         let msgs = client.messages("general");
@@ -3324,10 +3207,8 @@ mod tests {
         assert_eq!(list[0].1, "Test Server");
 
         // Add a second server.
-        let server2 = willow_channel::Server::new(
-            "Second",
-            client.shared.borrow().identity.peer_id(),
-        );
+        let server2 =
+            willow_channel::Server::new("Second", client.shared.borrow().identity.peer_id());
         let server2_id = server2.id.to_string();
         client.shared.borrow_mut().state.servers.insert(
             server2_id,
@@ -3401,12 +3282,8 @@ mod tests {
 
         // Send 2 messages to each channel.
         for name in &ch_names {
-            client
-                .send_message(name, &format!("{name} msg 1"))
-                .unwrap();
-            client
-                .send_message(name, &format!("{name} msg 2"))
-                .unwrap();
+            client.send_message(name, &format!("{name} msg 1")).unwrap();
+            client.send_message(name, &format!("{name} msg 2")).unwrap();
         }
 
         // Verify messages() returns correct messages per channel.
@@ -3535,10 +3412,7 @@ mod tests {
                 display_name: "EventAlice".into(),
             },
         };
-        willow_state::apply_lenient(
-            &mut client.shared.borrow_mut().state.event_state,
-            &event,
-        );
+        willow_state::apply_lenient(&mut client.shared.borrow_mut().state.event_state, &event);
 
         // Verify display_name() reads from event_state.profiles.
         assert_eq!(
@@ -3795,10 +3669,7 @@ mod tests {
         }
 
         client.create_server("Test").unwrap();
-        assert_eq!(
-            client.shared.borrow().state.chat.current_channel,
-            "general"
-        );
+        assert_eq!(client.shared.borrow().state.chat.current_channel, "general");
     }
 
     #[test]
@@ -3958,7 +3829,13 @@ mod tests {
     #[test]
     fn seen_message_ids_prevents_duplicates() {
         let (client, _rx) = test_client();
-        assert!(client.shared.borrow().state.chat.seen_message_ids.is_empty());
+        assert!(client
+            .shared
+            .borrow()
+            .state
+            .chat
+            .seen_message_ids
+            .is_empty());
 
         client.send_message("general", "test").unwrap();
         let _ = client.shared.borrow().state.chat.seen_message_ids.len();
