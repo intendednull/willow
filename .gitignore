@@ -3,3 +3,8 @@ dist
 project/.obsidian/
 web/pkg/
 .claude/settings.local.json
+
+# Playwright
+node_modules/
+test-results/
+playwright-report/

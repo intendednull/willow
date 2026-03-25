@@ -51,8 +51,16 @@ test-e2e:
 test-browser:
     wasm-pack test --headless --firefox crates/web
 
-# Run ALL tests including browser tests
-test-all: test test-browser
+# Run Playwright E2E tests against deployed site
+test-e2e-ui:
+    npx playwright test
+
+# Run Playwright E2E tests against deployed site (headed, for debugging)
+test-e2e-ui-headed:
+    npx playwright test --headed
+
+# Run ALL tests including browser and E2E
+test-all: test test-browser test-e2e-ui
 
 # Check native compilation
 check-native:
