@@ -1,15 +1,16 @@
 use leptos::prelude::*;
 
-use crate::app::ClientHandle;
+use crate::app::WebClientHandle;
 
 /// Right sidebar showing connected peers with trust/kick actions.
 /// Accepts `(peer_id, display_name)` tuples so names update reactively.
 #[component]
 pub fn MemberList(
     peers: ReadSignal<Vec<(String, String, bool)>>,
-    client: ClientHandle,
     peer_id: ReadSignal<String>,
 ) -> impl IntoView {
+    let handle = use_context::<WebClientHandle>().unwrap();
+
     view! {
         <div class="member-list">
             <h3>"Members"</h3>
@@ -25,10 +26,10 @@ pub fn MemberList(
                     let pid_untrust = pid.clone();
                     let pid_kick = pid.clone();
                     let pid_self = pid.clone();
-                    let client_badge = client.clone();
-                    let client_trust = client.clone();
-                    let client_untrust = client.clone();
-                    let client_kick = client.clone();
+                    let handle_badge = handle.clone();
+                    let handle_trust = handle.clone();
+                    let handle_untrust = handle.clone();
+                    let handle_kick = handle.clone();
                     view! {
                         <div class="member-item">
                             <div class={if is_online { "status-dot" } else { "status-dot offline" }}></div>
@@ -41,15 +42,12 @@ pub fn MemberList(
                             </span>
                             {
                                 let pb = pid_badge.clone();
-                                let cb = client_badge.clone();
+                                let hb = handle_badge.clone();
                                 move || {
-                                    let c = cb.borrow();
-                                    let owner = c.state().event_state.owner.clone();
+                                    let owner = hb.server_owner();
                                     if pb == owner {
                                         Some(view! { <span class="badge owner-badge">"Owner"</span> })
-                                    } else if c.state().event_state
-                                        .has_permission(&pb, &willow_client::willow_state::Permission::Administrator)
-                                    {
+                                    } else if hb.has_permission(&pb, &willow_client::willow_state::Permission::Administrator) {
                                         Some(view! { <span class="badge trusted-badge">"Trusted"</span> })
                                     } else {
                                         None
@@ -63,29 +61,27 @@ pub fn MemberList(
                                         move || peer_id.get() == p
                                     };
                                     let pt = pid_trust.clone();
-                                    let ct = client_trust.clone();
+                                    let ht = handle_trust.clone();
                                     let pu = pid_untrust.clone();
-                                    let cu = client_untrust.clone();
+                                    let hu = handle_untrust.clone();
                                     let pk = pid_kick.clone();
-                                    let ck = client_kick.clone();
+                                    let hk = handle_kick.clone();
+                                    let hb2 = handle_badge.clone();
                                     move || {
-                                        let is_owner = {
-                                            let c = client_badge.borrow();
-                                            c.state().event_state.owner == peer_id.get_untracked()
-                                        };
+                                        let is_owner = hb2.server_owner() == peer_id.get_untracked();
                                         if is_self() || !is_owner {
                                             None
                                         } else {
                                             let pt = pt.clone();
-                                            let ct = ct.clone();
+                                            let ht = ht.clone();
                                             let pu = pu.clone();
-                                            let cu = cu.clone();
+                                            let hu = hu.clone();
                                             let pk = pk.clone();
-                                            let ck = ck.clone();
+                                            let hk = hk.clone();
                                             Some(view! {
-                                                <button class="btn btn-sm" on:click=move |_| { ct.borrow_mut().trust_peer(&pt); }>"Trust"</button>
-                                                <button class="btn btn-sm" on:click=move |_| { cu.borrow_mut().untrust_peer(&pu); }>"Untrust"</button>
-                                                <button class="btn btn-sm btn-danger" on:click=move |_| { let _ = ck.borrow_mut().kick_member(&pk); }>"Kick"</button>
+                                                <button class="btn btn-sm" on:click=move |_| { ht.trust_peer(&pt); }>"Trust"</button>
+                                                <button class="btn btn-sm" on:click=move |_| { hu.untrust_peer(&pu); }>"Untrust"</button>
+                                                <button class="btn btn-sm btn-danger" on:click=move |_| { let _ = hk.kick_member(&pk); }>"Kick"</button>
                                             })
                                         }
                                     }

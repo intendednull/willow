@@ -1,33 +1,30 @@
 use leptos::prelude::*;
 
-use crate::app::ClientHandle;
+use crate::app::WebClientHandle;
 use crate::util::copy_to_clipboard;
 
-/// Profile settings panel — display name, relay address, peer ID.
+/// Profile settings panel -- display name, relay address, peer ID.
 #[component]
 pub fn SettingsPanel(
-    client: ClientHandle,
     peer_id: ReadSignal<String>,
     on_server_settings: impl Fn(()) + Send + Clone + 'static,
 ) -> impl IntoView {
+    let handle = use_context::<WebClientHandle>().unwrap();
+
     let (display_name, set_display_name) = signal(String::new());
     let (status_msg, set_status_msg) = signal(String::new());
     let (server_name, set_server_name) = signal(String::new());
 
     // Initialize from client.
-    {
-        let c = client.borrow();
-        set_display_name.set(c.server_display_name());
-        set_server_name.set(c.active_server_name());
-    }
+    set_display_name.set(handle.server_display_name());
+    set_server_name.set(handle.active_server_name());
 
     // Save handler.
-    let client_save = client.clone();
+    let handle_save = handle.clone();
     let on_save = move |_| {
         let name = display_name.get_untracked();
-        let mut c = client_save.borrow_mut();
         if !name.trim().is_empty() {
-            let _ = c.set_server_display_name(name.trim());
+            let _ = handle_save.set_server_display_name(name.trim());
         }
         set_status_msg.set("Saved.".to_string());
     };

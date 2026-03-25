@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 
-use crate::app::ClientHandle;
+use crate::app::WebClientHandle;
 
 /// List of all permission names that can be toggled on a role.
 const PERMISSION_NAMES: &[&str] = &[
@@ -23,30 +23,29 @@ type RoleEntry = (String, String, Vec<String>);
 /// permission toggles, assign). Non-owners see a read-only list.
 #[component]
 pub fn RoleManager(
-    client: ClientHandle,
     peer_id: ReadSignal<String>,
     #[prop(into)] roles: Signal<Vec<RoleEntry>>,
 ) -> impl IntoView {
+    let handle = use_context::<WebClientHandle>().unwrap();
+
     let (creating, set_creating) = signal(false);
     let (new_name, set_new_name) = signal(String::new());
     let (assign_peer, set_assign_peer) = signal(String::new());
 
     // Determine if the local user is the server owner.
-    let client_owner = client.clone();
+    let handle_owner = handle.clone();
     let is_owner = move || {
-        let c = client_owner.borrow();
         let pid = peer_id.get();
-        c.state().event_state.owner == pid
+        handle_owner.server_owner() == pid
     };
 
     // Create role handler.
-    let client_create = client.clone();
+    let handle_create = handle.clone();
     let on_create_submit = move || {
         let name = new_name.get_untracked();
         let name = name.trim().to_string();
         if !name.is_empty() {
-            let mut c = client_create.borrow_mut();
-            let _ = c.create_role(&name);
+            let _ = handle_create.create_role(&name);
         }
         set_new_name.set(String::new());
         set_creating.set(false);
@@ -127,9 +126,9 @@ pub fn RoleManager(
                     let role_id_delete = role_id.clone();
                     let role_id_perms = role_id.clone();
                     let role_id_assign = role_id.clone();
-                    let client_delete = client.clone();
-                    let client_perm = client.clone();
-                    let client_assign = client.clone();
+                    let handle_delete = handle.clone();
+                    let handle_perm = handle.clone();
+                    let handle_assign = handle.clone();
                     let owner_check = is_owner.clone();
                     view! {
                         <div class="role-item">
@@ -137,19 +136,18 @@ pub fn RoleManager(
                                 <span class="role-name">{role_name}</span>
                                 {
                                     let oc = owner_check.clone();
-                                    let cd = client_delete.clone();
+                                    let hd = handle_delete.clone();
                                     let rid = role_id_delete.clone();
                                     move || {
                                         if oc() {
-                                            let cd = cd.clone();
+                                            let hd = hd.clone();
                                             let rid = rid.clone();
                                             Some(view! {
                                                 <button
                                                     class="role-delete-btn"
                                                     title="Delete role"
                                                     on:click=move |_| {
-                                                        let mut c = cd.borrow_mut();
-                                                        let _ = c.delete_role(&rid);
+                                                        let _ = hd.delete_role(&rid);
                                                     }
                                                 >
                                                     "x"
@@ -166,7 +164,7 @@ pub fn RoleManager(
                             <div class="permission-toggles">
                                 {
                                     let oc = owner_check.clone();
-                                    let cp = client_perm.clone();
+                                    let hp = handle_perm.clone();
                                     let rid = role_id_perms.clone();
                                     let perms = permissions.clone();
                                     PERMISSION_NAMES.iter().map(|perm_name| {
@@ -175,7 +173,7 @@ pub fn RoleManager(
                                         let perm_check = perm.clone();
                                         let perm_toggle = perm.clone();
                                         let rid_t = rid.clone();
-                                        let cp_t = cp.clone();
+                                        let hp_t = hp.clone();
                                         let oc_t = oc.clone();
                                         let checked = perms.contains(&perm_check);
                                         view! {
@@ -186,8 +184,7 @@ pub fn RoleManager(
                                                     prop:disabled=move || !oc_t()
                                                     on:change=move |ev| {
                                                         let granted = event_target_checked(&ev);
-                                                        let mut c = cp_t.borrow_mut();
-                                                        let _ = c.set_permission(&rid_t, &perm_toggle, granted);
+                                                        let _ = hp_t.set_permission(&rid_t, &perm_toggle, granted);
                                                     }
                                                 />
                                                 <span>{perm_label}</span>
@@ -200,11 +197,11 @@ pub fn RoleManager(
                             // Assign role to peer (owner only).
                             {
                                 let oc = owner_check.clone();
-                                let ca = client_assign.clone();
+                                let ha = handle_assign.clone();
                                 let rid = role_id_assign.clone();
                                 move || {
                                     if oc() {
-                                        let ca = ca.clone();
+                                        let ha = ha.clone();
                                         let rid = rid.clone();
                                         Some(view! {
                                             <div class="role-assign">
@@ -220,8 +217,7 @@ pub fn RoleManager(
                                                     on:click=move |_| {
                                                         let pid = assign_peer.get_untracked();
                                                         if !pid.trim().is_empty() {
-                                                            let mut c = ca.borrow_mut();
-                                                            let _ = c.assign_role(pid.trim(), &rid);
+                                                            let _ = ha.assign_role(pid.trim(), &rid);
                                                             set_assign_peer.set(String::new());
                                                         }
                                                     }

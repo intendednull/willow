@@ -166,8 +166,8 @@ pub fn build_network_config(relay_addr: Option<&str>) -> willow_network::Network
 #[cfg(not(target_arch = "wasm32"))]
 pub fn spawn_network(
     identity: willow_identity::Identity,
-    event_tx: std::sync::mpsc::Sender<NetworkEvent>,
-    cmd_rx: std::sync::mpsc::Receiver<NetworkCommand>,
+    event_tx: futures::channel::mpsc::UnboundedSender<NetworkEvent>,
+    cmd_rx: futures::channel::mpsc::UnboundedReceiver<NetworkCommand>,
     config: willow_network::NetworkConfig,
 ) {
     std::thread::spawn(move || {
@@ -181,10 +181,11 @@ pub fn spawn_network(
 #[cfg(not(target_arch = "wasm32"))]
 async fn run_network(
     identity: willow_identity::Identity,
-    event_tx: std::sync::mpsc::Sender<NetworkEvent>,
-    cmd_rx: std::sync::mpsc::Receiver<NetworkCommand>,
+    event_tx: futures::channel::mpsc::UnboundedSender<NetworkEvent>,
+    mut cmd_rx: futures::channel::mpsc::UnboundedReceiver<NetworkCommand>,
     config: willow_network::NetworkConfig,
 ) -> anyhow::Result<()> {
+    use futures::StreamExt;
     use willow_network::{file_transfer::ChunkResponse, NetworkEvent as NetEvt, NetworkNode};
 
     let (node, mut events) = NetworkNode::start(identity, config).await?;
@@ -202,7 +203,7 @@ async fn run_network(
                         {
                             let from = source.map(|p| p.to_string()).unwrap_or_default();
                             file_mgr.register_manifest(manifest.clone());
-                            let _ = event_tx.send(NetworkEvent::FileAnnounced {
+                            let _ = event_tx.unbounded_send(NetworkEvent::FileAnnounced {
                                 filename: manifest.filename.clone(),
                                 mime_type: manifest.mime_type.clone(),
                                 size: manifest.total_size,
@@ -213,7 +214,7 @@ async fn run_network(
                         } else if let Ok((profile, willow_transport::MessageType::Identity)) =
                             willow_transport::unpack_envelope::<willow_identity::UserProfile>(&data)
                         {
-                            let _ = event_tx.send(NetworkEvent::ProfileReceived {
+                            let _ = event_tx.unbounded_send(NetworkEvent::ProfileReceived {
                                 peer_id: profile.peer_id.to_string(),
                                 display_name: profile.display_name,
                             });
@@ -225,45 +226,45 @@ async fn run_network(
                             let from = signer.to_string();
                             match wire_msg {
                                 crate::ops::WireMessage::Event(event) => {
-                                    let _ = event_tx.send(NetworkEvent::EventReceived {
+                                    let _ = event_tx.unbounded_send(NetworkEvent::EventReceived {
                                         event,
                                         from,
                                     });
                                 }
                                 crate::ops::WireMessage::SyncRequest { state_hash, topic } => {
-                                    let _ = event_tx.send(NetworkEvent::SyncRequested {
+                                    let _ = event_tx.unbounded_send(NetworkEvent::SyncRequested {
                                         state_hash,
                                         from,
                                         topic,
                                     });
                                 }
                                 crate::ops::WireMessage::SyncBatch { events } => {
-                                    let _ = event_tx.send(NetworkEvent::SyncBatchReceived {
+                                    let _ = event_tx.unbounded_send(NetworkEvent::SyncBatchReceived {
                                         events,
                                         from,
                                     });
                                 }
                                 crate::ops::WireMessage::TypingIndicator { channel } => {
-                                    let _ = event_tx.send(NetworkEvent::TypingReceived {
+                                    let _ = event_tx.unbounded_send(NetworkEvent::TypingReceived {
                                         peer_id: from,
                                         channel,
                                     });
                                 }
                                 crate::ops::WireMessage::VoiceJoin { channel_id, peer_id } => {
-                                    let _ = event_tx.send(NetworkEvent::VoiceJoinReceived {
+                                    let _ = event_tx.unbounded_send(NetworkEvent::VoiceJoinReceived {
                                         channel_id,
                                         peer_id,
                                     });
                                 }
                                 crate::ops::WireMessage::VoiceLeave { channel_id, peer_id } => {
-                                    let _ = event_tx.send(NetworkEvent::VoiceLeaveReceived {
+                                    let _ = event_tx.unbounded_send(NetworkEvent::VoiceLeaveReceived {
                                         channel_id,
                                         peer_id,
                                     });
                                 }
                                 crate::ops::WireMessage::VoiceSignal { channel_id, target_peer, signal } => {
                                     if target_peer == local_peer_id {
-                                        let _ = event_tx.send(NetworkEvent::VoiceSignalReceived {
+                                        let _ = event_tx.unbounded_send(NetworkEvent::VoiceSignalReceived {
                                             channel_id,
                                             from_peer: from,
                                             signal,
@@ -272,7 +273,7 @@ async fn run_network(
                                 }
                             }
                         } else {
-                            let _ = event_tx.send(NetworkEvent::MessageReceived {
+                            let _ = event_tx.unbounded_send(NetworkEvent::MessageReceived {
                                 topic,
                                 data,
                                 source: source.map(|p| p.to_string()),
@@ -280,13 +281,13 @@ async fn run_network(
                         }
                     }
                     NetEvt::PeerConnected(peer) => {
-                        let _ = event_tx.send(NetworkEvent::PeerConnected(peer.to_string()));
+                        let _ = event_tx.unbounded_send(NetworkEvent::PeerConnected(peer.to_string()));
                     }
                     NetEvt::PeerDisconnected(peer) => {
-                        let _ = event_tx.send(NetworkEvent::PeerDisconnected(peer.to_string()));
+                        let _ = event_tx.unbounded_send(NetworkEvent::PeerDisconnected(peer.to_string()));
                     }
                     NetEvt::Listening(addr) => {
-                        let _ = event_tx.send(NetworkEvent::Listening(addr.to_string()));
+                        let _ = event_tx.unbounded_send(NetworkEvent::Listening(addr.to_string()));
                     }
                     NetEvt::ChunkRequested { channel, hash, .. } => {
                         let response = if let Some(data) = file_mgr.get_chunk(&hash) {
@@ -306,8 +307,8 @@ async fn run_network(
                 }
             }
 
-            _ = tokio::time::sleep(std::time::Duration::from_millis(16)) => {
-                while let Ok(cmd) = cmd_rx.try_recv() {
+            cmd = cmd_rx.next() => {
+                if let Some(cmd) = cmd {
                     handle_network_command(&cmd, &node, &mut file_mgr)?;
                 }
             }
@@ -322,8 +323,8 @@ async fn run_network(
 #[cfg(target_arch = "wasm32")]
 pub fn spawn_network(
     identity: willow_identity::Identity,
-    event_tx: std::sync::mpsc::Sender<NetworkEvent>,
-    cmd_rx: std::sync::mpsc::Receiver<NetworkCommand>,
+    event_tx: futures::channel::mpsc::UnboundedSender<NetworkEvent>,
+    cmd_rx: futures::channel::mpsc::UnboundedReceiver<NetworkCommand>,
     config: willow_network::NetworkConfig,
 ) {
     wasm_bindgen_futures::spawn_local(async move {
@@ -334,8 +335,8 @@ pub fn spawn_network(
 #[cfg(target_arch = "wasm32")]
 async fn run_network_wasm(
     identity: willow_identity::Identity,
-    event_tx: std::sync::mpsc::Sender<NetworkEvent>,
-    cmd_rx: std::sync::mpsc::Receiver<NetworkCommand>,
+    event_tx: futures::channel::mpsc::UnboundedSender<NetworkEvent>,
+    mut cmd_rx: futures::channel::mpsc::UnboundedReceiver<NetworkCommand>,
     config: willow_network::NetworkConfig,
 ) -> anyhow::Result<()> {
     use futures::StreamExt;
@@ -344,13 +345,6 @@ async fn run_network_wasm(
     let (node, mut events) = NetworkNode::start(identity, config).await?;
     let mut file_mgr = crate::files::FileManager::new();
     let local_peer_id = node.peer_id().to_string();
-
-    // Create a 16ms interval for polling commands (like native's tokio::time::sleep).
-    let mut tick = Box::pin(futures::stream::unfold((), |_| async {
-        gloo_timers::future::TimeoutFuture::new(16).await;
-        Some(((), ()))
-    }))
-    .fuse();
 
     loop {
         futures::select! {
@@ -362,7 +356,7 @@ async fn run_network_wasm(
                         if let Ok((profile, willow_transport::MessageType::Identity)) =
                             willow_transport::unpack_envelope::<willow_identity::UserProfile>(&data)
                         {
-                            let _ = event_tx.send(NetworkEvent::ProfileReceived {
+                            let _ = event_tx.unbounded_send(NetworkEvent::ProfileReceived {
                                 peer_id: profile.peer_id.to_string(),
                                 display_name: profile.display_name,
                             });
@@ -374,45 +368,45 @@ async fn run_network_wasm(
                             let from = signer.to_string();
                             match wire_msg {
                                 crate::ops::WireMessage::Event(event) => {
-                                    let _ = event_tx.send(NetworkEvent::EventReceived {
+                                    let _ = event_tx.unbounded_send(NetworkEvent::EventReceived {
                                         event,
                                         from,
                                     });
                                 }
                                 crate::ops::WireMessage::SyncRequest { state_hash, topic } => {
-                                    let _ = event_tx.send(NetworkEvent::SyncRequested {
+                                    let _ = event_tx.unbounded_send(NetworkEvent::SyncRequested {
                                         state_hash,
                                         from,
                                         topic,
                                     });
                                 }
                                 crate::ops::WireMessage::SyncBatch { events } => {
-                                    let _ = event_tx.send(NetworkEvent::SyncBatchReceived {
+                                    let _ = event_tx.unbounded_send(NetworkEvent::SyncBatchReceived {
                                         events,
                                         from,
                                     });
                                 }
                                 crate::ops::WireMessage::TypingIndicator { channel } => {
-                                    let _ = event_tx.send(NetworkEvent::TypingReceived {
+                                    let _ = event_tx.unbounded_send(NetworkEvent::TypingReceived {
                                         peer_id: from,
                                         channel,
                                     });
                                 }
                                 crate::ops::WireMessage::VoiceJoin { channel_id, peer_id } => {
-                                    let _ = event_tx.send(NetworkEvent::VoiceJoinReceived {
+                                    let _ = event_tx.unbounded_send(NetworkEvent::VoiceJoinReceived {
                                         channel_id,
                                         peer_id,
                                     });
                                 }
                                 crate::ops::WireMessage::VoiceLeave { channel_id, peer_id } => {
-                                    let _ = event_tx.send(NetworkEvent::VoiceLeaveReceived {
+                                    let _ = event_tx.unbounded_send(NetworkEvent::VoiceLeaveReceived {
                                         channel_id,
                                         peer_id,
                                     });
                                 }
                                 crate::ops::WireMessage::VoiceSignal { channel_id, target_peer, signal } => {
                                     if target_peer == local_peer_id {
-                                        let _ = event_tx.send(NetworkEvent::VoiceSignalReceived {
+                                        let _ = event_tx.unbounded_send(NetworkEvent::VoiceSignalReceived {
                                             channel_id,
                                             from_peer: from,
                                             signal,
@@ -421,7 +415,7 @@ async fn run_network_wasm(
                                 }
                             }
                         } else {
-                            let _ = event_tx.send(NetworkEvent::MessageReceived {
+                            let _ = event_tx.unbounded_send(NetworkEvent::MessageReceived {
                                 topic,
                                 data,
                                 source: source.map(|p| p.to_string()),
@@ -429,27 +423,25 @@ async fn run_network_wasm(
                         }
                     }
                     NetEvt::PeerConnected(peer) => {
-                        let _ = event_tx.send(NetworkEvent::PeerConnected(peer.to_string()));
+                        let _ = event_tx.unbounded_send(NetworkEvent::PeerConnected(peer.to_string()));
                     }
                     NetEvt::PeerDisconnected(peer) => {
-                        let _ = event_tx.send(NetworkEvent::PeerDisconnected(peer.to_string()));
+                        let _ = event_tx.unbounded_send(NetworkEvent::PeerDisconnected(peer.to_string()));
                     }
                     NetEvt::Listening(addr) => {
-                        let _ = event_tx.send(NetworkEvent::Listening(addr.to_string()));
+                        let _ = event_tx.unbounded_send(NetworkEvent::Listening(addr.to_string()));
                     }
                     _ => {}
                 }
             }
 
-            // Poll commands every 16ms so messages get sent promptly.
-            _ = tick.next() => {}
+            cmd = cmd_rx.next() => {
+                if let Some(cmd) = cmd {
+                    handle_network_command(&cmd, &node, &mut file_mgr)?;
+                }
+            }
 
             complete => break,
-        }
-
-        // Process any queued commands after either arm fires.
-        while let Ok(cmd) = cmd_rx.try_recv() {
-            handle_network_command(&cmd, &node, &mut file_mgr)?;
         }
     }
 

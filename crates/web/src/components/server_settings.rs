@@ -1,39 +1,36 @@
 use leptos::prelude::*;
 
-use crate::app::ClientHandle;
+use crate::app::WebClientHandle;
 use crate::components::RoleManager;
 use crate::util::copy_to_clipboard;
 
 /// A single role entry: (role_id, role_name, list of granted permission strings).
 type RoleEntry = (String, String, Vec<String>);
 
-/// Server settings panel — invite generation, role management, and server info.
+/// Server settings panel -- invite generation, role management, and server info.
 #[component]
 pub fn ServerSettingsPanel(
-    client: ClientHandle,
     peer_id: ReadSignal<String>,
     #[prop(into)] roles: Signal<Vec<RoleEntry>>,
     on_back: impl Fn(()) + Send + Clone + 'static,
 ) -> impl IntoView {
+    let handle = use_context::<WebClientHandle>().unwrap();
+
     let (invite_peer, set_invite_peer) = signal(String::new());
     let (invite_code, set_invite_code) = signal(String::new());
     let (status_msg, set_status_msg) = signal(String::new());
 
-    let server_name = {
-        let c = client.borrow();
-        c.active_server_name()
-    };
+    let server_name = handle.active_server_name();
 
     // Generate invite handler.
-    let client_invite = client.clone();
+    let handle_invite = handle.clone();
     let on_generate_invite = move |_| {
         let recipient = invite_peer.get_untracked();
         if recipient.trim().is_empty() {
             set_status_msg.set("Enter a recipient Peer ID.".to_string());
             return;
         }
-        let c = client_invite.borrow();
-        match c.generate_invite(recipient.trim()) {
+        match handle_invite.generate_invite(recipient.trim()) {
             Ok(code) => {
                 set_invite_code.set(code);
                 set_status_msg.set("Invite generated.".to_string());
@@ -121,7 +118,6 @@ pub fn ServerSettingsPanel(
             // Role management section.
             <div class="settings-section role-section">
                 <RoleManager
-                    client=client.clone()
                     peer_id=peer_id
                     roles=roles
                 />

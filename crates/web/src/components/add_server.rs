@@ -3,15 +3,14 @@ use std::rc::Rc;
 use leptos::prelude::*;
 use send_wrapper::SendWrapper;
 
-use crate::app::ClientHandle;
+use crate::app::WebClientHandle;
 
 /// Panel for creating a new server or joining an existing one via invite code.
 /// Shown when the user clicks the "+" button in the server rail.
 #[component]
-pub fn AddServerPanel(
-    client: ClientHandle,
-    on_done: impl Fn(()) + Send + Clone + 'static,
-) -> impl IntoView {
+pub fn AddServerPanel(on_done: impl Fn(()) + Send + Clone + 'static) -> impl IntoView {
+    let handle = use_context::<WebClientHandle>().unwrap();
+
     // Create server state.
     let (server_name, set_server_name) = signal(String::new());
     let (create_display_name, set_create_display_name) = signal(String::new());
@@ -23,13 +22,10 @@ pub fn AddServerPanel(
     let (join_profile_name, set_join_profile_name) = signal(String::new());
     let (validated_code, set_validated_code) = signal(String::new());
 
-    {
-        let c = client.borrow();
-        set_join_profile_name.set(c.display_name());
-    }
+    set_join_profile_name.set(handle.display_name());
 
     // Create handler.
-    let client_create = client.clone();
+    let handle_create = handle.clone();
     let on_done_create = on_done.clone();
     let on_create = move |_| {
         let name = server_name.get_untracked();
@@ -37,14 +33,12 @@ pub fn AddServerPanel(
             set_status_msg.set("Please enter a server name.".to_string());
             return;
         }
-        let mut c = client_create.borrow_mut();
-        match c.create_server(name.trim()) {
+        match handle_create.create_server(name.trim()) {
             Ok(_) => {
                 let dn = create_display_name.get_untracked();
                 if !dn.trim().is_empty() {
-                    let _ = c.set_server_display_name(dn.trim());
+                    let _ = handle_create.set_server_display_name(dn.trim());
                 }
-                drop(c);
                 on_done_create(());
             }
             Err(e) => set_status_msg.set(format!("Error: {e}")),
@@ -64,7 +58,7 @@ pub fn AddServerPanel(
     };
 
     // Join step 2.
-    let client_join = SendWrapper::new(Rc::new(client.clone()));
+    let handle_join = SendWrapper::new(Rc::new(handle.clone()));
     let on_done_rc: SendWrapper<Rc<dyn Fn(())>> =
         SendWrapper::new(Rc::new(on_done) as Rc<dyn Fn(())>);
 
@@ -103,20 +97,18 @@ pub fn AddServerPanel(
                 <h3>"Join a Server"</h3>
                 {move || {
                     if join_step.get() {
-                        let cj = client_join.clone();
+                        let hj = handle_join.clone();
                         let done_cb = on_done_rc.clone();
                         let confirm = move |_: web_sys::MouseEvent| {
                             let code = validated_code.get_untracked();
-                            let mut c = cj.borrow_mut();
-                            match c.accept_invite(&code) {
+                            match hj.accept_invite(&code) {
                                 Ok(()) => {
                                     let name = join_profile_name.get_untracked();
                                     if !name.trim().is_empty() {
-                                        let _ = c.set_server_display_name(name.trim());
+                                        let _ = hj.set_server_display_name(name.trim());
                                     }
                                     set_join_code.set(String::new());
                                     set_join_step.set(false);
-                                    drop(c);
                                     (done_cb)(());
                                 }
                                 Err(e) => {

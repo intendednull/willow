@@ -1,15 +1,17 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use leptos::prelude::*;
 use send_wrapper::SendWrapper;
-use willow_client::{Client, ClientConfig, ClientEvent, DisplayMessage, VoiceSignalPayload};
+use willow_client::{ClientConfig, ClientEvent, ClientHandle, DisplayMessage, VoiceSignalPayload};
 
 use crate::components::{
     AddServerPanel, ChannelHeader, ChatInput, FileShareButton, MemberList, MessageList,
     PinnedPanel, ServerList, ServerSettingsPanel, SettingsPanel, Sidebar, WelcomeScreen,
 };
+use crate::event_processing::{extract_roles, process_event_batch, refresh_all_signals};
+use crate::handlers;
+use crate::state::{self, ChannelViewState};
 use crate::voice::VoiceManager;
 
 // Notification sounds disabled for now.
@@ -30,8 +32,8 @@ pub fn toggle_theme() {
 /// How many milliseconds to wait before clearing the loading state automatically.
 const LOADING_TIMEOUT_MS: u32 = 5_000;
 
-/// Wrapper around `Rc<RefCell<Client>>` that is `Send` for single-threaded WASM.
-pub type ClientHandle = SendWrapper<Rc<RefCell<Client>>>;
+/// Wrapper around `willow_client::ClientHandle` that is `Send` for single-threaded WASM.
+pub type WebClientHandle = SendWrapper<ClientHandle>;
 
 /// Wrapper around `Rc<RefCell<VoiceManager>>` that is `Send` for single-threaded WASM.
 pub type VoiceManagerHandle = SendWrapper<Rc<RefCell<VoiceManager>>>;
@@ -40,67 +42,37 @@ pub type VoiceManagerHandle = SendWrapper<Rc<RefCell<VoiceManager>>>;
 pub const DEFAULT_RELAY: &str =
     "/dns4/willow.intendednull.com/tcp/9443/wss/p2p/12D3KooWMBmUF1rHYG5CneKi8JZfKdMAciJd4oCgknTJkbwCUurd";
 
-fn new_client_handle() -> ClientHandle {
+fn new_client() -> (WebClientHandle, willow_client::ClientEventLoop) {
     let config = ClientConfig {
         relay_addr: Some(DEFAULT_RELAY.to_string()),
         ..ClientConfig::default()
     };
-    SendWrapper::new(Rc::new(RefCell::new(Client::new(config))))
+    let (handle, event_loop) = ClientHandle::new(config);
+    (SendWrapper::new(handle), event_loop)
 }
 
-/// Root application component. Creates the `Client`, connects to the P2P
-/// network, and runs a poll loop to bridge client state into reactive signals.
+/// Root application component. Creates the `ClientHandle`, connects to the P2P
+/// network, and spawns async event processing to bridge client state into
+/// reactive signals.
 #[component]
 pub fn App() -> impl IntoView {
     init_theme();
 
     // Create and connect the client.
-    let client = new_client_handle();
+    let (handle, event_loop) = new_client();
+    handle.connect();
 
-    {
-        let mut c = client.borrow_mut();
-        c.connect();
-    }
+    // Create all signals.
+    let (app_state, write) = state::create_signals();
 
-    // Reactive state signals.
-    let (messages, set_messages) = signal(Vec::<DisplayMessage>::new());
-    let (channels, set_channels) = signal(Vec::<String>::new());
-    let (peers, set_peers) = signal(Vec::<(String, String, bool)>::new());
-    let (current_channel, set_current_channel) = signal(String::from("general"));
-    let (peer_count, set_peer_count) = signal(0usize);
-    let (show_settings, set_show_settings) = signal(false);
-    let (show_server_settings, set_show_server_settings) = signal(false);
-    let (show_sidebar, set_show_sidebar) = signal(false);
-    let (show_members, set_show_members) = signal(false);
-    let (show_add_server, set_show_add_server) = signal(false);
-    let (peer_id, set_peer_id) = signal(String::new());
-    let (servers, set_servers) = signal(Vec::<(String, String)>::new());
-    let (active_server_id, set_active_server_id) = signal(String::new());
-    let (active_server_name, set_active_server_name) = signal(String::new());
-    let (unread, set_unread) = signal(HashMap::<String, usize>::new());
-    let (connection_status, set_connection_status) = signal("connecting".to_string());
-    let (replying_to, set_replying_to) = signal(Option::<DisplayMessage>::None);
-    let (editing, set_editing) = signal(Option::<DisplayMessage>::None);
-    let (loading, set_loading) = signal(true);
-    let (display_name, set_display_name) = signal(String::new());
-    let (roles, set_roles) = signal(Vec::<(String, String, Vec<String>)>::new());
-    let (typing_names, set_typing_names) = signal(Vec::<String>::new());
-    let (show_pinned, set_show_pinned) = signal(false);
-    let (pinned_messages, set_pinned_messages) = signal(Vec::<DisplayMessage>::new());
-    let (pin_labels, set_pin_labels) = signal(HashMap::<String, String>::new());
+    // Provide context so child components can access the handle and state.
+    provide_context(handle.clone());
+    provide_context(app_state);
+    provide_context(write);
 
-    // Voice state signals.
-    let (voice_channel, set_voice_channel) = signal(Option::<String>::None);
-    let (voice_muted, set_voice_muted) = signal(false);
-    let (voice_deafened, set_voice_deafened) = signal(false);
-    let (_voice_participants_map, set_voice_participants_map) =
-        signal(HashMap::<String, Vec<String>>::new());
-    let (voice_channel_name, set_voice_channel_name) = signal(String::new());
-
-    // Create the VoiceManager. The signal callback sends voice signaling
-    // messages back through the client's network.
-    let voice_signal_client = client.clone();
-    let voice_channel_for_signal = voice_channel;
+    // Create the VoiceManager.
+    let voice_signal_handle = handle.clone();
+    let voice_channel_for_signal = app_state.voice.voice_channel;
     let voice_manager: VoiceManagerHandle = SendWrapper::new(Rc::new(RefCell::new(
         VoiceManager::new(move |target_peer: &str, signal_type: &str, payload: &str| {
             let ch_id = voice_channel_for_signal.get_untracked().unwrap_or_default();
@@ -110,382 +82,181 @@ pub fn App() -> impl IntoView {
                 "ice" => VoiceSignalPayload::IceCandidate(payload.to_string()),
                 _ => return,
             };
-            let c = voice_signal_client.borrow();
-            c.send_voice_signal(&ch_id, target_peer, signal);
+            voice_signal_handle.send_voice_signal(&ch_id, target_peer, signal);
         }),
     )));
 
-    // Auto-clear loading after LOADING_TIMEOUT_MS even if no peer connects.
-    set_timeout(
-        move || {
-            set_loading.set(false);
-        },
-        std::time::Duration::from_millis(LOADING_TIMEOUT_MS as u64),
-    );
+    provide_context(voice_manager.clone());
 
-    // Closure that refreshes all signals from the client state. Used after
-    // server creation, joining, and on initial load.
-    let refresh_client = client.clone();
-    let refresh_all_signals: SendWrapper<std::rc::Rc<dyn Fn()>> =
-        SendWrapper::new(std::rc::Rc::new(move || {
-            let c = refresh_client.borrow();
-            set_servers.set(c.server_list());
-            set_channels.set(c.channels());
-            set_peer_id.set(c.peer_id());
-            set_display_name.set(c.display_name());
-            set_roles.set(extract_roles(&c));
-            if let Some(id) = c.active_server_id() {
-                set_active_server_id.set(id.to_string());
-            }
-            set_active_server_name.set(c.active_server_name());
-            let ch = c.state().chat.current_channel.clone();
-            set_current_channel.set(ch.clone());
-            set_messages.set(c.messages(&ch));
-            set_show_settings.set(false);
-            set_show_server_settings.set(false);
-            set_show_add_server.set(false);
-        }));
+    // Auto-clear loading after LOADING_TIMEOUT_MS even if no peer connects.
+    {
+        let w = write;
+        set_timeout(
+            move || {
+                w.network.set_loading.set(false);
+            },
+            std::time::Duration::from_millis(LOADING_TIMEOUT_MS as u64),
+        );
+    }
 
     // Populate initial state from the client.
-    refresh_all_signals();
+    refresh_all_signals(&handle, &write);
 
-    // Poll loop -- drain network events and refresh signals.
-    let client_poll = client.clone();
-    let vm_poll = voice_manager.clone();
-    set_interval(
-        move || {
-            let mut c = client_poll.borrow_mut();
-            let events = c.poll();
-            let mut needs_msg_refresh = false;
-            let mut needs_peer_refresh = false;
-            let mut needs_channel_refresh = false;
+    // Spawn the event loop and signal updater.
+    {
+        let handle_for_events = handle.clone();
+        let write_for_events = write;
+        let state_for_events = app_state;
+        let vm_for_events = voice_manager.clone();
 
-            for event in events {
-                match event {
-                    ClientEvent::MessageReceived { .. } => {
-                        needs_msg_refresh = true;
-                        // Notification sounds disabled for now.
-                    }
-                    ClientEvent::MessageEdited { .. }
-                    | ClientEvent::MessageDeleted { .. }
-                    | ClientEvent::ReactionAdded { .. }
-                    | ClientEvent::SyncCompleted { .. } => {
-                        needs_msg_refresh = true;
-                    }
-                    ClientEvent::PeerConnected(_) => {
-                        needs_peer_refresh = true;
-                        set_connection_status.set("connected".to_string());
-                        set_loading.set(false);
-                    }
-                    ClientEvent::PeerDisconnected(_) => {
-                        needs_peer_refresh = true;
-                    }
-                    ClientEvent::Listening(_) => {
-                        // We are listening but may have no peers yet.
-                        let status = connection_status.get_untracked();
-                        if status == "connecting" {
-                            // Stay "connecting" until a peer connects, but at
-                            // least we know the node is up.
-                            set_connection_status.set("connecting".to_string());
-                        }
-                    }
-                    ClientEvent::ChannelCreated(_) | ClientEvent::ChannelDeleted(_) => {
-                        needs_channel_refresh = true;
-                    }
-                    ClientEvent::ProfileUpdated { .. } => {
-                        // Display names are resolved at render time now.
-                        // Don't set needs_msg_refresh — it would destroy
-                        // open action sheets by re-rendering the message list.
-                        set_display_name.set(c.display_name());
-                        needs_peer_refresh = true;
-                    }
-                    ClientEvent::VoiceJoined {
-                        channel_id,
-                        peer_id,
-                    } => {
-                        set_voice_participants_map.update(|m| {
-                            let participants = m.entry(channel_id.clone()).or_default();
-                            if !participants.contains(&peer_id) {
-                                participants.push(peer_id.clone());
-                            }
-                        });
-                        // If we're in this channel, create offer to new peer.
-                        if voice_channel.get_untracked() == Some(channel_id) {
-                            let vm = vm_poll.clone();
-                            let pid = peer_id;
-                            wasm_bindgen_futures::spawn_local(handle_voice_create_offer(vm, pid));
-                        }
-                    }
-                    ClientEvent::VoiceLeft {
-                        channel_id,
-                        peer_id,
-                    } => {
-                        set_voice_participants_map.update(|m| {
-                            if let Some(v) = m.get_mut(&channel_id) {
-                                v.retain(|p| p != &peer_id);
-                            }
-                        });
-                        vm_poll.borrow_mut().close_connection(&peer_id);
-                    }
-                    ClientEvent::VoiceSignal {
-                        from_peer, signal, ..
-                    } => {
-                        let vm = vm_poll.clone();
-                        let from = from_peer;
-                        match signal {
-                            VoiceSignalPayload::Offer(sdp) => {
-                                wasm_bindgen_futures::spawn_local(handle_voice_offer(
-                                    vm, from, sdp,
-                                ));
-                            }
-                            VoiceSignalPayload::Answer(sdp) => {
-                                wasm_bindgen_futures::spawn_local(handle_voice_answer(
-                                    vm, from, sdp,
-                                ));
-                            }
-                            VoiceSignalPayload::IceCandidate(json) => {
-                                let _ = vm.borrow().handle_ice_candidate(&from, &json);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
+        let (client_event_tx, mut client_event_rx) =
+            futures::channel::mpsc::unbounded::<ClientEvent>();
 
-            if needs_msg_refresh {
-                let ch = current_channel.get_untracked();
-                let new_msgs = c.messages(&ch);
-                // Only update if messages actually changed (avoids destroying
-                // open action sheets by re-rendering the message list).
-                let old_msgs = messages.get_untracked();
-                let changed = new_msgs.len() != old_msgs.len()
-                    || new_msgs.last().map(|m| &m.id) != old_msgs.last().map(|m| &m.id)
-                    || new_msgs.iter().zip(old_msgs.iter()).any(|(a, b)| {
-                        a.id != b.id
-                            || a.body != b.body
-                            || a.edited != b.edited
-                            || a.deleted != b.deleted
-                            || a.reactions.len() != b.reactions.len()
-                    });
-                if changed {
-                    set_messages.set(new_msgs);
-                }
-                // Refresh pinned messages and labels.
-                set_pinned_messages.set(c.pinned_messages(&ch));
-                let mut labels = HashMap::new();
-                for msg in c.messages(&ch) {
-                    let label = if c.is_pinned(&ch, &msg.id) {
-                        "Unpin"
-                    } else {
-                        "Pin"
-                    };
-                    labels.insert(msg.id.clone(), label.to_string());
-                }
-                set_pin_labels.set(labels);
-                // Update unread counts from the active server.
-                let mut unread_map = HashMap::new();
-                if let Some(ctx) = c.state().active() {
-                    for (topic, count) in &ctx.unread {
-                        if let Some(name) = ctx.name_for_topic(topic) {
-                            unread_map.insert(name.to_string(), *count);
-                        }
-                    }
-                }
-                set_unread.set(unread_map);
-            }
-            if needs_peer_refresh {
-                let peer_list = c.server_members();
-                let count = peer_list.iter().filter(|(_, _, online)| *online).count();
-                set_peers.set(peer_list);
-                set_peer_count.set(count);
-                if count > 0 {
-                    set_connection_status.set("connected".to_string());
-                } else {
-                    set_connection_status.set("connecting".to_string());
-                }
-            }
-            if needs_channel_refresh {
-                set_channels.set(c.channels());
-                set_roles.set(extract_roles(&c));
-            }
-            if needs_msg_refresh || needs_peer_refresh {
-                // Roles may change via sync events, so refresh on any state change.
-                set_roles.set(extract_roles(&c));
-            }
+        // Spawn the event loop — processes network events and sends ClientEvents.
+        wasm_bindgen_futures::spawn_local(event_loop.run(client_event_tx));
 
-            // Refresh typing state (only if changed to avoid unnecessary re-renders).
-            let ch = current_channel.get_untracked();
-            let typers = c.typing_in(&ch);
-            if typers != typing_names.get_untracked() {
-                set_typing_names.set(typers);
+        // Spawn the signal updater — receives ClientEvents and updates signals.
+        wasm_bindgen_futures::spawn_local(async move {
+            use futures::StreamExt;
+            while let Some(event) = client_event_rx.next().await {
+                // Collect all pending events into a batch.
+                let mut batch = vec![event];
+                while let Ok(ev) = client_event_rx.try_recv() {
+                    batch.push(ev);
+                }
+                process_event_batch(
+                    &batch,
+                    &handle_for_events,
+                    &state_for_events,
+                    &write_for_events,
+                    &vm_for_events,
+                );
             }
-        },
-        std::time::Duration::from_millis(50),
-    );
-
-    // Channel switch handler.
-    let client_switch = client.clone();
-    let on_channel_click = move |name: String| {
-        set_current_channel.set(name.clone());
-        set_show_sidebar.set(false); // close sidebar on mobile
-        set_show_pinned.set(false); // close pinned panel on channel switch
-        let c = client_switch.borrow();
-        // Use immutable borrow first for reads.
-        set_messages.set(c.messages(&name));
-        set_pinned_messages.set(c.pinned_messages(&name));
-        let mut labels = HashMap::new();
-        for msg in c.messages(&name) {
-            let label = if c.is_pinned(&name, &msg.id) {
-                "Unpin"
-            } else {
-                "Pin"
-            };
-            labels.insert(msg.id.clone(), label.to_string());
-        }
-        set_pin_labels.set(labels);
-        drop(c);
-        let mut c = client_switch.borrow_mut();
-        c.switch_channel(&name);
-        // Clear unread for this channel.
-        set_unread.update(|m| {
-            m.remove(&name);
         });
-    };
+    }
 
-    // Send message handler -- supports replies when replying_to is set.
-    let client_send = client.clone();
-    let on_send = move |body: String| {
-        let ch = current_channel.get_untracked();
-        let mut c = client_send.borrow_mut();
-        if let Some(reply_msg) = replying_to.get_untracked() {
-            let _ = c.send_reply(&ch, &reply_msg.id, &body);
-            set_replying_to.set(None);
-        } else {
-            let _ = c.send_message(&ch, &body);
-        }
-        set_messages.set(c.messages(&ch));
-    };
+    // Spawn typing expiry timer (refreshes typing indicators every 2s).
+    {
+        let handle_typing = handle.clone();
+        let state_typing = app_state;
+        let write_typing = write;
 
-    // Server switch handler.
-    let client_server = client.clone();
-    let on_server_click = move |id: String| {
-        let mut c = client_server.borrow_mut();
-        c.switch_server(&id);
-        set_active_server_id.set(id);
-        set_servers.set(c.server_list());
-        let chs = c.channels();
-        set_channels.set(chs.clone());
-        let first_ch = chs
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "general".to_string());
-        set_current_channel.set(first_ch.clone());
-        set_messages.set(c.messages(&first_ch));
-        set_active_server_name.set(c.active_server_name());
-        set_show_settings.set(false);
-        set_show_add_server.set(false);
-    };
+        wasm_bindgen_futures::spawn_local(async move {
+            loop {
+                gloo_timers::future::TimeoutFuture::new(2_000).await;
+                let ch = state_typing.chat.current_channel.get_untracked();
+                let typers = handle_typing.typing_in(&ch);
+                // Read the current channel_views, extract typing for this channel.
+                let current_views = state_typing.chat.channel_views.get_untracked();
+                let current_typing = current_views
+                    .get(&ch)
+                    .map(|v| v.typing.clone())
+                    .unwrap_or_default();
+                if typers != current_typing {
+                    let mut views = current_views;
+                    views
+                        .entry(ch)
+                        .or_insert_with(ChannelViewState::default)
+                        .typing = typers;
+                    write_typing.chat.set_channel_views.set(views);
+                }
+            }
+        });
+    }
 
-    let settings_client = client.clone();
-
-    // Edit message handler -- called when the user submits an edited message.
-    let client_edit = client.clone();
-    let on_edit_send = move |(message_id, new_body): (String, String)| {
-        let ch = current_channel.get_untracked();
-        let mut c = client_edit.borrow_mut();
-        let _ = c.edit_message(&ch, &message_id, &new_body);
-        set_editing.set(None);
-        set_messages.set(c.messages(&ch));
-    };
-
-    // Delete message handler.
-    let client_delete = client.clone();
-    let on_delete_msg = move |msg: DisplayMessage| {
-        let ch = current_channel.get_untracked();
-        let mut c = client_delete.borrow_mut();
-        let _ = c.delete_message(&ch, &msg.id);
-        set_messages.set(c.messages(&ch));
-    };
-
-    // React handler.
-    let client_react = client.clone();
-    let on_react = move |(msg, emoji): (DisplayMessage, String)| {
-        let ch = current_channel.get_untracked();
-        let mut c = client_react.borrow_mut();
-        let _ = c.react(&ch, &msg.id, &emoji);
-        set_messages.set(c.messages(&ch));
-    };
-
-    let sidebar_client = client.clone();
-    let file_client = client.clone();
-    let member_client = client.clone();
-    let typing_client = client.clone();
-    let pin_client = client.clone();
+    // Build handler closures.
+    let on_send = handlers::make_send_handler(handle.clone(), app_state, write);
+    let on_edit_send = handlers::make_edit_handler(handle.clone(), app_state, write);
+    let on_delete_msg = handlers::make_delete_handler(handle.clone(), app_state, write);
+    let on_react = handlers::make_react_handler(handle.clone(), app_state, write);
+    let on_channel_click = handlers::make_channel_click_handler(handle.clone(), app_state, write);
+    let on_server_click = handlers::make_server_click_handler(handle.clone(), write);
+    let on_pin = handlers::make_pin_handler(handle.clone(), app_state, write);
 
     // Voice mute handler.
     let vm_mute = voice_manager.clone();
     let on_voice_mute = move |_: ()| {
-        let new_muted = !voice_muted.get_untracked();
-        set_voice_muted.set(new_muted);
+        let new_muted = !app_state.voice.voice_muted.get_untracked();
+        write.voice.set_voice_muted.set(new_muted);
         vm_mute.borrow().set_muted(new_muted);
     };
 
     // Voice deafen handler.
     let vm_deafen = voice_manager.clone();
     let on_voice_deafen = move |_: ()| {
-        let new_deafened = !voice_deafened.get_untracked();
-        set_voice_deafened.set(new_deafened);
-        // When deafened, also mute the mic.
+        let new_deafened = !app_state.voice.voice_deafened.get_untracked();
+        write.voice.set_voice_deafened.set(new_deafened);
         if new_deafened {
-            set_voice_muted.set(true);
+            write.voice.set_voice_muted.set(true);
             vm_deafen.borrow().set_muted(true);
         } else {
-            set_voice_muted.set(false);
+            write.voice.set_voice_muted.set(false);
             vm_deafen.borrow().set_muted(false);
         }
     };
 
     // Voice disconnect handler.
     let vm_disconnect = voice_manager.clone();
-    let client_voice_leave = client.clone();
+    let handle_voice_leave = handle.clone();
     let on_voice_disconnect = move |_: ()| {
-        client_voice_leave.borrow_mut().leave_voice();
+        handle_voice_leave.leave_voice();
         vm_disconnect.borrow_mut().close_all();
-        set_voice_channel.set(None);
-        set_voice_channel_name.set(String::new());
-        set_voice_muted.set(false);
-        set_voice_deafened.set(false);
+        write.voice.set_voice_channel.set(None);
+        write.voice.set_voice_channel_name.set(String::new());
+        write.voice.set_voice_muted.set(false);
+        write.voice.set_voice_deafened.set(false);
     };
 
     // Welcome screen callback that refreshes all signals.
-    let welcome_client = client.clone();
-    let refresh_for_welcome = refresh_all_signals.clone();
+    let handle_welcome = handle.clone();
     let on_welcome_done = move |_: ()| {
-        refresh_for_welcome();
+        refresh_all_signals(&handle_welcome, &write);
     };
 
-    // Store the refresh function so reactive closures can access it without moving.
-    let refresh_stored = StoredValue::new(refresh_all_signals);
+    // Store refresh function for reactive closures.
+    let handle_for_refresh = handle.clone();
+    let refresh_stored = StoredValue::new(SendWrapper::new(Rc::new(move || {
+        refresh_all_signals(&handle_for_refresh, &write);
+    }) as Rc<dyn Fn()>));
+
+    // Aliases for view closures.
+    let servers = app_state.server.servers;
+    let show_sidebar = app_state.ui.show_sidebar;
+    let show_add_server = app_state.ui.show_add_server;
+    let show_server_settings = app_state.ui.show_server_settings;
+    let show_settings = app_state.ui.show_settings;
+    let show_pinned = app_state.ui.show_pinned;
+    let show_members = app_state.ui.show_members;
+    let current_channel = app_state.chat.current_channel;
+    let messages = app_state.chat.messages;
+    let pinned_messages = app_state.chat.pinned_messages;
+    let pin_labels = app_state.chat.pin_labels;
+    let loading = app_state.network.loading;
+    let display_name = app_state.server.display_name;
+    let peer_count = app_state.network.peer_count;
+    let peer_id = app_state.network.peer_id;
+    let roles = app_state.server.roles;
+    let replying_to = app_state.chat.replying_to;
+    let editing = app_state.chat.editing;
+    let channel_views = app_state.chat.channel_views;
+
+    // Pre-clone handle for use inside the view closure.
+    let handle_for_voice_join = handle.clone();
+    let handle_for_typing = handle.clone();
+    let handle_for_ch_created = handle.clone();
+    let vm_for_view = voice_manager.clone();
 
     view! {
         {move || {
             let srv = servers.get();
             if srv.is_empty() {
-                let wc = welcome_client.clone();
                 let on_done = on_welcome_done.clone();
                 view! {
                     <WelcomeScreen
-                        client=wc
                         on_done=on_done
                     />
                 }.into_any()
             } else {
-                let sc = settings_client.clone();
-                let fc = file_client.clone();
-                let sbc = sidebar_client.clone();
-                let mc = member_client.clone();
-                let tc = typing_client.clone();
-                let pc = pin_client.clone();
                 let ch_click = on_channel_click.clone();
                 let srv_click = on_server_click.clone();
                 let send = on_send.clone();
@@ -495,54 +266,56 @@ pub fn App() -> impl IntoView {
                 let on_mute = on_voice_mute.clone();
                 let on_deafen = on_voice_deafen.clone();
                 let on_disconnect = on_voice_disconnect.clone();
+                let handle_vj = handle_for_voice_join.clone();
+                let handle_ty = handle_for_typing.clone();
+                let handle_cc = handle_for_ch_created.clone();
+                let vm_v = vm_for_view.clone();
+                let pin = on_pin.clone();
                 view! {
                     <div class="app">
                         <ServerList
-                            servers=servers
-                            active_server_id=active_server_id
+                            servers=app_state.server.servers
+                            active_server_id=app_state.server.active_server_id
                             on_server_click=srv_click
                             on_add_server_click=move |_| {
-                                set_show_add_server.update(|v| *v = !*v);
-                                set_show_settings.set(false);
-                                set_show_server_settings.set(false);
-                                set_show_sidebar.set(false);
+                                write.ui.set_show_add_server.update(|v| *v = !*v);
+                                write.ui.set_show_settings.set(false);
+                                write.ui.set_show_server_settings.set(false);
+                                write.ui.set_show_sidebar.set(false);
                             }
                         />
                         // Overlay to close sidebar on mobile tap
                         <div
                             class=move || if show_sidebar.get() { "sidebar-overlay open" } else { "sidebar-overlay" }
-                            on:click=move |_| set_show_sidebar.set(false)
+                            on:click=move |_| write.ui.set_show_sidebar.set(false)
                         />
                         <Sidebar
-                            channels=channels
+                            channels=app_state.chat.channels
                             current_channel=current_channel
                             open=show_sidebar
-                            unread=unread
-                            connection_status=connection_status
+                            unread=app_state.server.unread
+                            connection_status=app_state.network.connection_status
                             peer_count=peer_count
-                            server_name=active_server_name
-                            client=sbc
+                            server_name=app_state.server.active_server_name
                             on_channel_click=ch_click
                             on_settings_click=move |_| {
-                                set_show_settings.update(|v| *v = !*v);
-                                set_show_server_settings.set(false);
-                                set_show_sidebar.set(false);
+                                write.ui.set_show_settings.update(|v| *v = !*v);
+                                write.ui.set_show_server_settings.set(false);
+                                write.ui.set_show_sidebar.set(false);
                             }
                             on_server_settings_click=move |_| {
-                                set_show_server_settings.update(|v| *v = !*v);
-                                set_show_settings.set(false);
-                                set_show_sidebar.set(false);
+                                write.ui.set_show_server_settings.update(|v| *v = !*v);
+                                write.ui.set_show_settings.set(false);
+                                write.ui.set_show_sidebar.set(false);
                             }
                             on_voice_join={
-                                let vc_client = client.clone();
-                                let vm = voice_manager.clone();
+                                let vc_handle = handle_vj.clone();
+                                let vm = vm_v.clone();
                                 move |channel_name: String| {
-                                    set_show_sidebar.set(false);
+                                    write.ui.set_show_sidebar.set(false);
 
                                     // Request mic permission SYNCHRONOUSLY in the click handler
                                     // to preserve the user gesture chain (required on mobile).
-                                    // getUserMedia returns a Promise — we call it here so the
-                                    // browser sees it as user-initiated, then handle the result.
                                     let window = web_sys::window().unwrap();
                                     let navigator = window.navigator();
                                     let Ok(media_devices) = navigator.media_devices() else {
@@ -558,111 +331,95 @@ pub fn App() -> impl IntoView {
                                     };
 
                                     // Show controls immediately (optimistic).
-                                    set_voice_channel.set(Some(channel_name.clone()));
-                                    set_voice_channel_name.set(channel_name.clone());
+                                    write.voice.set_voice_channel.set(Some(channel_name.clone()));
+                                    write.voice.set_voice_channel_name.set(channel_name.clone());
 
                                     // Handle the promise result asynchronously.
-                                    let vc = vc_client.clone();
+                                    let vc = vc_handle.clone();
                                     let vm2 = vm.clone();
                                     let ch_name = channel_name.clone();
                                     let on_success = wasm_bindgen::closure::Closure::once(move |stream: wasm_bindgen::JsValue| {
                                         use wasm_bindgen::JsCast;
                                         let stream: web_sys::MediaStream = stream.unchecked_into();
                                         vm2.borrow_mut().set_local_stream(stream);
-                                        vc.borrow_mut().join_voice(&ch_name);
+                                        vc.join_voice(&ch_name);
                                     });
                                     let on_error = wasm_bindgen::closure::Closure::once(move |_err: wasm_bindgen::JsValue| {
                                         tracing::error!("Microphone access denied");
-                                        set_voice_channel.set(None);
-                                        set_voice_channel_name.set(String::new());
+                                        write.voice.set_voice_channel.set(None);
+                                        write.voice.set_voice_channel_name.set(String::new());
                                     });
                                     let _ = promise.then2(&on_success, &on_error);
                                     on_success.forget();
                                     on_error.forget();
                                 }
                             }
-                            voice_channel=voice_channel
-                            voice_channel_name=voice_channel_name
-                            voice_muted=voice_muted
-                            voice_deafened=voice_deafened
+                            voice_channel=app_state.voice.voice_channel
+                            voice_channel_name=app_state.voice.voice_channel_name
+                            voice_muted=app_state.voice.voice_muted
+                            voice_deafened=app_state.voice.voice_deafened
                             on_voice_mute=Callback::new(on_mute)
                             on_voice_deafen=Callback::new(on_deafen)
                             on_voice_disconnect=Callback::new(on_disconnect)
                             on_channel_created={
-                                let ch_client = client.clone();
+                                let ch_handle = handle_cc.clone();
                                 move |_| {
-                                    let c = ch_client.borrow();
-                                    set_channels.set(c.channels());
-                                    set_roles.set(extract_roles(&c));
+                                    write.chat.set_channels.set(ch_handle.channels());
+                                    write.server.set_roles.set(extract_roles(&ch_handle));
                                 }
                             }
                         />
                         <div class="main-content">
                             {move || {
-                                let sc2 = sc.clone();
-                                let pid = peer_id;
                                 if show_add_server.get() {
-                                    let add_client = sc2.clone();
                                     view! {
                                         <div class="settings-panel">
                                             <div class="server-settings-header">
-                                                <button class="btn btn-sm" on:click=move |_| set_show_add_server.set(false)>
+                                                <button class="btn btn-sm" on:click=move |_| write.ui.set_show_add_server.set(false)>
                                                     "\u{2190} Back"
                                                 </button>
                                                 <h2>"Add a Server"</h2>
                                             </div>
                                             <AddServerPanel
-                                                client=add_client
                                                 on_done=move |_| {
                                                     refresh_stored.with_value(|f| f());
-                                                    set_show_add_server.set(false);
+                                                    write.ui.set_show_add_server.set(false);
                                                 }
                                             />
                                         </div>
                                     }.into_any()
                                 } else if show_server_settings.get() {
-                                    let sc3 = sc2.clone();
-                                    view! { <ServerSettingsPanel client=sc3 peer_id=pid roles=Signal::from(roles) on_back=move |_| set_show_server_settings.set(false) /> }.into_any()
+                                    view! { <ServerSettingsPanel peer_id=peer_id roles=Signal::from(roles) on_back=move |_| write.ui.set_show_server_settings.set(false) /> }.into_any()
                                 } else if show_settings.get() {
-                                    view! { <SettingsPanel client=sc2 peer_id=pid on_server_settings=move |_| {
-                                        set_show_settings.set(false);
-                                        set_show_server_settings.set(true);
+                                    view! { <SettingsPanel peer_id=peer_id on_server_settings=move |_| {
+                                        write.ui.set_show_settings.set(false);
+                                        write.ui.set_show_server_settings.set(true);
                                     } /> }.into_any()
                                 } else {
-                                    let fc2 = fc.clone();
-                                    let pc2 = pc.clone();
                                     let send2 = send.clone();
                                     let edit_send2 = edit_send.clone();
                                     let del_msg2 = del_msg.clone();
                                     let react2 = react.clone();
-                                    let tc2 = tc.clone();
-                                    let on_typing_cb = Callback::new(move |_: ()| {
-                                        tc2.borrow_mut().send_typing();
-                                    });
-                                    let on_pin_cb = Callback::new(move |msg: DisplayMessage| {
-                                        let ch = current_channel.get_untracked();
-                                        let mut c = pc2.borrow_mut();
-                                        if c.is_pinned(&ch, &msg.id) {
-                                            let _ = c.unpin_message(&ch, &msg.id);
-                                        } else {
-                                            let _ = c.pin_message(&ch, &msg.id);
-                                        }
-                                        set_pinned_messages.set(c.pinned_messages(&ch));
-                                        let mut labels = HashMap::new();
-                                        for m in c.messages(&ch) {
-                                            let label = if c.is_pinned(&ch, &m.id) { "Unpin" } else { "Pin" };
-                                            labels.insert(m.id.clone(), label.to_string());
-                                        }
-                                        set_pin_labels.set(labels);
-                                    });
+                                    let on_typing_cb = {
+                                        let h = handle_ty.clone();
+                                        Callback::new(move |_: ()| {
+                                            h.send_typing();
+                                        })
+                                    };
+                                    let on_pin_cb = {
+                                        let pin_handler = pin.clone();
+                                        Callback::new(move |msg: DisplayMessage| {
+                                            pin_handler(msg);
+                                        })
+                                    };
                                     view! {
                                         <div class="chat-container">
                                             <ChannelHeader
                                                 channel=current_channel
                                                 peer_count=peer_count
-                                                on_menu_click=move |_| set_show_sidebar.update(|v| *v = !*v)
-                                                on_members_click=move |_| set_show_members.update(|v| *v = !*v)
-                                                on_pinned_click=Callback::new(move |_| set_show_pinned.update(|v| *v = !*v))
+                                                on_menu_click=move |_| write.ui.set_show_sidebar.update(|v| *v = !*v)
+                                                on_members_click=move |_| write.ui.set_show_members.update(|v| *v = !*v)
+                                                on_pinned_click=Callback::new(move |_| write.ui.set_show_pinned.update(|v| *v = !*v))
                                             />
                                             {move || {
                                                 if show_pinned.get() {
@@ -674,9 +431,9 @@ pub fn App() -> impl IntoView {
                                                                     "document.getElementById('msg-{}')?.scrollIntoView({{behavior:'smooth',block:'center'}})",
                                                                     msg_id.replace('\'', "")
                                                                 ));
-                                                                set_show_pinned.set(false);
+                                                                write.ui.set_show_pinned.set(false);
                                                             }
-                                                            on_close=move |_| set_show_pinned.set(false)
+                                                            on_close=move |_| write.ui.set_show_pinned.set(false)
                                                         />
                                                     })
                                                 } else {
@@ -688,12 +445,11 @@ pub fn App() -> impl IntoView {
                                                 loading=Signal::from(loading)
                                                 local_display_name={let s: Signal<String> = Signal::from(display_name); s}
                                                 on_message_click=Callback::new(move |msg: DisplayMessage| {
-                                                    set_replying_to.set(Some(msg));
-                                                    // Auto-focus the input field so keyboard opens on mobile.
+                                                    write.chat.set_replying_to.set(Some(msg));
                                                     let _ = js_sys::eval("setTimeout(function(){var i=document.querySelector('.input-area input,.input-area textarea');if(i)i.focus();},50)");
                                                 })
                                                 on_edit=Callback::new(move |msg: DisplayMessage| {
-                                                    set_editing.set(Some(msg));
+                                                    write.chat.set_editing.set(Some(msg));
                                                     let _ = js_sys::eval("setTimeout(function(){var i=document.querySelector('.input-area input,.input-area textarea');if(i)i.focus();},50)");
                                                 })
                                                 on_delete=Callback::new(del_msg2)
@@ -703,7 +459,12 @@ pub fn App() -> impl IntoView {
                                             />
                                             <div class="typing-indicator">
                                                 {move || {
-                                                    let names = typing_names.get();
+                                                    let ch = current_channel.get();
+                                                    let views = channel_views.get();
+                                                    let names = views
+                                                        .get(&ch)
+                                                        .map(|v| v.typing.clone())
+                                                        .unwrap_or_default();
                                                     match names.len() {
                                                         0 => String::new(),
                                                         1 => format!("{} is typing...", names[0]),
@@ -715,19 +476,18 @@ pub fn App() -> impl IntoView {
                                             </div>
                                             <div class="input-row">
                                                 <FileShareButton
-                                                    client=fc2
                                                     channel=current_channel
                                                 />
                                                 <ChatInput
                                                     on_send=send2
                                                     replying_to=replying_to
                                                     on_cancel_reply=Callback::new(move |_| {
-                                                        set_replying_to.set(None);
+                                                        write.chat.set_replying_to.set(None);
                                                     })
                                                     editing=editing
                                                     on_edit_send=Callback::new(edit_send2)
                                                     on_cancel_edit=Callback::new(move |_| {
-                                                        set_editing.set(None);
+                                                        write.chat.set_editing.set(None);
                                                     })
                                                     on_typing=on_typing_cb
                                                 />
@@ -739,12 +499,11 @@ pub fn App() -> impl IntoView {
                         </div>
                         <div
                             class=move || if show_members.get() { "members-overlay open" } else { "members-overlay" }
-                            on:click=move |_| set_show_members.set(false)
+                            on:click=move |_| write.ui.set_show_members.set(false)
                         />
                         <div class=move || if show_members.get() { "member-list-wrapper open" } else { "member-list-wrapper" }>
                             <MemberList
-                                peers=peers
-                                client=mc
+                                peers=app_state.network.peers
                                 peer_id=peer_id
                             />
                         </div>
@@ -760,7 +519,7 @@ pub fn App() -> impl IntoView {
 /// The `RefCell` borrow is held across await but this is safe on
 /// single-threaded WASM where there is no preemption.
 #[allow(clippy::await_holding_refcell_ref)]
-async fn handle_voice_create_offer(vm: VoiceManagerHandle, peer_id: String) {
+pub async fn handle_voice_create_offer(vm: VoiceManagerHandle, peer_id: String) {
     let mut mgr = vm.borrow_mut();
     let _ = mgr.create_offer(&peer_id).await;
 }
@@ -770,7 +529,7 @@ async fn handle_voice_create_offer(vm: VoiceManagerHandle, peer_id: String) {
 /// The `RefCell` borrow is held across await but this is safe on
 /// single-threaded WASM where there is no preemption.
 #[allow(clippy::await_holding_refcell_ref)]
-async fn handle_voice_offer(vm: VoiceManagerHandle, from: String, sdp: String) {
+pub async fn handle_voice_offer(vm: VoiceManagerHandle, from: String, sdp: String) {
     let mut mgr = vm.borrow_mut();
     let _ = mgr.handle_offer(&from, &sdp).await;
 }
@@ -780,23 +539,7 @@ async fn handle_voice_offer(vm: VoiceManagerHandle, from: String, sdp: String) {
 /// The `RefCell` borrow is held across await but this is safe on
 /// single-threaded WASM where there is no preemption.
 #[allow(clippy::await_holding_refcell_ref)]
-async fn handle_voice_answer(vm: VoiceManagerHandle, from: String, sdp: String) {
+pub async fn handle_voice_answer(vm: VoiceManagerHandle, from: String, sdp: String) {
     let mgr = vm.borrow();
     let _ = mgr.handle_answer(&from, &sdp).await;
-}
-
-/// Extract roles from the client's event-sourced state as a list of
-/// `(role_id, role_name, permission_strings)` tuples for reactive signals.
-fn extract_roles(client: &willow_client::Client) -> Vec<(String, String, Vec<String>)> {
-    let es = &client.state().event_state;
-    let mut entries: Vec<(String, String, Vec<String>)> = es
-        .roles
-        .values()
-        .map(|role| {
-            let perms: Vec<String> = role.permissions.iter().cloned().collect();
-            (role.id.clone(), role.name.clone(), perms)
-        })
-        .collect();
-    entries.sort_by(|a, b| a.1.cmp(&b.1));
-    entries
 }

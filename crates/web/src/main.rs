@@ -1,5 +1,8 @@
 mod app;
 mod components;
+mod event_processing;
+mod handlers;
+mod state;
 pub(crate) mod util;
 pub mod voice;
 

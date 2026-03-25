@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use leptos::prelude::*;
 
-use crate::app::ClientHandle;
+use crate::app::WebClientHandle;
 use crate::components::VoiceControls;
 
 /// Left sidebar showing the server name, channel list, and user info.
@@ -15,7 +15,6 @@ pub fn Sidebar(
     connection_status: ReadSignal<String>,
     peer_count: ReadSignal<usize>,
     server_name: ReadSignal<String>,
-    client: ClientHandle,
     on_channel_click: impl Fn(String) + Send + Clone + 'static,
     on_settings_click: impl Fn(()) + Send + Clone + 'static,
     on_server_settings_click: impl Fn(()) + Send + Clone + 'static,
@@ -43,23 +42,23 @@ pub fn Sidebar(
     #[prop(optional)]
     on_voice_disconnect: Option<Callback<()>>,
 ) -> impl IntoView {
+    let handle = use_context::<WebClientHandle>().unwrap();
+
     let (creating, set_creating) = signal(false);
     let (new_name, set_new_name) = signal(String::new());
     let (create_voice, set_create_voice) = signal(false);
 
-    let client_create = client.clone();
+    let handle_create = handle.clone();
     let on_create_submit = move || {
         let name = new_name.get_untracked();
         let name = name.trim().to_string();
         let is_voice = create_voice.get_untracked();
         if !name.is_empty() {
-            let mut c = client_create.borrow_mut();
             if is_voice {
-                let _ = c.create_voice_channel(&name);
+                let _ = handle_create.create_voice_channel(&name);
             } else {
-                let _ = c.create_channel(&name);
+                let _ = handle_create.create_channel(&name);
             }
-            drop(c);
             on_channel_created(());
         }
         set_new_name.set(String::new());
@@ -80,7 +79,7 @@ pub fn Sidebar(
         }
     };
 
-    let client_user = client.clone();
+    let handle_user = handle.clone();
 
     view! {
         <div class=move || if open.get() { "sidebar open" } else { "sidebar" }>
@@ -152,17 +151,16 @@ pub fn Sidebar(
                         let ch_voice_join = channel.clone();
                         let on_click = on_channel_click.clone();
                         let on_voice = on_voice_join.clone();
-                        let client_del = client.clone();
-                        let client_kind = client.clone();
+                        let handle_del = handle.clone();
+                        let handle_kind = handle.clone();
                         let active = move || current_channel.get() == ch_active;
 
                         // Reactively check if this is a voice channel.
                         let is_voice = {
-                            let ck = client_kind.clone();
+                            let hk = handle_kind.clone();
                             let name = ch_kind.clone();
                             move || {
-                                let c = ck.borrow();
-                                c.channel_kinds().iter().any(|(n, k)| n == &name && k == "voice")
+                                hk.channel_kinds().iter().any(|(n, k)| n == &name && k == "voice")
                             }
                         };
 
@@ -202,15 +200,14 @@ pub fn Sidebar(
                                     }
                                     {
                                         let ch_d = ch_delete.clone();
-                                        let cl = client_del.clone();
+                                        let hd = handle_del.clone();
                                         view! {
                                             <button
                                                 class="delete-btn"
                                                 title="Delete channel"
                                                 on:click=move |ev| {
                                                     ev.stop_propagation();
-                                                    let mut c = cl.borrow_mut();
-                                                    let _ = c.delete_channel(&ch_d);
+                                                    let _ = hd.delete_channel(&ch_d);
                                                 }
                                             >
                                                 "x"
@@ -275,10 +272,9 @@ pub fn Sidebar(
                 <div class="status-dot"></div>
                 <span style="font-size: 12px; color: var(--text-muted);">
                     {
-                        let client_name = client_user.clone();
+                        let hu = handle_user.clone();
                         move || {
-                            let c = client_name.borrow();
-                            let name = c.display_name();
+                            let name = hu.display_name();
                             if name.len() > 20 { format!("{}...", &name[..20]) } else { name }
                         }
                     }
