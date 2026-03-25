@@ -270,10 +270,21 @@ pub fn MessageView(
     let msg_dom_id_for_lp = msg_dom_id.clone();
     let lp_id_move = lp_id.clone();
 
-    let on_msg_touchstart = move |_ev: web_sys::TouchEvent| {
-        // Don't call prevent_default — it blocks scrolling and tapping
-        // interactive elements. The long-press timer is cancelled by
-        // touchmove (scrolling) so it won't fire during scroll.
+    let on_msg_touchstart = move |ev: web_sys::TouchEvent| {
+        // If touching the action sheet or overlay, don't start a long-press.
+        if let Some(target) = ev.target() {
+            use wasm_bindgen::JsCast;
+            let el: web_sys::Element = target.unchecked_into();
+            if el.closest(".mobile-action-sheet").ok().flatten().is_some()
+                || el
+                    .closest(".mobile-action-sheet-overlay")
+                    .ok()
+                    .flatten()
+                    .is_some()
+            {
+                return;
+            }
+        }
         // Dismiss any other open sheets and highlights.
         let _ = js_sys::eval("document.querySelectorAll('.mobile-action-sheet.open,.mobile-action-sheet-overlay.open').forEach(function(el){el.classList.remove('open')}); document.querySelectorAll('.message.long-press-active').forEach(function(el){el.classList.remove('long-press-active')})");
         // Highlight the message immediately.
