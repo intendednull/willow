@@ -782,11 +782,8 @@ impl Client {
                             uuid::Uuid::parse_str(channel_id)
                                 .unwrap_or_else(|_| uuid::Uuid::new_v4()),
                         );
-                        ctx.topic_map
-                            .insert(topic.clone(), (name.clone(), cid));
-                        let _ = self
-                            .cmd_tx
-                            .send(network::NetworkCommand::Subscribe(topic));
+                        ctx.topic_map.insert(topic.clone(), (name.clone(), cid));
+                        let _ = self.cmd_tx.send(network::NetworkCommand::Subscribe(topic));
                     }
                 }
                 events.push(ClientEvent::ChannelCreated(name.clone()));

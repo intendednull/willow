@@ -268,7 +268,9 @@ pub fn MessageView(
     // All state managed via Leptos signals — no js_sys::eval.
     let (show_sheet, set_show_sheet) = signal(false);
     let (long_press_active, set_long_press_active) = signal(false);
-    let long_press_timer = send_wrapper::SendWrapper::new(std::cell::Cell::new(0i32));
+    // Use Rc<Cell> so all closures share the SAME timer ID cell.
+    let long_press_timer =
+        send_wrapper::SendWrapper::new(std::rc::Rc::new(std::cell::Cell::new(0i32)));
     let lp_start = long_press_timer.clone();
     let lp_end = long_press_timer.clone();
     let lp_move = long_press_timer.clone();

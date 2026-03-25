@@ -12,11 +12,8 @@ use crate::components::{
 };
 use crate::voice::VoiceManager;
 
-fn play_notification_sound() {
-    let _ = js_sys::eval(
-        r#"(function(){try{var c=new(window.AudioContext||window.webkitAudioContext)();var o=c.createOscillator();var g=c.createGain();o.connect(g);g.connect(c.destination);o.frequency.value=800;g.gain.value=0.1;o.start();o.stop(c.currentTime+0.15);}catch(e){}})()"#,
-    );
-}
+// Notification sounds disabled for now.
+// fn play_notification_sound() { ... }
 
 fn init_theme() {
     let _ = js_sys::eval(
@@ -165,17 +162,9 @@ pub fn App() -> impl IntoView {
 
             for event in events {
                 match event {
-                    ClientEvent::MessageReceived { is_local, .. } => {
+                    ClientEvent::MessageReceived { .. } => {
                         needs_msg_refresh = true;
-                        if !is_local {
-                            let hidden = js_sys::eval("document.hidden")
-                                .ok()
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false);
-                            if hidden {
-                                play_notification_sound();
-                            }
-                        }
+                        // Notification sounds disabled for now.
                     }
                     ClientEvent::MessageEdited { .. }
                     | ClientEvent::MessageDeleted { .. }
