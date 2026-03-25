@@ -133,6 +133,24 @@ Willow uses a multi-tier testing strategy:
   settings, member list, server list, connection status
 - Requires: Firefox + geckodriver + wasm-pack
 
+### Which Test to Write
+
+**When adding a feature or fixing a bug, always add a test at the lowest
+level that covers the behavior.** Prefer state tests over client tests,
+client tests over browser tests, browser tests over Playwright E2E. Use
+E2E tests only for behavior that requires real P2P sync or browser
+interaction.
+
+| What changed | Test type | Location | Command |
+|---|---|---|---|
+| State logic (events, permissions, merge) | State tests | `crates/state/src/tests.rs` | `just test-state` |
+| Client API (send, create, trust, kick) | Client tests | `crates/client/src/lib.rs` test module | `just test-client` |
+| UI components (rendering, signals, effects) | Browser tests | `crates/web/tests/browser.rs` | `just test-browser` |
+| Multi-peer behavior (sync, messaging) | Playwright E2E | `e2e/multi-peer-sync.spec.ts` | `just test-e2e-sync` |
+| Permissions (trust, kick, roles) | Playwright E2E | `e2e/permissions.spec.ts` | `just test-e2e-perms` |
+| Mobile UI (touch, sidebar, action sheet) | Playwright E2E | `e2e/mobile.spec.ts` or `e2e/multi-peer-mobile.spec.ts` | `just test-e2e-ui` |
+| Network protocol (libp2p, relay) | Network integration | `crates/app/tests/e2e_flow.rs` | `just test-app` |
+
 ### Adding Tests
 
 **State machine test** (fastest):
@@ -142,7 +160,7 @@ Willow uses a multi-tier testing strategy:
 
 **Client API test**:
 1. Add to `crates/client/src/lib.rs` test module
-2. Use `test_client()` helper — creates Client without networking
+2. Use `test_client()` helper — creates ClientHandle without networking
 3. `cargo test -p willow-client`
 
 **Bevy headless test**:
@@ -155,6 +173,12 @@ Willow uses a multi-tier testing strategy:
 2. Use `mount_test(|| view! { ... })` to render into DOM
 3. Use `tick().await` to flush reactive effects
 4. `wasm-pack test --headless --firefox crates/web`
+
+**Playwright E2E test**:
+1. Add to the appropriate `e2e/*.spec.ts` file
+2. Use helpers from `e2e/helpers.ts` (`setupTwoPeers`, `sendMessage`, etc.)
+3. For multi-peer: use the `browser` fixture, not hardcoded `chromium.launch()`
+4. `npx playwright test e2e/your-file.spec.ts`
 
 ## Code Conventions
 
