@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
 use willow_client::DisplayMessage;
 
 use super::file_share::{parse_inline_file, FileCard};
@@ -271,6 +272,19 @@ pub fn MessageView(
     let lp_id_move = lp_id.clone();
 
     let on_msg_touchstart = move |ev: web_sys::TouchEvent| {
+        // Only prevent default if NOT touching the action sheet (so sheet buttons can get clicks).
+        if let Some(target) = ev.target() {
+            let el: web_sys::Element = target.unchecked_into();
+            if el.closest(".mobile-action-sheet").ok().flatten().is_some()
+                || el
+                    .closest(".mobile-action-sheet-overlay")
+                    .ok()
+                    .flatten()
+                    .is_some()
+            {
+                return;
+            }
+        }
         ev.prevent_default();
         // Dismiss any other open sheets and highlights.
         let _ = js_sys::eval("document.querySelectorAll('.mobile-action-sheet.open,.mobile-action-sheet-overlay.open').forEach(function(el){el.classList.remove('open')}); document.querySelectorAll('.message.long-press-active').forEach(function(el){el.classList.remove('long-press-active')})");
