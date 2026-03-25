@@ -1,5 +1,4 @@
 use leptos::prelude::*;
-use wasm_bindgen::JsCast;
 use willow_client::DisplayMessage;
 
 use super::file_share::{parse_inline_file, FileCard};
@@ -265,38 +264,41 @@ pub fn MessageView(
     let on_react_for_reactions = on_react;
 
     // Long-press to show dropdown (mobile).
-    let long_press_timer = std::cell::Cell::new(0i32);
-    let long_press_timer = send_wrapper::SendWrapper::new(long_press_timer);
-    let lp_timer_start = long_press_timer.clone();
-    let lp_timer_end = long_press_timer.clone();
+    // Uses a unique global variable per message to track the timer.
+    let lp_id = format!("__willow_lp_{}", message.id.replace('-', "_"));
+    let lp_id_start = lp_id.clone();
+    let lp_id_end = lp_id.clone();
+    let lp_id_move = lp_id.clone();
 
-    let on_msg_touchstart = move |_: web_sys::TouchEvent| {
-        let timer_id = web_sys::window()
-            .and_then(|w| {
-                let cb = wasm_bindgen::closure::Closure::once(move || {
-                    set_show_dropdown.set(true);
-                });
-                let id = w
-                    .set_timeout_with_callback_and_timeout_and_arguments_0(
-                        cb.as_ref().unchecked_ref(),
-                        500,
-                    )
-                    .ok();
-                cb.forget();
-                id
-            })
-            .unwrap_or(0);
-        lp_timer_start.set(timer_id);
+    let on_msg_touchstart = move |ev: web_sys::TouchEvent| {
+        // Prevent context menu
+        ev.prevent_default();
+        let _ = js_sys::eval(&format!(
+            "window.{id} = setTimeout(function() {{ window.{id} = -1; }}, 500)",
+            id = lp_id_start
+        ));
     };
 
     let on_msg_touchend = move |_: web_sys::TouchEvent| {
-        let id = lp_timer_end.get();
-        if id != 0 {
-            if let Some(w) = web_sys::window() {
-                w.clear_timeout_with_handle(id);
-            }
-            lp_timer_end.set(0);
+        let fired = js_sys::eval(&format!("window.{id}", id = lp_id_end))
+            .ok()
+            .and_then(|v| v.as_f64())
+            .map(|v| v == -1.0)
+            .unwrap_or(false);
+        if fired {
+            set_show_dropdown.set(true);
         }
+        let _ = js_sys::eval(&format!(
+            "clearTimeout(window.{id}); window.{id} = 0",
+            id = lp_id_end
+        ));
+    };
+
+    let on_msg_touchmove = move |_: web_sys::TouchEvent| {
+        let _ = js_sys::eval(&format!(
+            "clearTimeout(window.{id}); window.{id} = 0",
+            id = lp_id_move
+        ));
     };
 
     view! {
@@ -304,8 +306,8 @@ pub fn MessageView(
             class=msg_class
             id=msg_dom_id
             on:touchstart=on_msg_touchstart
-            on:touchend=on_msg_touchend.clone()
-            on:touchmove=on_msg_touchend
+            on:touchend=on_msg_touchend
+            on:touchmove=on_msg_touchmove
         >
             {reply_preview.map(|preview| {
                 let jump_id = reply_to_id.clone();
