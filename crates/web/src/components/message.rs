@@ -272,7 +272,8 @@ pub fn MessageView(
     let lp_id_move = lp_id.clone();
 
     let on_msg_touchstart = move |ev: web_sys::TouchEvent| {
-        // Only prevent default if NOT touching the action sheet (so sheet buttons can get clicks).
+        // Only prevent default if NOT touching interactive elements inside the message
+        // (action sheet buttons, reaction buttons, links, reply previews).
         if let Some(target) = ev.target() {
             let el: web_sys::Element = target.unchecked_into();
             if el.closest(".mobile-action-sheet").ok().flatten().is_some()
@@ -281,6 +282,9 @@ pub fn MessageView(
                     .ok()
                     .flatten()
                     .is_some()
+                || el.closest(".reactions").ok().flatten().is_some()
+                || el.closest(".reply-clickable").ok().flatten().is_some()
+                || el.closest("a").ok().flatten().is_some()
             {
                 return;
             }
