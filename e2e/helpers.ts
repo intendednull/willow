@@ -171,20 +171,31 @@ export async function closeSidebar(page: Page) {
   }
 }
 
-/** Opens the member list on mobile (no-op on desktop). */
+/** Opens the member list panel. The toggle button exists on both desktop and mobile. */
 export async function openMemberList(page: Page) {
-  if (!isMobile(page)) return;
+  // The member panel starts hidden; the toggle button (.mobile-members-toggle)
+  // exists on both viewports despite the class name.
+  const panel = page.locator('.member-list-wrapper.open');
+  if (await panel.isVisible().catch(() => false)) return; // Already open
   await page.locator('.mobile-members-toggle').click();
   await page.waitForTimeout(500);
 }
 
-/** Closes the member list on mobile by tapping the overlay (no-op on desktop). */
+/** Closes the member list panel. */
 export async function closeMemberList(page: Page) {
-  if (!isMobile(page)) return;
-  const overlay = page.locator('.members-overlay.open');
-  if (await overlay.isVisible()) {
-    await overlay.click();
-    await page.waitForTimeout(300);
+  if (isMobile(page)) {
+    const overlay = page.locator('.members-overlay.open');
+    if (await overlay.isVisible()) {
+      await overlay.click();
+      await page.waitForTimeout(300);
+    }
+  } else {
+    // On desktop, re-click the toggle to close.
+    const panel = page.locator('.member-list-wrapper.open');
+    if (await panel.isVisible().catch(() => false)) {
+      await page.locator('.mobile-members-toggle').click();
+      await page.waitForTimeout(300);
+    }
   }
 }
 
@@ -303,7 +314,7 @@ export async function messageAction(page: Page, messageText: string, actionName:
     // Desktop: hover to reveal action trigger, click dropdown item.
     await msg.hover();
     await page.waitForTimeout(200);
-    await page.locator('.action-trigger').last().click();
+    await msg.locator('.action-trigger').click();
     await page.waitForTimeout(200);
     await page.locator('.dropdown-item', { hasText: actionName }).click();
     await page.waitForTimeout(200);
@@ -337,7 +348,7 @@ export async function reactToMessage(page: Page, messageText: string, emojiIndex
   } else {
     await msg.hover();
     await page.waitForTimeout(200);
-    await page.locator('.action-trigger').last().click();
+    await msg.locator('.action-trigger').click();
     await page.waitForTimeout(200);
     await page.locator('.dropdown-item', { hasText: 'React' }).click();
     await page.waitForTimeout(200);

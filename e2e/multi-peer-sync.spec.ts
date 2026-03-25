@@ -38,6 +38,7 @@ test.describe('Multi-peer state synchronization', () => {
   });
 
   test('messages sync both directions', async ({ browser }) => {
+    // Also covers the "general channel works after invite" regression.
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser);
     try {
       // Alice sends a message.

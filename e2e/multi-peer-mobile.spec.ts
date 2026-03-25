@@ -14,8 +14,11 @@ test.describe('Multi-peer mobile', () => {
   // Mobile two-peer tests need extra time for setup + P2P sync + mobile navigation.
   test.setTimeout(120_000);
 
-  test('invite flow on mobile — sidebar accessible via hamburger', async ({ browser }, testInfo) => {
-    test.skip(!testInfo.project.name.includes('mobile'), 'mobile only');
+  test.beforeEach(({}, testInfo) => {
+    test.skip(!testInfo.project.name.startsWith('mobile'), 'mobile only');
+  });
+
+  test('invite flow on mobile — sidebar accessible via hamburger', async ({ browser }) => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Mobile Invite', 'Alice', 'Bob');
     try {
       // Open sidebar on both peers via hamburger.
@@ -32,9 +35,8 @@ test.describe('Multi-peer mobile', () => {
     }
   });
 
-  test.fixme('new channels visible via hamburger menu', async ({ browser }, testInfo) => {
+  test.fixme('new channels visible via hamburger menu', async ({ browser }) => {
     // Channel sync via gossipsub can exceed test timeframes on mobile.
-    test.skip(!testInfo.project.name.includes('mobile'), 'mobile only');
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Mobile Chan', 'Alice', 'Bob');
     try {
       // Alice creates a new channel.
@@ -51,8 +53,7 @@ test.describe('Multi-peer mobile', () => {
     }
   });
 
-  test('messages visible while sidebar is closed', async ({ browser }, testInfo) => {
-    test.skip(!testInfo.project.name.includes('mobile'), 'mobile only');
+  test('messages visible while sidebar is closed', async ({ browser }) => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Mobile Msg', 'Alice', 'Bob');
     try {
       // Alice sends a message (sidebar is closed on mobile after setup).
@@ -66,9 +67,8 @@ test.describe('Multi-peer mobile', () => {
     }
   });
 
-  test.fixme('member list accessible via toggle — shows peers', async ({ browser }, testInfo) => {
+  test.fixme('member list accessible via toggle — shows peers', async ({ browser }) => {
     // Member count assertion can be flaky due to P2P discovery timing.
-    test.skip(!testInfo.project.name.includes('mobile'), 'mobile only');
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Mobile Members', 'Alice', 'Bob');
     try {
       // Open member list on peer 1.
@@ -83,9 +83,8 @@ test.describe('Multi-peer mobile', () => {
     }
   });
 
-  test.fixme('channel switch during active sync — messages in new channel', async ({ browser }, testInfo) => {
+  test.fixme('channel switch during active sync — messages in new channel', async ({ browser }) => {
     // Channel sync + message sync can exceed test timeframes on mobile.
-    test.skip(!testInfo.project.name.includes('mobile'), 'mobile only');
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Mobile Switch', 'Alice', 'Bob');
     try {
       // Alice creates a channel.
