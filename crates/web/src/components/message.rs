@@ -1,5 +1,4 @@
 use leptos::prelude::*;
-use wasm_bindgen::JsCast;
 use willow_client::DisplayMessage;
 
 use super::file_share::{parse_inline_file, FileCard};
@@ -271,25 +270,10 @@ pub fn MessageView(
     let msg_dom_id_for_lp = msg_dom_id.clone();
     let lp_id_move = lp_id.clone();
 
-    let on_msg_touchstart = move |ev: web_sys::TouchEvent| {
-        // Only prevent default if NOT touching interactive elements inside the message
-        // (action sheet buttons, reaction buttons, links, reply previews).
-        if let Some(target) = ev.target() {
-            let el: web_sys::Element = target.unchecked_into();
-            if el.closest(".mobile-action-sheet").ok().flatten().is_some()
-                || el
-                    .closest(".mobile-action-sheet-overlay")
-                    .ok()
-                    .flatten()
-                    .is_some()
-                || el.closest(".reactions").ok().flatten().is_some()
-                || el.closest(".reply-clickable").ok().flatten().is_some()
-                || el.closest("a").ok().flatten().is_some()
-            {
-                return;
-            }
-        }
-        ev.prevent_default();
+    let on_msg_touchstart = move |_ev: web_sys::TouchEvent| {
+        // Don't call prevent_default — it blocks scrolling and tapping
+        // interactive elements. The long-press timer is cancelled by
+        // touchmove (scrolling) so it won't fire during scroll.
         // Dismiss any other open sheets and highlights.
         let _ = js_sys::eval("document.querySelectorAll('.mobile-action-sheet.open,.mobile-action-sheet-overlay.open').forEach(function(el){el.classList.remove('open')}); document.querySelectorAll('.message.long-press-active').forEach(function(el){el.classList.remove('long-press-active')})");
         // Highlight the message immediately.
