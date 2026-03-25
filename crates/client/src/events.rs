@@ -90,19 +90,3 @@ pub enum ClientEvent {
         signal: crate::ops::VoiceSignalPayload,
     },
 }
-
-/// Push notifications sent through the optional notification channel.
-///
-/// These are an addition alongside the existing [`ClientEvent`] poll model.
-/// UIs can subscribe to this channel for reactive updates without polling.
-#[derive(Debug, Clone)]
-pub enum ClientNotification {
-    /// A `willow_state::Event` was applied to the event-sourced state.
-    EventApplied(willow_state::Event),
-    /// A new peer connected to the network.
-    PeerConnected(String),
-    /// A peer disconnected from the network.
-    PeerDisconnected(String),
-    /// The event-sourced state changed (generic notification).
-    StateChanged,
-}

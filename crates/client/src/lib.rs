@@ -30,7 +30,7 @@ pub mod storage;
 pub mod util;
 
 // Re-export key types at crate root for convenience.
-pub use events::{ClientEvent, ClientNotification};
+pub use events::ClientEvent;
 pub use ops::{pack_wire, unpack_wire, VoiceSignalPayload, WireMessage};
 pub use state::{
     ChatState, ClientState, DisplayMessage, PersistentEventStore, ProfileStore, ServerContext,
@@ -40,7 +40,7 @@ pub use state::{
 pub use willow_state;
 
 use std::collections::HashMap;
-use std::sync::mpsc as std_mpsc;
+use futures::channel::mpsc as futures_mpsc;
 
 use willow_identity::Identity;
 use willow_messaging::Content;
@@ -67,8 +67,8 @@ impl Default for ClientConfig {
 }
 
 type DeferredPair = (
-    std_mpsc::Sender<network::NetworkEvent>,
-    std_mpsc::Receiver<network::NetworkCommand>,
+    futures_mpsc::UnboundedSender<network::NetworkEvent>,
+    futures_mpsc::UnboundedReceiver<network::NetworkCommand>,
 );
 
 /// UI-agnostic P2P chat client.
@@ -76,25 +76,17 @@ type DeferredPair = (
 /// Wraps identity, networking, and all chat state. Call [`Client::poll()`]
 /// each frame (or in a loop) to drain network events and receive
 /// [`ClientEvent`]s.
-///
-/// Optionally accepts a push notification channel via
-/// [`Client::with_notifications`] for reactive UIs that prefer push over
-/// poll.
 pub struct Client {
     pub(crate) state: ClientState,
     pub(crate) identity: Identity,
-    pub(crate) cmd_tx: std_mpsc::Sender<network::NetworkCommand>,
-    pub(crate) event_rx: std_mpsc::Receiver<network::NetworkEvent>,
+    pub(crate) cmd_tx: futures_mpsc::UnboundedSender<network::NetworkCommand>,
+    pub(crate) event_rx: futures_mpsc::UnboundedReceiver<network::NetworkEvent>,
     pub(crate) connected: bool,
     pub(crate) config: ClientConfig,
     /// Holds the event_tx and cmd_rx until connect() consumes them.
     pub(crate) deferred_channels: Option<std::sync::Arc<std::sync::Mutex<Option<DeferredPair>>>>,
     /// Whether we have performed initial channel subscriptions.
     pub(crate) connected_subscribed: bool,
-    /// Counter for throttled profile re-broadcasts.
-    pub(crate) profile_broadcast_counter: u32,
-    /// Optional push notification sender for reactive UIs.
-    pub(crate) notification_tx: Option<std_mpsc::Sender<events::ClientNotification>>,
     /// Tracks what state hash each peer has reported via StateVerification events.
     pub(crate) state_verification_results: HashMap<String, willow_state::StateHash>,
     /// Timestamp (ms) when we last broadcast a typing indicator (for debouncing).
@@ -119,8 +111,8 @@ impl Client {
     pub fn new(config: ClientConfig) -> Self {
         let identity = load_identity();
 
-        let (cmd_tx, cmd_rx) = std_mpsc::channel();
-        let (event_tx, event_rx) = std_mpsc::channel();
+        let (cmd_tx, cmd_rx) = futures_mpsc::unbounded();
+        let (event_tx, event_rx) = futures_mpsc::unbounded();
 
         // We hold cmd_rx and event_tx until connect() is called.
         // Store them in a side channel via Mutex.
@@ -294,8 +286,6 @@ impl Client {
             config,
             deferred_channels: Some(deferred),
             connected_subscribed: false,
-            profile_broadcast_counter: 0,
-            notification_tx: None,
             state_verification_results: HashMap::new(),
             last_typing_sent_ms: 0,
             typing_peers: HashMap::new(),
@@ -308,26 +298,7 @@ impl Client {
         client
     }
 
-    /// Attach a push notification channel. Notifications are sent whenever
-    /// an event is applied to the event-sourced state, a peer connects or
-    /// disconnects, etc.
-    ///
-    /// This is an **addition** to the existing `poll()` model -- both work
-    /// simultaneously.
-    pub fn with_notifications(mut self, tx: std_mpsc::Sender<events::ClientNotification>) -> Self {
-        self.notification_tx = Some(tx);
-        self
-    }
-
-    /// Helper: send a push notification if the channel is configured.
-    fn notify(&self, notification: events::ClientNotification) {
-        if let Some(ref tx) = self.notification_tx {
-            let _ = tx.send(notification);
-        }
-    }
-
     /// Helper: apply an event to the event-sourced state and store it.
-    /// Sends a push notification if the channel is configured.
     /// Persists the full state after every mutation.
     fn apply_event(&mut self, event: &willow_state::Event) {
         willow_state::apply_lenient(&mut self.state.event_state, event);
@@ -335,7 +306,6 @@ impl Client {
         self.state
             .event_store
             .set_latest_hash(self.state.event_state.hash());
-        self.notify(events::ClientNotification::EventApplied(event.clone()));
 
         // Persist full state after every mutation.
         if self.config.persistence {
@@ -399,7 +369,7 @@ impl Client {
             .or_default()
             .insert(self.identity.peer_id().to_string());
         // Broadcast join.
-        let _ = self.cmd_tx.send(network::NetworkCommand::SendVoiceJoin {
+        let _ = self.cmd_tx.unbounded_send(network::NetworkCommand::SendVoiceJoin {
             channel_id: channel_id.to_string(),
         });
     }
@@ -413,7 +383,7 @@ impl Client {
             }
             let _ = self
                 .cmd_tx
-                .send(network::NetworkCommand::SendVoiceLeave { channel_id: ch });
+                .unbounded_send(network::NetworkCommand::SendVoiceLeave { channel_id: ch });
         }
     }
 
@@ -459,7 +429,7 @@ impl Client {
         target: &str,
         signal: ops::VoiceSignalPayload,
     ) {
-        let _ = self.cmd_tx.send(network::NetworkCommand::SendVoiceSignal {
+        let _ = self.cmd_tx.unbounded_send(network::NetworkCommand::SendVoiceSignal {
             channel_id: channel_id.to_string(),
             target_peer: target.to_string(),
             signal,
@@ -481,22 +451,6 @@ impl Client {
     /// [`ClientEvent`]s for the caller to handle.
     pub fn poll(&mut self) -> Vec<ClientEvent> {
         let mut events = Vec::new();
-
-        // Re-broadcast our profile periodically during startup so peers
-        // learn our display name even if the initial broadcast was missed
-        // (gossipsub mesh not yet formed).
-        if self.connected_subscribed && self.profile_broadcast_counter < 600 {
-            self.profile_broadcast_counter += 1;
-            // Broadcast at ticks 60, 120, 200, 400 (~3s, 6s, 10s, 20s at 50ms poll)
-            if matches!(self.profile_broadcast_counter, 60 | 120 | 200 | 400) {
-                let saved = storage::load_profile().unwrap_or_default();
-                if !saved.display_name.is_empty() {
-                    let _ = self.cmd_tx.send(network::NetworkCommand::BroadcastProfile {
-                        display_name: saved.display_name,
-                    });
-                }
-            }
-        }
 
         while let Ok(net_event) = self.event_rx.try_recv() {
             match net_event {
@@ -522,7 +476,6 @@ impl Client {
                         self.state
                             .event_store
                             .set_latest_hash(self.state.event_state.hash());
-                        self.notify(events::ClientNotification::EventApplied(event.clone()));
 
                         // Persist full state.
                         if self.config.persistence {
@@ -549,7 +502,7 @@ impl Client {
                         tracing::info!(count, "sending event sync batch");
                         let _ = self
                             .cmd_tx
-                            .send(network::NetworkCommand::SendSyncBatch { events: missing });
+                            .unbounded_send(network::NetworkCommand::SendSyncBatch { events: missing });
                     }
                 }
 
@@ -575,7 +528,6 @@ impl Client {
                             self.state
                                 .event_store
                                 .set_latest_hash(self.state.event_state.hash());
-                            self.notify(events::ClientNotification::EventApplied(event.clone()));
 
                             self.emit_client_events_for(event, &mut events);
                         }
@@ -608,17 +560,15 @@ impl Client {
                         // Re-broadcast profile so the new peer learns our name.
                         let saved = storage::load_profile().unwrap_or_default();
                         if !saved.display_name.is_empty() {
-                            let _ = self.cmd_tx.send(network::NetworkCommand::BroadcastProfile {
+                            let _ = self.cmd_tx.unbounded_send(network::NetworkCommand::BroadcastProfile {
                                 display_name: saved.display_name,
                             });
                         }
                     }
-                    self.notify(events::ClientNotification::PeerConnected(peer.clone()));
                     events.push(ClientEvent::PeerConnected(peer));
                 }
                 network::NetworkEvent::PeerDisconnected(peer) => {
                     self.state.chat.peers.retain(|p| p != &peer);
-                    self.notify(events::ClientNotification::PeerDisconnected(peer.clone()));
                     events.push(ClientEvent::PeerDisconnected(peer));
                 }
                 network::NetworkEvent::ProfileReceived {
@@ -783,7 +733,7 @@ impl Client {
                                 .unwrap_or_else(|_| uuid::Uuid::new_v4()),
                         );
                         ctx.topic_map.insert(topic.clone(), (name.clone(), cid));
-                        let _ = self.cmd_tx.send(network::NetworkCommand::Subscribe(topic));
+                        let _ = self.cmd_tx.unbounded_send(network::NetworkCommand::Subscribe(topic));
                     }
                 }
                 events.push(ClientEvent::ChannelCreated(name.clone()));
@@ -1065,7 +1015,7 @@ impl Client {
         }
 
         // Subscribe to channel topic if connected.
-        let _ = self.cmd_tx.send(network::NetworkCommand::Subscribe(topic));
+        let _ = self.cmd_tx.unbounded_send(network::NetworkCommand::Subscribe(topic));
 
         Ok(server_id)
     }
@@ -1382,7 +1332,7 @@ impl Client {
         ctx.topic_map
             .insert(topic.clone(), (name.to_string(), ch_id));
 
-        let _ = self.cmd_tx.send(network::NetworkCommand::Subscribe(topic));
+        let _ = self.cmd_tx.unbounded_send(network::NetworkCommand::Subscribe(topic));
 
         // Create and apply event, then broadcast it.
         let peer_id_str = self.identity.peer_id().to_string();
@@ -1426,7 +1376,7 @@ impl Client {
         ctx.topic_map
             .insert(topic.clone(), (name.to_string(), ch_id));
 
-        let _ = self.cmd_tx.send(network::NetworkCommand::Subscribe(topic));
+        let _ = self.cmd_tx.unbounded_send(network::NetworkCommand::Subscribe(topic));
 
         let peer_id_str = self.identity.peer_id().to_string();
         let event = willow_state::Event {
@@ -1815,7 +1765,7 @@ impl Client {
                 }
                 let _ = self
                     .cmd_tx
-                    .send(network::NetworkCommand::Subscribe(topic.clone()));
+                    .unbounded_send(network::NetworkCommand::Subscribe(topic.clone()));
             }
         } else {
             // Create a new server context for this server.
@@ -1842,7 +1792,7 @@ impl Client {
                 topic_map.insert(topic.clone(), (name.clone(), ch_id));
                 let _ = self
                     .cmd_tx
-                    .send(network::NetworkCommand::Subscribe(topic.clone()));
+                    .unbounded_send(network::NetworkCommand::Subscribe(topic.clone()));
             }
 
             let ctx = ServerContext {
@@ -1884,13 +1834,13 @@ impl Client {
         Self::persist_servers(&self.state);
 
         // Request sync for the new server — get all events from peers.
-        let _ = self.cmd_tx.send(network::NetworkCommand::RequestSync {
+        let _ = self.cmd_tx.unbounded_send(network::NetworkCommand::RequestSync {
             state_hash: willow_state::StateHash::ZERO,
             topic: None,
         });
         if let Some(ctx) = self.state.servers.get(&server_id) {
             for topic in ctx.topic_map.keys() {
-                let _ = self.cmd_tx.send(network::NetworkCommand::RequestSync {
+                let _ = self.cmd_tx.unbounded_send(network::NetworkCommand::RequestSync {
                     state_hash: willow_state::StateHash::ZERO,
                     topic: Some(topic.clone()),
                 });
@@ -1909,7 +1859,7 @@ impl Client {
             display_name: name.to_string(),
         });
 
-        let _ = self.cmd_tx.send(network::NetworkCommand::BroadcastProfile {
+        let _ = self.cmd_tx.unbounded_send(network::NetworkCommand::BroadcastProfile {
             display_name: name.to_string(),
         });
     }
@@ -1943,7 +1893,7 @@ impl Client {
         if !channel.is_empty() {
             let _ = self
                 .cmd_tx
-                .send(network::NetworkCommand::SendTyping { channel });
+                .unbounded_send(network::NetworkCommand::SendTyping { channel });
         }
     }
 
@@ -2205,7 +2155,7 @@ impl Client {
     fn broadcast_event(&self, event: willow_state::Event, topic: Option<String>) {
         let _ = self
             .cmd_tx
-            .send(network::NetworkCommand::BroadcastEvent { event, topic });
+            .unbounded_send(network::NetworkCommand::BroadcastEvent { event, topic });
     }
 
     /// Send chat content (text, reply) on a channel.
@@ -2271,37 +2221,37 @@ impl Client {
             for topic in ctx.topic_map.keys() {
                 let _ = self
                     .cmd_tx
-                    .send(network::NetworkCommand::Subscribe(topic.clone()));
+                    .unbounded_send(network::NetworkCommand::Subscribe(topic.clone()));
             }
         }
 
         // Subscribe to the global profile broadcast topic.
-        let _ = self.cmd_tx.send(network::NetworkCommand::Subscribe(
+        let _ = self.cmd_tx.unbounded_send(network::NetworkCommand::Subscribe(
             network::PROFILE_TOPIC.to_string(),
         ));
 
         // Subscribe to server state operations topic.
-        let _ = self.cmd_tx.send(network::NetworkCommand::Subscribe(
+        let _ = self.cmd_tx.unbounded_send(network::NetworkCommand::Subscribe(
             ops::SERVER_OPS_TOPIC.to_string(),
         ));
 
         // Broadcast our profile.
         let saved_profile = storage::load_profile().unwrap_or_default();
         if !saved_profile.display_name.is_empty() {
-            let _ = self.cmd_tx.send(network::NetworkCommand::BroadcastProfile {
+            let _ = self.cmd_tx.unbounded_send(network::NetworkCommand::BroadcastProfile {
                 display_name: saved_profile.display_name,
             });
         }
 
         // Request missing events via event-sourced sync.
         let state_hash = self.state.event_store.latest_hash();
-        let _ = self.cmd_tx.send(network::NetworkCommand::RequestSync {
+        let _ = self.cmd_tx.unbounded_send(network::NetworkCommand::RequestSync {
             state_hash: state_hash.clone(),
             topic: None,
         });
         for ctx in self.state.servers.values() {
             for topic in ctx.topic_map.keys() {
-                let _ = self.cmd_tx.send(network::NetworkCommand::RequestSync {
+                let _ = self.cmd_tx.unbounded_send(network::NetworkCommand::RequestSync {
                     state_hash: state_hash.clone(),
                     topic: Some(topic.clone()),
                 });
@@ -2343,10 +2293,10 @@ fn parse_permission(s: &str) -> anyhow::Result<willow_channel::Permission> {
 /// Create a test-only Client without connecting to the network.
 /// The returned client has mpsc channels wired up but no background task.
 #[cfg(test)]
-pub(crate) fn test_client() -> (Client, std::sync::mpsc::Receiver<network::NetworkCommand>) {
+pub(crate) fn test_client() -> (Client, futures_mpsc::UnboundedReceiver<network::NetworkCommand>) {
     let identity = Identity::generate();
-    let (cmd_tx, cmd_rx) = std_mpsc::channel();
-    let (_event_tx, event_rx) = std_mpsc::channel();
+    let (cmd_tx, cmd_rx) = futures_mpsc::unbounded();
+    let (_event_tx, event_rx) = futures_mpsc::unbounded();
 
     let mut state = ClientState::default();
 
@@ -2415,8 +2365,6 @@ pub(crate) fn test_client() -> (Client, std::sync::mpsc::Receiver<network::Netwo
         },
         deferred_channels: None,
         connected_subscribed: false,
-        profile_broadcast_counter: 0,
-        notification_tx: None,
         state_verification_results: HashMap::new(),
         last_typing_sent_ms: 0,
         typing_peers: HashMap::new(),
@@ -2462,7 +2410,7 @@ mod tests {
 
     #[test]
     fn send_message_broadcasts_event() {
-        let (mut client, rx) = test_client();
+        let (mut client, mut rx) = test_client();
         client.send_message("general", "test").unwrap();
 
         // Should broadcast a BroadcastEvent command.
@@ -2557,7 +2505,7 @@ mod tests {
 
     #[test]
     fn trust_untrust_broadcasts_events() {
-        let (mut client, rx) = test_client();
+        let (mut client, mut rx) = test_client();
         client.trust_peer("some-peer");
 
         // Should broadcast BroadcastEvent.
@@ -2586,7 +2534,7 @@ mod tests {
 
     #[test]
     fn set_display_name_updates_profile() {
-        let (mut client, rx) = test_client();
+        let (mut client, mut rx) = test_client();
         client.set_display_name("Alice");
 
         assert_eq!(client.display_name(), "Alice");
@@ -3083,7 +3031,7 @@ mod tests {
 
     #[test]
     fn verify_state_broadcasts_event() {
-        let (mut client, rx) = test_client();
+        let (mut client, mut rx) = test_client();
         client.verify_state().unwrap();
 
         // Should broadcast a BroadcastEvent command.
@@ -3162,7 +3110,7 @@ mod tests {
 
     #[test]
     fn rename_server_broadcasts_event() {
-        let (mut client, rx) = test_client();
+        let (mut client, mut rx) = test_client();
         client.rename_server("Another Name").unwrap();
 
         let cmd = rx.try_recv().unwrap();
@@ -3181,7 +3129,7 @@ mod tests {
 
     #[test]
     fn set_server_description_broadcasts_event() {
-        let (mut client, rx) = test_client();
+        let (mut client, mut rx) = test_client();
         client.set_server_description("Hello world").unwrap();
 
         let cmd = rx.try_recv().unwrap();
@@ -3317,7 +3265,7 @@ mod tests {
 
     #[test]
     fn create_server_subscribes_to_topic() {
-        let (mut client, rx) = test_client();
+        let (mut client, mut rx) = test_client();
         client.state.servers.clear();
         client.state.active_server = None;
 
