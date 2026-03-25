@@ -24,6 +24,7 @@ web-sys = { version = "0.3", features = [
     "RtcIceServer", "RtcPeerConnectionIceEvent", "RtcTrackEvent",
     "RtcRtpSender", "MediaStream", "MediaStreamTrack",
     "MediaStreamConstraints", "MediaDevices", "HtmlMediaElement",
+    "ScrollIntoViewOptions", "ScrollBehavior", "ScrollLogicalPosition",
 ] }
 js-sys = "0.3"
 wasm-bindgen-futures = "0.4"

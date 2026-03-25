@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
 use willow_client::DisplayMessage;
 
 use super::file_share::{parse_inline_file, FileCard};
@@ -263,17 +264,18 @@ pub fn MessageView(
     // Clone on_react for use in the reactions display.
     let on_react_for_reactions = on_react;
 
-    // Long-press to show dropdown (mobile).
-    let lp_id = format!("__willow_lp_{}", message.id.replace('-', "_"));
-    let lp_id_start = lp_id.clone();
-    let lp_id_end = lp_id.clone();
-    let msg_dom_id_for_lp = msg_dom_id.clone();
-    let lp_id_move = lp_id.clone();
+    // Long-press to show mobile action sheet.
+    // All state managed via Leptos signals — no js_sys::eval.
+    let (show_sheet, set_show_sheet) = signal(false);
+    let (long_press_active, set_long_press_active) = signal(false);
+    let long_press_timer = send_wrapper::SendWrapper::new(std::cell::Cell::new(0i32));
+    let lp_start = long_press_timer.clone();
+    let lp_end = long_press_timer.clone();
+    let lp_move = long_press_timer.clone();
 
     let on_msg_touchstart = move |ev: web_sys::TouchEvent| {
-        // If touching the action sheet or overlay, don't start a long-press.
+        // Skip if touching the action sheet or overlay.
         if let Some(target) = ev.target() {
-            use wasm_bindgen::JsCast;
             let el: web_sys::Element = target.unchecked_into();
             if el.closest(".mobile-action-sheet").ok().flatten().is_some()
                 || el
@@ -285,51 +287,60 @@ pub fn MessageView(
                 return;
             }
         }
-        // Dismiss any other open sheets and highlights.
-        let _ = js_sys::eval("document.querySelectorAll('.mobile-action-sheet.open,.mobile-action-sheet-overlay.open').forEach(function(el){el.classList.remove('open')}); document.querySelectorAll('.message.long-press-active').forEach(function(el){el.classList.remove('long-press-active')})");
-        // Highlight the message immediately.
-        let _ = js_sys::eval(&format!(
-            "document.getElementById('{msg_id}')?.classList.add('long-press-active')",
-            msg_id = msg_dom_id_for_lp,
-        ));
-        // Show action sheet after 500ms hold.
-        let _ = js_sys::eval(&format!(
-            "window.{id} = setTimeout(function() {{ \
-                var msg = document.getElementById('{msg_id}'); \
-                if(msg) {{ \
-                    msg.classList.remove('long-press-active'); \
-                    if(navigator.vibrate) navigator.vibrate(25); \
-                    var sheet = msg.querySelector('.mobile-action-sheet'); \
-                    var overlay = msg.querySelector('.mobile-action-sheet-overlay'); \
-                    if(sheet) sheet.classList.add('open'); \
-                    if(overlay) overlay.classList.add('open'); \
-                }} \
-                window.{id} = -1; \
-            }}, 500)",
-            id = lp_id_start,
-            msg_id = msg_dom_id_for_lp,
-        ));
+        set_long_press_active.set(true);
+        // Start 500ms timer via web_sys.
+        if let Some(window) = web_sys::window() {
+            let cb = wasm_bindgen::closure::Closure::once(move || {
+                set_long_press_active.set(false);
+                set_show_sheet.set(true);
+                // Haptic feedback.
+                if let Some(w) = web_sys::window() {
+                    let nav = w.navigator();
+                    let _ = nav.vibrate_with_duration(25);
+                }
+            });
+            if let Ok(id) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                cb.as_ref().unchecked_ref(),
+                500,
+            ) {
+                lp_start.set(id);
+            }
+            cb.forget();
+        }
     };
 
     let on_msg_touchend = move |_: web_sys::TouchEvent| {
-        let _ = js_sys::eval(&format!(
-            "if(window.{id}!==-1){{ clearTimeout(window.{id}); }} window.{id}=0; \
-            document.querySelectorAll('.message.long-press-active').forEach(function(el){{el.classList.remove('long-press-active')}})",
-            id = lp_id_end
-        ));
+        let id = lp_end.get();
+        if id != 0 {
+            if let Some(w) = web_sys::window() {
+                w.clear_timeout_with_handle(id);
+            }
+            lp_end.set(0);
+        }
+        set_long_press_active.set(false);
     };
 
     let on_msg_touchmove = move |_: web_sys::TouchEvent| {
-        let _ = js_sys::eval(&format!(
-            "if(window.{id}!==-1){{ clearTimeout(window.{id}); }} window.{id}=0; \
-            document.querySelectorAll('.message.long-press-active').forEach(function(el){{el.classList.remove('long-press-active')}})",
-            id = lp_id_move
-        ));
+        let id = lp_move.get();
+        if id != 0 {
+            if let Some(w) = web_sys::window() {
+                w.clear_timeout_with_handle(id);
+            }
+            lp_move.set(0);
+        }
+        set_long_press_active.set(false);
     };
 
+    let base_class = msg_class.to_string();
     view! {
         <div
-            class=msg_class
+            class=move || {
+                if long_press_active.get() {
+                    format!("{base_class} long-press-active")
+                } else {
+                    base_class.clone()
+                }
+            }
             id=msg_dom_id
             on:touchstart=on_msg_touchstart
             on:touchend=on_msg_touchend
@@ -343,10 +354,14 @@ pub fn MessageView(
                         on:click=move |ev| {
                             ev.stop_propagation();
                             if let Some(ref id) = jump_id {
-                                let _ = js_sys::eval(&format!(
-                                    "document.getElementById('msg-{}')?.scrollIntoView({{behavior:'smooth',block:'center'}})",
-                                    id
-                                ));
+                                if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                                    if let Some(el) = doc.get_element_by_id(&format!("msg-{id}")) {
+                                        let opts = web_sys::ScrollIntoViewOptions::new();
+                                        opts.set_behavior(web_sys::ScrollBehavior::Smooth);
+                                        opts.set_block(web_sys::ScrollLogicalPosition::Center);
+                                        el.scroll_into_view_with_scroll_into_view_options(&opts);
+                                    }
+                                }
                             }
                         }
                     >
@@ -598,12 +613,15 @@ pub fn MessageView(
                 let react_msg2 = message.clone();
 
                 let close_sheet = move || {
-                    let _ = js_sys::eval("document.querySelectorAll('.mobile-action-sheet.open,.mobile-action-sheet-overlay.open').forEach(function(el){el.classList.remove('open')})");
+                    set_show_sheet.set(false);
                 };
 
                 Some(view! {
-                    <div class="mobile-action-sheet-overlay" on:click=move |_| close_sheet()></div>
-                    <div class="mobile-action-sheet">
+                    <div
+                        class=move || if show_sheet.get() { "mobile-action-sheet-overlay open" } else { "mobile-action-sheet-overlay" }
+                        on:click=move |_| close_sheet()
+                    ></div>
+                    <div class=move || if show_sheet.get() { "mobile-action-sheet open" } else { "mobile-action-sheet" }>
                         {if has_reply {
                             let cb = reply_cb2;
                             let msg = reply_msg2.clone();
