@@ -63,9 +63,13 @@ test-e2e-ui-all:
 test-e2e-ui-headed:
     npx playwright test --headed
 
-# Run only state sync tests
+# Run multi-peer sync tests (desktop-chrome for quick iteration)
 test-e2e-sync:
-    npx playwright test e2e/state-sync.spec.ts --project=desktop-chrome
+    npx playwright test e2e/multi-peer-sync.spec.ts --project=desktop-chrome
+
+# Run permission tests
+test-e2e-perms:
+    npx playwright test e2e/permissions.spec.ts --project=desktop-chrome
 
 # Run ALL tests including browser and E2E
 test-all: test test-browser test-e2e-ui
