@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
-use crate::app::ClientHandle;
+use crate::app::WebClientHandle;
 
 /// Maximum inline file size (256 KB).
 const MAX_FILE_SIZE: u64 = 256 * 1024;
@@ -12,7 +12,9 @@ const MAX_FILE_SIZE: u64 = 256 * 1024;
 ///
 /// Files larger than 256 KB are rejected with a browser alert.
 #[component]
-pub fn FileShareButton(client: ClientHandle, channel: ReadSignal<String>) -> impl IntoView {
+pub fn FileShareButton(channel: ReadSignal<String>) -> impl IntoView {
+    let handle = use_context::<WebClientHandle>().unwrap();
+
     // Create a hidden file input and trigger it on button click.
     let input_ref = NodeRef::<leptos::html::Input>::new();
 
@@ -25,7 +27,7 @@ pub fn FileShareButton(client: ClientHandle, channel: ReadSignal<String>) -> imp
         }
     };
 
-    let client_change = client.clone();
+    let handle_change = handle.clone();
     let on_change = move |_ev: web_sys::Event| {
         let Some(input) = input_ref.get() else {
             return;
@@ -48,7 +50,7 @@ pub fn FileShareButton(client: ClientHandle, channel: ReadSignal<String>) -> imp
 
         let filename = file.name();
         let ch = channel.get_untracked();
-        let client_inner = client_change.clone();
+        let handle_inner = handle_change.clone();
 
         let reader = web_sys::FileReader::new().unwrap();
         let reader_clone = reader.clone();
@@ -59,8 +61,7 @@ pub fn FileShareButton(client: ClientHandle, channel: ReadSignal<String>) -> imp
             let uint8 = js_sys::Uint8Array::new(&array_buf);
             let data = uint8.to_vec();
 
-            let mut c = client_inner.borrow_mut();
-            if let Err(e) = c.share_file_inline(&ch, &filename, &data) {
+            if let Err(e) = handle_inner.share_file_inline(&ch, &filename, &data) {
                 let window = web_sys::window().unwrap();
                 let _ = window.alert_with_message(&format!("Failed to share file: {e}"));
             }

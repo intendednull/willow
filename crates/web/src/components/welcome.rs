@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 
-use crate::app::ClientHandle;
+use crate::app::WebClientHandle;
 use crate::components::AddServerPanel;
 use crate::util::copy_to_clipboard;
 
@@ -10,11 +10,9 @@ use crate::util::copy_to_clipboard;
 /// invite code. The create/join form is delegated to `AddServerPanel` to
 /// avoid duplicating logic.
 #[component]
-pub fn WelcomeScreen(
-    client: ClientHandle,
-    on_done: impl Fn(()) + Send + Clone + 'static,
-) -> impl IntoView {
-    let peer_id = client.borrow().peer_id();
+pub fn WelcomeScreen(on_done: impl Fn(()) + Send + Clone + 'static) -> impl IntoView {
+    let handle = use_context::<WebClientHandle>().unwrap();
+    let peer_id = handle.peer_id();
     let (copy_label, set_copy_label) = signal("Copy");
 
     view! {
@@ -49,7 +47,7 @@ pub fn WelcomeScreen(
                         </button>
                     </div>
                 </div>
-                <AddServerPanel client=client on_done=on_done />
+                <AddServerPanel on_done=on_done />
             </div>
         </div>
     }

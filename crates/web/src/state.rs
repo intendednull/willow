@@ -66,6 +66,8 @@ pub struct VoiceState {
     pub voice_channel: ReadSignal<Option<String>>,
     pub voice_muted: ReadSignal<bool>,
     pub voice_deafened: ReadSignal<bool>,
+    /// Participants per voice channel. Not yet rendered but tracked for future use.
+    #[allow(dead_code)]
     pub voice_participants_map: ReadSignal<HashMap<String, Vec<String>>>,
     pub voice_channel_name: ReadSignal<String>,
 }

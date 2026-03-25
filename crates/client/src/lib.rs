@@ -2073,6 +2073,44 @@ impl ClientHandle {
         entries
     }
 
+    /// Returns the PeerId of the server owner.
+    pub fn server_owner(&self) -> String {
+        self.shared.borrow().state.event_state.owner.clone()
+    }
+
+    /// Check whether a peer has a specific permission.
+    pub fn has_permission(&self, peer_id: &str, perm: &willow_state::Permission) -> bool {
+        self.shared
+            .borrow()
+            .state
+            .event_state
+            .has_permission(peer_id, perm)
+    }
+
+    /// Returns the current channel name from the chat state.
+    pub fn current_channel(&self) -> String {
+        self.shared
+            .borrow()
+            .state
+            .chat
+            .current_channel
+            .clone()
+    }
+
+    /// Returns unread counts keyed by channel name for the active server.
+    pub fn unread_counts(&self) -> HashMap<String, usize> {
+        let shared = self.shared.borrow();
+        let mut unread_map = HashMap::new();
+        if let Some(ctx) = shared.state.active() {
+            for (topic, count) in &ctx.unread {
+                if let Some(name) = ctx.name_for_topic(topic) {
+                    unread_map.insert(name.to_string(), *count);
+                }
+            }
+        }
+        unread_map
+    }
+
     // ---- Internal helpers ----
 
     /// Send chat content (text, reply) on a channel.
