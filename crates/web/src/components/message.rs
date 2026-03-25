@@ -264,39 +264,44 @@ pub fn MessageView(
     let on_react_for_reactions = on_react;
 
     // Long-press to show dropdown (mobile).
-    // Uses a unique global variable per message to track the timer.
     let lp_id = format!("__willow_lp_{}", message.id.replace('-', "_"));
     let lp_id_start = lp_id.clone();
     let lp_id_end = lp_id.clone();
+    let msg_dom_id_for_lp = msg_dom_id.clone();
     let lp_id_move = lp_id.clone();
 
     let on_msg_touchstart = move |ev: web_sys::TouchEvent| {
-        // Prevent context menu
         ev.prevent_default();
+        // Dismiss any other open sheets first.
+        let _ = js_sys::eval("document.querySelectorAll('.mobile-action-sheet.open,.mobile-action-sheet-overlay.open').forEach(function(el){el.classList.remove('open')})");
+        // Show action sheet after 500ms hold.
         let _ = js_sys::eval(&format!(
-            "window.{id} = setTimeout(function() {{ window.{id} = -1; }}, 500)",
-            id = lp_id_start
+            "window.{id} = setTimeout(function() {{ \
+                var msg = document.getElementById('{msg_id}'); \
+                if(msg) {{ \
+                    var sheet = msg.querySelector('.mobile-action-sheet'); \
+                    var overlay = msg.querySelector('.mobile-action-sheet-overlay'); \
+                    if(sheet) sheet.classList.add('open'); \
+                    if(overlay) overlay.classList.add('open'); \
+                }} \
+                window.{id} = -1; \
+            }}, 500)",
+            id = lp_id_start,
+            msg_id = msg_dom_id_for_lp,
         ));
     };
 
     let on_msg_touchend = move |_: web_sys::TouchEvent| {
-        let fired = js_sys::eval(&format!("window.{id}", id = lp_id_end))
-            .ok()
-            .and_then(|v| v.as_f64())
-            .map(|v| v == -1.0)
-            .unwrap_or(false);
-        if fired {
-            set_show_dropdown.set(true);
-        }
+        // Only clear the timer if it hasn't fired yet.
         let _ = js_sys::eval(&format!(
-            "clearTimeout(window.{id}); window.{id} = 0",
+            "if(window.{id}!==-1){{ clearTimeout(window.{id}); }} window.{id}=0",
             id = lp_id_end
         ));
     };
 
     let on_msg_touchmove = move |_: web_sys::TouchEvent| {
         let _ = js_sys::eval(&format!(
-            "clearTimeout(window.{id}); window.{id} = 0",
+            "if(window.{id}!==-1){{ clearTimeout(window.{id}); }} window.{id}=0",
             id = lp_id_move
         ));
     };
@@ -557,6 +562,102 @@ pub fn MessageView(
             } else {
                 None
             }}
+            // Mobile bottom action sheet (shown via long-press, hidden by default).
+            {if show_actions {
+                let reply_cb2 = on_click;
+                let reply_msg2 = message.clone();
+                let pin_cb2 = on_pin;
+                let pin_msg2 = message.clone();
+                let pin_label2 = pin_label.clone();
+                let edit_cb2 = on_edit;
+                let edit_msg2 = message.clone();
+                let delete_cb2 = on_delete;
+                let delete_msg2 = message.clone();
+                let react_cb2 = on_react;
+                let react_msg2 = message.clone();
+
+                let close_sheet = move || {
+                    let _ = js_sys::eval("document.querySelectorAll('.mobile-action-sheet.open,.mobile-action-sheet-overlay.open').forEach(function(el){el.classList.remove('open')})");
+                };
+
+                Some(view! {
+                    <div class="mobile-action-sheet-overlay" on:click=move |_| close_sheet()></div>
+                    <div class="mobile-action-sheet">
+                        {if has_reply {
+                            let cb = reply_cb2;
+                            let msg = reply_msg2.clone();
+                            let close = close_sheet;
+                            Some(view! {
+                                <button class="sheet-item" on:click=move |ev| {
+                                    ev.stop_propagation();
+                                    if let Some(ref cb) = cb { cb.run(msg.clone()); }
+                                    close();
+                                }>"Reply"</button>
+                            })
+                        } else { None }}
+                        {if has_pin {
+                            let cb = pin_cb2;
+                            let msg = pin_msg2.clone();
+                            let label = pin_label2.clone();
+                            let close = close_sheet;
+                            Some(view! {
+                                <button class="sheet-item" on:click=move |ev| {
+                                    ev.stop_propagation();
+                                    if let Some(ref cb) = cb { cb.run(msg.clone()); }
+                                    close();
+                                }>{label}</button>
+                            })
+                        } else { None }}
+                        {if has_react {
+                            let cb = react_cb2;
+                            let msg = react_msg2.clone();
+                            let close = close_sheet;
+                            Some(view! {
+                                <div class="sheet-emoji-row">
+                                    {REACTION_EMOJI.iter().map(|emoji| {
+                                        let e = emoji.to_string();
+                                        let ev = e.clone();
+                                        let m = msg.clone();
+                                        let c = cb;
+                                        let cl = close;
+                                        view! {
+                                            <button on:click=move |_| {
+                                                if let Some(ref c) = c { c.run((m.clone(), ev.clone())); }
+                                                cl();
+                                            }>{e}</button>
+                                        }
+                                    }).collect::<Vec<_>>()}
+                                </div>
+                            })
+                        } else { None }}
+                        {if has_edit {
+                            let cb = edit_cb2;
+                            let msg = edit_msg2.clone();
+                            let close = close_sheet;
+                            Some(view! {
+                                <button class="sheet-item" on:click=move |ev| {
+                                    ev.stop_propagation();
+                                    if let Some(ref cb) = cb { cb.run(msg.clone()); }
+                                    close();
+                                }>"Edit"</button>
+                            })
+                        } else { None }}
+                        {if has_delete {
+                            let cb = delete_cb2;
+                            let msg = delete_msg2.clone();
+                            let close = close_sheet;
+                            Some(view! {
+                                <button class="sheet-item sheet-danger" on:click=move |ev| {
+                                    ev.stop_propagation();
+                                    if let Some(ref cb) = cb { cb.run(msg.clone()); }
+                                    close();
+                                }>"Delete"</button>
+                            })
+                        } else { None }}
+                        <button class="sheet-item sheet-cancel" on:click=move |_| close_sheet()>"Cancel"</button>
+                    </div>
+                })
+            } else { None }}
             {if has_reactions {
                 let react_cb = on_react_for_reactions;
                 Some(view! {

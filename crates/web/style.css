@@ -797,6 +797,113 @@ select:focus-visible {
     transform: scale(1.15);
 }
 
+/* ── Mobile Action Sheet (bottom drawer, Discord-style) ──────────── */
+
+.mobile-action-sheet-overlay {
+    display: none;
+}
+
+.mobile-action-sheet {
+    display: none;
+}
+
+@media (max-width: 900px) {
+    .mobile-action-sheet-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 99;
+    }
+
+    .mobile-action-sheet-overlay.open {
+        display: block;
+    }
+
+    .mobile-action-sheet {
+        display: none;
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        z-index: 100;
+        background: var(--bg-sidebar);
+        border-top: 1px solid var(--border);
+        border-radius: 16px 16px 0 0;
+        padding: 8px 0;
+        padding-bottom: max(8px, env(safe-area-inset-bottom));
+        transform: translateY(100%);
+        transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+        box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.3);
+    }
+
+    .mobile-action-sheet.open {
+        display: flex;
+        flex-direction: column;
+        transform: translateY(0);
+    }
+
+    .mobile-action-sheet .sheet-item {
+        display: block;
+        width: 100%;
+        padding: 14px 20px;
+        background: transparent;
+        border: none;
+        color: var(--text-primary);
+        font-size: 16px;
+        text-align: left;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+    }
+
+    .mobile-action-sheet .sheet-item:active {
+        background: var(--bg-input);
+    }
+
+    .mobile-action-sheet .sheet-danger {
+        color: var(--danger);
+    }
+
+    .mobile-action-sheet .sheet-cancel {
+        border-top: 1px solid var(--border);
+        margin-top: 4px;
+        padding-top: 14px;
+        color: var(--text-muted);
+    }
+
+    .mobile-action-sheet .sheet-emoji-row {
+        display: flex;
+        justify-content: center;
+        gap: 4px;
+        padding: 8px 16px;
+        flex-wrap: wrap;
+    }
+
+    .mobile-action-sheet .sheet-emoji-row button {
+        font-size: 24px;
+        padding: 8px;
+        background: transparent;
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+        min-width: 44px;
+        min-height: 44px;
+    }
+
+    .mobile-action-sheet .sheet-emoji-row button:active {
+        background: var(--bg-input);
+    }
+
+}
+
+/* On desktop, hide the action sheet entirely */
+@media (min-width: 901px) {
+    .mobile-action-sheet,
+    .mobile-action-sheet-overlay {
+        display: none !important;
+    }
+}
+
 /* ── Edit Bar (above input, similar to reply bar) ────────────────── */
 
 .edit-bar {
