@@ -97,6 +97,48 @@ test.describe('Mobile action sheet', () => {
     await expect(page.locator('.reaction')).toBeVisible();
   });
 
+  test('swipe down dismisses action sheet', async ({ page }) => {
+    await freshStart(page);
+    await createServer(page, 'SwipeDown');
+    await sendMessage(page, 'swipe to dismiss');
+    await page.waitForTimeout(500);
+
+    await longPress(page, '.message');
+    await expect(page.locator('.mobile-action-sheet.open')).toBeVisible({ timeout: 3000 });
+
+    // Simulate a downward swipe on the action sheet.
+    const sheet = page.locator('.mobile-action-sheet.open');
+    const box = await sheet.boundingBox();
+    if (!box) throw new Error('sheet not found');
+
+    const startX = box.x + box.width / 2;
+    const startY = box.y + 20; // Near the drag handle at top
+    const endY = startY + 150; // Swipe 150px down (past 80px threshold)
+
+    await page.evaluate(({ startX, startY, endY }) => {
+      const target = document.elementFromPoint(startX, startY);
+      if (!target) return;
+      const makeTouch = (y: number) => new Touch({
+        identifier: 1, target, clientX: startX, clientY: y, pageX: startX, pageY: y,
+      });
+      target.dispatchEvent(new TouchEvent('touchstart', {
+        bubbles: true, cancelable: true,
+        touches: [makeTouch(startY)], targetTouches: [makeTouch(startY)], changedTouches: [makeTouch(startY)],
+      }));
+      target.dispatchEvent(new TouchEvent('touchmove', {
+        bubbles: true, cancelable: true,
+        touches: [makeTouch(endY)], targetTouches: [makeTouch(endY)], changedTouches: [makeTouch(endY)],
+      }));
+      target.dispatchEvent(new TouchEvent('touchend', {
+        bubbles: true, cancelable: true,
+        touches: [], targetTouches: [], changedTouches: [makeTouch(endY)],
+      }));
+    }, { startX, startY, endY });
+
+    await page.waitForTimeout(500);
+    await expect(page.locator('.mobile-action-sheet.open')).toBeHidden();
+  });
+
   test('quick tap does NOT open sheet', async ({ page }) => {
     await freshStart(page);
     await createServer(page, 'QuickTap2');
