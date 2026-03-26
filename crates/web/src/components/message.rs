@@ -268,6 +268,63 @@ pub fn MessageView(
     // All state managed via Leptos signals — no js_sys::eval.
     let (show_sheet, set_show_sheet) = signal(false);
     let (long_press_active, set_long_press_active) = signal(false);
+    // Swipe-down-to-dismiss state for the action sheet.
+    let (sheet_drag_y, set_sheet_drag_y) = signal(0.0f64);
+    let (sheet_dragging, set_sheet_dragging) = signal(false);
+    let sheet_touch_start_y =
+        send_wrapper::SendWrapper::new(std::rc::Rc::new(std::cell::Cell::new(0.0f64)));
+    let sheet_touch_last_y =
+        send_wrapper::SendWrapper::new(std::rc::Rc::new(std::cell::Cell::new(0.0f64)));
+    let sheet_touch_time =
+        send_wrapper::SendWrapper::new(std::rc::Rc::new(std::cell::Cell::new(0.0f64)));
+    let st_start_for_start = sheet_touch_start_y.clone();
+    let st_last_for_start = sheet_touch_last_y.clone();
+    let st_time_for_start = sheet_touch_time.clone();
+    let st_start_for_move = sheet_touch_start_y.clone();
+    let st_last_for_move = sheet_touch_last_y.clone();
+    let st_start_for_end = sheet_touch_start_y.clone();
+    let st_last_for_end = sheet_touch_last_y.clone();
+    let st_time_for_end = sheet_touch_time.clone();
+
+    let on_sheet_touchstart = move |ev: web_sys::TouchEvent| {
+        if let Some(touch) = ev.touches().get(0) {
+            let y = touch.client_y() as f64;
+            st_start_for_start.set(y);
+            st_last_for_start.set(y);
+            st_time_for_start.set(js_sys::Date::now());
+            set_sheet_dragging.set(true);
+        }
+    };
+
+    let on_sheet_touchmove = move |ev: web_sys::TouchEvent| {
+        if !sheet_dragging.get_untracked() {
+            return;
+        }
+        if let Some(touch) = ev.touches().get(0) {
+            let y = touch.client_y() as f64;
+            let delta = y - st_start_for_move.get();
+            // Only allow dragging downward (positive delta).
+            set_sheet_drag_y.set(delta.max(0.0));
+            st_last_for_move.set(y);
+        }
+    };
+
+    let on_sheet_touchend = move |_: web_sys::TouchEvent| {
+        if !sheet_dragging.get_untracked() {
+            return;
+        }
+        set_sheet_dragging.set(false);
+        let drag = sheet_drag_y.get_untracked();
+        let elapsed = js_sys::Date::now() - st_time_for_end.get();
+        let distance = st_last_for_end.get() - st_start_for_end.get();
+        // Dismiss if dragged past 80px OR fast swipe (>200px/s downward).
+        let velocity = if elapsed > 0.0 { distance / elapsed * 1000.0 } else { 0.0 };
+        if drag > 80.0 || velocity > 200.0 {
+            set_show_sheet.set(false);
+        }
+        set_sheet_drag_y.set(0.0);
+    };
+
     // Use Rc<Cell> so all closures share the SAME timer ID cell.
     let long_press_timer =
         send_wrapper::SendWrapper::new(std::rc::Rc::new(std::cell::Cell::new(0i32)));
@@ -623,7 +680,21 @@ pub fn MessageView(
                         class=move || if show_sheet.get() { "mobile-action-sheet-overlay open" } else { "mobile-action-sheet-overlay" }
                         on:click=move |_| close_sheet()
                     ></div>
-                    <div class=move || if show_sheet.get() { "mobile-action-sheet open" } else { "mobile-action-sheet" }>
+                    <div
+                        class=move || if show_sheet.get() { "mobile-action-sheet open" } else { "mobile-action-sheet" }
+                        style=move || {
+                            let dy = sheet_drag_y.get();
+                            if dy > 0.0 {
+                                // While dragging, disable transition and apply transform.
+                                format!("transform: translateY({dy}px); transition: none;")
+                            } else {
+                                String::new()
+                            }
+                        }
+                        on:touchstart=on_sheet_touchstart
+                        on:touchmove=on_sheet_touchmove
+                        on:touchend=on_sheet_touchend
+                    >
                         {if has_reply {
                             let cb = reply_cb2;
                             let msg = reply_msg2.clone();
