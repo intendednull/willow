@@ -3072,19 +3072,7 @@ select:focus-visible {
 .settings-tabs .tab-btn.active {
     color: var(--text-primary);
     border-bottom-color: var(--accent);
-}
-
-/* Subtle glow on active tab underline */
-.settings-tabs .tab-btn.active::after {
-    content: '';
-    position: absolute;
-    bottom: -1px;
-    left: 20%;
-    right: 20%;
-    height: 2px;
-    background: var(--accent);
-    box-shadow: 0 0 8px var(--accent-glow), 0 0 2px var(--accent);
-    border-radius: 1px;
+    box-shadow: 0 2px 8px var(--accent-glow);
 }
 
 /* ── Settings Breadcrumb / Header ──────────────────────────────── */
