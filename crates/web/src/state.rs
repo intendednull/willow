@@ -74,6 +74,7 @@ pub struct ServerState {
 #[derive(Clone, Copy)]
 pub struct UiState {
     pub show_settings: ReadSignal<bool>,
+    #[allow(dead_code)]
     pub show_server_settings: ReadSignal<bool>,
     pub show_sidebar: ReadSignal<bool>,
     pub show_members: ReadSignal<bool>,
@@ -82,6 +83,7 @@ pub struct UiState {
     pub show_call_page: ReadSignal<bool>,
     pub show_palette: ReadSignal<bool>,
     pub call_layout: ReadSignal<CallLayout>,
+    #[allow(dead_code)]
     pub settings_tab: ReadSignal<SettingsTab>,
 }
 
@@ -217,9 +219,10 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
     let (voice_channel_name, set_voice_channel_name) = signal(String::new());
     let (video_source, set_video_source) = signal(Option::<VideoSource>::None);
     let (speaking_peers, set_speaking_peers) = signal(HashSet::<String>::new());
-    let (remote_video_streams, set_remote_video_streams) = signal(
-        HashMap::<String, send_wrapper::SendWrapper<web_sys::MediaStream>>::new(),
-    );
+    let (remote_video_streams, set_remote_video_streams) = signal(HashMap::<
+        String,
+        send_wrapper::SendWrapper<web_sys::MediaStream>,
+    >::new());
 
     let app_state = AppState {
         chat: ChatState {

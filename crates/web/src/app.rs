@@ -77,8 +77,8 @@ pub fn App() -> impl IntoView {
     let voice_channel_for_signal = app_state.voice.voice_channel;
     let set_remote_streams = write.voice.set_remote_video_streams;
     let set_speaking = write.voice.set_speaking_peers;
-    let voice_manager: VoiceManagerHandle = SendWrapper::new(Rc::new(RefCell::new(
-        VoiceManager::new(
+    let voice_manager: VoiceManagerHandle =
+        SendWrapper::new(Rc::new(RefCell::new(VoiceManager::new(
             local_peer_id,
             move |target_peer: &str, signal_type: &str, payload: &str| {
                 let ch_id = voice_channel_for_signal.get_untracked().unwrap_or_default();
@@ -103,8 +103,7 @@ pub fn App() -> impl IntoView {
             move |peers: std::collections::HashSet<String>| {
                 set_speaking.set(peers);
             },
-        ),
-    )));
+        ))));
 
     provide_context(voice_manager.clone());
 
@@ -127,18 +126,13 @@ pub fn App() -> impl IntoView {
             move |ev: web_sys::KeyboardEvent| {
                 if (ev.ctrl_key() || ev.meta_key()) && ev.key() == "k" {
                     ev.prevent_default();
-                    write_for_palette
-                        .ui
-                        .set_show_palette
-                        .update(|v| *v = !*v);
+                    write_for_palette.ui.set_show_palette.update(|v| *v = !*v);
                 }
             },
         );
         if let Some(window) = web_sys::window() {
-            let _ = window.add_event_listener_with_callback(
-                "keydown",
-                closure.as_ref().unchecked_ref(),
-            );
+            let _ = window
+                .add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref());
         }
         closure.forget();
     }
@@ -251,9 +245,15 @@ pub fn App() -> impl IntoView {
         write.voice.set_voice_deafened.set(false);
         write.voice.set_video_source.set(None);
         write.voice.set_remote_video_streams.update(|m| m.clear());
-        write.voice.set_speaking_peers.set(std::collections::HashSet::new());
+        write
+            .voice
+            .set_speaking_peers
+            .set(std::collections::HashSet::new());
         write.ui.set_show_call_page.set(false);
-        write.ui.set_call_layout.set(crate::state::CallLayout::default());
+        write
+            .ui
+            .set_call_layout
+            .set(crate::state::CallLayout::default());
     };
 
     // Welcome screen callback that refreshes all signals.
@@ -283,7 +283,7 @@ pub fn App() -> impl IntoView {
     let display_name = app_state.server.display_name;
     let peer_count = app_state.network.peer_count;
     let peer_id = app_state.network.peer_id;
-    let roles = app_state.server.roles;
+    let _roles = app_state.server.roles;
     let replying_to = app_state.chat.replying_to;
     let editing = app_state.chat.editing;
     let channel_views = app_state.chat.channel_views;

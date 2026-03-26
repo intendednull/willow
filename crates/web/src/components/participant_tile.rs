@@ -6,8 +6,6 @@
 
 use leptos::prelude::*;
 use send_wrapper::SendWrapper;
-use wasm_bindgen::JsCast;
-
 use crate::icons;
 
 /// Derive a unique gradient from a peer ID for the avatar background.

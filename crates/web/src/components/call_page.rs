@@ -17,6 +17,7 @@ use crate::state::{AppState, AppWriteSignals, CallLayout, VideoSource};
 ///
 /// Because Leptos `#[prop(optional)]` expects the inner `T` when passing a
 /// value (not `Option<T>`), we branch on whether a stream exists.
+#[allow(clippy::too_many_arguments)]
 fn render_tile(
     peer_id: String,
     display_name: String,
@@ -139,10 +140,9 @@ pub fn CallPage(
                 vm2.borrow_mut().start_camera(stream);
                 write2.voice.set_video_source.set(Some(VideoSource::Camera));
             });
-        let on_error =
-            wasm_bindgen::closure::Closure::once(move |_err: wasm_bindgen::JsValue| {
-                tracing::error!("Camera access denied");
-            });
+        let on_error = wasm_bindgen::closure::Closure::once(move |_err: wasm_bindgen::JsValue| {
+            tracing::error!("Camera access denied");
+        });
         let _ = promise.then2(&on_success, &on_error);
         on_success.forget();
         on_error.forget();
@@ -187,10 +187,9 @@ pub fn CallPage(
                 vm2.borrow_mut().start_screen_share(stream);
                 write2.voice.set_video_source.set(Some(VideoSource::Screen));
             });
-        let on_error =
-            wasm_bindgen::closure::Closure::once(move |_err: wasm_bindgen::JsValue| {
-                tracing::error!("Screen share denied or cancelled");
-            });
+        let on_error = wasm_bindgen::closure::Closure::once(move |_err: wasm_bindgen::JsValue| {
+            tracing::error!("Screen share denied or cancelled");
+        });
         let _ = promise.then2(&on_success, &on_error);
         on_success.forget();
         on_error.forget();

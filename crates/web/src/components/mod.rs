@@ -29,7 +29,6 @@ pub use member_list::*;
 pub use message::*;
 pub use participant_tile::*;
 pub use pinned::*;
-pub use roles::*;
 pub use server_list::*;
 pub use settings::*;
 pub use sidebar::*;

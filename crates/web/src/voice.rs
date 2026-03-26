@@ -55,7 +55,8 @@ impl SpeakingDetector {
     /// The `AudioContext` is created immediately (caller must ensure a user
     /// gesture has already occurred so the browser allows it).
     pub fn new(on_change: impl Fn(HashSet<String>) + 'static) -> Result<Self, String> {
-        let audio_context = AudioContext::new().map_err(|e| format!("AudioContext::new failed: {e:?}"))?;
+        let audio_context =
+            AudioContext::new().map_err(|e| format!("AudioContext::new failed: {e:?}"))?;
         // Resume the context in case it was created in a suspended state.
         let _ = audio_context.resume();
         Ok(Self {
@@ -94,7 +95,9 @@ impl SpeakingDetector {
             return;
         }
 
-        self.analysers.borrow_mut().insert(peer_id.to_string(), analyser);
+        self.analysers
+            .borrow_mut()
+            .insert(peer_id.to_string(), analyser);
         self.sources.insert(peer_id.to_string(), source);
     }
 
@@ -360,10 +363,7 @@ impl VoiceManager {
 
         // Share the detector's analysers map and audio context with the closure
         // so it can register incoming remote audio streams for speaking detection.
-        let detector_analysers = self
-            .speaking_detector
-            .as_ref()
-            .map(|d| d.analysers.clone());
+        let detector_analysers = self.speaking_detector.as_ref().map(|d| d.analysers.clone());
         let detector_ctx = self
             .speaking_detector
             .as_ref()
@@ -379,16 +379,12 @@ impl VoiceManager {
 
             if track.kind() == "audio" {
                 // Register the remote audio stream with the speaking detector.
-                if let (Some(ref ctx), Some(ref analysers)) =
-                    (&detector_ctx, &detector_analysers)
-                {
+                if let (Some(ref ctx), Some(ref analysers)) = (&detector_ctx, &detector_analysers) {
                     if let Ok(source) = ctx.create_media_stream_source(&stream) {
                         if let Ok(analyser) = ctx.create_analyser() {
                             analyser.set_fft_size(256);
                             if source.connect_with_audio_node(&analyser).is_ok() {
-                                analysers
-                                    .borrow_mut()
-                                    .insert(peer_id.clone(), analyser);
+                                analysers.borrow_mut().insert(peer_id.clone(), analyser);
                                 // Source node must stay alive — leak it so the
                                 // browser keeps the audio graph connected.
                                 std::mem::forget(source);
@@ -456,8 +452,8 @@ impl VoiceManager {
             wasm_bindgen_futures::spawn_local(async move {
                 flag.set(true);
 
-                let offer_result = wasm_bindgen_futures::JsFuture::from(pc_inner.create_offer())
-                    .await;
+                let offer_result =
+                    wasm_bindgen_futures::JsFuture::from(pc_inner.create_offer()).await;
                 let Ok(offer) = offer_result else {
                     flag.set(false);
                     return;
@@ -517,10 +513,7 @@ impl VoiceManager {
 
         self.connections.insert(
             remote_peer.to_string(),
-            PeerConnectionState {
-                pc,
-                making_offer,
-            },
+            PeerConnectionState { pc, making_offer },
         );
 
         let state = self.connections.get(remote_peer).unwrap();
@@ -592,8 +585,7 @@ impl VoiceManager {
             }
             // We are polite — rollback our pending local description.
             let rollback = RtcSessionDescriptionInit::new(RtcSdpType::Rollback);
-            let _ = wasm_bindgen_futures::JsFuture::from(pc.set_local_description(&rollback))
-                .await;
+            let _ = wasm_bindgen_futures::JsFuture::from(pc.set_local_description(&rollback)).await;
         }
 
         // Set remote description (the offer).
@@ -705,7 +697,7 @@ impl VoiceManager {
         let senders: Vec<(String, RtcRtpSender)> = self.video_senders.drain().collect();
         for (peer_id, sender) in senders {
             if let Some(state) = self.connections.get(&peer_id) {
-                let _ = state.pc.remove_track(&sender);
+                state.pc.remove_track(&sender);
             }
         }
         if let Some(ref stream) = self.video_stream {
