@@ -418,6 +418,25 @@ pub fn App() -> impl IntoView {
                                         let stream: web_sys::MediaStream = stream.unchecked_into();
                                         vm2.borrow_mut().set_local_stream(stream);
                                         vc.join_voice(&ch_name);
+
+                                        // Seed participants from client state after joining.
+                                        // This ensures that on reconnect we pick up peers
+                                        // who are already in the channel (their VoiceJoined
+                                        // event was received before we joined).
+                                        let parts = vc.voice_participants(&ch_name);
+                                        write.voice.set_voice_participants_map.update(|m| {
+                                            let list = m.entry(ch_name.clone()).or_default();
+                                            for p in parts {
+                                                if !list.contains(&p) {
+                                                    list.push(p);
+                                                }
+                                            }
+                                            // Also add the local user.
+                                            let my_id = vc.peer_id();
+                                            if !list.contains(&my_id) {
+                                                list.push(my_id);
+                                            }
+                                        });
                                     });
                                     let on_error = wasm_bindgen::closure::Closure::once(move |_err: wasm_bindgen::JsValue| {
                                         tracing::error!("Microphone access denied");
@@ -465,9 +484,13 @@ pub fn App() -> impl IntoView {
                                         </div>
                                     }.into_any()
                                 } else if show_settings.get() {
-                                    view! { <SettingsPanel peer_id=peer_id on_server_settings=move |_| {
-                                        write.ui.set_show_settings.set(false);
-                                    } /> }.into_any()
+                                    let tab = app_state.ui.settings_tab.get_untracked();
+                                    view! { <SettingsPanel
+                                        peer_id=peer_id
+                                        roles=Signal::from(_roles)
+                                        default_tab=tab
+                                        on_close=move |_| write.ui.set_show_settings.set(false)
+                                    /> }.into_any()
                                 } else if show_call_page.get() {
                                     let on_mute_cp = on_mute.clone();
                                     let on_deafen_cp = on_deafen.clone();

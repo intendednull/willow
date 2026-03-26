@@ -21,6 +21,7 @@ pub enum SettingsTab {
     #[default]
     Profile,
     Server,
+    Roles,
 }
 
 /// Per-channel UI state. Extensible for future needs (drafts, scroll pos).
