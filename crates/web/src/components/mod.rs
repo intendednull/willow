@@ -1,5 +1,6 @@
 mod add_server;
 mod chat;
+mod command_palette;
 mod confirm_dialog;
 mod context_menu;
 mod file_share;
@@ -16,6 +17,7 @@ mod welcome;
 
 pub use add_server::*;
 pub use chat::*;
+pub use command_palette::*;
 pub use confirm_dialog::*;
 pub use context_menu::*;
 pub use file_share::*;

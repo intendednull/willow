@@ -3083,6 +3083,25 @@ select:focus-visible {
 .settings-breadcrumb .separator { color: var(--text-muted); }
 .settings-breadcrumb .current { color: var(--text-primary); font-weight: 500; }
 
+/* ── Command Palette ─────────────────────────────────────────────── */
+
+.palette-overlay { position: fixed; inset: 0; background: var(--overlay-bg); backdrop-filter: var(--backdrop-blur); display: flex; justify-content: center; padding-top: 15vh; z-index: 1000; animation: fade-in 0.1s ease; }
+.palette { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow-lg); width: 90%; max-width: 520px; max-height: 400px; display: flex; flex-direction: column; overflow: hidden; animation: scale-in 0.1s ease; align-self: flex-start; }
+.palette-input { padding: 14px 16px; background: transparent; border: none; border-bottom: 1px solid var(--border); color: var(--text-primary); font-size: 15px; font-family: inherit; outline: none; width: 100%; box-sizing: border-box; }
+.palette-input::placeholder { color: var(--text-placeholder); }
+.palette-results { overflow-y: auto; flex: 1; padding: 4px; }
+.palette-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 6px; cursor: pointer; color: var(--text-primary); transition: background var(--transition-fast); }
+.palette-item:hover, .palette-item.selected { background: var(--bg-message-hover); }
+.palette-item .icon { color: var(--text-muted); }
+.palette-item-label { flex: 1; }
+.palette-item-category { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.palette-empty { padding: 16px; text-align: center; color: var(--text-muted); font-size: 13px; }
+.palette-hint { padding: 8px 16px; font-size: 11px; color: var(--text-muted); border-top: 1px solid var(--border); display: flex; gap: 12px; }
+.palette-hint kbd { background: var(--bg-input); padding: 1px 5px; border-radius: 3px; font-size: 10px; }
+
+.search-toggle { background: transparent; border: none; color: var(--text-muted); cursor: pointer; padding: 4px 8px; transition: color var(--transition-fast); }
+.search-toggle:hover { color: var(--text-primary); }
+
 /* ── Peer ID Copy ───────────────────────────────────────────────── */
 
 .copy-pid-btn { background: transparent; border: none; color: var(--text-muted); cursor: pointer; padding: 4px; font-size: 14px; transition: color var(--transition-fast); }

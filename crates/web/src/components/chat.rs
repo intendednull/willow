@@ -12,6 +12,9 @@ pub fn ChannelHeader(
     on_menu_click: impl Fn(()) + Send + Clone + 'static,
     on_members_click: impl Fn(()) + Send + Clone + 'static,
     #[prop(optional, into)] on_pinned_click: Option<Callback<()>>,
+    /// Called when the user clicks the search icon (opens command palette).
+    #[prop(optional, into)]
+    on_search_click: Option<Callback<()>>,
 ) -> impl IntoView {
     view! {
         <div class="channel-header">
@@ -20,6 +23,11 @@ pub fn ChannelHeader(
             </button>
             <span>{icons::icon_hash()} " " {move || channel.get()}</span>
             <span class="channel-header-right">
+                {on_search_click.map(|cb| view! {
+                    <button class="search-toggle" title="Search (Ctrl+K)" on:click=move |_| cb.run(())>
+                        {icons::icon_search()}
+                    </button>
+                })}
                 {on_pinned_click.map(|cb| view! {
                     <button class="pinned-toggle" title="Pinned Messages" on:click=move |_| cb.run(())>
                         {icons::icon_pin()}

@@ -279,6 +279,16 @@ pub fn icon_smile() -> impl IntoView {
     )
 }
 
+/// Search / magnifying glass icon.
+pub fn icon_search() -> impl IntoView {
+    icon(
+        &format!(
+            r#"<svg {SVG_ATTRS}><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>"#
+        ),
+        "icon-search",
+    )
+}
+
 /// Copy / clipboard icon.
 pub fn icon_copy() -> impl IntoView {
     icon(
