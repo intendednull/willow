@@ -162,9 +162,7 @@ pub fn icon_download() -> impl IntoView {
 /// Left arrow icon.
 pub fn icon_arrow_left() -> impl IntoView {
     icon(
-        &format!(
-            r#"<svg {SVG_ATTRS}><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>"#
-        ),
+        &format!(r#"<svg {SVG_ATTRS}><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>"#),
         "icon-arrow-left",
     )
 }
@@ -172,9 +170,7 @@ pub fn icon_arrow_left() -> impl IntoView {
 /// Right arrow icon.
 pub fn icon_arrow_right() -> impl IntoView {
     icon(
-        &format!(
-            r#"<svg {SVG_ATTRS}><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>"#
-        ),
+        &format!(r#"<svg {SVG_ATTRS}><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>"#),
         "icon-arrow-right",
     )
 }
@@ -182,9 +178,7 @@ pub fn icon_arrow_right() -> impl IntoView {
 /// X / close icon.
 pub fn icon_x() -> impl IntoView {
     icon(
-        &format!(
-            r#"<svg {SVG_ATTRS}><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>"#
-        ),
+        &format!(r#"<svg {SVG_ATTRS}><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>"#),
         "icon-x",
     )
 }
@@ -192,9 +186,7 @@ pub fn icon_x() -> impl IntoView {
 /// Plus icon (for add actions).
 pub fn icon_plus() -> impl IntoView {
     icon(
-        &format!(
-            r#"<svg {SVG_ATTRS}><path d="M5 12h14"/><path d="M12 5v14"/></svg>"#
-        ),
+        &format!(r#"<svg {SVG_ATTRS}><path d="M5 12h14"/><path d="M12 5v14"/></svg>"#),
         "icon-plus",
     )
 }
@@ -222,9 +214,7 @@ pub fn icon_sun() -> impl IntoView {
 /// Moon / crescent icon (dark theme indicator).
 pub fn icon_moon() -> impl IntoView {
     icon(
-        &format!(
-            r#"<svg {SVG_ATTRS}><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>"#
-        ),
+        &format!(r#"<svg {SVG_ATTRS}><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>"#),
         "icon-moon",
     )
 }

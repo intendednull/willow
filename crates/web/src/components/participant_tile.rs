@@ -4,9 +4,9 @@
 //! or a peer-ID-derived gradient avatar. Includes a display name overlay,
 //! speaking glow, and muted badge.
 
+use crate::icons;
 use leptos::prelude::*;
 use send_wrapper::SendWrapper;
-use crate::icons;
 
 /// Derive a unique gradient from a peer ID for the avatar background.
 ///
@@ -59,13 +59,24 @@ pub fn ParticipantTile(
     let video_ref = NodeRef::<leptos::html::Video>::new();
 
     // Bind srcObject when the video ref becomes available.
+    // Use set_timeout(0) to ensure the DOM element is fully mounted
+    // before setting srcObject (fixes black screen on Chrome).
     let stream_for_effect = video_stream.clone();
     Effect::new(move |_| {
         if let Some(el) = video_ref.get() {
             if let Some(ref stream) = stream_for_effect {
-                let media_el: &web_sys::HtmlMediaElement = el.as_ref();
-                media_el.set_src_object(Some(stream));
-                let _ = media_el.play();
+                use wasm_bindgen::JsCast;
+                let media_el: web_sys::HtmlMediaElement = el.unchecked_ref::<web_sys::HtmlMediaElement>().clone();
+                // Explicit deref through SendWrapper to get MediaStream
+                let media_stream: web_sys::MediaStream = (**stream).clone();
+                // Defer to next microtask to ensure DOM is ready
+                leptos::prelude::set_timeout(
+                    move || {
+                        media_el.set_src_object(Some(&media_stream));
+                        let _ = media_el.play();
+                    },
+                    std::time::Duration::ZERO,
+                );
             }
         }
     });
