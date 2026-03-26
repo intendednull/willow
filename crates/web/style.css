@@ -3083,6 +3083,13 @@ select:focus-visible {
 .settings-breadcrumb .separator { color: var(--text-muted); }
 .settings-breadcrumb .current { color: var(--text-primary); font-weight: 500; }
 
+/* ── Peer ID Copy ───────────────────────────────────────────────── */
+
+.copy-pid-btn { background: transparent; border: none; color: var(--text-muted); cursor: pointer; padding: 4px; font-size: 14px; transition: color var(--transition-fast); }
+.copy-pid-btn:hover { color: var(--text-primary); }
+.copied-tooltip { position: absolute; background: var(--accent); color: white; font-size: 11px; padding: 3px 8px; border-radius: 4px; white-space: nowrap; animation: tooltip-fade 1.5s ease forwards; pointer-events: none; }
+@keyframes tooltip-fade { 0%, 70% { opacity: 1; } 100% { opacity: 0; } }
+
 /* ── Context Menu ────────────────────────────────────────────────── */
 
 .context-menu-overlay { position: fixed; inset: 0; z-index: 998; display: none; }

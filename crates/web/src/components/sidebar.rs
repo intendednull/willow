@@ -87,6 +87,10 @@ pub fn Sidebar(
 
     let handle_user = handle.clone();
 
+    // Peer ID copy state.
+    let (show_copied, set_show_copied) = signal(false);
+    let handle_copy = handle.clone();
+
     view! {
         <div class=move || if open.get() { "sidebar open" } else { "sidebar" }>
             <div class="sidebar-header">
@@ -284,6 +288,17 @@ pub fn Sidebar(
                         }
                     }
                 </span>
+                <button class="copy-pid-btn" title="Copy Peer ID" on:click=move |_| {
+                    let id = handle_copy.peer_id();
+                    crate::util::copy_to_clipboard(&id);
+                    set_show_copied.set(true);
+                    set_timeout(move || set_show_copied.set(false), std::time::Duration::from_millis(1500));
+                }>
+                    {icons::icon_copy()}
+                </button>
+                {move || show_copied.get().then(|| view! {
+                    <span class="copied-tooltip">"Copied!"</span>
+                })}
                 <button
                     class="btn btn-sm theme-toggle"
                     title="Toggle theme"
