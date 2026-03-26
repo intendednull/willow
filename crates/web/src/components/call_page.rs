@@ -291,15 +291,20 @@ pub fn CallPage(
             {move || {
                 let ch = app_state.voice.voice_channel.get().unwrap_or_default();
                 let participants_map = app_state.voice.voice_participants_map.get();
-                let remote_participants: Vec<String> = participants_map.get(&ch).cloned().unwrap_or_default();
+                let local_peer_id = handle.peer_id();
+                let local_name = handle.display_name();
+                let remote_participants: Vec<String> = participants_map
+                    .get(&ch)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|p| p != &local_peer_id)
+                    .collect();
                 let speaking = app_state.voice.speaking_peers.get();
                 let remote_streams = app_state.voice.remote_video_streams.get();
                 let muted = app_state.voice.voice_muted.get();
                 let video_source = app_state.voice.video_source.get();
                 let current_layout = layout.get();
-
-                let local_peer_id = handle.peer_id();
-                let local_name = handle.display_name();
 
                 // Total participant count including self.
                 let total = remote_participants.len() + 1;

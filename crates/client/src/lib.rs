@@ -2486,7 +2486,10 @@ impl ClientEventLoop {
                 }
                 network::NetworkEvent::Listening(addr) => {
                     let mut shared = self.shared.borrow_mut();
-                    // On receiving a listening event, do initial subscriptions.
+                    // Reset subscription flag on reconnect so on_connected re-runs.
+                    if addr == "reconnecting" {
+                        shared.connected_subscribed = false;
+                    }
                     if !shared.connected_subscribed {
                         on_connected(&shared.state, &self.cmd_tx);
                         shared.connected_subscribed = true;

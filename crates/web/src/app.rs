@@ -378,6 +378,22 @@ pub fn App() -> impl IntoView {
                                 move |channel_name: String| {
                                     write.ui.set_show_sidebar.set(false);
 
+                                    // If in a different voice channel, disconnect from the old one first.
+                                    let current_vc = app_state.voice.voice_channel.get_untracked();
+                                    if current_vc.is_some() && current_vc.as_deref() != Some(&channel_name) {
+                                        vc_handle.leave_voice();
+                                        vm.borrow_mut().close_all();
+                                        write.voice.set_voice_channel.set(None);
+                                        write.voice.set_voice_channel_name.set(String::new());
+                                        write.voice.set_voice_muted.set(false);
+                                        write.voice.set_voice_deafened.set(false);
+                                        write.voice.set_video_source.set(None);
+                                        write.voice.set_local_video_stream.set(None);
+                                        write.voice.set_remote_video_streams.update(|m| m.clear());
+                                        write.voice.set_speaking_peers.set(std::collections::HashSet::new());
+                                        write.voice.set_voice_participants_map.update(|m| m.clear());
+                                    }
+
                                     // If already in this voice channel, just navigate to the call page.
                                     if app_state.voice.voice_channel.get_untracked() == Some(channel_name.clone()) {
                                         write.ui.set_show_call_page.set(true);
