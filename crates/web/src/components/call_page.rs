@@ -247,7 +247,7 @@ pub fn CallPage(
                         {move || {
                             let ch = app_state.voice.voice_channel.get().unwrap_or_default();
                             let map = app_state.voice.voice_participants_map.get();
-                            let count = map.get(&ch).map(|v| v.len()).unwrap_or(0) + 1; // +1 for local
+                            let count = map.get(&ch).map(|v| v.len()).unwrap_or(0); // local already in map
                             format!("{count} participant{}", if count != 1 { "s" } else { "" })
                         }}
                     </span>
