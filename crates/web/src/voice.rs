@@ -283,32 +283,6 @@ impl VoiceManager {
         config
     }
 
-    /// Request microphone access from the browser.
-    ///
-    /// Must be called before creating offers or handling offers so that local
-    /// audio tracks can be added to peer connections.
-    pub async fn acquire_microphone(&mut self) -> Result<(), String> {
-        let window = web_sys::window().ok_or("no window")?;
-        let navigator = window.navigator();
-        let media_devices = navigator.media_devices().map_err(|_| "no media devices")?;
-
-        let constraints = web_sys::MediaStreamConstraints::new();
-        constraints.set_audio(&true.into());
-        constraints.set_video(&false.into());
-
-        let promise = media_devices
-            .get_user_media_with_constraints(&constraints)
-            .map_err(|_| "getUserMedia failed")?;
-
-        let stream_js = wasm_bindgen_futures::JsFuture::from(promise)
-            .await
-            .map_err(|_| "microphone access denied")?;
-
-        let stream: MediaStream = stream_js.unchecked_into();
-        self.local_stream = Some(stream);
-        Ok(())
-    }
-
     /// Add local audio tracks (and video track if sharing) to a peer connection.
     ///
     /// Returns `Some(RtcRtpSender)` if a video track was added, so the caller
@@ -394,9 +368,16 @@ impl VoiceManager {
                 }
 
                 // Create <audio> element for remote audio playback.
+                // Uses a peer-id-based DOM id so close_connection can remove it.
                 if let Some(window) = web_sys::window() {
                     if let Some(document) = window.document() {
+                        // Remove any existing audio element for this peer first.
+                        let audio_id = format!("willow-audio-{}", peer_id);
+                        if let Some(existing) = document.get_element_by_id(&audio_id) {
+                            existing.remove();
+                        }
                         if let Ok(el) = document.create_element("audio") {
+                            el.set_id(&audio_id);
                             let audio: web_sys::HtmlMediaElement = el.unchecked_into();
                             audio.set_src_object(Some(&stream));
                             audio.set_autoplay(true);
@@ -528,6 +509,11 @@ impl VoiceManager {
     pub async fn create_offer(&mut self, remote_peer: &str) -> Result<(), String> {
         let (state, video_sender) = self.get_or_create_connection(remote_peer)?;
         let pc = state.pc.clone();
+        let making_offer = state.making_offer.clone();
+
+        // Prevent the onnegotiationneeded handler from firing a duplicate offer
+        // while we are creating one here.
+        making_offer.set(true);
 
         // Store video sender if a new connection was created with video.
         if let Some(sender) = video_sender {
@@ -535,9 +521,13 @@ impl VoiceManager {
         }
 
         // Create offer.
-        let offer = wasm_bindgen_futures::JsFuture::from(pc.create_offer())
-            .await
-            .map_err(|_| "create_offer failed")?;
+        let offer = match wasm_bindgen_futures::JsFuture::from(pc.create_offer()).await {
+            Ok(o) => o,
+            Err(_) => {
+                making_offer.set(false);
+                return Err("create_offer failed".to_string());
+            }
+        };
 
         let offer_sdp = js_sys::Reflect::get(&offer, &"sdp".into())
             .unwrap_or_default()
@@ -547,12 +537,17 @@ impl VoiceManager {
         // Set local description.
         let desc = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
         desc.set_sdp(&offer_sdp);
-        wasm_bindgen_futures::JsFuture::from(pc.set_local_description(&desc))
+        if wasm_bindgen_futures::JsFuture::from(pc.set_local_description(&desc))
             .await
-            .map_err(|_| "set_local_description failed")?;
+            .is_err()
+        {
+            making_offer.set(false);
+            return Err("set_local_description failed".to_string());
+        }
 
         // Send offer to remote peer.
         (self.on_signal)(remote_peer, "offer", &offer_sdp);
+        making_offer.set(false);
 
         Ok(())
     }
@@ -727,6 +722,9 @@ impl VoiceManager {
     }
 
     /// Close the connection to a specific remote peer.
+    ///
+    /// Also removes the `<audio>` element created for this peer's remote
+    /// audio playback so elements do not accumulate across reconnects.
     pub fn close_connection(&mut self, remote_peer: &str) {
         self.video_senders.remove(remote_peer);
         if let Some(ref mut detector) = self.speaking_detector {
@@ -735,6 +733,15 @@ impl VoiceManager {
         (self.on_video_track)(remote_peer, None);
         if let Some(state) = self.connections.remove(remote_peer) {
             state.pc.close();
+        }
+        // Remove the <audio> element from the DOM.
+        if let Some(window) = web_sys::window() {
+            if let Some(document) = window.document() {
+                let audio_id = format!("willow-audio-{}", remote_peer);
+                if let Some(el) = document.get_element_by_id(&audio_id) {
+                    el.remove();
+                }
+            }
         }
     }
 
@@ -759,24 +766,3 @@ impl VoiceManager {
     }
 }
 
-/// Acquire the microphone as a standalone async function.
-/// This avoids holding a `RefCell` borrow across an `.await` boundary.
-pub async fn acquire_microphone_async() -> Result<MediaStream, String> {
-    let window = web_sys::window().ok_or("no window")?;
-    let navigator = window.navigator();
-    let media_devices = navigator.media_devices().map_err(|_| "no media devices")?;
-
-    let constraints = web_sys::MediaStreamConstraints::new();
-    constraints.set_audio(&true.into());
-    constraints.set_video(&false.into());
-
-    let promise = media_devices
-        .get_user_media_with_constraints(&constraints)
-        .map_err(|_| "getUserMedia failed")?;
-
-    let stream_js = wasm_bindgen_futures::JsFuture::from(promise)
-        .await
-        .map_err(|_| "microphone access denied")?;
-
-    Ok(stream_js.unchecked_into())
-}

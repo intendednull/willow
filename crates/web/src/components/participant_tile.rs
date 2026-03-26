@@ -104,10 +104,11 @@ pub fn ParticipantTile(
         classes.push_str(" local-camera");
     }
 
+    // Local camera uses `local-camera` (object-fit: cover + mirrored).
+    // All other video (remote camera or screen share) uses default
+    // `object-fit: cover` which is a better default than `contain`.
     let video_class = if is_local_camera {
         "local-camera"
-    } else if has_video && !is_local_camera {
-        "screen-share"
     } else {
         ""
     };

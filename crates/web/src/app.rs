@@ -244,11 +244,16 @@ pub fn App() -> impl IntoView {
         write.voice.set_voice_muted.set(false);
         write.voice.set_voice_deafened.set(false);
         write.voice.set_video_source.set(None);
+        write.voice.set_local_video_stream.set(None);
         write.voice.set_remote_video_streams.update(|m| m.clear());
         write
             .voice
             .set_speaking_peers
             .set(std::collections::HashSet::new());
+        write
+            .voice
+            .set_voice_participants_map
+            .update(|m| m.clear());
         write.ui.set_show_call_page.set(false);
         write
             .ui

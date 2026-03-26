@@ -100,6 +100,10 @@ pub struct VoiceState {
     pub speaking_peers: ReadSignal<HashSet<String>>,
     pub remote_video_streams:
         ReadSignal<HashMap<String, send_wrapper::SendWrapper<web_sys::MediaStream>>>,
+    /// Local video stream (camera or screen share). Stored globally so it
+    /// survives call-page component remounts.
+    pub local_video_stream:
+        ReadSignal<Option<send_wrapper::SendWrapper<web_sys::MediaStream>>>,
 }
 
 // ── Write signals (NOT in context — held by event processing) ────────
@@ -169,6 +173,8 @@ pub struct VoiceWriteSignals {
     pub set_speaking_peers: WriteSignal<HashSet<String>>,
     pub set_remote_video_streams:
         WriteSignal<HashMap<String, send_wrapper::SendWrapper<web_sys::MediaStream>>>,
+    pub set_local_video_stream:
+        WriteSignal<Option<send_wrapper::SendWrapper<web_sys::MediaStream>>>,
 }
 
 /// Create all signal pairs and return the read/write halves.
@@ -223,6 +229,9 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
         String,
         send_wrapper::SendWrapper<web_sys::MediaStream>,
     >::new());
+    let (local_video_stream, set_local_video_stream) = signal(
+        Option::<send_wrapper::SendWrapper<web_sys::MediaStream>>::None,
+    );
 
     let app_state = AppState {
         chat: ChatState {
@@ -271,6 +280,7 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
             video_source,
             speaking_peers,
             remote_video_streams,
+            local_video_stream,
         },
     };
 
@@ -321,6 +331,7 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
             set_video_source,
             set_speaking_peers,
             set_remote_video_streams,
+            set_local_video_stream,
         },
     };
 

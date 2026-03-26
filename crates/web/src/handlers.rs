@@ -79,6 +79,7 @@ pub fn make_channel_click_handler(
         write.chat.set_current_channel.set(name.clone());
         write.ui.set_show_sidebar.set(false);
         write.ui.set_show_pinned.set(false);
+        write.ui.set_show_call_page.set(false);
         write.chat.set_messages.set(handle.messages(&name));
         write
             .chat
