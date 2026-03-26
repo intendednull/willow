@@ -3,6 +3,7 @@ use wasm_bindgen::JsCast;
 use willow_client::DisplayMessage;
 
 use super::file_share::{parse_inline_file, FileCard};
+use crate::components::ConfirmDialog;
 use crate::icons;
 
 /// Image file extensions for URL and upload embedding.
@@ -242,6 +243,9 @@ pub fn MessageView(
     // Signal controlling the dropdown menu visibility.
     let (show_dropdown, set_show_dropdown) = signal(false);
     let (show_react_row, set_show_react_row) = signal(false);
+
+    // Delete confirmation state.
+    let (show_del_confirm, set_show_del_confirm) = signal(false);
 
     // Determine whether to show any action buttons at all.
     let has_reply = on_click.is_some();
@@ -497,8 +501,6 @@ pub fn MessageView(
             {if show_actions {
                 let edit_cb = on_edit;
                 let edit_msg = msg_for_edit.clone();
-                let delete_cb = on_delete;
-                let delete_msg = msg_for_delete.clone();
                 let react_cb = on_react;
                 let pin_cb = on_pin;
                 let pin_msg = msg_for_pin.clone();
@@ -610,15 +612,11 @@ pub fn MessageView(
                                 };
 
                                 let delete_view = if has_delete {
-                                    let cb = delete_cb;
-                                    let msg = delete_msg.clone();
                                     Some(view! {
                                         <button class="dropdown-item dropdown-danger" on:click=move |ev| {
                                             ev.stop_propagation();
-                                            if let Some(ref cb) = cb {
-                                                cb.run(msg.clone());
-                                            }
                                             set_show_dropdown.set(false);
+                                            set_show_del_confirm.set(true);
                                         }>"Delete"</button>
                                     })
                                 } else {
@@ -667,8 +665,6 @@ pub fn MessageView(
                 let pin_label2 = pin_label.clone();
                 let edit_cb2 = on_edit;
                 let edit_msg2 = message.clone();
-                let delete_cb2 = on_delete;
-                let delete_msg2 = message.clone();
                 let react_cb2 = on_react;
                 let react_msg2 = message.clone();
 
@@ -756,14 +752,12 @@ pub fn MessageView(
                             })
                         } else { None }}
                         {if has_delete {
-                            let cb = delete_cb2;
-                            let msg = delete_msg2.clone();
                             let close = close_sheet;
                             Some(view! {
                                 <button class="sheet-item sheet-danger" on:click=move |ev| {
                                     ev.stop_propagation();
-                                    if let Some(ref cb) = cb { cb.run(msg.clone()); }
                                     close();
+                                    set_show_del_confirm.set(true);
                                 }>"Delete"</button>
                             })
                         } else { None }}
@@ -791,6 +785,30 @@ pub fn MessageView(
                             }
                         }).collect::<Vec<_>>()}
                     </div>
+                })
+            } else {
+                None
+            }}
+            {if has_delete {
+                let del_cb = on_delete;
+                let del_msg = msg_for_delete.clone();
+                Some(view! {
+                    <ConfirmDialog
+                        visible=show_del_confirm
+                        title="Delete Message"
+                        message=Signal::derive(|| "Are you sure you want to delete this message?".to_string())
+                        confirm_text="Delete"
+                        danger=true
+                        on_confirm=Callback::new(move |_| {
+                            if let Some(ref cb) = del_cb {
+                                cb.run(del_msg.clone());
+                            }
+                            set_show_del_confirm.set(false);
+                        })
+                        on_cancel=Callback::new(move |_| {
+                            set_show_del_confirm.set(false);
+                        })
+                    />
                 })
             } else {
                 None

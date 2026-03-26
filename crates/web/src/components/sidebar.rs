@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use leptos::prelude::*;
 
 use crate::app::WebClientHandle;
-use crate::components::VoiceControls;
+use crate::components::{ConfirmDialog, VoiceControls};
 use crate::icons;
 
 /// Left sidebar showing the server name, channel list, and user info.
@@ -48,6 +48,11 @@ pub fn Sidebar(
     let (creating, set_creating) = signal(false);
     let (new_name, set_new_name) = signal(String::new());
     let (create_voice, set_create_voice) = signal(false);
+
+    // Channel delete confirmation state.
+    let (show_del_confirm, set_show_del_confirm) = signal(false);
+    let (pending_del_channel, set_pending_del_channel) = signal(Option::<String>::None);
+    let handle_del_confirm = handle.clone();
 
     let handle_create = handle.clone();
     let on_create_submit = move || {
@@ -152,7 +157,6 @@ pub fn Sidebar(
                         let ch_voice_join = channel.clone();
                         let on_click = on_channel_click.clone();
                         let on_voice = on_voice_join.clone();
-                        let handle_del = handle.clone();
                         let handle_kind = handle.clone();
                         let active = move || current_channel.get() == ch_active;
 
@@ -201,14 +205,14 @@ pub fn Sidebar(
                                     }
                                     {
                                         let ch_d = ch_delete.clone();
-                                        let hd = handle_del.clone();
                                         view! {
                                             <button
                                                 class="delete-btn"
                                                 title="Delete channel"
                                                 on:click=move |ev| {
                                                     ev.stop_propagation();
-                                                    let _ = hd.delete_channel(&ch_d);
+                                                    set_pending_del_channel.set(Some(ch_d.clone()));
+                                                    set_show_del_confirm.set(true);
                                                 }
                                             >
                                                 "x"
@@ -300,6 +304,28 @@ pub fn Sidebar(
                     "Settings"
                 </button>
             </div>
+            <ConfirmDialog
+                visible=show_del_confirm
+                title="Delete Channel"
+                message=Signal::derive(move || {
+                    pending_del_channel.get()
+                        .map(|n| format!("Delete #{}?", n))
+                        .unwrap_or_default()
+                })
+                confirm_text="Delete"
+                danger=true
+                on_confirm=Callback::new(move |_| {
+                    if let Some(name) = pending_del_channel.get_untracked() {
+                        let _ = handle_del_confirm.delete_channel(&name);
+                    }
+                    set_pending_del_channel.set(None);
+                    set_show_del_confirm.set(false);
+                })
+                on_cancel=Callback::new(move |_| {
+                    set_pending_del_channel.set(None);
+                    set_show_del_confirm.set(false);
+                })
+            />
         </div>
     }
 }

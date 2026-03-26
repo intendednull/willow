@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 
 use crate::app::WebClientHandle;
+use crate::components::ConfirmDialog;
 
 /// List of all permission names that can be toggled on a role.
 const PERMISSION_NAMES: &[&str] = &[
@@ -31,6 +32,11 @@ pub fn RoleManager(
     let (creating, set_creating) = signal(false);
     let (new_name, set_new_name) = signal(String::new());
     let (assign_peer, set_assign_peer) = signal(String::new());
+
+    // Role delete confirmation state.
+    let (show_del_confirm, set_show_del_confirm) = signal(false);
+    let (pending_del_role, set_pending_del_role) = signal(Option::<(String, String)>::None);
+    let handle_del_confirm = handle.clone();
 
     // Determine if the local user is the server owner.
     let handle_owner = handle.clone();
@@ -124,9 +130,9 @@ pub fn RoleManager(
                 {
                     let (role_id, role_name, permissions) = role;
                     let role_id_delete = role_id.clone();
+                    let role_name_delete = role_name.clone();
                     let role_id_perms = role_id.clone();
                     let role_id_assign = role_id.clone();
-                    let handle_delete = handle.clone();
                     let handle_perm = handle.clone();
                     let handle_assign = handle.clone();
                     let owner_check = is_owner.clone();
@@ -136,18 +142,19 @@ pub fn RoleManager(
                                 <span class="role-name">{role_name}</span>
                                 {
                                     let oc = owner_check.clone();
-                                    let hd = handle_delete.clone();
                                     let rid = role_id_delete.clone();
+                                    let rname = role_name_delete.clone();
                                     move || {
                                         if oc() {
-                                            let hd = hd.clone();
                                             let rid = rid.clone();
+                                            let rname = rname.clone();
                                             Some(view! {
                                                 <button
                                                     class="role-delete-btn"
                                                     title="Delete role"
                                                     on:click=move |_| {
-                                                        let _ = hd.delete_role(&rid);
+                                                        set_pending_del_role.set(Some((rid.clone(), rname.clone())));
+                                                        set_show_del_confirm.set(true);
                                                     }
                                                 >
                                                     "x"
@@ -246,6 +253,28 @@ pub fn RoleManager(
                     None
                 }
             }}
+            <ConfirmDialog
+                visible=show_del_confirm
+                title="Delete Role"
+                message=Signal::derive(move || {
+                    pending_del_role.get()
+                        .map(|(_, name)| format!("Delete role \"{}\"?", name))
+                        .unwrap_or_default()
+                })
+                confirm_text="Delete"
+                danger=true
+                on_confirm=Callback::new(move |_| {
+                    if let Some((rid, _)) = pending_del_role.get_untracked() {
+                        let _ = handle_del_confirm.delete_role(&rid);
+                    }
+                    set_pending_del_role.set(None);
+                    set_show_del_confirm.set(false);
+                })
+                on_cancel=Callback::new(move |_| {
+                    set_pending_del_role.set(None);
+                    set_show_del_confirm.set(false);
+                })
+            />
         </div>
     }
 }
