@@ -72,19 +72,34 @@ pub fn App() -> impl IntoView {
     provide_context(write);
 
     // Create the VoiceManager.
+    let local_peer_id = handle.peer_id();
     let voice_signal_handle = handle.clone();
     let voice_channel_for_signal = app_state.voice.voice_channel;
+    let set_remote_streams = write.voice.set_remote_video_streams;
     let voice_manager: VoiceManagerHandle = SendWrapper::new(Rc::new(RefCell::new(
-        VoiceManager::new(move |target_peer: &str, signal_type: &str, payload: &str| {
-            let ch_id = voice_channel_for_signal.get_untracked().unwrap_or_default();
-            let signal = match signal_type {
-                "offer" => VoiceSignalPayload::Offer(payload.to_string()),
-                "answer" => VoiceSignalPayload::Answer(payload.to_string()),
-                "ice" => VoiceSignalPayload::IceCandidate(payload.to_string()),
-                _ => return,
-            };
-            voice_signal_handle.send_voice_signal(&ch_id, target_peer, signal);
-        }),
+        VoiceManager::new(
+            local_peer_id,
+            move |target_peer: &str, signal_type: &str, payload: &str| {
+                let ch_id = voice_channel_for_signal.get_untracked().unwrap_or_default();
+                let signal = match signal_type {
+                    "offer" => VoiceSignalPayload::Offer(payload.to_string()),
+                    "answer" => VoiceSignalPayload::Answer(payload.to_string()),
+                    "ice" => VoiceSignalPayload::IceCandidate(payload.to_string()),
+                    _ => return,
+                };
+                voice_signal_handle.send_voice_signal(&ch_id, target_peer, signal);
+            },
+            move |peer_id: &str, stream: Option<web_sys::MediaStream>| {
+                let pid = peer_id.to_string();
+                set_remote_streams.update(move |map| {
+                    if let Some(s) = stream {
+                        map.insert(pid, send_wrapper::SendWrapper::new(s));
+                    } else {
+                        map.remove(&pid);
+                    }
+                });
+            },
+        ),
     )));
 
     provide_context(voice_manager.clone());
