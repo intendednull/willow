@@ -346,10 +346,16 @@ impl VoiceManager {
         let on_track = Closure::wrap(Box::new(move |ev: RtcTrackEvent| {
             let track: web_sys::MediaStreamTrack = ev.track();
             let streams = ev.streams();
-            if streams.length() == 0 {
-                return;
-            }
-            let stream: MediaStream = streams.get(0).unchecked_into();
+            // Renegotiated tracks may arrive without an associated stream
+            // (empty streams array when SDP lacks a=msid). Create one from
+            // the track so video still works.
+            let stream: MediaStream = if streams.length() > 0 {
+                streams.get(0).unchecked_into()
+            } else {
+                let s = MediaStream::new().unwrap();
+                s.add_track(&track);
+                s
+            };
 
             if track.kind() == "audio" {
                 // Register the remote audio stream with the speaking detector.
@@ -431,6 +437,11 @@ impl VoiceManager {
             let flag = making_offer.clone();
 
             wasm_bindgen_futures::spawn_local(async move {
+                // Guard: skip if another offer is already in progress
+                // (e.g., create_offer set making_offer before this fires).
+                if flag.get() {
+                    return;
+                }
                 flag.set(true);
 
                 let offer_result =
