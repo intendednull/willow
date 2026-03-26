@@ -295,7 +295,8 @@ pub fn CallPage(
                     // Render the focused tile.
                     let (f_name, f_stream, f_is_muted, f_is_speaking, _f_is_local, f_is_local_cam) =
                         if focused_pid == local_peer_id {
-                            (local_name.clone(), None, muted, false, true, video_source == Some(VideoSource::Camera))
+                            let local_spk = speaking.contains(&local_peer_id);
+                            (local_name.clone(), None, muted, local_spk, true, video_source == Some(VideoSource::Camera))
                         } else {
                             let name = handle.peer_display_name(&focused_pid);
                             let stream = remote_streams.get(&focused_pid).cloned();
@@ -322,11 +323,12 @@ pub fn CallPage(
 
                     // Local in thumbnails if not focused.
                     if fpid != local_peer_id {
+                        let local_spk_thumb = speaking.contains(&local_peer_id);
                         thumb_views.push(render_tile(
                             local_peer_id.clone(),
                             local_name.clone(),
                             None,
-                            false,
+                            local_spk_thumb,
                             muted,
                             false,
                             video_source == Some(VideoSource::Camera),
@@ -367,11 +369,12 @@ pub fn CallPage(
                     }
                 } else {
                     // Grid layout — local user tile.
+                    let local_spk_grid = speaking.contains(&local_peer_id);
                     tiles.push(render_tile(
                         local_peer_id.clone(),
                         local_name.clone(),
                         None,
-                        false,
+                        local_spk_grid,
                         muted,
                         false,
                         video_source == Some(VideoSource::Camera),

@@ -76,6 +76,7 @@ pub fn App() -> impl IntoView {
     let voice_signal_handle = handle.clone();
     let voice_channel_for_signal = app_state.voice.voice_channel;
     let set_remote_streams = write.voice.set_remote_video_streams;
+    let set_speaking = write.voice.set_speaking_peers;
     let voice_manager: VoiceManagerHandle = SendWrapper::new(Rc::new(RefCell::new(
         VoiceManager::new(
             local_peer_id,
@@ -98,6 +99,9 @@ pub fn App() -> impl IntoView {
                         map.remove(&pid);
                     }
                 });
+            },
+            move |peers: std::collections::HashSet<String>| {
+                set_speaking.set(peers);
             },
         ),
     )));
@@ -247,6 +251,7 @@ pub fn App() -> impl IntoView {
         write.voice.set_voice_deafened.set(false);
         write.voice.set_video_source.set(None);
         write.voice.set_remote_video_streams.update(|m| m.clear());
+        write.voice.set_speaking_peers.set(std::collections::HashSet::new());
         write.ui.set_show_call_page.set(false);
         write.ui.set_call_layout.set(crate::state::CallLayout::default());
     };

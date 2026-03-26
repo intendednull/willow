@@ -15,18 +15,156 @@
 //! the peer with the lower ID is "polite" and will rollback its own offer
 //! when a collision is detected.
 
-use std::cell::Cell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::{
-    MediaStream, RtcConfiguration, RtcIceServer, RtcPeerConnection, RtcPeerConnectionIceEvent,
-    RtcRtpSender, RtcSdpType, RtcSessionDescriptionInit, RtcTrackEvent,
+    AnalyserNode, AudioContext, MediaStream, MediaStreamAudioSourceNode, RtcConfiguration,
+    RtcIceServer, RtcPeerConnection, RtcPeerConnectionIceEvent, RtcRtpSender, RtcSdpType,
+    RtcSessionDescriptionInit, RtcTrackEvent,
 };
 
 use crate::state::VideoSource;
+
+/// Callback invoked whenever the set of currently-speaking peer IDs changes.
+type SpeakingCallback = Rc<dyn Fn(HashSet<String>)>;
+
+/// Analyses audio volume on `AnalyserNode`s to detect which peers are speaking.
+///
+/// Each peer (including the local user) has an `AnalyserNode` fed by their
+/// `MediaStream`. A `setInterval` timer polls all analysers at ~60 ms and
+/// calls `on_speaking_change` with the set of peer IDs whose average
+/// frequency-domain amplitude exceeds a threshold.
+pub struct SpeakingDetector {
+    audio_context: AudioContext,
+    /// Analysers keyed by peer ID. Shared with the polling closure via `Rc<RefCell>`.
+    analysers: Rc<RefCell<HashMap<String, AnalyserNode>>>,
+    /// Source nodes kept alive so the browser does not garbage-collect them.
+    #[allow(dead_code)]
+    sources: HashMap<String, MediaStreamAudioSourceNode>,
+    on_speaking_change: SpeakingCallback,
+    interval_id: Option<i32>,
+}
+
+impl SpeakingDetector {
+    /// Create a new `SpeakingDetector` with the given change callback.
+    ///
+    /// The `AudioContext` is created immediately (caller must ensure a user
+    /// gesture has already occurred so the browser allows it).
+    pub fn new(on_change: impl Fn(HashSet<String>) + 'static) -> Result<Self, String> {
+        let audio_context = AudioContext::new().map_err(|e| format!("AudioContext::new failed: {e:?}"))?;
+        // Resume the context in case it was created in a suspended state.
+        let _ = audio_context.resume();
+        Ok(Self {
+            audio_context,
+            analysers: Rc::new(RefCell::new(HashMap::new())),
+            sources: HashMap::new(),
+            on_speaking_change: Rc::new(on_change),
+            interval_id: None,
+        })
+    }
+
+    /// Connect a peer's `MediaStream` to an `AnalyserNode` for volume monitoring.
+    pub fn add_stream(&mut self, peer_id: &str, stream: &MediaStream) {
+        // Create a source node from the stream.
+        let source = match self.audio_context.create_media_stream_source(stream) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("SpeakingDetector: create_media_stream_source failed: {e:?}");
+                return;
+            }
+        };
+
+        // Create an analyser node.
+        let analyser = match self.audio_context.create_analyser() {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::warn!("SpeakingDetector: create_analyser failed: {e:?}");
+                return;
+            }
+        };
+        analyser.set_fft_size(256);
+
+        // Connect source -> analyser (no output needed; we poll manually).
+        if let Err(e) = source.connect_with_audio_node(&analyser) {
+            tracing::warn!("SpeakingDetector: connect failed: {e:?}");
+            return;
+        }
+
+        self.analysers.borrow_mut().insert(peer_id.to_string(), analyser);
+        self.sources.insert(peer_id.to_string(), source);
+    }
+
+    /// Remove a peer's analyser (e.g. when they disconnect).
+    pub fn remove_peer(&mut self, peer_id: &str) {
+        self.analysers.borrow_mut().remove(peer_id);
+        self.sources.remove(peer_id);
+    }
+
+    /// Start polling all analysers every ~60 ms.
+    ///
+    /// Each poll computes the average byte-frequency amplitude for every peer
+    /// and fires `on_speaking_change` with the set of peers above threshold.
+    pub fn start_polling(&mut self) {
+        if self.interval_id.is_some() {
+            return; // already running
+        }
+
+        let analysers = self.analysers.clone();
+        let on_change = self.on_speaking_change.clone();
+        let prev_speaking: Rc<RefCell<HashSet<String>>> = Rc::new(RefCell::new(HashSet::new()));
+
+        let closure = Closure::wrap(Box::new(move || {
+            let map = analysers.borrow();
+            let mut speaking = HashSet::new();
+            for (peer_id, analyser) in map.iter() {
+                let buf_len = analyser.frequency_bin_count() as usize;
+                if buf_len == 0 {
+                    continue;
+                }
+                let mut data = vec![0u8; buf_len];
+                analyser.get_byte_frequency_data(&mut data);
+                let avg: f64 = data.iter().map(|&b| b as f64).sum::<f64>() / buf_len as f64;
+                if avg > 25.0 {
+                    speaking.insert(peer_id.clone());
+                }
+            }
+            // Only fire the callback when the speaking set actually changes.
+            let mut prev = prev_speaking.borrow_mut();
+            if *prev != speaking {
+                *prev = speaking.clone();
+                on_change(speaking);
+            }
+        }) as Box<dyn FnMut()>);
+
+        let window = web_sys::window().unwrap();
+        let id = window
+            .set_interval_with_callback_and_timeout_and_arguments_0(
+                closure.as_ref().unchecked_ref(),
+                60,
+            )
+            .unwrap();
+        // Intentional leak: the closure must outlive the interval.
+        closure.forget();
+
+        self.interval_id = Some(id);
+    }
+
+    /// Stop polling and release resources.
+    pub fn destroy(&mut self) {
+        if let Some(id) = self.interval_id.take() {
+            if let Some(window) = web_sys::window() {
+                window.clear_interval_with_handle(id);
+            }
+        }
+        let _ = self.audio_context.close();
+        self.analysers.borrow_mut().clear();
+        self.sources.clear();
+    }
+}
 
 /// Callback for sending voice signaling data back through the network.
 ///
@@ -75,10 +213,12 @@ pub struct VoiceManager {
     /// RTP senders for the video track, keyed by remote peer ID.
     /// Stored so we can call `remove_track` later.
     video_senders: HashMap<String, RtcRtpSender>,
+    /// Audio volume analyser for speaking detection.
+    speaking_detector: Option<SpeakingDetector>,
 }
 
 impl VoiceManager {
-    /// Create a new `VoiceManager` with a signaling callback and video track callback.
+    /// Create a new `VoiceManager` with signaling, video track, and speaking callbacks.
     ///
     /// `local_peer_id` is this node's peer ID string, used to determine
     /// polite vs impolite role during offer collisions.
@@ -88,11 +228,21 @@ impl VoiceManager {
     ///
     /// `on_video_track` is invoked with `(remote_peer_id, Some(stream))` when
     /// a remote video track arrives, and `(remote_peer_id, None)` when it ends.
+    ///
+    /// `on_speaking_change` is invoked with the set of currently-speaking peer
+    /// IDs every ~60 ms while audio is active.
     pub fn new(
         local_peer_id: String,
         on_signal: impl Fn(&str, &str, &str) + 'static,
         on_video_track: impl Fn(&str, Option<MediaStream>) + 'static,
+        on_speaking_change: impl Fn(HashSet<String>) + 'static,
     ) -> Self {
+        // Create the detector eagerly — the caller is inside a user-gesture
+        // handler (voice join click) so AudioContext creation is allowed.
+        let mut detector = SpeakingDetector::new(on_speaking_change).ok();
+        if let Some(ref mut d) = detector {
+            d.start_polling();
+        }
         Self {
             local_peer_id,
             connections: HashMap::new(),
@@ -102,11 +252,18 @@ impl VoiceManager {
             video_stream: None,
             video_source: None,
             video_senders: HashMap::new(),
+            speaking_detector: detector,
         }
     }
 
     /// Set the local microphone stream (acquired externally to avoid RefCell across await).
+    ///
+    /// Also adds the stream to the speaking detector so the local user's
+    /// volume is analysed alongside remote peers.
     pub fn set_local_stream(&mut self, stream: MediaStream) {
+        if let Some(ref mut detector) = self.speaking_detector {
+            detector.add_stream(&self.local_peer_id, &stream);
+        }
         self.local_stream = Some(stream);
     }
 
@@ -193,12 +350,24 @@ impl VoiceManager {
 
     /// Set up the `ontrack` handler to play remote audio and forward video.
     ///
-    /// Audio tracks create `<audio>` elements appended to the document body.
+    /// Audio tracks create `<audio>` elements appended to the document body
+    /// and are added to the speaking detector for volume analysis.
     /// Video tracks are forwarded to the `on_video_track` callback with a
     /// listener for `ended` that fires `on_video_track(peer_id, None)`.
     fn setup_track_handler(&self, pc: &RtcPeerConnection, remote_peer: &str) {
         let peer_id = remote_peer.to_string();
         let on_video = self.on_video_track.clone();
+
+        // Share the detector's analysers map and audio context with the closure
+        // so it can register incoming remote audio streams for speaking detection.
+        let detector_analysers = self
+            .speaking_detector
+            .as_ref()
+            .map(|d| d.analysers.clone());
+        let detector_ctx = self
+            .speaking_detector
+            .as_ref()
+            .map(|d| d.audio_context.clone());
 
         let on_track = Closure::wrap(Box::new(move |ev: RtcTrackEvent| {
             let track: web_sys::MediaStreamTrack = ev.track();
@@ -209,6 +378,25 @@ impl VoiceManager {
             let stream: MediaStream = streams.get(0).unchecked_into();
 
             if track.kind() == "audio" {
+                // Register the remote audio stream with the speaking detector.
+                if let (Some(ref ctx), Some(ref analysers)) =
+                    (&detector_ctx, &detector_analysers)
+                {
+                    if let Ok(source) = ctx.create_media_stream_source(&stream) {
+                        if let Ok(analyser) = ctx.create_analyser() {
+                            analyser.set_fft_size(256);
+                            if source.connect_with_audio_node(&analyser).is_ok() {
+                                analysers
+                                    .borrow_mut()
+                                    .insert(peer_id.clone(), analyser);
+                                // Source node must stay alive — leak it so the
+                                // browser keeps the audio graph connected.
+                                std::mem::forget(source);
+                            }
+                        }
+                    }
+                }
+
                 // Create <audio> element for remote audio playback.
                 if let Some(window) = web_sys::window() {
                     if let Some(document) = window.document() {
@@ -549,6 +737,9 @@ impl VoiceManager {
     /// Close the connection to a specific remote peer.
     pub fn close_connection(&mut self, remote_peer: &str) {
         self.video_senders.remove(remote_peer);
+        if let Some(ref mut detector) = self.speaking_detector {
+            detector.remove_peer(remote_peer);
+        }
         (self.on_video_track)(remote_peer, None);
         if let Some(state) = self.connections.remove(remote_peer) {
             state.pc.close();
@@ -558,6 +749,10 @@ impl VoiceManager {
     /// Close all connections, stop video sharing, and release the microphone.
     pub fn close_all(&mut self) {
         self.stop_video_share();
+        if let Some(ref mut detector) = self.speaking_detector {
+            detector.destroy();
+        }
+        self.speaking_detector = None;
         for (_, state) in self.connections.drain() {
             state.pc.close();
         }
