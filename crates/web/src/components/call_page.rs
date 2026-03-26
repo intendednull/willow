@@ -87,6 +87,10 @@ pub fn CallPage(
     let handle = use_context::<WebClientHandle>().unwrap();
     let vm = use_context::<VoiceManagerHandle>().unwrap();
 
+    // Local video stream signal — tracks the stream to display on the local tile.
+    let (local_video_stream, set_local_video_stream) =
+        signal(Option::<SendWrapper<web_sys::MediaStream>>::None);
+
     // Duration timer — increments every second.
     let (duration, set_duration) = signal(0u32);
     set_interval(
@@ -107,6 +111,7 @@ pub fn CallPage(
             // Toggle off — stop camera.
             vm_camera.borrow_mut().stop_video_share();
             write.voice.set_video_source.set(None);
+            set_local_video_stream.set(None);
             return;
         }
 
@@ -114,6 +119,7 @@ pub fn CallPage(
         if current_source.is_some() {
             vm_camera.borrow_mut().stop_video_share();
             write.voice.set_video_source.set(None);
+            set_local_video_stream.set(None);
         }
 
         // MUST call getUserMedia synchronously in click handler for gesture.
@@ -137,8 +143,10 @@ pub fn CallPage(
             wasm_bindgen::closure::Closure::once(move |stream: wasm_bindgen::JsValue| {
                 use wasm_bindgen::JsCast;
                 let stream: web_sys::MediaStream = stream.unchecked_into();
+                let stream_for_signal = SendWrapper::new(stream.clone());
                 vm2.borrow_mut().start_camera(stream);
                 write2.voice.set_video_source.set(Some(VideoSource::Camera));
+                set_local_video_stream.set(Some(stream_for_signal));
             });
         let on_error = wasm_bindgen::closure::Closure::once(move |_err: wasm_bindgen::JsValue| {
             tracing::error!("Camera access denied");
@@ -157,6 +165,7 @@ pub fn CallPage(
             // Toggle off — stop screen share.
             vm_screen.borrow_mut().stop_video_share();
             write.voice.set_video_source.set(None);
+            set_local_video_stream.set(None);
             return;
         }
 
@@ -164,6 +173,7 @@ pub fn CallPage(
         if current_source.is_some() {
             vm_screen.borrow_mut().stop_video_share();
             write.voice.set_video_source.set(None);
+            set_local_video_stream.set(None);
         }
 
         // MUST call getDisplayMedia synchronously in click handler for gesture.
@@ -184,8 +194,23 @@ pub fn CallPage(
             wasm_bindgen::closure::Closure::once(move |stream: wasm_bindgen::JsValue| {
                 use wasm_bindgen::JsCast;
                 let stream: web_sys::MediaStream = stream.unchecked_into();
-                vm2.borrow_mut().start_screen_share(stream);
+                let stream_for_signal = SendWrapper::new(stream.clone());
+                vm2.borrow_mut().start_screen_share(stream.clone());
                 write2.voice.set_video_source.set(Some(VideoSource::Screen));
+                set_local_video_stream.set(Some(stream_for_signal));
+
+                // Listen for the browser's "Stop sharing" chrome button.
+                let tracks = stream.get_video_tracks();
+                let track_val = tracks.get(0);
+                if !track_val.is_undefined() {
+                    let track: web_sys::MediaStreamTrack = track_val.unchecked_into();
+                    let on_ended = wasm_bindgen::closure::Closure::once(move || {
+                        set_local_video_stream.set(None);
+                        write2.voice.set_video_source.set(None);
+                    });
+                    track.set_onended(Some(on_ended.as_ref().unchecked_ref()));
+                    on_ended.forget();
+                }
             });
         let on_error = wasm_bindgen::closure::Closure::once(move |_err: wasm_bindgen::JsValue| {
             tracing::error!("Screen share denied or cancelled");
@@ -198,6 +223,7 @@ pub fn CallPage(
     // Disconnect handler — also clear call page.
     let on_disconnect_click = move |_| {
         write.voice.set_video_source.set(None);
+        set_local_video_stream.set(None);
         write.voice.set_remote_video_streams.update(|m| m.clear());
         write.ui.set_show_call_page.set(false);
         write.ui.set_call_layout.set(CallLayout::default());
@@ -295,7 +321,7 @@ pub fn CallPage(
                     let (f_name, f_stream, f_is_muted, f_is_speaking, _f_is_local, f_is_local_cam) =
                         if focused_pid == local_peer_id {
                             let local_spk = speaking.contains(&local_peer_id);
-                            (local_name.clone(), None, muted, local_spk, true, video_source == Some(VideoSource::Camera))
+                            (local_name.clone(), local_video_stream.get(), muted, local_spk, true, video_source == Some(VideoSource::Camera))
                         } else {
                             let name = handle.peer_display_name(&focused_pid);
                             let stream = remote_streams.get(&focused_pid).cloned();
@@ -326,7 +352,7 @@ pub fn CallPage(
                         thumb_views.push(render_tile(
                             local_peer_id.clone(),
                             local_name.clone(),
-                            None,
+                            local_video_stream.get(),
                             local_spk_thumb,
                             muted,
                             false,
@@ -372,7 +398,7 @@ pub fn CallPage(
                     tiles.push(render_tile(
                         local_peer_id.clone(),
                         local_name.clone(),
-                        None,
+                        local_video_stream.get(),
                         local_spk_grid,
                         muted,
                         false,
