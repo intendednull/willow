@@ -1,7 +1,7 @@
 ---
 name: deploy
 description: Build and deploy the Willow relay server and Leptos web UI to the Linode server
-user_invocable: true
+user-invocable: true
 ---
 
 # Deploy Willow

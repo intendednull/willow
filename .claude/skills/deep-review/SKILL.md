@@ -1,7 +1,7 @@
 ---
 name: deep-review
 description: Deep iterative code review — flags issues, spawns parallel analysis agents, presents findings, and loops until clean
-user_invocable: true
+user-invocable: true
 ---
 
 # Deep Review
