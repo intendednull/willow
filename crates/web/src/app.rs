@@ -6,8 +6,8 @@ use send_wrapper::SendWrapper;
 use willow_client::{ClientConfig, ClientEvent, ClientHandle, DisplayMessage, VoiceSignalPayload};
 
 use crate::components::{
-    AddServerPanel, ChannelHeader, ChatInput, CommandPalette, FileShareButton, MemberList,
-    MessageList, PinnedPanel, ServerList, SettingsPanel, Sidebar, WelcomeScreen,
+    AddServerPanel, CallPage, ChannelHeader, ChatInput, CommandPalette, FileShareButton,
+    MemberList, MessageList, PinnedPanel, ServerList, SettingsPanel, Sidebar, WelcomeScreen,
 };
 use crate::event_processing::{extract_roles, process_event_batch, refresh_all_signals};
 use crate::handlers;
@@ -245,6 +245,10 @@ pub fn App() -> impl IntoView {
         write.voice.set_voice_channel_name.set(String::new());
         write.voice.set_voice_muted.set(false);
         write.voice.set_voice_deafened.set(false);
+        write.voice.set_video_source.set(None);
+        write.voice.set_remote_video_streams.update(|m| m.clear());
+        write.ui.set_show_call_page.set(false);
+        write.ui.set_call_layout.set(crate::state::CallLayout::default());
     };
 
     // Welcome screen callback that refreshes all signals.
@@ -279,6 +283,7 @@ pub fn App() -> impl IntoView {
     let editing = app_state.chat.editing;
     let channel_views = app_state.chat.channel_views;
     let show_palette = app_state.ui.show_palette;
+    let show_call_page = app_state.ui.show_call_page;
 
     // Pre-clone handle for use inside the view closure.
     let handle_for_voice_join = handle.clone();
@@ -363,6 +368,14 @@ pub fn App() -> impl IntoView {
                                 move |channel_name: String| {
                                     write.ui.set_show_sidebar.set(false);
 
+                                    // If already in this voice channel, just navigate to the call page.
+                                    if app_state.voice.voice_channel.get_untracked() == Some(channel_name.clone()) {
+                                        write.ui.set_show_call_page.set(true);
+                                        write.ui.set_show_settings.set(false);
+                                        write.ui.set_show_add_server.set(false);
+                                        return;
+                                    }
+
                                     // Request mic permission SYNCHRONOUSLY in the click handler
                                     // to preserve the user gesture chain (required on mobile).
                                     let window = web_sys::window().unwrap();
@@ -379,9 +392,12 @@ pub fn App() -> impl IntoView {
                                         return;
                                     };
 
-                                    // Show controls immediately (optimistic).
+                                    // Show controls and call page immediately (optimistic).
                                     write.voice.set_voice_channel.set(Some(channel_name.clone()));
                                     write.voice.set_voice_channel_name.set(channel_name.clone());
+                                    write.ui.set_show_call_page.set(true);
+                                    write.ui.set_show_settings.set(false);
+                                    write.ui.set_show_add_server.set(false);
 
                                     // Handle the promise result asynchronously.
                                     let vc = vc_handle.clone();
@@ -397,6 +413,7 @@ pub fn App() -> impl IntoView {
                                         tracing::error!("Microphone access denied");
                                         write.voice.set_voice_channel.set(None);
                                         write.voice.set_voice_channel_name.set(String::new());
+                                        write.ui.set_show_call_page.set(false);
                                     });
                                     let _ = promise.then2(&on_success, &on_error);
                                     on_success.forget();
@@ -407,9 +424,9 @@ pub fn App() -> impl IntoView {
                             voice_channel_name=app_state.voice.voice_channel_name
                             voice_muted=app_state.voice.voice_muted
                             voice_deafened=app_state.voice.voice_deafened
-                            on_voice_mute=Callback::new(on_mute)
-                            on_voice_deafen=Callback::new(on_deafen)
-                            on_voice_disconnect=Callback::new(on_disconnect)
+                            on_voice_mute=Callback::new(on_mute.clone())
+                            on_voice_deafen=Callback::new(on_deafen.clone())
+                            on_voice_disconnect=Callback::new(on_disconnect.clone())
                             on_channel_created={
                                 let ch_handle = handle_cc.clone();
                                 move |_| {
@@ -441,6 +458,17 @@ pub fn App() -> impl IntoView {
                                     view! { <SettingsPanel peer_id=peer_id on_server_settings=move |_| {
                                         write.ui.set_show_settings.set(false);
                                     } /> }.into_any()
+                                } else if show_call_page.get() {
+                                    let on_mute_cp = on_mute.clone();
+                                    let on_deafen_cp = on_deafen.clone();
+                                    let on_disconnect_cp = on_disconnect.clone();
+                                    view! {
+                                        <CallPage
+                                            on_disconnect=Callback::new(on_disconnect_cp)
+                                            on_mute=Callback::new(on_mute_cp)
+                                            on_deafen=Callback::new(on_deafen_cp)
+                                        />
+                                    }.into_any()
                                 } else {
                                     let send2 = send.clone();
                                     let edit_send2 = edit_send.clone();
