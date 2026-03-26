@@ -658,6 +658,21 @@ impl ClientHandle {
         !self.shared.borrow().state.servers.is_empty()
     }
 
+    /// Remove a server from the local state and persist the change.
+    ///
+    /// If the removed server was active, switches to the first remaining
+    /// server (or clears the active server if none remain).
+    pub fn leave_server(&self, server_id: &str) {
+        let mut shared = self.shared.borrow_mut();
+        shared.state.servers.remove(server_id);
+        if shared.state.active_server.as_deref() == Some(server_id) {
+            shared.state.active_server = shared.state.servers.keys().next().cloned();
+        }
+        // Persist updated server list.
+        let ids: Vec<String> = shared.state.servers.keys().cloned().collect();
+        storage::save_server_list(&ids);
+    }
+
     /// Create a brand-new server with the local user as owner.
     ///
     /// Automatically creates a "general" text channel, initializes the

@@ -7,12 +7,12 @@ use willow_client::{ClientConfig, ClientEvent, ClientHandle, DisplayMessage, Voi
 
 use crate::components::{
     AddServerPanel, ChannelHeader, ChatInput, FileShareButton, MemberList, MessageList,
-    PinnedPanel, ServerList, ServerSettingsPanel, SettingsPanel, Sidebar, WelcomeScreen,
+    PinnedPanel, ServerList, SettingsPanel, Sidebar, WelcomeScreen,
 };
 use crate::event_processing::{extract_roles, process_event_batch, refresh_all_signals};
 use crate::handlers;
 use crate::icons;
-use crate::state::{self, ChannelViewState};
+use crate::state::{self, ChannelViewState, SettingsTab};
 use crate::voice::VoiceManager;
 
 // Notification sounds disabled for now.
@@ -224,7 +224,6 @@ pub fn App() -> impl IntoView {
     let servers = app_state.server.servers;
     let show_sidebar = app_state.ui.show_sidebar;
     let show_add_server = app_state.ui.show_add_server;
-    let show_server_settings = app_state.ui.show_server_settings;
     let show_settings = app_state.ui.show_settings;
     let show_pinned = app_state.ui.show_pinned;
     let show_members = app_state.ui.show_members;
@@ -281,9 +280,14 @@ pub fn App() -> impl IntoView {
                             on_add_server_click=move |_| {
                                 write.ui.set_show_add_server.update(|v| *v = !*v);
                                 write.ui.set_show_settings.set(false);
-                                write.ui.set_show_server_settings.set(false);
                                 write.ui.set_show_sidebar.set(false);
                             }
+                            on_open_settings=Callback::new(move |_| {
+                                write.ui.set_settings_tab.set(SettingsTab::Server);
+                                write.ui.set_show_settings.set(true);
+                                write.ui.set_show_add_server.set(false);
+                                write.ui.set_show_sidebar.set(false);
+                            })
                         />
                         // Overlay to close sidebar on mobile tap
                         <div
@@ -300,13 +304,15 @@ pub fn App() -> impl IntoView {
                             server_name=app_state.server.active_server_name
                             on_channel_click=ch_click
                             on_settings_click=move |_| {
-                                write.ui.set_show_settings.update(|v| *v = !*v);
-                                write.ui.set_show_server_settings.set(false);
+                                write.ui.set_settings_tab.set(SettingsTab::Profile);
+                                write.ui.set_show_settings.set(true);
+                                write.ui.set_show_add_server.set(false);
                                 write.ui.set_show_sidebar.set(false);
                             }
                             on_server_settings_click=move |_| {
-                                write.ui.set_show_server_settings.update(|v| *v = !*v);
-                                write.ui.set_show_settings.set(false);
+                                write.ui.set_settings_tab.set(SettingsTab::Server);
+                                write.ui.set_show_settings.set(true);
+                                write.ui.set_show_add_server.set(false);
                                 write.ui.set_show_sidebar.set(false);
                             }
                             on_voice_join={
@@ -389,12 +395,10 @@ pub fn App() -> impl IntoView {
                                             />
                                         </div>
                                     }.into_any()
-                                } else if show_server_settings.get() {
-                                    view! { <ServerSettingsPanel peer_id=peer_id roles=Signal::from(roles) on_back=move |_| write.ui.set_show_server_settings.set(false) /> }.into_any()
                                 } else if show_settings.get() {
-                                    view! { <SettingsPanel peer_id=peer_id on_server_settings=move |_| {
+                                    let tab = app_state.ui.settings_tab.get_untracked();
+                                    view! { <SettingsPanel peer_id=peer_id roles=Signal::from(roles) default_tab=tab on_close=move |_| {
                                         write.ui.set_show_settings.set(false);
-                                        write.ui.set_show_server_settings.set(true);
                                     } /> }.into_any()
                                 } else {
                                     let send2 = send.clone();
