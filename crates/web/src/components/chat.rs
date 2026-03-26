@@ -24,12 +24,6 @@ pub fn ChannelHeader(
                         "\u{1F4CC}"
                     </button>
                 })}
-                <span class="peer-count">
-                    {move || {
-                        let n = peer_count.get();
-                        if n == 1 { "1 peer".to_string() } else { format!("{n} peers") }
-                    }}
-                </span>
                 <button class="mobile-members-toggle" on:click=move |_| on_members_click(())>
                     {move || {
                         let n = peer_count.get();
