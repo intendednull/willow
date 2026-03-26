@@ -423,8 +423,7 @@ pub fn App() -> impl IntoView {
                                         </div>
                                     }.into_any()
                                 } else if show_settings.get() {
-                                    let tab = app_state.ui.settings_tab.get_untracked();
-                                    view! { <SettingsPanel peer_id=peer_id roles=Signal::from(roles) default_tab=tab on_close=move |_| {
+                                    view! { <SettingsPanel peer_id=peer_id on_server_settings=move |_| {
                                         write.ui.set_show_settings.set(false);
                                     } /> }.into_any()
                                 } else {
