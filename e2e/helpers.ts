@@ -1,4 +1,4 @@
-import { Page, expect } from '@playwright/test';
+import { Page, Browser, BrowserContext, expect } from '@playwright/test';
 
 /** Wait for the WASM app to load (loading spinner disappears). */
 export async function waitForApp(page: Page) {
@@ -145,4 +145,254 @@ export async function longPress(page: Page, selector: string, durationMs = 600) 
   }, { x, y });
 
   await page.waitForTimeout(300);
+}
+
+// ── Mobile detection + navigation ─────────────────────────────────────
+
+/** Returns true if the page viewport is narrow enough to be mobile. */
+export function isMobile(page: Page): boolean {
+  return (page.viewportSize()?.width ?? 1024) < 768;
+}
+
+/** Opens the sidebar on mobile (no-op on desktop). */
+export async function openSidebar(page: Page) {
+  if (!isMobile(page)) return;
+  await page.locator('.mobile-nav-toggle').click();
+  await page.waitForTimeout(500);
+}
+
+/** Closes the sidebar on mobile by tapping the overlay (no-op on desktop). */
+export async function closeSidebar(page: Page) {
+  if (!isMobile(page)) return;
+  const overlay = page.locator('.sidebar-overlay.open');
+  if (await overlay.isVisible()) {
+    await overlay.click();
+    await page.waitForTimeout(300);
+  }
+}
+
+/** Opens the member list panel. The toggle button exists on both desktop and mobile. */
+export async function openMemberList(page: Page) {
+  // The member panel starts hidden; the toggle button (.mobile-members-toggle)
+  // exists on both viewports despite the class name.
+  const panel = page.locator('.member-list-wrapper.open');
+  if (await panel.isVisible().catch(() => false)) return; // Already open
+  await page.locator('.mobile-members-toggle').click();
+  await page.waitForTimeout(500);
+}
+
+/** Closes the member list panel. */
+export async function closeMemberList(page: Page) {
+  if (isMobile(page)) {
+    const overlay = page.locator('.members-overlay.open');
+    if (await overlay.isVisible()) {
+      await overlay.click();
+      await page.waitForTimeout(300);
+    }
+  } else {
+    // On desktop, re-click the toggle to close.
+    const panel = page.locator('.member-list-wrapper.open');
+    if (await panel.isVisible().catch(() => false)) {
+      await page.locator('.mobile-members-toggle').click();
+      await page.waitForTimeout(300);
+    }
+  }
+}
+
+// ── Invite flow ───────────────────────────────────────────────────────
+
+/** Opens the server settings panel (opens sidebar first on mobile). */
+export async function openServerSettings(page: Page) {
+  await openSidebar(page);
+  await page.locator('.server-gear-btn').click();
+  await page.waitForTimeout(500);
+}
+
+/** Generates an invite code for a given peer ID. Returns the invite code string. */
+export async function generateInvite(page: Page, recipientPeerId: string): Promise<string> {
+  await openServerSettings(page);
+  await page.locator('input[placeholder*="12D3KooW"]').fill(recipientPeerId);
+  await page.locator('button', { hasText: 'Generate Invite' }).click();
+  await page.waitForTimeout(500);
+  const inviteCode = await page.locator('.invite-code-display textarea').inputValue();
+  await page.locator('text=Back').click();
+  await page.waitForTimeout(500);
+  return inviteCode;
+}
+
+/** Joins a server via invite code from the welcome screen. */
+export async function joinViaInvite(page: Page, inviteCode: string, displayName?: string) {
+  await page.locator('.welcome-invite-input').fill(inviteCode);
+  await page.locator('button', { hasText: 'Next' }).click();
+  // Wait for the join confirmation form to appear.
+  await page.locator('button', { hasText: 'Join Server' }).waitFor({ timeout: 5_000 });
+  if (displayName) {
+    // The display name input has placeholder "Your name...".
+    const dnInput = page.locator('input[placeholder*="name" i]').first();
+    if (await dnInput.isVisible()) {
+      await dnInput.fill(displayName);
+      await page.waitForTimeout(200);
+    }
+  }
+  await page.locator('button', { hasText: 'Join Server' }).click();
+  await page.waitForSelector('.sidebar', { timeout: 15_000 });
+  await page.waitForTimeout(3000);
+}
+
+/** Sets up two peers: peer1 creates a server, peer2 joins via invite. */
+export async function setupTwoPeers(
+  browser: Browser,
+  serverName = 'Test Server',
+  peer1Name = 'Alice',
+  peer2Name = 'Bob',
+): Promise<{ ctx1: BrowserContext; ctx2: BrowserContext; page1: Page; page2: Page }> {
+  const ctx1 = await browser.newContext();
+  const ctx2 = await browser.newContext();
+  const page1 = await ctx1.newPage();
+  const page2 = await ctx2.newPage();
+
+  // Peer 1: Create server.
+  await freshStart(page1);
+  await createServer(page1, serverName, peer1Name);
+
+  // Peer 2: Get peer ID from welcome screen.
+  await freshStart(page2);
+  const peer2Id = await getPeerId(page2);
+
+  // Peer 1: Generate invite for peer 2.
+  const inviteCode = await generateInvite(page1, peer2Id);
+
+  // Peer 2: Join the server.
+  await joinViaInvite(page2, inviteCode, peer2Name);
+
+  // Wait for display name sync: peer2's name should appear in peer1's member list.
+  if (peer2Name) {
+    try {
+      await page1.locator('.member-item', { hasText: peer2Name })
+        .waitFor({ timeout: 15_000 });
+    } catch {
+      // Display name sync may be slow; proceed anyway.
+    }
+  }
+
+  return { ctx1, ctx2, page1, page2 };
+}
+
+// ── Channel helpers ───────────────────────────────────────────────────
+
+/** Creates a new text channel (opens sidebar on mobile). */
+export async function createChannel(page: Page, name: string) {
+  await openSidebar(page);
+  await page.locator('.channel-add-btn').click();
+  await page.waitForTimeout(200);
+  await page.locator('.channel-create-input input').fill(name);
+  await page.locator('.channel-create-input input').press('Enter');
+  await page.waitForTimeout(500);
+  await closeSidebar(page);
+}
+
+/** Switches to a channel by name on mobile (opens sidebar, clicks channel). */
+export async function switchChannelMobile(page: Page, channelName: string) {
+  await openSidebar(page);
+  await page.locator('.channel-item', { hasText: channelName }).click();
+  await page.waitForTimeout(300);
+}
+
+// ── Message actions ───────────────────────────────────────────────────
+
+/** Performs a named action on a message (desktop: hover+dropdown, mobile: long-press+sheet). */
+export async function messageAction(page: Page, messageText: string, actionName: string) {
+  const msg = page.locator('.message', { hasText: messageText }).last();
+
+  if (isMobile(page)) {
+    // Mobile: long-press to open action sheet.
+    await longPress(page, `.message:has-text("${messageText}")`);
+    await page.locator('.mobile-action-sheet.open').waitFor({ timeout: 3000 });
+    await page.locator('.sheet-item', { hasText: actionName }).click();
+    await page.waitForTimeout(300);
+  } else {
+    // Desktop: hover to reveal action trigger, click dropdown item.
+    await msg.hover();
+    await page.waitForTimeout(200);
+    await msg.locator('.action-trigger').click();
+    await page.waitForTimeout(200);
+    await page.locator('.dropdown-item', { hasText: actionName }).click();
+    await page.waitForTimeout(200);
+  }
+}
+
+/** Edits a message (desktop or mobile). */
+export async function editMessage(page: Page, originalText: string, newText: string) {
+  await messageAction(page, originalText, 'Edit');
+  const input = page.locator('.input-area input, .input-area textarea').first();
+  await input.fill(newText);
+  await input.press('Enter');
+  await page.waitForTimeout(500);
+}
+
+/** Deletes a message (desktop or mobile). */
+export async function deleteMessage(page: Page, text: string) {
+  await messageAction(page, text, 'Delete');
+  await page.waitForTimeout(500);
+}
+
+/** Reacts to a message with an emoji (desktop or mobile). */
+export async function reactToMessage(page: Page, messageText: string, emojiIndex = 0) {
+  const msg = page.locator('.message', { hasText: messageText }).last();
+
+  if (isMobile(page)) {
+    await longPress(page, `.message:has-text("${messageText}")`);
+    await page.locator('.mobile-action-sheet.open').waitFor({ timeout: 3000 });
+    await page.locator('.sheet-emoji-row button').nth(emojiIndex).click();
+    await page.waitForTimeout(500);
+  } else {
+    await msg.hover();
+    await page.waitForTimeout(200);
+    await msg.locator('.action-trigger').click();
+    await page.waitForTimeout(200);
+    await page.locator('.dropdown-item', { hasText: 'React' }).click();
+    await page.waitForTimeout(200);
+    await page.locator('.dropdown-emoji-row button').nth(emojiIndex).click();
+    await page.waitForTimeout(500);
+  }
+}
+
+// ── Permission actions ────────────────────────────────────────────────
+
+/** Trusts a peer by name from the member list. */
+export async function trustPeer(page: Page, peerName: string) {
+  await openMemberList(page);
+  // Wait for the member to appear (display name may take time to sync).
+  const member = page.locator('.member-item', { hasText: peerName });
+  await member.waitFor({ timeout: 30_000 });
+  await member.locator('button', { hasText: 'Trust' }).click();
+  await page.waitForTimeout(500);
+  await closeMemberList(page);
+}
+
+/** Untrusts a peer by name from the member list. */
+export async function untrustPeer(page: Page, peerName: string) {
+  await openMemberList(page);
+  const member = page.locator('.member-item', { hasText: peerName });
+  await member.waitFor({ timeout: 30_000 });
+  await member.locator('button', { hasText: 'Untrust' }).click();
+  await page.waitForTimeout(500);
+  await closeMemberList(page);
+}
+
+/** Kicks a peer by name from the member list. */
+export async function kickPeer(page: Page, peerName: string) {
+  await openMemberList(page);
+  const member = page.locator('.member-item', { hasText: peerName });
+  await member.waitFor({ timeout: 30_000 });
+  await member.locator('.btn-danger', { hasText: 'Kick' }).click();
+  await page.waitForTimeout(500);
+  await closeMemberList(page);
+}
+
+/** Waits until the member list shows the expected count of members. */
+export async function waitForPeerCount(page: Page, count: number, timeout = 15_000) {
+  await openMemberList(page);
+  await expect(page.locator('.member-item')).toHaveCount(count, { timeout });
+  await closeMemberList(page);
 }
