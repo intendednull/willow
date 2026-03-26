@@ -43,8 +43,9 @@ pub struct SpeakingDetector {
     /// Analysers keyed by peer ID. Shared with the polling closure via `Rc<RefCell>`.
     analysers: Rc<RefCell<HashMap<String, AnalyserNode>>>,
     /// Source nodes kept alive so the browser does not garbage-collect them.
-    #[allow(dead_code)]
-    sources: HashMap<String, MediaStreamAudioSourceNode>,
+    /// Shared with the `ontrack` closure via `Rc<RefCell>` so it can store
+    /// source nodes created for remote peer audio streams.
+    sources: Rc<RefCell<HashMap<String, MediaStreamAudioSourceNode>>>,
     on_speaking_change: SpeakingCallback,
     interval_id: Option<i32>,
 }
@@ -62,7 +63,7 @@ impl SpeakingDetector {
         Ok(Self {
             audio_context,
             analysers: Rc::new(RefCell::new(HashMap::new())),
-            sources: HashMap::new(),
+            sources: Rc::new(RefCell::new(HashMap::new())),
             on_speaking_change: Rc::new(on_change),
             interval_id: None,
         })
@@ -98,13 +99,15 @@ impl SpeakingDetector {
         self.analysers
             .borrow_mut()
             .insert(peer_id.to_string(), analyser);
-        self.sources.insert(peer_id.to_string(), source);
+        self.sources
+            .borrow_mut()
+            .insert(peer_id.to_string(), source);
     }
 
-    /// Remove a peer's analyser (e.g. when they disconnect).
+    /// Remove a peer's analyser and source node (e.g. when they disconnect).
     pub fn remove_peer(&mut self, peer_id: &str) {
         self.analysers.borrow_mut().remove(peer_id);
-        self.sources.remove(peer_id);
+        self.sources.borrow_mut().remove(peer_id);
     }
 
     /// Start polling all analysers every ~60 ms.
@@ -165,7 +168,7 @@ impl SpeakingDetector {
         }
         let _ = self.audio_context.close();
         self.analysers.borrow_mut().clear();
-        self.sources.clear();
+        self.sources.borrow_mut().clear();
     }
 }
 
@@ -218,6 +221,8 @@ pub struct VoiceManager {
     video_senders: HashMap<String, RtcRtpSender>,
     /// Audio volume analyser for speaking detection.
     speaking_detector: Option<SpeakingDetector>,
+    /// Stored so `close_all()` can recreate the `SpeakingDetector` for the next session.
+    speaking_change_cb: Option<Rc<dyn Fn(HashSet<String>)>>,
 }
 
 impl VoiceManager {
@@ -240,9 +245,12 @@ impl VoiceManager {
         on_video_track: impl Fn(&str, Option<MediaStream>) + 'static,
         on_speaking_change: impl Fn(HashSet<String>) + 'static,
     ) -> Self {
+        // Store callback so close_all() can recreate the detector for future sessions.
+        let speaking_cb: Rc<dyn Fn(HashSet<String>)> = Rc::new(on_speaking_change);
         // Create the detector eagerly — the caller is inside a user-gesture
         // handler (voice join click) so AudioContext creation is allowed.
-        let mut detector = SpeakingDetector::new(on_speaking_change).ok();
+        let cb_clone = speaking_cb.clone();
+        let mut detector = SpeakingDetector::new(move |s| cb_clone(s)).ok();
         if let Some(ref mut d) = detector {
             d.start_polling();
         }
@@ -256,6 +264,7 @@ impl VoiceManager {
             video_source: None,
             video_senders: HashMap::new(),
             speaking_detector: detector,
+            speaking_change_cb: Some(speaking_cb),
         }
     }
 
@@ -335,9 +344,11 @@ impl VoiceManager {
         let peer_id = remote_peer.to_string();
         let on_video = self.on_video_track.clone();
 
-        // Share the detector's analysers map and audio context with the closure
-        // so it can register incoming remote audio streams for speaking detection.
+        // Share the detector's analysers map, sources map, and audio context
+        // with the closure so it can register incoming remote audio streams
+        // for speaking detection.
         let detector_analysers = self.speaking_detector.as_ref().map(|d| d.analysers.clone());
+        let detector_sources = self.speaking_detector.as_ref().map(|d| d.sources.clone());
         let detector_ctx = self
             .speaking_detector
             .as_ref()
@@ -359,15 +370,17 @@ impl VoiceManager {
 
             if track.kind() == "audio" {
                 // Register the remote audio stream with the speaking detector.
-                if let (Some(ref ctx), Some(ref analysers)) = (&detector_ctx, &detector_analysers) {
+                if let (Some(ref ctx), Some(ref analysers), Some(ref sources)) =
+                    (&detector_ctx, &detector_analysers, &detector_sources)
+                {
                     if let Ok(source) = ctx.create_media_stream_source(&stream) {
                         if let Ok(analyser) = ctx.create_analyser() {
                             analyser.set_fft_size(256);
                             if source.connect_with_audio_node(&analyser).is_ok() {
                                 analysers.borrow_mut().insert(peer_id.clone(), analyser);
-                                // Source node must stay alive — leak it so the
-                                // browser keeps the audio graph connected.
-                                std::mem::forget(source);
+                                // Store source node in the shared map so it stays
+                                // alive and is properly cleaned up by remove_peer().
+                                sources.borrow_mut().insert(peer_id.clone(), source);
                             }
                         }
                     }
@@ -757,14 +770,31 @@ impl VoiceManager {
     }
 
     /// Close all connections, stop video sharing, and release the microphone.
+    ///
+    /// Each peer connection is closed via [`close_connection`] so that
+    /// `<audio>` elements are removed from the DOM and the speaking detector
+    /// is cleaned up per-peer. The detector is then destroyed and recreated
+    /// so speaking detection works on the next voice session.
     pub fn close_all(&mut self) {
         self.stop_video_share();
+        // Close each peer individually to remove <audio> elements and clean
+        // up per-peer detector state.
+        let peers: Vec<String> = self.connections.keys().cloned().collect();
+        for peer in peers {
+            self.close_connection(&peer);
+        }
+        // Destroy the detector after per-peer cleanup.
         if let Some(ref mut detector) = self.speaking_detector {
             detector.destroy();
         }
         self.speaking_detector = None;
-        for (_, state) in self.connections.drain() {
-            state.pc.close();
+        // Recreate the detector so speaking detection works on rejoin.
+        if let Some(ref cb) = self.speaking_change_cb {
+            let cb_clone = cb.clone();
+            self.speaking_detector = SpeakingDetector::new(move |s| cb_clone(s)).ok();
+            if let Some(ref mut d) = self.speaking_detector {
+                d.start_polling();
+            }
         }
         if let Some(ref stream) = self.local_stream {
             let tracks = stream.get_tracks();
@@ -776,4 +806,3 @@ impl VoiceManager {
         self.local_stream = None;
     }
 }
-

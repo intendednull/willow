@@ -90,19 +90,21 @@ pub fn CallPage(
     // Local video stream — stored globally in VoiceState so it survives remounts.
     let local_video_stream = app_state.voice.local_video_stream;
 
-    // Duration timer — increments every second.
+    // Duration timer — increments every second. Clean up on unmount so
+    // timers do not stack across call-page remounts.
     let (duration, set_duration) = signal(0u32);
-    set_interval(
+    let timer_handle = set_interval_with_handle(
         move || set_duration.update(|d| *d += 1),
         std::time::Duration::from_millis(1000),
-    );
+    )
+    .expect("set_interval failed");
+    on_cleanup(move || timer_handle.clear());
 
     // Layout state.
     let layout = app_state.ui.call_layout;
 
     // Camera button click handler.
     let vm_camera = vm.clone();
-    let _handle_camera = handle.clone();
     let on_camera_click = move |_| {
         let current_source = app_state.voice.video_source.get_untracked();
 
@@ -145,7 +147,10 @@ pub fn CallPage(
                 let stream_for_signal = SendWrapper::new(stream.clone());
                 vm2.borrow_mut().start_camera(stream);
                 write2.voice.set_video_source.set(Some(VideoSource::Camera));
-                write2.voice.set_local_video_stream.set(Some(stream_for_signal));
+                write2
+                    .voice
+                    .set_local_video_stream
+                    .set(Some(stream_for_signal));
             });
         let on_error = wasm_bindgen::closure::Closure::once(move |_err: wasm_bindgen::JsValue| {
             tracing::error!("Camera access denied");
@@ -196,7 +201,10 @@ pub fn CallPage(
                 let stream_for_signal = SendWrapper::new(stream.clone());
                 vm2.borrow_mut().start_screen_share(stream.clone());
                 write2.voice.set_video_source.set(Some(VideoSource::Screen));
-                write2.voice.set_local_video_stream.set(Some(stream_for_signal));
+                write2
+                    .voice
+                    .set_local_video_stream
+                    .set(Some(stream_for_signal));
 
                 // Listen for the browser's "Stop sharing" chrome button.
                 let tracks = stream.get_video_tracks();

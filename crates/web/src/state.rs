@@ -75,8 +75,6 @@ pub struct ServerState {
 #[derive(Clone, Copy)]
 pub struct UiState {
     pub show_settings: ReadSignal<bool>,
-    #[allow(dead_code)]
-    pub show_server_settings: ReadSignal<bool>,
     pub show_sidebar: ReadSignal<bool>,
     pub show_members: ReadSignal<bool>,
     pub show_add_server: ReadSignal<bool>,
@@ -103,8 +101,7 @@ pub struct VoiceState {
         ReadSignal<HashMap<String, send_wrapper::SendWrapper<web_sys::MediaStream>>>,
     /// Local video stream (camera or screen share). Stored globally so it
     /// survives call-page component remounts.
-    pub local_video_stream:
-        ReadSignal<Option<send_wrapper::SendWrapper<web_sys::MediaStream>>>,
+    pub local_video_stream: ReadSignal<Option<send_wrapper::SendWrapper<web_sys::MediaStream>>>,
 }
 
 // ── Write signals (NOT in context — held by event processing) ────────
@@ -152,7 +149,6 @@ pub struct ServerWriteSignals {
 #[derive(Clone, Copy)]
 pub struct UiWriteSignals {
     pub set_show_settings: WriteSignal<bool>,
-    pub set_show_server_settings: WriteSignal<bool>,
     pub set_show_sidebar: WriteSignal<bool>,
     pub set_show_members: WriteSignal<bool>,
     pub set_show_add_server: WriteSignal<bool>,
@@ -207,7 +203,6 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
 
     // UI panel signals
     let (show_settings, set_show_settings) = signal(false);
-    let (show_server_settings, set_show_server_settings) = signal(false);
     let (show_sidebar, set_show_sidebar) = signal(false);
     let (show_members, set_show_members) = signal(false);
     let (show_add_server, set_show_add_server) = signal(false);
@@ -230,9 +225,8 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
         String,
         send_wrapper::SendWrapper<web_sys::MediaStream>,
     >::new());
-    let (local_video_stream, set_local_video_stream) = signal(
-        Option::<send_wrapper::SendWrapper<web_sys::MediaStream>>::None,
-    );
+    let (local_video_stream, set_local_video_stream) =
+        signal(Option::<send_wrapper::SendWrapper<web_sys::MediaStream>>::None);
 
     let app_state = AppState {
         chat: ChatState {
@@ -262,7 +256,6 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
         },
         ui: UiState {
             show_settings,
-            show_server_settings,
             show_sidebar,
             show_members,
             show_add_server,
@@ -313,7 +306,6 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
         },
         ui: UiWriteSignals {
             set_show_settings,
-            set_show_server_settings,
             set_show_sidebar,
             set_show_members,
             set_show_add_server,
