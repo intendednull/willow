@@ -3038,15 +3038,19 @@ select:focus-visible {
 @keyframes scale-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
 
 /* ── Settings Tabs ──────────────────────────────────────────────── */
+
 .settings-tabs {
     display: flex;
-    gap: 2px;
-    padding: 0 16px;
+    gap: 0;
+    padding: 0 20px;
     border-bottom: 1px solid var(--border);
-    margin-bottom: 16px;
+    margin-bottom: 0;
+    background: transparent;
 }
-.settings-tab {
-    padding: 10px 16px;
+
+.settings-tabs .tab-btn {
+    position: relative;
+    padding: 12px 20px;
     background: transparent;
     border: none;
     border-bottom: 2px solid transparent;
@@ -3055,33 +3059,64 @@ select:focus-visible {
     font-family: inherit;
     font-size: 13px;
     font-weight: 500;
-    transition: color var(--transition-fast), border-color var(--transition-fast);
+    letter-spacing: 0.01em;
+    transition: color var(--transition-normal), border-color var(--transition-normal), background var(--transition-fast);
+    -webkit-tap-highlight-color: transparent;
 }
-.settings-tab:hover { color: var(--text-secondary); }
-.settings-tab.active { color: var(--text-primary); border-bottom-color: var(--accent); }
 
-.settings-breadcrumb {
+.settings-tabs .tab-btn:hover {
+    color: var(--text-secondary);
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.settings-tabs .tab-btn.active {
+    color: var(--text-primary);
+    border-bottom-color: var(--accent);
+}
+
+/* Subtle glow on active tab underline */
+.settings-tabs .tab-btn.active::after {
+    content: '';
+    position: absolute;
+    bottom: -1px;
+    left: 20%;
+    right: 20%;
+    height: 2px;
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent-glow), 0 0 2px var(--accent);
+    border-radius: 1px;
+}
+
+/* ── Settings Breadcrumb / Header ──────────────────────────────── */
+
+.settings-panel .server-settings-header {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 16px;
+    gap: 12px;
+    padding: 16px 20px;
     border-bottom: 1px solid var(--border);
-    font-size: 14px;
-    color: var(--text-muted);
 }
-.settings-breadcrumb .back-btn {
-    background: transparent;
-    border: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    padding: 4px;
-    display: flex;
-    align-items: center;
-    transition: color var(--transition-fast);
+
+.settings-panel .server-settings-header h2 {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin: 0;
 }
-.settings-breadcrumb .back-btn:hover { color: var(--text-primary); }
-.settings-breadcrumb .separator { color: var(--text-muted); }
-.settings-breadcrumb .current { color: var(--text-primary); font-weight: 500; }
+
+/* Tab content padding */
+.settings-tab-content {
+    padding: 20px;
+}
+
+/* Section spacing inside tabs */
+.settings-tab-content .settings-section {
+    margin-bottom: 20px;
+}
+
+.settings-tab-content .settings-section:last-child {
+    margin-bottom: 0;
+}
 
 /* ── Command Palette ─────────────────────────────────────────────── */
 
