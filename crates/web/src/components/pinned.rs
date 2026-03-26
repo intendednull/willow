@@ -2,6 +2,7 @@ use leptos::prelude::*;
 use willow_client::DisplayMessage;
 
 use super::message::extract_urls;
+use crate::icons;
 
 /// Render a message body with clickable URL links.
 fn render_body_with_links(body: &str) -> impl IntoView {
@@ -35,7 +36,7 @@ pub fn PinnedPanel(
         <div class="pinned-panel">
             <div class="pinned-header">
                 <h3>"Pinned Messages"</h3>
-                <button class="btn btn-sm" on:click=move |_| on_close(())>"\u{00D7}"</button>
+                <button class="btn btn-sm" on:click=move |_| on_close(())>{icons::icon_x()}</button>
             </div>
             <div class="pinned-list">
                 <For

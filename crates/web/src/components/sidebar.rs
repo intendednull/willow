@@ -4,6 +4,7 @@ use leptos::prelude::*;
 
 use crate::app::WebClientHandle;
 use crate::components::VoiceControls;
+use crate::icons;
 
 /// Left sidebar showing the server name, channel list, and user info.
 #[component]
@@ -90,7 +91,7 @@ pub fn Sidebar(
                     title="Server Settings"
                     on:click=move |_| on_server_settings_click(())
                 >
-                    "\u{2699}\u{fe0f}"
+                    {icons::icon_settings()}
                 </button>
             </div>
             <div class="channel-list">
@@ -101,7 +102,7 @@ pub fn Sidebar(
                         title="Create channel"
                         on:click=move |_| set_creating.set(true)
                     >
-                        "+"
+                        {icons::icon_plus()}
                     </button>
                 </div>
                 {move || {
@@ -122,7 +123,7 @@ pub fn Sidebar(
                                             ev.prevent_default();
                                             set_create_voice.set(true);
                                         }
-                                    >"\u{1F50A} Voice"</button>
+                                    >{icons::icon_volume_2()} " Voice"</button>
                                 </div>
                                 <input
                                     type="text"
@@ -185,7 +186,7 @@ pub fn Sidebar(
                                     }
                                 }
                             >
-                                <span>{move || if is_voice_for_prefix() { "\u{1F50A} " } else { "# " }} {channel.clone()}</span>
+                                <span>{move || if is_voice_for_prefix() { icons::icon_volume_2().into_any() } else { icons::icon_hash().into_any() }} " " {channel.clone()}</span>
                                 <span class="channel-item-right">
                                     {
                                         let ch_u = ch_unread.clone();
@@ -288,7 +289,7 @@ pub fn Sidebar(
                         let is_dark = js_sys::eval(
                             "document.documentElement.getAttribute('data-theme') !== 'light'"
                         ).ok().and_then(|v| v.as_bool()).unwrap_or(true);
-                        if is_dark { "\u{2600}\u{fe0f}" } else { "\u{1f319}" }
+                        if is_dark { icons::icon_sun().into_any() } else { icons::icon_moon().into_any() }
                     }}
                 </button>
                 <button

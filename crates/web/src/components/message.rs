@@ -3,6 +3,7 @@ use wasm_bindgen::JsCast;
 use willow_client::DisplayMessage;
 
 use super::file_share::{parse_inline_file, FileCard};
+use crate::icons;
 
 /// Image file extensions for URL and upload embedding.
 /// SAFETY: SVG is included but must ONLY be rendered via `<img>` tags
@@ -513,7 +514,7 @@ pub fn MessageView(
                             ev.stop_propagation();
                             set_show_dropdown.update(|v| *v = !*v);
                             set_show_react_row.set(false);
-                        }>"\u{22EF}"</button>
+                        }>{icons::icon_more_horizontal()}</button>
                         {move || {
                             if show_dropdown.get() {
                                 let reply_view = if has_reply {

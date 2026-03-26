@@ -11,6 +11,7 @@ use crate::components::{
 };
 use crate::event_processing::{extract_roles, process_event_batch, refresh_all_signals};
 use crate::handlers;
+use crate::icons;
 use crate::state::{self, ChannelViewState};
 use crate::voice::VoiceManager;
 
@@ -376,7 +377,7 @@ pub fn App() -> impl IntoView {
                                         <div class="settings-panel">
                                             <div class="server-settings-header">
                                                 <button class="btn btn-sm" on:click=move |_| write.ui.set_show_add_server.set(false)>
-                                                    "\u{2190} Back"
+                                                    {icons::icon_arrow_left()} " Back"
                                                 </button>
                                                 <h2>"Add a Server"</h2>
                                             </div>

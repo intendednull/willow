@@ -106,6 +106,27 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     font-family: 'IBM Plex Mono', 'SF Mono', 'Fira Code', monospace;
 }
 
+/* ── Icons ──────────────────────────────────────────────────────── */
+
+.icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    vertical-align: middle;
+    flex-shrink: 0;
+}
+
+.icon svg {
+    display: block;
+    width: 1em;
+    height: 1em;
+}
+
+/* Size variants */
+.icon-sm svg { width: 14px; height: 14px; }
+.icon-md svg { width: 18px; height: 18px; }
+.icon-lg svg { width: 22px; height: 22px; }
+
 /* ── Focus Visible (accessibility) ───────────────────────────────── */
 
 :focus-visible {

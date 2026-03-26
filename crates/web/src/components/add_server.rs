@@ -4,6 +4,7 @@ use leptos::prelude::*;
 use send_wrapper::SendWrapper;
 
 use crate::app::WebClientHandle;
+use crate::icons;
 
 /// Panel for creating a new server or joining an existing one via invite code.
 /// Shown when the user clicks the "+" button in the server rail.
@@ -129,7 +130,7 @@ pub fn AddServerPanel(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Int
                                 />
                                 <div class="join-profile-buttons">
                                     <button class="btn btn-sm" on:click=move |_| set_join_step.set(false)>
-                                        "\u{2190} Back"
+                                        {icons::icon_arrow_left()} " Back"
                                     </button>
                                     <button class="btn btn-primary welcome-btn" on:click=confirm>
                                         "Join Server"
@@ -148,7 +149,7 @@ pub fn AddServerPanel(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Int
                                     on:input=move |ev| set_join_code.set(event_target_value(&ev))
                                 ></textarea>
                                 <button class="btn btn-primary welcome-btn" on:click=on_join_next>
-                                    "Next \u{2192}"
+                                    "Next " {icons::icon_arrow_right()}
                                 </button>
                             </div>
                         }.into_any()
