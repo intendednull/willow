@@ -2,6 +2,7 @@ use leptos::prelude::*;
 
 use crate::app::WebClientHandle;
 use crate::components::RoleManager;
+use crate::icons;
 use crate::util::copy_to_clipboard;
 
 /// A single role entry: (role_id, role_name, list of granted permission strings).
@@ -61,7 +62,7 @@ pub fn ServerSettingsPanel(
         <div class="settings-panel server-settings">
             <div class="server-settings-header">
                 <button class="btn btn-sm" on:click=move |_| on_back(())>
-                    "\u{2190} Back"
+                    {icons::icon_arrow_left()} " Back"
                 </button>
                 <h2>{server_name}</h2>
             </div>

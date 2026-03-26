@@ -139,6 +139,21 @@ test.describe('Mobile action sheet', () => {
     await expect(page.locator('.mobile-action-sheet.open')).toBeHidden();
   });
 
+  test('action trigger (three-dot menu) is hidden on mobile', async ({ page }) => {
+    await freshStart(page);
+    await createServer(page, 'NoTrigger');
+    await sendMessage(page, 'no dots');
+    await page.waitForTimeout(500);
+
+    // Hover the message (simulated) — the .message-actions should stay hidden on mobile.
+    const msg = page.locator('.message').first();
+    await msg.hover();
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('.action-trigger')).toBeHidden();
+    await expect(page.locator('.message-actions')).toBeHidden();
+  });
+
   test('quick tap does NOT open sheet', async ({ page }) => {
     await freshStart(page);
     await createServer(page, 'QuickTap2');

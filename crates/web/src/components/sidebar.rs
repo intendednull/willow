@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use leptos::prelude::*;
 
 use crate::app::WebClientHandle;
-use crate::components::VoiceControls;
+use crate::components::{ConfirmDialog, VoiceControls};
+use crate::icons;
 
 /// Left sidebar showing the server name, channel list, and user info.
 #[component]
@@ -48,6 +49,11 @@ pub fn Sidebar(
     let (new_name, set_new_name) = signal(String::new());
     let (create_voice, set_create_voice) = signal(false);
 
+    // Channel delete confirmation state.
+    let (show_del_confirm, set_show_del_confirm) = signal(false);
+    let (pending_del_channel, set_pending_del_channel) = signal(Option::<String>::None);
+    let handle_del_confirm = handle.clone();
+
     let handle_create = handle.clone();
     let on_create_submit = move || {
         let name = new_name.get_untracked();
@@ -81,6 +87,10 @@ pub fn Sidebar(
 
     let handle_user = handle.clone();
 
+    // Peer ID copy state.
+    let (show_copied, set_show_copied) = signal(false);
+    let handle_copy = handle.clone();
+
     view! {
         <div class=move || if open.get() { "sidebar open" } else { "sidebar" }>
             <div class="sidebar-header">
@@ -90,7 +100,7 @@ pub fn Sidebar(
                     title="Server Settings"
                     on:click=move |_| on_server_settings_click(())
                 >
-                    "\u{2699}\u{fe0f}"
+                    {icons::icon_settings()}
                 </button>
             </div>
             <div class="channel-list">
@@ -101,7 +111,7 @@ pub fn Sidebar(
                         title="Create channel"
                         on:click=move |_| set_creating.set(true)
                     >
-                        "+"
+                        {icons::icon_plus()}
                     </button>
                 </div>
                 {move || {
@@ -122,7 +132,7 @@ pub fn Sidebar(
                                             ev.prevent_default();
                                             set_create_voice.set(true);
                                         }
-                                    >"\u{1F50A} Voice"</button>
+                                    >{icons::icon_volume_2()} " Voice"</button>
                                 </div>
                                 <input
                                     type="text"
@@ -151,7 +161,6 @@ pub fn Sidebar(
                         let ch_voice_join = channel.clone();
                         let on_click = on_channel_click.clone();
                         let on_voice = on_voice_join.clone();
-                        let handle_del = handle.clone();
                         let handle_kind = handle.clone();
                         let active = move || current_channel.get() == ch_active;
 
@@ -185,7 +194,7 @@ pub fn Sidebar(
                                     }
                                 }
                             >
-                                <span>{move || if is_voice_for_prefix() { "\u{1F50A} " } else { "# " }} {channel.clone()}</span>
+                                <span>{move || if is_voice_for_prefix() { icons::icon_volume_2().into_any() } else { icons::icon_hash().into_any() }} " " {channel.clone()}</span>
                                 <span class="channel-item-right">
                                     {
                                         let ch_u = ch_unread.clone();
@@ -200,14 +209,14 @@ pub fn Sidebar(
                                     }
                                     {
                                         let ch_d = ch_delete.clone();
-                                        let hd = handle_del.clone();
                                         view! {
                                             <button
                                                 class="delete-btn"
                                                 title="Delete channel"
                                                 on:click=move |ev| {
                                                     ev.stop_propagation();
-                                                    let _ = hd.delete_channel(&ch_d);
+                                                    set_pending_del_channel.set(Some(ch_d.clone()));
+                                                    set_show_del_confirm.set(true);
                                                 }
                                             >
                                                 "x"
@@ -279,6 +288,17 @@ pub fn Sidebar(
                         }
                     }
                 </span>
+                <button class="copy-pid-btn" title="Copy Peer ID" on:click=move |_| {
+                    let id = handle_copy.peer_id();
+                    crate::util::copy_to_clipboard(&id);
+                    set_show_copied.set(true);
+                    set_timeout(move || set_show_copied.set(false), std::time::Duration::from_millis(1500));
+                }>
+                    {icons::icon_copy()}
+                </button>
+                {move || show_copied.get().then(|| view! {
+                    <span class="copied-tooltip">"Copied!"</span>
+                })}
                 <button
                     class="btn btn-sm theme-toggle"
                     title="Toggle theme"
@@ -288,7 +308,7 @@ pub fn Sidebar(
                         let is_dark = js_sys::eval(
                             "document.documentElement.getAttribute('data-theme') !== 'light'"
                         ).ok().and_then(|v| v.as_bool()).unwrap_or(true);
-                        if is_dark { "\u{2600}\u{fe0f}" } else { "\u{1f319}" }
+                        if is_dark { icons::icon_sun().into_any() } else { icons::icon_moon().into_any() }
                     }}
                 </button>
                 <button
@@ -299,6 +319,28 @@ pub fn Sidebar(
                     "Settings"
                 </button>
             </div>
+            <ConfirmDialog
+                visible=show_del_confirm
+                title="Delete Channel"
+                message=Signal::derive(move || {
+                    pending_del_channel.get()
+                        .map(|n| format!("Delete #{}?", n))
+                        .unwrap_or_default()
+                })
+                confirm_text="Delete"
+                danger=true
+                on_confirm=Callback::new(move |_| {
+                    if let Some(name) = pending_del_channel.get_untracked() {
+                        let _ = handle_del_confirm.delete_channel(&name);
+                    }
+                    set_pending_del_channel.set(None);
+                    set_show_del_confirm.set(false);
+                })
+                on_cancel=Callback::new(move |_| {
+                    set_pending_del_channel.set(None);
+                    set_show_del_confirm.set(false);
+                })
+            />
         </div>
     }
 }

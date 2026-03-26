@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 
 use crate::app::WebClientHandle;
+use crate::components::ConfirmDialog;
 
 /// Right sidebar showing connected peers with trust/kick actions.
 /// Accepts `(peer_id, display_name)` tuples so names update reactively.
@@ -10,6 +11,11 @@ pub fn MemberList(
     peer_id: ReadSignal<String>,
 ) -> impl IntoView {
     let handle = use_context::<WebClientHandle>().unwrap();
+
+    // Kick confirmation state.
+    let (show_kick_confirm, set_show_kick_confirm) = signal(false);
+    let (pending_kick_peer, set_pending_kick_peer) = signal(Option::<(String, String)>::None);
+    let handle_kick_confirm = handle.clone();
 
     view! {
         <div class="member-list">
@@ -21,6 +27,7 @@ pub fn MemberList(
             >
                 {
                     let (pid, name, is_online) = peer;
+                    let name_for_kick = name.clone();
                     let pid_badge = pid.clone();
                     let pid_trust = pid.clone();
                     let pid_untrust = pid.clone();
@@ -29,7 +36,6 @@ pub fn MemberList(
                     let handle_badge = handle.clone();
                     let handle_trust = handle.clone();
                     let handle_untrust = handle.clone();
-                    let handle_kick = handle.clone();
                     view! {
                         <div class="member-item">
                             <div class={if is_online { "status-dot" } else { "status-dot offline" }}></div>
@@ -65,7 +71,6 @@ pub fn MemberList(
                                     let pu = pid_untrust.clone();
                                     let hu = handle_untrust.clone();
                                     let pk = pid_kick.clone();
-                                    let hk = handle_kick.clone();
                                     let hb2 = handle_badge.clone();
                                     move || {
                                         let is_owner = hb2.server_owner() == peer_id.get_untracked();
@@ -77,12 +82,18 @@ pub fn MemberList(
                                             let pu = pu.clone();
                                             let hu = hu.clone();
                                             let pk = pk.clone();
-                                            let hk = hk.clone();
-                                            Some(view! {
-                                                <button class="btn btn-sm" on:click=move |_| { ht.trust_peer(&pt); }>"Trust"</button>
-                                                <button class="btn btn-sm" on:click=move |_| { hu.untrust_peer(&pu); }>"Untrust"</button>
-                                                <button class="btn btn-sm btn-danger" on:click=move |_| { let _ = hk.kick_member(&pk); }>"Kick"</button>
-                                            })
+                                            {
+                                                let kick_name = name_for_kick.clone();
+                                                let kick_pid = pk.clone();
+                                                Some(view! {
+                                                    <button class="btn btn-sm" on:click=move |_| { ht.trust_peer(&pt); }>"Trust"</button>
+                                                    <button class="btn btn-sm" on:click=move |_| { hu.untrust_peer(&pu); }>"Untrust"</button>
+                                                    <button class="btn btn-sm btn-danger" on:click=move |_| {
+                                                        set_pending_kick_peer.set(Some((kick_pid.clone(), kick_name.clone())));
+                                                        set_show_kick_confirm.set(true);
+                                                    }>"Kick"</button>
+                                                })
+                                            }
                                         }
                                     }
                                 }
@@ -98,6 +109,28 @@ pub fn MemberList(
                     None
                 }
             }}
+            <ConfirmDialog
+                visible=show_kick_confirm
+                title="Kick Member"
+                message=Signal::derive(move || {
+                    pending_kick_peer.get()
+                        .map(|(_, name)| format!("Kick {}?", name))
+                        .unwrap_or_default()
+                })
+                confirm_text="Kick"
+                danger=true
+                on_confirm=Callback::new(move |_| {
+                    if let Some((pid, _)) = pending_kick_peer.get_untracked() {
+                        let _ = handle_kick_confirm.kick_member(&pid);
+                    }
+                    set_pending_kick_peer.set(None);
+                    set_show_kick_confirm.set(false);
+                })
+                on_cancel=Callback::new(move |_| {
+                    set_pending_kick_peer.set(None);
+                    set_show_kick_confirm.set(false);
+                })
+            />
         </div>
     }
 }

@@ -2,6 +2,8 @@ mod app;
 mod components;
 mod event_processing;
 mod handlers;
+#[allow(dead_code)]
+pub(crate) mod icons;
 mod state;
 pub(crate) mod util;
 pub mod voice;

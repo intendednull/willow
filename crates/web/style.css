@@ -106,6 +106,27 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
     font-family: 'IBM Plex Mono', 'SF Mono', 'Fira Code', monospace;
 }
 
+/* ── Icons ──────────────────────────────────────────────────────── */
+
+.icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    vertical-align: middle;
+    flex-shrink: 0;
+}
+
+.icon svg {
+    display: block;
+    width: 1em;
+    height: 1em;
+}
+
+/* Size variants */
+.icon-sm svg { width: 14px; height: 14px; }
+.icon-md svg { width: 18px; height: 18px; }
+.icon-lg svg { width: 22px; height: 22px; }
+
 /* ── Focus Visible (accessibility) ───────────────────────────────── */
 
 :focus-visible {
@@ -2118,24 +2139,9 @@ select:focus-visible {
         word-break: break-word;
     }
 
-    /* On mobile, hide the trigger button — long-press shows dropdown directly */
-    .action-trigger {
-        display: none;
-    }
-
-    /* But show the actions container when dropdown is open */
-    .message-actions:has(.message-dropdown) {
-        display: flex;
-    }
-
-    .action-trigger {
-        padding: 6px 10px;
-        font-size: 18px;
-        min-width: 36px;
-        min-height: 36px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
+    /* On mobile, hide the entire action bar — long-press opens the action sheet instead. */
+    .message-actions {
+        display: none !important;
     }
 
     /* Dropdown: prevent overflow on mobile */
@@ -3002,6 +3008,117 @@ select:focus-visible {
     background: var(--accent-glow);
     color: var(--text-primary);
 }
+
+/* ── Confirm Dialog ─────────────────────────────────────────────── */
+.confirm-overlay {
+    position: fixed;
+    inset: 0;
+    background: var(--overlay-bg);
+    backdrop-filter: var(--backdrop-blur);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    animation: fade-in 0.15s ease;
+}
+.confirm-dialog {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    max-width: 400px;
+    width: 90%;
+    box-shadow: var(--shadow-lg);
+    animation: scale-in 0.15s ease;
+}
+.confirm-dialog h3 { margin-bottom: 8px; font-size: 16px; font-weight: 600; }
+.confirm-dialog p { color: var(--text-secondary); font-size: 14px; margin-bottom: 20px; line-height: 1.5; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes scale-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+
+/* ── Settings Tabs ──────────────────────────────────────────────── */
+.settings-tabs {
+    display: flex;
+    gap: 2px;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 16px;
+}
+.settings-tab {
+    padding: 10px 16px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+.settings-tab:hover { color: var(--text-secondary); }
+.settings-tab.active { color: var(--text-primary); border-bottom-color: var(--accent); }
+
+.settings-breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 16px;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+    color: var(--text-muted);
+}
+.settings-breadcrumb .back-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px;
+    display: flex;
+    align-items: center;
+    transition: color var(--transition-fast);
+}
+.settings-breadcrumb .back-btn:hover { color: var(--text-primary); }
+.settings-breadcrumb .separator { color: var(--text-muted); }
+.settings-breadcrumb .current { color: var(--text-primary); font-weight: 500; }
+
+/* ── Command Palette ─────────────────────────────────────────────── */
+
+.palette-overlay { position: fixed; inset: 0; background: var(--overlay-bg); backdrop-filter: var(--backdrop-blur); display: flex; justify-content: center; padding-top: 15vh; z-index: 1000; animation: fade-in 0.1s ease; }
+.palette { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow-lg); width: 90%; max-width: 520px; max-height: 400px; display: flex; flex-direction: column; overflow: hidden; animation: scale-in 0.1s ease; align-self: flex-start; }
+.palette-input { padding: 14px 16px; background: transparent; border: none; border-bottom: 1px solid var(--border); color: var(--text-primary); font-size: 15px; font-family: inherit; outline: none; width: 100%; box-sizing: border-box; }
+.palette-input::placeholder { color: var(--text-placeholder); }
+.palette-results { overflow-y: auto; flex: 1; padding: 4px; }
+.palette-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 6px; cursor: pointer; color: var(--text-primary); transition: background var(--transition-fast); }
+.palette-item:hover, .palette-item.selected { background: var(--bg-message-hover); }
+.palette-item .icon { color: var(--text-muted); }
+.palette-item-label { flex: 1; }
+.palette-item-category { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.palette-empty { padding: 16px; text-align: center; color: var(--text-muted); font-size: 13px; }
+.palette-hint { padding: 8px 16px; font-size: 11px; color: var(--text-muted); border-top: 1px solid var(--border); display: flex; gap: 12px; }
+.palette-hint kbd { background: var(--bg-input); padding: 1px 5px; border-radius: 3px; font-size: 10px; }
+
+.search-toggle { background: transparent; border: none; color: var(--text-muted); cursor: pointer; padding: 4px 8px; transition: color var(--transition-fast); }
+.search-toggle:hover { color: var(--text-primary); }
+
+/* ── Peer ID Copy ───────────────────────────────────────────────── */
+
+.copy-pid-btn { background: transparent; border: none; color: var(--text-muted); cursor: pointer; padding: 4px; font-size: 14px; transition: color var(--transition-fast); }
+.copy-pid-btn:hover { color: var(--text-primary); }
+.copied-tooltip { position: absolute; background: var(--accent); color: white; font-size: 11px; padding: 3px 8px; border-radius: 4px; white-space: nowrap; animation: tooltip-fade 1.5s ease forwards; pointer-events: none; }
+@keyframes tooltip-fade { 0%, 70% { opacity: 1; } 100% { opacity: 0; } }
+
+/* ── Context Menu ────────────────────────────────────────────────── */
+
+.context-menu-overlay { position: fixed; inset: 0; z-index: 998; display: none; }
+.context-menu-overlay.open { display: block; }
+.context-menu { position: fixed; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow-lg); padding: 4px; min-width: 160px; z-index: 999; display: none; animation: scale-in 0.1s ease; }
+.context-menu.open { display: block; }
+.context-menu-item { display: block; width: 100%; padding: 8px 12px; background: transparent; border: none; color: var(--text-primary); cursor: pointer; font-family: inherit; font-size: 13px; text-align: left; border-radius: 4px; transition: background var(--transition-fast); }
+.context-menu-item:hover { background: var(--bg-message-hover); }
+.context-menu-item.danger { color: var(--danger); }
+.context-menu-item.danger:hover { background: var(--danger-glow); }
 
 /* ── Reduced Motion ──────────────────────────────────────────────── */
 

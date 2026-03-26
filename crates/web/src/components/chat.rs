@@ -2,6 +2,7 @@ use leptos::prelude::*;
 use willow_client::DisplayMessage;
 
 use super::MessageView;
+use crate::icons;
 
 /// Header bar showing the current channel name and connected peer count.
 #[component]
@@ -11,30 +12,29 @@ pub fn ChannelHeader(
     on_menu_click: impl Fn(()) + Send + Clone + 'static,
     on_members_click: impl Fn(()) + Send + Clone + 'static,
     #[prop(optional, into)] on_pinned_click: Option<Callback<()>>,
+    /// Called when the user clicks the search icon (opens command palette).
+    #[prop(optional, into)]
+    on_search_click: Option<Callback<()>>,
 ) -> impl IntoView {
     view! {
         <div class="channel-header">
             <button class="mobile-nav-toggle" on:click=move |_| on_menu_click(())>
-                "="
+                {icons::icon_menu()}
             </button>
-            <span>"# " {move || channel.get()}</span>
+            <span>{icons::icon_hash()} " " {move || channel.get()}</span>
             <span class="channel-header-right">
-                {on_pinned_click.map(|cb| view! {
-                    <button class="pinned-toggle" title="Pinned Messages" on:click=move |_| cb.run(())>
-                        "\u{1F4CC}"
+                {on_search_click.map(|cb| view! {
+                    <button class="search-toggle" title="Search (Ctrl+K)" on:click=move |_| cb.run(())>
+                        {icons::icon_search()}
                     </button>
                 })}
-                <span class="peer-count">
-                    {move || {
-                        let n = peer_count.get();
-                        if n == 1 { "1 peer".to_string() } else { format!("{n} peers") }
-                    }}
-                </span>
+                {on_pinned_click.map(|cb| view! {
+                    <button class="pinned-toggle" title="Pinned Messages" on:click=move |_| cb.run(())>
+                        {icons::icon_pin()}
+                    </button>
+                })}
                 <button class="mobile-members-toggle" on:click=move |_| on_members_click(())>
-                    {move || {
-                        let n = peer_count.get();
-                        format!("\u{1f465} {n}")
-                    }}
+                    {icons::icon_users()} " " {move || peer_count.get().to_string()}
                 </button>
             </span>
         </div>

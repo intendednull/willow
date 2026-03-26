@@ -6,12 +6,13 @@ use send_wrapper::SendWrapper;
 use willow_client::{ClientConfig, ClientEvent, ClientHandle, DisplayMessage, VoiceSignalPayload};
 
 use crate::components::{
-    AddServerPanel, ChannelHeader, ChatInput, FileShareButton, MemberList, MessageList,
-    PinnedPanel, ServerList, ServerSettingsPanel, SettingsPanel, Sidebar, WelcomeScreen,
+    AddServerPanel, ChannelHeader, ChatInput, CommandPalette, FileShareButton, MemberList,
+    MessageList, PinnedPanel, ServerList, SettingsPanel, Sidebar, WelcomeScreen,
 };
 use crate::event_processing::{extract_roles, process_event_batch, refresh_all_signals};
 use crate::handlers;
-use crate::state::{self, ChannelViewState};
+use crate::icons;
+use crate::state::{self, ChannelViewState, SettingsTab};
 use crate::voice::VoiceManager;
 
 // Notification sounds disabled for now.
@@ -97,6 +98,30 @@ pub fn App() -> impl IntoView {
             },
             std::time::Duration::from_millis(LOADING_TIMEOUT_MS as u64),
         );
+    }
+
+    // Register Ctrl+K / Cmd+K for command palette.
+    {
+        use wasm_bindgen::JsCast;
+        let write_for_palette = write;
+        let closure = wasm_bindgen::closure::Closure::<dyn Fn(web_sys::KeyboardEvent)>::new(
+            move |ev: web_sys::KeyboardEvent| {
+                if (ev.ctrl_key() || ev.meta_key()) && ev.key() == "k" {
+                    ev.prevent_default();
+                    write_for_palette
+                        .ui
+                        .set_show_palette
+                        .update(|v| *v = !*v);
+                }
+            },
+        );
+        if let Some(window) = web_sys::window() {
+            let _ = window.add_event_listener_with_callback(
+                "keydown",
+                closure.as_ref().unchecked_ref(),
+            );
+        }
+        closure.forget();
     }
 
     // Populate initial state from the client.
@@ -223,7 +248,6 @@ pub fn App() -> impl IntoView {
     let servers = app_state.server.servers;
     let show_sidebar = app_state.ui.show_sidebar;
     let show_add_server = app_state.ui.show_add_server;
-    let show_server_settings = app_state.ui.show_server_settings;
     let show_settings = app_state.ui.show_settings;
     let show_pinned = app_state.ui.show_pinned;
     let show_members = app_state.ui.show_members;
@@ -239,6 +263,7 @@ pub fn App() -> impl IntoView {
     let replying_to = app_state.chat.replying_to;
     let editing = app_state.chat.editing;
     let channel_views = app_state.chat.channel_views;
+    let show_palette = app_state.ui.show_palette;
 
     // Pre-clone handle for use inside the view closure.
     let handle_for_voice_join = handle.clone();
@@ -259,6 +284,8 @@ pub fn App() -> impl IntoView {
             } else {
                 let ch_click = on_channel_click.clone();
                 let srv_click = on_server_click.clone();
+                let ch_click_for_palette = on_channel_click.clone();
+                let srv_click_for_palette = on_server_click.clone();
                 let send = on_send.clone();
                 let edit_send = on_edit_send.clone();
                 let del_msg = on_delete_msg.clone();
@@ -280,9 +307,14 @@ pub fn App() -> impl IntoView {
                             on_add_server_click=move |_| {
                                 write.ui.set_show_add_server.update(|v| *v = !*v);
                                 write.ui.set_show_settings.set(false);
-                                write.ui.set_show_server_settings.set(false);
                                 write.ui.set_show_sidebar.set(false);
                             }
+                            on_open_settings=Callback::new(move |_| {
+                                write.ui.set_settings_tab.set(SettingsTab::Server);
+                                write.ui.set_show_settings.set(true);
+                                write.ui.set_show_add_server.set(false);
+                                write.ui.set_show_sidebar.set(false);
+                            })
                         />
                         // Overlay to close sidebar on mobile tap
                         <div
@@ -299,13 +331,15 @@ pub fn App() -> impl IntoView {
                             server_name=app_state.server.active_server_name
                             on_channel_click=ch_click
                             on_settings_click=move |_| {
-                                write.ui.set_show_settings.update(|v| *v = !*v);
-                                write.ui.set_show_server_settings.set(false);
+                                write.ui.set_settings_tab.set(SettingsTab::Profile);
+                                write.ui.set_show_settings.set(true);
+                                write.ui.set_show_add_server.set(false);
                                 write.ui.set_show_sidebar.set(false);
                             }
                             on_server_settings_click=move |_| {
-                                write.ui.set_show_server_settings.update(|v| *v = !*v);
-                                write.ui.set_show_settings.set(false);
+                                write.ui.set_settings_tab.set(SettingsTab::Server);
+                                write.ui.set_show_settings.set(true);
+                                write.ui.set_show_add_server.set(false);
                                 write.ui.set_show_sidebar.set(false);
                             }
                             on_voice_join={
@@ -376,7 +410,7 @@ pub fn App() -> impl IntoView {
                                         <div class="settings-panel">
                                             <div class="server-settings-header">
                                                 <button class="btn btn-sm" on:click=move |_| write.ui.set_show_add_server.set(false)>
-                                                    "\u{2190} Back"
+                                                    {icons::icon_arrow_left()} " Back"
                                                 </button>
                                                 <h2>"Add a Server"</h2>
                                             </div>
@@ -388,12 +422,10 @@ pub fn App() -> impl IntoView {
                                             />
                                         </div>
                                     }.into_any()
-                                } else if show_server_settings.get() {
-                                    view! { <ServerSettingsPanel peer_id=peer_id roles=Signal::from(roles) on_back=move |_| write.ui.set_show_server_settings.set(false) /> }.into_any()
                                 } else if show_settings.get() {
-                                    view! { <SettingsPanel peer_id=peer_id on_server_settings=move |_| {
+                                    let tab = app_state.ui.settings_tab.get_untracked();
+                                    view! { <SettingsPanel peer_id=peer_id roles=Signal::from(roles) default_tab=tab on_close=move |_| {
                                         write.ui.set_show_settings.set(false);
-                                        write.ui.set_show_server_settings.set(true);
                                     } /> }.into_any()
                                 } else {
                                     let send2 = send.clone();
@@ -420,6 +452,7 @@ pub fn App() -> impl IntoView {
                                                 on_menu_click=move |_| write.ui.set_show_sidebar.update(|v| *v = !*v)
                                                 on_members_click=move |_| write.ui.set_show_members.update(|v| *v = !*v)
                                                 on_pinned_click=Callback::new(move |_| write.ui.set_show_pinned.update(|v| *v = !*v))
+                                                on_search_click=Callback::new(move |_| write.ui.set_show_palette.set(true))
                                             />
                                             {move || {
                                                 if show_pinned.get() {
@@ -507,6 +540,31 @@ pub fn App() -> impl IntoView {
                                 peer_id=peer_id
                             />
                         </div>
+                        {move || {
+                            if show_palette.get() {
+                                let ch_click_palette = ch_click_for_palette.clone();
+                                let srv_click_palette = srv_click_for_palette.clone();
+                                Some(view! {
+                                    <CommandPalette
+                                        on_close=Callback::new(move |_| write.ui.set_show_palette.set(false))
+                                        on_switch_channel=Callback::new(move |name: String| {
+                                            ch_click_palette(name);
+                                            write.ui.set_show_palette.set(false);
+                                        })
+                                        on_switch_server=Callback::new(move |id: String| {
+                                            srv_click_palette(id);
+                                            write.ui.set_show_palette.set(false);
+                                        })
+                                        on_open_members=Callback::new(move |_| {
+                                            write.ui.set_show_members.set(true);
+                                            write.ui.set_show_palette.set(false);
+                                        })
+                                    />
+                                })
+                            } else {
+                                None
+                            }
+                        }}
                     </div>
                 }.into_any()
             }

@@ -5,6 +5,8 @@
 
 use leptos::prelude::*;
 
+use crate::icons;
+
 /// Voice control bar shown when connected to a voice channel.
 ///
 /// Displays the current voice channel name, mute/deafen toggles, and a
@@ -27,7 +29,7 @@ pub fn VoiceControls(
     view! {
         <div class="voice-controls">
             <div class="voice-status">
-                <span class="voice-status-icon">{"\u{1F50A}"}</span>
+                <span class="voice-status-icon">{icons::icon_volume_2()}</span>
                 <span class="voice-channel-name">{move || channel_name.get()}</span>
             </div>
             <div class="voice-buttons">
@@ -39,7 +41,7 @@ pub fn VoiceControls(
                         move |_| on_mute(())
                     }
                 >
-                    {move || if muted.get() { "\u{1F507}" } else { "\u{1F3A4}" }}
+                    {move || if muted.get() { icons::icon_mic_off().into_any() } else { icons::icon_mic().into_any() }}
                 </button>
                 <button
                     class=move || if deafened.get() { "voice-btn deafened" } else { "voice-btn" }
@@ -49,7 +51,7 @@ pub fn VoiceControls(
                         move |_| on_deafen(())
                     }
                 >
-                    {move || if deafened.get() { "\u{1F515}" } else { "\u{1F514}" }}
+                    {move || if deafened.get() { icons::icon_headphones_off().into_any() } else { icons::icon_headphones().into_any() }}
                 </button>
                 <button
                     class="voice-btn disconnect"
@@ -59,7 +61,7 @@ pub fn VoiceControls(
                         move |_| on_disconnect(())
                     }
                 >
-                    {"\u{1F4F5}"}
+                    {icons::icon_phone_off()}
                 </button>
             </div>
         </div>

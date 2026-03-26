@@ -67,22 +67,6 @@ test.describe('Multi-peer mobile', () => {
     }
   });
 
-  test.fixme('member list accessible via toggle — shows peers', async ({ browser }) => {
-    // Member count assertion can be flaky due to P2P discovery timing.
-    const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Mobile Members', 'Alice', 'Bob');
-    try {
-      // Open member list on peer 1.
-      await openMemberList(page1);
-      // Member list should include at least our 2 peers (may also include relay).
-      const memberCount = await page1.locator('.member-item').count();
-      expect(memberCount).toBeGreaterThanOrEqual(2);
-      await closeMemberList(page1);
-    } finally {
-      await ctx1.close();
-      await ctx2.close();
-    }
-  });
-
   test.fixme('channel switch during active sync — messages in new channel', async ({ browser }) => {
     // Channel sync + message sync can exceed test timeframes on mobile.
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Mobile Switch', 'Alice', 'Bob');

@@ -3,6 +3,7 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
 use crate::app::WebClientHandle;
+use crate::icons;
 
 /// Maximum inline file size (256 KB).
 const MAX_FILE_SIZE: u64 = 256 * 1024;
@@ -76,7 +77,7 @@ pub fn FileShareButton(channel: ReadSignal<String>) -> impl IntoView {
 
     view! {
         <button class="file-share-btn" title="Attach file" on:click=on_click>
-            "\u{1F4CE}"
+            {icons::icon_paperclip()}
         </button>
         <input
             node_ref=input_ref
@@ -142,13 +143,13 @@ pub fn FileCard(filename: String, data: Vec<u8>) -> impl IntoView {
 
     view! {
         <div class="file-card">
-            <span class="file-icon">"\u{1F4C4}"</span>
+            <span class="file-icon">{icons::icon_file()}</span>
             <div class="file-info">
                 <span class="file-name">{fname_display}</span>
                 <span class="file-size">{size_str}</span>
             </div>
             <button class="download-btn btn btn-sm btn-primary" on:click=on_download>
-                "\u{2B07}"
+                {icons::icon_download()}
             </button>
         </div>
     }

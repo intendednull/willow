@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 
 use crate::app::WebClientHandle;
+use crate::icons;
 use crate::util::copy_to_clipboard;
 
 /// Profile settings panel -- display name, relay address, peer ID.
@@ -81,7 +82,7 @@ pub fn SettingsPanel(
             // Link to server settings.
             <div class="settings-section" style="margin-top: 24px;">
                 <button class="btn btn-secondary server-settings-link" on:click=move |_| on_server_settings(())>
-                    "Server Settings \u{2192}"
+                    "Server Settings " {icons::icon_arrow_right()}
                 </button>
             </div>
         </div>
