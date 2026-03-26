@@ -2118,24 +2118,9 @@ select:focus-visible {
         word-break: break-word;
     }
 
-    /* On mobile, hide the trigger button — long-press shows dropdown directly */
-    .action-trigger {
-        display: none;
-    }
-
-    /* But show the actions container when dropdown is open */
-    .message-actions:has(.message-dropdown) {
-        display: flex;
-    }
-
-    .action-trigger {
-        padding: 6px 10px;
-        font-size: 18px;
-        min-width: 36px;
-        min-height: 36px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
+    /* On mobile, hide the entire action bar — long-press opens the action sheet instead. */
+    .message-actions {
+        display: none !important;
     }
 
     /* Dropdown: prevent overflow on mobile */
