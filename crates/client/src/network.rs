@@ -469,7 +469,10 @@ async fn run_network_wasm(
         }
 
         // Connection lost — notify UI and wait before retrying.
-        tracing::warn!(backoff_ms, "network connection lost, reconnecting in {backoff_ms}ms");
+        tracing::warn!(
+            backoff_ms,
+            "network connection lost, reconnecting in {backoff_ms}ms"
+        );
         let _ = event_tx.unbounded_send(NetworkEvent::Listening("reconnecting".to_string()));
         gloo_timers::future::TimeoutFuture::new(backoff_ms).await;
         backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);

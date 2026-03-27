@@ -250,10 +250,7 @@ pub fn App() -> impl IntoView {
             .voice
             .set_speaking_peers
             .set(std::collections::HashSet::new());
-        write
-            .voice
-            .set_voice_participants_map
-            .update(|m| m.clear());
+        write.voice.set_voice_participants_map.update(|m| m.clear());
         write.ui.set_show_call_page.set(false);
         write
             .ui

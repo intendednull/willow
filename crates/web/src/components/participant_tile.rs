@@ -66,7 +66,8 @@ pub fn ParticipantTile(
         if let Some(el) = video_ref.get() {
             if let Some(ref stream) = stream_for_effect {
                 use wasm_bindgen::JsCast;
-                let media_el: web_sys::HtmlMediaElement = el.unchecked_ref::<web_sys::HtmlMediaElement>().clone();
+                let media_el: web_sys::HtmlMediaElement =
+                    el.unchecked_ref::<web_sys::HtmlMediaElement>().clone();
                 // Explicit deref through SendWrapper to get MediaStream
                 let media_stream: web_sys::MediaStream = (**stream).clone();
                 // Defer to next microtask to ensure DOM is ready
