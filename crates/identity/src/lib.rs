@@ -77,6 +77,12 @@ impl PeerId {
     pub fn inner(&self) -> &libp2p::PeerId {
         &self.0
     }
+
+    /// Parse a base58-encoded PeerId string.
+    pub fn parse(s: &str) -> Option<Self> {
+        let inner: libp2p::PeerId = s.parse().ok()?;
+        Some(Self(Arc::new(inner)))
+    }
 }
 
 /// Extract Ed25519 public key bytes from a PeerId string.

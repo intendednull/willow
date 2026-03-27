@@ -645,11 +645,16 @@ mod wasm {
 
                         SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                             info!(%peer_id, "connection established");
+                            // WASM has no mDNS — explicitly add every
+                            // connected peer to the gossipsub mesh so
+                            // messages are reliably forwarded.
+                            swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                             let _ = events.send(NetworkEvent::PeerConnected(peer_id)).await;
                         }
 
                         SwarmEvent::ConnectionClosed { peer_id, .. } => {
                             debug!(%peer_id, "connection closed");
+                            swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
                             let _ = events.send(NetworkEvent::PeerDisconnected(peer_id)).await;
                         }
 

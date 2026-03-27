@@ -13,6 +13,7 @@ use libp2p::{
     gossipsub, identify, kad, noise, relay, swarm::SwarmEvent, tcp, yamux, PeerId, SwarmBuilder,
 };
 use tracing::{debug, info, warn};
+use willow_state::EventStore as _;
 
 /// Wire message format — mirrors the client's `WireMessage` but defined
 /// locally to avoid pulling in the full client dependency.
@@ -157,11 +158,21 @@ impl Relay {
                 peer_id, endpoint, ..
             } => {
                 info!(%peer_id, ?endpoint, "peer connected");
+                // Explicitly add to gossipsub mesh so message delivery is
+                // reliable, especially for WASM peers over WebSocket.
+                self.swarm
+                    .behaviour_mut()
+                    .gossipsub
+                    .add_explicit_peer(&peer_id);
                 false
             }
 
             SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
                 debug!(%peer_id, ?cause, "peer disconnected");
+                self.swarm
+                    .behaviour_mut()
+                    .gossipsub
+                    .remove_explicit_peer(&peer_id);
                 false
             }
 
@@ -258,11 +269,14 @@ impl Relay {
                         );
                         stored = true;
                     }
-                    WireMessage::SyncRequest { ref topic, .. } => {
+                    WireMessage::SyncRequest {
+                        ref state_hash,
+                        ref topic,
+                    } => {
                         let events = if let Some(ref t) = topic {
-                            self.event_store.events_for_topic_since(t, 0)
+                            self.event_store.events_for_topic_since_hash(t, state_hash)
                         } else {
-                            self.event_store.all_events_since(0)
+                            self.event_store.events_since(state_hash)
                         };
 
                         if !events.is_empty() {

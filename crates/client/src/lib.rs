@@ -1585,8 +1585,13 @@ impl ClientHandle {
         } else {
             // Create a new server context for this server.
             // Use the ORIGINAL server ID from the invite so topics match.
+            // Use the ACTUAL owner from the invite, not the joiner's peer ID.
+            // This is persisted and used on reload to initialize event_state —
+            // if the owner is wrong, the actual owner's events get rejected.
+            let owner_peer_id = willow_identity::PeerId::parse(&accepted.owner)
+                .unwrap_or_else(|| shared.identity.peer_id());
             let mut server =
-                willow_channel::Server::new(&accepted.server_name, shared.identity.peer_id());
+                willow_channel::Server::new(&accepted.server_name, owner_peer_id);
             server.id = willow_channel::ServerId(
                 uuid::Uuid::parse_str(&server_id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
             );
