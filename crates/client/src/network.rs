@@ -342,110 +342,141 @@ async fn run_network_wasm(
     use futures::StreamExt;
     use willow_network::{NetworkEvent as NetEvt, NetworkNode};
 
-    let (node, mut events) = NetworkNode::start(identity, config).await?;
-    let mut file_mgr = crate::files::FileManager::new();
-    let local_peer_id = node.peer_id().to_string();
+    let mut backoff_ms: u32 = 1_000;
+    const MAX_BACKOFF_MS: u32 = 30_000;
 
     loop {
-        futures::select! {
-            event = events.next() => {
-                let Some(event) = event else { break };
-                match event {
-                    NetEvt::Message { topic, data, source } => {
-                        // Try parsing as a profile broadcast.
-                        if let Ok((profile, willow_transport::MessageType::Identity)) =
-                            willow_transport::unpack_envelope::<willow_identity::UserProfile>(&data)
-                        {
-                            let _ = event_tx.unbounded_send(NetworkEvent::ProfileReceived {
-                                peer_id: profile.peer_id.to_string(),
-                                display_name: profile.display_name,
-                            });
-                        }
-                        // Try wire format.
-                        else if let Some((wire_msg, signer)) =
-                            crate::ops::unpack_wire(&data)
-                        {
-                            let from = signer.to_string();
-                            match wire_msg {
-                                crate::ops::WireMessage::Event(event) => {
-                                    let _ = event_tx.unbounded_send(NetworkEvent::EventReceived {
-                                        event,
-                                        from,
-                                    });
-                                }
-                                crate::ops::WireMessage::SyncRequest { state_hash, topic } => {
-                                    let _ = event_tx.unbounded_send(NetworkEvent::SyncRequested {
-                                        state_hash,
-                                        from,
-                                        topic,
-                                    });
-                                }
-                                crate::ops::WireMessage::SyncBatch { events } => {
-                                    let _ = event_tx.unbounded_send(NetworkEvent::SyncBatchReceived {
-                                        events,
-                                        from,
-                                    });
-                                }
-                                crate::ops::WireMessage::TypingIndicator { channel } => {
-                                    let _ = event_tx.unbounded_send(NetworkEvent::TypingReceived {
-                                        peer_id: from,
-                                        channel,
-                                    });
-                                }
-                                crate::ops::WireMessage::VoiceJoin { channel_id, peer_id } => {
-                                    let _ = event_tx.unbounded_send(NetworkEvent::VoiceJoinReceived {
-                                        channel_id,
-                                        peer_id,
-                                    });
-                                }
-                                crate::ops::WireMessage::VoiceLeave { channel_id, peer_id } => {
-                                    let _ = event_tx.unbounded_send(NetworkEvent::VoiceLeaveReceived {
-                                        channel_id,
-                                        peer_id,
-                                    });
-                                }
-                                crate::ops::WireMessage::VoiceSignal { channel_id, target_peer, signal } => {
-                                    if target_peer == local_peer_id {
-                                        let _ = event_tx.unbounded_send(NetworkEvent::VoiceSignalReceived {
-                                            channel_id,
-                                            from_peer: from,
-                                            signal,
+        tracing::info!("connecting to network...");
+
+        let node_result = NetworkNode::start(identity.clone(), config.clone()).await;
+        let (node, mut events) = match node_result {
+            Ok(pair) => {
+                // Successful connection — reset backoff.
+                backoff_ms = 1_000;
+                pair
+            }
+            Err(e) => {
+                tracing::warn!("failed to start network node: {e}");
+                gloo_timers::future::TimeoutFuture::new(backoff_ms).await;
+                backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
+                continue;
+            }
+        };
+
+        let mut file_mgr = crate::files::FileManager::new();
+        let local_peer_id = node.peer_id().to_string();
+
+        // Run the event loop until the connection drops.
+        loop {
+            futures::select! {
+                event = events.next() => {
+                    let Some(event) = event else { break };
+                    match event {
+                        NetEvt::Message { topic, data, source } => {
+                            // Try parsing as a profile broadcast.
+                            if let Ok((profile, willow_transport::MessageType::Identity)) =
+                                willow_transport::unpack_envelope::<willow_identity::UserProfile>(&data)
+                            {
+                                let _ = event_tx.unbounded_send(NetworkEvent::ProfileReceived {
+                                    peer_id: profile.peer_id.to_string(),
+                                    display_name: profile.display_name,
+                                });
+                            }
+                            // Try wire format.
+                            else if let Some((wire_msg, signer)) =
+                                crate::ops::unpack_wire(&data)
+                            {
+                                let from = signer.to_string();
+                                match wire_msg {
+                                    crate::ops::WireMessage::Event(event) => {
+                                        let _ = event_tx.unbounded_send(NetworkEvent::EventReceived {
+                                            event,
+                                            from,
                                         });
                                     }
+                                    crate::ops::WireMessage::SyncRequest { state_hash, topic } => {
+                                        let _ = event_tx.unbounded_send(NetworkEvent::SyncRequested {
+                                            state_hash,
+                                            from,
+                                            topic,
+                                        });
+                                    }
+                                    crate::ops::WireMessage::SyncBatch { events } => {
+                                        let _ = event_tx.unbounded_send(NetworkEvent::SyncBatchReceived {
+                                            events,
+                                            from,
+                                        });
+                                    }
+                                    crate::ops::WireMessage::TypingIndicator { channel } => {
+                                        let _ = event_tx.unbounded_send(NetworkEvent::TypingReceived {
+                                            peer_id: from,
+                                            channel,
+                                        });
+                                    }
+                                    crate::ops::WireMessage::VoiceJoin { channel_id, peer_id } => {
+                                        let _ = event_tx.unbounded_send(NetworkEvent::VoiceJoinReceived {
+                                            channel_id,
+                                            peer_id,
+                                        });
+                                    }
+                                    crate::ops::WireMessage::VoiceLeave { channel_id, peer_id } => {
+                                        let _ = event_tx.unbounded_send(NetworkEvent::VoiceLeaveReceived {
+                                            channel_id,
+                                            peer_id,
+                                        });
+                                    }
+                                    crate::ops::WireMessage::VoiceSignal { channel_id, target_peer, signal } => {
+                                        if target_peer == local_peer_id {
+                                            let _ = event_tx.unbounded_send(NetworkEvent::VoiceSignalReceived {
+                                                channel_id,
+                                                from_peer: from,
+                                                signal,
+                                            });
+                                        }
+                                    }
                                 }
+                            } else {
+                                let _ = event_tx.unbounded_send(NetworkEvent::MessageReceived {
+                                    topic,
+                                    data,
+                                    source: source.map(|p| p.to_string()),
+                                });
                             }
-                        } else {
-                            let _ = event_tx.unbounded_send(NetworkEvent::MessageReceived {
-                                topic,
-                                data,
-                                source: source.map(|p| p.to_string()),
-                            });
                         }
+                        NetEvt::PeerConnected(peer) => {
+                            // Reset backoff on successful peer connection.
+                            backoff_ms = 1_000;
+                            let _ = event_tx.unbounded_send(NetworkEvent::PeerConnected(peer.to_string()));
+                        }
+                        NetEvt::PeerDisconnected(peer) => {
+                            let _ = event_tx.unbounded_send(NetworkEvent::PeerDisconnected(peer.to_string()));
+                        }
+                        NetEvt::Listening(addr) => {
+                            let _ = event_tx.unbounded_send(NetworkEvent::Listening(addr.to_string()));
+                        }
+                        _ => {}
                     }
-                    NetEvt::PeerConnected(peer) => {
-                        let _ = event_tx.unbounded_send(NetworkEvent::PeerConnected(peer.to_string()));
-                    }
-                    NetEvt::PeerDisconnected(peer) => {
-                        let _ = event_tx.unbounded_send(NetworkEvent::PeerDisconnected(peer.to_string()));
-                    }
-                    NetEvt::Listening(addr) => {
-                        let _ = event_tx.unbounded_send(NetworkEvent::Listening(addr.to_string()));
-                    }
-                    _ => {}
                 }
-            }
 
-            cmd = cmd_rx.next() => {
-                if let Some(cmd) = cmd {
-                    handle_network_command(&cmd, &node, &mut file_mgr)?;
+                cmd = cmd_rx.next() => {
+                    if let Some(cmd) = cmd {
+                        let _ = handle_network_command(&cmd, &node, &mut file_mgr);
+                    }
                 }
-            }
 
-            complete => break,
+                complete => break,
+            }
         }
-    }
 
-    Ok(())
+        // Connection lost — notify UI and wait before retrying.
+        tracing::warn!(
+            backoff_ms,
+            "network connection lost, reconnecting in {backoff_ms}ms"
+        );
+        let _ = event_tx.unbounded_send(NetworkEvent::Listening("reconnecting".to_string()));
+        gloo_timers::future::TimeoutFuture::new(backoff_ms).await;
+        backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
+    }
 }
 
 // ───── Shared command handler ───────────────────────────────────────────────

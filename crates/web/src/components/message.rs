@@ -323,7 +323,11 @@ pub fn MessageView(
         let elapsed = js_sys::Date::now() - st_time_for_end.get();
         let distance = st_last_for_end.get() - st_start_for_end.get();
         // Dismiss if dragged past 80px OR fast swipe (>200px/s downward).
-        let velocity = if elapsed > 0.0 { distance / elapsed * 1000.0 } else { 0.0 };
+        let velocity = if elapsed > 0.0 {
+            distance / elapsed * 1000.0
+        } else {
+            0.0
+        };
         if drag > 80.0 || velocity > 200.0 {
             set_show_sheet.set(false);
         }

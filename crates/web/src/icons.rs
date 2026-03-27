@@ -162,9 +162,7 @@ pub fn icon_download() -> impl IntoView {
 /// Left arrow icon.
 pub fn icon_arrow_left() -> impl IntoView {
     icon(
-        &format!(
-            r#"<svg {SVG_ATTRS}><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>"#
-        ),
+        &format!(r#"<svg {SVG_ATTRS}><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>"#),
         "icon-arrow-left",
     )
 }
@@ -172,9 +170,7 @@ pub fn icon_arrow_left() -> impl IntoView {
 /// Right arrow icon.
 pub fn icon_arrow_right() -> impl IntoView {
     icon(
-        &format!(
-            r#"<svg {SVG_ATTRS}><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>"#
-        ),
+        &format!(r#"<svg {SVG_ATTRS}><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>"#),
         "icon-arrow-right",
     )
 }
@@ -182,9 +178,7 @@ pub fn icon_arrow_right() -> impl IntoView {
 /// X / close icon.
 pub fn icon_x() -> impl IntoView {
     icon(
-        &format!(
-            r#"<svg {SVG_ATTRS}><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>"#
-        ),
+        &format!(r#"<svg {SVG_ATTRS}><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>"#),
         "icon-x",
     )
 }
@@ -192,9 +186,7 @@ pub fn icon_x() -> impl IntoView {
 /// Plus icon (for add actions).
 pub fn icon_plus() -> impl IntoView {
     icon(
-        &format!(
-            r#"<svg {SVG_ATTRS}><path d="M5 12h14"/><path d="M12 5v14"/></svg>"#
-        ),
+        &format!(r#"<svg {SVG_ATTRS}><path d="M5 12h14"/><path d="M12 5v14"/></svg>"#),
         "icon-plus",
     )
 }
@@ -222,9 +214,7 @@ pub fn icon_sun() -> impl IntoView {
 /// Moon / crescent icon (dark theme indicator).
 pub fn icon_moon() -> impl IntoView {
     icon(
-        &format!(
-            r#"<svg {SVG_ATTRS}><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>"#
-        ),
+        &format!(r#"<svg {SVG_ATTRS}><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>"#),
         "icon-moon",
     )
 }
@@ -296,5 +286,55 @@ pub fn icon_copy() -> impl IntoView {
             r#"<svg {SVG_ATTRS}><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>"#
         ),
         "icon-copy",
+    )
+}
+
+/// Monitor / screen icon (rectangle with stand).
+pub fn icon_monitor() -> impl IntoView {
+    icon(
+        &format!(
+            r#"<svg {SVG_ATTRS}><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>"#
+        ),
+        "icon-monitor",
+    )
+}
+
+/// Video camera icon.
+pub fn icon_video() -> impl IntoView {
+    icon(
+        &format!(
+            r#"<svg {SVG_ATTRS}><path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5"/><rect width="14" height="12" x="2" y="6" rx="2"/></svg>"#
+        ),
+        "icon-video",
+    )
+}
+
+/// Video camera off icon (with diagonal slash).
+pub fn icon_video_off() -> impl IntoView {
+    icon(
+        &format!(
+            r#"<svg {SVG_ATTRS}><path d="M10.66 6H14a2 2 0 0 1 2 2v2.5l5.248-3.062A.5.5 0 0 1 22 7.87v8.196"/><path d="M16 16a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2"/><line x1="2" x2="22" y1="2" y2="22"/></svg>"#
+        ),
+        "icon-video-off",
+    )
+}
+
+/// 2x2 grid icon.
+pub fn icon_grid() -> impl IntoView {
+    icon(
+        &format!(
+            r#"<svg {SVG_ATTRS}><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>"#
+        ),
+        "icon-grid",
+    )
+}
+
+/// Maximize / expand icon (corner arrows).
+pub fn icon_maximize() -> impl IntoView {
+    icon(
+        &format!(
+            r#"<svg {SVG_ATTRS}><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/></svg>"#
+        ),
+        "icon-maximize",
     )
 }

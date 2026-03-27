@@ -25,6 +25,10 @@ web-sys = { version = "0.3", features = [
     "RtcRtpSender", "MediaStream", "MediaStreamTrack",
     "MediaStreamConstraints", "MediaDevices", "HtmlMediaElement",
     "ScrollIntoViewOptions", "ScrollBehavior", "ScrollLogicalPosition",
+    "DisplayMediaStreamConstraints",
+    "AudioContext", "BaseAudioContext", "AudioNode",
+    "AnalyserNode", "MediaStreamAudioSourceNode",
+    "RtcSignalingState", "RtcRtpTransceiver",
 ] }
 js-sys = "0.3"
 wasm-bindgen-futures = "0.4"

@@ -101,6 +101,11 @@ pub fn process_event_batch(
                         v.retain(|p| p != &pid);
                     }
                 });
+                // Remove remote video stream for this peer.
+                let pid_for_stream = peer_id.clone();
+                write.voice.set_remote_video_streams.update(|m| {
+                    m.remove(&pid_for_stream);
+                });
                 voice_manager.borrow_mut().close_connection(peer_id);
             }
             ClientEvent::VoiceSignal {
@@ -210,7 +215,6 @@ pub fn refresh_all_signals(handle: &WebClientHandle, write: &AppWriteSignals) {
     write.chat.set_current_channel.set(ch.clone());
     write.chat.set_messages.set(handle.messages(&ch));
     write.ui.set_show_settings.set(false);
-    write.ui.set_show_server_settings.set(false);
     write.ui.set_show_add_server.set(false);
 }
 
