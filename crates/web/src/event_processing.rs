@@ -53,14 +53,28 @@ pub fn process_event_batch(
             }
             ClientEvent::PeerDisconnected(_) => {
                 needs_peer_refresh = true;
-            }
-            ClientEvent::Listening(_) => {
-                let status = state.network.connection_status.get_untracked();
-                if status == "connecting" {
+                // If no peers remain, show reconnecting status.
+                if handle.peers().is_empty() {
                     write
                         .network
                         .set_connection_status
-                        .set("connecting".to_string());
+                        .set("reconnecting".to_string());
+                }
+            }
+            ClientEvent::Listening(ref addr) => {
+                if addr == "reconnecting" {
+                    write
+                        .network
+                        .set_connection_status
+                        .set("reconnecting".to_string());
+                } else {
+                    let status = state.network.connection_status.get_untracked();
+                    if status == "connecting" {
+                        write
+                            .network
+                            .set_connection_status
+                            .set("connecting".to_string());
+                    }
                 }
             }
             ClientEvent::ChannelCreated(_) | ClientEvent::ChannelDeleted(_) => {

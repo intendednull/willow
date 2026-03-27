@@ -33,7 +33,7 @@ impl Default for NetworkConfig {
         Self {
             listen_addr: "/ip4/0.0.0.0/tcp/0".parse().expect("valid multiaddr"),
             bootstrap_peers: Vec::new(),
-            idle_timeout: Duration::from_secs(120),
+            idle_timeout: Duration::from_secs(600),
             gossipsub_heartbeat: Duration::from_secs(1),
         }
     }
@@ -129,7 +129,7 @@ mod tests {
         let config = NetworkConfig::default();
         assert_eq!(config.listen_addr.to_string(), "/ip4/0.0.0.0/tcp/0");
         assert!(config.bootstrap_peers.is_empty());
-        assert_eq!(config.idle_timeout, Duration::from_secs(120));
+        assert_eq!(config.idle_timeout, Duration::from_secs(600));
         assert_eq!(config.gossipsub_heartbeat, Duration::from_secs(1));
     }
 
@@ -147,6 +147,6 @@ mod tests {
 
         assert_eq!(config.bootstrap_peers.len(), 2);
         // Other defaults preserved.
-        assert_eq!(config.idle_timeout, Duration::from_secs(120));
+        assert_eq!(config.idle_timeout, Duration::from_secs(600));
     }
 }

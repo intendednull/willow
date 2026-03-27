@@ -234,7 +234,7 @@ pub fn Sidebar(
                     let status = connection_status.get();
                     match status.as_str() {
                         "connected" => "status-dot connected",
-                        "connecting" => "status-dot connecting",
+                        "connecting" | "reconnecting" => "status-dot connecting",
                         _ => "status-dot disconnected",
                     }
                 }></span>
@@ -250,6 +250,7 @@ pub fn Sidebar(
                             }
                         }
                         "connecting" => "Connecting...".to_string(),
+                        "reconnecting" => "Reconnecting...".to_string(),
                         _ => "Disconnected".to_string(),
                     }
                 }}</span>
