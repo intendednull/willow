@@ -204,6 +204,82 @@ pub fn SettingsPanel(
                         }
                     }}
                 </div>
+                // ── Invite Links ──────────────────────────────────────
+                {
+                    let (link_copied, set_link_copied) = signal(false);
+                    let (link_list, set_link_list) = signal(handle.join_links());
+
+                    let handle_gen = handle.clone();
+                    let set_status = set_status_msg;
+                    let on_create_link = move |_| {
+                        match handle_gen.create_join_link(5, None) {
+                            Ok(token) => {
+                                let url = format!("https://willow.intendednull.com/#join={token}");
+                                copy_to_clipboard(&url);
+                                set_link_copied.set(true);
+                                let set_copied = set_link_copied;
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    gloo_timers::future::TimeoutFuture::new(1500).await;
+                                    set_copied.set(false);
+                                });
+                                set_link_list.set(handle_gen.join_links());
+                            }
+                            Err(e) => set_status.set(format!("Error: {e}")),
+                        }
+                    };
+
+                    let handle_links = handle.clone();
+                    view! {
+                        <div class="settings-section">
+                            <h3>"Invite Links"</h3>
+                            <p class="settings-hint">"Share a link to let people join while you're online."</p>
+                            <div style="position: relative; display: inline-block;">
+                                <button class="btn btn-accent-green" on:click=on_create_link>
+                                    "Create Invite Link"
+                                </button>
+                                {move || link_copied.get().then(|| view! {
+                                    <span class="copied-tooltip">"Copied!"</span>
+                                })}
+                            </div>
+
+                            <div class="invite-link-list">
+                                <For
+                                    each=move || link_list.get()
+                                    key=|link| link.link_id.clone()
+                                    let:link
+                                >
+                                    {
+                                        let h = handle_links.clone();
+                                        let lid = link.link_id.clone();
+                                        let valid = link.is_valid();
+                                        let set_ll = set_link_list;
+                                        view! {
+                                            <div class={if valid { "invite-link-item" } else { "invite-link-item expired" }}>
+                                                <span class="invite-link-uses">
+                                                    {format!("{}/{}", link.used, link.max_uses)}
+                                                </span>
+                                                <span class="invite-link-age">
+                                                    {if valid { "active" } else { "expired" }}
+                                                </span>
+                                                <button class="btn-icon btn-icon-danger" on:click={
+                                                    let h2 = h.clone();
+                                                    let lid2 = lid.clone();
+                                                    move |_| {
+                                                        h2.delete_join_link(&lid2);
+                                                        set_ll.set(h2.join_links());
+                                                    }
+                                                }>
+                                                    {icons::icon_trash()}
+                                                </button>
+                                            </div>
+                                        }
+                                    }
+                                </For>
+                            </div>
+                        </div>
+                    }
+                }
+
                 <div class="settings-section">
                     <h3>"Your Peer ID"</h3>
                     <p class="settings-hint">"Share this with others so they can invite you to their servers."</p>
