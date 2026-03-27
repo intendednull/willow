@@ -88,6 +88,7 @@ pub struct SharedState {
     pub voice_deafened: bool,
     pub state_verification_results: HashMap<String, willow_state::StateHash>,
     pub last_typing_sent_ms: u64,
+    pub join_links: Vec<ops::JoinLink>,
 }
 
 /// Cloneable command interface for UI components.
@@ -464,6 +465,7 @@ impl ClientHandle {
             active_voice_channel: None,
             voice_muted: false,
             voice_deafened: false,
+            join_links: Vec::new(),
         };
 
         let shared = Rc::new(RefCell::new(shared_state));
@@ -1679,6 +1681,115 @@ impl ClientHandle {
         Ok(())
     }
 
+    /// Publish raw data on a gossipsub topic.
+    pub fn publish(&self, topic: &str, data: Vec<u8>) {
+        let _ = self
+            .cmd_tx
+            .unbounded_send(network::NetworkCommand::Publish {
+                topic: topic.to_string(),
+                data,
+            });
+    }
+
+    /// Send a JoinRequest for a link ID on the server ops topic.
+    pub fn send_join_request(&self, link_id: &str) {
+        let shared = self.shared.borrow();
+        let msg = ops::WireMessage::JoinRequest {
+            link_id: link_id.to_string(),
+            peer_id: shared.identity.peer_id().to_string(),
+        };
+        if let Some(data) = ops::pack_wire(&msg, &shared.identity) {
+            let _ = self
+                .cmd_tx
+                .unbounded_send(network::NetworkCommand::Publish {
+                    topic: ops::SERVER_OPS_TOPIC.to_string(),
+                    data,
+                });
+        }
+    }
+
+    /// Create a join link for the active server. Returns the encoded token string.
+    /// Requires `CreateInvite` permission (owner has this implicitly).
+    pub fn create_join_link(
+        &self,
+        max_uses: u32,
+        expires_at: Option<u64>,
+    ) -> anyhow::Result<String> {
+        let mut shared = self.shared.borrow_mut();
+        let server_id = shared
+            .state
+            .active_server
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("no active server"))?;
+
+        let peer_id = shared.identity.peer_id().to_string();
+        if !shared
+            .state
+            .event_state
+            .has_permission(&peer_id, &willow_state::Permission::CreateInvite)
+        {
+            return Err(anyhow::anyhow!("missing CreateInvite permission"));
+        }
+
+        let server_name = shared
+            .state
+            .active()
+            .map(|c| c.server.name.clone())
+            .unwrap_or_default();
+        let inviter_name = shared
+            .state
+            .profiles
+            .names
+            .get(&peer_id)
+            .cloned()
+            .unwrap_or_default();
+
+        let link = ops::JoinLink {
+            link_id: uuid::Uuid::new_v4().to_string(),
+            server_id: server_id.clone(),
+            max_uses,
+            used: 0,
+            active: true,
+            expires_at,
+            created_at: util::current_time_ms(),
+        };
+
+        let token = ops::JoinToken {
+            inviter_peer_id: peer_id,
+            server_id,
+            link_id: link.link_id.clone(),
+            server_name,
+            inviter_name,
+        };
+
+        shared.join_links.push(link);
+        if shared.config.persistence {
+            storage::save_join_links(
+                shared.state.active_server.as_deref().unwrap_or(""),
+                &shared.join_links,
+            );
+        }
+
+        Ok(token.encode())
+    }
+
+    /// Return all join links for the active server.
+    pub fn join_links(&self) -> Vec<ops::JoinLink> {
+        self.shared.borrow().join_links.clone()
+    }
+
+    /// Delete a join link by ID.
+    pub fn delete_join_link(&self, link_id: &str) {
+        let mut shared = self.shared.borrow_mut();
+        shared.join_links.retain(|l| l.link_id != link_id);
+        if shared.config.persistence {
+            storage::save_join_links(
+                shared.state.active_server.as_deref().unwrap_or(""),
+                &shared.join_links,
+            );
+        }
+    }
+
     /// Set the local display name and broadcast to peers.
     pub fn set_display_name(&self, name: &str) {
         let mut shared = self.shared.borrow_mut();
@@ -2577,6 +2688,68 @@ impl ClientEventLoop {
                         signal,
                     });
                 }
+                network::NetworkEvent::JoinLinkRequested { link_id, peer_id } => {
+                    let mut shared = self.shared.borrow_mut();
+                    let link = shared.join_links.iter_mut().find(|l| l.link_id == link_id);
+                    match link {
+                        Some(link) if link.is_valid() => {
+                            link.used += 1;
+                            tracing::info!(%link_id, used = link.used, max = link.max_uses, %peer_id, "processing join link request");
+                            if shared.config.persistence {
+                                storage::save_join_links(
+                                    shared.state.active_server.as_deref().unwrap_or(""),
+                                    &shared.join_links,
+                                );
+                            }
+                            let identity = shared.identity.clone();
+                            drop(shared);
+                            let handle = ClientHandle {
+                                shared: Rc::clone(&self.shared),
+                                cmd_tx: self.cmd_tx.clone(),
+                                deferred_channels: None,
+                            };
+                            match handle.generate_invite(&peer_id) {
+                                Ok(invite_data) => {
+                                    let msg = ops::WireMessage::JoinResponse {
+                                        target_peer: peer_id,
+                                        invite_data,
+                                    };
+                                    if let Some(data) = ops::pack_wire(&msg, &identity) {
+                                        let _ = self.cmd_tx.unbounded_send(
+                                            network::NetworkCommand::Publish {
+                                                topic: ops::SERVER_OPS_TOPIC.to_string(),
+                                                data,
+                                            },
+                                        );
+                                    }
+                                }
+                                Err(e) => tracing::warn!(%e, "failed to generate invite for join link"),
+                            }
+                        }
+                        Some(_) => {
+                            let shared = self.shared.borrow();
+                            let msg = ops::WireMessage::JoinDenied {
+                                target_peer: peer_id,
+                                reason: "link_expired".to_string(),
+                            };
+                            if let Some(data) = ops::pack_wire(&msg, &shared.identity) {
+                                let _ = self.cmd_tx.unbounded_send(
+                                    network::NetworkCommand::Publish {
+                                        topic: ops::SERVER_OPS_TOPIC.to_string(),
+                                        data,
+                                    },
+                                );
+                            }
+                        }
+                        None => {}
+                    }
+                }
+                network::NetworkEvent::JoinLinkResponseReceived { invite_data } => {
+                    events.push(ClientEvent::JoinLinkResponse { invite_data });
+                }
+                network::NetworkEvent::JoinLinkDenied { reason } => {
+                    events.push(ClientEvent::JoinLinkDenied { reason });
+                }
             }
         }
 
@@ -2754,6 +2927,7 @@ pub(crate) fn test_client() -> (
         active_voice_channel: None,
         voice_muted: false,
         voice_deafened: false,
+        join_links: Vec::new(),
     };
 
     let shared = Rc::new(RefCell::new(shared_state));
@@ -4081,5 +4255,36 @@ mod tests {
         assert_eq!(pinned.len(), 1);
         assert_eq!(pinned[0].id, msg_id);
         assert_eq!(pinned[0].body, "pin this");
+    }
+
+    #[test]
+    fn create_join_link_returns_token_with_server_info() {
+        let (client, _rx) = test_client();
+        let token_str = client.create_join_link(5, None).unwrap();
+        let token = crate::ops::JoinToken::decode(&token_str).unwrap();
+        assert_eq!(token.inviter_peer_id, client.peer_id());
+        assert!(!token.link_id.is_empty());
+        assert!(!token.server_name.is_empty());
+    }
+
+    #[test]
+    fn join_links_returns_created_links() {
+        let (client, _rx) = test_client();
+        assert!(client.join_links().is_empty());
+        client.create_join_link(3, None).unwrap();
+        let links = client.join_links();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].max_uses, 3);
+        assert_eq!(links[0].used, 0);
+        assert!(links[0].active);
+    }
+
+    #[test]
+    fn delete_join_link_removes_it() {
+        let (client, _rx) = test_client();
+        client.create_join_link(5, None).unwrap();
+        let link_id = client.join_links()[0].link_id.clone();
+        client.delete_join_link(&link_id);
+        assert!(client.join_links().is_empty());
     }
 }

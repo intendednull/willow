@@ -89,4 +89,12 @@ pub enum ClientEvent {
         from_peer: String,
         signal: crate::ops::VoiceSignalPayload,
     },
+    /// A join-via-link response was received — auto-join can proceed.
+    JoinLinkResponse {
+        invite_data: String,
+    },
+    /// A join-via-link request was denied.
+    JoinLinkDenied {
+        reason: String,
+    },
 }

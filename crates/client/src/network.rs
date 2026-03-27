@@ -84,6 +84,19 @@ pub enum NetworkEvent {
         /// The signaling payload.
         signal: crate::ops::VoiceSignalPayload,
     },
+    /// A peer wants to join via a shareable link.
+    JoinLinkRequested {
+        link_id: String,
+        peer_id: String,
+    },
+    /// A join link response was received (targeted at us).
+    JoinLinkResponseReceived {
+        invite_data: String,
+    },
+    /// A join link request was denied.
+    JoinLinkDenied {
+        reason: String,
+    },
 }
 
 /// Commands flowing from the client to the network.
@@ -271,6 +284,19 @@ async fn run_network(
                                         });
                                     }
                                 }
+                                crate::ops::WireMessage::JoinRequest { link_id, peer_id } => {
+                                    let _ = event_tx.unbounded_send(NetworkEvent::JoinLinkRequested { link_id, peer_id });
+                                }
+                                crate::ops::WireMessage::JoinResponse { target_peer, invite_data } => {
+                                    if target_peer == local_peer_id {
+                                        let _ = event_tx.unbounded_send(NetworkEvent::JoinLinkResponseReceived { invite_data });
+                                    }
+                                }
+                                crate::ops::WireMessage::JoinDenied { target_peer, reason } => {
+                                    if target_peer == local_peer_id {
+                                        let _ = event_tx.unbounded_send(NetworkEvent::JoinLinkDenied { reason });
+                                    }
+                                }
                             }
                         } else {
                             let _ = event_tx.unbounded_send(NetworkEvent::MessageReceived {
@@ -432,6 +458,19 @@ async fn run_network_wasm(
                                                 from_peer: from,
                                                 signal,
                                             });
+                                        }
+                                    }
+                                    crate::ops::WireMessage::JoinRequest { link_id, peer_id } => {
+                                        let _ = event_tx.unbounded_send(NetworkEvent::JoinLinkRequested { link_id, peer_id });
+                                    }
+                                    crate::ops::WireMessage::JoinResponse { target_peer, invite_data } => {
+                                        if target_peer == local_peer_id {
+                                            let _ = event_tx.unbounded_send(NetworkEvent::JoinLinkResponseReceived { invite_data });
+                                        }
+                                    }
+                                    crate::ops::WireMessage::JoinDenied { target_peer, reason } => {
+                                        if target_peer == local_peer_id {
+                                            let _ = event_tx.unbounded_send(NetworkEvent::JoinLinkDenied { reason });
                                         }
                                     }
                                 }

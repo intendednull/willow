@@ -40,6 +40,26 @@ pub fn load_profile() -> Option<LocalProfile> {
     willow_transport::unpack(&load_raw("profile")?).ok()
 }
 
+/// Persisted join link data for a server.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+pub struct SavedJoinLinks(pub Vec<crate::ops::JoinLink>);
+
+/// Save join links for a server.
+pub fn save_join_links(server_id: &str, links: &[crate::ops::JoinLink]) {
+    let saved = SavedJoinLinks(links.to_vec());
+    if let Ok(bytes) = willow_transport::pack(&saved) {
+        save_raw(&format!("join_links_{server_id}"), &bytes);
+    }
+}
+
+/// Load join links for a server.
+pub fn load_join_links(server_id: &str) -> Vec<crate::ops::JoinLink> {
+    load_raw(&format!("join_links_{server_id}"))
+        .and_then(|bytes| willow_transport::unpack::<SavedJoinLinks>(&bytes).ok())
+        .map(|s| s.0)
+        .unwrap_or_default()
+}
+
 // ---- Public API -------------------------------------------------------------
 
 pub fn save_server(server: &Server, keys: &HashMap<String, ChannelKey>) {

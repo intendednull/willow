@@ -16,6 +16,64 @@
 
 use serde::{Deserialize, Serialize};
 
+// ───── Join link types ──────────────────────────────────────────────────────
+
+/// Token embedded in a shareable join URL. Contains enough
+/// context to show the user what they're joining before connecting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JoinToken {
+    pub inviter_peer_id: String,
+    pub server_id: String,
+    pub link_id: String,
+    /// Human-readable server name for the join page.
+    pub server_name: String,
+    /// Display name of whoever generated the link.
+    pub inviter_name: String,
+}
+
+impl JoinToken {
+    /// Encode to a URL-safe base64 string.
+    pub fn encode(&self) -> String {
+        let bytes = willow_transport::pack(self).unwrap_or_default();
+        crate::base64::encode(&bytes)
+    }
+
+    /// Decode from a base64 string.
+    pub fn decode(s: &str) -> Option<Self> {
+        let bytes = crate::base64::decode(s)?;
+        willow_transport::unpack(&bytes).ok()
+    }
+}
+
+/// Metadata for a generated join link, stored locally by the inviter.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JoinLink {
+    pub link_id: String,
+    pub server_id: String,
+    pub max_uses: u32,
+    pub used: u32,
+    pub active: bool,
+    /// Timestamp in ms. None = never expires.
+    pub expires_at: Option<u64>,
+    /// When this link was created (ms since epoch).
+    pub created_at: u64,
+}
+
+impl JoinLink {
+    /// Check if this link can accept another join.
+    pub fn is_valid(&self) -> bool {
+        if !self.active || self.used >= self.max_uses {
+            return false;
+        }
+        if let Some(expires) = self.expires_at {
+            if crate::util::current_time_ms() > expires {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 // ───── Wire format ──────────────────────────────────────────────────────────
 
 /// Wire-level message format for network communication.
@@ -66,6 +124,21 @@ pub enum WireMessage {
         target_peer: String,
         /// The signaling payload.
         signal: VoiceSignalPayload,
+    },
+    /// A peer is requesting to join via a shareable link.
+    JoinRequest {
+        link_id: String,
+        peer_id: String,
+    },
+    /// The inviter's response with an encrypted invite for the requester.
+    JoinResponse {
+        target_peer: String,
+        invite_data: String,
+    },
+    /// The inviter denied the join request.
+    JoinDenied {
+        target_peer: String,
+        reason: String,
     },
 }
 
@@ -226,5 +299,146 @@ mod tests {
         }
 
         assert!(unpack_wire(&data).is_none());
+    }
+
+    #[test]
+    fn join_token_round_trip() {
+        let token = JoinToken {
+            inviter_peer_id: "12D3KooWTest".to_string(),
+            server_id: "srv-1".to_string(),
+            link_id: "link-abc".to_string(),
+            server_name: "My Server".to_string(),
+            inviter_name: "Alice".to_string(),
+        };
+        let encoded = token.encode();
+        let decoded = JoinToken::decode(&encoded).unwrap();
+        assert_eq!(decoded.inviter_peer_id, "12D3KooWTest");
+        assert_eq!(decoded.server_id, "srv-1");
+        assert_eq!(decoded.link_id, "link-abc");
+        assert_eq!(decoded.server_name, "My Server");
+        assert_eq!(decoded.inviter_name, "Alice");
+    }
+
+    #[test]
+    fn join_token_decode_invalid_returns_none() {
+        assert!(JoinToken::decode("not-valid!@#$").is_none());
+        assert!(JoinToken::decode("").is_none());
+    }
+
+    #[test]
+    fn join_link_is_valid_active_under_limit() {
+        let link = JoinLink {
+            link_id: "l1".into(),
+            server_id: "s1".into(),
+            max_uses: 5,
+            used: 2,
+            active: true,
+            expires_at: None,
+            created_at: 0,
+        };
+        assert!(link.is_valid());
+    }
+
+    #[test]
+    fn join_link_is_valid_max_uses_reached() {
+        let link = JoinLink {
+            link_id: "l1".into(),
+            server_id: "s1".into(),
+            max_uses: 5,
+            used: 5,
+            active: true,
+            expires_at: None,
+            created_at: 0,
+        };
+        assert!(!link.is_valid());
+    }
+
+    #[test]
+    fn join_link_is_valid_inactive() {
+        let link = JoinLink {
+            link_id: "l1".into(),
+            server_id: "s1".into(),
+            max_uses: 5,
+            used: 0,
+            active: false,
+            expires_at: None,
+            created_at: 0,
+        };
+        assert!(!link.is_valid());
+    }
+
+    #[test]
+    fn join_link_is_valid_expired() {
+        let link = JoinLink {
+            link_id: "l1".into(),
+            server_id: "s1".into(),
+            max_uses: 5,
+            used: 0,
+            active: true,
+            expires_at: Some(1),
+            created_at: 0,
+        };
+        assert!(!link.is_valid());
+    }
+
+    #[test]
+    fn wire_message_join_request_round_trip() {
+        let id = Identity::generate();
+        let msg = WireMessage::JoinRequest {
+            link_id: "link-1".to_string(),
+            peer_id: "12D3KooWJoiner".to_string(),
+        };
+        let data = pack_wire(&msg, &id).unwrap();
+        let (decoded, signer) = unpack_wire(&data).unwrap();
+        assert_eq!(signer, id.peer_id());
+        match decoded {
+            WireMessage::JoinRequest { link_id, peer_id } => {
+                assert_eq!(link_id, "link-1");
+                assert_eq!(peer_id, "12D3KooWJoiner");
+            }
+            _ => panic!("expected JoinRequest"),
+        }
+    }
+
+    #[test]
+    fn wire_message_join_response_round_trip() {
+        let id = Identity::generate();
+        let msg = WireMessage::JoinResponse {
+            target_peer: "12D3KooWJoiner".to_string(),
+            invite_data: "base64inviteblob".to_string(),
+        };
+        let data = pack_wire(&msg, &id).unwrap();
+        let (decoded, _) = unpack_wire(&data).unwrap();
+        match decoded {
+            WireMessage::JoinResponse {
+                target_peer,
+                invite_data,
+            } => {
+                assert_eq!(target_peer, "12D3KooWJoiner");
+                assert_eq!(invite_data, "base64inviteblob");
+            }
+            _ => panic!("expected JoinResponse"),
+        }
+    }
+
+    #[test]
+    fn wire_message_join_denied_round_trip() {
+        let id = Identity::generate();
+        let msg = WireMessage::JoinDenied {
+            target_peer: "12D3KooWJoiner".to_string(),
+            reason: "link_expired".to_string(),
+        };
+        let data = pack_wire(&msg, &id).unwrap();
+        let (decoded, _) = unpack_wire(&data).unwrap();
+        match decoded {
+            WireMessage::JoinDenied {
+                target_peer,
+                reason,
+            } => {
+                assert_eq!(target_peer, "12D3KooWJoiner");
+                assert_eq!(reason, "link_expired");
+            }
+            _ => panic!("expected JoinDenied"),
+        }
     }
 }
