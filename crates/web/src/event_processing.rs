@@ -127,6 +127,39 @@ pub fn process_event_batch(
                     }
                 }
             }
+            ClientEvent::JoinLinkResponse { invite_data } => {
+                match handle.accept_invite(invite_data) {
+                    Ok(()) => {
+                        refresh_all_signals(handle, write);
+                        write.ui.set_join_token.set(None);
+                        write.ui.set_join_status.set(String::new());
+                        // Clear URL fragment to prevent re-trigger on refresh.
+                        if let Some(window) = web_sys::window() {
+                            let _ = window.history().ok().and_then(|h| {
+                                h.replace_state_with_url(
+                                    &wasm_bindgen::JsValue::NULL,
+                                    "",
+                                    Some("/"),
+                                )
+                                .ok()
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(%e, "join link auto-accept failed");
+                        write
+                            .ui
+                            .set_join_status
+                            .set(format!("denied:{e}"));
+                    }
+                }
+            }
+            ClientEvent::JoinLinkDenied { reason } => {
+                write
+                    .ui
+                    .set_join_status
+                    .set(format!("denied:{reason}"));
+            }
             _ => {}
         }
     }

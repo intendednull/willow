@@ -3522,6 +3522,179 @@ select:focus-visible {
     .call-top-bar { padding: 10px 12px; }
 }
 
+/* ── Join Page ─────────────────────────────────────────────────────── */
+
+.join-page {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-main);
+    z-index: 100;
+    transition: opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+                transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.join-page.leaving {
+    opacity: 0;
+    transform: scale(0.98);
+    pointer-events: none;
+}
+.join-page-ambient {
+    position: absolute;
+    inset: 0;
+    background:
+        radial-gradient(ellipse at 50% 40%, var(--accent-glow) 0%, transparent 60%);
+    opacity: 0.5;
+    pointer-events: none;
+}
+.join-card {
+    position: relative;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 40px 32px 32px;
+    max-width: 400px;
+    width: 90%;
+    text-align: center;
+    box-shadow: var(--shadow-lg);
+    animation: scale-in 0.2s ease;
+}
+.join-card-brand {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    text-transform: lowercase;
+    margin-bottom: 24px;
+}
+.join-card-server {
+    font-size: 28px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0 0 4px;
+    line-height: 1.2;
+}
+.join-card-inviter {
+    color: var(--text-muted);
+    font-size: 14px;
+    margin: 0 0 28px;
+}
+.join-card-inviter strong {
+    color: var(--text-secondary);
+}
+.join-card-field {
+    text-align: left;
+    margin-bottom: 20px;
+}
+.join-card-field label {
+    display: block;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 6px;
+}
+.join-card-field input {
+    width: 100%;
+    padding: 10px 12px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 15px;
+    box-sizing: border-box;
+    outline: none;
+    transition: border-color var(--transition-fast);
+}
+.join-card-field input:focus {
+    border-color: var(--accent);
+}
+.join-card-field input:disabled {
+    opacity: 0.5;
+}
+.join-card-btn {
+    width: 100%;
+    padding: 12px;
+    font-size: 15px;
+    font-weight: 600;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all var(--transition-normal);
+}
+.join-card-btn.connecting {
+    cursor: default;
+    position: relative;
+    border: 2px solid var(--accent);
+    background: transparent;
+    color: var(--accent);
+    animation: join-pulse 2s ease-in-out infinite;
+}
+@keyframes join-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 var(--accent-glow); }
+    50% { box-shadow: 0 0 0 8px transparent; }
+}
+.join-card-hint {
+    color: var(--text-muted);
+    font-size: 13px;
+    margin: 12px 0 0;
+}
+.join-card-error {
+    color: var(--danger);
+    font-size: 14px;
+    margin: 0 0 12px;
+}
+
+/* ── Invite Link Management ────────────────────────────────────────── */
+
+.btn-accent-green {
+    background: var(--accent-green);
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background var(--transition-fast);
+}
+.btn-accent-green:hover {
+    background: var(--accent-green-hover);
+}
+.invite-link-list {
+    margin-top: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.invite-link-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    background: var(--bg-input);
+    border-radius: 8px;
+    font-size: 13px;
+}
+.invite-link-item.expired {
+    opacity: 0.4;
+    text-decoration: line-through;
+}
+.invite-link-uses {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    background: var(--bg-main);
+    padding: 2px 8px;
+    border-radius: 4px;
+    color: var(--text-muted);
+}
+.invite-link-age {
+    flex: 1;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
 /* ── Reduced Motion ──────────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {

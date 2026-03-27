@@ -6,7 +6,7 @@ use send_wrapper::SendWrapper;
 use willow_client::{ClientConfig, ClientEvent, ClientHandle, DisplayMessage, VoiceSignalPayload};
 
 use crate::components::{
-    AddServerPanel, CallPage, ChannelHeader, ChatInput, CommandPalette, FileShareButton,
+    AddServerPanel, CallPage, ChannelHeader, ChatInput, CommandPalette, FileShareButton, JoinPage,
     MemberList, MessageList, PinnedPanel, ServerList, SettingsPanel, Sidebar, WelcomeScreen,
 };
 use crate::event_processing::{extract_roles, process_event_batch, refresh_all_signals};
@@ -140,6 +140,28 @@ pub fn App() -> impl IntoView {
     // Populate initial state from the client.
     refresh_all_signals(&handle, &write);
 
+    // Detect join link from URL fragment.
+    {
+        let join_token_value = web_sys::window()
+            .and_then(|w| w.location().hash().ok())
+            .and_then(|hash| hash.strip_prefix("#join=").map(|s| s.to_string()));
+
+        if let Some(ref token_str) = join_token_value {
+            if let Some(token) = willow_client::ops::JoinToken::decode(token_str) {
+                write
+                    .ui
+                    .set_join_token
+                    .set(Some(state::ParsedJoinToken {
+                        raw: token_str.clone(),
+                        link_id: token.link_id,
+                        server_name: token.server_name,
+                        inviter_name: token.inviter_name,
+                    }));
+                write.ui.set_join_status.set(String::new());
+            }
+        }
+    }
+
     // Spawn the event loop and signal updater.
     {
         let handle_for_events = handle.clone();
@@ -169,6 +191,22 @@ pub fn App() -> impl IntoView {
                     &write_for_events,
                     &vm_for_events,
                 );
+
+                // If we just connected and a join is in progress, send the request.
+                let has_connect = batch.iter().any(|e| {
+                    matches!(
+                        e,
+                        ClientEvent::PeerConnected(_) | ClientEvent::Listening(_)
+                    )
+                });
+                if has_connect {
+                    let status = state_for_events.ui.join_status.get_untracked();
+                    if status == "connecting" {
+                        if let Some(token) = state_for_events.ui.join_token.get_untracked() {
+                            handle_for_events.send_join_request(&token.link_id);
+                        }
+                    }
+                }
             }
         });
     }
@@ -298,8 +336,15 @@ pub fn App() -> impl IntoView {
     let handle_for_ch_created = handle.clone();
     let vm_for_view = voice_manager.clone();
 
+    let join_token_signal = app_state.ui.join_token;
+
     view! {
         {move || {
+            // Join link takes priority over everything.
+            if join_token_signal.get().is_some() {
+                return view! { <JoinPage /> }.into_any();
+            }
+
             let srv = servers.get();
             if srv.is_empty() {
                 let on_done = on_welcome_done.clone();

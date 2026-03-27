@@ -30,6 +30,16 @@ pub struct ChannelViewState {
     pub typing: Vec<String>,
 }
 
+/// Parsed join token data for the UI.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParsedJoinToken {
+    /// Original base64 for re-encoding.
+    pub raw: String,
+    pub link_id: String,
+    pub server_name: String,
+    pub inviter_name: String,
+}
+
 // ── Read signals (provided via context) ──────────────────────────────
 
 #[derive(Clone, Copy)]
@@ -84,6 +94,9 @@ pub struct UiState {
     pub call_layout: ReadSignal<CallLayout>,
     #[allow(dead_code)]
     pub settings_tab: ReadSignal<SettingsTab>,
+    pub join_token: ReadSignal<Option<ParsedJoinToken>>,
+    /// "", "connecting", or "denied:<reason>".
+    pub join_status: ReadSignal<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -157,6 +170,8 @@ pub struct UiWriteSignals {
     pub set_show_palette: WriteSignal<bool>,
     pub set_call_layout: WriteSignal<CallLayout>,
     pub set_settings_tab: WriteSignal<SettingsTab>,
+    pub set_join_token: WriteSignal<Option<ParsedJoinToken>>,
+    pub set_join_status: WriteSignal<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -211,6 +226,8 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
     let (show_palette, set_show_palette) = signal(false);
     let (call_layout, set_call_layout) = signal(CallLayout::default());
     let (settings_tab, set_settings_tab) = signal(SettingsTab::default());
+    let (join_token, set_join_token) = signal(Option::<ParsedJoinToken>::None);
+    let (join_status, set_join_status) = signal(String::new());
 
     // Voice signals
     let (voice_channel, set_voice_channel) = signal(Option::<String>::None);
@@ -264,6 +281,8 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
             show_palette,
             call_layout,
             settings_tab,
+            join_token,
+            join_status,
         },
         voice: VoiceState {
             voice_channel,
@@ -314,6 +333,8 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
             set_show_palette,
             set_call_layout,
             set_settings_tab,
+            set_join_token,
+            set_join_status,
         },
         voice: VoiceWriteSignals {
             set_voice_channel,
