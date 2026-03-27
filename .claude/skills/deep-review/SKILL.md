@@ -54,7 +54,15 @@ For each flagged area, record:
 - **Summary**: one-line description
 - **Severity estimate**: Critical / High / Medium / Low
 
-### Phase 3: Parallel Deep Investigation
+### Phase 3: Deep Investigation
+
+After presenting the flagged issues, ask the user:
+
+> Would you like me to spawn parallel sub-agents to investigate each issue
+> in depth, or should I investigate them myself in this session?
+> (Enter "agents" for parallel sub-agents, or "no" to investigate inline)
+
+#### Option A: Parallel Sub-Agent Investigation (if user chose "agents")
 
 For EACH flagged issue, spawn a parallel Agent to investigate it independently.
 
@@ -63,7 +71,19 @@ Each agent receives:
 2. The specific flag (category, summary, location)
 3. Surrounding context (callers, related types, tests)
 
-Each agent MUST return a structured analysis in this exact format:
+Agents should be thorough — read the actual code, trace call paths, check
+for existing tests, and verify whether the concern is real or a false positive.
+
+#### Option B: Inline Investigation (if user chose "no")
+
+Investigate each flagged issue sequentially in the current session. For each
+issue, read the relevant code, trace call paths, check for existing tests,
+and determine whether the concern is real or a false positive.
+
+#### Investigation Output Format
+
+Each issue (whether investigated by agent or inline) MUST produce a
+structured analysis in this exact format:
 
 ```
 ISSUE_ID: <number>
@@ -76,9 +96,6 @@ ANALYSIS: <2-5 sentence detailed explanation>
 SUGGESTED_FIX: <brief description of the fix, or "N/A" if false positive>
 EFFORT: Trivial | Small | Medium | Large
 ```
-
-Agents should be thorough — read the actual code, trace call paths, check
-for existing tests, and verify whether the concern is real or a false positive.
 
 ### Phase 4: Present Results Table
 
