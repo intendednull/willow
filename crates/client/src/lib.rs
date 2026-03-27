@@ -2355,6 +2355,78 @@ fn emit_client_events_for(
                 message_id: message_id.clone(),
             });
         }
+        willow_state::EventKind::EditMessage {
+            message_id,
+            new_body,
+        } => {
+            let channel = shared
+                .state
+                .event_state
+                .messages
+                .iter()
+                .find(|m| m.id == *message_id)
+                .and_then(|m| {
+                    shared
+                        .state
+                        .event_state
+                        .channels
+                        .get(&m.channel_id)
+                        .map(|ch| ch.name.clone())
+                })
+                .unwrap_or_default();
+            events.push(ClientEvent::MessageEdited {
+                channel,
+                message_id: message_id.clone(),
+                new_body: new_body.clone(),
+            });
+        }
+        willow_state::EventKind::DeleteMessage { message_id } => {
+            let channel = shared
+                .state
+                .event_state
+                .messages
+                .iter()
+                .find(|m| m.id == *message_id)
+                .and_then(|m| {
+                    shared
+                        .state
+                        .event_state
+                        .channels
+                        .get(&m.channel_id)
+                        .map(|ch| ch.name.clone())
+                })
+                .unwrap_or_default();
+            events.push(ClientEvent::MessageDeleted {
+                channel,
+                message_id: message_id.clone(),
+            });
+        }
+        willow_state::EventKind::Reaction {
+            message_id, emoji, ..
+        } => {
+            // Find the channel name from the message's channel_id.
+            let channel = shared
+                .state
+                .event_state
+                .messages
+                .iter()
+                .find(|m| m.id == *message_id)
+                .and_then(|m| {
+                    shared
+                        .state
+                        .event_state
+                        .channels
+                        .get(&m.channel_id)
+                        .map(|ch| ch.name.clone())
+                })
+                .unwrap_or_default();
+            events.push(ClientEvent::ReactionAdded {
+                channel,
+                message_id: message_id.clone(),
+                emoji: emoji.clone(),
+                author: event.author.clone(),
+            });
+        }
         willow_state::EventKind::StateVerification { state_hash } => {
             let our_hash = shared.state.event_state.hash();
             shared
