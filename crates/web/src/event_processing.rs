@@ -39,9 +39,13 @@ pub fn process_event_batch(
             }
             ClientEvent::MessageEdited { .. }
             | ClientEvent::MessageDeleted { .. }
-            | ClientEvent::ReactionAdded { .. }
-            | ClientEvent::SyncCompleted { .. } => {
+            | ClientEvent::ReactionAdded { .. } => {
                 needs_msg_refresh = true;
+            }
+            ClientEvent::SyncCompleted { .. } => {
+                needs_msg_refresh = true;
+                needs_channel_refresh = true;
+                needs_peer_refresh = true;
             }
             ClientEvent::PeerConnected(_) => {
                 needs_peer_refresh = true;
