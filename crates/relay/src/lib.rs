@@ -33,6 +33,21 @@ pub enum WireMessage {
         /// The events being synced.
         events: Vec<willow_state::Event>,
     },
+    /// A peer is requesting to join via a shareable link.
+    JoinRequest {
+        link_id: String,
+        peer_id: String,
+    },
+    /// The inviter's response with an encrypted invite for the requester.
+    JoinResponse {
+        target_peer: String,
+        invite_data: String,
+    },
+    /// The inviter denied the join request.
+    JoinDenied {
+        target_peer: String,
+        reason: String,
+    },
 }
 
 /// Composite behaviour for the relay server.
@@ -311,6 +326,9 @@ impl Relay {
                         }
                         debug!(count = events.len(), "cached sync batch");
                     }
+                    // Ephemeral messages (join links, typing, voice) — relay forwards via
+                    // gossipsub automatically, no storage needed.
+                    _ => {}
                 }
             }
         }
