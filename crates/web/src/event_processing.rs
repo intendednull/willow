@@ -147,18 +147,12 @@ pub fn process_event_batch(
                     }
                     Err(e) => {
                         tracing::error!(%e, "join link auto-accept failed");
-                        write
-                            .ui
-                            .set_join_status
-                            .set(format!("denied:{e}"));
+                        write.ui.set_join_status.set(format!("denied:{e}"));
                     }
                 }
             }
             ClientEvent::JoinLinkDenied { reason } => {
-                write
-                    .ui
-                    .set_join_status
-                    .set(format!("denied:{reason}"));
+                write.ui.set_join_status.set(format!("denied:{reason}"));
             }
             _ => {}
         }

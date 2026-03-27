@@ -148,15 +148,12 @@ pub fn App() -> impl IntoView {
 
         if let Some(ref token_str) = join_token_value {
             if let Some(token) = willow_client::ops::JoinToken::decode(token_str) {
-                write
-                    .ui
-                    .set_join_token
-                    .set(Some(state::ParsedJoinToken {
-                        raw: token_str.clone(),
-                        link_id: token.link_id,
-                        server_name: token.server_name,
-                        inviter_name: token.inviter_name,
-                    }));
+                write.ui.set_join_token.set(Some(state::ParsedJoinToken {
+                    raw: token_str.clone(),
+                    link_id: token.link_id,
+                    server_name: token.server_name,
+                    inviter_name: token.inviter_name,
+                }));
                 write.ui.set_join_status.set(String::new());
             }
         }
@@ -194,10 +191,7 @@ pub fn App() -> impl IntoView {
 
                 // If we just connected and a join is in progress, send the request.
                 let has_connect = batch.iter().any(|e| {
-                    matches!(
-                        e,
-                        ClientEvent::PeerConnected(_) | ClientEvent::Listening(_)
-                    )
+                    matches!(e, ClientEvent::PeerConnected(_) | ClientEvent::Listening(_))
                 });
                 if has_connect {
                     let status = state_for_events.ui.join_status.get_untracked();

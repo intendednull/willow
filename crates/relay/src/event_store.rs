@@ -33,9 +33,8 @@ impl RelayEventStore {
         )?;
 
         // Migrate: add parent_hash column if missing (idempotent).
-        let _ = conn.execute_batch(
-            "ALTER TABLE events ADD COLUMN parent_hash BLOB NOT NULL DEFAULT X''",
-        );
+        let _ = conn
+            .execute_batch("ALTER TABLE events ADD COLUMN parent_hash BLOB NOT NULL DEFAULT X''");
         // Index on parent_hash (safe now that the column exists).
         let _ = conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_events_parent_hash ON events(parent_hash)",
@@ -113,9 +112,10 @@ impl RelayEventStore {
 
     /// Return all events for a given topic, ordered by timestamp.
     fn all_events_for_topic(&self, topic: &str) -> Vec<Event> {
-        let mut stmt = match self.conn.prepare(
-            "SELECT event_data FROM events WHERE topic = ?1 ORDER BY timestamp_ms",
-        ) {
+        let mut stmt = match self
+            .conn
+            .prepare("SELECT event_data FROM events WHERE topic = ?1 ORDER BY timestamp_ms")
+        {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
@@ -131,9 +131,10 @@ impl RelayEventStore {
 
     /// Load all events across all topics since a given timestamp.
     pub fn all_events_since(&self, since_ms: u64) -> Vec<Event> {
-        let mut stmt = match self.conn.prepare(
-            "SELECT event_data FROM events WHERE timestamp_ms > ?1 ORDER BY timestamp_ms",
-        ) {
+        let mut stmt = match self
+            .conn
+            .prepare("SELECT event_data FROM events WHERE timestamp_ms > ?1 ORDER BY timestamp_ms")
+        {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };

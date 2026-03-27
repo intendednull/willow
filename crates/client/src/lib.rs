@@ -1592,8 +1592,7 @@ impl ClientHandle {
             // if the owner is wrong, the actual owner's events get rejected.
             let owner_peer_id = willow_identity::PeerId::parse(&accepted.owner)
                 .unwrap_or_else(|| shared.identity.peer_id());
-            let mut server =
-                willow_channel::Server::new(&accepted.server_name, owner_peer_id);
+            let mut server = willow_channel::Server::new(&accepted.server_name, owner_peer_id);
             server.id = willow_channel::ServerId(
                 uuid::Uuid::parse_str(&server_id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
             );
@@ -2723,7 +2722,9 @@ impl ClientEventLoop {
                                         );
                                     }
                                 }
-                                Err(e) => tracing::warn!(%e, "failed to generate invite for join link"),
+                                Err(e) => {
+                                    tracing::warn!(%e, "failed to generate invite for join link")
+                                }
                             }
                         }
                         Some(_) => {
@@ -2733,12 +2734,12 @@ impl ClientEventLoop {
                                 reason: "link_expired".to_string(),
                             };
                             if let Some(data) = ops::pack_wire(&msg, &shared.identity) {
-                                let _ = self.cmd_tx.unbounded_send(
-                                    network::NetworkCommand::Publish {
-                                        topic: ops::SERVER_OPS_TOPIC.to_string(),
-                                        data,
-                                    },
-                                );
+                                let _ =
+                                    self.cmd_tx
+                                        .unbounded_send(network::NetworkCommand::Publish {
+                                            topic: ops::SERVER_OPS_TOPIC.to_string(),
+                                            data,
+                                        });
                             }
                         }
                         None => {}

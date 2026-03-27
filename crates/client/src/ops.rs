@@ -126,20 +126,14 @@ pub enum WireMessage {
         signal: VoiceSignalPayload,
     },
     /// A peer is requesting to join via a shareable link.
-    JoinRequest {
-        link_id: String,
-        peer_id: String,
-    },
+    JoinRequest { link_id: String, peer_id: String },
     /// The inviter's response with an encrypted invite for the requester.
     JoinResponse {
         target_peer: String,
         invite_data: String,
     },
     /// The inviter denied the join request.
-    JoinDenied {
-        target_peer: String,
-        reason: String,
-    },
+    JoinDenied { target_peer: String, reason: String },
 }
 
 /// WebRTC signaling payload for voice chat negotiation.
