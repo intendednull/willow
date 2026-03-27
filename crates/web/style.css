@@ -2307,11 +2307,15 @@ select:focus-visible {
         padding: 12px;
         align-items: flex-start;
         padding-top: 24px;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
     }
 
     .welcome-card {
         padding: 24px 20px;
         border-radius: 12px;
+        margin-bottom: 24px;
+        flex-shrink: 0;
     }
 
     .welcome-card h1 {
