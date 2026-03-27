@@ -225,11 +225,12 @@ pub fn MessageView(
     let show_edited = message.edited && !message.deleted;
     let author = message.author_display_name.clone();
     let body = message.body.clone();
-    let reactions: Vec<(String, usize)> = message
+    let mut reactions: Vec<(String, usize)> = message
         .reactions
         .iter()
         .map(|(emoji, authors)| (emoji.clone(), authors.len()))
         .collect();
+    reactions.sort_by(|a, b| a.0.cmp(&b.0));
     let has_reactions = !reactions.is_empty();
 
     let msg_class = match (show_header, is_mention) {
