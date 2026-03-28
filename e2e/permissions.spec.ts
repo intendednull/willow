@@ -16,8 +16,7 @@ test.describe('Permissions and trust', () => {
   test.setTimeout(120_000);
 
   test.fixme('owner trusts peer — trusted badge appears', async ({ browser }) => {
-    // Known issue: peer display names don't sync reliably within test timeframes,
-    // so trustPeer('Bob') can't find the member item. Passes when sync is fast.
+    // Flaky: two-peer setup with trust action can exceed test timeframes.
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Trust Server', 'Alice', 'Bob');
     try {
       // Alice trusts Bob.
@@ -33,7 +32,7 @@ test.describe('Permissions and trust', () => {
   });
 
   test.fixme('trusted peer messages are visible', async ({ browser }) => {
-    // Depends on display name sync for trustPeer('Bob').
+    // Flaky: depends on trust + message sync within test timeframes.
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Trusted Msg', 'Alice', 'Bob');
     try {
       // Alice trusts Bob.
@@ -52,7 +51,7 @@ test.describe('Permissions and trust', () => {
   });
 
   test.fixme('owner untrusts peer — trusted badge hidden', async ({ browser }) => {
-    // Depends on display name sync for trustPeer/untrustPeer('Bob').
+    // Flaky: depends on trust + untrust sync within test timeframes.
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Untrust Server', 'Alice', 'Bob');
     try {
       // Alice trusts then untrusts Bob.
@@ -98,7 +97,7 @@ test.describe('Permissions and trust', () => {
   });
 
   test.fixme('owner kicks member — member count drops', async ({ browser }) => {
-    // Depends on display name sync for kickPeer('Bob').
+    // Flaky: depends on kick sync within test timeframes.
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Kick Server', 'Alice', 'Bob');
     try {
       // Record initial member count (includes relay + peers).

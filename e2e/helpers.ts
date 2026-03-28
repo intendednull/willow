@@ -333,6 +333,10 @@ export async function editMessage(page: Page, originalText: string, newText: str
 /** Deletes a message (desktop or mobile). */
 export async function deleteMessage(page: Page, text: string) {
   await messageAction(page, text, 'Delete');
+  // Confirm the deletion dialog.
+  const confirmBtn = page.locator('.confirm-dialog .btn-danger, .confirm-dialog button', { hasText: 'Delete' });
+  await confirmBtn.waitFor({ timeout: 3000 });
+  await confirmBtn.click();
   await page.waitForTimeout(500);
 }
 

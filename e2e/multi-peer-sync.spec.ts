@@ -135,8 +135,7 @@ test.describe('Multi-peer state synchronization', () => {
     }
   });
 
-  test.fixme('reactions sync between peers', async ({ browser }) => {
-    // Known issue: reaction events don't propagate reliably via P2P gossipsub within test timeframes.
+  test('reactions sync between peers', async ({ browser }) => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser);
     try {
       // Alice sends a message.
@@ -157,8 +156,7 @@ test.describe('Multi-peer state synchronization', () => {
     }
   });
 
-  test.fixme('edits sync between peers', async ({ browser }) => {
-    // Known issue: edit events don't propagate reliably via P2P gossipsub within test timeframes.
+  test('edits sync between peers', async ({ browser }) => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser);
     try {
       // Alice sends a message.
@@ -176,8 +174,7 @@ test.describe('Multi-peer state synchronization', () => {
     }
   });
 
-  test.fixme('deletes sync between peers', async ({ browser }) => {
-    // Known issue: delete events don't propagate reliably via P2P gossipsub within test timeframes.
+  test('deletes sync between peers', async ({ browser }) => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser);
     try {
       // Alice sends a message.
@@ -187,13 +184,13 @@ test.describe('Multi-peer state synchronization', () => {
       // Alice deletes the message.
       await deleteMessage(page1, 'delete me soon');
 
-      // Alice should see [message deleted] locally.
-      await expect(page1.locator('.message .body', { hasText: '[message deleted]' }))
+      // Alice should see the deleted style locally (italic/muted).
+      await expect(page1.locator('.message .body.deleted'))
         .toBeVisible({ timeout: 5_000 });
 
-      // Bob should see the deletion sync (original text replaced).
-      await expect(page2.locator('.message .body', { hasText: 'delete me soon' }))
-        .toBeHidden({ timeout: 15_000 });
+      // Bob should see the deleted style sync.
+      await expect(page2.locator('.message .body.deleted'))
+        .toBeVisible({ timeout: 15_000 });
     } finally {
       await ctx1.close();
       await ctx2.close();
