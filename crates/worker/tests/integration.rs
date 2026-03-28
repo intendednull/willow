@@ -309,3 +309,122 @@ async fn graceful_shutdown_sends_departure() {
     let _ = state_tx.send(StateMsg::Shutdown).await;
     state_handle.await.unwrap();
 }
+
+/// Tests the full actor wiring pattern used by runtime::run() —
+/// state + heartbeat + sync actors coordinating via channels.
+/// Validates that the orchestration pattern works without needing
+/// a real libp2p network node.
+#[tokio::test]
+async fn full_actor_orchestration_without_network() {
+    use willow_worker::actors::{heartbeat, sync, NetworkOutMsg};
+
+    let (state_tx, state_rx) = mpsc::channel(256);
+    let (network_tx, mut network_rx) = mpsc::channel(256);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let role = Box::new(TestReplayRole::new("srv-1", "owner", 100));
+
+    // Spawn all three non-network actors.
+    let state_handle = tokio::spawn(state::run(role, state_rx));
+    let hb_handle = tokio::spawn(heartbeat::run(
+        "orch-test".to_string(),
+        Duration::from_millis(50),
+        state_tx.clone(),
+        network_tx.clone(),
+        shutdown_rx.clone(),
+    ));
+    let sync_handle = tokio::spawn(sync::run(
+        "orch-test".to_string(),
+        Duration::from_millis(80),
+        state_tx.clone(),
+        network_tx,
+        shutdown_rx,
+    ));
+
+    // Ingest some events.
+    for i in 0..3u64 {
+        state_tx
+            .send(StateMsg::Event(make_message(&format!("orch-{i}"), (i + 1) * 1000)))
+            .await
+            .unwrap();
+    }
+
+    // Collect messages from heartbeat and sync for a bit.
+    let mut announcement_count = 0;
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(30), network_rx.recv()).await {
+            Ok(Some(NetworkOutMsg::Publish { data, .. })) => {
+                // Could be announcement or sync request.
+                if let Ok(msg) = bincode::deserialize::<willow_common::WorkerWireMessage>(&data)
+                {
+                    match msg {
+                        willow_common::WorkerWireMessage::Announcement(_) => {
+                            announcement_count += 1;
+                        }
+                        willow_common::WorkerWireMessage::Request { .. } => {
+                            // Sync requests are expected too.
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    assert!(
+        announcement_count >= 1,
+        "expected at least 1 heartbeat, got {announcement_count}"
+    );
+
+    // Verify state actor still responds after all this.
+    let (reply_tx, reply_rx) = oneshot::channel();
+    state_tx
+        .send(StateMsg::GetRoleInfo { reply: reply_tx })
+        .await
+        .unwrap();
+    match reply_rx.await.unwrap() {
+        WorkerRoleInfo::Replay {
+            events_buffered, ..
+        } => assert_eq!(events_buffered, 3),
+        _ => panic!("expected Replay"),
+    }
+
+    // Shutdown all actors.
+    shutdown_tx.send(true).unwrap();
+    let _ = state_tx.send(StateMsg::Shutdown).await;
+    let _ = tokio::join!(state_handle, hb_handle, sync_handle);
+}
+
+/// Tests that the member list component's worker detection logic
+/// (checking SyncProvider permission) correctly separates workers
+/// from regular members at the data level.
+#[test]
+fn sync_provider_permission_identifies_workers() {
+    use willow_state::{EventKind, Permission, ServerState};
+
+    let mut state = ServerState::new("srv", "Test", "owner-peer".to_string());
+
+    // Grant SyncProvider to a worker.
+    let grant = willow_state::Event {
+        id: "grant-1".to_string(),
+        parent_hash: state.hash(),
+        author: "owner-peer".to_string(),
+        timestamp_ms: 1000,
+        kind: EventKind::GrantPermission {
+            peer_id: "worker-peer".to_string(),
+            permission: Permission::SyncProvider,
+        },
+    };
+    willow_state::apply_lenient(&mut state, &grant);
+
+    // Worker should have SyncProvider.
+    assert!(state.has_permission("worker-peer", &Permission::SyncProvider));
+    // Owner has implicit all-permissions (root of trust).
+    assert!(state.has_permission("owner-peer", &Permission::SyncProvider));
+    // Random peer should not.
+    assert!(!state.has_permission("random-peer", &Permission::SyncProvider));
+    // The member list excludes owner from the infra section even though
+    // they have the permission — that filtering is in the component, not state.
+}

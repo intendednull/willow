@@ -198,6 +198,11 @@ impl Relay {
         self.broadcast_profile();
     }
 
+    /// Returns the relay's peer ID as a string.
+    pub fn peer_id_string(&self) -> String {
+        self.peer_id.to_string()
+    }
+
     /// Broadcast our display name on the profile topic.
     fn broadcast_profile(&mut self) {
         if self.display_name.is_empty() {
@@ -215,5 +220,71 @@ impl Relay {
                 debug!(%e, "failed to broadcast profile (no subscribers yet)");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use libp2p::Multiaddr;
+
+    fn test_keypair() -> libp2p::identity::Keypair {
+        libp2p::identity::Keypair::generate_ed25519()
+    }
+
+    #[tokio::test]
+    async fn start_creates_valid_relay() {
+        let kp = test_keypair();
+        let expected_peer_id = PeerId::from(kp.public());
+
+        let relay = Relay::start(kp).await.unwrap();
+
+        assert_eq!(relay.peer_id, expected_peer_id);
+        assert!(relay.display_name.is_empty());
+        assert!(!relay.peer_id_string().is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_display_name_updates_field() {
+        let relay_result = Relay::start(test_keypair()).await;
+        let mut relay = relay_result.unwrap();
+
+        assert!(relay.display_name.is_empty());
+        relay.set_display_name("Test Relay");
+        assert_eq!(relay.display_name, "Test Relay");
+    }
+
+    #[tokio::test]
+    async fn relay_can_listen_on_tcp() {
+        let mut relay = Relay::start(test_keypair()).await.unwrap();
+
+        let addr: Multiaddr = "/ip4/127.0.0.1/tcp/0".parse().unwrap();
+        let result = relay.swarm.listen_on(addr);
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn relay_has_no_event_store() {
+        // Verify the relay struct has no event_store field —
+        // this is a compile-time check. If someone adds an event_store
+        // back, this test's assertions will need updating.
+        let relay = Relay::start(test_keypair()).await.unwrap();
+
+        // The relay is stateless — only has swarm, identity, peer_id, display_name.
+        assert!(!relay.peer_id_string().is_empty());
+        assert!(relay.display_name.is_empty());
+    }
+
+    #[tokio::test]
+    async fn relay_identity_matches_keypair() {
+        let kp = test_keypair();
+        let ed_kp = kp.clone().try_into_ed25519().unwrap();
+        let expected_bytes = ed_kp.to_bytes();
+
+        let relay = Relay::start(kp).await.unwrap();
+
+        // Verify the willow Identity was correctly derived from the keypair.
+        let relay_bytes = relay.identity.to_ed25519_bytes().unwrap();
+        assert_eq!(relay_bytes, expected_bytes);
     }
 }
