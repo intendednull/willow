@@ -7,6 +7,7 @@
 //! - Sync actor: periodic state sync
 
 pub mod heartbeat;
+pub mod network;
 pub mod state;
 pub mod sync;
 

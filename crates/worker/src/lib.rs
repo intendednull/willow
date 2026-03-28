@@ -7,6 +7,7 @@
 pub mod actors;
 pub mod config;
 pub mod identity;
+pub mod runtime;
 pub mod types;
 
 pub use config::WorkerConfig;
