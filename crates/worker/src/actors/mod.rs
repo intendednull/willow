@@ -6,7 +6,9 @@
 //! - Heartbeat actor: periodic announcements
 //! - Sync actor: periodic state sync
 
+pub mod heartbeat;
 pub mod state;
+pub mod sync;
 
 use tokio::sync::oneshot;
 
