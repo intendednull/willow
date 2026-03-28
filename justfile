@@ -35,9 +35,17 @@ test-client:
 test-app:
     cargo test -p willow-app
 
-# Run the relay history sync tests
+# Run the relay tests
 test-relay:
     cargo test -p willow-relay
+
+# Run worker node tests (worker library + replay + storage)
+test-workers:
+    cargo test -p willow-worker -p willow-replay -p willow-storage -p willow-common
+
+# Build worker node binaries
+build-workers:
+    cargo build --release -p willow-replay -p willow-storage
 
 # Run the scaling / performance tests with output
 test-scale:
