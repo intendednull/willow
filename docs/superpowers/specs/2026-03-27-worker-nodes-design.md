@@ -159,8 +159,8 @@ The relay becomes stateless network infrastructure.
 
 ```rust
 pub trait WorkerRole: Send + 'static {
-    /// Identifies this worker's role type.
-    fn role_type(&self) -> RoleType;
+    /// Returns combined role identity and capacity info for heartbeats.
+    fn role_info(&self) -> WorkerRoleInfo;
 
     /// Called when an event is received from gossipsub.
     /// The state actor calls this sequentially — safe to use &mut self.
@@ -169,9 +169,6 @@ pub trait WorkerRole: Send + 'static {
     /// Handle an incoming request from a client peer.
     /// Called by the state actor — has exclusive access to state.
     fn handle_request(&mut self, req: WorkerRequest) -> WorkerResponse;
-
-    /// Report current capacity for heartbeat announcements.
-    fn capacity_info(&self) -> CapacityInfo;
 }
 
 pub enum RoleType {
@@ -280,14 +277,14 @@ only worker protocol messages, not server state.
 ```rust
 WorkerAnnouncement {
     peer_id: String,
-    role: RoleType,
+    role: WorkerRoleInfo,       // role type + capacity in one enum
     servers: Vec<String>,       // server IDs this worker serves
-    capacity: CapacityInfo,     // role-specific capacity info
     timestamp: u64,
 }
 
-/// Role-specific capacity information included in heartbeats.
-enum CapacityInfo {
+/// Combined role identity and capacity. The role type is implicit in
+/// the variant — impossible to have a Replay role with Storage capacity.
+enum WorkerRoleInfo {
     Replay {
         servers_loaded: u32,
         events_buffered: u32,
@@ -298,6 +295,7 @@ enum CapacityInfo {
         total_events_stored: u64,
         disk_used_bytes: u64,
     },
+    // Future: File { ... }, Stream { ... }, Bot { ... }
 }
 ```
 
