@@ -158,15 +158,20 @@ The relay becomes stateless network infrastructure.
 ### WorkerRole Trait
 
 ```rust
+#[async_trait]
 pub trait WorkerRole: Send + Sync {
     /// Identifies this worker's role type.
     fn role_type(&self) -> RoleType;
 
     /// Called when an event is received from gossipsub.
-    fn on_event(&mut self, event: &Event);
+    /// Takes &self (not &mut self) — implementations use interior
+    /// mutability (e.g., RwLock) for concurrent event ingestion.
+    async fn on_event(&self, event: &Event);
 
     /// Handle an incoming request from a client peer.
-    fn handle_request(&self, req: WorkerRequest) -> WorkerResponse;
+    /// Async to allow disk I/O (storage nodes) without blocking.
+    /// Multiple requests are handled concurrently via tokio tasks.
+    async fn handle_request(&self, req: WorkerRequest) -> WorkerResponse;
 
     /// Report current capacity for heartbeat announcements.
     fn capacity_info(&self) -> CapacityInfo;
@@ -180,6 +185,27 @@ pub enum RoleType {
     // to introduce a new worker type.
 }
 ```
+
+### Concurrency Model
+
+Workers are **multi-threaded** and handle multiple requests
+concurrently. The `willow-worker` runtime uses tokio's multi-threaded
+executor:
+
+- **Event ingestion**: Incoming gossipsub events are dispatched to
+  `on_event()` which updates internal state. Implementations use
+  `Arc<RwLock<_>>` — readers (request handlers) don't block writers
+  (event ingestion) except during brief state updates.
+- **Request handling**: Each incoming `WorkerRequest` is spawned as an
+  independent tokio task via `tokio::spawn`. Multiple requests from
+  different clients are served simultaneously.
+- **Heartbeat**: Runs on its own timer task, independent of request
+  processing.
+
+For **replay nodes**, the `RwLock` around the in-memory `ServerState`
+allows concurrent reads (sync responses) with occasional writes (new
+events). For **storage nodes**, SQLite handles its own concurrency —
+each request task opens a read connection from a connection pool.
 
 ### Peer Lifecycle
 
@@ -501,29 +527,66 @@ Workers are deployed as separate processes alongside the relay on the
 same server (or different servers). They connect to the relay like any
 browser or native peer.
 
+**Multiple instances per role** are deployed for redundancy. Each
+instance has its own identity and runs as an independent peer. If one
+crashes, others continue serving. Clients automatically failover via
+the worker cache — the downed worker's heartbeats stop, it gets evicted,
+and requests route to surviving instances.
+
 ```
-┌─────────────────────────────────┐
-│  Production Server              │
-│                                 │
-│  willow-relay    (ports 9090/1) │
-│  willow-replay   (peer)        │
-│  willow-storage  (peer)        │
-│                                 │
-└─────────────────────────────────┘
+┌──────────────────────────────────────┐
+│  Production Server                   │
+│                                      │
+│  willow-relay       (ports 9090/1)   │
+│  willow-replay-1    (peer)           │
+│  willow-replay-2    (peer)           │
+│  willow-storage-1   (peer)           │
+│  willow-storage-2   (peer)           │
+│                                      │
+└──────────────────────────────────────┘
 ```
 
-Each worker has its own:
-- Ed25519 identity (persistent keypair file)
+Each worker instance has its own:
+- Ed25519 identity (persistent keypair file, unique per instance)
 - Network connection to the relay
 - systemd service unit for process management
+- Data directory (for storage nodes: separate SQLite databases)
 
 ### Systemd Services
 
 ```
-willow-relay.service     — existing
-willow-replay.service    — new
-willow-storage.service   — new
+willow-relay.service       — existing
+willow-replay@.service     — template unit, instantiated as
+                             willow-replay@1.service,
+                             willow-replay@2.service, etc.
+willow-storage@.service    — template unit, instantiated as
+                             willow-storage@1.service,
+                             willow-storage@2.service, etc.
 ```
+
+Template units use `%i` for instance-specific paths:
+```ini
+[Service]
+ExecStart=/usr/local/bin/willow-replay \
+    --identity-path /etc/willow/replay-%i.key \
+    --relay /ip4/127.0.0.1/tcp/9091/ws/p2p/<relay-peer-id>
+```
+
+### Scaling
+
+To add capacity, the operator deploys additional instances:
+```bash
+# Generate identity for new instance
+willow-replay --generate-identity --identity-path /etc/willow/replay-3.key
+
+# Enable and start
+systemctl enable --now willow-replay@3.service
+```
+
+The new instance joins the network, begins heartbeating, and clients
+discover it automatically. Server owners need to grant it `SyncProvider`
+permission (or it gets authorized automatically if the peer ID is added
+to `PLATFORM_WORKERS` and new servers are created).
 
 ## Client Changes Summary
 
