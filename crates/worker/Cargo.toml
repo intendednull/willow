@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+willow-common = { path = "../common" }
 willow-state = { path = "../state" }
 willow-identity = { path = "../identity" }
 willow-transport = { path = "../transport" }

@@ -4789,6 +4789,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "willow-channel",
+ "willow-common",
  "willow-crypto",
  "willow-files",
  "willow-identity",
@@ -4796,6 +4797,15 @@ dependencies = [
  "willow-network",
  "willow-state",
  "willow-transport",
+]
+
+[[package]]
+name = "willow-common"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "serde",
+ "willow-state",
 ]
 
 [[package]]
@@ -4975,6 +4985,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "willow-common",
  "willow-identity",
  "willow-network",
  "willow-state",

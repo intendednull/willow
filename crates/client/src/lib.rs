@@ -28,6 +28,7 @@ pub mod ops;
 pub mod state;
 pub mod storage;
 pub mod util;
+pub mod worker_cache;
 
 // Re-export key types at crate root for convenience.
 pub use events::ClientEvent;
