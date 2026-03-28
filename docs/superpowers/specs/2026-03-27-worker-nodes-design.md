@@ -26,9 +26,40 @@ authorize them via `GrantPermission` like any other peer.
 ## Non-Goals (for initial version)
 
 - Per-server worker allocation UI (stubs only)
-- File/media storage workers
 - Dynamic worker scaling
 - Worker health monitoring dashboard
+- Future worker types (see below) — not implemented, but the architecture
+  must accommodate them
+
+## Future Worker Types
+
+The `WorkerRole` trait and `RoleType` enum are designed to be extended.
+These are anticipated worker types beyond the initial Replay and Storage
+nodes:
+
+- **File Node** — Handles large file sharing and content-addressed chunk
+  storage/retrieval (building on `willow-files`). Peers upload chunks to
+  file nodes instead of flooding gossipsub. File nodes serve chunks on
+  demand, acting as always-available seeders.
+- **Stream Node** — Optimizes voice/video call routing. Instead of
+  full-mesh WebRTC between N peers, a stream node acts as an SFU
+  (Selective Forwarding Unit), receiving one stream per sender and
+  redistributing to receivers. Reduces per-peer bandwidth from O(N) to
+  O(1).
+- **Bot Node** — Runs user-defined automation: custom commands, webhook
+  integrations, moderation bots, notification bridges (e.g., GitHub →
+  channel). Bots are just workers with a scripting/plugin interface.
+  They receive events like any peer and can emit messages/reactions.
+- **Search Node** — Full-text indexing of message history. Receives
+  events from gossipsub, builds a search index (e.g., tantivy), and
+  responds to search queries with ranked results.
+- **Bridge Node** — Bridges messages between Willow servers and external
+  platforms (Matrix, IRC, Slack). Translates protocols bidirectionally.
+
+Each future type would be a new binary (`willow-files-worker`,
+`willow-stream`, `willow-bot`, etc.) implementing `WorkerRole`. The
+discovery protocol, permission model, and deployment infrastructure
+remain unchanged — they're just peers with different jobs.
 
 ## Architecture
 
@@ -82,6 +113,9 @@ pub trait WorkerRole: Send + Sync {
 pub enum RoleType {
     Replay,
     Storage,
+    // Future: File, Stream, Bot, Search, Bridge
+    // Adding a variant here + a new binary is all that's needed
+    // to introduce a new worker type.
 }
 ```
 
