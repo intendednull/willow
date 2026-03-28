@@ -3,7 +3,9 @@ import { freshStart, createServer, sendMessage, waitForMessage, openSidebar } fr
 
 test.describe('Join via shareable link', () => {
   test('peer joins via link URL and sees messages', async ({ browser }) => {
-    const ctxA = await browser.newContext();
+    const ctxA = await browser.newContext({
+      permissions: ['clipboard-read', 'clipboard-write'],
+    });
     const pageA = await ctxA.newPage();
     await freshStart(pageA);
     await createServer(pageA, 'Link Test', 'Alice');

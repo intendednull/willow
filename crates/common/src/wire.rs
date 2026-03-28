@@ -92,3 +92,111 @@ pub fn unpack_wire(data: &[u8]) -> Option<(WireMessage, willow_identity::PeerId)
     };
     Some((msg, signer))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use willow_identity::Identity;
+    use willow_state::{EventKind, StateHash};
+
+    #[test]
+    fn pack_unpack_event_round_trip() {
+        let id = Identity::generate();
+        let event = willow_state::Event {
+            id: "evt-1".to_string(),
+            parent_hash: StateHash::ZERO,
+            author: id.peer_id().to_string(),
+            timestamp_ms: 1000,
+            kind: EventKind::Message {
+                channel_id: "general".to_string(),
+                body: "hello from common".to_string(),
+                reply_to: None,
+            },
+        };
+
+        let msg = WireMessage::Event(event);
+        let data = pack_wire(&msg, &id).unwrap();
+        let (decoded, signer) = unpack_wire(&data).unwrap();
+
+        assert_eq!(signer, id.peer_id());
+        match decoded {
+            WireMessage::Event(e) => assert_eq!(e.id, "evt-1"),
+            _ => panic!("expected Event"),
+        }
+    }
+
+    #[test]
+    fn pack_unpack_sync_batch_round_trip() {
+        let id = Identity::generate();
+        let events = vec![willow_state::Event {
+            id: "e1".to_string(),
+            parent_hash: StateHash::ZERO,
+            author: "peer".to_string(),
+            timestamp_ms: 100,
+            kind: EventKind::CreateChannel {
+                name: "ch".to_string(),
+                channel_id: "cid".to_string(),
+                kind: "text".to_string(),
+            },
+        }];
+
+        let msg = WireMessage::SyncBatch { events };
+        let data = pack_wire(&msg, &id).unwrap();
+        let (decoded, _) = unpack_wire(&data).unwrap();
+
+        match decoded {
+            WireMessage::SyncBatch { events } => assert_eq!(events.len(), 1),
+            _ => panic!("expected SyncBatch"),
+        }
+    }
+
+    #[test]
+    fn pack_unpack_sync_request_round_trip() {
+        let id = Identity::generate();
+        let msg = WireMessage::SyncRequest {
+            state_hash: StateHash::from_bytes(b"test"),
+            topic: Some("_willow_server_ops".to_string()),
+        };
+
+        let data = pack_wire(&msg, &id).unwrap();
+        let (decoded, _) = unpack_wire(&data).unwrap();
+
+        match decoded {
+            WireMessage::SyncRequest { state_hash, topic } => {
+                assert_eq!(state_hash, StateHash::from_bytes(b"test"));
+                assert_eq!(topic, Some("_willow_server_ops".to_string()));
+            }
+            _ => panic!("expected SyncRequest"),
+        }
+    }
+
+    #[test]
+    fn tampered_data_fails_unpack() {
+        let id = Identity::generate();
+        let msg = WireMessage::Event(willow_state::Event {
+            id: "e".to_string(),
+            parent_hash: StateHash::ZERO,
+            author: "p".to_string(),
+            timestamp_ms: 0,
+            kind: EventKind::DeleteChannel {
+                channel_id: "c".to_string(),
+            },
+        });
+
+        let mut data = pack_wire(&msg, &id).unwrap();
+        if let Some(b) = data.last_mut() {
+            *b ^= 0xFF;
+        }
+        assert!(unpack_wire(&data).is_none());
+    }
+
+    #[test]
+    fn empty_data_fails_unpack() {
+        assert!(unpack_wire(&[]).is_none());
+    }
+
+    #[test]
+    fn garbage_data_fails_unpack() {
+        assert!(unpack_wire(b"not a valid message at all").is_none());
+    }
+}
