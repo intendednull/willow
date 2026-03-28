@@ -4,6 +4,7 @@
 //! peer lifecycle (identity, networking, heartbeat, sync) for all
 //! worker node binaries.
 
+pub mod actors;
 pub mod config;
 pub mod identity;
 pub mod types;
