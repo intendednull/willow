@@ -158,20 +158,17 @@ The relay becomes stateless network infrastructure.
 ### WorkerRole Trait
 
 ```rust
-#[async_trait]
-pub trait WorkerRole: Send + Sync {
+pub trait WorkerRole: Send + 'static {
     /// Identifies this worker's role type.
     fn role_type(&self) -> RoleType;
 
     /// Called when an event is received from gossipsub.
-    /// Takes &self (not &mut self) — implementations use interior
-    /// mutability (e.g., RwLock) for concurrent event ingestion.
-    async fn on_event(&self, event: &Event);
+    /// The state actor calls this sequentially — safe to use &mut self.
+    fn on_event(&mut self, event: &Event);
 
     /// Handle an incoming request from a client peer.
-    /// Async to allow disk I/O (storage nodes) without blocking.
-    /// Multiple requests are handled concurrently via tokio tasks.
-    async fn handle_request(&self, req: WorkerRequest) -> WorkerResponse;
+    /// Called by the state actor — has exclusive access to state.
+    fn handle_request(&mut self, req: WorkerRequest) -> WorkerResponse;
 
     /// Report current capacity for heartbeat announcements.
     fn capacity_info(&self) -> CapacityInfo;
@@ -188,24 +185,58 @@ pub enum RoleType {
 
 ### Concurrency Model
 
-Workers are **multi-threaded** and handle multiple requests
-concurrently. The `willow-worker` runtime uses tokio's multi-threaded
-executor:
+Workers are **multi-threaded** and use an **actor system** for
+cross-thread synchronization. No shared locks — all state access goes
+through message passing.
 
-- **Event ingestion**: Incoming gossipsub events are dispatched to
-  `on_event()` which updates internal state. Implementations use
-  `Arc<RwLock<_>>` — readers (request handlers) don't block writers
-  (event ingestion) except during brief state updates.
-- **Request handling**: Each incoming `WorkerRequest` is spawned as an
-  independent tokio task via `tokio::spawn`. Multiple requests from
-  different clients are served simultaneously.
-- **Heartbeat**: Runs on its own timer task, independent of request
-  processing.
+Each worker runs three actor loops on the tokio multi-threaded runtime:
 
-For **replay nodes**, the `RwLock` around the in-memory `ServerState`
-allows concurrent reads (sync responses) with occasional writes (new
-events). For **storage nodes**, SQLite handles its own concurrency —
-each request task opens a read connection from a connection pool.
+1. **Network actor** — Owns the libp2p swarm. Receives gossipsub
+   events, dispatches them to the state actor. Receives outbound
+   messages (heartbeats, responses) from other actors and publishes
+   them to gossipsub. Runs on a single task (libp2p swarm is
+   single-owner).
+
+2. **State actor** — Owns all mutable state (in-memory `ServerState`
+   for replay nodes, SQLite connection for storage nodes). Receives
+   events and requests via `tokio::sync::mpsc` channels. Processes
+   them sequentially — no contention, no locks. Sends responses back
+   via a reply channel included in each request message.
+
+3. **Heartbeat actor** — Simple timer loop. Queries the state actor
+   for capacity info, sends announcements through the network actor.
+
+```
+┌───────────┐  events   ┌───────────┐  response  ┌──────────┐
+│  Network  │──────────►│   State   │───────────►│ Network  │
+│   Actor   │  request  │   Actor   │            │  (send)  │
+│           │──────────►│           │            │          │
+└───────────┘           └───────────┘            └──────────┘
+                             ▲
+                    capacity  │
+                    query    │
+                        ┌───────────┐
+                        │ Heartbeat │
+                        │   Actor   │
+                        └───────────┘
+```
+
+**Request flow:**
+1. Network actor receives `WorkerRequest` from gossipsub
+2. Sends `(request, oneshot::Sender<WorkerResponse>)` to state actor
+3. State actor processes request, sends response on the oneshot
+4. Network actor receives response, publishes to gossipsub
+
+Multiple requests are in-flight concurrently — each gets its own
+oneshot reply channel. The state actor processes them sequentially
+but individual request handling is fast (memory lookups for replay,
+indexed queries for storage).
+
+**Why actors over locks:**
+- No deadlocks — impossible with message passing
+- No contention — state is owned by a single task
+- Clean shutdown — drain channels, process remaining messages
+- Easy to reason about — each actor has a clear, single responsibility
 
 ### Peer Lifecycle
 
