@@ -4,6 +4,8 @@ pub mod role;
 pub mod store;
 
 use clap::Parser;
+use role::StorageRole;
+use store::StorageEventStore;
 
 #[derive(Parser)]
 #[command(name = "willow-storage", about = "Willow storage worker node")]
@@ -33,7 +35,8 @@ struct Cli {
     print_peer_id: bool,
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -53,13 +56,27 @@ fn main() -> anyhow::Result<()> {
         return willow_worker::identity::print_peer_id(&cli.identity_path);
     }
 
+    let relay = cli
+        .relay
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("--relay is required"))?;
+
     tracing::info!(
         db_path = %cli.db_path,
         sync_interval = cli.sync_interval,
+        %relay,
         "starting storage node"
     );
 
-    // Full runtime integration will be wired in Task 7.
-    tracing::info!("storage node ready (runtime not yet wired)");
-    Ok(())
+    let store = StorageEventStore::open(&cli.db_path)?;
+    let role = StorageRole::new(store);
+
+    let config = willow_worker::WorkerConfig {
+        identity_path: cli.identity_path,
+        relay_addr: relay.to_string(),
+        sync_interval_secs: cli.sync_interval,
+        allocation: willow_worker::AllocationStrategy::Global,
+    };
+
+    willow_worker::runtime::run(Box::new(role), config).await
 }

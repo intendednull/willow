@@ -152,9 +152,20 @@ async fn handle_incoming_message(
             }
         }
     } else {
-        // Server ops or channel topic — try to decode as a state event.
-        if let Ok(event) = bincode::deserialize::<willow_state::Event>(data) {
-            let _ = state_tx.send(StateMsg::Event(event)).await;
+        // Server ops or channel topic — unpack signed envelope and extract events.
+        if let Some((wire_msg, _signer)) = willow_common::unpack_wire(data) {
+            match wire_msg {
+                willow_common::WireMessage::Event(event) => {
+                    let _ = state_tx.send(StateMsg::Event(event)).await;
+                }
+                willow_common::WireMessage::SyncBatch { events } => {
+                    for event in events {
+                        let _ = state_tx.send(StateMsg::Event(event)).await;
+                    }
+                }
+                // Ephemeral messages (typing, voice, join) — workers ignore these.
+                _ => {}
+            }
         } else {
             trace!(topic, bytes = data.len(), "unrecognized message on topic");
         }

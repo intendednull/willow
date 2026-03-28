@@ -4805,7 +4805,9 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "serde",
+ "willow-identity",
  "willow-state",
+ "willow-transport",
 ]
 
 [[package]]
