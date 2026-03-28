@@ -1,0 +1,25 @@
+[package]
+name = "willow-storage"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "willow-storage"
+path = "src/main.rs"
+
+[dependencies]
+willow-worker = { path = "../worker" }
+willow-state = { path = "../state" }
+willow-identity = { path = "../identity" }
+rusqlite = { version = "0.31", features = ["bundled"] }
+clap = { version = "4", features = ["derive"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { workspace = true }
+bincode = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+uuid = { workspace = true }

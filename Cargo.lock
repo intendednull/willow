@@ -4789,6 +4789,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "willow-channel",
+ "willow-common",
  "willow-crypto",
  "willow-files",
  "willow-identity",
@@ -4796,6 +4797,15 @@ dependencies = [
  "willow-network",
  "willow-state",
  "willow-transport",
+]
+
+[[package]]
+name = "willow-common"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "serde",
+ "willow-state",
 ]
 
 [[package]]
@@ -4881,17 +4891,27 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "dirs",
  "libp2p",
- "rusqlite",
- "serde",
- "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "willow-identity",
- "willow-state",
  "willow-transport",
+]
+
+[[package]]
+name = "willow-replay"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "willow-identity",
+ "willow-state",
+ "willow-worker",
 ]
 
 [[package]]
@@ -4902,6 +4922,25 @@ dependencies = [
  "serde",
  "sha2",
  "uuid",
+]
+
+[[package]]
+name = "willow-storage"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "clap",
+ "rusqlite",
+ "serde",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "willow-identity",
+ "willow-state",
+ "willow-worker",
 ]
 
 [[package]]
@@ -4932,6 +4971,25 @@ dependencies = [
  "wasm-bindgen-test",
  "web-sys",
  "willow-client",
+]
+
+[[package]]
+name = "willow-worker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "clap",
+ "serde",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+ "willow-common",
+ "willow-identity",
+ "willow-network",
+ "willow-state",
+ "willow-transport",
 ]
 
 [[package]]

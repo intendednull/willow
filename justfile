@@ -35,9 +35,17 @@ test-client:
 test-app:
     cargo test -p willow-app
 
-# Run the relay history sync tests
+# Run the relay tests
 test-relay:
     cargo test -p willow-relay
+
+# Run worker node tests (worker library + replay + storage)
+test-workers:
+    cargo test -p willow-worker -p willow-replay -p willow-storage -p willow-common
+
+# Build worker node binaries
+build-workers:
+    cargo build --release -p willow-replay -p willow-storage
 
 # Run the scaling / performance tests with output
 test-scale:
@@ -78,9 +86,9 @@ test-all: test test-browser test-e2e-ui
 check-native:
     cargo check
 
-# Check WASM compilation (excludes native-only relay server)
+# Check WASM compilation (excludes native-only binaries)
 check-wasm:
-    cargo check --target wasm32-unknown-unknown --workspace --exclude willow-relay
+    cargo check --target wasm32-unknown-unknown --workspace --exclude willow-relay --exclude willow-worker --exclude willow-replay --exclude willow-storage
 
 # Build the native desktop app
 build:
@@ -122,6 +130,29 @@ build-relay:
 # Run the relay server (TCP 9090, WebSocket 9091)
 relay *args:
     cargo run -p willow-relay -- {{args}}
+
+# Docker: build all images
+docker-build:
+    docker compose build
+
+# Docker: start full stack
+docker-up:
+    docker compose up -d
+
+# Docker: stop full stack
+docker-down:
+    docker compose down
+
+# Docker: tail all logs
+docker-logs:
+    docker compose logs -f
+
+# Docker: print all worker peer IDs
+docker-ids:
+    @docker compose exec replay-1 willow-replay --print-peer-id 2>/dev/null || echo "replay-1: not running"
+    @docker compose exec replay-2 willow-replay --print-peer-id 2>/dev/null || echo "replay-2: not running"
+    @docker compose exec storage-1 willow-storage --print-peer-id 2>/dev/null || echo "storage-1: not running"
+    @docker compose exec storage-2 willow-storage --print-peer-id 2>/dev/null || echo "storage-2: not running"
 
 # Clean build artifacts
 clean:

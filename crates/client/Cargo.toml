@@ -14,6 +14,7 @@ willow-transport = { path = "../transport" }
 willow-crypto = { path = "../crypto" }
 willow-files = { path = "../files" }
 willow-state = { path = "../state" }
+willow-common = { path = "../common" }
 
 anyhow = { workspace = true }
 serde = { workspace = true }
