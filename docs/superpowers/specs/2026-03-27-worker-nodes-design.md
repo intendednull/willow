@@ -186,13 +186,13 @@ Workers are **multi-threaded** and use an **actor system** for
 cross-thread synchronization. No shared locks — all state access goes
 through message passing.
 
-Each worker runs three actor loops on the tokio multi-threaded runtime:
+Each worker runs four actor loops on the tokio multi-threaded runtime:
 
 1. **Network actor** — Owns the libp2p swarm. Receives gossipsub
    events, dispatches them to the state actor. Receives outbound
-   messages (heartbeats, responses) from other actors and publishes
-   them to gossipsub. Runs on a single task (libp2p swarm is
-   single-owner).
+   messages (heartbeats, responses, sync requests) from other actors
+   and publishes them to gossipsub. Runs on a single task (libp2p
+   swarm is single-owner).
 
 2. **State actor** — Owns all mutable state (in-memory `ServerState`
    for replay nodes, SQLite connection for storage nodes). Receives
@@ -203,19 +203,25 @@ Each worker runs three actor loops on the tokio multi-threaded runtime:
 3. **Heartbeat actor** — Simple timer loop. Queries the state actor
    for capacity info, sends announcements through the network actor.
 
+4. **Sync actor** — Periodic timer loop. Queries the state actor for
+   current state hashes, broadcasts `SyncRequest` through the network
+   actor. Ensures the worker actively converges with other peers.
+
 ```
 ┌───────────┐  events   ┌───────────┐  response  ┌──────────┐
 │  Network  │──────────►│   State   │───────────►│ Network  │
 │   Actor   │  request  │   Actor   │            │  (send)  │
 │           │──────────►│           │            │          │
-└───────────┘           └───────────┘            └──────────┘
-                             ▲
-                    capacity  │
-                    query    │
-                        ┌───────────┐
-                        │ Heartbeat │
-                        │   Actor   │
-                        └───────────┘
+└───────────┘           └─────┬─────┘            └──────────┘
+                              │ ▲                      ▲
+                    capacity  │ │ state hash    sync    │
+                    query     │ │ query        request  │
+                        ┌─────┘ └──────┐               │
+                        ▼              ▼               │
+                   ┌───────────┐ ┌───────────┐         │
+                   │ Heartbeat │ │   Sync    │─────────┘
+                   │   Actor   │ │   Actor   │
+                   └───────────┘ └───────────┘
 ```
 
 **Request flow:**
@@ -234,6 +240,44 @@ indexed queries for storage).
 - No contention — state is owned by a single task
 - Clean shutdown — drain channels, process remaining messages
 - Easy to reason about — each actor has a clear, single responsibility
+
+### Active Sync
+
+Workers that hold server state (replay nodes, and any future stateful
+worker types) participate in the same sync protocol as regular peers.
+They are not passive recipients — they actively maintain state
+consistency by syncing with other peers and workers.
+
+The worker library runs a **sync loop** as a fourth actor alongside
+network, state, and heartbeat:
+
+- **Periodic sync**: Every N seconds (configurable, default 30s), the
+  sync actor broadcasts a `SyncRequest` with the worker's current state
+  hash for each server it serves. This is identical to what clients do
+  when they come online.
+- **Peer-to-peer convergence**: Other replay nodes, storage nodes, and
+  regular peers respond with any events the worker is missing. The
+  worker applies them via `on_event()` through the state actor.
+- **Incoming sync requests**: Workers also *respond* to `SyncRequest`
+  from other workers and peers — they're full participants in the
+  protocol, not just consumers.
+
+This creates a **continuous convergence loop** across the network.
+Workers don't just wait for events to arrive via gossipsub — they
+actively pull from peers to catch up on anything missed. Benefits:
+
+- **Resilience to gossipsub gaps**: If a gossipsub message is dropped
+  (network partition, temporary disconnect), the next sync cycle
+  catches it
+- **Worker-to-worker consistency**: Multiple replay nodes converge to
+  the same state, so clients get consistent responses regardless of
+  which worker they hit
+- **Stale data mitigation**: State is never more than one sync interval
+  behind, even if gossipsub delivery is delayed
+
+Storage nodes participate in sync differently — they don't maintain
+`ServerState` but they do broadcast `SyncRequest` to discover events
+they may have missed, ensuring their archive is complete.
 
 ### Peer Lifecycle
 
@@ -359,6 +403,7 @@ directly.
 
 ```
 --max-events-per-server 1000    # Event buffer size
+--sync-interval 30              # Active sync interval in seconds
 --relay <multiaddr>             # Relay to connect through
 --identity-path <path>          # Ed25519 keypair location
 ```
@@ -405,6 +450,7 @@ WorkerResponse::HistoryPage {
 
 ```
 --db-path <path>                # SQLite database location
+--sync-interval 60              # Active sync interval in seconds
 --relay <multiaddr>             # Relay to connect through
 --identity-path <path>          # Ed25519 keypair location
 ```
