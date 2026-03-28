@@ -44,7 +44,7 @@ but not limited to:
 | **Performance** | Unnecessary allocations, O(n^2) where O(n) is possible, missing caching |
 | **Concurrency** | Data races, deadlock potential, missing synchronization |
 | **API misuse** | Wrong trait bounds, incorrect lifetimes, misused library APIs |
-| **Test gaps** | Changed logic with no corresponding test coverage |
+| **Test gaps** | Changed logic with no corresponding test coverage, missing error-path tests (what happens when DB fails, network drops, channel closes), missing edge-case tests (empty input, boundary values, concurrent access), untested public API methods |
 | **WASM compat** | `std::fs`, `std::time::SystemTime`, `std::thread` in library crates (per CLAUDE.md) |
 
 For each flagged area, record:
