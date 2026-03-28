@@ -2,9 +2,13 @@ use leptos::prelude::*;
 
 use crate::app::WebClientHandle;
 use crate::components::ConfirmDialog;
+use crate::icons;
 
-/// Right sidebar showing connected peers with trust/kick actions.
-/// Accepts `(peer_id, display_name)` tuples so names update reactively.
+/// Right sidebar showing connected peers and infrastructure nodes.
+///
+/// Workers (peers with SyncProvider permission) are displayed in a
+/// separate "Infrastructure" section with role-specific icons and
+/// badges, visually distinct from regular members.
 #[component]
 pub fn MemberList(
     peers: ReadSignal<Vec<(String, String, bool)>>,
@@ -17,11 +21,105 @@ pub fn MemberList(
     let (pending_kick_peer, set_pending_kick_peer) = signal(Option::<(String, String)>::None);
     let handle_kick_confirm = handle.clone();
 
+    let handle_split = handle.clone();
+    let handle_members = handle.clone();
+    let handle_for_items = handle.clone();
+    let handle_empty = handle.clone();
+
     view! {
         <div class="member-list">
+            // ── Infrastructure (worker nodes) ──────────────────────
+            {
+                let hs = handle_split.clone();
+                move || {
+                    let all = peers.get();
+                    let workers: Vec<_> = all
+                        .iter()
+                        .filter(|(pid, _, _)| {
+                            hs.has_permission(pid, &willow_client::willow_state::Permission::SyncProvider)
+                                && pid != &peer_id.get_untracked()
+                                && pid != &hs.server_owner()
+                        })
+                        .cloned()
+                        .collect();
+
+                    if workers.is_empty() {
+                        None
+                    } else {
+                        let _hs2 = hs.clone();
+                        Some(view! {
+                            <h3 class="section-header infra-header">
+                                {icons::icon_server()}
+                                " Infrastructure"
+                            </h3>
+                            <For
+                                each=move || workers.clone()
+                                key=|(id, _, _)| id.clone()
+                                let:worker
+                            >
+                                {
+                                    let (wpid, wname, w_online) = worker;
+                                    let wpid_display = wpid.clone();
+                                    view! {
+                                        <div class={if w_online { "worker-item" } else { "worker-item offline" }}>
+                                            <div class="worker-icon">
+                                                {
+                                                    // Determine role by name heuristic or just show server icon.
+                                                    let name_lower = wname.to_lowercase();
+                                                    if name_lower.contains("replay") {
+                                                        icons::icon_refresh().into_any()
+                                                    } else if name_lower.contains("storage") {
+                                                        icons::icon_database().into_any()
+                                                    } else {
+                                                        icons::icon_server().into_any()
+                                                    }
+                                                }
+                                            </div>
+                                            <div class="worker-info">
+                                                <span class="worker-name">{wname}</span>
+                                                <span class="worker-peer-id">{
+                                                    if wpid_display.len() > 12 {
+                                                        format!("{}...", &wpid_display[..12])
+                                                    } else {
+                                                        wpid_display
+                                                    }
+                                                }</span>
+                                            </div>
+                                            <div class="worker-status">
+                                                {if w_online {
+                                                    view! {
+                                                        <span class="worker-badge online">{icons::icon_activity()} " Active"</span>
+                                                    }.into_any()
+                                                } else {
+                                                    view! {
+                                                        <span class="worker-badge offline">"Offline"</span>
+                                                    }.into_any()
+                                                }}
+                                            </div>
+                                        </div>
+                                    }
+                                }
+                            </For>
+                        })
+                    }
+                }
+            }
+
+            // ── Members (regular peers) ────────────────────────────
             <h3>"Members"</h3>
             <For
-                each=move || peers.get()
+                each=move || {
+                    let all = peers.get();
+                    let hs = handle_members.clone();
+                    all.into_iter()
+                        .filter(|(pid, _, _)| {
+                            // Exclude workers from the members section.
+                            !hs.has_permission(pid, &willow_client::willow_state::Permission::SyncProvider)
+                                || pid == &peer_id.get_untracked()
+                                || pid == &hs.server_owner()
+                        })
+                        .collect::<Vec<_>>()
+                }
                 key=|(id, _, _)| id.clone()
                 let:peer
             >
@@ -33,9 +131,9 @@ pub fn MemberList(
                     let pid_untrust = pid.clone();
                     let pid_kick = pid.clone();
                     let pid_self = pid.clone();
-                    let handle_badge = handle.clone();
-                    let handle_trust = handle.clone();
-                    let handle_untrust = handle.clone();
+                    let handle_badge = handle_for_items.clone();
+                    let handle_trust = handle_for_items.clone();
+                    let handle_untrust = handle_for_items.clone();
                     view! {
                         <div class="member-item">
                             <div class={if is_online { "status-dot" } else { "status-dot offline" }}></div>
@@ -103,7 +201,13 @@ pub fn MemberList(
                 }
             </For>
             {move || {
-                if peers.get().is_empty() {
+                let all = peers.get();
+                let non_worker_count = all.iter().filter(|(pid, _, _)| {
+                    !handle_empty.has_permission(pid, &willow_client::willow_state::Permission::SyncProvider)
+                        || pid == &peer_id.get_untracked()
+                        || pid == &handle_empty.server_owner()
+                }).count();
+                if non_worker_count == 0 {
                     Some(view! { <div class="empty-state" style="font-size: 12px;">"No peers connected"</div> })
                 } else {
                     None

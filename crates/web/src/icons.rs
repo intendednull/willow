@@ -338,3 +338,43 @@ pub fn icon_maximize() -> impl IntoView {
         "icon-maximize",
     )
 }
+
+/// Server/infrastructure icon (stacked horizontal bars — like a server rack).
+pub fn icon_server() -> impl IntoView {
+    icon(
+        &format!(
+            r#"<svg {SVG_ATTRS}><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg>"#
+        ),
+        "icon-server",
+    )
+}
+
+/// Refresh/sync icon (circular arrows).
+pub fn icon_refresh() -> impl IntoView {
+    icon(
+        &format!(
+            r#"<svg {SVG_ATTRS}><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>"#
+        ),
+        "icon-refresh",
+    )
+}
+
+/// Database/storage icon (cylinder).
+pub fn icon_database() -> impl IntoView {
+    icon(
+        &format!(
+            r#"<svg {SVG_ATTRS}><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></svg>"#
+        ),
+        "icon-database",
+    )
+}
+
+/// Activity/pulse icon (heartbeat line).
+pub fn icon_activity() -> impl IntoView {
+    icon(
+        &format!(
+            r#"<svg {SVG_ATTRS}><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>"#
+        ),
+        "icon-activity",
+    )
+}
