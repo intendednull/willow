@@ -1,0 +1,21 @@
+[package]
+name = "willow-replay"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "willow-replay"
+path = "src/main.rs"
+
+[dependencies]
+willow-worker = { path = "../worker" }
+willow-state = { path = "../state" }
+willow-identity = { path = "../identity" }
+clap = { version = "4", features = ["derive"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { workspace = true }
+
+[dev-dependencies]
+uuid = { workspace = true }
