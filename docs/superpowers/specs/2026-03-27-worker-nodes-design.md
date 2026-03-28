@@ -1,0 +1,443 @@
+# Worker Nodes Design Spec
+
+**Date**: 2026-03-27
+**Status**: Approved
+
+## Overview
+
+Willow's relay currently handles both network plumbing (TCP↔WS bridging,
+NAT traversal) and state storage/replay (SQLite event store, SyncRequest
+handling). This design separates those concerns by introducing **worker
+nodes** — specialized peers that behave like any other peer in the network
+but perform specific infrastructure jobs.
+
+Worker nodes use the same protocols, identity system, and permission model
+as regular peers. They require no special allowances — server owners
+authorize them via `GrantPermission` like any other peer.
+
+## Goals
+
+- Always-available state replay for peers coming online
+- Deep archival history beyond what any single peer holds
+- Fault isolation: one worker crashing doesn't affect others
+- No special trust model — workers are just peers with jobs
+- Scalable architecture with stubs for per-server management
+
+## Non-Goals (for initial version)
+
+- Per-server worker allocation UI (stubs only)
+- File/media storage workers
+- Dynamic worker scaling
+- Worker health monitoring dashboard
+
+## Architecture
+
+### Crate Structure
+
+```
+crates/
+├── worker/    — Shared library: peer lifecycle, heartbeat, WorkerRole trait
+├── replay/    — Binary: fast bounded-memory state replay
+├── storage/   — Binary: archival disk-backed history
+├── relay/     — Stripped back to pure network plumbing
+```
+
+### Relay Changes
+
+The relay loses its event storage and sync handling responsibilities:
+
+**Removed from relay:**
+- SQLite `EventStore` and all event persistence
+- `SyncRequest` / `SyncBatch` handling
+- `events_for_topic_since_hash()` query logic
+
+**Relay retains:**
+- TCP and WebSocket listeners
+- libp2p relay protocol (NAT traversal)
+- GossipSub message routing (pass-through)
+- Kademlia peer discovery
+- Identify protocol
+
+The relay becomes stateless network infrastructure.
+
+## Worker Library (`willow-worker`)
+
+### WorkerRole Trait
+
+```rust
+pub trait WorkerRole: Send + Sync {
+    /// Identifies this worker's role type.
+    fn role_type(&self) -> RoleType;
+
+    /// Called when an event is received from gossipsub.
+    fn on_event(&mut self, event: &Event);
+
+    /// Handle an incoming request from a client peer.
+    fn handle_request(&self, req: WorkerRequest) -> WorkerResponse;
+
+    /// Report current capacity for heartbeat announcements.
+    fn capacity_info(&self) -> CapacityInfo;
+}
+
+pub enum RoleType {
+    Replay,
+    Storage,
+}
+```
+
+### Peer Lifecycle
+
+The library handles all common peer behavior:
+
+1. **Identity** — Generates or loads a persistent Ed25519 identity per
+   worker instance from a configured path.
+2. **Network bootstrap** — Connects to the relay, subscribes to both
+   `_willow_workers` (discovery protocol) and `_willow_server_ops`
+   (server events and permissions) gossipsub topics, plus per-channel
+   topics for assigned servers.
+3. **Heartbeat loop** — Broadcasts `WorkerAnnouncement` every 10 seconds
+   on the `_willow_workers` gossipsub topic.
+4. **Permission awareness** — Listens for `GrantPermission` events. Only
+   begins serving requests for a server after receiving `SyncProvider`
+   permission.
+5. **Graceful shutdown** — On SIGTERM/SIGINT, broadcasts a departure
+   message so clients evict the worker from their cache immediately.
+
+### Binary Entry Point
+
+Each worker binary is minimal:
+
+```rust
+fn main() {
+    let config = WorkerConfig::from_args();
+    let role = ReplayRole::new(&config);
+    willow_worker::run(role, config);
+}
+```
+
+## Capability Discovery Protocol
+
+### Gossipsub Topic
+
+All worker discovery happens on `_willow_workers`. This topic carries
+only worker protocol messages, not server state.
+
+### Heartbeat Message
+
+```rust
+WorkerAnnouncement {
+    peer_id: String,
+    role: RoleType,
+    servers: Vec<String>,       // server IDs this worker serves
+    capacity: CapacityInfo,     // role-specific capacity info
+    timestamp: u64,
+}
+
+/// Role-specific capacity information included in heartbeats.
+enum CapacityInfo {
+    Replay {
+        servers_loaded: u32,
+        events_buffered: u32,
+        max_events: u32,
+    },
+    Storage {
+        servers_tracked: u32,
+        total_events_stored: u64,
+        disk_used_bytes: u64,
+    },
+}
+```
+
+**Interval**: Every 10 seconds.
+
+### Client-Side Cache
+
+Clients maintain a local `HashMap<(RoleType, ServerId), Vec<WorkerInfo>>`
+populated from heartbeats. Entries are evicted after 30 seconds without
+a heartbeat (3 missed heartbeats).
+
+When a client needs a service:
+1. Look up workers for the role + server in the local cache
+2. Pick one (round-robin or random for load distribution)
+3. Send a `WorkerRequest` via gossipsub
+4. If no workers are cached, fall back to direct peer-to-peer sync
+
+### Failure Detection
+
+- 3 missed heartbeats (30s) → client removes worker from cache
+- Graceful shutdown → immediate eviction via departure message
+- Client-side timeout on requests (5s) → try next available worker
+
+## Replay Node (`willow-replay`)
+
+### Purpose
+
+Fast, bounded-memory state sync. When a peer comes online, the replay
+node gets them caught up as quickly as possible.
+
+### Behavior
+
+- Subscribes to all assigned servers' gossipsub topics
+- Applies incoming events to an in-memory `ServerState` per server using
+  `apply_lenient()`
+- Responds to `SyncRequest` messages by computing a diff against the
+  requester's state hash and sending a `SyncBatch`
+
+### Bounded Memory Strategy
+
+- Configurable max events per server (default: 1000)
+- When the buffer is full, oldest events are evicted
+- The computed `ServerState` snapshot is always retained
+- If a client's state hash predates the oldest buffered event, the replay
+  node sends a `StateSnapshot` (full computed state) instead of a diff
+
+### New Wire Message
+
+```rust
+StateSnapshot {
+    server_id: String,
+    state: ServerState,
+}
+```
+
+This enables fast catch-up for peers that are very far behind — instead
+of replaying hundreds of events, they receive the final computed state
+directly.
+
+### Configuration
+
+```
+--max-events-per-server 1000    # Event buffer size
+--relay <multiaddr>             # Relay to connect through
+--identity-path <path>          # Ed25519 keypair location
+```
+
+## Storage Node (`willow-storage`)
+
+### Purpose
+
+Archival history. Persists every event to disk indefinitely. Serves
+paginated history queries for older messages.
+
+### Behavior
+
+- Subscribes to all assigned servers' gossipsub topics
+- Persists every event to SQLite (migrated from the relay's current
+  `EventStore` implementation)
+- Does NOT maintain an in-memory `ServerState` — stores raw events only
+- Responds to `WorkerRequest::History` with paginated results
+
+### Request/Response Types
+
+```rust
+WorkerRequest::History {
+    server_id: String,
+    channel: String,
+    before_timestamp: Option<u64>,  // pagination cursor
+    limit: u32,                      // default 50
+}
+
+WorkerResponse::HistoryPage {
+    events: Vec<Event>,
+    has_more: bool,
+}
+```
+
+### Client Integration
+
+- When a user scrolls up past locally cached messages, the client sends
+  a `History` request to a known storage node
+- Results are cached locally so the same page isn't re-requested
+- UI shows "Loading older messages..." while waiting
+
+### Configuration
+
+```
+--db-path <path>                # SQLite database location
+--relay <multiaddr>             # Relay to connect through
+--identity-path <path>          # Ed25519 keypair location
+```
+
+## Wire Protocol Additions
+
+New messages on the `_willow_workers` gossipsub topic:
+
+```rust
+enum WorkerWireMessage {
+    /// Periodic heartbeat from a worker.
+    Announcement(WorkerAnnouncement),
+
+    /// Client requesting a service from a worker.
+    Request {
+        request_id: String,
+        target_peer: String,     // specific worker peer ID
+        payload: WorkerRequest,
+    },
+
+    /// Worker responding to a client request.
+    Response {
+        request_id: String,
+        target_peer: String,     // requesting client's peer ID
+        payload: WorkerResponse,
+    },
+}
+
+enum WorkerRequest {
+    /// Request state sync (handled by replay nodes).
+    Sync {
+        server_id: String,
+        state_hash: Vec<u8>,
+    },
+
+    /// Request paginated history (handled by storage nodes).
+    History {
+        server_id: String,
+        channel: String,
+        before_timestamp: Option<u64>,
+        limit: u32,
+    },
+}
+
+enum WorkerResponse {
+    /// Batch of events for sync catch-up.
+    SyncBatch { events: Vec<Event> },
+
+    /// Full state snapshot for far-behind peers.
+    Snapshot { state: ServerState },
+
+    /// Paginated history results.
+    HistoryPage {
+        events: Vec<Event>,
+        has_more: bool,
+    },
+
+    /// Request denied (no permission, unknown server, etc).
+    Denied { reason: String },
+}
+```
+
+## Authorization & Server Creation
+
+### Permission Model
+
+Workers use the existing `SyncProvider` permission. No new permission
+types are needed. A worker without `SyncProvider` for a server can
+listen to events (building state) but cannot respond to requests.
+
+### Server Creation Flow
+
+When a user creates a server, the creation flow includes a new
+"Worker Nodes" step:
+
+1. User enters server name (existing step)
+2. **New: "Worker Nodes" step** — checklist of available platform workers
+   grouped by role:
+   - **Replay Nodes**: list of known replay worker peer IDs, all checked
+     by default
+   - **Storage Nodes**: list of known storage worker peer IDs, all checked
+     by default
+   - "Select All / Deselect All" per group
+   - Brief descriptions: "Replay nodes keep your server available when
+     you're offline", "Storage nodes preserve your full message history"
+3. User can uncheck any workers they don't want
+4. On submit, `GrantPermission { peer_id, permission: SyncProvider }`
+   events are emitted for each checked worker as part of the genesis
+   event sequence
+
+### Known Worker Discovery
+
+The client needs to know which platform workers exist to populate the
+checklist. For the initial version:
+
+1. The operator generates persistent Ed25519 identities for each worker
+   (e.g., `willow-replay --generate-identity --identity-path /etc/willow/replay.key`)
+2. The resulting peer IDs are hardcoded in the client at build time as a
+   `PLATFORM_WORKERS` constant
+3. A discovery-based approach (querying the `_willow_workers` topic
+   before server creation) can replace this later
+
+### Server Settings (Stub)
+
+A "Worker Nodes" section in server settings where owners can:
+- See currently authorized workers and their roles
+- Revoke worker access
+- Authorize new workers
+
+This is a stub for the initial version — the UI exists but the
+management API behind it is minimal.
+
+## Auto-Allocation
+
+### Initial Strategy
+
+All workers serve all servers. When a worker starts:
+
+1. Connects to relay
+2. Discovers servers via `_willow_server_ops` gossipsub traffic
+3. Auto-joins every server it discovers
+4. Begins heartbeats listing all servers
+5. Waits for `SyncProvider` permission before serving requests
+
+### Future Stubs
+
+```rust
+pub enum AllocationStrategy {
+    /// Serve all discovered servers (initial implementation).
+    Global,
+    /// Serve only specific servers.
+    PerServer(Vec<String>),
+    /// Dynamic allocation based on load (future).
+    Dynamic,
+}
+```
+
+Configuration fields for:
+- `allocation_strategy: AllocationStrategy`
+- `max_servers: Option<usize>`
+- Placeholder for management API (add/remove server assignments at
+  runtime)
+
+## Deployment
+
+### Alongside Relay
+
+Workers are deployed as separate processes alongside the relay on the
+same server (or different servers). They connect to the relay like any
+browser or native peer.
+
+```
+┌─────────────────────────────────┐
+│  Production Server              │
+│                                 │
+│  willow-relay    (ports 9090/1) │
+│  willow-replay   (peer)        │
+│  willow-storage  (peer)        │
+│                                 │
+└─────────────────────────────────┘
+```
+
+Each worker has its own:
+- Ed25519 identity (persistent keypair file)
+- Network connection to the relay
+- systemd service unit for process management
+
+### Systemd Services
+
+```
+willow-relay.service     — existing
+willow-replay.service    — new
+willow-storage.service   — new
+```
+
+## Client Changes Summary
+
+1. **Worker cache** — new module maintaining discovered workers from
+   heartbeats, with TTL-based eviction
+2. **Sync routing** — prefer replay nodes for `SyncRequest` instead of
+   broadcasting to all peers
+3. **History loading** — new "load older messages" flow that queries
+   storage nodes on scroll-up
+4. **Server creation** — new "Worker Nodes" step with authorization
+   checklist
+5. **Server settings** — stub "Worker Nodes" section for managing
+   authorized workers
