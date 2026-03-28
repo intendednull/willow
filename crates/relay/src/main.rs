@@ -1,7 +1,7 @@
 //! # Willow Relay Server
 //!
-//! A lightweight relay node that bridges native (TCP) and browser (WebSocket)
-//! peers. Deploy one on a VPS so browser clients can join the network.
+//! A lightweight, stateless relay node that bridges native (TCP) and browser
+//! (WebSocket) peers. Deploy one on a VPS so browser clients can join.
 //!
 //! ## What it does
 //!
@@ -11,18 +11,11 @@
 //! - Runs **Kademlia** for peer discovery
 //! - Runs **Identify** for peer metadata exchange
 //!
-//! ## Usage
+//! ## What it does NOT do
 //!
-//! ```bash
-//! # Listen on default ports (TCP 9090, WebSocket 9091)
-//! willow-relay
-//!
-//! # Custom ports
-//! willow-relay --tcp-port 4001 --ws-port 4002
-//!
-//! # Persist identity across restarts
-//! willow-relay --identity relay.key
-//! ```
+//! - Store events (replay nodes handle state persistence)
+//! - Respond to sync requests (replay nodes handle catch-up)
+//! - Store message history (storage nodes handle archival)
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -47,11 +40,6 @@ struct Args {
     #[arg(long)]
     identity: Option<std::path::PathBuf>,
 
-    /// Directory for the event store database.
-    /// Defaults to ~/.local/share/willow-relay/
-    #[arg(long)]
-    data_dir: Option<std::path::PathBuf>,
-
     /// Display name for this relay node (visible in peer lists).
     #[arg(long, default_value = "Relay Node")]
     name: String,
@@ -69,14 +57,7 @@ async fn main() -> Result<()> {
 
     let keypair = load_or_generate_keypair(args.identity.as_deref())?;
 
-    let data_dir = args.data_dir.unwrap_or_else(|| {
-        dirs::data_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("willow-relay")
-    });
-    let db_path = data_dir.join("events.db");
-
-    let mut relay = Relay::start(keypair, &db_path).await?;
+    let mut relay = Relay::start(keypair).await?;
 
     relay.set_display_name(&args.name);
     info!(%relay.peer_id, name = %args.name, "starting willow relay");
@@ -96,8 +77,7 @@ async fn main() -> Result<()> {
     info!(
         tcp_port = args.tcp_port,
         ws_port = args.ws_port,
-        events = relay.event_store.count(),
-        "relay listening"
+        "relay listening (stateless — no event storage)"
     );
 
     // Run the swarm event loop.

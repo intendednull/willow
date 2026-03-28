@@ -1,48 +1,16 @@
 //! # Willow Relay — Library
 //!
-//! Reusable relay-server logic: swarm construction, event storage, and message
-//! handling. The binary in `main.rs` is a thin CLI wrapper around this library.
+//! Stateless relay-server: TCP↔WS bridging, NAT traversal, and gossipsub
+//! message routing. No event storage — replay and storage nodes handle
+//! state persistence.
 
-pub mod event_store;
-
-use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use libp2p::{
     gossipsub, identify, kad, noise, relay, swarm::SwarmEvent, tcp, yamux, PeerId, SwarmBuilder,
 };
 use tracing::{debug, info, warn};
-use willow_state::EventStore as _;
-
-/// Wire message format — mirrors the client's `WireMessage` but defined
-/// locally to avoid pulling in the full client dependency.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum WireMessage {
-    /// A state event to be applied.
-    Event(willow_state::Event),
-    /// Request missing events from peers / relay.
-    SyncRequest {
-        /// Hash of the requester's current state.
-        state_hash: willow_state::StateHash,
-        /// Optional topic to scope the request.
-        topic: Option<String>,
-    },
-    /// A batch of events sent in response to a `SyncRequest`.
-    SyncBatch {
-        /// The events being synced.
-        events: Vec<willow_state::Event>,
-    },
-    /// A peer is requesting to join via a shareable link.
-    JoinRequest { link_id: String, peer_id: String },
-    /// The inviter's response with an encrypted invite for the requester.
-    JoinResponse {
-        target_peer: String,
-        invite_data: String,
-    },
-    /// The inviter denied the join request.
-    JoinDenied { target_peer: String, reason: String },
-}
 
 /// Composite behaviour for the relay server.
 #[derive(libp2p::swarm::NetworkBehaviour)]
@@ -60,13 +28,11 @@ pub struct RelayBehaviour {
 /// Profile topic for broadcasting display names.
 const PROFILE_TOPIC: &str = "_willow_profiles";
 
-/// A running relay node with its swarm, event store, and signing identity.
+/// A running relay node — pure network plumbing, no state storage.
 pub struct Relay {
     /// The libp2p swarm driving all network protocols.
     pub swarm: libp2p::Swarm<RelayBehaviour>,
-    /// Persistent store for events passing through the relay.
-    pub event_store: event_store::RelayEventStore,
-    /// Ed25519 identity used to sign sync responses.
+    /// Ed25519 identity used to sign profile broadcasts.
     pub identity: willow_identity::Identity,
     /// This relay's libp2p peer ID.
     pub peer_id: PeerId,
@@ -75,14 +41,14 @@ pub struct Relay {
 }
 
 impl Relay {
-    /// Build a relay node with the given keypair and database path.
+    /// Build a relay node with the given keypair.
     ///
     /// The swarm is fully constructed but has no listen addresses yet — call
     /// [`libp2p::Swarm::listen_on`] after this to bind to ports.
-    pub async fn start(keypair: libp2p::identity::Keypair, db_path: &Path) -> Result<Self> {
+    pub async fn start(keypair: libp2p::identity::Keypair) -> Result<Self> {
         let local_peer_id = PeerId::from(keypair.public());
 
-        // Build a willow Identity for signing sync responses.
+        // Build a willow Identity for signing profile broadcasts.
         let relay_identity = {
             let ed_kp = keypair
                 .clone()
@@ -139,41 +105,32 @@ impl Relay {
                     relay,
                 })
             })?
-            .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(300)))
+            .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(600)))
             .build();
-
-        std::fs::create_dir_all(db_path.parent().unwrap_or(Path::new("."))).ok();
-        let event_store =
-            event_store::RelayEventStore::open(db_path).context("failed to open event store")?;
 
         Ok(Relay {
             swarm,
-            event_store,
             identity: relay_identity,
             peer_id: local_peer_id,
             display_name: String::new(),
         })
     }
 
-    /// Process a single swarm event. Returns `true` if a message was stored.
-    pub fn handle_swarm_event(&mut self, event: SwarmEvent<RelayBehaviourEvent>) -> bool {
+    /// Process a single swarm event.
+    pub fn handle_swarm_event(&mut self, event: SwarmEvent<RelayBehaviourEvent>) {
         match event {
             SwarmEvent::NewListenAddr { address, .. } => {
                 info!(%address, "listening on");
-                false
             }
 
             SwarmEvent::ConnectionEstablished {
                 peer_id, endpoint, ..
             } => {
                 info!(%peer_id, ?endpoint, "peer connected");
-                // Explicitly add to gossipsub mesh so message delivery is
-                // reliable, especially for WASM peers over WebSocket.
                 self.swarm
                     .behaviour_mut()
                     .gossipsub
                     .add_explicit_peer(&peer_id);
-                false
             }
 
             SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
@@ -182,7 +139,6 @@ impl Relay {
                     .behaviour_mut()
                     .gossipsub
                     .remove_explicit_peer(&peer_id);
-                false
             }
 
             SwarmEvent::Behaviour(RelayBehaviourEvent::Identify(identify::Event::Received {
@@ -197,7 +153,6 @@ impl Relay {
                         .kademlia
                         .add_address(&peer_id, addr);
                 }
-                false
             }
 
             SwarmEvent::Behaviour(RelayBehaviourEvent::Gossipsub(
@@ -208,22 +163,28 @@ impl Relay {
                 if let Err(e) = self.swarm.behaviour_mut().gossipsub.subscribe(&topic) {
                     warn!(%e, "failed to subscribe");
                 }
-                // Broadcast our display name so the new peer sees us.
                 self.broadcast_profile();
-                false
             }
 
             SwarmEvent::Behaviour(RelayBehaviourEvent::Gossipsub(gossipsub::Event::Message {
                 message,
                 ..
-            })) => self.handle_gossipsub_message(&message),
+            })) => {
+                // Pure pass-through — gossipsub handles message forwarding.
+                // No storage, no parsing, no sync responses.
+                debug!(
+                    topic = %message.topic,
+                    source = ?message.source,
+                    bytes = message.data.len(),
+                    "relaying message"
+                );
+            }
 
             SwarmEvent::Behaviour(RelayBehaviourEvent::Relay(event)) => {
                 debug!(?event, "relay event");
-                false
             }
 
-            _ => false,
+            _ => {}
         }
     }
 
@@ -254,87 +215,5 @@ impl Relay {
                 debug!(%e, "failed to broadcast profile (no subscribers yet)");
             }
         }
-    }
-
-    /// Handle a single GossipSub message: parse, store events, respond to sync
-    /// requests. Returns `true` if an event was stored.
-    fn handle_gossipsub_message(&mut self, message: &gossipsub::Message) -> bool {
-        let topic_str = message.topic.to_string();
-        let data = &message.data;
-        let mut stored = false;
-
-        if let Ok((envelope_bytes, _signer)) = willow_identity::unpack::<Vec<u8>>(data) {
-            if let Ok((wire_msg, willow_transport::MessageType::Channel)) =
-                willow_transport::unpack_envelope::<WireMessage>(&envelope_bytes)
-            {
-                match wire_msg {
-                    WireMessage::Event(ref event) => {
-                        self.event_store.store_event(&topic_str, event, data);
-                        debug!(
-                            id = %event.id,
-                            author = %event.author,
-                            topic = %topic_str,
-                            "stored event"
-                        );
-                        stored = true;
-                    }
-                    WireMessage::SyncRequest {
-                        ref state_hash,
-                        ref topic,
-                    } => {
-                        let events = if let Some(ref t) = topic {
-                            self.event_store.events_for_topic_since_hash(t, state_hash)
-                        } else {
-                            self.event_store.events_since(state_hash)
-                        };
-
-                        if !events.is_empty() {
-                            let batch = WireMessage::SyncBatch {
-                                events: events.clone(),
-                            };
-                            if let Ok(envelope) = willow_transport::pack_envelope(
-                                willow_transport::MessageType::Channel,
-                                &batch,
-                            ) {
-                                if let Ok(signed) = willow_identity::pack(&envelope, &self.identity)
-                                {
-                                    let reply_topic =
-                                        topic.as_deref().unwrap_or("_willow_server_ops");
-                                    let gt = gossipsub::IdentTopic::new(reply_topic);
-                                    let _ =
-                                        self.swarm.behaviour_mut().gossipsub.publish(gt, signed);
-                                    info!(
-                                        count = events.len(),
-                                        topic = %reply_topic,
-                                        "relay sent sync response"
-                                    );
-                                }
-                            }
-                        } else {
-                            debug!("sync request but no events stored");
-                        }
-                    }
-                    WireMessage::SyncBatch { ref events } => {
-                        for event in events {
-                            self.event_store.store_event(&topic_str, event, &[]);
-                        }
-                        debug!(count = events.len(), "cached sync batch");
-                    }
-                    // Ephemeral messages (join links, typing, voice) — relay forwards via
-                    // gossipsub automatically, no storage needed.
-                    _ => {}
-                }
-            }
-        }
-
-        debug!(
-            topic = %topic_str,
-            source = ?message.source,
-            bytes = data.len(),
-            stored = self.event_store.count(),
-            "relaying message"
-        );
-
-        stored
     }
 }
