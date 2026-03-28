@@ -10,6 +10,16 @@ use willow_state::{Event, ServerState, StateHash};
 /// Gossipsub topic for worker discovery and request/response.
 pub const WORKERS_TOPIC: &str = "_willow_workers";
 
+/// Known platform worker peer IDs, grouped by role.
+///
+/// Hardcoded for the initial version. Populated after first deployment
+/// by running `willow-replay --print-peer-id` and `willow-storage --print-peer-id`.
+/// A discovery-based approach can replace this later.
+pub const PLATFORM_WORKERS: &[(&str, &str)] = &[
+    // ("peer_id", "role")
+    // Populated after deployment — see docs/superpowers/specs/2026-03-27-worker-nodes-design.md
+];
+
 /// Gossipsub topic for server state operations (shared with clients).
 pub const SERVER_OPS_TOPIC: &str = "_willow_server_ops";
 

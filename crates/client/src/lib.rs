@@ -760,6 +760,28 @@ impl ClientHandle {
         Ok(server_id)
     }
 
+    /// Grant SyncProvider permission to the given worker peer IDs.
+    ///
+    /// Called during server creation for each worker the user wants to
+    /// authorize. Workers need SyncProvider to serve state.
+    pub fn authorize_workers(&self, worker_peer_ids: &[String]) {
+        let mut shared = self.shared.borrow_mut();
+        let peer_id = shared.identity.peer_id().to_string();
+        for worker_pid in worker_peer_ids {
+            let event = willow_state::Event {
+                id: uuid::Uuid::new_v4().to_string(),
+                parent_hash: shared.state.event_state.hash(),
+                author: peer_id.clone(),
+                timestamp_ms: util::current_time_ms(),
+                kind: willow_state::EventKind::GrantPermission {
+                    peer_id: worker_pid.clone(),
+                    permission: willow_state::Permission::SyncProvider,
+                },
+            };
+            apply_event_on_shared(&mut shared, &event);
+        }
+    }
+
     /// Set display name for the active server via event-sourced state.
     pub fn set_server_display_name(&self, name: &str) -> anyhow::Result<()> {
         let mut shared = self.shared.borrow_mut();
@@ -4360,5 +4382,38 @@ mod tests {
         let link_id = client.join_links()[0].link_id.clone();
         client.delete_join_link(&link_id);
         assert!(client.join_links().is_empty());
+    }
+
+    #[test]
+    fn authorize_workers_grants_sync_provider() {
+        let (client, _rx) = test_client();
+        client.create_server("Worker Test").unwrap();
+
+        client.authorize_workers(&[
+            "worker-peer-1".to_string(),
+            "worker-peer-2".to_string(),
+        ]);
+
+        let shared = client.shared.borrow();
+        assert!(shared
+            .state
+            .event_state
+            .has_permission("worker-peer-1", &willow_state::Permission::SyncProvider));
+        assert!(shared
+            .state
+            .event_state
+            .has_permission("worker-peer-2", &willow_state::Permission::SyncProvider));
+    }
+
+    #[test]
+    fn authorize_workers_empty_list_is_noop() {
+        let (client, _rx) = test_client();
+        client.create_server("No Workers").unwrap();
+
+        let hash_before = client.shared.borrow().state.event_state.hash();
+        client.authorize_workers(&[]);
+        let hash_after = client.shared.borrow().state.event_state.hash();
+
+        assert_eq!(hash_before, hash_after);
     }
 }
