@@ -596,7 +596,132 @@ Configuration fields for:
 
 ## Deployment
 
-### Alongside Relay
+### Docker
+
+All infrastructure is containerized for reproducible deployment. A
+single `docker-compose.yml` at the repo root defines the full stack.
+
+#### Dockerfiles
+
+```
+docker/
+├── relay.Dockerfile      — Builds willow-relay binary
+├── replay.Dockerfile     — Builds willow-replay binary
+├── storage.Dockerfile    — Builds willow-storage binary
+└── web.Dockerfile        — Builds web app via trunk, serves with nginx
+```
+
+All worker Dockerfiles share a common multi-stage pattern:
+1. **Builder stage** — `rust:latest`, builds the release binary
+2. **Runtime stage** — `debian:bookworm-slim`, copies just the binary
+   and runtime deps (libssl, ca-certificates)
+
+#### Docker Compose
+
+```yaml
+services:
+  relay:
+    build:
+      dockerfile: docker/relay.Dockerfile
+    ports:
+      - "9090:9090"   # TCP
+      - "9091:9091"   # WebSocket
+    volumes:
+      - relay-identity:/etc/willow
+
+  replay-1:
+    build:
+      dockerfile: docker/replay.Dockerfile
+    volumes:
+      - replay-1-identity:/etc/willow
+    environment:
+      - RELAY_ADDR=/dns4/relay/tcp/9091/ws/p2p/${RELAY_PEER_ID}
+      - MAX_EVENTS_PER_SERVER=1000
+      - SYNC_INTERVAL=30
+
+  replay-2:
+    build:
+      dockerfile: docker/replay.Dockerfile
+    volumes:
+      - replay-2-identity:/etc/willow
+    environment:
+      - RELAY_ADDR=/dns4/relay/tcp/9091/ws/p2p/${RELAY_PEER_ID}
+
+  storage-1:
+    build:
+      dockerfile: docker/storage.Dockerfile
+    volumes:
+      - storage-1-identity:/etc/willow
+      - storage-1-data:/var/lib/willow
+    environment:
+      - RELAY_ADDR=/dns4/relay/tcp/9091/ws/p2p/${RELAY_PEER_ID}
+      - SYNC_INTERVAL=60
+
+  storage-2:
+    build:
+      dockerfile: docker/storage.Dockerfile
+    volumes:
+      - storage-2-identity:/etc/willow
+      - storage-2-data:/var/lib/willow
+    environment:
+      - RELAY_ADDR=/dns4/relay/tcp/9091/ws/p2p/${RELAY_PEER_ID}
+
+  web:
+    build:
+      dockerfile: docker/web.Dockerfile
+    ports:
+      - "80:80"
+      - "443:443"
+
+volumes:
+  relay-identity:
+  replay-1-identity:
+  replay-2-identity:
+  storage-1-identity:
+  storage-1-data:
+  storage-2-identity:
+  storage-2-data:
+```
+
+#### Identity Bootstrap
+
+On first run, each container generates its Ed25519 identity if one
+doesn't exist in its volume. A bootstrap script collects the peer IDs
+and outputs them for hardcoding into the client build:
+
+```bash
+# After first `docker compose up`, extract worker peer IDs
+docker compose exec replay-1 willow-replay --print-peer-id
+docker compose exec replay-2 willow-replay --print-peer-id
+docker compose exec storage-1 willow-storage --print-peer-id
+docker compose exec storage-2 willow-storage --print-peer-id
+```
+
+These peer IDs go into `PLATFORM_WORKERS` in the client. A future
+improvement replaces this with dynamic discovery.
+
+#### Scaling
+
+Adding more workers is a compose scale or a new service entry:
+
+```bash
+# Quick scale (shares config, generates new identity)
+docker compose up -d --scale replay=4
+
+# Or add a named service for persistent identity
+```
+
+#### Just Commands
+
+```bash
+just docker-build     # Build all images
+just docker-up        # Start full stack
+just docker-down      # Stop full stack
+just docker-logs      # Tail all logs
+just docker-ids       # Print all worker peer IDs
+```
+
+### Alongside Relay (Bare Metal)
 
 Workers are deployed as separate processes alongside the relay on the
 same server (or different servers). They connect to the relay like any
