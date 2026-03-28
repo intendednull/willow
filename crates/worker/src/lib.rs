@@ -4,6 +4,9 @@
 //! peer lifecycle (identity, networking, heartbeat, sync) for all
 //! worker node binaries.
 
+pub mod config;
+pub mod identity;
 pub mod types;
 
+pub use config::WorkerConfig;
 pub use types::*;
