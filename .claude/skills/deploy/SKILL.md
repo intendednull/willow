@@ -174,7 +174,7 @@ curl -s -o /dev/null -w "Web: HTTP %{http_code}\n" http://172.234.217.219/
 sshpass -p 'WillowP2P2026deploy!' ssh -o StrictHostKeyChecking=no root@172.234.217.219 \
     'echo "Relay: $(systemctl is-active willow-relay)"; echo "Replay: $(systemctl is-active willow-replay)"; echo "Storage: $(systemctl is-active willow-storage)"'
 
-# Print worker peer IDs (needed for PLATFORM_WORKERS)
+# Print worker peer IDs (for granting SyncProvider permission)
 sshpass -p 'WillowP2P2026deploy!' ssh -o StrictHostKeyChecking=no root@172.234.217.219 \
     'echo "Replay PeerID:"; /usr/local/bin/willow-replay --print-peer-id --identity-path /etc/willow/replay.key; echo "Storage PeerID:"; /usr/local/bin/willow-storage --print-peer-id --identity-path /etc/willow/storage.key'
 ```

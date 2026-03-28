@@ -24,7 +24,7 @@ pub fn load_or_generate(path: &str) -> Result<Identity> {
 }
 
 /// Print the peer ID for an identity file. Used by operators to
-/// collect worker peer IDs for `PLATFORM_WORKERS`.
+/// identify workers when granting permissions.
 pub fn print_peer_id(path: &str) -> Result<()> {
     let identity = load_or_generate(path)?;
     println!("{}", identity.peer_id());
