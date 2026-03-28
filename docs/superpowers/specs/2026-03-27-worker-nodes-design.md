@@ -61,6 +61,68 @@ Each future type would be a new binary (`willow-files-worker`,
 discovery protocol, permission model, and deployment infrastructure
 remain unchanged — they're just peers with different jobs.
 
+## Relay Scaling
+
+Since this design strips the relay back to pure network plumbing, it
+becomes lightweight enough to run multiple instances for redundancy and
+geographic distribution.
+
+### Current State
+
+- `NetworkConfig.bootstrap_peers` is already a `Vec` — the network
+  layer can dial multiple relays today
+- `with_relay()` is chainable — adding relays to config is trivial
+- **Gap**: The client UI (`settings.relay_addr`) and storage layer
+  (`NetworkSettings.relay_addr`) only support a single relay address
+
+### Multi-Relay Architecture (Future)
+
+Multiple relays form a mesh of network plumbing. Each relay is
+independent — no coordination between them is needed. Peers connect to
+whichever relay(s) they can reach; gossipsub handles message propagation
+across the mesh.
+
+```
+┌──────────┐     gossipsub     ┌──────────┐
+│ Relay A  │◄────────────────►│ Relay B  │
+│ (US-East)│                   │ (EU-West)│
+└────┬─────┘                   └────┬─────┘
+     │                              │
+  clients                        clients
+```
+
+**Benefits:**
+- **Redundancy** — If one relay goes down, peers reconnect to another
+- **Geographic distribution** — Lower latency for global users
+- **Load distribution** — Peers spread across relays naturally
+
+### Changes Needed for Multi-Relay
+
+These are scoped as future work but the initial implementation should
+not make them harder:
+
+1. **Config layer** — `NetworkSettings.relay_addr` becomes
+   `relay_addrs: Vec<String>`. The UI settings field accepts
+   comma-separated addresses or a list input.
+2. **Client startup** — Call `with_relay()` for each address in the
+   list. The network layer already handles this.
+3. **Reconnection failover** — On disconnect, try the next relay in the
+   list before backing off. The WASM reconnection loop already has
+   backoff; it just needs relay rotation added.
+4. **Relay discovery** — Relays could advertise each other's addresses
+   via Kademlia, so clients that connect to one relay automatically
+   learn about others.
+
+### What This Means for the Current Work
+
+When stripping state storage from the relay:
+- Keep the relay's network code clean and stateless so it's trivial to
+  run N instances
+- Don't introduce any relay-local state that would break with multiple
+  relays (the event store removal already achieves this)
+- Workers connect to relay(s) the same way clients do — via
+  `bootstrap_peers` config — so multi-relay works for workers too
+
 ## Architecture
 
 ### Crate Structure
