@@ -2,6 +2,7 @@
 //!
 //! Persists events to SQLite, serves paginated history queries.
 
+use tracing::warn;
 use willow_state::Event;
 use willow_worker::{WorkerRequest, WorkerResponse, WorkerRole, WorkerRoleInfo};
 
@@ -32,9 +33,18 @@ impl StorageRole {
 
 impl WorkerRole for StorageRole {
     fn role_info(&self) -> WorkerRoleInfo {
-        let total = self.store.count().unwrap_or(0);
-        let disk = self.store.disk_usage_bytes().unwrap_or(0);
-        let servers = self.store.server_count().unwrap_or(0);
+        let total = self.store.count().unwrap_or_else(|e| {
+            warn!(%e, "failed to query event count");
+            0
+        });
+        let disk = self.store.disk_usage_bytes().unwrap_or_else(|e| {
+            warn!(%e, "failed to query disk usage");
+            0
+        });
+        let servers = self.store.server_count().unwrap_or_else(|e| {
+            warn!(%e, "failed to query server count");
+            0
+        });
         WorkerRoleInfo::Storage {
             servers_tracked: servers,
             total_events_stored: total,
@@ -43,7 +53,9 @@ impl WorkerRole for StorageRole {
     }
 
     fn on_event(&mut self, event: &Event) {
-        let _ = self.store.store_event(&self.default_server_id, event);
+        if let Err(e) = self.store.store_event(&self.default_server_id, event) {
+            warn!(event_id = %event.id, %e, "failed to store event");
+        }
     }
 
     fn handle_request(&mut self, req: WorkerRequest) -> WorkerResponse {
@@ -146,6 +158,72 @@ mod tests {
                 assert_eq!(servers_tracked, 1);
             }
             _ => panic!("expected Storage"),
+        }
+    }
+
+    #[test]
+    fn on_event_deduplicates_same_id() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let mut role = StorageRole::new(store);
+        role.set_default_server("srv-1".to_string());
+
+        let event = make_message("dup-1", "general", 1000);
+        role.on_event(&event);
+        role.on_event(&event); // Same event ID
+
+        match role.role_info() {
+            WorkerRoleInfo::Storage {
+                total_events_stored, ..
+            } => assert_eq!(total_events_stored, 1),
+            _ => panic!("expected Storage"),
+        }
+    }
+
+    #[test]
+    fn history_for_unknown_server_returns_empty() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let mut role = StorageRole::new(store);
+        role.set_default_server("srv-1".to_string());
+
+        role.on_event(&make_message("e1", "general", 1000));
+
+        let resp = role.handle_request(WorkerRequest::History {
+            server_id: "nonexistent".to_string(),
+            channel: "general".to_string(),
+            before_timestamp: None,
+            limit: 10,
+        });
+
+        match resp {
+            WorkerResponse::HistoryPage { events, has_more } => {
+                assert!(events.is_empty());
+                assert!(!has_more);
+            }
+            _ => panic!("expected empty HistoryPage"),
+        }
+    }
+
+    #[test]
+    fn history_for_unknown_channel_returns_empty() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let mut role = StorageRole::new(store);
+        role.set_default_server("srv-1".to_string());
+
+        role.on_event(&make_message("e1", "general", 1000));
+
+        let resp = role.handle_request(WorkerRequest::History {
+            server_id: "srv-1".to_string(),
+            channel: "nonexistent".to_string(),
+            before_timestamp: None,
+            limit: 10,
+        });
+
+        match resp {
+            WorkerResponse::HistoryPage { events, has_more } => {
+                assert!(events.is_empty());
+                assert!(!has_more);
+            }
+            _ => panic!("expected empty HistoryPage"),
         }
     }
 }

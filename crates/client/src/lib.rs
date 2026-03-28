@@ -765,20 +765,30 @@ impl ClientHandle {
     /// Called during server creation for each worker the user wants to
     /// authorize. Workers need SyncProvider to serve state.
     pub fn authorize_workers(&self, worker_peer_ids: &[String]) {
-        let mut shared = self.shared.borrow_mut();
-        let peer_id = shared.identity.peer_id().to_string();
-        for worker_pid in worker_peer_ids {
-            let event = willow_state::Event {
-                id: uuid::Uuid::new_v4().to_string(),
-                parent_hash: shared.state.event_state.hash(),
-                author: peer_id.clone(),
-                timestamp_ms: util::current_time_ms(),
-                kind: willow_state::EventKind::GrantPermission {
-                    peer_id: worker_pid.clone(),
-                    permission: willow_state::Permission::SyncProvider,
-                },
-            };
-            apply_event_on_shared(&mut shared, &event);
+        let mut events_to_broadcast = Vec::new();
+        {
+            let mut shared = self.shared.borrow_mut();
+            let peer_id = shared.identity.peer_id().to_string();
+            for worker_pid in worker_peer_ids {
+                let event = willow_state::Event {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    parent_hash: shared.state.event_state.hash(),
+                    author: peer_id.clone(),
+                    timestamp_ms: util::current_time_ms(),
+                    kind: willow_state::EventKind::GrantPermission {
+                        peer_id: worker_pid.clone(),
+                        permission: willow_state::Permission::SyncProvider,
+                    },
+                };
+                apply_event_on_shared(&mut shared, &event);
+                events_to_broadcast.push(event);
+            }
+        }
+        // Broadcast after releasing the borrow.
+        for event in events_to_broadcast {
+            let _ = self.cmd_tx.unbounded_send(
+                network::NetworkCommand::BroadcastEvent { event, topic: None },
+            );
         }
     }
 

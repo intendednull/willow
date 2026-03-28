@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::{NetworkOutMsg, StateMsg};
 use crate::types::{WorkerAnnouncement, WorkerWireMessage, WORKERS_TOPIC};
@@ -31,12 +31,15 @@ pub async fn run(
                         peer_id: peer_id.clone(),
                     };
                     if let Ok(bytes) = bincode::serialize(&departure) {
-                        let _ = network_tx
+                        if let Err(e) = network_tx
                             .send(NetworkOutMsg::Publish {
                                 topic: WORKERS_TOPIC.to_string(),
                                 data: bytes,
                             })
-                            .await;
+                            .await
+                        {
+                            warn!(%e, "failed to send departure message");
+                        }
                     }
                     debug!("heartbeat actor shutting down");
                     return;
@@ -51,12 +54,16 @@ pub async fn run(
             .await
             .is_err()
         {
+            warn!("state actor unavailable, heartbeat stopping");
             break;
         }
 
         let role_info = match reply_rx.await {
             Ok(info) => info,
-            Err(_) => break,
+            Err(_) => {
+                warn!("state actor dropped reply, heartbeat stopping");
+                break;
+            }
         };
 
         let announcement = WorkerAnnouncement {

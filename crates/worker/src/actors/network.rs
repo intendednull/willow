@@ -37,6 +37,7 @@ pub async fn run(
                             &topic,
                             &data,
                             &state_tx,
+                            &node,
                             &local_peer_id,
                         )
                         .await;
@@ -75,13 +76,17 @@ async fn handle_incoming_message(
     topic: &str,
     data: &[u8],
     state_tx: &mpsc::Sender<StateMsg>,
+    node: &NetworkNode,
     local_peer_id: &str,
 ) {
     if topic == WORKERS_TOPIC {
         // Try to decode as WorkerWireMessage.
         let msg = match bincode::deserialize::<WorkerWireMessage>(data) {
             Ok(m) => m,
-            Err(_) => return,
+            Err(e) => {
+                debug!(%e, "failed to deserialize worker message");
+                return;
+            }
         };
 
         match msg {
@@ -93,14 +98,46 @@ async fn handle_incoming_message(
                 // Only handle if targeted at us or broadcast (empty target).
                 if target_peer.is_empty() || target_peer == local_peer_id {
                     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                    let _ = state_tx
+                    if state_tx
                         .send(StateMsg::Request {
                             req: payload,
                             reply: reply_tx,
                         })
-                        .await;
-                    if let Ok(resp) = reply_rx.await {
-                        debug!(?resp, %request_id, "request handled");
+                        .await
+                        .is_err()
+                    {
+                        warn!("state actor unavailable for request {request_id}");
+                        return;
+                    }
+
+                    // Wait for response with a timeout.
+                    let resp = match tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        reply_rx,
+                    )
+                    .await
+                    {
+                        Ok(Ok(resp)) => resp,
+                        Ok(Err(_)) => {
+                            warn!(%request_id, "state actor dropped reply channel");
+                            return;
+                        }
+                        Err(_) => {
+                            warn!(%request_id, "request timed out after 5s");
+                            return;
+                        }
+                    };
+
+                    // Publish the response back via gossipsub.
+                    let response_msg = WorkerWireMessage::Response {
+                        request_id: request_id.clone(),
+                        target_peer: String::new(), // Requester filters by request_id
+                        payload: resp,
+                    };
+                    if let Ok(bytes) = bincode::serialize(&response_msg) {
+                        if let Err(e) = node.publish(WORKERS_TOPIC, bytes) {
+                            debug!(%e, %request_id, "failed to publish response");
+                        }
                     }
                 }
             }
@@ -116,11 +153,10 @@ async fn handle_incoming_message(
         }
     } else {
         // Server ops or channel topic — try to decode as a state event.
-        // In the full runtime, this would use willow_identity::unpack
-        // to verify signatures and willow_transport::unpack_envelope
-        // to deserialize. For now, try direct bincode deserialization.
         if let Ok(event) = bincode::deserialize::<willow_state::Event>(data) {
             let _ = state_tx.send(StateMsg::Event(event)).await;
+        } else {
+            trace!(topic, bytes = data.len(), "unrecognized message on topic");
         }
     }
 }
