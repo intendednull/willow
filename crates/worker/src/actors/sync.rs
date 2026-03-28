@@ -13,7 +13,7 @@ use crate::types::{WorkerRequest, WorkerWireMessage, WORKERS_TOPIC};
 /// Every `interval`, queries the state actor for state hashes per server
 /// and broadcasts SyncRequests so other peers/workers can send missing events.
 pub async fn run(
-    peer_id: String,
+    _peer_id: String,
     interval: Duration,
     state_tx: mpsc::Sender<StateMsg>,
     network_tx: mpsc::Sender<NetworkOutMsg>,

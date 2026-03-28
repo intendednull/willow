@@ -1,7 +1,7 @@
 //! Willow Storage Node — archival disk-backed history worker.
 
-mod role;
-mod store;
+pub mod role;
+pub mod store;
 
 use clap::Parser;
 

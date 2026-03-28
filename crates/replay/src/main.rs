@@ -1,6 +1,6 @@
 //! Willow Replay Node — fast bounded-memory state sync worker.
 
-mod role;
+pub mod role;
 
 use clap::Parser;
 
