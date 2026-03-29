@@ -374,7 +374,11 @@ crates/web/
 - [ ] `cargo test -p willow-client` — all 93 tests pass with `MemNetwork`
 - [ ] `cargo check -p willow-web --target wasm32-unknown-unknown` — WASM compiles
 - [ ] `just test-browser` — 39 browser tests pass
-- [ ] Manual smoke test: `just dev` → open web UI → send message → verify delivery
+
+Note: `just dev` end-to-end smoke test is deferred to Phase 3. The client
+now uses `IrohNetwork` but the relay is still libp2p until Phase 3 — these
+are incompatible transports. All Phase 2 validation is via `MemNetwork`
+tests and WASM compile checks.
 
 ---
 
