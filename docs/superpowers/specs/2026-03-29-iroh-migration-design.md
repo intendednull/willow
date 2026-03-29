@@ -132,6 +132,13 @@ protocol with `iroh-blobs`. Files are added to the local blob store,
 a `BlobTicket` (containing hash + provider address) is broadcast over
 gossip, and receivers download directly via the blobs protocol.
 
+**`willow-files` crate**: Currently handles content-addressed chunking
+and reassembly. With `iroh-blobs`, chunking is handled by the blob
+protocol itself (BLAKE3 verified streaming does incremental
+verification). `willow-files` is **deleted** — its responsibilities
+are subsumed by `iroh-blobs`. The `BlobStore` trait in `willow-network`
+is the new abstraction for file operations.
+
 ### Relay
 
 | Current | Iroh |
@@ -249,6 +256,10 @@ pub trait Network: Send + Sync {
         bootstrap: Vec<EndpointId>,
     ) -> Result<(Self::Topic, Self::Events)>;
 
+    /// Unsubscribe from a topic. Drops the sender/receiver and leaves
+    /// the gossip mesh for this topic.
+    async fn unsubscribe(&self, topic: TopicId) -> Result<()>;
+
     fn blobs(&self) -> &dyn BlobStore;
 
     async fn shutdown(&self) -> Result<()>;
@@ -337,7 +348,10 @@ pub struct ClientHandle<N: Network> {
     network: Arc<N>,
     /// Active gossip topic handles, keyed by TopicId.
     topics: HashMap<TopicId, N::Topic>,
-    state: Rc<RefCell<SharedState>>,
+    /// Arc<RwLock> instead of Rc<RefCell> — Network: Send + Sync
+    /// requires the client to be Send, and spawned topic listener
+    /// tasks need shared access across threads/tasks.
+    state: Arc<RwLock<SharedState>>,
 }
 
 impl<N: Network> ClientHandle<N> {
@@ -374,7 +388,7 @@ impl<N: Network> ClientHandle<N> {
 /// emits ClientEvents to the UI layer.
 async fn spawn_topic_listener<E: TopicEvents>(
     mut events: E,
-    state: Rc<RefCell<SharedState>>,
+    state: Arc<RwLock<SharedState>>,
     event_tx: UnboundedSender<ClientEvent>,
 ) {
     while let Some(Ok(gossip_event)) = events.next().await {
@@ -383,7 +397,7 @@ async fn spawn_topic_listener<E: TopicEvents>(
                 let (wire_msg, from) = unpack_wire(&msg.content)?;
                 match wire_msg {
                     WireMessage::Event(e) => {
-                        apply_event(&mut state.borrow_mut(), e);
+                        apply_event(&mut state.write().unwrap(), e);
                         event_tx.send(ClientEvent::MessageReceived { .. });
                     }
                     // ...
@@ -509,6 +523,10 @@ identifiers. Update `willow-transport` to remove any libp2p imports.
 - `willow-network`: `Network` trait + `IrohNetwork` + `MemNetwork`
 - `willow-state`: `Event.author` becomes `EndpointId`, `ServerState`
   member/permission maps key on `EndpointId`
+
+These can be parallelized: `willow-state`'s `String` → `EndpointId`
+change is mechanical and independent from the `willow-network` rewrite.
+Work both simultaneously.
 
 **Test**: Identity sign/verify, state apply/merge, `MemNetwork`
 round-trips, `IrohNetwork` endpoint creation on localhost.
@@ -894,6 +912,7 @@ pub struct MemBlobStore {
 | `crates/app/tests/integration.rs` | 14 | Rewrite against `IrohNetwork` |
 | `crates/app/tests/peer_scale.rs` | 7 | Port to `IrohNetwork` |
 | `crates/worker/tests/integration.rs` | ~5 | Port to `MemNetwork` |
+| `e2e/*.spec.ts` | ~40 | Update relay startup in helpers |
 | `crates/app/src/tests.rs` | 99 | Out of scope (Bevy) |
 
 ### Tier 8: Playwright E2E (existing — ported to iroh relay)
@@ -909,20 +928,6 @@ directly.
 **Action**: Update `e2e/helpers.ts` to start the iroh relay wrapper
 instead of `willow-relay`. Everything else should work as-is since
 the tests operate at the UI level.
-
-### Test Migration Checklist (updated)
-
-| Test file | Current count | Migration action |
-|---|---|---|
-| `crates/state/src/tests.rs` | 63 | Update `String` → `EndpointId` |
-| `crates/client/src/lib.rs` | 93 | Port to `ClientHandle<MemNetwork>` |
-| `crates/web/tests/browser.rs` | 39 | Minimal — update display types |
-| `crates/app/tests/e2e_flow.rs` (state) | 5 | Update `String` → `EndpointId` |
-| `crates/app/tests/integration.rs` | 14 | Rewrite against `IrohNetwork` |
-| `crates/app/tests/peer_scale.rs` | 7 | Port to `IrohNetwork` |
-| `crates/worker/tests/integration.rs` | ~5 | Port to `MemNetwork` |
-| `e2e/*.spec.ts` | ~40 | Update relay startup in helpers |
-| `crates/app/src/tests.rs` | 99 | Out of scope (Bevy) |
 
 **Total**: ~266 tests to port/rewrite (excluding Bevy). The Bevy app
 tests (99) are out of scope for this migration but remain functional
