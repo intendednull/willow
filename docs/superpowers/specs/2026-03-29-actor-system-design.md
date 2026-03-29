@@ -1,6 +1,9 @@
-# willow-actor Design Spec
+# Actor System Design Spec
 
-## Problem
+**Date**: 2026-03-29
+**Status**: Draft
+
+## Overview
 
 Willow has five different channel/concurrency patterns across its crates:
 
@@ -338,8 +341,8 @@ Built-in support for periodic ticks (replaces the manual
 
 ```rust
 impl<A: Actor> Context<A> {
-    /// Start a periodic interval. Delivers `Tick` messages to the actor.
-    /// Returns a handle that can cancel the interval.
+    /// Start a periodic interval. Delivers messages to the actor
+    /// on each tick. Returns a handle that can cancel the interval.
     pub fn run_interval<M: Message<Result = ()>>(
         &mut self,
         duration: Duration,
@@ -375,6 +378,41 @@ pub enum AskError {
     NoResponse,
 }
 ```
+
+## Crate Structure
+
+```
+crates/actor/
+├── Cargo.toml
+└── src/
+    ├── lib.rs          — public API re-exports
+    ├── actor.rs        — Actor, Handler, StreamHandler traits
+    ├── addr.rs         — Addr<A>, AnyAddr, Recipient<M>
+    ├── context.rs      — Context<A>, interval, stream attachment
+    ├── envelope.rs     — BoxEnvelope, type-erased message dispatch
+    ├── mailbox.rs      — bounded channel wrapper, recv loop
+    ├── message.rs      — Message trait, MaybeSend
+    ├── runtime.rs      — platform abstraction (spawn, channel, sleep)
+    ├── supervisor.rs   — RestartPolicy, supervised spawn
+    ├── system.rs       — System, SystemHandle
+    └── error.rs        — SendError, AskError
+```
+
+## Dependency Graph
+
+```
+willow-actor (new)
+├── futures-core        (Stream trait)
+├── async-trait
+├── thiserror
+├── tracing
+├── cfg-if
+├── [native] tokio      (spawn, mpsc, oneshot, sleep)
+└── [wasm]   wasm-bindgen-futures, futures-channel, gloo-timers
+```
+
+`willow-actor` has **no dependency on any other willow crate**. It is a
+pure infrastructure crate.
 
 ## Migration Path
 
@@ -457,42 +495,6 @@ that an actor feeds. The bridge actor replaces `run_network()`.
 
 The Leptos event loop (`spawn_local` + `futures::channel::mpsc`) becomes
 a `StreamHandler` on a UI actor. Signal updates happen in the handler.
-
-## Dependency Graph
-
-```
-willow-actor (new)
-├── futures-core        (Stream trait)
-├── async-trait
-├── thiserror
-├── tracing
-├── cfg-if
-├── [native] tokio      (spawn, mpsc, oneshot, sleep)
-└── [wasm]   wasm-bindgen-futures, futures-channel, gloo-timers
-```
-
-`willow-actor` has **no dependency on any other willow crate**. It is a
-pure infrastructure crate.
-
-## Crate Structure
-
-```
-crates/actor/
-├── Cargo.toml
-├── DESIGN.md           (this file)
-└── src/
-    ├── lib.rs          — public API re-exports
-    ├── actor.rs        — Actor, Handler, StreamHandler traits
-    ├── addr.rs         — Addr<A>, AnyAddr, Recipient<M>
-    ├── context.rs      — Context<A>, interval, stream attachment
-    ├── envelope.rs     — BoxEnvelope, type-erased message dispatch
-    ├── mailbox.rs      — bounded channel wrapper, recv loop
-    ├── message.rs      — Message trait, MaybeSend
-    ├── runtime.rs      — platform abstraction (spawn, channel, sleep)
-    ├── supervisor.rs   — RestartPolicy, supervised spawn
-    ├── system.rs       — System, SystemHandle
-    └── error.rs        — SendError, AskError
-```
 
 ## Open Questions
 
