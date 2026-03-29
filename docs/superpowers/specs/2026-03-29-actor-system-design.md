@@ -8,27 +8,72 @@
 A survey of existing Rust actor crates was conducted to determine whether
 an off-the-shelf solution could be adopted. Summary:
 
-| Crate | Version | WASM | Send req | Supervision | Status |
-|-------|---------|------|----------|-------------|--------|
-| **actix** | 0.13.5 | No | Send+Sync | Yes | Maintained, stalled |
-| **ractor** | 0.15.12 | No | Send+Sync+'static | Yes (Erlang-style) | Active |
-| **kameo** | 0.19.2 | No | Send+Sync | Yes | Active |
-| **coerce** | 0.8.11 | No | Send+Sync | Yes | Active |
-| **xactor** | 0.7.11 | No | Send | No | Dormant (2022) |
-| **stakker** | 0.2.14 | No | — (sync) | No | Low activity |
-| **xtor** | 0.9.10 | Yes (feature) | Send | Yes | Dormant (2022) |
-| **xtra** | 0.6.0 | Yes (feature) | Send+'static | No | Low activity (2024) |
+| Crate | Version | WASM | Send req | Supervision | Handlers | Status |
+|-------|---------|------|----------|-------------|----------|--------|
+| **ractor** | 0.15.12 | **Yes** (`tokio_with_wasm`) | Send+Sync | Yes (Erlang) | Single `Msg` enum | Active (2026-03) |
+| **kameo** | 0.19.2 | No (tokio) | Send | Yes (OneForOne) | Per-message `Message<M>` | Active (2025-11) |
+| **actix** | 0.13.5 | No (tokio) | Unpin (no Send) | Basic | Per-message `Handler<M>` | Passive |
+| **xtra** | 0.6.0 | **Yes** (`wasm_bindgen`) | Send | No | Per-message `Handler<M>` | Low (2024-02) |
+| **coerce** | 0.8.11 | No (tokio full) | Send+Sync | Yes | Per-message `Handler<M>` | Dormant (2023) |
+| **xactor** | 0.7.11 | No | Send | No | Per-message `Handler<M>` | Dead (2020) |
+| **xtor** | 0.9.10 | **Yes** (`wasm_bindgen`) | Send | Yes | Per-message handler | Dead (2022) |
+| **stakker** | 0.2.14 | Provisional | Not Send | No | Macro-based callbacks | Niche |
 
-### xtra — closest match
+### ractor — first-class WASM, Erlang-style
+
+[ractor](https://github.com/slawlor/ractor) (546k downloads, MIT) is
+the most actively maintained option and has **first-class WASM support**
+with 84 passing browser tests. Key details:
+
+- **WASM runtime**: Uses `tokio_with_wasm` (a shim that provides
+  tokio-compatible channels/spawn/timers on `wasm32-unknown-unknown`
+  backed by the JS event loop). Platform abstraction lives in a
+  `concurrency` module with three backends: `tokio_primitives`,
+  `async_std_primitives`, `wasm_browser_primitives`.
+- **Erlang-style API**: Each actor declares a single `type Msg` enum.
+  The `handle()` method pattern-matches on it. State is separated from
+  the handler (`&self` + `&mut State`).
+- **Supervision**: `spawn_linked()` establishes parent-child links.
+  `SupervisionEvent` notifies parents of child panics/deaths. No
+  built-in restart policies — left to the `handle_supervisor_evt` impl
+  (like Erlang's custom supervisor).
+- **Request-reply**: `RpcReplyPort<T>` for typed replies. `call()` and
+  `cast()` for ask/tell patterns.
+
+**Why not adopt ractor directly:**
+
+1. **Single-enum message type**: `type Msg: Message` requires one enum
+   per actor for all message types. This means every actor needs a
+   hand-written `match` over its message enum in `handle()`, and adding
+   a new message type requires modifying the enum + the match arm. With
+   per-message `Handler<M>` traits, new message types are additive (just
+   implement another trait). For Willow's actors that handle 5-10+
+   message types each, the enum approach produces large match blocks.
+2. **Separated `&self` + `&mut State`**: The actor handler is immutable;
+   mutable state lives in a separate `State` type. This is idiomatic
+   Erlang but awkward in Rust — fields that logically belong together
+   (e.g., a `WorkerRole` + its config) are split across two types.
+3. **Hard `Send + Sync` on `Actor`**: Requires all actor types to be
+   `Send + Sync`. This is stricter than necessary — actors are
+   single-owner by design, so `Sync` is never needed.
+4. **`tokio_with_wasm` dependency**: Pulls in a full tokio-compatible
+   shim for WASM. Willow already uses `futures::channel::mpsc` and
+   `wasm_bindgen_futures::spawn_local` directly — adding another layer
+   of abstraction over tokio's API on WASM is unnecessary indirection.
+5. **Heavy dependency tree**: `dashmap`, `bon`, `strum`, `once_cell`,
+   plus the full `tokio_with_wasm` crate on WASM. Willow's actor system
+   needs only channels, oneshot, and spawn.
+
+### xtra — per-message handlers, lightweight
 
 [xtra](https://github.com/Restioson/xtra) (83k downloads, MPL-2.0) is
-the closest existing solution. It provides:
+the closest match to our desired API shape:
 
 - **Multi-runtime**: tokio, async-std, smol, and `wasm_bindgen` via
   feature flags. WASM spawns use `wasm_bindgen_futures::spawn_local`.
-- **Typed handlers**: `Handler<M>` trait with `type Return`, async
-  `handle()` method. Request-reply via `Address::send()` returning a
-  `SendFuture` that resolves to the handler's return value.
+- **Per-message `Handler<M>`**: Each message type gets its own `Handler`
+  impl with `type Return`. Request-reply via `Address::send()` returning
+  a `SendFuture` that resolves to the handler's return value.
 - **Lightweight**: core deps are `catty`, `futures-core`, `event-listener`,
   `spin`. No proc macros required (optional `xtra-macros`).
 - **Actor lifecycle**: `started(&mut self, &Mailbox)` and
@@ -57,22 +102,36 @@ the closest existing solution. It provides:
    on WASM.
 6. **Low activity**: Last release Feb 2024, limited maintenance signal.
 
-### xtor — explicit WASM feature
+### kameo — best API shape, no WASM
 
-[xtor](https://github.com/nicktqwewe/xtor) supports WASM via a
-`wasm_bindgen` feature flag and multiple runtimes. However:
-- Last updated May 2022, only 2.8k downloads
-- No supervision
-- Thin documentation
-- Unclear maintenance future
+[kameo](https://github.com/tqwewe/kameo) (190k downloads, MIT) has the
+cleanest API design with per-message `Message<M>` trait impls and
+ask/tell naming:
+
+```rust
+impl Message<MyMsg> for MyActor {
+    type Reply = MyReply;
+    async fn handle(&mut self, msg: MyMsg, ctx: &mut Context<..>) -> Self::Reply;
+}
+```
+
+It has OneForOne supervision, stream attachment, and actor linking. But
+it depends on tokio directly with no WASM runtime support and no feature
+flags for alternative runtimes. Would need forking to add WASM.
 
 ### Recommendation: build `willow-actor`
 
 No existing crate satisfies all requirements (dual-target with
-conditional Send, supervision, intervals, stream handlers, lightweight).
-The design below draws on xtra's `Handler<M>` pattern and envelope-based
-mailbox while adding `MaybeSend`, supervision, intervals, and
-`Recipient<M>`.
+conditional Send, supervision, intervals, stream handlers, per-message
+handlers). The design below combines:
+
+- **xtra/kameo's `Handler<M>` pattern** — per-message-type trait impls
+  with typed returns, not a single enum
+- **ractor's `concurrency` module approach** — platform-abstracted
+  spawn/channel/timer with cfg-switched backends
+- **New: `MaybeSend`** — conditional `Send` bounds dropped on WASM
+- **New: supervision, intervals, `Recipient<M>`** — features missing
+  from xtra
 
 ---
 
