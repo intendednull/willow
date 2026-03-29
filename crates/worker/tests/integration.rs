@@ -88,9 +88,12 @@ async fn state_actor_with_replay_role_full_flow() {
 
     // 1. Ingest 5 events.
     for i in 0..5u64 {
-        tx.send(StateMsg::Event(make_message(&format!("e{i}"), (i + 1) * 1000)))
-            .await
-            .unwrap();
+        tx.send(StateMsg::Event(make_message(
+            &format!("e{i}"),
+            (i + 1) * 1000,
+        )))
+        .await
+        .unwrap();
     }
 
     // 2. Verify role info shows 5 buffered events.
@@ -170,8 +173,7 @@ async fn heartbeat_and_state_actor_interaction() {
 
     match msg {
         NetworkOutMsg::Publish { data, .. } => {
-            let decoded: willow_common::WorkerWireMessage =
-                bincode::deserialize(&data).unwrap();
+            let decoded: willow_common::WorkerWireMessage = bincode::deserialize(&data).unwrap();
             match decoded {
                 willow_common::WorkerWireMessage::Announcement(a) => {
                     assert_eq!(a.peer_id, "test-worker");
@@ -238,9 +240,12 @@ async fn events_applied_then_queried_via_request() {
 
     // Ingest 10 events into a buffer of size 5.
     for i in 0..10u64 {
-        tx.send(StateMsg::Event(make_message(&format!("e{i}"), (i + 1) * 1000)))
-            .await
-            .unwrap();
+        tx.send(StateMsg::Event(make_message(
+            &format!("e{i}"),
+            (i + 1) * 1000,
+        )))
+        .await
+        .unwrap();
     }
 
     // Query — should only get 5 (buffer evicted oldest).
@@ -294,8 +299,7 @@ async fn graceful_shutdown_sends_departure() {
 
     match msg {
         NetworkOutMsg::Publish { data, .. } => {
-            let decoded: willow_common::WorkerWireMessage =
-                bincode::deserialize(&data).unwrap();
+            let decoded: willow_common::WorkerWireMessage = bincode::deserialize(&data).unwrap();
             match decoded {
                 willow_common::WorkerWireMessage::Departure { peer_id } => {
                     assert_eq!(peer_id, "departing-worker");
@@ -344,7 +348,10 @@ async fn full_actor_orchestration_without_network() {
     // Ingest some events.
     for i in 0..3u64 {
         state_tx
-            .send(StateMsg::Event(make_message(&format!("orch-{i}"), (i + 1) * 1000)))
+            .send(StateMsg::Event(make_message(
+                &format!("orch-{i}"),
+                (i + 1) * 1000,
+            )))
             .await
             .unwrap();
     }
@@ -356,8 +363,7 @@ async fn full_actor_orchestration_without_network() {
         match tokio::time::timeout(Duration::from_millis(30), network_rx.recv()).await {
             Ok(Some(NetworkOutMsg::Publish { data, .. })) => {
                 // Could be announcement or sync request.
-                if let Ok(msg) = bincode::deserialize::<willow_common::WorkerWireMessage>(&data)
-                {
+                if let Ok(msg) = bincode::deserialize::<willow_common::WorkerWireMessage>(&data) {
                     match msg {
                         willow_common::WorkerWireMessage::Announcement(_) => {
                             announcement_count += 1;

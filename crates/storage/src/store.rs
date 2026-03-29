@@ -129,11 +129,11 @@ impl StorageEventStore {
 
     /// Number of distinct servers tracked.
     pub fn server_count(&self) -> anyhow::Result<u32> {
-        let count: i64 = self.conn.query_row(
-            "SELECT COUNT(DISTINCT server_id) FROM events",
-            [],
-            |row| row.get(0),
-        )?;
+        let count: i64 =
+            self.conn
+                .query_row("SELECT COUNT(DISTINCT server_id) FROM events", [], |row| {
+                    row.get(0)
+                })?;
         Ok(count as u32)
     }
 }
@@ -193,7 +193,10 @@ mod tests {
         let store = StorageEventStore::open(":memory:").unwrap();
         for i in 0..5u64 {
             store
-                .store_event("srv-1", &make_message(&format!("e{i}"), "general", (i + 1) * 1000))
+                .store_event(
+                    "srv-1",
+                    &make_message(&format!("e{i}"), "general", (i + 1) * 1000),
+                )
                 .unwrap();
         }
 
@@ -210,7 +213,10 @@ mod tests {
         let store = StorageEventStore::open(":memory:").unwrap();
         for i in 0..10u64 {
             store
-                .store_event("srv-1", &make_message(&format!("e{i}"), "general", (i + 1) * 1000))
+                .store_event(
+                    "srv-1",
+                    &make_message(&format!("e{i}"), "general", (i + 1) * 1000),
+                )
                 .unwrap();
         }
 
@@ -239,9 +245,15 @@ mod tests {
     #[test]
     fn history_filters_by_channel() {
         let store = StorageEventStore::open(":memory:").unwrap();
-        store.store_event("srv-1", &make_message("e1", "general", 1000)).unwrap();
-        store.store_event("srv-1", &make_message("e2", "random", 2000)).unwrap();
-        store.store_event("srv-1", &make_message("e3", "general", 3000)).unwrap();
+        store
+            .store_event("srv-1", &make_message("e1", "general", 1000))
+            .unwrap();
+        store
+            .store_event("srv-1", &make_message("e2", "random", 2000))
+            .unwrap();
+        store
+            .store_event("srv-1", &make_message("e3", "general", 3000))
+            .unwrap();
 
         let (events, _) = store.history("srv-1", "general", None, 10).unwrap();
         assert_eq!(events.len(), 2);
@@ -250,8 +262,12 @@ mod tests {
     #[test]
     fn history_filters_by_server() {
         let store = StorageEventStore::open(":memory:").unwrap();
-        store.store_event("srv-1", &make_message("e1", "general", 1000)).unwrap();
-        store.store_event("srv-2", &make_message("e2", "general", 2000)).unwrap();
+        store
+            .store_event("srv-1", &make_message("e1", "general", 1000))
+            .unwrap();
+        store
+            .store_event("srv-2", &make_message("e2", "general", 2000))
+            .unwrap();
 
         let (events, _) = store.history("srv-1", "general", None, 10).unwrap();
         assert_eq!(events.len(), 1);
@@ -261,9 +277,15 @@ mod tests {
     #[test]
     fn server_count_tracks_distinct_servers() {
         let store = StorageEventStore::open(":memory:").unwrap();
-        store.store_event("srv-1", &make_message("e1", "general", 1000)).unwrap();
-        store.store_event("srv-2", &make_message("e2", "general", 2000)).unwrap();
-        store.store_event("srv-1", &make_message("e3", "general", 3000)).unwrap();
+        store
+            .store_event("srv-1", &make_message("e1", "general", 1000))
+            .unwrap();
+        store
+            .store_event("srv-2", &make_message("e2", "general", 2000))
+            .unwrap();
+        store
+            .store_event("srv-1", &make_message("e3", "general", 3000))
+            .unwrap();
 
         assert_eq!(store.server_count().unwrap(), 2);
     }
@@ -271,7 +293,9 @@ mod tests {
     #[test]
     fn disk_usage_returns_nonzero_after_insert() {
         let store = StorageEventStore::open(":memory:").unwrap();
-        store.store_event("srv-1", &make_message("e1", "general", 1000)).unwrap();
+        store
+            .store_event("srv-1", &make_message("e1", "general", 1000))
+            .unwrap();
         assert!(store.disk_usage_bytes().unwrap() > 0);
     }
 
