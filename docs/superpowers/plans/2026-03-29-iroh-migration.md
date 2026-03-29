@@ -329,9 +329,11 @@ crates/web/
 
 - [ ] Delete `crates/client/src/network.rs` (NetworkCommand, NetworkEvent, spawn_network)
 - [ ] Remove all `NetworkCommand` / `NetworkEvent` references from lib.rs
-- [ ] Update ops.rs: remove old wire type re-exports, use `willow_network::topics` for constants
+- [ ] Update ops.rs: remove old wire type re-exports, use `willow_network::topics` for TopicId constants. Update `JoinToken.inviter_peer_id` and `JoinLink` peer fields → `EndpointId`
 - [ ] Update events.rs: `ClientEvent` peer fields from `String` to `EndpointId`
+- [ ] Update invite.rs: invite creation/parsing uses `EndpointId` for peer fields, base64-encoded tokens carry `EndpointId` bytes instead of PeerId strings
 - [ ] Update worker_cache.rs: peer fields from `String` to `EndpointId`
+- [ ] Update storage.rs: serialized event format changes (Event.author is now EndpointId). Old stored data is incompatible — clean break, no migration. Add a storage version check that wipes old data on format mismatch.
 - [ ] Verify: `cargo check -p willow-client`
 
 #### 2.5 — Port client tests to MemNetwork
