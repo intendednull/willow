@@ -35,7 +35,10 @@ built-in), and a cleaner protocol composition model.
 ## Non-Goals
 
 - Changing the event-sourced state model (willow-state is untouched)
-- Changing the wire message format (WireMessage/pack_wire/unpack_wire)
+- Changing the WireMessage enum variants or pack/unpack semantics
+  (the outer signed envelope naturally changes because the signer's
+  public key becomes `EndpointId` instead of `PeerId`, but the
+  inner message format is preserved)
 - Changing the client's public API semantics (send_message, create_server, etc.)
 - Changing the Leptos web UI components
 - Changing the Bevy desktop app (out of scope — focus on web UI only)
@@ -149,10 +152,19 @@ is the new abstraction for file operations.
 | Kademlia + Identify protocols | Not needed (DNS-based lookup) |
 | Stateless (after worker extraction) | Stateless by design |
 
-**Key change**: The relay becomes an off-the-shelf iroh relay server.
-It only forwards encrypted QUIC packets — it cannot read message content.
-This is a security improvement over the current relay which participates
-in GossipSub and can read unencrypted gossip traffic.
+**Key change**: The relay splits into two roles:
+1. **iroh-relay** — pure packet forwarding for NAT traversal. Cannot
+   read message content. This replaces the current libp2p relay.
+2. **Bootstrap node** — a lightweight gossip participant that subscribes
+   to system topics so new peers have someone to bootstrap against.
+   Runs alongside the relay as a separate process (or integrated into
+   the relay wrapper binary).
+
+This is a security improvement: the relay's packet-forwarding role
+cannot read gossip traffic. The bootstrap node participates in gossip
+but only for peer discovery — it doesn't store or process messages
+(unlike the current relay which sees all GossipSub traffic in
+plaintext).
 
 ## Crate Changes
 
@@ -262,7 +274,18 @@ pub trait Network: Send + Sync {
 
     fn blobs(&self) -> &dyn BlobStore;
 
+    /// Stream of connectivity events (relay up/down, peer connects).
+    /// Used by client to re-subscribe topics after reconnection.
+    async fn connection_events(&self) -> ConnectionEventStream;
+
     async fn shutdown(&self) -> Result<()>;
+}
+
+pub enum ConnectionEvent {
+    RelayConnected,
+    RelayDisconnected,
+    DirectConnected(EndpointId),
+    DirectDisconnected(EndpointId),
 }
 
 // ── Iroh implementation ─────────────────────────────────────────
@@ -316,22 +339,35 @@ removing any libp2p type imports if present.
 The custom relay binary is replaced by an iroh relay server deployment.
 The `crates/relay/` directory can either:
 
-1. **Wrap iroh-relay** with Willow-specific configuration (recommended):
-   ```rust
-   fn main() {
-       let config = RelayConfig::from_args();
-       iroh_relay::Server::new(config)
-           .tls(cert, key)
-           .bind(addr)
-           .run()
-           .await;
-   }
-   ```
+The relay wrapper binary runs two things:
+1. **iroh-relay server** — packet forwarding for NAT traversal
+2. **Bootstrap node** — a minimal gossip participant that subscribes
+   to system topics so new peers can join the mesh
 
-2. **Use iroh-relay directly** as an external binary, configured via
-   environment variables.
+```rust
+#[tokio::main]
+async fn main() {
+    let config = RelayConfig::from_args();
 
-Option 1 is preferred for consistency with the existing deployment model.
+    // Start iroh relay for NAT traversal
+    let relay = iroh_relay::Server::new(config.relay)
+        .bind(config.relay_addr)
+        .spawn().await?;
+
+    // Start bootstrap gossip node alongside relay
+    let bootstrap = IrohNetwork::new(config.bootstrap).await?;
+    bootstrap.subscribe(SERVER_OPS_TOPIC, vec![]).await?;
+    bootstrap.subscribe(WORKERS_TOPIC, vec![]).await?;
+    bootstrap.subscribe(PROFILES_TOPIC, vec![]).await?;
+
+    // Run until shutdown
+    tokio::signal::ctrl_c().await?;
+}
+```
+
+The bootstrap node is lightweight — it joins topics but doesn't
+process messages. It exists so new peers have a known `EndpointId`
+to bootstrap gossip against.
 
 ### `willow-client` (restructured)
 
@@ -412,7 +448,7 @@ async fn spawn_topic_listener<E: TopicEvents>(
 
 **Testing**:
 ```rust
-#[test]
+#[tokio::test]
 async fn send_message_broadcasts_to_topic() {
     let hub = MemHub::new();
     let net_a = MemNetwork::new(&hub);
@@ -429,9 +465,9 @@ async fn send_message_broadcasts_to_topic() {
 }
 ```
 
-No tokio runtime, no real QUIC, no ports. The `MemHub` acts as an
-in-process gossip mesh — broadcasts on a `TopicId` are delivered to
-all `MemNetwork` instances subscribed to that topic.
+No real QUIC, no ports, no network I/O. Tests use `#[tokio::test]`
+to drive the async trait methods, but `MemHub` delivers messages
+in-process via broadcast channels — no actual networking happens.
 
 ### `willow-app` (out of scope)
 
@@ -496,9 +532,11 @@ fn channel_topic(server_id: &str, channel_id: &str) -> TopicId {
 iroh-gossip requires bootstrap peers when subscribing to a topic (unlike
 GossipSub which discovers peers via the mesh). Strategy:
 
-1. **Relay as bootstrap**: The relay's `EndpointId` is known. All peers
-   bootstrap gossip topics through the relay. The relay subscribes to
-   all system topics and acts as a rendezvous point.
+1. **Bootstrap node**: A lightweight gossip participant deployed
+   alongside the relay. Its `EndpointId` is known at build time. All
+   peers bootstrap gossip topics through it. It subscribes to system
+   topics and acts as a rendezvous point but does not store or process
+   messages — it exists solely so new peers can join the gossip mesh.
 
 2. **Worker nodes as bootstrap**: Known worker `EndpointId`s (from
    `PLATFORM_WORKERS`) serve as additional bootstrap peers.
@@ -546,8 +584,9 @@ validate everything without real connections.
 
 ### Phase 3: Relay + Workers
 
-Replace `willow-relay` with iroh relay wrapper. Restructure worker
-network actor to use `GossipReceiver` / `GossipSender` directly.
+Replace `willow-relay` with iroh relay wrapper + bootstrap node.
+Restructure worker network actor to use `TopicEvents` / `TopicHandle`
+traits (same pattern as client).
 
 **Test**: Relay tests, worker tests, scaling tests.
 **Risk**: Low — relay is stateless, workers follow same pattern as
@@ -896,8 +935,8 @@ pub struct MemBlobStore {
 **Properties**:
 - Deterministic: messages arrive in send order, no timing variance
 - Isolated: each `MemHub` instance is independent
-- Fast: no async runtime needed for basic tests (though `tokio::test`
-  is fine too)
+- Fast: needs `#[tokio::test]` for async trait methods but all I/O is
+  in-process channel sends — sub-millisecond per test
 - Correct: mirrors the real gossip semantics closely enough that
   tests catching bugs in MemNetwork also catch them in IrohNetwork
 
@@ -1040,32 +1079,12 @@ punching) are unaffected by relay outages.
 ### Topic Subscription Recovery
 
 If the underlying connection drops and recovers, gossip topic
-subscriptions need to be re-established. The `Network` trait should
-expose connection status, and the client should re-subscribe to all
-active topics on reconnection:
-
-```rust
-// Addition to Network trait
-#[async_trait]
-pub trait Network: Send + Sync {
-    // ... existing methods ...
-
-    /// Stream of connectivity events.
-    async fn connection_events(&self) -> ConnectionEventStream;
-}
-
-pub enum ConnectionEvent {
-    RelayConnected,
-    RelayDisconnected,
-    DirectConnected(EndpointId),
-    DirectDisconnected(EndpointId),
-}
-```
-
-The client spawns a reconnection task that watches for
-`RelayDisconnected` and re-subscribes to all topics in the `topics`
-map when `RelayConnected` fires. HyParView handles re-joining the
-gossip mesh automatically once the topic subscription is re-established.
+subscriptions need to be re-established. The `Network` trait exposes
+`connection_events()` (see trait definition above). The client spawns
+a reconnection task that watches for `RelayDisconnected` and
+re-subscribes to all topics in the `topics` map when `RelayConnected`
+fires. HyParView handles re-joining the gossip mesh automatically
+once the topic subscription is re-established.
 
 ### WASM-Specific
 
