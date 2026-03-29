@@ -235,22 +235,333 @@ Cargo.toml                 — Add iroh workspace deps, keep libp2p for now
 
 ## Phase 2: Client + Web UI
 
-*To be detailed after Phase 1 is implemented.*
+Make `willow-client` generic over `Network`. Drop the `NetworkCommand`/`NetworkEvent` enum indirection. The client calls `Network` trait methods directly and spawns per-topic listener tasks. Port all 93 client tests to `MemNetwork`. Wire the Leptos web UI to the restructured client.
 
-**Scope**: Make `willow-client` generic over `Network`. Drop `NetworkCommand`/`NetworkEvent` enums. Port 93 client tests to `MemNetwork`. Wire Leptos web UI to new async-native client.
+### File Map
+
+#### Modified Crates
+
+```
+crates/client/
+├── Cargo.toml                 — Add willow-network dep, remove libp2p/futures-mpsc
+└── src/
+    ├── lib.rs                 — ClientHandle<N: Network>, ClientEventLoop removed,
+    │                            connect() creates Network + subscribes topics,
+    │                            send_message/create_channel etc. call TopicHandle directly
+    ├── network.rs             — DELETE (NetworkCommand, NetworkEvent, spawn_network gone)
+    ├── listeners.rs           — NEW: spawn_topic_listener(), process_gossip_event(),
+    │                            reconnection_task()
+    ├── state.rs               — SharedState uses Arc<RwLock<>> instead of Rc<RefCell<>>,
+    │                            ServerContext.topic_map keys → TopicId,
+    │                            PersistentEventStore unchanged
+    ├── events.rs              — ClientEvent peer fields: String → EndpointId
+    ├── ops.rs                 — Remove re-exports of old wire types,
+    │                            use willow_network::topics for TopicId constants
+    ├── files.rs               — File sharing via BlobStore trait instead of
+    │                            NetworkCommand::ShareFile
+    ├── storage.rs             — Unchanged (persistence backends)
+    └── worker_cache.rs        — Worker peer fields: String → EndpointId
+
+crates/web/
+└── src/
+    ├── app.rs                 — Create IrohNetwork, pass to ClientHandle::connect(),
+    │                            event loop consumes ClientEvent stream (same pattern,
+    │                            new generic type)
+    ├── state.rs               — Signal peer_id fields → EndpointId display format
+    ├── event_processing.rs    — process_event_batch: EndpointId for peer fields
+    └── components/*.rs        — Peer ID display: fmt_short() instead of truncated PeerId
+```
+
+### Steps
+
+#### 2.1 — Restructure ClientHandle as generic
+
+- [ ] Update `crates/client/Cargo.toml`: add `willow-network` dep (with `test-utils` as dev feature), remove `libp2p`, remove `futures` channel deps
+- [ ] Rewrite `ClientHandle` in `crates/client/src/lib.rs`:
+  - `pub struct ClientHandle<N: Network>` with `network: Arc<N>`, `topics: HashMap<TopicId, N::Topic>`, `state: Arc<RwLock<SharedState>>`, `identity: Identity`, `event_tx: UnboundedSender<ClientEvent>`
+  - `connect(network: N, identity: Identity, config: ClientConfig) -> Result<(Self, UnboundedReceiver<ClientEvent>)>` — subscribes to system topics, spawns listeners
+  - All command methods (`send_message`, `create_channel`, `trust_peer`, etc.) call `self.topics[&topic].broadcast()` directly instead of `cmd_tx.send(NetworkCommand::...)`
+  - `subscribe_channel(topic_id)` / `unsubscribe_channel(topic_id)` — manage per-channel topic subscriptions
+- [ ] Update `SharedState` to use `Arc<RwLock<>>` instead of `Rc<RefCell<>>`
+- [ ] Update `ServerContext.topic_map` keys from `String` to `TopicId`
+- [ ] Verify: `cargo check -p willow-client` (compiles with new generics)
+
+#### 2.2 — Topic listener system
+
+- [ ] Create `crates/client/src/listeners.rs`:
+  - `spawn_topic_listener<E: TopicEvents>(events, state, event_tx, identity)` — spawns async task that:
+    - Calls `events.next()` in loop
+    - On `GossipEvent::Received`: calls `unpack_wire()`, routes by `WireMessage` variant:
+      - `Event(e)` → `apply_event()` on state, emit `ClientEvent::MessageReceived` etc.
+      - `SyncRequest` → build and broadcast `SyncBatch` response
+      - `SyncBatch` → apply events, emit `ClientEvent::SyncCompleted`
+      - `TypingIndicator` → emit typing event
+      - `VoiceJoin/Leave/Signal` → emit corresponding `ClientEvent`
+      - `JoinRequest/Response/Denied` → emit corresponding `ClientEvent`
+    - On `GossipEvent::NeighborUp` → emit `ClientEvent::PeerConnected`
+    - On `GossipEvent::NeighborDown` → emit `ClientEvent::PeerDisconnected`
+  - `spawn_reconnection_task(network, topics, state)` — watches `connection_events()`, re-subscribes on relay reconnect
+- [ ] Verify: `cargo check -p willow-client`
+
+#### 2.3 — File sharing via BlobStore
+
+- [ ] Update `crates/client/src/files.rs`:
+  - `share_file(network, topic_sender, filename, mime_type, data)`:
+    - `network.blobs().add(data)` → get `Hash`
+    - Broadcast file announcement (hash, filename, mime_type, size, endpoint_id) over gossip
+  - `download_file(network, hash)`:
+    - `network.blobs().get(hash)` → return bytes
+  - Remove `FileManager` and chunk-based logic (replaced by iroh-blobs)
+- [ ] Update `ClientHandle::share_file()` to call new file module
+- [ ] Verify: `cargo check -p willow-client`
+
+#### 2.4 — Delete old network module
+
+- [ ] Delete `crates/client/src/network.rs` (NetworkCommand, NetworkEvent, spawn_network)
+- [ ] Remove all `NetworkCommand` / `NetworkEvent` references from lib.rs
+- [ ] Update ops.rs: remove old wire type re-exports, use `willow_network::topics` for constants
+- [ ] Update events.rs: `ClientEvent` peer fields from `String` to `EndpointId`
+- [ ] Update worker_cache.rs: peer fields from `String` to `EndpointId`
+- [ ] Verify: `cargo check -p willow-client`
+
+#### 2.5 — Port client tests to MemNetwork
+
+- [ ] Update `test_client()` helper:
+  - Returns `ClientHandle<MemNetwork>` with `MemHub`
+  - Creates server, subscribes to channel topics via MemHub
+  - Returns `(handle, event_rx)` for asserting events
+- [ ] Add `test_client_pair()` helper:
+  - Two `ClientHandle<MemNetwork>` on same `MemHub`
+  - Both joined to same server with "general" channel
+- [ ] Port all 93 existing tests:
+  - Tests that previously asserted on `NetworkCommand` variants now assert on `ClientEvent` arrival at the other client or on local state mutation
+  - `send_message` → verify message arrives at other client via MemHub
+  - `create_channel` → verify channel creation event propagates
+  - `trust/untrust` → verify permission events broadcast
+  - `edit/delete/react` → verify state mutations
+  - `reply` → verify reply preview
+  - Profile/display name → verify profile broadcasts
+- [ ] Verify: `cargo test -p willow-client`
+
+#### 2.6 — Wire Leptos web UI
+
+- [ ] Update `crates/web/src/app.rs`:
+  - Create `IrohNetwork` with `Config` (relay URL, identity)
+  - `ClientHandle::connect(network, identity, config)` — typed as `ClientHandle<IrohNetwork>`
+  - Event loop: `spawn_local` reads from `event_rx` (same pattern, new generic type)
+  - Remove old deferred channel construction
+- [ ] Update `crates/web/src/state.rs`:
+  - `peer_id` signal: use `EndpointId` display format
+  - `peers` signal: peer tuples use `EndpointId`
+- [ ] Update `crates/web/src/event_processing.rs`:
+  - `process_event_batch()`: handle `EndpointId` in peer fields
+  - Connection status: derive from `ConnectionEvent` stream instead of counting peers
+- [ ] Update component files (`components/*.rs`):
+  - Peer display: use `fmt_short()` for compact peer ID display
+  - Any `PeerId` string comparisons → `EndpointId` comparison
+- [ ] Verify: `cargo check -p willow-web --target wasm32-unknown-unknown`
+
+#### 2.7 — Browser tests
+
+- [ ] Update `crates/web/tests/browser.rs`:
+  - `DisplayMessage.author_peer_id` → `EndpointId` display string
+  - `make_msg()` helper uses `EndpointId` for author
+  - All 39 tests pass with updated types
+- [ ] Verify: `just test-browser` (requires Firefox + geckodriver)
+
+#### 2.8 — Phase 2 validation gate
+
+- [ ] `cargo test -p willow-client` — all 93 tests pass with `MemNetwork`
+- [ ] `cargo check -p willow-web --target wasm32-unknown-unknown` — WASM compiles
+- [ ] `just test-browser` — 39 browser tests pass
+- [ ] Manual smoke test: `just dev` → open web UI → send message → verify delivery
 
 ---
 
 ## Phase 3: Relay + Workers
 
-*To be detailed after Phase 2 is implemented.*
+Replace the custom relay with an iroh-relay wrapper + bootstrap gossip node. Make workers generic over `Network`. Port worker and scaling tests.
 
-**Scope**: Replace `willow-relay` with iroh-relay wrapper + bootstrap node. Make workers generic over `Network`. Port worker tests to `MemNetwork`. Port scaling tests to `IrohNetwork`.
+### File Map
+
+```
+crates/relay/
+├── Cargo.toml             — Replace libp2p deps with iroh, iroh-relay, iroh-gossip,
+│                            willow-network
+└── src/
+    ├── lib.rs             — DELETE old RelayBehaviour, Relay struct
+    ├── main.rs            — Rewrite: iroh-relay server + bootstrap gossip node
+    └── config.rs          — NEW: RelayConfig (relay_addr, bootstrap identity,
+                             tls cert/key paths, system topics)
+
+crates/worker/
+├── Cargo.toml             — Replace old willow-network dep with new (trait-based)
+└── src/
+    ├── lib.rs             — WorkerRole trait unchanged, run() becomes generic
+    ├── runtime.rs         — run<N: Network>(): create actors with TopicHandle/Events
+    ├── config.rs          — WorkerConfig: relay_addr → relay_url: RelayUrl
+    ├── identity.rs        — iroh SecretKey, print EndpointId hex
+    ├── types.rs           — Unchanged (re-exports willow_common types)
+    └── actors/
+        ├── network.rs     — Stream from TopicEvents instead of polling libp2p swarm
+        ├── state.rs       — Unchanged (no network dependency)
+        ├── heartbeat.rs   — Send via TopicHandle instead of NetworkOutMsg
+        └── sync.rs        — Send via TopicHandle instead of NetworkOutMsg
+
+crates/replay/src/main.rs — Use IrohNetwork, --relay-url CLI flag
+crates/storage/src/main.rs — Use IrohNetwork, --relay-url CLI flag
+```
+
+### Steps
+
+#### 3.1 — Relay rewrite
+
+- [ ] Update `crates/relay/Cargo.toml`: replace libp2p deps with `iroh`, `iroh-relay`, `iroh-gossip`, `willow-network`, `willow-identity`
+- [ ] Delete `crates/relay/src/lib.rs` (old `Relay` + `RelayBehaviour`)
+- [ ] Create `crates/relay/src/config.rs`:
+  - `RelayConfig`: `relay_bind_addr`, `bootstrap_identity_path`, `tls_cert_path`, `tls_key_path` (all optional for dev)
+  - CLI parsing via clap
+- [ ] Rewrite `crates/relay/src/main.rs`:
+  - Start `iroh_relay::Server` with configured bind address
+  - Create `IrohNetwork` with bootstrap identity (load or generate)
+  - Subscribe to system topics: `SERVER_OPS_TOPIC`, `WORKERS_TOPIC`, `PROFILES_TOPIC`
+  - `tokio::signal::ctrl_c()` for graceful shutdown
+  - Print bootstrap node `EndpointId` on startup (for client config)
+- [ ] Verify: `cargo build -p willow-relay`
+
+#### 3.2 — Worker runtime generic over Network
+
+- [ ] Update `crates/worker/Cargo.toml`: replace old willow-network dep with new
+- [ ] Update `crates/worker/src/runtime.rs`:
+  - `pub async fn run<N: Network>(role, config, network: N)` signature
+  - Subscribe to `WORKERS_TOPIC` and `SERVER_OPS_TOPIC` via `network.subscribe()`
+  - Pass `TopicHandle` to heartbeat and sync actors
+  - Pass `TopicEvents` to network actor
+- [ ] Update `crates/worker/src/identity.rs`:
+  - `load_or_generate()` → iroh `SecretKey` from/to file
+  - `print_peer_id()` → print `EndpointId` hex
+- [ ] Update `crates/worker/src/config.rs`:
+  - `relay_addr: String` → `relay_url: Option<RelayUrl>`
+
+#### 3.3 — Worker actor rewrites
+
+- [ ] Rewrite `crates/worker/src/actors/network.rs`:
+  - `network_actor<E: TopicEvents>(events, state_tx, shutdown_rx)`:
+    - Stream from `TopicEvents` instead of polling `NetworkNode`
+    - On `GossipEvent::Received` → parse worker/server messages, send to state actor
+    - Keep existing `parse_worker_message()` and `parse_server_message()` (pure functions, unchanged)
+- [ ] Update `crates/worker/src/actors/heartbeat.rs`:
+  - Accept `TopicHandle` instead of `mpsc::Sender<NetworkOutMsg>`
+  - `sender.broadcast(packed_announcement)` instead of channel send
+- [ ] Update `crates/worker/src/actors/sync.rs`:
+  - Accept `TopicHandle` instead of `mpsc::Sender<NetworkOutMsg>`
+  - `sender.broadcast(packed_sync_request)` instead of channel send
+- [ ] `crates/worker/src/actors/state.rs` — unchanged (no network dependency)
+- [ ] Verify: `cargo check -p willow-worker`
+
+#### 3.4 — Replay and storage binaries
+
+- [ ] Update `crates/replay/src/main.rs`:
+  - Create `IrohNetwork` with worker identity + relay URL
+  - Call `willow_worker::run(role, config, network)`
+  - CLI: `--relay` → `--relay-url`
+- [ ] Update `crates/storage/src/main.rs`: same pattern
+- [ ] Role files (`role.rs`, `store.rs`) — unchanged (pure state logic)
+- [ ] Verify: `cargo build -p willow-replay && cargo build -p willow-storage`
+
+#### 3.5 — Port worker tests to MemNetwork
+
+- [ ] Update `crates/worker/tests/integration.rs`:
+  - Create `MemHub` + `MemNetwork` instead of mock channels
+  - State actor tests: unchanged (no network dependency)
+  - Heartbeat tests: pass `MemTopicHandle`, assert broadcasts arrive on hub
+  - Sync tests: pass `MemTopicHandle`, assert sync requests broadcast
+  - Full orchestration test: wire all actors with `MemNetwork`
+  - Graceful shutdown test: verify departure broadcast on hub
+- [ ] Verify: `cargo test -p willow-worker`
+
+#### 3.6 — Port scaling tests
+
+- [ ] Create `crates/network/tests/scaling.rs`:
+  - `scale_5/10/20_peers_connect()` — IrohNetwork nodes, star topology
+  - `scale_5/10_peers_message_flood()` — broadcast and verify delivery
+  - Adjust timeout thresholds for iroh QUIC
+- [ ] Verify: `cargo test -p willow-network --test scaling`
+
+#### 3.7 — Update `just dev` flow
+
+- [ ] Update `justfile`:
+  - `relay` recipe: build and run new `willow-relay` binary
+  - `dev` recipe: start iroh relay wrapper → workers → trunk serve
+  - Print bootstrap node `EndpointId` for client config
+- [ ] Test: `just dev` starts full stack
+
+#### 3.8 — Phase 3 validation gate
+
+- [ ] `cargo build -p willow-relay` — relay builds
+- [ ] `cargo test -p willow-worker` — worker tests pass with MemNetwork
+- [ ] `cargo build -p willow-replay && cargo build -p willow-storage` — binaries build
+- [ ] `just dev` — full stack starts, web UI connects, messages deliver
+- [ ] Scaling tests pass
 
 ---
 
 ## Phase 4: Cleanup
 
-*To be detailed after Phase 3 is implemented.*
+Remove all libp2p vestiges. Delete replaced crates. Update docs and deployment.
 
-**Scope**: Remove all libp2p deps. Delete `willow-files`. Remove WASM transport branching. Update CLAUDE.md. Update Docker configs. Playwright E2E tests.
+### Steps
+
+#### 4.1 — Remove libp2p dependencies
+
+- [ ] Audit all `Cargo.toml` files for remaining libp2p deps
+- [ ] Remove `libp2p` from workspace `[dependencies]` in root `Cargo.toml`
+- [ ] `cargo check --workspace` — verify no libp2p imports remain
+
+#### 4.2 — Delete replaced crates and files
+
+- [ ] Delete `crates/files/` entirely (replaced by iroh-blobs)
+- [ ] Remove `willow-files` from workspace members
+- [ ] Delete old test files from `crates/app/tests/` (integration.rs, peer_scale.rs)
+- [ ] Clean up any dead code referencing old network types
+
+#### 4.3 — Remove WASM transport branching
+
+- [ ] Search for `#[cfg(target_arch = "wasm32")]` in network-related code
+- [ ] Remove platform-specific transport code (iroh handles internally)
+- [ ] Keep legitimate WASM cfg gates (blob store selection, storage backend)
+- [ ] `cargo check --target wasm32-unknown-unknown -p willow-network -p willow-client`
+
+#### 4.4 — Update E2E state convergence tests
+
+- [ ] Update `crates/app/tests/e2e_flow.rs`: authors → `EndpointId`
+- [ ] Verify: `cargo test -p willow-app --test e2e_flow`
+
+#### 4.5 — Update Playwright E2E tests
+
+- [ ] Update `e2e/helpers.ts`: relay startup → new binary
+- [ ] Run all Playwright test suites
+
+#### 4.6 — Update Docker deployment
+
+- [ ] Update Dockerfiles for relay, replay, storage
+- [ ] Update `docker-compose.yml` for new CLI flags
+- [ ] Test: `just docker-build && just docker-up`
+
+#### 4.7 — Update CLAUDE.md
+
+- [ ] Architecture notes: iroh replaces libp2p
+- [ ] Dependency graph update
+- [ ] Message flow update
+- [ ] Network protocol table update
+- [ ] Remove "Adding a new libp2p protocol" section
+- [ ] Add "Adding a new iroh protocol" section
+- [ ] Update `just dev` instructions
+
+#### 4.8 — Phase 4 validation gate
+
+- [ ] `just check` — fmt + clippy + test + WASM, zero warnings
+- [ ] `just test-browser` — browser tests pass
+- [ ] `just dev` → manual smoke test
+- [ ] `grep -r "libp2p" crates/` — zero matches
+- [ ] `cargo tree | grep libp2p` — not in dependency tree
