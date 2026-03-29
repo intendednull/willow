@@ -60,20 +60,19 @@ change format. This affects:
 - Stored profiles, permissions, channel keys
 - Wire protocol peer identification
 
-**Approach**: Build the entire networking stack around iroh's model
-natively. Don't shim iroh into libp2p-shaped abstractions anywhere:
+**Approach**: Build the entire networking stack around iroh's types and
+patterns. Use iroh types (`TopicId`, `EndpointId`, `Bytes`, `Hash`) in
+trait interfaces — not libp2p types, not Willow-invented abstractions.
+But keep a thin trait boundary so the client and worker code can be
+tested without real iroh endpoints:
 
 - `Identity` wraps `iroh_base::SecretKey` and exposes `EndpointId` directly
 - Drop the `peer_id() -> String` indirection — consumers use `EndpointId`
   as the native peer identifier type throughout the codebase
 - `ServerState.owner`, `Event.author`, permission maps, profile keys all
   change from `String` to `EndpointId` (or its serialized form)
-- Network layer uses `Endpoint` + `Router` + `ProtocolHandler` natively,
-  not wrapped behind libp2p-shaped `NetworkNode` / `NetworkEvent` enums
-- Gossip uses `GossipTopic` / `GossipSender` / `GossipReceiver` directly,
-  not wrapped behind publish/subscribe command channels
-- File transfer uses `iroh-blobs` `Hash` / `BlobTicket` directly, not
-  mapped through `FileManifest` / `ChunkRequest` abstractions
+- Network abstraction uses iroh-shaped traits (`TopicHandle`, `BlobStore`)
+  that speak iroh types but can be swapped for in-memory test doubles
 - No backward compatibility with libp2p data — clean break, fresh state
 
 ### Transport
@@ -182,17 +181,81 @@ directly. Display formatting uses iroh's `fmt_short()` for UIs.
 ### `willow-network` (rewritten)
 
 The entire crate is replaced. Current contents (behaviour.rs, node.rs,
-config.rs, file_transfer.rs) are removed. The new crate is a thin
-setup layer — it does NOT wrap iroh types behind Willow-specific
-abstractions. Consumers use iroh types directly.
+config.rs, file_transfer.rs) are removed.
+
+The new crate provides two things:
+1. **Iroh-shaped traits** — abstract over gossip and blob operations
+   using iroh's own types. Thin enough that the real implementation is
+   trivial, but swappable for test doubles.
+2. **Iroh implementation** — assembles `Endpoint` + `Router` + `Gossip`
+   + `BlobsProtocol` and implements the traits.
 
 ```rust
-use iroh::{Endpoint, Router, EndpointId};
-use iroh_base::{SecretKey, RelayUrl, EndpointAddr};
-use iroh_gossip::{Gossip, TopicId};
-use iroh_blobs::BlobsProtocol;
+use bytes::Bytes;
+use iroh::EndpointId;
+use iroh_gossip::TopicId;
+use iroh_blobs::{Hash, BlobFormat};
 
-/// Configuration for creating a Willow network endpoint.
+// ── Traits (iroh-shaped, but mockable) ──────────────────────────
+
+/// A handle to a single gossip topic subscription.
+/// Mirrors iroh_gossip::GossipTopic but as a trait.
+#[async_trait]
+pub trait TopicHandle: Send + Sync {
+    async fn broadcast(&self, data: Bytes) -> Result<()>;
+    async fn broadcast_neighbors(&self, data: Bytes) -> Result<()>;
+    fn neighbors(&self) -> Vec<EndpointId>;
+}
+
+/// Incoming gossip message.
+pub struct GossipMessage {
+    pub content: Bytes,
+    pub sender: EndpointId,
+}
+
+/// Stream of incoming gossip messages for a topic.
+/// Mirrors iroh_gossip::GossipReceiver but as a trait.
+#[async_trait]
+pub trait TopicEvents: Send {
+    async fn next(&mut self) -> Option<Result<GossipEvent>>;
+    async fn joined(&mut self) -> Result<()>;
+}
+
+pub enum GossipEvent {
+    Received(GossipMessage),
+    NeighborUp(EndpointId),
+    NeighborDown(EndpointId),
+}
+
+/// Content-addressed blob operations.
+#[async_trait]
+pub trait BlobStore: Send + Sync {
+    async fn add(&self, data: Bytes) -> Result<Hash>;
+    async fn get(&self, hash: Hash) -> Result<Option<Bytes>>;
+    async fn has(&self, hash: Hash) -> bool;
+}
+
+/// Top-level network handle. Assembled once, passed to client/workers.
+#[async_trait]
+pub trait Network: Send + Sync {
+    type Topic: TopicHandle;
+    type Events: TopicEvents;
+
+    fn id(&self) -> EndpointId;
+
+    async fn subscribe(
+        &self,
+        topic: TopicId,
+        bootstrap: Vec<EndpointId>,
+    ) -> Result<(Self::Topic, Self::Events)>;
+
+    fn blobs(&self) -> &dyn BlobStore;
+
+    async fn shutdown(&self) -> Result<()>;
+}
+
+// ── Iroh implementation ─────────────────────────────────────────
+
 pub struct Config {
     pub secret_key: SecretKey,
     pub relay_url: Option<RelayUrl>,
@@ -200,31 +263,33 @@ pub struct Config {
     pub mdns: bool,
 }
 
-/// Assembled iroh stack, ready to use. Fields are public —
-/// consumers interact with iroh types directly.
-pub struct Network {
-    pub endpoint: Endpoint,
-    pub gossip: Gossip,
-    pub blobs: BlobsProtocol,
-    pub router: Router,
-}
+/// Real iroh-backed implementation.
+pub struct IrohNetwork { /* Endpoint, Router, Gossip, Blobs */ }
 
-impl Network {
-    /// Build and spawn the iroh endpoint, router, gossip, and blobs.
+impl IrohNetwork {
     pub async fn new(config: Config) -> Result<Self>;
-
-    /// Convenience: this node's EndpointId.
-    pub fn id(&self) -> EndpointId;
-
-    /// Graceful shutdown.
-    pub async fn shutdown(self) -> Result<()>;
 }
+
+impl Network for IrohNetwork { /* delegates to iroh types */ }
+
+// ── Test double ─────────────────────────────────────────────────
+
+/// In-memory network for tests. No real connections, no async runtime
+/// needed. Messages broadcast on a topic are delivered to all other
+/// MemNetwork instances sharing the same MemHub.
+#[cfg(any(test, feature = "test-utils"))]
+pub struct MemNetwork { /* ... */ }
+
+#[cfg(any(test, feature = "test-utils"))]
+pub struct MemHub { /* shared broadcast channels per TopicId */ }
 ```
 
-Consumers call `network.gossip.subscribe(topic, peers)` directly to
-get a `GossipTopic`, then call `.split()` for sender/receiver. No
-Willow-specific `subscribe()` / `publish()` wrappers. Same for blobs —
-call `network.blobs` methods directly.
+**Design rationale**: The traits use iroh's types (`TopicId`,
+`EndpointId`, `Hash`, `Bytes`) everywhere — no Willow-invented ID
+types or message wrappers. The trait surface is small (subscribe,
+broadcast, blobs) because iroh's API is already small. The `MemNetwork`
+test double lets client and worker tests run without tokio, without
+real QUIC connections, and without iroh as a dev-dependency.
 
 **No more native/WASM split**: iroh's `Endpoint` handles platform
 differences internally. The same code compiles for both targets.
@@ -259,29 +324,33 @@ Option 1 is preferred for consistency with the existing deployment model.
 
 ### `willow-client` (restructured)
 
-Drop the `NetworkCommand` / `NetworkEvent` enum indirection. The client
-holds iroh handles directly and calls them inline.
+The client is generic over `Network`. Production uses `IrohNetwork`,
+tests use `MemNetwork`. No `NetworkCommand` / `NetworkEvent` enums —
+the client calls trait methods directly.
 
 ```rust
-use willow_network::Network;
-use iroh_gossip::{GossipSender, GossipReceiver, TopicId};
+use willow_network::{Network, TopicHandle, TopicEvents, GossipEvent};
+use iroh_gossip::TopicId;
 use iroh_blobs::Hash;
 
-pub struct ClientHandle {
-    network: Network,
-    /// Active gossip subscriptions, keyed by TopicId.
-    topics: HashMap<TopicId, GossipSender>,
+pub struct ClientHandle<N: Network> {
+    network: Arc<N>,
+    /// Active gossip topic handles, keyed by TopicId.
+    topics: HashMap<TopicId, N::Topic>,
     state: Rc<RefCell<SharedState>>,
 }
 
-impl ClientHandle {
-    pub async fn connect(config: willow_network::Config) -> Result<Self> {
-        let network = Network::new(config).await?;
-        // Subscribe to system topics directly
-        let ops_topic = network.gossip
+impl<N: Network> ClientHandle<N> {
+    pub async fn connect(network: N, identity: Identity) -> Result<Self> {
+        let network = Arc::new(network);
+        // Subscribe to system topics via trait
+        let (ops_sender, ops_events) = network
             .subscribe(SERVER_OPS_TOPIC, bootstrap_peers)
             .await?;
-        // ...
+
+        // Spawn listener task for incoming events
+        spawn_topic_listener(ops_events, state.clone(), event_tx.clone());
+
         Ok(Self { network, topics, state })
     }
 
@@ -294,44 +363,61 @@ impl ClientHandle {
     }
 
     pub async fn share_file(&self, topic: TopicId, data: Vec<u8>) -> Result<Hash> {
-        let hash = self.network.blobs.add_slice(&data).await?.hash;
-        let ticket = BlobTicket::new(self.network.endpoint.addr(), hash, BlobFormat::Raw);
-        // Broadcast ticket over gossip
-        self.topics[&topic].broadcast(ticket_bytes.into()).await?;
+        let hash = self.network.blobs().add(data.into()).await?;
+        // Broadcast hash + endpoint ID over gossip
+        self.topics[&topic].broadcast(announce_bytes.into()).await?;
         Ok(hash)
     }
 }
-```
 
-**No more command channels**: The old architecture used `mpsc` channels
-to bridge async networking into sync Bevy ECS. Since we're focusing on
-the Leptos web UI (which is async-native), the client calls iroh
-directly. No `NetworkCommand` enum, no `NetworkEvent` enum, no bridge.
-
-The `ClientEventLoop` is replaced by spawned tasks that stream from
-`GossipReceiver` and update `SharedState` directly:
-
-```rust
-// Spawned per-topic listener
-async fn listen_topic(
-    mut receiver: GossipReceiver,
+/// Spawned per-topic: streams GossipEvents, applies state mutations,
+/// emits ClientEvents to the UI layer.
+async fn spawn_topic_listener<E: TopicEvents>(
+    mut events: E,
     state: Rc<RefCell<SharedState>>,
     event_tx: UnboundedSender<ClientEvent>,
 ) {
-    while let Some(event) = receiver.next().await {
-        if let Ok(Event::Received(msg)) = event {
-            let (wire_msg, from) = unpack_wire(&msg.content)?;
-            match wire_msg {
-                WireMessage::Event(e) => {
-                    apply_event(&mut state.borrow_mut(), e);
-                    event_tx.send(ClientEvent::MessageReceived { .. });
+    while let Some(Ok(gossip_event)) = events.next().await {
+        match gossip_event {
+            GossipEvent::Received(msg) => {
+                let (wire_msg, from) = unpack_wire(&msg.content)?;
+                match wire_msg {
+                    WireMessage::Event(e) => {
+                        apply_event(&mut state.borrow_mut(), e);
+                        event_tx.send(ClientEvent::MessageReceived { .. });
+                    }
+                    // ...
                 }
-                // ...
             }
+            GossipEvent::NeighborUp(id) => { /* track peer */ }
+            GossipEvent::NeighborDown(id) => { /* remove peer */ }
         }
     }
 }
 ```
+
+**Testing**:
+```rust
+#[test]
+async fn send_message_broadcasts_to_topic() {
+    let hub = MemHub::new();
+    let net_a = MemNetwork::new(&hub);
+    let net_b = MemNetwork::new(&hub);
+
+    let client_a = ClientHandle::connect(net_a, identity_a).await?;
+    let client_b = ClientHandle::connect(net_b, identity_b).await?;
+
+    client_a.send_message("general", "hello").await?;
+
+    // Message arrives at client_b via MemHub in-process broadcast
+    let msg = client_b.next_event().await;
+    assert_eq!(msg.body, "hello");
+}
+```
+
+No tokio runtime, no real QUIC, no ports. The `MemHub` acts as an
+in-process gossip mesh — broadcasts on a `TopicId` are delivered to
+all `MemNetwork` instances subscribed to that topic.
 
 ### `willow-app` (out of scope)
 
@@ -341,25 +427,25 @@ The Bevy app can be migrated later using the same updated client library.
 
 ### `willow-worker` (restructured)
 
-Workers hold `Network` directly and use iroh handles natively. The
-actor model (network, state, heartbeat, sync) remains, but the network
-actor uses `GossipReceiver` streams instead of polling a libp2p swarm:
+Workers are also generic over `Network`. The actor model (network,
+state, heartbeat, sync) remains, but the network actor streams from
+`TopicEvents` and writes via `TopicHandle`:
 
 ```rust
-pub struct WorkerNode {
-    network: Network,
+pub struct WorkerNode<N: Network> {
+    network: Arc<N>,
     role: Box<dyn WorkerRole>,
     state_tx: mpsc::Sender<StateMsg>,
 }
 
-// Network actor: stream gossip events directly
-async fn network_actor(
-    mut receiver: GossipReceiver,
+// Network actor: stream topic events via trait
+async fn network_actor<E: TopicEvents, T: TopicHandle>(
+    mut events: E,
+    sender: T,
     state_tx: mpsc::Sender<StateMsg>,
-    sender: GossipSender,
 ) {
-    while let Some(event) = receiver.next().await {
-        if let Ok(Event::Received(msg)) = event {
+    while let Some(Ok(gossip_event)) = events.next().await {
+        if let GossipEvent::Received(msg) = gossip_event {
             let (wire_msg, from) = unpack_wire(&msg.content)?;
             state_tx.send(StateMsg::from(wire_msg)).await?;
         }
@@ -367,8 +453,9 @@ async fn network_actor(
 }
 ```
 
-No `NetworkEvent` / `NetworkCommand` enums — the actor reads from
-`GossipReceiver` and writes to `GossipSender` directly.
+Worker tests use `MemNetwork` just like client tests — verify event
+application, sync responses, and heartbeat logic without real
+connections.
 
 ## Topic ID Registry
 
@@ -419,23 +506,25 @@ Rewrite `willow-identity` and `willow-network` against iroh. Update
 identifiers. Update `willow-transport` to remove any libp2p imports.
 
 - `willow-identity`: `SecretKey` / `PublicKey` / `EndpointId` native
-- `willow-network`: `Network` struct exposing iroh handles directly
+- `willow-network`: `Network` trait + `IrohNetwork` + `MemNetwork`
 - `willow-state`: `Event.author` becomes `EndpointId`, `ServerState`
   member/permission maps key on `EndpointId`
 
-**Test**: Identity sign/verify, state apply/merge, network endpoint
-creation on localhost.
+**Test**: Identity sign/verify, state apply/merge, `MemNetwork`
+round-trips, `IrohNetwork` endpoint creation on localhost.
 **Risk**: Medium — touches state types, but it's a clean break so no
 compatibility concerns.
 
 ### Phase 2: Client + Web UI
 
-Restructure `willow-client` to hold `Network` directly. Drop
-`NetworkCommand` / `NetworkEvent` enums and the bridge layer. Wire
-the Leptos web UI to the new async-native client.
+Make `willow-client` generic over `Network`. Wire up `IrohNetwork` for
+production and `MemNetwork` for tests. Port existing client tests to
+use `MemNetwork`. Wire the Leptos web UI to the new async-native client.
 
-**Test**: Client tests, web UI integration, gossip round-trips.
-**Risk**: Medium — largest behavioral change, but simpler code.
+**Test**: All existing client tests ported to `MemNetwork`, new gossip
+round-trip tests, web UI integration.
+**Risk**: Medium — largest behavioral change, but `MemNetwork` lets us
+validate everything without real connections.
 
 ### Phase 3: Relay + Workers
 
