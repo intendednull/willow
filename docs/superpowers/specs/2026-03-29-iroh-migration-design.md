@@ -118,8 +118,9 @@ iroh relay server instead of a custom libp2p relay.
 hashing the string: `TopicId::from(blake3::hash(topic_string.as_bytes()))`.
 
 **Bootstrap**: iroh-gossip requires bootstrap peers when subscribing to a
-topic. The relay/worker nodes serve as bootstrap peers — their `EndpointId`s
-are known at build time (same as current `PLATFORM_WORKERS`).
+topic. The bootstrap node and worker nodes serve as bootstrap peers —
+their `EndpointId`s are known at build time (same as current
+`PLATFORM_WORKERS`).
 
 ### File Transfer
 
