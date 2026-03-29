@@ -63,8 +63,9 @@ Agent messages render like human messages with these differences:
   messages show a "processed in cleartext" notice (see [Privacy](#8-privacy)).
 - **Streaming responses**: Long replies render incrementally as chunks arrive
   (see [Streaming](#5-streaming-responses)).
-- **Collapsible**: Responses longer than 20 lines are auto-collapsed with a
-  "Show more" toggle to keep chat scannable.
+- **Collapsible**: Messages longer than 20 lines are auto-collapsed with a
+  "Show more" toggle to keep chat scannable. This applies to all messages,
+  not just agent responses.
 
 ### Message Actions
 
