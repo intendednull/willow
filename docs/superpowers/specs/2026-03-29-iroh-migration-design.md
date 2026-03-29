@@ -37,8 +37,10 @@ built-in), and a cleaner protocol composition model.
 - Changing the event-sourced state model (willow-state is untouched)
 - Changing the wire message format (WireMessage/pack_wire/unpack_wire)
 - Changing the client API surface (ClientHandle methods stay the same)
-- Changing the Bevy UI or Leptos web UI
+- Changing the Leptos web UI components
+- Changing the Bevy desktop app (out of scope — focus on web UI only)
 - Migrating in a single atomic step (phased approach)
+- Preserving backward compatibility with old libp2p data (clean break)
 
 ## Architecture Mapping
 
@@ -58,11 +60,16 @@ change format. This affects:
 - Stored profiles, permissions, channel keys
 - Wire protocol peer identification
 
-**Migration**: The `willow-identity` crate abstracts this. Update its
-`Identity` type to wrap `iroh_base::SecretKey` and derive `EndpointId`
-from it. The `peer_id()` method returns the hex-encoded `EndpointId`
-instead of a libp2p `PeerId` string. Existing state stored with libp2p
-PeerId strings needs a one-time migration (see Phase 4).
+**Approach**: Don't shim iroh into the old libp2p-shaped API. Restructure
+`willow-identity` around iroh's model natively:
+
+- `Identity` wraps `iroh_base::SecretKey` and exposes `EndpointId` directly
+- Drop the `peer_id() -> String` indirection — consumers use `EndpointId`
+  as the native peer identifier type throughout the codebase
+- `ServerState.owner`, `Event.author`, permission maps, profile keys all
+  change from `String` to `EndpointId` (or its serialized form)
+- No backward compatibility with libp2p `PeerId` strings — clean break,
+  all state starts fresh
 
 ### Transport
 
@@ -277,13 +284,11 @@ pub async fn spawn_network(
 }
 ```
 
-### `willow-app` (modified)
+### `willow-app` (out of scope)
 
-`network_bridge.rs` changes:
-- `ConnectCommand` carries `RelayUrl` instead of `Multiaddr`
-- Bridge event/command types updated for `TopicId` where applicable
-- The massive native/WASM split in the bridge event loop collapses
-  into a single implementation
+The Bevy desktop app is not part of this migration. Focus is on the
+Leptos web UI (`crates/web/`), which consumes `willow-client` directly.
+The Bevy app can be migrated later using the same updated client library.
 
 ### `willow-worker` (modified)
 
@@ -350,36 +355,23 @@ gossip and blob support. Delete `behaviour.rs`, `file_transfer.rs`.
 **Risk**: Medium — largest code change, but well-isolated behind
 `NetworkNode` API.
 
-### Phase 3: Client + Bridge
+### Phase 3: Client Network Layer
 
-Update `willow-client/src/network.rs` and `willow-app/src/network_bridge.rs`
-to use the new `NetworkNode`. Collapse the native/WASM code paths.
+Update `willow-client/src/network.rs` to use the new `NetworkNode`.
+Collapse the native/WASM code paths into a single implementation.
 
-**Test**: Client tests, headless Bevy tests, network integration tests.
-**Risk**: Medium — touches the async/sync boundary.
+**Test**: Client tests, web UI integration.
+**Risk**: Medium — touches the async boundary.
 
 ### Phase 4: Relay + Workers
 
 Replace `willow-relay` with iroh relay wrapper. Update worker network
 actor. Deploy new relay alongside old relay for testing.
 
-**Test**: Relay history tests, worker tests, scaling tests.
+**Test**: Relay tests, worker tests, scaling tests.
 **Risk**: Medium — deployment change, but relay is stateless.
 
-### Phase 5: Data Migration
-
-One-time migration of stored peer ID strings from libp2p `PeerId`
-format to iroh `EndpointId` format in:
-- Persisted `ServerState` (SQLite / localStorage)
-- `EventStore` entries
-- Profile store
-- Op log
-
-**Strategy**: Migration runs on first startup after upgrade. Old format
-peer IDs are detected by length/prefix and converted. A version flag
-in storage prevents re-migration.
-
-### Phase 6: Cleanup
+### Phase 5: Cleanup
 
 - Remove all libp2p dependencies from `Cargo.toml` workspace
 - Remove `#[cfg(target_arch = "wasm32")]` transport branching
@@ -450,22 +442,88 @@ and handles the rest. The bridge event loop is unified.
   request-response)
 - **Binary size**: Likely smaller (one transport stack vs two)
 
+## Decisions
+
+### Relay: Self-Hosted by Default
+
+Self-host an iroh relay for development and production. The relay binary
+in `crates/relay/` wraps `iroh-relay` with Willow-specific defaults
+(ports, TLS, logging). n0's public relay infrastructure can be used as
+a fallback or for users who don't want to run their own.
+
+For local dev (`just dev`), the relay runs without TLS on localhost.
+For production, the relay runs behind the existing Caddy/nginx TLS
+termination on the Linode server — no separate cert management needed.
+
+### Gossip Max Message Size
+
+Increase from 4096 to **64 KiB** via `Builder::max_message_size(65536)`.
+
+**Implications**: iroh-gossip uses epidemic broadcast trees (PlumTree).
+Messages above the `max_message_size` are rejected at the sender. The
+PlumTree protocol sends full messages eagerly to peers in the eager set,
+and only sends `IHave` (hash) notifications to peers in the lazy set.
+Larger messages mean:
+
+- **More bandwidth per eager push**: Each message is forwarded in full
+  to ~5 active-view peers. At 64 KiB, a single broadcast costs ~320 KiB
+  of outbound traffic. At 4 KiB, it's ~20 KiB. For Willow's traffic
+  patterns (chat messages, sync batches, file manifests), 64 KiB is
+  well within reason.
+- **Lazy repair cost**: When a lazy peer sends `IHave` and the receiver
+  needs the message, it sends `Graft` + the full message is forwarded.
+  Larger messages make this repair more expensive, but it only happens
+  on tree restructuring (rare).
+- **Memory**: Each peer buffers recent message hashes for dedup. Message
+  *content* is not retained by the gossip layer after delivery, so the
+  max size doesn't affect memory proportionally.
+- **No fragmentation risk**: QUIC handles packet-level fragmentation
+  transparently. Unlike UDP-based gossip, there's no MTU concern.
+
+64 KiB covers all current message types comfortably. The largest messages
+are `SyncBatch` (hundreds of events) which can be split into multiple
+batches if they approach the limit. Chat messages and file manifests are
+well under 4 KiB.
+
+### Bootstrap Cold Start
+
+This is an infrastructure concern, not an application-level problem.
+The relay must be running and reachable for gossip to work — same as
+today. The relay's `EndpointId` is baked into the client build config.
+
+For `just dev`, the relay starts first and workers/web connect after.
+For production, the relay is a long-running systemd service. If the
+relay goes down, peers already connected to each other via HyParView
+continue to gossip directly — only new topic joins fail.
+
+Worker nodes provide additional bootstrap redundancy. If the relay is
+unreachable but a worker is, peers can bootstrap through the worker.
+
 ## Open Questions
 
 1. **iroh stability**: iroh is pre-1.0 (v0.97). API may change between
    minor versions. Pin exact versions and budget for update maintenance.
 
-2. **Self-hosted relay**: Do we run n0's relay infrastructure or
-   self-host? Self-hosting is straightforward with `iroh-relay` but
-   requires TLS certificate management.
+2. **Blob garbage collection**: iroh-blobs retains all received blobs
+   in its store indefinitely. Without GC, disk usage grows unbounded.
 
-3. **Gossip max message size**: iroh-gossip defaults to 4096 bytes.
-   Current GossipSub messages can be larger (file manifests, sync
-   batches). Either increase the limit or chunk large messages.
+   **On clients (browser)**: WASM uses `MemStore` — blobs are lost on
+   page close. No GC needed. Native clients could use `MemStore` too
+   since files are saved to the filesystem separately after download.
 
-4. **Topic bootstrap cold start**: If no bootstrap peers are available
-   for a topic, gossip cannot start. The relay must always be reachable
-   as a fallback bootstrap peer.
+   **On worker nodes**: Storage workers archive events in SQLite, not
+   blobs. File workers (future) would need blob GC. Options:
+   - **TTL-based**: Evict blobs not accessed in N days. Simple, but
+     risks evicting content still needed by peers who haven't downloaded.
+   - **Reference counting**: Track which servers/channels reference a
+     blob. Evict when no references remain. More complex, but precise.
+   - **Size cap**: Evict oldest blobs when store exceeds N GB. Simple
+     and predictable. Works well for file workers with bounded disk.
 
-5. **Blob garbage collection**: iroh-blobs stores all received blobs.
-   Need a GC strategy for disk space management, especially on workers.
+   Recommendation: Start with **size cap** for workers (configurable
+   `--max-blob-store-size`). Use `MemStore` for clients. Revisit with
+   reference counting when file workers are implemented.
+
+   iroh-blobs' `FsStore` (backed by `redb`) supports deletion via its
+   API, so implementing any GC strategy is straightforward once the
+   policy is decided.
