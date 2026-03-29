@@ -132,8 +132,10 @@ are bounded by the permissions granted to its roles:
 | `ManageMessages` | Pin messages, delete own responses |
 | `AttachFiles` | Share generated files (images, docs) |
 
-Agents MUST NOT be granted `Administrator`, `ManageRoles`, `KickMembers`,
-or `BanMembers` — the UI warns if an owner attempts this.
+Agents CAN be granted any permission, but the UI applies heavy friction
+for dangerous permissions (`Administrator`, `ManageRoles`, `KickMembers`,
+`BanMembers`). Attempting to grant these shows a confirmation dialog
+explaining the risks, requiring the owner to explicitly acknowledge.
 
 ### Trust Model
 
@@ -272,18 +274,19 @@ event) and transmitted to the agent on join/sync.
 
 ## 8. Privacy & Encryption
 
-### Cleartext Processing
+### Encryption
 
-LLM agents must read message content to generate responses. This conflicts
-with E2E encryption.
+Agents participate in E2E encryption the same way human members do. They
+receive channel keys via the invite flow, decrypt incoming messages locally,
+and encrypt outgoing messages with the channel key. There is no special
+"cleartext" mode — from the protocol's perspective, an agent is just another
+member.
 
-**Approach**: Transparent disclosure.
-
-- When an agent joins an encrypted channel, the channel header shows:
-  "Messages in this channel are readable by agent: Claude"
-- Agent messages show a small "processed in cleartext" indicator.
-- The agent receives the channel key like any other member. Encryption
-  still protects messages in transit and from non-members.
+The only distinction is what happens after decryption: a `CloudProvider`
+agent may send decrypted content to an external API for inference (see
+[Data Handling Disclosure](#data-handling-disclosure) below). A `Local`
+agent keeps everything on-device. This is a deployment concern, not a
+protocol concern.
 
 ### Data Handling Disclosure
 
