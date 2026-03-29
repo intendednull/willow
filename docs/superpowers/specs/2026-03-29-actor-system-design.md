@@ -2,6 +2,7 @@
 
 **Date**: 2026-03-29
 **Status**: Draft
+**Depends on**: iroh integration (implementation blocked until complete)
 
 ## Existing Solutions
 
@@ -647,10 +648,18 @@ crate. It shares `tokio` with iroh — no additional runtime overhead.
 
 ## Migration Path
 
-### Phase 1: New crate, worker migration
+**Prerequisite**: iroh integration must be complete before implementation
+begins. The actor system depends on iroh's tokio runtime being available
+on both native and WASM targets. Once iroh is integrated, the networking
+layer will already use iroh's `Endpoint`, `Router`, and `ProtocolHandler`
+— the actor system builds on that foundation.
+
+### Phase 1: Core crate + worker migration
 
 Create `crates/actor/` with the core types. Migrate the worker crate's
-four actors to use `willow-actor`:
+four hand-rolled actor loops to use `willow-actor`. This is the smallest
+useful scope — workers are native-only, so WASM correctness isn't tested
+yet but the API is designed for it.
 
 **Before** (current `crates/worker/src/actors/state.rs`):
 ```rust
@@ -714,18 +723,19 @@ system.shutdown().await;
 
 ### Phase 2: Client library
 
-Replace `ClientHandle`'s `futures::channel::mpsc` pair with actor addresses.
-The `ClientEventLoop` becomes an actor with `StreamHandler<NetworkEvent>`.
+Replace `ClientHandle`'s channel pair with actor addresses. The
+`ClientEventLoop` becomes an actor with `StreamHandler` for iroh
+network events. `Rc<RefCell<SharedState>>` becomes `Arc<Mutex<>>`.
 
 ### Phase 3: Network bridge
 
 The Bevy bridge becomes a thin adapter: a Bevy system polls a `Receiver`
-that an actor feeds. The bridge actor replaces `run_network()`.
+that an actor feeds. The bridge actor wraps the iroh `Endpoint`.
 
 ### Phase 4: Web UI
 
-The Leptos event loop (`spawn_local` + `futures::channel::mpsc`) becomes
-a `StreamHandler` on a UI actor. Signal updates happen in the handler.
+The Leptos event loop becomes a `StreamHandler` on a UI actor. Signal
+updates happen in the handler. Validates WASM target correctness.
 
 ## Open Questions
 
