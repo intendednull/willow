@@ -665,6 +665,259 @@ continue to gossip directly — only new topic joins fail.
 Worker nodes provide additional bootstrap redundancy. If the relay is
 unreachable but a worker is, peers can bootstrap through the worker.
 
+## Testing Strategy
+
+The existing test suite has ~665 tests across 7 tiers. The migration
+must preserve coverage at every tier, porting tests to the new
+abstractions rather than dropping them.
+
+### Tier 1: State Machine (63 tests — unchanged)
+
+`crates/state/src/tests.rs` — pure event application, merge, permissions.
+
+**Impact**: `Event.author` and `ServerState` member keys change from
+`String` to `EndpointId`. Tests update to use `EndpointId` values
+instead of string literals like `"owner"` and `"alice"`.
+
+```rust
+// Before
+let event = event(&state, "e1", "alice", EventKind::Message { .. });
+
+// After
+let alice = Identity::generate().endpoint_id();
+let event = event(&state, "e1", alice, EventKind::Message { .. });
+```
+
+The `test_state()` helper generates an `Identity` for the owner and
+returns both the state and the owner's `EndpointId`. Test assertions
+use `EndpointId` comparison instead of string comparison.
+
+**No networking involved** — these tests stay fast and deterministic.
+
+### Tier 2: Client API (93 tests — ported to MemNetwork)
+
+`crates/client/src/lib.rs` test module.
+
+**Current**: `test_client()` creates a `ClientHandle` with a captured
+`mpsc::Receiver<NetworkCommand>` — no real networking. Tests verify
+that calling `send_message()` produces the right `NetworkCommand`.
+
+**After**: `test_client()` creates a `ClientHandle<MemNetwork>` with
+a `MemHub`. Tests verify actual behavior — messages sent by client A
+arrive at client B through the in-process hub:
+
+```rust
+async fn test_client_pair() -> (ClientHandle<MemNetwork>, ClientHandle<MemNetwork>) {
+    let hub = MemHub::new();
+    let a = ClientHandle::connect(MemNetwork::new(&hub), Identity::generate()).await?;
+    let b = ClientHandle::connect(MemNetwork::new(&hub), Identity::generate()).await?;
+    (a, b)
+}
+
+#[tokio::test]
+async fn send_message_delivered() {
+    let (alice, bob) = test_client_pair().await;
+    alice.send_message("general", "hello").await?;
+    let event = bob.next_event().await;
+    assert!(matches!(event, ClientEvent::MessageReceived { .. }));
+}
+```
+
+This is strictly better than the current approach — tests verify
+end-to-end behavior through the gossip abstraction, not just that
+the right command enum variant was produced.
+
+**What MemHub provides**:
+- Deterministic message delivery (no timing, no flakes)
+- Multiple isolated hubs per test (no cross-test interference)
+- Neighbor tracking (NeighborUp/Down events fire on subscribe)
+- Optional: configurable message loss for chaos testing
+
+### Tier 3: Browser / Leptos (39 tests — minimal changes)
+
+`crates/web/tests/browser.rs` — DOM rendering via `wasm_bindgen_test`.
+
+**Impact**: Minimal. These tests render Leptos components with mock
+data (`DisplayMessage` structs). They don't touch networking. The only
+change is `DisplayMessage.author_peer_id` becomes an `EndpointId`
+display string instead of a libp2p `PeerId` string.
+
+### Tier 4: Network Integration (new — replaces libp2p integration)
+
+Currently `crates/app/tests/integration.rs` — real libp2p nodes on
+localhost TCP. These are **deleted and rewritten** against iroh.
+
+New location: `crates/network/tests/integration.rs`
+
+```rust
+#[tokio::test]
+async fn two_nodes_gossip_round_trip() {
+    let a = IrohNetwork::new(test_config()).await?;
+    let b = IrohNetwork::new(test_config()).await?;
+
+    let topic = topic_id("test-topic");
+    let (sender_a, _) = a.subscribe(topic, vec![b.id()]).await?;
+    let (_, mut events_b) = b.subscribe(topic, vec![a.id()]).await?;
+
+    events_b.joined().await?;
+    sender_a.broadcast("hello".into()).await?;
+
+    match events_b.next().await {
+        Some(Ok(GossipEvent::Received(msg))) => {
+            assert_eq!(msg.content.as_ref(), b"hello");
+            assert_eq!(msg.sender, a.id());
+        }
+        other => panic!("expected Received, got {:?}", other),
+    }
+}
+```
+
+These tests use **real iroh endpoints on localhost** — they validate
+that `IrohNetwork` correctly assembles the iroh stack and that gossip
+actually works over QUIC. They replace the libp2p integration tests
+1:1.
+
+**Tests to write**:
+- Two nodes connect and exchange gossip messages
+- Topic isolation (messages on topic A don't appear on topic B)
+- Blob add + get round-trip between two nodes
+- Node disconnect fires NeighborDown
+- Multiple topics on same endpoint
+- Relay-mediated connection (requires local iroh-relay in test)
+
+### Tier 5: Scaling (7 tests — ported to iroh)
+
+Currently `crates/app/tests/peer_scale.rs` — N real nodes in star
+topology measuring connection time and message delivery.
+
+Ported to use `IrohNetwork` instead of libp2p `NetworkNode`. The test
+structure stays the same — create N nodes, dial into a hub, measure
+latency. Thresholds may need adjustment since iroh's QUIC connections
+have different latency characteristics than libp2p TCP+Noise+Yamux.
+
+```rust
+#[tokio::test]
+async fn scale_10_peers_connect() {
+    let hub = IrohNetwork::new(test_config()).await?;
+    let mut peers = vec![];
+    for _ in 0..9 {
+        let peer = IrohNetwork::new(test_config()).await?;
+        // Subscribe to shared topic with hub as bootstrap
+        peer.subscribe(topic, vec![hub.id()]).await?;
+        peers.push(peer);
+    }
+    // Verify all peers see each other as neighbors
+}
+```
+
+### Tier 6: Worker (existing tests — ported to MemNetwork)
+
+`crates/worker/tests/integration.rs` — actor message passing.
+
+Workers become generic over `Network`. Worker tests use `MemNetwork`
+to verify:
+- State actor ingests events from gossip
+- Sync requests produce correct batches
+- Heartbeat actor broadcasts announcements
+- Concurrent requests resolve correctly
+
+Same test logic, swap `MemNetwork` for the current mock setup.
+
+### Tier 7: E2E State Convergence (existing — unchanged)
+
+`crates/app/tests/e2e_flow.rs` pure state machine tests (lines 100-394).
+
+These create 3 `ServerState` instances and apply events directly to
+simulate concurrent peers. No networking. Only change is `String` →
+`EndpointId` for author fields. These tests are the most valuable
+correctness tests in the codebase and are completely unaffected by the
+networking migration.
+
+### MemHub Design
+
+The `MemHub` is the core test primitive. It simulates an in-process
+gossip network with deterministic delivery:
+
+```rust
+/// Shared in-process gossip mesh for testing.
+pub struct MemHub {
+    /// Per-topic broadcast channels.
+    topics: Mutex<HashMap<TopicId, broadcast::Sender<(EndpointId, Bytes)>>>,
+}
+
+impl MemHub {
+    pub fn new() -> Arc<Self>;
+}
+
+/// Test network backed by MemHub. No real connections.
+pub struct MemNetwork {
+    id: EndpointId,
+    hub: Arc<MemHub>,
+    blobs: MemBlobStore,
+}
+
+/// In-memory blob store for tests.
+pub struct MemBlobStore {
+    store: Mutex<HashMap<Hash, Bytes>>,
+}
+```
+
+**Behavior**:
+- `subscribe(topic, _bootstrap)` — registers with the hub's broadcast
+  channel for that topic. Bootstrap peers are ignored (everyone is
+  already "connected" through the hub).
+- `broadcast(data)` — sends `(sender_id, data)` to all subscribers
+  on that topic via the broadcast channel.
+- `next()` — receives from the broadcast channel. Filters out
+  messages from self (same as real gossip).
+- `NeighborUp` — fired for all existing subscribers when a new peer
+  joins a topic.
+- `NeighborDown` — fired when a `MemNetwork` is dropped.
+- Blob add/get — simple HashMap insert/lookup.
+
+**Properties**:
+- Deterministic: messages arrive in send order, no timing variance
+- Isolated: each `MemHub` instance is independent
+- Fast: no async runtime needed for basic tests (though `tokio::test`
+  is fine too)
+- Correct: mirrors the real gossip semantics closely enough that
+  tests catching bugs in MemNetwork also catch them in IrohNetwork
+
+### Test Migration Checklist
+
+| Test file | Current count | Migration action |
+|---|---|---|
+| `crates/state/src/tests.rs` | 63 | Update `String` → `EndpointId` |
+| `crates/client/src/lib.rs` | 93 | Port to `ClientHandle<MemNetwork>` |
+| `crates/web/tests/browser.rs` | 39 | Minimal — update display types |
+| `crates/app/tests/e2e_flow.rs` (state) | 5 | Update `String` → `EndpointId` |
+| `crates/app/tests/integration.rs` | 14 | Rewrite against `IrohNetwork` |
+| `crates/app/tests/peer_scale.rs` | 7 | Port to `IrohNetwork` |
+| `crates/worker/tests/integration.rs` | ~5 | Port to `MemNetwork` |
+| `crates/app/src/tests.rs` | 99 | Out of scope (Bevy) |
+
+**Total**: ~226 tests to port/rewrite (excluding Bevy). The Bevy app
+tests (99) are out of scope for this migration but remain functional
+until the Bevy app is migrated separately.
+
+### Validation Gates
+
+Each migration phase has a gate before proceeding:
+
+- **Phase 1 gate**: `just test-state` passes (63 tests with
+  `EndpointId`). `MemNetwork` round-trip tests pass. `IrohNetwork`
+  connects two localhost nodes and exchanges a gossip message.
+
+- **Phase 2 gate**: All 93 client tests pass with `MemNetwork`.
+  Leptos browser tests pass (39). New multi-client gossip tests pass.
+
+- **Phase 3 gate**: Relay starts and two `IrohNetwork` nodes connect
+  through it. Worker tests pass with `MemNetwork`. Scaling tests
+  pass with `IrohNetwork` (thresholds adjusted if needed).
+
+- **Phase 4 gate**: `just check` passes with zero warnings. No
+  libp2p imports remain. WASM build succeeds (`just check-wasm`).
+
 ## Open Questions
 
 1. **iroh stability**: iroh is pre-1.0 (v0.97). API may change between
