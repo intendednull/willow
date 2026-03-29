@@ -308,9 +308,9 @@ impl Network for IrohNetwork { /* delegates to iroh types */ }
 
 // ── Test double ─────────────────────────────────────────────────
 
-/// In-memory network for tests. No real connections, no async runtime
-/// needed. Messages broadcast on a topic are delivered to all other
-/// MemNetwork instances sharing the same MemHub.
+/// In-memory network for tests. No real connections, no network I/O.
+/// Needs #[tokio::test] to drive async trait methods, but all
+/// delivery happens in-process via broadcast channels.
 #[cfg(any(test, feature = "test-utils"))]
 pub struct MemNetwork { /* ... */ }
 
@@ -322,8 +322,8 @@ pub struct MemHub { /* shared broadcast channels per TopicId */ }
 `EndpointId`, `Hash`, `Bytes`) everywhere — no Willow-invented ID
 types or message wrappers. The trait surface is small (subscribe,
 broadcast, blobs) because iroh's API is already small. The `MemNetwork`
-test double lets client and worker tests run without tokio, without
-real QUIC connections, and without iroh as a dev-dependency.
+test double lets client and worker tests run without real QUIC
+connections and without iroh as a dev-dependency.
 
 **No more native/WASM split**: iroh's `Endpoint` handles platform
 differences internally. The same code compiles for both targets.
@@ -336,10 +336,8 @@ removing any libp2p type imports if present.
 
 ### `willow-relay` (replaced)
 
-The custom relay binary is replaced by an iroh relay server deployment.
-The `crates/relay/` directory can either:
-
-The relay wrapper binary runs two things:
+The custom relay binary is replaced. The new `crates/relay/` binary
+runs two things:
 1. **iroh-relay server** — packet forwarding for NAT traversal
 2. **Bootstrap node** — a minimal gossip participant that subscribes
    to system topics so new peers can join the mesh
@@ -561,10 +559,13 @@ identifiers. Update `willow-transport` to remove any libp2p imports.
 - `willow-network`: `Network` trait + `IrohNetwork` + `MemNetwork`
 - `willow-state`: `Event.author` becomes `EndpointId`, `ServerState`
   member/permission maps key on `EndpointId`
+- `willow-channel`: `Server.owner`, `Member.peer_id` → `EndpointId`
+- `willow-messaging`: `Message.author` → `EndpointId`
+- `willow-crypto`: X25519 derivation from iroh `SecretKey`
 
-These can be parallelized: `willow-state`'s `String` → `EndpointId`
-change is mechanical and independent from the `willow-network` rewrite.
-Work both simultaneously.
+The `String` → `EndpointId` changes across state/channel/messaging/crypto
+are mechanical and independent from the `willow-network` rewrite.
+Work both tracks simultaneously.
 
 **Test**: Identity sign/verify, state apply/merge, `MemNetwork`
 round-trips, `IrohNetwork` endpoint creation on localhost.
@@ -595,6 +596,7 @@ client.
 ### Phase 4: Cleanup
 
 - Remove all libp2p dependencies from `Cargo.toml` workspace
+- Delete `willow-files` crate (replaced by `iroh-blobs`)
 - Remove `#[cfg(target_arch = "wasm32")]` transport branching
 - Update CLAUDE.md architecture docs
 - Update Docker deployment configs
@@ -711,8 +713,8 @@ well under 4 KiB.
 ### Bootstrap Cold Start
 
 This is an infrastructure concern, not an application-level problem.
-The relay must be running and reachable for gossip to work — same as
-today. The relay's `EndpointId` is baked into the client build config.
+The bootstrap node must be running and reachable for gossip to work —
+same as today. Its `EndpointId` is baked into the client build config.
 
 For `just dev`, the relay starts first and workers/web connect after.
 For production, the relay is a long-running systemd service. If the
