@@ -194,7 +194,12 @@ Cargo.toml                 — Add iroh workspace deps, keep libp2p for now
   - `event()` / `event_with()` helpers take `EndpointId` for author
   - All string literal authors (`"owner"`, `"alice"`, `"bob"`) → `Identity::generate().endpoint_id()`
   - Assertions compare `EndpointId` values
+- [ ] Update `crates/app/tests/e2e_flow.rs` (5 pure state machine tests):
+  - Same mechanical change: author strings → `EndpointId`
+  - These tests use `ServerState` directly (no networking), so they break
+    as soon as willow-state changes
 - [ ] Verify: `cargo test -p willow-state`
+- [ ] Verify: `cargo test -p willow-app --test e2e_flow`
 
 #### 1.7 — Supporting crates: channel, messaging, crypto, transport, common
 
@@ -230,6 +235,11 @@ Cargo.toml                 — Add iroh workspace deps, keep libp2p for now
 - [ ] `cargo test -p willow-network` — IrohNetwork integration tests pass (two localhost nodes exchange gossip)
 - [ ] `cargo test -p willow-channel && cargo test -p willow-messaging && cargo test -p willow-crypto && cargo test -p willow-transport && cargo test -p willow-common` — all supporting crates pass
 - [ ] `cargo check -p willow-network --target wasm32-unknown-unknown` — WASM compiles
+
+**Note**: Do NOT run `just check` or `cargo check --workspace` — `willow-client`,
+`willow-app`, `willow-worker`, and `willow-relay` still depend on the old network
+types and will fail to compile. They are updated in Phases 2-3. Validate only
+the specific crates listed above.
 
 ---
 
@@ -536,23 +546,18 @@ Remove all libp2p vestiges. Delete replaced crates. Update docs and deployment.
 - [ ] Keep legitimate WASM cfg gates (blob store selection, storage backend)
 - [ ] `cargo check --target wasm32-unknown-unknown -p willow-network -p willow-client`
 
-#### 4.4 — Update E2E state convergence tests
-
-- [ ] Update `crates/app/tests/e2e_flow.rs`: authors → `EndpointId`
-- [ ] Verify: `cargo test -p willow-app --test e2e_flow`
-
-#### 4.5 — Update Playwright E2E tests
+#### 4.4 — Update Playwright E2E tests
 
 - [ ] Update `e2e/helpers.ts`: relay startup → new binary
 - [ ] Run all Playwright test suites
 
-#### 4.6 — Update Docker deployment
+#### 4.5 — Update Docker deployment
 
 - [ ] Update Dockerfiles for relay, replay, storage
 - [ ] Update `docker-compose.yml` for new CLI flags
 - [ ] Test: `just docker-build && just docker-up`
 
-#### 4.7 — Update CLAUDE.md
+#### 4.6 — Update CLAUDE.md
 
 - [ ] Architecture notes: iroh replaces libp2p
 - [ ] Dependency graph update
@@ -562,7 +567,7 @@ Remove all libp2p vestiges. Delete replaced crates. Update docs and deployment.
 - [ ] Add "Adding a new iroh protocol" section
 - [ ] Update `just dev` instructions
 
-#### 4.8 — Phase 4 validation gate
+#### 4.7 — Phase 4 validation gate
 
 - [ ] `just check` — fmt + clippy + test + WASM, zero warnings
 - [ ] `just test-browser` — browser tests pass
