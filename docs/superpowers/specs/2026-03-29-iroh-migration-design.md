@@ -446,14 +446,16 @@ and handles the rest. The bridge event loop is unified.
 
 ### Relay: Self-Hosted by Default
 
-Self-host an iroh relay for development and production. The relay binary
-in `crates/relay/` wraps `iroh-relay` with Willow-specific defaults
-(ports, TLS, logging). n0's public relay infrastructure can be used as
-a fallback or for users who don't want to run their own.
+Self-host iroh relays for both development and production. The relay
+binary in `crates/relay/` wraps `iroh-relay` with Willow-specific
+defaults (ports, TLS, logging). n0's public relay infrastructure can
+be used as an additional fallback.
 
 For local dev (`just dev`), the relay runs without TLS on localhost.
-For production, the relay runs behind the existing Caddy/nginx TLS
-termination on the Linode server — no separate cert management needed.
+For production, the relay runs on the Linode server behind the existing
+Caddy/nginx TLS termination — no separate cert management needed.
+The production relay is deployed the same way as today (systemd service,
+persistent identity volume).
 
 ### Gossip Max Message Size
 
