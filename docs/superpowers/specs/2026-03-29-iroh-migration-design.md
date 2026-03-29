@@ -630,8 +630,35 @@ Iroh handles WASM internally, but these constraints remain:
   (same as current WebSocket-only model). Once WebTransport is widely
   available, iroh can use it for direct browser-to-browser connections.
 - **No filesystem blob store**: WASM uses `MemStore` for blobs.
-  Persistent blob caching on WASM would need IndexedDB integration
-  (future work).
+  Persistent blob caching on WASM would need IndexedDB integration.
+  Include stubs in Phase 1 so the path is clear:
+
+  ```rust
+  /// Platform-aware blob store. Uses MemStore on WASM, FsStore on native.
+  #[cfg(target_arch = "wasm32")]
+  pub type PlatformBlobStore = MemBlobStore;
+
+  #[cfg(not(target_arch = "wasm32"))]
+  pub type PlatformBlobStore = FsBlobStore;
+
+  /// WASM blob store backed by in-memory HashMap.
+  /// TODO: Replace with IndexedDB-backed store for persistence across
+  /// page reloads. Implementation plan:
+  ///
+  /// 1. Add `idb` crate dependency (IndexedDB wrapper for wasm-bindgen)
+  /// 2. Create `IdbBlobStore` implementing `BlobStore` trait:
+  ///    - Object store: "blobs", keyed by Hash (hex string)
+  ///    - add(): put blob bytes into object store, return Hash
+  ///    - get(): fetch by hash key, return Option<Bytes>
+  ///    - has(): key existence check via count()
+  /// 3. Add LRU eviction when store exceeds configurable size limit
+  ///    (browser storage quota is ~50-100 MB depending on browser)
+  /// 4. Wire into PlatformBlobStore via cfg(target_arch = "wasm32")
+  /// 5. Add browser test: add blob, reload page, verify blob persists
+  pub struct MemBlobStore {
+      store: Mutex<HashMap<Hash, Bytes>>,
+  }
+  ```
 - **Address lookup**: WASM uses `PkarrResolver` (HTTPS-based) instead
   of DNS queries. Configure with `PkarrResolver::n0_dns()`.
 
@@ -1140,3 +1167,56 @@ same (they consume `willow-client` which handles the network layer).
    iroh-blobs' `FsStore` (backed by `redb`) supports deletion via its
    API, so implementing any GC strategy is straightforward once the
    policy is decided.
+
+   Include GC stubs in the `BlobStore` trait from day one:
+
+   ```rust
+   #[async_trait]
+   pub trait BlobStore: Send + Sync {
+       async fn add(&self, data: Bytes) -> Result<Hash>;
+       async fn get(&self, hash: Hash) -> Result<Option<Bytes>>;
+       async fn has(&self, hash: Hash) -> bool;
+
+       /// Remove a blob from the store. Returns true if it existed.
+       /// TODO: Called by GC strategies below. No-op on MemStore.
+       async fn remove(&self, hash: Hash) -> Result<bool>;
+
+       /// Current store size in bytes. Returns None if unsupported.
+       /// TODO: Used by size-cap GC to decide when to evict.
+       async fn store_size(&self) -> Option<u64>;
+   }
+
+   /// TODO: Blob GC implementation plan:
+   ///
+   /// 1. Add `BlobGc` struct that wraps a `BlobStore` + config:
+   ///    ```
+   ///    pub struct BlobGc<S: BlobStore> {
+   ///        store: S,
+   ///        max_size: u64,           // e.g. 1 GB
+   ///        check_interval: Duration, // e.g. 5 minutes
+   ///    }
+   ///    ```
+   ///
+   /// 2. GC loop (spawned as background task on workers):
+   ///    - Poll store_size() on interval
+   ///    - If over max_size, list blobs by last-access time
+   ///    - Remove oldest blobs until under 80% of max_size
+   ///    - Log evictions for debugging
+   ///
+   /// 3. FsStore integration:
+   ///    - iroh-blobs FsStore (redb) supports delete via its API
+   ///    - Track last-access timestamps in a separate redb table
+   ///    - Update timestamp on get(), don't update on has()
+   ///
+   /// 4. MemStore: remove() deletes from HashMap. store_size()
+   ///    returns sum of value byte lengths.
+   ///
+   /// 5. Worker CLI flag: --max-blob-store-size <bytes>
+   ///    Default: 1 GB for replay nodes, 10 GB for file nodes
+   ///
+   /// 6. Tests:
+   ///    - Add blobs until over limit, verify oldest evicted
+   ///    - Verify recently-accessed blobs survive GC
+   ///    - Verify GC runs on interval without blocking operations
+   ///    - Verify remove() returns false for missing hash
+   ```
