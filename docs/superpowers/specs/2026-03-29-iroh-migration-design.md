@@ -896,7 +896,35 @@ pub struct MemBlobStore {
 | `crates/worker/tests/integration.rs` | ~5 | Port to `MemNetwork` |
 | `crates/app/src/tests.rs` | 99 | Out of scope (Bevy) |
 
-**Total**: ~226 tests to port/rewrite (excluding Bevy). The Bevy app
+### Tier 8: Playwright E2E (existing — ported to iroh relay)
+
+`e2e/*.spec.ts` — multi-peer sync, permissions, mobile UI tests.
+
+These spin up the full `just dev` stack and test real browser-to-browser
+communication. They need the iroh relay running instead of the libp2p
+relay. The test helpers (`setupTwoPeers`, `sendMessage`, etc.) are
+unchanged — they interact with the Leptos UI, not the network layer
+directly.
+
+**Action**: Update `e2e/helpers.ts` to start the iroh relay wrapper
+instead of `willow-relay`. Everything else should work as-is since
+the tests operate at the UI level.
+
+### Test Migration Checklist (updated)
+
+| Test file | Current count | Migration action |
+|---|---|---|
+| `crates/state/src/tests.rs` | 63 | Update `String` → `EndpointId` |
+| `crates/client/src/lib.rs` | 93 | Port to `ClientHandle<MemNetwork>` |
+| `crates/web/tests/browser.rs` | 39 | Minimal — update display types |
+| `crates/app/tests/e2e_flow.rs` (state) | 5 | Update `String` → `EndpointId` |
+| `crates/app/tests/integration.rs` | 14 | Rewrite against `IrohNetwork` |
+| `crates/app/tests/peer_scale.rs` | 7 | Port to `IrohNetwork` |
+| `crates/worker/tests/integration.rs` | ~5 | Port to `MemNetwork` |
+| `e2e/*.spec.ts` | ~40 | Update relay startup in helpers |
+| `crates/app/src/tests.rs` | 99 | Out of scope (Bevy) |
+
+**Total**: ~266 tests to port/rewrite (excluding Bevy). The Bevy app
 tests (99) are out of scope for this migration but remain functional
 until the Bevy app is migrated separately.
 
@@ -917,6 +945,145 @@ Each migration phase has a gate before proceeding:
 
 - **Phase 4 gate**: `just check` passes with zero warnings. No
   libp2p imports remain. WASM build succeeds (`just check-wasm`).
+
+## Additional Crate Impacts
+
+### `willow-crypto` (modified)
+
+Currently derives X25519 Diffie-Hellman keys from Ed25519 keys via
+libp2p's identity types. After migration, derive from iroh's
+`SecretKey` instead:
+
+```rust
+// Before: libp2p keypair → ed25519 bytes → X25519
+// After:  iroh SecretKey → ed25519 bytes → X25519
+let ed_bytes = identity.secret_key().to_bytes();
+let x25519_secret = x25519_dalek::StaticSecret::from(
+    ed25519_to_x25519(&ed_bytes)
+);
+```
+
+The underlying Ed25519→X25519 conversion is the same algorithm
+(clamped SHA-512 of the seed). Only the wrapper type changes. E2E
+encryption (ChaCha20-Poly1305) is unaffected.
+
+### `willow-channel` and `willow-messaging` (modified)
+
+Both crates use `String` for peer identifiers internally:
+- `willow-channel`: `Server.owner`, `Member.peer_id`, role assignments
+- `willow-messaging`: `Message.author`, `HLC` node identifiers
+
+These change to `EndpointId` (or a serializable wrapper). Since these
+crates don't depend on libp2p directly, the change is mechanical —
+swap `String` fields to `EndpointId`, update constructors and accessors.
+
+### `willow-common` / wire format (modified)
+
+`pack_wire` and `unpack_wire` sign/verify with `willow_identity`. The
+signature bytes change format because iroh's `SecretKey::sign()` may
+produce a different envelope than libp2p's `Keypair::sign()`. Both use
+Ed25519 signatures (64 bytes), but the signed payload structure may
+differ.
+
+**Decision**: Keep the existing signed envelope format (hash payload,
+sign hash, prepend signature + public key bytes). Just swap the
+signing/verification calls to use iroh types. The wire format stays
+compatible across versions since it's our own envelope, not libp2p's.
+
+### `EndpointId` serialization
+
+`EndpointId` (= `PublicKey`) needs consistent serialization across
+wire protocol, state persistence, and display:
+
+- **Wire / persistence**: 32 raw bytes (compact, used in bincode
+  serialization of `Event`, `ServerState`, etc.)
+- **Display**: hex string via iroh's `Display` impl (64 chars) for
+  logs, UI display names, debug output
+- **Short display**: `fmt_short()` (first 5 bytes as hex, 10 chars)
+  for UI peer badges
+
+iroh's `PublicKey` already implements `Serialize`/`Deserialize` (raw
+32 bytes for binary formats, hex string for human-readable formats).
+This works with bincode (wire) and JSON (debug/config) out of the box.
+
+## Voice / WebRTC Signaling
+
+Voice signaling (`VoiceJoin`, `VoiceLeave`, `VoiceSignal`) currently
+uses gossipsub topics. This maps directly to iroh-gossip — voice
+signals are just gossip messages on a voice-specific `TopicId`:
+
+```rust
+fn voice_topic(server_id: &str, channel_id: &str) -> TopicId {
+    topic_id(&format!("{server_id}/{channel_id}/voice"))
+}
+```
+
+No protocol change needed. The signaling messages are small (SDP
+offers/answers, ICE candidates) — well within the 64 KiB gossip limit.
+WebRTC data channels are established peer-to-peer after signaling and
+don't go through iroh.
+
+## Reconnection and Resilience
+
+### Relay Disconnection
+
+iroh's `Endpoint` handles relay reconnection internally. If the relay
+drops, the endpoint automatically attempts to re-establish the relay
+connection with exponential backoff. Direct peer connections (via hole
+punching) are unaffected by relay outages.
+
+### Topic Subscription Recovery
+
+If the underlying connection drops and recovers, gossip topic
+subscriptions need to be re-established. The `Network` trait should
+expose connection status, and the client should re-subscribe to all
+active topics on reconnection:
+
+```rust
+// Addition to Network trait
+#[async_trait]
+pub trait Network: Send + Sync {
+    // ... existing methods ...
+
+    /// Stream of connectivity events.
+    async fn connection_events(&self) -> ConnectionEventStream;
+}
+
+pub enum ConnectionEvent {
+    RelayConnected,
+    RelayDisconnected,
+    DirectConnected(EndpointId),
+    DirectDisconnected(EndpointId),
+}
+```
+
+The client spawns a reconnection task that watches for
+`RelayDisconnected` and re-subscribes to all topics in the `topics`
+map when `RelayConnected` fires. HyParView handles re-joining the
+gossip mesh automatically once the topic subscription is re-established.
+
+### WASM-Specific
+
+The current WASM reconnection loop (backoff + retry) is replaced by
+iroh's built-in relay reconnection. No custom reconnection code needed
+in the client — iroh handles it at the transport level.
+
+## `just dev` Changes
+
+The `justfile` dev stack updates:
+
+```
+# Before
+just dev → relay (willow-relay) + replay worker + storage worker + trunk serve
+
+# After
+just dev → relay (iroh-relay wrapper) + replay worker + storage worker + trunk serve
+```
+
+The relay binary changes from `willow-relay` to the new iroh-relay
+wrapper in `crates/relay/`. Startup script updates to pass iroh-relay
+flags instead of libp2p multiaddrs. Worker and web startup remain the
+same (they consume `willow-client` which handles the network layer).
 
 ## Open Questions
 
