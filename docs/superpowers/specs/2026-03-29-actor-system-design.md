@@ -3,6 +3,79 @@
 **Date**: 2026-03-29
 **Status**: Draft
 
+## Prior Art
+
+A survey of existing Rust actor crates was conducted to determine whether
+an off-the-shelf solution could be adopted. Summary:
+
+| Crate | Version | WASM | Send req | Supervision | Status |
+|-------|---------|------|----------|-------------|--------|
+| **actix** | 0.13.5 | No | Send+Sync | Yes | Maintained, stalled |
+| **ractor** | 0.15.12 | No | Send+Sync+'static | Yes (Erlang-style) | Active |
+| **kameo** | 0.19.2 | No | Send+Sync | Yes | Active |
+| **coerce** | 0.8.11 | No | Send+Sync | Yes | Active |
+| **xactor** | 0.7.11 | No | Send | No | Dormant (2022) |
+| **stakker** | 0.2.14 | No | — (sync) | No | Low activity |
+| **xtor** | 0.9.10 | Yes (feature) | Send | Yes | Dormant (2022) |
+| **xtra** | 0.6.0 | Yes (feature) | Send+'static | No | Low activity (2024) |
+
+### xtra — closest match
+
+[xtra](https://github.com/Restioson/xtra) (83k downloads, MPL-2.0) is
+the closest existing solution. It provides:
+
+- **Multi-runtime**: tokio, async-std, smol, and `wasm_bindgen` via
+  feature flags. WASM spawns use `wasm_bindgen_futures::spawn_local`.
+- **Typed handlers**: `Handler<M>` trait with `type Return`, async
+  `handle()` method. Request-reply via `Address::send()` returning a
+  `SendFuture` that resolves to the handler's return value.
+- **Lightweight**: core deps are `catty`, `futures-core`, `event-listener`,
+  `spin`. No proc macros required (optional `xtra-macros`).
+- **Actor lifecycle**: `started(&mut self, &Mailbox)` and
+  `stopped(self) -> Self::Stop`.
+- **Address/Mailbox split**: `Address<A>` for sending, `Mailbox<A>` for
+  the actor's receive loop.
+
+**Why not adopt xtra directly:**
+
+1. **Hard `Send` bound on `Actor`**: The `Actor` trait requires
+   `Send + 'static`. On WASM, all types are trivially `Send` (single
+   thread), but this forces `Send` constraints to propagate through the
+   entire Willow type graph. Many Willow types use `Rc<RefCell<>>` in
+   WASM paths (e.g., `ClientHandle.shared`), which are not `Send`.
+   Switching to `Arc<Mutex<>>` everywhere adds overhead on WASM for no
+   benefit.
+2. **No supervision**: No restart policies or supervisor trees. Actors
+   that panic are simply gone.
+3. **No `Recipient<M>` / type-erased message targets**: xtra has
+   `MessageChannel` but it's less ergonomic than a standalone
+   `Recipient<M>` type for pub-sub patterns.
+4. **No interval support**: No built-in periodic tick mechanism. The
+   heartbeat/sync actors would still need manual timer loops.
+5. **No `MaybeSend` pattern**: The `Send` bound is unconditional. Our
+   design needs conditional `Send` to avoid unnecessary synchronization
+   on WASM.
+6. **Low activity**: Last release Feb 2024, limited maintenance signal.
+
+### xtor — explicit WASM feature
+
+[xtor](https://github.com/nicktqwewe/xtor) supports WASM via a
+`wasm_bindgen` feature flag and multiple runtimes. However:
+- Last updated May 2022, only 2.8k downloads
+- No supervision
+- Thin documentation
+- Unclear maintenance future
+
+### Recommendation: build `willow-actor`
+
+No existing crate satisfies all requirements (dual-target with
+conditional Send, supervision, intervals, stream handlers, lightweight).
+The design below draws on xtra's `Handler<M>` pattern and envelope-based
+mailbox while adding `MaybeSend`, supervision, intervals, and
+`Recipient<M>`.
+
+---
+
 ## Overview
 
 Willow has five different channel/concurrency patterns across its crates:
