@@ -54,7 +54,7 @@ impl WorkerRole for TestReplayRole {
                     }
                 } else {
                     WorkerResponse::Snapshot {
-                        state: self.state.clone(),
+                        state: Box::new(self.state.clone()),
                     }
                 }
             }

@@ -124,7 +124,7 @@ impl WorkerRole for ReplayRole {
                     // Client is too far behind — send full snapshot.
                     match self.servers.get(&server_id) {
                         Some(data) => WorkerResponse::Snapshot {
-                            state: data.state.clone(),
+                            state: Box::new(data.state.clone()),
                         },
                         None => WorkerResponse::Denied {
                             reason: format!("unknown server: {server_id}"),

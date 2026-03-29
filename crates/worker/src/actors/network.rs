@@ -184,7 +184,7 @@ async fn handle_incoming_message(
                 let response_msg = WorkerWireMessage::Response {
                     request_id: request_id.clone(),
                     target_peer: String::new(),
-                    payload: resp,
+                    payload: Box::new(resp),
                 };
                 if let Ok(bytes) = bincode::serialize(&response_msg) {
                     if let Err(e) = node.publish(WORKERS_TOPIC, bytes) {
@@ -313,9 +313,9 @@ mod tests {
         let msg = WorkerWireMessage::Response {
             request_id: "r1".to_string(),
             target_peer: "my-peer".to_string(),
-            payload: WorkerResponse::Denied {
+            payload: Box::new(WorkerResponse::Denied {
                 reason: "test".to_string(),
-            },
+            }),
         };
         let data = bincode::serialize(&msg).unwrap();
 
