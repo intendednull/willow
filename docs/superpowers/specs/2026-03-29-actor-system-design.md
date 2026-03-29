@@ -97,7 +97,7 @@ the closest match to our desired API shape:
    `Recipient<M>` type for pub-sub patterns.
 4. **No interval support**: No built-in periodic tick mechanism. The
    heartbeat/sync actors would still need manual timer loops.
-5. **No `MaybeSend` pattern**: The `Send` bound is unconditional. Our
+5. **No `Send` pattern**: The `Send` bound is unconditional. Our
    design needs conditional `Send` to avoid unnecessary synchronization
    on WASM.
 6. **Low activity**: Last release Feb 2024, limited maintenance signal.
@@ -163,7 +163,7 @@ directly to `futures::channel::mpsc`.
 The fork saves ~800 lines of actor machinery (mailbox, supervision,
 actor lifecycle) but introduces:
 - Ongoing merge burden with an actively evolving upstream
-- The `Send` bound issue remains (kameo won't accept a `MaybeSend`
+- The `Send` bound issue remains (kameo won't accept a `Send`
   change upstream — it's a fundamental API decision)
 - kameo's `remote` feature (libp2p-based distributed actors) would
   conflict with Willow's existing libp2p networking layer
@@ -175,19 +175,80 @@ for the core (message, actor, handler, addr, context, mailbox, envelope,
 runtime, error modules). This is comparable to the fork effort when
 accounting for the abstraction layer + ongoing maintenance cost.
 
+### Iroh as a foundation
+
+If Willow migrates from libp2p to [iroh](https://github.com/n0-computer/iroh)
+(n0-computer's QUIC-based P2P connectivity library), this changes the
+runtime story significantly:
+
+**What iroh is:**
+- A peer-to-peer QUIC connectivity library: dial peers by Ed25519 public
+  key, get hole-punching + relay fallback transparently
+- **Not** libp2p — a complete replacement for the transport layer
+- Point-to-point connections (QUIC streams + datagrams), not message-
+  oriented pub/sub. `iroh-gossip` provides broadcast overlay separately.
+- `ProtocolHandler` trait for multiplexing ALPN protocols over a single
+  `Endpoint`
+
+**Iroh's runtime model:**
+- Built on **tokio** (mpsc, oneshot, CancellationToken, task spawning)
+- **First-class WASM support**: `cfg(wasm_browser)` gates throughout,
+  CI validates WASM compilation, `spawn_local` on WASM via an internal
+  `Runtime` struct
+- On WASM: only relay/WebSocket transport (no UDP/direct), all tasks
+  run via `spawn_local`
+- **`Send` bounds are required** at compile time on both native and WASM
+  (iroh's `Runtime::spawn` takes `Future + Send`)
+
+**Impact on willow-actor:**
+
+1. **`Send` is unnecessary.** Iroh requires `Send` everywhere.
+   Since the actor system runs within iroh's tokio runtime, all futures
+   must be `Send` regardless of target. The `Send` pattern was
+   designed to allow `Rc<RefCell<>>` on WASM, but iroh's `Send`
+   requirement already prevents that. **Use `Send` unconditionally** —
+   it compiles fine on WASM (single-threaded, everything is trivially
+   Send) and matches iroh's constraints.
+
+2. **Runtime module simplifies.** Instead of abstracting over
+   tokio vs `futures::channel` vs `wasm_bindgen_futures`, use tokio
+   channels on both targets (iroh already depends on tokio for WASM
+   via its internal runtime shim). The runtime module shrinks to just
+   `spawn()` (tokio::spawn on native, spawn_local on WASM) and
+   `sleep()` — channels are always `tokio::sync::mpsc`.
+
+3. **`CancellationToken` for shutdown.** Iroh uses
+   `tokio_util::sync::CancellationToken` pervasively. The actor system
+   should adopt the same pattern for graceful shutdown instead of custom
+   stop flags, so actor lifecycle integrates cleanly with iroh endpoint
+   shutdown.
+
+4. **`ProtocolHandler` as actor entry point.** Iroh's `Router` dispatches
+   incoming connections by ALPN to `ProtocolHandler::accept()` impls.
+   A network actor can implement `ProtocolHandler`, bridging iroh
+   connections into actor messages.
+
+5. **No built-in gossipsub.** Without libp2p's gossipsub, broadcast
+   patterns change. `iroh-gossip` provides a gossip overlay, or actors
+   can use point-to-point messaging with explicit fan-out. The actor
+   system doesn't need to handle this — it's a networking layer concern.
+
 ### Recommendation: build `willow-actor`
 
-No existing crate satisfies all requirements (dual-target with
-conditional Send, supervision, intervals, stream handlers, per-message
-handlers). The design below combines:
+No existing crate satisfies all requirements (dual-target, supervision,
+intervals, stream handlers, per-message handlers). The design below
+combines:
 
 - **xtra/kameo's `Handler<M>` pattern** — per-message-type trait impls
   with typed returns, not a single enum
-- **ractor's `concurrency` module approach** — platform-abstracted
-  spawn/channel/timer with cfg-switched backends
-- **New: `MaybeSend`** — conditional `Send` bounds dropped on WASM
-- **New: supervision, intervals, `Recipient<M>`** — features missing
-  from xtra
+- **tokio channels directly** — no runtime abstraction needed since iroh
+  already provides tokio on both native and WASM
+- **`Send` unconditionally** — matches iroh's requirement, compiles on
+  WASM (everything is trivially Send on single-threaded targets)
+- **`CancellationToken` for lifecycle** — aligns with iroh's shutdown
+  pattern
+- **Supervision, intervals, `Recipient<M>`** — features missing from
+  xtra
 
 ---
 
@@ -232,49 +293,43 @@ the existing architecture's strengths.
 ### Message Trait
 
 ```rust
-/// Marker trait for actor messages. Must be Send on native.
-/// On WASM, Send is not required since everything is single-threaded.
-pub trait Message: 'static + MaybeSend {
+/// Marker trait for actor messages.
+pub trait Message: Send + 'static {
     /// The response type for request-reply. Use `()` for fire-and-forget.
-    type Result: 'static + MaybeSend;
+    type Result: Send + 'static;
 }
 ```
 
-`MaybeSend` is a conditional trait alias:
-
-```rust
-#[cfg(not(target_arch = "wasm32"))]
-pub trait MaybeSend: Send {}
-#[cfg(not(target_arch = "wasm32"))]
-impl<T: Send> MaybeSend for T {}
-
-#[cfg(target_arch = "wasm32")]
-pub trait MaybeSend {}
-#[cfg(target_arch = "wasm32")]
-impl<T> MaybeSend for T {}
-```
+`Send` is required unconditionally. On WASM (single-threaded), all types
+are trivially `Send`, so this compiles without issue. This matches iroh's
+requirement that all futures and channel payloads are `Send`.
 
 ### Actor Trait
 
 ```rust
 /// An actor processes messages sequentially in its own task.
-#[async_trait(?Send)]  // ?Send for WASM compat
-pub trait Actor: 'static + MaybeSend + Sized {
+pub trait Actor: Send + 'static + Sized {
     /// Called once when the actor starts, before processing messages.
-    async fn started(&mut self, ctx: &mut Context<Self>) {}
+    fn started(&mut self, ctx: &mut Context<Self>)
+        -> impl Future<Output = ()> + Send { async {} }
 
     /// Called when the actor is stopping (mailbox closed or explicit stop).
-    async fn stopped(&mut self) {}
+    fn stopped(&mut self)
+        -> impl Future<Output = ()> + Send { async {} }
 }
 ```
+
+Uses RPITIT (return-position impl trait in trait, stabilized in Rust
+1.75) instead of `async_trait` — avoids the proc macro dependency and
+Box allocation per handler call.
 
 ### Handler Trait
 
 ```rust
 /// Implement Handler<M> for each message type an actor accepts.
-#[async_trait(?Send)]
 pub trait Handler<M: Message>: Actor {
-    async fn handle(&mut self, msg: M, ctx: &mut Context<Self>) -> M::Result;
+    fn handle(&mut self, msg: M, ctx: &mut Context<Self>)
+        -> impl Future<Output = M::Result> + Send;
 }
 ```
 
@@ -288,7 +343,7 @@ is type-checked at compile time.
 pub struct Context<A: Actor> {
     addr: Addr<A>,
     system: SystemHandle,
-    stop_flag: bool,
+    cancel: CancellationToken,
 }
 
 impl<A: Actor> Context<A> {
@@ -300,6 +355,10 @@ impl<A: Actor> Context<A> {
 
     /// Request a graceful stop after the current message finishes.
     pub fn stop(&mut self) { ... }
+
+    /// Get the cancellation token (child of the system's root token).
+    /// Integrates with iroh's CancellationToken-based shutdown.
+    pub fn cancellation_token(&self) -> &CancellationToken { ... }
 
     /// Access the actor system (for spawning unrelated actors).
     pub fn system(&self) -> &SystemHandle { ... }
@@ -413,41 +472,26 @@ impl System {
 
 ## Platform Abstraction
 
-The crate uses a thin `runtime` module to abstract over native vs WASM:
+Since iroh already depends on tokio for both native and WASM, the
+runtime module is minimal — only task spawning differs by platform:
 
 ```rust
 // crate::runtime (internal)
 
 /// Spawn a future as a background task.
-pub fn spawn<F: Future<Output = ()> + MaybeSend + 'static>(fut: F) {
+pub fn spawn<F: Future<Output = ()> + Send + 'static>(fut: F) {
     #[cfg(not(target_arch = "wasm32"))]
-    tokio::task::spawn(fut);
+    { tokio::task::spawn(fut); }
 
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_futures::spawn_local(fut);
 }
-
-/// One-shot channel (platform-specific).
-pub fn oneshot<T: MaybeSend + 'static>() -> (OneshotTx<T>, OneshotRx<T>) {
-    #[cfg(not(target_arch = "wasm32"))]
-    { /* tokio::sync::oneshot */ }
-
-    #[cfg(target_arch = "wasm32")]
-    { /* futures::channel::oneshot */ }
-}
-
-/// Bounded MPSC channel.
-pub fn channel<T: MaybeSend + 'static>(cap: usize) -> (Sender<T>, Receiver<T>) {
-    #[cfg(not(target_arch = "wasm32"))]
-    { /* tokio::sync::mpsc */ }
-
-    #[cfg(target_arch = "wasm32")]
-    { /* futures::channel::mpsc */ }
-}
-
-/// Sleep for a duration (native: tokio::time::sleep, WASM: gloo_timers).
-pub async fn sleep(duration: Duration) { ... }
 ```
+
+Channels use `tokio::sync::mpsc` and `tokio::sync::oneshot` on both
+targets — iroh's WASM shim makes these available. Timers use
+`tokio::time::sleep` on native and `gloo_timers` (or iroh's internal
+timer abstraction) on WASM.
 
 ## Mailbox Internals
 
@@ -457,7 +501,7 @@ type-erased inside the mailbox using a closure-based envelope pattern:
 ```rust
 // Internal — not part of the public API.
 
-type BoxEnvelope<A> = Box<dyn FnOnce(&mut A, &mut Context<A>) -> BoxFuture<'_, ()> + MaybeSend>;
+type BoxEnvelope<A> = Box<dyn FnOnce(&mut A, &mut Context<A>) -> BoxFuture<'_, ()> + Send + 'static>;
 
 // When Addr<A>.send(msg) is called for M where A: Handler<M>:
 // 1. msg is wrapped in an envelope closure
@@ -493,9 +537,9 @@ impl<A: Actor> Context<A> {
 }
 ```
 
-On WASM, `RestartPolicy::OnFailure` and `Backoff` still work but panics
-are caught via `std::panic::catch_unwind` only if the actor is
-`UnwindSafe`. Otherwise, `Never` is the only safe option on WASM.
+Panics are caught via `std::panic::catch_unwind`. On WASM, this works
+only if the actor is `UnwindSafe`; otherwise `Never` is the only safe
+option.
 
 ## Streams
 
@@ -504,7 +548,7 @@ timers) that feed into their mailbox:
 
 ```rust
 #[async_trait(?Send)]
-pub trait StreamHandler<S: 'static + MaybeSend>: Actor {
+pub trait StreamHandler<S: 'static + Send>: Actor {
     async fn handle_stream_item(&mut self, item: S, ctx: &mut Context<Self>);
 
     /// Called when the stream ends.
@@ -516,8 +560,8 @@ impl<A: Actor> Context<A> {
     pub fn add_stream<S, St>(&mut self, stream: St)
     where
         A: StreamHandler<S>,
-        S: 'static + MaybeSend,
-        St: Stream<Item = S> + MaybeSend + 'static,
+        S: 'static + Send,
+        St: Stream<Item = S> + Send + 'static,
     { ... }
 }
 ```
@@ -534,7 +578,7 @@ impl<A: Actor> Context<A> {
     pub fn run_interval<M: Message<Result = ()>>(
         &mut self,
         duration: Duration,
-        msg_factory: impl Fn() -> M + MaybeSend + 'static,
+        msg_factory: impl Fn() -> M + Send + 'static,
     ) -> IntervalHandle
     where
         A: Handler<M>,
@@ -574,15 +618,14 @@ crates/actor/
 ├── Cargo.toml
 └── src/
     ├── lib.rs          — public API re-exports
-    ├── actor.rs        — Actor, Handler, StreamHandler traits
+    ├── actor.rs        — Actor, Handler, StreamHandler, Message traits
     ├── addr.rs         — Addr<A>, AnyAddr, Recipient<M>
     ├── context.rs      — Context<A>, interval, stream attachment
     ├── envelope.rs     — BoxEnvelope, type-erased message dispatch
-    ├── mailbox.rs      — bounded channel wrapper, recv loop
-    ├── message.rs      — Message trait, MaybeSend
-    ├── runtime.rs      — platform abstraction (spawn, channel, sleep)
+    ├── mailbox.rs      — tokio mpsc wrapper, recv loop
+    ├── runtime.rs      — spawn abstraction (tokio::spawn vs spawn_local)
     ├── supervisor.rs   — RestartPolicy, supervised spawn
-    ├── system.rs       — System, SystemHandle
+    ├── system.rs       — System, SystemHandle (CancellationToken)
     └── error.rs        — SendError, AskError
 ```
 
@@ -590,17 +633,17 @@ crates/actor/
 
 ```
 willow-actor (new)
+├── tokio               (sync: mpsc, oneshot; time: sleep, interval)
+├── tokio-util          (CancellationToken)
 ├── futures-core        (Stream trait)
-├── async-trait
 ├── thiserror
 ├── tracing
-├── cfg-if
-├── [native] tokio      (spawn, mpsc, oneshot, sleep)
-└── [wasm]   wasm-bindgen-futures, futures-channel, gloo-timers
+└── [wasm] wasm-bindgen-futures  (spawn_local)
 ```
 
-`willow-actor` has **no dependency on any other willow crate**. It is a
-pure infrastructure crate.
+No `async-trait` needed — uses RPITIT (Rust 1.75+). `willow-actor` has
+**no dependency on any other willow crate**. It is a pure infrastructure
+crate. It shares `tokio` with iroh — no additional runtime overhead.
 
 ## Migration Path
 
@@ -687,20 +730,23 @@ a `StreamHandler` on a UI actor. Signal updates happen in the handler.
 ## Open Questions
 
 1. **Backpressure policy**: When a mailbox is full, should `send()` drop
-   the message (lossy), block (native only), or return an error? Current
-   design returns `SendError::Full`. An `async fn send_async()` that
-   awaits capacity could be added for native.
+   the message (lossy) or return an error? Current design returns
+   `SendError::Full`. An `async fn send_async()` that awaits capacity
+   is straightforward since we're always on tokio.
 
 2. **Priority messages**: Should shutdown/stop bypass the queue? Current
    design: no, messages are FIFO. Shutdown is just another message. The
-   `Context::stop()` flag is checked between messages.
+   `Context::stop()` flag is checked between messages. The
+   `CancellationToken` provides an independent shutdown signal that
+   doesn't go through the mailbox.
 
-3. **Actor state snapshots**: Should there be a way to query an actor's
-   internal state for debugging/metrics? Could add an optional
-   `Inspect` trait that serializes state, but this risks breaking
-   encapsulation.
-
-4. **Bounded vs unbounded mailboxes**: The current network layers use
+3. **Bounded vs unbounded mailboxes**: The current network layers use
    unbounded channels to avoid dropping gossipsub messages. Should
    `System::spawn_unbounded()` be offered? Probably yes, with a lint
    warning in docs.
+
+4. **`Rc<RefCell<>>` migration**: Willow's client library currently uses
+   `Rc<RefCell<SharedState>>` on WASM paths. With `Send` required
+   unconditionally, these must become `Arc<Mutex<>>`. On WASM the
+   overhead is negligible (no actual locking), but this is a codebase-
+   wide change that should happen before or alongside actor adoption.
