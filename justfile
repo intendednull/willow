@@ -154,6 +154,18 @@ docker-ids:
     @docker compose exec storage-1 willow-storage --print-peer-id 2>/dev/null || echo "storage-1: not running"
     @docker compose exec storage-2 willow-storage --print-peer-id 2>/dev/null || echo "storage-2: not running"
 
+# Start all services for local development (relay, workers, web UI)
+dev:
+    ./scripts/dev.sh
+
+# Start all services, skipping the build step
+dev-quick:
+    ./scripts/dev.sh --skip-build
+
+# Clean dev data (identity keys, logs, storage DB)
+dev-clean:
+    rm -rf .dev
+
 # Clean build artifacts
 clean:
     cargo clean

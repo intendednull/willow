@@ -70,11 +70,32 @@ just serve-web      # serve Leptos web app locally
 just build-relay    # build relay server (release)
 just run            # run native desktop app
 just relay          # run the relay server
+just dev            # start full local dev stack (relay + workers + web)
+just dev-quick      # same as dev, but skip cargo build
+just dev-clean      # remove .dev/ (keys, logs, storage DB)
 ```
 
 **All code must pass `just check` (fmt + clippy + test + WASM) with zero
 warnings before being committed.** Browser tests (`just test-browser`)
 require Firefox and geckodriver installed.
+
+### Local Development Stack
+
+Run `just dev` to start all services locally:
+
+| Service | Address | Description |
+|---------|---------|-------------|
+| Relay | `localhost:9090` (TCP), `localhost:9091` (WS) | Bridges peers |
+| Replay node | connects via relay | In-memory state sync (max 1000 events/server) |
+| Storage node | connects via relay | Archival SQLite storage |
+| Web UI | `http://localhost:8080` | Leptos app via `trunk serve` |
+
+All service logs are color-coded and interleaved in the terminal. Press
+`Ctrl+C` to stop everything. Identity keys and data persist in `.dev/`
+across restarts so peer IDs stay stable. Use `just dev-clean` to reset.
+
+After the first run, use `just dev-quick` to skip the build step and
+start services immediately.
 
 ### Dual-Target Support (Native + WASM)
 
