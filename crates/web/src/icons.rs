@@ -372,9 +372,7 @@ pub fn icon_database() -> impl IntoView {
 /// Activity/pulse icon (heartbeat line).
 pub fn icon_activity() -> impl IntoView {
     icon(
-        &format!(
-            r#"<svg {SVG_ATTRS}><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>"#
-        ),
+        &format!(r#"<svg {SVG_ATTRS}><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>"#),
         "icon-activity",
     )
 }

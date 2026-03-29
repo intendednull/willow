@@ -223,7 +223,10 @@ mod tests {
     #[test]
     fn worker_serving_multiple_servers() {
         let mut cache = WorkerCache::new(Duration::from_secs(30));
-        cache.update(&make_replay_announcement("r1", vec!["srv-1", "srv-2", "srv-3"]));
+        cache.update(&make_replay_announcement(
+            "r1",
+            vec!["srv-1", "srv-2", "srv-3"],
+        ));
 
         assert_eq!(cache.replay_workers_for_server("srv-1").len(), 1);
         assert_eq!(cache.replay_workers_for_server("srv-2").len(), 1);

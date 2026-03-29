@@ -786,9 +786,9 @@ impl ClientHandle {
         }
         // Broadcast after releasing the borrow.
         for event in events_to_broadcast {
-            let _ = self.cmd_tx.unbounded_send(
-                network::NetworkCommand::BroadcastEvent { event, topic: None },
-            );
+            let _ = self
+                .cmd_tx
+                .unbounded_send(network::NetworkCommand::BroadcastEvent { event, topic: None });
         }
     }
 
@@ -4399,10 +4399,7 @@ mod tests {
         let (client, _rx) = test_client();
         client.create_server("Worker Test").unwrap();
 
-        client.authorize_workers(&[
-            "worker-peer-1".to_string(),
-            "worker-peer-2".to_string(),
-        ]);
+        client.authorize_workers(&["worker-peer-1".to_string(), "worker-peer-2".to_string()]);
 
         let shared = client.shared.borrow();
         assert!(shared

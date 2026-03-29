@@ -98,11 +98,7 @@ impl ReplayRole {
 
 impl WorkerRole for ReplayRole {
     fn role_info(&self) -> WorkerRoleInfo {
-        let total_events: u32 = self
-            .servers
-            .values()
-            .map(|s| s.events.len() as u32)
-            .sum();
+        let total_events: u32 = self.servers.values().map(|s| s.events.len() as u32).sum();
         WorkerRoleInfo::Replay {
             servers_loaded: self.servers.len() as u32,
             events_buffered: total_events,
@@ -128,7 +124,7 @@ impl WorkerRole for ReplayRole {
                     // Client is too far behind — send full snapshot.
                     match self.servers.get(&server_id) {
                         Some(data) => WorkerResponse::Snapshot {
-                            state: data.state.clone(),
+                            state: Box::new(data.state.clone()),
                         },
                         None => WorkerResponse::Denied {
                             reason: format!("unknown server: {server_id}"),

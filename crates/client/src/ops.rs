@@ -17,9 +17,7 @@
 use serde::{Deserialize, Serialize};
 
 // Re-export wire types from willow-common so existing imports still work.
-pub use willow_common::{
-    pack_wire, unpack_wire, VoiceSignalPayload, WireMessage,
-};
+pub use willow_common::{pack_wire, unpack_wire, VoiceSignalPayload, WireMessage};
 
 // ───── Join link types ──────────────────────────────────────────────────────
 

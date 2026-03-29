@@ -69,7 +69,7 @@ pub enum WorkerWireMessage {
     Response {
         request_id: String,
         target_peer: String,
-        payload: WorkerResponse,
+        payload: Box<WorkerResponse>,
     },
 }
 
@@ -98,7 +98,7 @@ pub enum WorkerResponse {
     SyncBatch { events: Vec<Event> },
 
     /// Full state snapshot for far-behind peers.
-    Snapshot { state: ServerState },
+    Snapshot { state: Box<ServerState> },
 
     /// Paginated history results.
     HistoryPage { events: Vec<Event>, has_more: bool },
@@ -123,20 +123,15 @@ pub trait WorkerRole: Send + 'static {
 }
 
 /// Allocation strategy for which servers a worker serves.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub enum AllocationStrategy {
     /// Serve all discovered servers (initial implementation).
+    #[default]
     Global,
     /// Serve only specific servers (future).
     PerServer(Vec<String>),
     /// Dynamic allocation based on load (future).
     Dynamic,
-}
-
-impl Default for AllocationStrategy {
-    fn default() -> Self {
-        AllocationStrategy::Global
-    }
 }
 
 #[cfg(test)]
@@ -366,9 +361,9 @@ mod tests {
         let msg = WorkerWireMessage::Response {
             request_id: "req-456".to_string(),
             target_peer: "client-peer".to_string(),
-            payload: WorkerResponse::Denied {
+            payload: Box::new(WorkerResponse::Denied {
                 reason: "unknown server".to_string(),
-            },
+            }),
         };
         let bytes = bincode::serialize(&msg).unwrap();
         let decoded: WorkerWireMessage = bincode::deserialize(&bytes).unwrap();

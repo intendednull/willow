@@ -134,9 +134,7 @@ pub fn parse_server_message(data: &[u8]) -> ServerMessageAction {
     if let Some((wire_msg, _signer)) = willow_common::unpack_wire(data) {
         match wire_msg {
             willow_common::WireMessage::Event(event) => ServerMessageAction::Events(vec![event]),
-            willow_common::WireMessage::SyncBatch { events } => {
-                ServerMessageAction::Events(events)
-            }
+            willow_common::WireMessage::SyncBatch { events } => ServerMessageAction::Events(events),
             _ => ServerMessageAction::Ignore,
         }
     } else {
@@ -170,27 +168,23 @@ async fn handle_incoming_message(
                     return;
                 }
 
-                let resp = match tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    reply_rx,
-                )
-                .await
-                {
-                    Ok(Ok(resp)) => resp,
-                    Ok(Err(_)) => {
-                        warn!(%request_id, "state actor dropped reply channel");
-                        return;
-                    }
-                    Err(_) => {
-                        warn!(%request_id, "request timed out after 5s");
-                        return;
-                    }
-                };
+                let resp =
+                    match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
+                        Ok(Ok(resp)) => resp,
+                        Ok(Err(_)) => {
+                            warn!(%request_id, "state actor dropped reply channel");
+                            return;
+                        }
+                        Err(_) => {
+                            warn!(%request_id, "request timed out after 5s");
+                            return;
+                        }
+                    };
 
                 let response_msg = WorkerWireMessage::Response {
                     request_id: request_id.clone(),
                     target_peer: String::new(),
-                    payload: resp,
+                    payload: Box::new(resp),
                 };
                 if let Ok(bytes) = bincode::serialize(&response_msg) {
                     if let Err(e) = node.publish(WORKERS_TOPIC, bytes) {
@@ -319,9 +313,9 @@ mod tests {
         let msg = WorkerWireMessage::Response {
             request_id: "r1".to_string(),
             target_peer: "my-peer".to_string(),
-            payload: WorkerResponse::Denied {
+            payload: Box::new(WorkerResponse::Denied {
                 reason: "test".to_string(),
-            },
+            }),
         };
         let data = bincode::serialize(&msg).unwrap();
 
@@ -362,9 +356,8 @@ mod tests {
             },
         };
 
-        let data =
-            willow_common::pack_wire(&willow_common::WireMessage::Event(event.clone()), &id)
-                .unwrap();
+        let data = willow_common::pack_wire(&willow_common::WireMessage::Event(event.clone()), &id)
+            .unwrap();
 
         match parse_server_message(&data) {
             ServerMessageAction::Events(events) => {
@@ -403,9 +396,8 @@ mod tests {
             },
         ];
 
-        let data =
-            willow_common::pack_wire(&willow_common::WireMessage::SyncBatch { events }, &id)
-                .unwrap();
+        let data = willow_common::pack_wire(&willow_common::WireMessage::SyncBatch { events }, &id)
+            .unwrap();
 
         match parse_server_message(&data) {
             ServerMessageAction::Events(events) => assert_eq!(events.len(), 2),
