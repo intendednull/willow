@@ -3,7 +3,7 @@
 **Date**: 2026-03-29
 **Status**: Draft
 
-## Prior Art
+## Existing Solutions
 
 A survey of existing Rust actor crates was conducted to determine whether
 an off-the-shelf solution could be adopted. Summary:
@@ -117,7 +117,63 @@ impl Message<MyMsg> for MyActor {
 
 It has OneForOne supervision, stream attachment, and actor linking. But
 it depends on tokio directly with no WASM runtime support and no feature
-flags for alternative runtimes. Would need forking to add WASM.
+flags for alternative runtimes.
+
+### kameo fork feasibility
+
+A source audit of kameo's tokio coupling reveals it is **shallow and
+concentrated**. All tokio usage falls into 6 primitives across 4 files:
+
+| Primitive | Call sites | WASM replacement |
+|-----------|-----------|------------------|
+| `tokio::spawn` | 5 | `wasm_bindgen_futures::spawn_local` |
+| `tokio::sync::mpsc` (bounded+unbounded) | 1 module (~15 method delegations) | `futures::channel::mpsc` |
+| `tokio::sync::Mutex` | 1 | `futures::lock::Mutex` |
+| `tokio::sync::SetOnce` | 2 | `OnceCell` or custom |
+| `tokio::select!` | 1 | `futures::select!` |
+| `tokio::runtime::Handle` | 1 (for `spawn_in_thread`) | `#[cfg(not(wasm32))]` gate |
+| `task_local!` | 1 | `thread_local!` (WASM is single-threaded) |
+
+**Total estimated changes**: ~150-200 lines to introduce a `runtime`
+abstraction module with `cfg(target_arch = "wasm32")` branches, plus
+Cargo.toml feature flag changes. The supervision module has **zero**
+production tokio usage. The mailbox module is the densest — it wraps
+tokio mpsc types — but it's a clean 1:1 delegation layer that maps
+directly to `futures::channel::mpsc`.
+
+**Challenges:**
+
+1. **`Send` bounds everywhere**: kameo requires `Actor: Send + 'static`
+   and all futures must be `Send`. On WASM this compiles (everything is
+   trivially Send on single-threaded targets) but it forces Willow types
+   that currently use `Rc<RefCell<>>` to switch to `Arc<Mutex<>>`. This
+   is a Willow-side change, not a kameo fork issue.
+2. **`spawn_in_thread()`**: Uses `tokio::runtime::Handle::current()` and
+   `std::thread::spawn`. Must be `cfg`-gated out on WASM entirely.
+3. **`blocking_send()` / `blocking_recv()`**: These tokio mpsc methods
+   have no WASM equivalent. Must be gated or removed on WASM.
+4. **Minimum Rust 1.88.0**: kameo requires edition 2024 / Rust 1.88+.
+   Willow would need to match this MSRV.
+5. **Upstream maintenance**: kameo is actively developed (v0.19.2, last
+   commit March 2026). Forking means maintaining divergence or getting
+   the runtime abstraction upstreamed.
+
+**Verdict: fork is feasible but not clearly better than writing our own.**
+
+The fork saves ~800 lines of actor machinery (mailbox, supervision,
+actor lifecycle) but introduces:
+- Ongoing merge burden with an actively evolving upstream
+- The `Send` bound issue remains (kameo won't accept a `MaybeSend`
+  change upstream — it's a fundamental API decision)
+- kameo's `remote` feature (libp2p-based distributed actors) would
+  conflict with Willow's existing libp2p networking layer
+- kameo's dependency on `downcast-rs`, `dyn-clone`, `serde` (with
+  derive) adds weight Willow doesn't need
+
+Writing `willow-actor` from scratch is estimated at ~1000-1500 lines
+for the core (message, actor, handler, addr, context, mailbox, envelope,
+runtime, error modules). This is comparable to the fork effort when
+accounting for the abstraction layer + ongoing maintenance cost.
 
 ### Recommendation: build `willow-actor`
 
