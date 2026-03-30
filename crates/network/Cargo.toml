@@ -3,42 +3,29 @@ name = "willow-network"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
-description = "P2P networking layer for Willow using libp2p"
+description = "P2P networking layer for Willow using iroh"
+
+[features]
+test-utils = ["tokio/sync"]
 
 [dependencies]
 willow-identity = { path = "../identity" }
-willow-transport = { path = "../transport" }
-willow-files = { path = "../files" }
 
-serde = { workspace = true }
+iroh = { workspace = true }
+iroh-base = { workspace = true, features = ["key"] }
+iroh-gossip = { workspace = true }
+iroh-blobs = { workspace = true }
+
+async-trait = { workspace = true }
+bytes = { workspace = true }
+blake3 = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-
-# Native: libp2p with tokio, TCP, mDNS
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-libp2p = { workspace = true }
 tokio = { workspace = true }
-
-# WASM: libp2p with wasm-bindgen transports
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-libp2p = { version = "0.53", features = [
-    "gossipsub",
-    "kad",
-    "noise",
-    "yamux",
-    "relay",
-    "identify",
-    "request-response",
-    "cbor",
-    "macros",
-    "ed25519",
-    "serde",
-    "wasm-bindgen",
-    "websocket-websys",
-] }
-futures = "0.3"
-wasm-bindgen-futures = "0.4"
+serde = { workspace = true }
+futures-lite = "2"
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["full", "sync"] }
 tracing-subscriber = { workspace = true }

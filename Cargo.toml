@@ -38,6 +38,14 @@ libp2p = { version = "0.53", features = [
     "ed25519",
     "serde",
 ] }
+iroh = { version = "0.97", features = ["address-lookup-mdns"] }
+iroh-base = "0.97"
+iroh-gossip = "0.97"
+iroh-blobs = "0.99"
+iroh-relay = "0.97"
+async-trait = "0.1"
+bytes = "1"
+blake3 = "1"
 
 # Time & IDs
 chrono = { version = "0.4", features = ["serde"] }
