@@ -210,8 +210,6 @@ fn send_and_edit_message() {
 #[test]
 fn delete_message_is_soft() {
     let (mut state, owner) = test_state();
-    let alice = Identity::generate().endpoint_id();
-
     let create_ch = event(
         &state,
         "e0", owner,
@@ -252,8 +250,6 @@ fn delete_message_is_soft() {
 #[test]
 fn reaction_added_to_message() {
     let (mut state, owner) = test_state();
-    let alice = Identity::generate().endpoint_id();
-
     let create_ch = event(
         &state,
         "e0", owner,
@@ -295,8 +291,6 @@ fn reaction_added_to_message() {
 fn grant_and_revoke_permission() {
     let (mut state, owner) = test_state();
     let alice = Identity::generate().endpoint_id();
-    let stranger = Identity::generate().endpoint_id();
-
     // Grant a permission.
     let grant = event(
         &state,
@@ -328,9 +322,6 @@ fn grant_and_revoke_permission() {
 #[test]
 fn parent_hash_mismatch() {
     let (mut state, owner) = test_state();
-    let alice = Identity::generate().endpoint_id();
-    let stranger = Identity::generate().endpoint_id();
-
     let evt = Event {
         id: "e1".into(),
         parent_hash: StateHash::from_bytes(b"wrong-hash"),
@@ -352,8 +343,7 @@ fn parent_hash_mismatch() {
 
 #[test]
 fn unpermitted_author_rejected() {
-    let (mut state, owner) = test_state();
-    let alice = Identity::generate().endpoint_id();
+    let (mut state, _owner) = test_state();
     let stranger = Identity::generate().endpoint_id();
 
     // An unpermitted peer tries to create a channel.
@@ -375,7 +365,6 @@ fn unpermitted_author_rejected() {
 #[test]
 fn unpermitted_peer_can_send_messages() {
     let (mut state, owner) = test_state();
-    let alice = Identity::generate().endpoint_id();
     let stranger = Identity::generate().endpoint_id();
 
     let create_ch = event(
@@ -407,8 +396,6 @@ fn unpermitted_peer_can_send_messages() {
 fn permission_enforcement() {
     let (mut state, owner) = test_state();
     let alice = Identity::generate().endpoint_id();
-    let bob = Identity::generate().endpoint_id();
-
     // Grant alice only SendMessages.
     let grant = event(
         &state,
@@ -504,8 +491,6 @@ fn admin_permission_grants_all() {
 #[test]
 fn owner_always_has_permission() {
     let (state, owner) = test_state();
-    let alice = Identity::generate().endpoint_id();
-
     // Owner has every permission without any explicit grants.
     assert!(state.has_permission(&owner, &Permission::ManageChannels));
     assert!(state.has_permission(&owner, &Permission::ManageRoles));
@@ -885,8 +870,6 @@ fn kick_member_removes_and_revokes_permissions() {
 #[test]
 fn cannot_kick_owner() {
     let (mut state, owner) = test_state();
-    let alice = Identity::generate().endpoint_id();
-
     let kick = event(
         &state,
         "e1", owner,
@@ -904,9 +887,6 @@ fn cannot_kick_owner() {
 #[test]
 fn set_profile() {
     let (mut state, owner) = test_state();
-    let alice = Identity::generate().endpoint_id();
-    let stranger = Identity::generate().endpoint_id();
-
     let evt = event(
         &state,
         "e1", owner,
@@ -927,9 +907,6 @@ fn set_profile() {
 #[test]
 fn delete_channel_removes_messages() {
     let (mut state, owner) = test_state();
-    let alice = Identity::generate().endpoint_id();
-    let stranger = Identity::generate().endpoint_id();
-
     let create = event(
         &state,
         "e0", owner,
@@ -970,8 +947,6 @@ fn delete_channel_removes_messages() {
 fn sync_provider_permission() {
     let (mut state, owner) = test_state();
     let alice = Identity::generate().endpoint_id();
-    let stranger = Identity::generate().endpoint_id();
-
     // Alice is not a sync provider by default.
     assert!(!state.is_sync_provider(&alice));
 
@@ -1034,10 +1009,6 @@ fn is_trusted_compat() {
 fn multiple_permissions_per_peer() {
     let (mut state, owner) = test_state();
     let alice = Identity::generate().endpoint_id();
-    let bob = Identity::generate().endpoint_id();
-    let dave = Identity::generate().endpoint_id();
-    let carol = Identity::generate().endpoint_id();
-
     let g1 = event(
         &state,
         "e0", owner,
@@ -1575,8 +1546,6 @@ fn replay_100_events_produces_correct_state() {
 #[test]
 fn stress_1000_messages_same_channel() {
     let (mut state, owner) = test_state();
-    let stranger = Identity::generate().endpoint_id();
-
     // Create a channel.
     let create_ch = make_event(
         &state,
@@ -1703,10 +1672,8 @@ fn untrusted_peer_cant_escalate() {
 
 #[test]
 fn profile_history_through_events() {
-    let (mut state, owner) = test_state();
+    let (mut state, _owner) = test_state();
     let alice = Identity::generate().endpoint_id();
-    let bob = Identity::generate().endpoint_id();
-
     // Peer sets profile "Alice".
     let set1 = make_event(
         &state,
@@ -2102,8 +2069,6 @@ fn merge_preserves_permission_chain() {
 #[test]
 fn state_verification_does_not_mutate_state() {
     let (mut state, owner) = test_state();
-    let alice = Identity::generate().endpoint_id();
-    let stranger = Identity::generate().endpoint_id();
     let hash_before = state.hash();
 
     let evt = event(
@@ -2143,8 +2108,7 @@ fn identical_states_produce_matching_hashes() {
 
 #[test]
 fn state_verification_accepted_from_any_peer() {
-    let (mut state, owner) = test_state();
-    let alice = Identity::generate().endpoint_id();
+    let (mut state, _owner) = test_state();
     let stranger = Identity::generate().endpoint_id();
 
     // A stranger can send a StateVerification event.
@@ -2163,7 +2127,6 @@ fn state_verification_accepted_from_any_peer() {
 #[test]
 fn owner_can_rename_server() {
     let (mut state, owner) = test_state();
-    let alice = Identity::generate().endpoint_id();
     assert_eq!(state.server_name, "Test Server");
 
     let evt = event(
@@ -2210,7 +2173,6 @@ fn non_owner_cannot_rename_server() {
 #[test]
 fn rename_server_changes_hash() {
     let (mut state, owner) = test_state();
-    let alice = Identity::generate().endpoint_id();
     let hash_before = state.hash();
 
     let evt = event(
@@ -2229,7 +2191,6 @@ fn rename_server_changes_hash() {
 #[test]
 fn owner_can_set_server_description() {
     let (mut state, owner) = test_state();
-    let alice = Identity::generate().endpoint_id();
     assert_eq!(state.description, "");
 
     let evt = event(
