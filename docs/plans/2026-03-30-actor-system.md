@@ -194,7 +194,7 @@ Replace `Arc<RwLock<SharedState>>` and `futures::channel::mpsc` with actors.
 
 - [ ] **Step 2: Define `TopicListenerActor`.** Replaces `spawn_topic_listener`. Implements `StreamHandler` for gossip events. Holds `Addr<ClientStateActor>` and `TopicHandle`. In `handle_stream_item`, sends mutations to the state actor and emits `ClientEvent`s.
 
-- [ ] **Step 3: Refactor `ClientHandle<N>`.** Replace `shared: Arc<RwLock<SharedState>>` with `state: Addr<ClientStateActor>`. Keep `event_tx: futures_mpsc::UnboundedSender<ClientEvent>` as a plain channel — `ClientEvent`s flow to the UI layer which is not an actor. **Note:** this makes previously-synchronous state accessors async (`shared.read()` → `state.ask().await`). All callers in `lib.rs`, `ops.rs`, `invite.rs`, `files.rs`, and `worker_cache.rs` must be updated to `.await` state queries. Methods that were `fn` become `async fn`.
+- [ ] **Step 3: Refactor `ClientHandle<N>`.** Replace `shared: Arc<RwLock<SharedState>>` with `state: Addr<ClientStateActor>`. Also move `topics: Arc<RwLock<HashMap<String, N::Topic>>>` into the state actor (or a dedicated topic actor) — this is another lock to eliminate. Keep `event_tx: futures_mpsc::UnboundedSender<ClientEvent>` as a plain channel — `ClientEvent`s flow to the UI layer which is not an actor. **Note:** this makes previously-synchronous state accessors async (`shared.read()` → `state.ask().await`). All callers in `lib.rs`, `ops.rs`, `invite.rs`, `files.rs`, and `worker_cache.rs` must be updated to `.await` state queries. Methods that were `fn` become `async fn`.
 
 - [ ] **Step 4: Update `listeners.rs`.** Replace `spawn_topic_listener()` with spawning a `TopicListenerActor` on the system. Remove the manual `topic_listener_loop`.
 
@@ -210,16 +210,40 @@ Replace `Arc<RwLock<SharedState>>` and `futures::channel::mpsc` with actors.
 - Modify: `crates/web/Cargo.toml`
 - Modify: `crates/web/src/app.rs`
 - Modify: `crates/web/src/event_processing.rs`
+- Modify: `crates/web/src/state.rs` (if signal source changes)
+- Modify: `crates/web/src/components/*.rs` (any that call handle methods directly)
 
-Validates WASM target correctness.
+Validates WASM target correctness. This task is larger than it appears because `ClientHandle` methods become async in Task 6, which cascades into the web crate.
 
-- [ ] **Step 1: Update `app.rs` initialization.** Create a `System`, spawn the `ClientStateActor` and listener actors. Pass `Addr`s into Leptos context instead of `Arc<RwLock<>>`.
+### Actor ↔ Leptos Bridge
 
-- [ ] **Step 2: Update event processing.** Leptos components read state via reactive signals, not `Arc<RwLock<>>` directly. The signals are populated from `ClientEvent`s received on the event channel. Since `ClientHandle` now uses actor-based state internally, verify that `ClientEvent` emission still works correctly — the `TopicListenerActor` emits events via the `event_tx` channel, which flows into `event_processing.rs` to update signals. This path should require minimal changes.
+The current flow is:
+```
+TopicEvents → spawn_local loop → ClientEvent channel → process_event_batch() → WriteSignal::set()
+                                                         ↓ reads handle.peers(), handle.messages(), etc.
+                                                         (sync reads via Arc<RwLock<SharedState>>)
+```
 
-- [ ] **Step 3: Verify WASM compilation.** `just check-wasm` must pass.
+After the migration:
+```
+TopicEvents → TopicListenerActor → ClientEvent channel → process_event_batch() → WriteSignal::set()
+                                                           ↓ reads via handle.ask().await
+                                                           (async reads via state actor)
+```
 
-- [ ] **Step 4: Run `just test-browser`.** All 39+ browser tests must pass.
+The `ClientEvent` channel remains the boundary between the actor world and Leptos signals. The key change is that `process_event_batch` and `refresh_all_signals` become async because `ClientHandle` state accessors (`peers()`, `messages()`, `channels()`, `server_list()`, `display_name()`, `roles_data()`, etc.) are now async. Since these are called inside a `spawn_local` async block, `.await` works — but every call site must be updated.
+
+**Alternative considered:** have the state actor push full state snapshots into a signal directly, eliminating the `ClientEvent` → `process_event_batch` → signal path. Rejected: the snapshot approach would re-render everything on every state change. The event-based approach is more efficient (only flags `needs_msg_refresh`, `needs_peer_refresh`, etc.).
+
+- [ ] **Step 1: Update `app.rs` initialization.** The `System` is created by the client library (Task 6), not the web crate. `app.rs` receives the `ClientHandle<N>` which already owns actor addresses internally. No `System::new()` call needed here. Update the `spawn_local` event loop: the `while let Some(event) = client_event_rx.next().await` loop stays, but `process_event_batch` is now called with `.await`.
+
+- [ ] **Step 2: Make `process_event_batch` async.** Currently `fn`, becomes `async fn`. All `handle.peers()`, `handle.messages()`, `handle.channels()`, etc. calls gain `.await`. The function is called inside a `spawn_local` async block, so this is straightforward. Same for `refresh_all_signals`.
+
+- [ ] **Step 3: Update component direct handle calls.** Grep for `handle.` in `crates/web/src/components/` — any component that calls `ClientHandle` methods directly (not through signals) must switch to async. Components typically access the handle via `use_context::<WebClientHandle>()`. If a component calls a now-async method in a sync event handler (e.g., button click), wrap it in `spawn_local`.
+
+- [ ] **Step 4: Verify WASM compilation.** `just check-wasm` must pass.
+
+- [ ] **Step 5: Run `just test-browser`.** All 39+ browser tests must pass.
 
 ---
 
