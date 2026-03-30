@@ -43,7 +43,7 @@ pub enum ClientEvent {
         channel: String,
         filename: String,
         size: u64,
-        from: EndpointId,
+        from: String,
     },
     Listening(String),
     SyncCompleted {
@@ -78,17 +78,17 @@ pub enum ClientEvent {
     /// A peer joined a voice channel.
     VoiceJoined {
         channel_id: String,
-        peer_id: String,
+        peer_id: EndpointId,
     },
     /// A peer left a voice channel.
     VoiceLeft {
         channel_id: String,
-        peer_id: String,
+        peer_id: EndpointId,
     },
     /// A voice signaling message was received.
     VoiceSignal {
         channel_id: String,
-        from_peer: String,
+        from_peer: EndpointId,
         signal: crate::ops::VoiceSignalPayload,
     },
     /// A join-via-link response was received — auto-join can proceed.

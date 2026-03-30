@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use willow_channel::Server;
 use willow_crypto::ChannelKey;
+use willow_identity::EndpointId;
 use willow_messaging::hlc::HLC;
 
 /// Platform-aware event store that delegates to the appropriate backend.
@@ -138,7 +139,7 @@ impl ServerContext {
 pub struct ChatState {
     /// The current channel *name* (human-readable, e.g. "general").
     pub current_channel: String,
-    pub peers: Vec<String>,
+    pub peers: Vec<EndpointId>,
     pub hlc: HLC,
     /// Seen message/op IDs for deduplication.
     pub seen_message_ids: std::collections::HashSet<String>,
@@ -162,7 +163,7 @@ impl Default for ChatState {
 pub struct DisplayMessage {
     pub id: String,
     pub channel_id: String,
-    pub author_peer_id: String,
+    pub author_peer_id: EndpointId,
     pub author_display_name: String,
     pub body: String,
     pub is_local: bool,
@@ -174,19 +175,19 @@ pub struct DisplayMessage {
     pub reply_preview: Option<String>,
 }
 
-/// Maps PeerId strings -> display names. Updated from profile broadcasts.
+/// Maps EndpointId -> display names. Updated from profile broadcasts.
 #[derive(Default, Clone)]
 pub struct ProfileStore {
-    pub names: HashMap<String, String>,
+    pub names: HashMap<EndpointId, String>,
 }
 
 impl ProfileStore {
     /// Look up a display name for a peer, falling back to truncated ID.
-    pub fn display_name(&self, peer_id: &str) -> String {
+    pub fn display_name(&self, peer_id: &EndpointId) -> String {
         self.names
             .get(peer_id)
             .cloned()
-            .unwrap_or_else(|| crate::util::truncate_peer_id(peer_id))
+            .unwrap_or_else(|| crate::util::truncate_peer_id(&peer_id.to_string()))
     }
 }
 
@@ -213,8 +214,10 @@ pub struct ClientState {
     pub event_store: PersistentEventStore,
 }
 
-impl Default for ClientState {
-    fn default() -> Self {
+impl ClientState {
+    /// Create with a placeholder event state. The real owner will be set
+    /// when a server is loaded or created.
+    pub fn new(owner: EndpointId) -> Self {
         Self {
             chat: ChatState::default(),
             servers: HashMap::new(),
@@ -222,7 +225,7 @@ impl Default for ClientState {
             profiles: ProfileStore::default(),
             emoji: crate::emoji::EmojiRegistry::new(),
             message_db: None,
-            event_state: willow_state::ServerState::default(),
+            event_state: willow_state::ServerState::new("", "", owner),
             event_store: PersistentEventStore::default(),
         }
     }

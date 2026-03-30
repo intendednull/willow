@@ -4,8 +4,11 @@
 //! network layer. These are UI-framework-agnostic counterparts to the Bevy
 //! bridge types in `willow-app`.
 //!
-//! Also contains `spawn_network`, `build_network_config`, and the async
-//! `run_network` functions that drive the libp2p swarm.
+//! The network spawn/run functions have been removed as part of the iroh
+//! migration. They will be re-added once the network layer is rebuilt on
+//! iroh endpoints.
+
+use willow_identity::EndpointId;
 
 /// Global gossipsub topic for profile broadcasts.
 pub const PROFILE_TOPIC: &str = "_willow_profiles";
@@ -18,8 +21,8 @@ pub enum NetworkEvent {
         data: Vec<u8>,
         source: Option<String>,
     },
-    PeerConnected(String),
-    PeerDisconnected(String),
+    PeerConnected(EndpointId),
+    PeerDisconnected(EndpointId),
     Listening(String),
     /// A file was announced by a peer (manifest received via gossipsub).
     FileAnnounced {
@@ -37,28 +40,28 @@ pub enum NetworkEvent {
     },
     /// A peer's profile was received.
     ProfileReceived {
-        peer_id: String,
+        peer_id: EndpointId,
         display_name: String,
     },
     /// An event was received from a peer.
     EventReceived {
         event: willow_state::Event,
-        from: String,
+        from: EndpointId,
     },
     /// A sync request was received from a peer.
     SyncRequested {
         state_hash: willow_state::StateHash,
-        from: String,
+        from: EndpointId,
         topic: Option<String>,
     },
     /// A batch of events was received as a sync response.
     SyncBatchReceived {
         events: Vec<willow_state::Event>,
-        from: String,
+        from: EndpointId,
     },
     /// A typing indicator was received from a peer.
     TypingReceived {
-        peer_id: String,
+        peer_id: EndpointId,
         channel: String,
     },
     /// A peer joined a voice channel.
@@ -66,28 +69,28 @@ pub enum NetworkEvent {
         /// The voice channel that was joined.
         channel_id: String,
         /// The peer who joined.
-        peer_id: String,
+        peer_id: EndpointId,
     },
     /// A peer left a voice channel.
     VoiceLeaveReceived {
         /// The voice channel that was left.
         channel_id: String,
         /// The peer who left.
-        peer_id: String,
+        peer_id: EndpointId,
     },
     /// A voice signaling message was received (targeted at us).
     VoiceSignalReceived {
         /// The voice channel this signal relates to.
         channel_id: String,
         /// The peer who sent the signal.
-        from_peer: String,
+        from_peer: EndpointId,
         /// The signaling payload.
         signal: crate::ops::VoiceSignalPayload,
     },
     /// A peer wants to join via a shareable link.
     JoinLinkRequested {
         link_id: String,
-        peer_id: String,
+        peer_id: EndpointId,
     },
     /// A join link response was received (targeted at us).
     JoinLinkResponseReceived {
@@ -101,6 +104,7 @@ pub enum NetworkEvent {
 
 /// Commands flowing from the client to the network.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum NetworkCommand {
     Subscribe(String),
     Publish {
@@ -151,504 +155,34 @@ pub enum NetworkCommand {
         /// The voice channel this signal relates to.
         channel_id: String,
         /// The intended recipient peer.
-        target_peer: String,
+        target_peer: EndpointId,
         /// The signaling payload.
         signal: crate::ops::VoiceSignalPayload,
     },
 }
 
-// ───── Network config ───────────────────────────────────────────────────────
+// ───── Network spawn (stubbed) ────────────────────────────────────────────
+//
+// The network spawn/run functions that previously used libp2p's NetworkConfig,
+// NetworkNode, and NetworkEvent have been removed. The iroh-based network
+// layer will provide a different API. For now, connect() is a no-op.
 
-/// Build a [`willow_network::NetworkConfig`] from an optional relay address.
-pub fn build_network_config(relay_addr: Option<&str>) -> willow_network::NetworkConfig {
-    let mut config = willow_network::NetworkConfig::default();
-
-    if let Some(addr) = relay_addr {
-        if let Ok(c) = config.clone().with_relay(addr) {
-            config = c;
-        }
-    }
-
-    config
-}
-
-// ───── Native ───────────────────────────────────────────────────────────────
-
-/// Spawn the network task on a background thread (native) or via
-/// `spawn_local` (WASM).
+/// Stub: spawn the network task. Currently a no-op during the iroh migration.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn spawn_network(
-    identity: willow_identity::Identity,
-    event_tx: futures::channel::mpsc::UnboundedSender<NetworkEvent>,
-    cmd_rx: futures::channel::mpsc::UnboundedReceiver<NetworkCommand>,
-    config: willow_network::NetworkConfig,
+    _identity: willow_identity::Identity,
+    _event_tx: futures::channel::mpsc::UnboundedSender<NetworkEvent>,
+    _cmd_rx: futures::channel::mpsc::UnboundedReceiver<NetworkCommand>,
 ) {
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-        rt.block_on(async move {
-            let _ = run_network(identity, event_tx, cmd_rx, config).await;
-        });
-    });
+    tracing::warn!("network spawn is stubbed out during iroh migration");
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-async fn run_network(
-    identity: willow_identity::Identity,
-    event_tx: futures::channel::mpsc::UnboundedSender<NetworkEvent>,
-    mut cmd_rx: futures::channel::mpsc::UnboundedReceiver<NetworkCommand>,
-    config: willow_network::NetworkConfig,
-) -> anyhow::Result<()> {
-    use futures::StreamExt;
-    use willow_network::{file_transfer::ChunkResponse, NetworkEvent as NetEvt, NetworkNode};
-
-    let (node, mut events) = NetworkNode::start(identity, config).await?;
-    let mut file_mgr = crate::files::FileManager::new();
-    let local_peer_id = node.peer_id().to_string();
-
-    loop {
-        tokio::select! {
-            event = events.recv() => {
-                let Some(event) = event else { break };
-                match event {
-                    NetEvt::Message { topic, data, source } => {
-                        if let Ok((manifest, willow_transport::MessageType::File)) =
-                            willow_transport::unpack_envelope::<willow_files::FileManifest>(&data)
-                        {
-                            let from = source.map(|p| p.to_string()).unwrap_or_default();
-                            file_mgr.register_manifest(manifest.clone());
-                            let _ = event_tx.unbounded_send(NetworkEvent::FileAnnounced {
-                                filename: manifest.filename.clone(),
-                                mime_type: manifest.mime_type.clone(),
-                                size: manifest.total_size,
-                                file_hash: manifest.file_hash.to_hex(),
-                                from,
-                                topic: topic.clone(),
-                            });
-                        } else if let Ok((profile, willow_transport::MessageType::Identity)) =
-                            willow_transport::unpack_envelope::<willow_identity::UserProfile>(&data)
-                        {
-                            let _ = event_tx.unbounded_send(NetworkEvent::ProfileReceived {
-                                peer_id: profile.peer_id.to_string(),
-                                display_name: profile.display_name,
-                            });
-                        }
-                        // Try wire format.
-                        else if let Some((wire_msg, signer)) =
-                            crate::ops::unpack_wire(&data)
-                        {
-                            let from = signer.to_string();
-                            match wire_msg {
-                                crate::ops::WireMessage::Event(event) => {
-                                    let _ = event_tx.unbounded_send(NetworkEvent::EventReceived {
-                                        event,
-                                        from,
-                                    });
-                                }
-                                crate::ops::WireMessage::SyncRequest { state_hash, topic } => {
-                                    let _ = event_tx.unbounded_send(NetworkEvent::SyncRequested {
-                                        state_hash,
-                                        from,
-                                        topic,
-                                    });
-                                }
-                                crate::ops::WireMessage::SyncBatch { events } => {
-                                    let _ = event_tx.unbounded_send(NetworkEvent::SyncBatchReceived {
-                                        events,
-                                        from,
-                                    });
-                                }
-                                crate::ops::WireMessage::TypingIndicator { channel } => {
-                                    let _ = event_tx.unbounded_send(NetworkEvent::TypingReceived {
-                                        peer_id: from,
-                                        channel,
-                                    });
-                                }
-                                crate::ops::WireMessage::VoiceJoin { channel_id, peer_id } => {
-                                    let _ = event_tx.unbounded_send(NetworkEvent::VoiceJoinReceived {
-                                        channel_id,
-                                        peer_id,
-                                    });
-                                }
-                                crate::ops::WireMessage::VoiceLeave { channel_id, peer_id } => {
-                                    let _ = event_tx.unbounded_send(NetworkEvent::VoiceLeaveReceived {
-                                        channel_id,
-                                        peer_id,
-                                    });
-                                }
-                                crate::ops::WireMessage::VoiceSignal { channel_id, target_peer, signal } => {
-                                    if target_peer == local_peer_id {
-                                        let _ = event_tx.unbounded_send(NetworkEvent::VoiceSignalReceived {
-                                            channel_id,
-                                            from_peer: from,
-                                            signal,
-                                        });
-                                    }
-                                }
-                                crate::ops::WireMessage::JoinRequest { link_id, peer_id } => {
-                                    let _ = event_tx.unbounded_send(NetworkEvent::JoinLinkRequested { link_id, peer_id });
-                                }
-                                crate::ops::WireMessage::JoinResponse { target_peer, invite_data } => {
-                                    if target_peer == local_peer_id {
-                                        let _ = event_tx.unbounded_send(NetworkEvent::JoinLinkResponseReceived { invite_data });
-                                    }
-                                }
-                                crate::ops::WireMessage::JoinDenied { target_peer, reason } => {
-                                    if target_peer == local_peer_id {
-                                        let _ = event_tx.unbounded_send(NetworkEvent::JoinLinkDenied { reason });
-                                    }
-                                }
-                            }
-                        } else {
-                            let _ = event_tx.unbounded_send(NetworkEvent::MessageReceived {
-                                topic,
-                                data,
-                                source: source.map(|p| p.to_string()),
-                            });
-                        }
-                    }
-                    NetEvt::PeerConnected(peer) => {
-                        let _ = event_tx.unbounded_send(NetworkEvent::PeerConnected(peer.to_string()));
-                    }
-                    NetEvt::PeerDisconnected(peer) => {
-                        let _ = event_tx.unbounded_send(NetworkEvent::PeerDisconnected(peer.to_string()));
-                    }
-                    NetEvt::Listening(addr) => {
-                        let _ = event_tx.unbounded_send(NetworkEvent::Listening(addr.to_string()));
-                    }
-                    NetEvt::ChunkRequested { channel, hash, .. } => {
-                        let response = if let Some(data) = file_mgr.get_chunk(&hash) {
-                            ChunkResponse::Found { hash, data: data.to_vec() }
-                        } else {
-                            ChunkResponse::NotFound { hash }
-                        };
-                        let _ = node.respond_chunk(channel, response);
-                    }
-                    NetEvt::ChunkReceived {
-                        response: ChunkResponse::Found { hash, data },
-                        ..
-                    } => {
-                        file_mgr.add_chunk(hash, data);
-                    }
-                    _ => {}
-                }
-            }
-
-            cmd = cmd_rx.next() => {
-                if let Some(cmd) = cmd {
-                    handle_network_command(&cmd, &node, &mut file_mgr)?;
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-// ───── WASM ─────────────────────────────────────────────────────────────────
-
+/// Stub: spawn the network task (WASM). Currently a no-op during the iroh migration.
 #[cfg(target_arch = "wasm32")]
 pub fn spawn_network(
-    identity: willow_identity::Identity,
-    event_tx: futures::channel::mpsc::UnboundedSender<NetworkEvent>,
-    cmd_rx: futures::channel::mpsc::UnboundedReceiver<NetworkCommand>,
-    config: willow_network::NetworkConfig,
+    _identity: willow_identity::Identity,
+    _event_tx: futures::channel::mpsc::UnboundedSender<NetworkEvent>,
+    _cmd_rx: futures::channel::mpsc::UnboundedReceiver<NetworkCommand>,
 ) {
-    wasm_bindgen_futures::spawn_local(async move {
-        let _ = run_network_wasm(identity, event_tx, cmd_rx, config).await;
-    });
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn run_network_wasm(
-    identity: willow_identity::Identity,
-    event_tx: futures::channel::mpsc::UnboundedSender<NetworkEvent>,
-    mut cmd_rx: futures::channel::mpsc::UnboundedReceiver<NetworkCommand>,
-    config: willow_network::NetworkConfig,
-) -> anyhow::Result<()> {
-    use futures::StreamExt;
-    use willow_network::{NetworkEvent as NetEvt, NetworkNode};
-
-    let mut backoff_ms: u32 = 1_000;
-    const MAX_BACKOFF_MS: u32 = 30_000;
-
-    loop {
-        tracing::info!("connecting to network...");
-
-        let node_result = NetworkNode::start(identity.clone(), config.clone()).await;
-        let (node, mut events) = match node_result {
-            Ok(pair) => {
-                // Successful connection — reset backoff.
-                backoff_ms = 1_000;
-                pair
-            }
-            Err(e) => {
-                tracing::warn!("failed to start network node: {e}");
-                gloo_timers::future::TimeoutFuture::new(backoff_ms).await;
-                backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
-                continue;
-            }
-        };
-
-        let mut file_mgr = crate::files::FileManager::new();
-        let local_peer_id = node.peer_id().to_string();
-
-        // Run the event loop until the connection drops.
-        loop {
-            futures::select! {
-                event = events.next() => {
-                    let Some(event) = event else { break };
-                    match event {
-                        NetEvt::Message { topic, data, source } => {
-                            // Try parsing as a profile broadcast.
-                            if let Ok((profile, willow_transport::MessageType::Identity)) =
-                                willow_transport::unpack_envelope::<willow_identity::UserProfile>(&data)
-                            {
-                                let _ = event_tx.unbounded_send(NetworkEvent::ProfileReceived {
-                                    peer_id: profile.peer_id.to_string(),
-                                    display_name: profile.display_name,
-                                });
-                            }
-                            // Try wire format.
-                            else if let Some((wire_msg, signer)) =
-                                crate::ops::unpack_wire(&data)
-                            {
-                                let from = signer.to_string();
-                                match wire_msg {
-                                    crate::ops::WireMessage::Event(event) => {
-                                        let _ = event_tx.unbounded_send(NetworkEvent::EventReceived {
-                                            event,
-                                            from,
-                                        });
-                                    }
-                                    crate::ops::WireMessage::SyncRequest { state_hash, topic } => {
-                                        let _ = event_tx.unbounded_send(NetworkEvent::SyncRequested {
-                                            state_hash,
-                                            from,
-                                            topic,
-                                        });
-                                    }
-                                    crate::ops::WireMessage::SyncBatch { events } => {
-                                        let _ = event_tx.unbounded_send(NetworkEvent::SyncBatchReceived {
-                                            events,
-                                            from,
-                                        });
-                                    }
-                                    crate::ops::WireMessage::TypingIndicator { channel } => {
-                                        let _ = event_tx.unbounded_send(NetworkEvent::TypingReceived {
-                                            peer_id: from,
-                                            channel,
-                                        });
-                                    }
-                                    crate::ops::WireMessage::VoiceJoin { channel_id, peer_id } => {
-                                        let _ = event_tx.unbounded_send(NetworkEvent::VoiceJoinReceived {
-                                            channel_id,
-                                            peer_id,
-                                        });
-                                    }
-                                    crate::ops::WireMessage::VoiceLeave { channel_id, peer_id } => {
-                                        let _ = event_tx.unbounded_send(NetworkEvent::VoiceLeaveReceived {
-                                            channel_id,
-                                            peer_id,
-                                        });
-                                    }
-                                    crate::ops::WireMessage::VoiceSignal { channel_id, target_peer, signal } => {
-                                        if target_peer == local_peer_id {
-                                            let _ = event_tx.unbounded_send(NetworkEvent::VoiceSignalReceived {
-                                                channel_id,
-                                                from_peer: from,
-                                                signal,
-                                            });
-                                        }
-                                    }
-                                    crate::ops::WireMessage::JoinRequest { link_id, peer_id } => {
-                                        let _ = event_tx.unbounded_send(NetworkEvent::JoinLinkRequested { link_id, peer_id });
-                                    }
-                                    crate::ops::WireMessage::JoinResponse { target_peer, invite_data } => {
-                                        if target_peer == local_peer_id {
-                                            let _ = event_tx.unbounded_send(NetworkEvent::JoinLinkResponseReceived { invite_data });
-                                        }
-                                    }
-                                    crate::ops::WireMessage::JoinDenied { target_peer, reason } => {
-                                        if target_peer == local_peer_id {
-                                            let _ = event_tx.unbounded_send(NetworkEvent::JoinLinkDenied { reason });
-                                        }
-                                    }
-                                }
-                            } else {
-                                let _ = event_tx.unbounded_send(NetworkEvent::MessageReceived {
-                                    topic,
-                                    data,
-                                    source: source.map(|p| p.to_string()),
-                                });
-                            }
-                        }
-                        NetEvt::PeerConnected(peer) => {
-                            // Reset backoff on successful peer connection.
-                            backoff_ms = 1_000;
-                            let _ = event_tx.unbounded_send(NetworkEvent::PeerConnected(peer.to_string()));
-                        }
-                        NetEvt::PeerDisconnected(peer) => {
-                            let _ = event_tx.unbounded_send(NetworkEvent::PeerDisconnected(peer.to_string()));
-                        }
-                        NetEvt::Listening(addr) => {
-                            let _ = event_tx.unbounded_send(NetworkEvent::Listening(addr.to_string()));
-                        }
-                        _ => {}
-                    }
-                }
-
-                cmd = cmd_rx.next() => {
-                    if let Some(cmd) = cmd {
-                        let _ = handle_network_command(&cmd, &node, &mut file_mgr);
-                    }
-                }
-
-                complete => break,
-            }
-        }
-
-        // Connection lost — notify UI and wait before retrying.
-        tracing::warn!(
-            backoff_ms,
-            "network connection lost, reconnecting in {backoff_ms}ms"
-        );
-        let _ = event_tx.unbounded_send(NetworkEvent::Listening("reconnecting".to_string()));
-        gloo_timers::future::TimeoutFuture::new(backoff_ms).await;
-        backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
-    }
-}
-
-// ───── Shared command handler ───────────────────────────────────────────────
-
-fn handle_network_command(
-    cmd: &NetworkCommand,
-    node: &willow_network::NetworkNode,
-    file_mgr: &mut crate::files::FileManager,
-) -> anyhow::Result<()> {
-    match cmd {
-        NetworkCommand::Subscribe(topic) => {
-            node.subscribe(topic)?;
-        }
-        NetworkCommand::Publish { topic, data } => {
-            node.publish(topic, data.clone())?;
-        }
-        NetworkCommand::ShareFile {
-            topic,
-            filename,
-            mime_type,
-            data,
-        } => {
-            if let Some((_manifest, envelope)) =
-                file_mgr.share_file(data, filename.clone(), mime_type.clone())
-            {
-                node.publish(topic, envelope)?;
-            }
-        }
-        NetworkCommand::SendTyping { channel } => {
-            let identity = willow_identity::Identity::from_ed25519_bytes(
-                &crate::storage::load_identity_bytes().unwrap_or_default(),
-            )
-            .unwrap_or_else(willow_identity::Identity::generate);
-            let msg = crate::ops::WireMessage::TypingIndicator {
-                channel: channel.clone(),
-            };
-            if let Some(data) = crate::ops::pack_wire(&msg, &identity) {
-                let _ = node.publish(crate::ops::SERVER_OPS_TOPIC, data);
-            }
-        }
-        NetworkCommand::BroadcastProfile { display_name } => {
-            let profile = willow_identity::UserProfile::new(
-                willow_identity::PeerId::from(node.peer_id()),
-                display_name,
-            );
-            if let Ok(data) =
-                willow_transport::pack_envelope(willow_transport::MessageType::Identity, &profile)
-            {
-                let _ = node.publish(PROFILE_TOPIC, data);
-            }
-        }
-        NetworkCommand::BroadcastEvent { event, topic } => {
-            let identity = willow_identity::Identity::from_ed25519_bytes(
-                &crate::storage::load_identity_bytes().unwrap_or_default(),
-            )
-            .unwrap_or_else(willow_identity::Identity::generate);
-            let publish_topic = topic.as_deref().unwrap_or(crate::ops::SERVER_OPS_TOPIC);
-            if let Some(data) =
-                crate::ops::pack_wire(&crate::ops::WireMessage::Event(event.clone()), &identity)
-            {
-                let _ = node.publish(publish_topic, data);
-            }
-        }
-        NetworkCommand::RequestSync { state_hash, topic } => {
-            let identity = willow_identity::Identity::from_ed25519_bytes(
-                &crate::storage::load_identity_bytes().unwrap_or_default(),
-            )
-            .unwrap_or_else(willow_identity::Identity::generate);
-            let msg = crate::ops::WireMessage::SyncRequest {
-                state_hash: state_hash.clone(),
-                topic: topic.clone(),
-            };
-            if let Some(data) = crate::ops::pack_wire(&msg, &identity) {
-                let publish_topic = topic.as_deref().unwrap_or(crate::ops::SERVER_OPS_TOPIC);
-                let _ = node.publish(publish_topic, data);
-            }
-        }
-        NetworkCommand::SendSyncBatch { events } => {
-            let identity = willow_identity::Identity::from_ed25519_bytes(
-                &crate::storage::load_identity_bytes().unwrap_or_default(),
-            )
-            .unwrap_or_else(willow_identity::Identity::generate);
-            let msg = crate::ops::WireMessage::SyncBatch {
-                events: events.clone(),
-            };
-            if let Some(data) = crate::ops::pack_wire(&msg, &identity) {
-                let _ = node.publish(crate::ops::SERVER_OPS_TOPIC, data);
-            }
-        }
-        NetworkCommand::SendVoiceJoin { channel_id } => {
-            let identity = willow_identity::Identity::from_ed25519_bytes(
-                &crate::storage::load_identity_bytes().unwrap_or_default(),
-            )
-            .unwrap_or_else(willow_identity::Identity::generate);
-            let msg = crate::ops::WireMessage::VoiceJoin {
-                channel_id: channel_id.clone(),
-                peer_id: willow_identity::PeerId::from(node.peer_id()).to_string(),
-            };
-            if let Some(data) = crate::ops::pack_wire(&msg, &identity) {
-                let _ = node.publish(crate::ops::SERVER_OPS_TOPIC, data);
-            }
-        }
-        NetworkCommand::SendVoiceLeave { channel_id } => {
-            let identity = willow_identity::Identity::from_ed25519_bytes(
-                &crate::storage::load_identity_bytes().unwrap_or_default(),
-            )
-            .unwrap_or_else(willow_identity::Identity::generate);
-            let msg = crate::ops::WireMessage::VoiceLeave {
-                channel_id: channel_id.clone(),
-                peer_id: willow_identity::PeerId::from(node.peer_id()).to_string(),
-            };
-            if let Some(data) = crate::ops::pack_wire(&msg, &identity) {
-                let _ = node.publish(crate::ops::SERVER_OPS_TOPIC, data);
-            }
-        }
-        NetworkCommand::SendVoiceSignal {
-            channel_id,
-            target_peer,
-            signal,
-        } => {
-            let identity = willow_identity::Identity::from_ed25519_bytes(
-                &crate::storage::load_identity_bytes().unwrap_or_default(),
-            )
-            .unwrap_or_else(willow_identity::Identity::generate);
-            let msg = crate::ops::WireMessage::VoiceSignal {
-                channel_id: channel_id.clone(),
-                target_peer: target_peer.clone(),
-                signal: signal.clone(),
-            };
-            if let Some(data) = crate::ops::pack_wire(&msg, &identity) {
-                let _ = node.publish(crate::ops::SERVER_OPS_TOPIC, data);
-            }
-        }
-    }
-    Ok(())
+    tracing::warn!("network spawn is stubbed out during iroh migration");
 }

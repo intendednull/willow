@@ -82,12 +82,12 @@ pub struct SharedState {
     pub config: ClientConfig,
     pub connected: bool,
     pub connected_subscribed: bool,
-    pub typing_peers: HashMap<String, (String, u64)>,
-    pub voice_participants: HashMap<String, std::collections::HashSet<String>>,
+    pub typing_peers: HashMap<willow_identity::EndpointId, (String, u64)>,
+    pub voice_participants: HashMap<String, std::collections::HashSet<willow_identity::EndpointId>>,
     pub active_voice_channel: Option<String>,
     pub voice_muted: bool,
     pub voice_deafened: bool,
-    pub state_verification_results: HashMap<String, willow_state::StateHash>,
+    pub state_verification_results: HashMap<willow_identity::EndpointId, willow_state::StateHash>,
     pub last_typing_sent_ms: u64,
     pub join_links: Vec<ops::JoinLink>,
 }
@@ -237,9 +237,8 @@ fn init_event_state_for_server(state: &mut ClientState, persistence: bool, serve
     if let Some(saved_state) = storage::load_server_state(server_id) {
         state.event_state = saved_state;
     } else {
-        let owner = ctx.server.owner.to_string();
         state.event_state =
-            willow_state::ServerState::new(server_id, ctx.server.name.clone(), owner);
+            willow_state::ServerState::new(server_id, ctx.server.name.clone(), ctx.server.owner);
     }
 
     // Open persistent event store for this server.
@@ -294,7 +293,7 @@ impl ClientHandle {
         // Store them in a side channel via Rc<RefCell>.
         let deferred = Rc::new(RefCell::new(Some((event_tx, cmd_rx))));
 
-        let mut state = ClientState::default();
+        let mut state = ClientState::new(identity.endpoint_id());
 
         // Open message database.
         if config.persistence {
@@ -362,9 +361,11 @@ impl ClientHandle {
                 if let Some(saved_state) = storage::load_server_state(sid) {
                     state.event_state = saved_state;
                 } else {
-                    let owner = ctx.server.owner.to_string();
-                    state.event_state =
-                        willow_state::ServerState::new(sid.clone(), ctx.server.name.clone(), owner);
+                    state.event_state = willow_state::ServerState::new(
+                        sid.clone(),
+                        ctx.server.name.clone(),
+                        ctx.server.owner,
+                    );
 
                     // No saved state -- seed from legacy channels.
                     // Open persistent event store and replay stored events.
@@ -433,12 +434,9 @@ impl ClientHandle {
         }
 
         // Load saved display name, or use config override.
-        let peer_id_str = identity.peer_id().to_string();
+        let local_endpoint = identity.endpoint_id();
         if let Some(ref name) = config.display_name {
-            state
-                .profiles
-                .names
-                .insert(peer_id_str.clone(), name.clone());
+            state.profiles.names.insert(local_endpoint, name.clone());
             if config.persistence {
                 storage::save_profile(&storage::LocalProfile {
                     display_name: name.clone(),
@@ -449,7 +447,7 @@ impl ClientHandle {
                 state
                     .profiles
                     .names
-                    .insert(peer_id_str, profile.display_name);
+                    .insert(local_endpoint, profile.display_name);
             }
         }
 
@@ -504,15 +502,13 @@ impl ClientHandle {
             return;
         };
 
-        let config = network::build_network_config(shared.config.relay_addr.as_deref());
-
         if shared.config.persistence {
             storage::save_settings(&storage::NetworkSettings {
                 relay_addr: shared.config.relay_addr.clone(),
             });
         }
 
-        network::spawn_network(shared.identity.clone(), event_tx, cmd_rx, config);
+        network::spawn_network(shared.identity.clone(), event_tx, cmd_rx);
         shared.connected = true;
     }
 
@@ -525,7 +521,7 @@ impl ClientHandle {
             self.leave_voice();
         }
         let mut shared = self.shared.borrow_mut();
-        let my_peer_id = shared.identity.peer_id().to_string();
+        let my_peer_id = shared.identity.endpoint_id();
         shared.active_voice_channel = Some(channel_id.to_string());
         // Add ourselves to participants.
         shared
@@ -544,7 +540,7 @@ impl ClientHandle {
     /// Leave the current voice channel, if in one.
     pub fn leave_voice(&self) {
         let mut shared = self.shared.borrow_mut();
-        let my_peer_id = shared.identity.peer_id().to_string();
+        let my_peer_id = shared.identity.endpoint_id();
         if let Some(ch) = shared.active_voice_channel.take() {
             // Remove ourselves from participants.
             if let Some(participants) = shared.voice_participants.get_mut(&ch) {
@@ -571,12 +567,12 @@ impl ClientHandle {
     }
 
     /// Returns the list of peer IDs currently in the given voice channel.
-    pub fn voice_participants(&self, channel_id: &str) -> Vec<String> {
+    pub fn voice_participants(&self, channel_id: &str) -> Vec<willow_identity::EndpointId> {
         let shared = self.shared.borrow();
         shared
             .voice_participants
             .get(channel_id)
-            .map(|s| s.iter().cloned().collect())
+            .map(|s| s.iter().copied().collect())
             .unwrap_or_default()
     }
 
@@ -599,14 +595,14 @@ impl ClientHandle {
     pub fn send_voice_signal(
         &self,
         channel_id: &str,
-        target: &str,
+        target: willow_identity::EndpointId,
         signal: ops::VoiceSignalPayload,
     ) {
         let _ = self
             .cmd_tx
             .unbounded_send(network::NetworkCommand::SendVoiceSignal {
                 channel_id: channel_id.to_string(),
-                target_peer: target.to_string(),
+                target_peer: target,
                 signal,
             });
     }
@@ -685,7 +681,7 @@ impl ClientHandle {
     /// Returns the server ID.
     pub fn create_server(&self, name: &str) -> anyhow::Result<String> {
         let mut shared = self.shared.borrow_mut();
-        let mut server = willow_channel::Server::new(name, shared.identity.peer_id());
+        let mut server = willow_channel::Server::new(name, shared.identity.endpoint_id());
         let server_id = server.id.to_string();
 
         // Create default "general" channel.
@@ -715,9 +711,9 @@ impl ClientHandle {
         shared.state.chat.current_channel = "general".to_string();
 
         // Initialize event-sourced state for this server.
-        let peer_id = shared.identity.peer_id().to_string();
+        let peer_id = shared.identity.endpoint_id();
         shared.state.event_state =
-            willow_state::ServerState::new(server_id.clone(), name.to_string(), peer_id.clone());
+            willow_state::ServerState::new(server_id.clone(), name.to_string(), peer_id);
 
         // Open event store.
         if shared.config.persistence {
@@ -764,19 +760,19 @@ impl ClientHandle {
     ///
     /// Called during server creation for each worker the user wants to
     /// authorize. Workers need SyncProvider to serve state.
-    pub fn authorize_workers(&self, worker_peer_ids: &[String]) {
+    pub fn authorize_workers(&self, worker_peer_ids: &[willow_identity::EndpointId]) {
         let mut events_to_broadcast = Vec::new();
         {
             let mut shared = self.shared.borrow_mut();
-            let peer_id = shared.identity.peer_id().to_string();
+            let peer_id = shared.identity.endpoint_id();
             for worker_pid in worker_peer_ids {
                 let event = willow_state::Event {
                     id: uuid::Uuid::new_v4().to_string(),
                     parent_hash: shared.state.event_state.hash(),
-                    author: peer_id.clone(),
+                    author: peer_id,
                     timestamp_ms: util::current_time_ms(),
                     kind: willow_state::EventKind::GrantPermission {
-                        peer_id: worker_pid.clone(),
+                        peer_id: *worker_pid,
                         permission: willow_state::Permission::SyncProvider,
                     },
                 };
@@ -798,7 +794,7 @@ impl ClientHandle {
         if shared.state.active_server.is_none() {
             return Err(anyhow::anyhow!("no active server"));
         }
-        let peer_id = shared.identity.peer_id().to_string();
+        let peer_id = shared.identity.endpoint_id();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
             parent_hash: shared.state.event_state.hash(),
@@ -815,7 +811,7 @@ impl ClientHandle {
             .unbounded_send(network::NetworkCommand::BroadcastEvent { event, topic: None });
 
         // Also update the global profile for backward compat.
-        let pid = shared.identity.peer_id().to_string();
+        let pid = shared.identity.endpoint_id();
         shared.state.profiles.names.insert(pid, name.to_string());
 
         storage::save_profile(&storage::LocalProfile {
@@ -834,7 +830,7 @@ impl ClientHandle {
     /// Get the display name for the active server (from event-sourced state).
     pub fn server_display_name(&self) -> String {
         let shared = self.shared.borrow();
-        let peer_id = shared.identity.peer_id().to_string();
+        let peer_id = shared.identity.endpoint_id();
         shared
             .state
             .event_state
@@ -930,7 +926,7 @@ impl ClientHandle {
             .active()
             .ok_or_else(|| anyhow::anyhow!("no active server"))?;
 
-        let peer_id_str = shared.identity.peer_id().to_string();
+        let peer_id_str = shared.identity.endpoint_id();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
             parent_hash: shared.state.event_state.hash(),
@@ -957,7 +953,7 @@ impl ClientHandle {
             .active()
             .ok_or_else(|| anyhow::anyhow!("no active server"))?;
 
-        let peer_id_str = shared.identity.peer_id().to_string();
+        let peer_id_str = shared.identity.endpoint_id();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
             parent_hash: shared.state.event_state.hash(),
@@ -983,7 +979,7 @@ impl ClientHandle {
             .active()
             .ok_or_else(|| anyhow::anyhow!("no active server"))?;
 
-        let peer_id_str = shared.identity.peer_id().to_string();
+        let peer_id_str = shared.identity.endpoint_id();
         let reaction_event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
             parent_hash: shared.state.event_state.hash(),
@@ -1012,7 +1008,7 @@ impl ClientHandle {
     pub fn pin_message(&self, channel: &str, message_id: &str) -> anyhow::Result<()> {
         let mut shared = self.shared.borrow_mut();
         let channel_id = resolve_channel_id_shared(&shared.state, channel)?;
-        let peer_id = shared.identity.peer_id().to_string();
+        let peer_id = shared.identity.endpoint_id();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
             parent_hash: shared.state.event_state.hash(),
@@ -1038,7 +1034,7 @@ impl ClientHandle {
     pub fn unpin_message(&self, channel: &str, message_id: &str) -> anyhow::Result<()> {
         let mut shared = self.shared.borrow_mut();
         let channel_id = resolve_channel_id_shared(&shared.state, channel)?;
-        let peer_id = shared.identity.peer_id().to_string();
+        let peer_id = shared.identity.endpoint_id();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
             parent_hash: shared.state.event_state.hash(),
@@ -1142,7 +1138,7 @@ impl ClientHandle {
             .unbounded_send(network::NetworkCommand::Subscribe(topic));
 
         // Create and apply event, then broadcast it.
-        let peer_id_str = shared.identity.peer_id().to_string();
+        let peer_id_str = shared.identity.endpoint_id();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
             parent_hash: shared.state.event_state.hash(),
@@ -1190,7 +1186,7 @@ impl ClientHandle {
             .cmd_tx
             .unbounded_send(network::NetworkCommand::Subscribe(topic));
 
-        let peer_id_str = shared.identity.peer_id().to_string();
+        let peer_id_str = shared.identity.endpoint_id();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
             parent_hash: shared.state.event_state.hash(),
@@ -1245,7 +1241,7 @@ impl ClientHandle {
         }
 
         // Create and apply event, then broadcast it.
-        let peer_id_str = shared.identity.peer_id().to_string();
+        let peer_id_str = shared.identity.endpoint_id();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
             parent_hash: shared.state.event_state.hash(),
@@ -1267,16 +1263,16 @@ impl ClientHandle {
     ///
     /// Applies a `GrantPermission(Administrator)` event to the event-sourced
     /// state and broadcasts the event on the wire.
-    pub fn trust_peer(&self, peer_id: &str) {
+    pub fn trust_peer(&self, peer_id: willow_identity::EndpointId) {
         let mut shared = self.shared.borrow_mut();
-        let author = shared.identity.peer_id().to_string();
+        let author = shared.identity.endpoint_id();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
             parent_hash: shared.state.event_state.hash(),
             author,
             timestamp_ms: util::current_time_ms(),
             kind: willow_state::EventKind::GrantPermission {
-                peer_id: peer_id.to_string(),
+                peer_id,
                 permission: willow_state::Permission::Administrator,
             },
         };
@@ -1290,16 +1286,16 @@ impl ClientHandle {
     ///
     /// Applies a `RevokePermission(Administrator)` event to the event-sourced
     /// state and broadcasts the event on the wire.
-    pub fn untrust_peer(&self, peer_id: &str) {
+    pub fn untrust_peer(&self, peer_id: willow_identity::EndpointId) {
         let mut shared = self.shared.borrow_mut();
-        let author = shared.identity.peer_id().to_string();
+        let author = shared.identity.endpoint_id();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
             parent_hash: shared.state.event_state.hash(),
             author,
             timestamp_ms: util::current_time_ms(),
             kind: willow_state::EventKind::RevokePermission {
-                peer_id: peer_id.to_string(),
+                peer_id,
                 permission: willow_state::Permission::Administrator,
             },
         };
@@ -1310,7 +1306,7 @@ impl ClientHandle {
     }
 
     /// Kick a member, rotating channel keys.
-    pub fn kick_member(&self, peer_id: &str) -> anyhow::Result<()> {
+    pub fn kick_member(&self, peer_id: willow_identity::EndpointId) -> anyhow::Result<()> {
         let mut shared = self.shared.borrow_mut();
         let ctx = shared
             .state
@@ -1321,8 +1317,8 @@ impl ClientHandle {
             .server
             .members()
             .iter()
-            .find(|m| m.peer_id.to_string() == peer_id)
-            .map(|m| m.peer_id.clone());
+            .find(|m| m.peer_id == peer_id)
+            .map(|m| m.peer_id);
 
         let Some(peer) = member_peer else {
             anyhow::bail!("peer not found in server members");
@@ -1341,18 +1337,16 @@ impl ClientHandle {
             }
         }
 
-        shared.state.chat.peers.retain(|p| p != peer_id);
+        shared.state.chat.peers.retain(|p| *p != peer_id);
 
         // Create and apply event, then broadcast it.
-        let author = shared.identity.peer_id().to_string();
+        let author = shared.identity.endpoint_id();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
             parent_hash: shared.state.event_state.hash(),
             author,
             timestamp_ms: util::current_time_ms(),
-            kind: willow_state::EventKind::KickMember {
-                peer_id: peer_id.to_string(),
-            },
+            kind: willow_state::EventKind::KickMember { peer_id },
         };
         apply_event_on_shared(&mut shared, &event);
         let _ = self
@@ -1375,7 +1369,7 @@ impl ClientHandle {
         ctx.server.create_role(role);
         storage::save_server(&ctx.server, &ctx.keys);
 
-        let peer_id_str = shared.identity.peer_id().to_string();
+        let peer_id_str = shared.identity.endpoint_id();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
             parent_hash: shared.state.event_state.hash(),
@@ -1406,7 +1400,7 @@ impl ClientHandle {
         ctx.server.delete_role(&rid)?;
         storage::save_server(&ctx.server, &ctx.keys);
 
-        let peer_id_str = shared.identity.peer_id().to_string();
+        let peer_id_str = shared.identity.endpoint_id();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
             parent_hash: shared.state.event_state.hash(),
@@ -1442,7 +1436,7 @@ impl ClientHandle {
         ctx.server.set_permission(&rid, perm, granted)?;
         storage::save_server(&ctx.server, &ctx.keys);
 
-        let peer_id_str = shared.identity.peer_id().to_string();
+        let peer_id_str = shared.identity.endpoint_id();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
             parent_hash: shared.state.event_state.hash(),
@@ -1463,7 +1457,11 @@ impl ClientHandle {
     }
 
     /// Assign a role to a peer.
-    pub fn assign_role(&self, peer_id: &str, role_id: &str) -> anyhow::Result<()> {
+    pub fn assign_role(
+        &self,
+        peer_id: willow_identity::EndpointId,
+        role_id: &str,
+    ) -> anyhow::Result<()> {
         let mut shared = self.shared.borrow_mut();
         let rid = willow_channel::RoleId(uuid::Uuid::parse_str(role_id).unwrap_or_default());
 
@@ -1476,8 +1474,8 @@ impl ClientHandle {
             .server
             .members()
             .iter()
-            .find(|m| m.peer_id.to_string() == peer_id)
-            .map(|m| m.peer_id.clone());
+            .find(|m| m.peer_id == peer_id)
+            .map(|m| m.peer_id);
 
         let Some(peer) = member_peer else {
             anyhow::bail!("peer not found");
@@ -1486,14 +1484,14 @@ impl ClientHandle {
         ctx.server.assign_role(&peer, &rid)?;
         storage::save_server(&ctx.server, &ctx.keys);
 
-        let peer_id_str_author = shared.identity.peer_id().to_string();
+        let author = shared.identity.endpoint_id();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
             parent_hash: shared.state.event_state.hash(),
-            author: peer_id_str_author,
+            author,
             timestamp_ms: util::current_time_ms(),
             kind: willow_state::EventKind::AssignRole {
-                peer_id: peer_id.to_string(),
+                peer_id,
                 role_id: role_id.to_string(),
             },
         };
@@ -1508,7 +1506,7 @@ impl ClientHandle {
     /// Broadcast a state verification event carrying this peer's current state hash.
     pub fn verify_state(&self) -> anyhow::Result<()> {
         let mut shared = self.shared.borrow_mut();
-        let author = shared.identity.peer_id().to_string();
+        let author = shared.identity.endpoint_id();
         let state_hash = shared.state.event_state.hash();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
@@ -1541,7 +1539,7 @@ impl ClientHandle {
     /// Rename the server. Only the owner can do this.
     pub fn rename_server(&self, new_name: &str) -> anyhow::Result<()> {
         let mut shared = self.shared.borrow_mut();
-        let author = shared.identity.peer_id().to_string();
+        let author = shared.identity.endpoint_id();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
             parent_hash: shared.state.event_state.hash(),
@@ -1561,7 +1559,7 @@ impl ClientHandle {
     /// Set the server description. Only the owner can do this.
     pub fn set_server_description(&self, desc: &str) -> anyhow::Result<()> {
         let mut shared = self.shared.borrow_mut();
-        let author = shared.identity.peer_id().to_string();
+        let author = shared.identity.endpoint_id();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
             parent_hash: shared.state.event_state.hash(),
@@ -1579,10 +1577,11 @@ impl ClientHandle {
     }
 
     /// Generate a secure invite code encrypted for the given recipient.
-    pub fn generate_invite(&self, recipient_peer_id: &str) -> anyhow::Result<String> {
-        let Some(pub_key) = invite::peer_id_to_ed25519_public(recipient_peer_id) else {
-            anyhow::bail!("invalid recipient PeerId");
-        };
+    pub fn generate_invite(
+        &self,
+        recipient_peer_id: &willow_identity::EndpointId,
+    ) -> anyhow::Result<String> {
+        let pub_key = invite::endpoint_id_to_ed25519_public(recipient_peer_id);
 
         let shared = self.shared.borrow();
         let ctx = shared
@@ -1623,9 +1622,7 @@ impl ClientHandle {
             // Use the ACTUAL owner from the invite, not the joiner's peer ID.
             // This is persisted and used on reload to initialize event_state —
             // if the owner is wrong, the actual owner's events get rejected.
-            let owner_peer_id = willow_identity::PeerId::parse(&accepted.owner)
-                .unwrap_or_else(|| shared.identity.peer_id());
-            let mut server = willow_channel::Server::new(&accepted.server_name, owner_peer_id);
+            let mut server = willow_channel::Server::new(&accepted.server_name, accepted.owner);
             server.id = willow_channel::ServerId(
                 uuid::Uuid::parse_str(&server_id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
             );
@@ -1665,23 +1662,18 @@ impl ClientHandle {
         // Fix the event_state owner to be the ACTUAL server owner from the invite,
         // not the joining peer. This is critical for permission checks -- without it,
         // the actual owner's events (CreateChannel, etc.) get rejected.
-        shared.state.event_state.owner = accepted.owner.clone();
+        shared.state.event_state.owner = accepted.owner;
         // Also add the owner as a member so permissions work.
-        if !shared
+        shared
             .state
             .event_state
             .members
-            .contains_key(&accepted.owner)
-        {
-            shared.state.event_state.members.insert(
-                accepted.owner.clone(),
-                willow_state::Member {
-                    peer_id: accepted.owner.clone(),
-                    roles: std::collections::HashSet::new(),
-                    display_name: None,
-                },
-            );
-        }
+            .entry(accepted.owner)
+            .or_insert_with(|| willow_state::Member {
+                peer_id: accepted.owner,
+                roles: std::collections::HashSet::new(),
+                display_name: None,
+            });
 
         reconcile_topic_map(&mut shared.state);
 
@@ -1728,7 +1720,7 @@ impl ClientHandle {
         let shared = self.shared.borrow();
         let msg = ops::WireMessage::JoinRequest {
             link_id: link_id.to_string(),
-            peer_id: shared.identity.peer_id().to_string(),
+            peer_id: shared.identity.endpoint_id(),
         };
         if let Some(data) = ops::pack_wire(&msg, &shared.identity) {
             let _ = self
@@ -1754,7 +1746,7 @@ impl ClientHandle {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("no active server"))?;
 
-        let peer_id = shared.identity.peer_id().to_string();
+        let peer_id = shared.identity.endpoint_id();
         if !shared
             .state
             .event_state
@@ -1825,7 +1817,7 @@ impl ClientHandle {
     /// Set the local display name and broadcast to peers.
     pub fn set_display_name(&self, name: &str) {
         let mut shared = self.shared.borrow_mut();
-        let peer_id = shared.identity.peer_id().to_string();
+        let peer_id = shared.identity.endpoint_id();
         shared
             .state
             .profiles
@@ -1888,7 +1880,7 @@ impl ClientHandle {
         // Remove expired entries (older than 5 seconds).
         shared.typing_peers.retain(|_, (_, ts)| now - *ts < 5000);
 
-        let my_id = shared.identity.peer_id().to_string();
+        let my_id = shared.identity.endpoint_id();
         shared
             .typing_peers
             .iter()
@@ -1901,7 +1893,7 @@ impl ClientHandle {
 
     /// Get the local PeerId as a string.
     pub fn peer_id(&self) -> String {
-        self.shared.borrow().identity.peer_id().to_string()
+        self.shared.borrow().identity.endpoint_id().to_string()
     }
 
     /// Get the local display name.
@@ -1910,7 +1902,7 @@ impl ClientHandle {
     /// legacy profile store.
     pub fn display_name(&self) -> String {
         let shared = self.shared.borrow();
-        let pid = shared.identity.peer_id().to_string();
+        let pid = shared.identity.endpoint_id();
         if let Some(profile) = shared.state.event_state.profiles.get(&pid) {
             return profile.display_name.clone();
         }
@@ -1921,7 +1913,7 @@ impl ClientHandle {
     ///
     /// Checks the event-sourced state profiles first, falling back to the
     /// legacy profile store.
-    pub fn peer_display_name(&self, peer_id: &str) -> String {
+    pub fn peer_display_name(&self, peer_id: &willow_identity::EndpointId) -> String {
         let shared = self.shared.borrow();
         peer_display_name_shared(&shared, peer_id)
     }
@@ -1953,7 +1945,7 @@ impl ClientHandle {
             return vec![];
         }
 
-        let local_peer_id = shared.identity.peer_id().to_string();
+        let local_peer_id = shared.identity.endpoint_id();
 
         let mut msgs: Vec<state::DisplayMessage> = shared
             .state
@@ -2018,7 +2010,7 @@ impl ClientHandle {
                 state::DisplayMessage {
                     id: m.id.clone(),
                     channel_id: m.channel_id.clone(),
-                    author_peer_id: m.author.clone(),
+                    author_peer_id: m.author,
                     author_display_name: author_name,
                     body: m.body.clone(),
                     is_local: m.author == local_peer_id,
@@ -2073,7 +2065,7 @@ impl ClientHandle {
     }
 
     /// Get the list of connected peers (libp2p-level connections).
-    pub fn peers(&self) -> Vec<String> {
+    pub fn peers(&self) -> Vec<willow_identity::EndpointId> {
         self.shared.borrow().state.chat.peers.clone()
     }
 
@@ -2082,11 +2074,11 @@ impl ClientHandle {
     /// Returns `(peer_id, display_name, is_online)` for each member.
     /// Falls back to `chat.peers` for peers not in the member list
     /// (e.g. connected before event sync completes).
-    pub fn server_members(&self) -> Vec<(String, String, bool)> {
+    pub fn server_members(&self) -> Vec<(willow_identity::EndpointId, String, bool)> {
         let shared = self.shared.borrow();
-        let local_id = shared.identity.peer_id().to_string();
-        let online: std::collections::HashSet<&str> =
-            shared.state.chat.peers.iter().map(|s| s.as_str()).collect();
+        let local_id = shared.identity.endpoint_id();
+        let online: std::collections::HashSet<willow_identity::EndpointId> =
+            shared.state.chat.peers.iter().copied().collect();
 
         let mut result = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -2106,16 +2098,16 @@ impl ClientHandle {
                 })
                 .unwrap_or_else(|| peer_display_name_shared(&shared, pid));
             // Local user is always online.
-            let is_online = *pid == local_id || online.contains(pid.as_str());
-            result.push((pid.clone(), name, is_online));
-            seen.insert(pid.clone());
+            let is_online = *pid == local_id || online.contains(pid);
+            result.push((*pid, name, is_online));
+            seen.insert(*pid);
         }
 
         // Connected peers not yet in the member list (pre-sync).
         for pid in &shared.state.chat.peers {
             if !seen.contains(pid) {
                 let name = peer_display_name_shared(&shared, pid);
-                result.push((pid.clone(), name, true));
+                result.push((*pid, name, true));
             }
         }
 
@@ -2146,13 +2138,17 @@ impl ClientHandle {
         entries
     }
 
-    /// Returns the PeerId of the server owner.
-    pub fn server_owner(&self) -> String {
-        self.shared.borrow().state.event_state.owner.clone()
+    /// Returns the EndpointId of the server owner.
+    pub fn server_owner(&self) -> willow_identity::EndpointId {
+        self.shared.borrow().state.event_state.owner
     }
 
     /// Check whether a peer has a specific permission.
-    pub fn has_permission(&self, peer_id: &str, perm: &willow_state::Permission) -> bool {
+    pub fn has_permission(
+        &self,
+        peer_id: &willow_identity::EndpointId,
+        perm: &willow_state::Permission,
+    ) -> bool {
         self.shared
             .borrow()
             .state
@@ -2199,7 +2195,7 @@ impl ClientHandle {
             .topic_for_name(channel)
             .unwrap_or_else(|| channel.to_string());
 
-        let peer_id_str = shared.identity.peer_id().to_string();
+        let peer_id_str = shared.identity.endpoint_id();
 
         // Resolve channel_id from topic.
         let channel_id = shared
@@ -2217,7 +2213,7 @@ impl ClientHandle {
         let msg_event = willow_state::Event {
             id: event_id.clone(),
             parent_hash: shared.state.event_state.hash(),
-            author: peer_id_str.clone(),
+            author: peer_id_str,
             timestamp_ms: ts,
             kind: willow_state::EventKind::Message {
                 channel_id,
@@ -2253,7 +2249,7 @@ fn emit_client_events_for(
 ) {
     match &event.kind {
         willow_state::EventKind::Message { ref channel_id, .. } => {
-            let is_local = event.author == shared.identity.peer_id().to_string();
+            let is_local = event.author == shared.identity.endpoint_id();
 
             // Track seen IDs for dedup.
             shared.state.chat.seen_message_ids.insert(event.id.clone());
@@ -2338,13 +2334,13 @@ fn emit_client_events_for(
             });
         }
         willow_state::EventKind::KickMember { peer_id } => {
-            events.push(ClientEvent::MemberKicked(peer_id.clone()));
+            events.push(ClientEvent::MemberKicked(*peer_id));
         }
         willow_state::EventKind::GrantPermission { peer_id, .. } => {
-            events.push(ClientEvent::PeerTrusted(peer_id.clone()));
+            events.push(ClientEvent::PeerTrusted(*peer_id));
         }
         willow_state::EventKind::RevokePermission { peer_id, .. } => {
-            events.push(ClientEvent::PeerUntrusted(peer_id.clone()));
+            events.push(ClientEvent::PeerUntrusted(*peer_id));
         }
         willow_state::EventKind::RenameServer { new_name } => {
             events.push(ClientEvent::ServerRenamed {
@@ -2457,7 +2453,7 @@ fn emit_client_events_for(
                 channel,
                 message_id: message_id.clone(),
                 emoji: emoji.clone(),
-                author: event.author.clone(),
+                author: event.author,
             });
         }
         willow_state::EventKind::SetProfile { display_name } => {
@@ -2468,9 +2464,9 @@ fn emit_client_events_for(
                 .state
                 .profiles
                 .names
-                .insert(event.author.clone(), display_name.clone());
+                .insert(event.author, display_name.clone());
             events.push(ClientEvent::ProfileUpdated {
-                peer_id: event.author.clone(),
+                peer_id: event.author,
                 display_name: display_name.clone(),
             });
         }
@@ -2478,10 +2474,10 @@ fn emit_client_events_for(
             let our_hash = shared.state.event_state.hash();
             shared
                 .state_verification_results
-                .insert(event.author.clone(), state_hash.clone());
+                .insert(event.author, state_hash.clone());
             if *state_hash != our_hash {
                 events.push(ClientEvent::StateHashMismatch {
-                    peer_id: event.author.clone(),
+                    peer_id: event.author,
                     our_hash: our_hash.to_string(),
                     their_hash: state_hash.to_string(),
                 });
@@ -2597,9 +2593,9 @@ impl ClientEventLoop {
                     let mut shared = self.shared.borrow_mut();
                     // Track the sender as an online peer — receiving a signed
                     // event proves they are connected (possibly through the relay).
-                    if !from.is_empty() && !shared.state.chat.peers.contains(&from) {
-                        shared.state.chat.peers.push(from.clone());
-                        events.push(ClientEvent::PeerConnected(from.clone()));
+                    if !shared.state.chat.peers.contains(&from) {
+                        shared.state.chat.peers.push(from);
+                        events.push(ClientEvent::PeerConnected(from));
                     }
                     // Apply to event-sourced state.
                     let result = willow_state::apply_lenient(&mut shared.state.event_state, &event);
@@ -2648,9 +2644,9 @@ impl ClientEventLoop {
                     let mut shared = self.shared.borrow_mut();
                     tracing::info!(count = batch_events.len(), %from, "received event sync batch");
                     // Track the sender as online.
-                    if !from.is_empty() && !shared.state.chat.peers.contains(&from) {
-                        shared.state.chat.peers.push(from.clone());
-                        events.push(ClientEvent::PeerConnected(from.clone()));
+                    if !shared.state.chat.peers.contains(&from) {
+                        shared.state.chat.peers.push(from);
+                        events.push(ClientEvent::PeerConnected(from));
                     }
                     let mut sorted = batch_events;
                     sorted.sort_by_key(|e| e.timestamp_ms);
@@ -2699,7 +2695,7 @@ impl ClientEventLoop {
                 network::NetworkEvent::PeerConnected(peer) => {
                     let mut shared = self.shared.borrow_mut();
                     if !shared.state.chat.peers.contains(&peer) {
-                        shared.state.chat.peers.push(peer.clone());
+                        shared.state.chat.peers.push(peer);
                     }
                     // On first peer connect, subscribe to channels.
                     if !shared.connected_subscribed {
@@ -2718,7 +2714,7 @@ impl ClientEventLoop {
                             // the peer's member list picks it up immediately
                             // (the initial broadcast may be lost if the gossipsub
                             // mesh wasn't formed yet).
-                            let pid = shared.identity.peer_id().to_string();
+                            let pid = shared.identity.endpoint_id();
                             let event = willow_state::Event {
                                 id: uuid::Uuid::new_v4().to_string(),
                                 parent_hash: shared.state.event_state.hash(),
@@ -2730,10 +2726,7 @@ impl ClientEventLoop {
                             };
                             apply_event_on_shared(&mut shared, &event);
                             let _ = self.cmd_tx.unbounded_send(
-                                network::NetworkCommand::BroadcastEvent {
-                                    event,
-                                    topic: None,
-                                },
+                                network::NetworkCommand::BroadcastEvent { event, topic: None },
                             );
                         }
                     }
@@ -2753,7 +2746,7 @@ impl ClientEventLoop {
                         .state
                         .profiles
                         .names
-                        .insert(peer_id.clone(), display_name.clone());
+                        .insert(peer_id, display_name.clone());
                     events.push(ClientEvent::ProfileUpdated {
                         peer_id,
                         display_name,
@@ -2798,10 +2791,10 @@ impl ClientEventLoop {
                 network::NetworkEvent::TypingReceived { peer_id, channel } => {
                     let mut shared = self.shared.borrow_mut();
                     let now = util::current_time_ms();
-                    shared.typing_peers.insert(peer_id.clone(), (channel, now));
+                    shared.typing_peers.insert(peer_id, (channel, now));
                     // Also track as online peer.
                     if !shared.state.chat.peers.contains(&peer_id) {
-                        shared.state.chat.peers.push(peer_id.clone());
+                        shared.state.chat.peers.push(peer_id);
                         events.push(ClientEvent::PeerConnected(peer_id));
                     }
                 }
@@ -2817,7 +2810,7 @@ impl ClientEventLoop {
                         .voice_participants
                         .entry(channel_id.clone())
                         .or_default()
-                        .insert(peer_id.clone());
+                        .insert(peer_id);
                     events.push(ClientEvent::VoiceJoined {
                         channel_id,
                         peer_id,
@@ -2940,7 +2933,7 @@ impl ClientEventLoop {
     /// inside `process_batch`.
     fn verify_state_after_sync(&self) {
         let mut shared = self.shared.borrow_mut();
-        let author = shared.identity.peer_id().to_string();
+        let author = shared.identity.endpoint_id();
         let state_hash = shared.state.event_state.hash();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
@@ -2969,7 +2962,7 @@ fn resolve_channel_id_shared(state: &ClientState, channel: &str) -> anyhow::Resu
 }
 
 /// Get a peer's display name from a borrowed SharedState.
-fn peer_display_name_shared(shared: &SharedState, peer_id: &str) -> String {
+fn peer_display_name_shared(shared: &SharedState, peer_id: &willow_identity::EndpointId) -> String {
     if let Some(profile) = shared.state.event_state.profiles.get(peer_id) {
         return profile.display_name.clone();
     }
@@ -2980,15 +2973,13 @@ fn peer_display_name_shared(shared: &SharedState, peer_id: &str) -> String {
 
 fn load_identity() -> Identity {
     if let Some(bytes) = storage::load_identity_bytes() {
-        if let Some(id) = Identity::from_ed25519_bytes(&bytes) {
+        if let Some(id) = Identity::from_bytes(&bytes) {
             return id;
         }
     }
 
     let identity = Identity::generate();
-    if let Some(bytes) = identity.to_ed25519_bytes() {
-        storage::save_identity_bytes(&bytes);
-    }
+    storage::save_identity_bytes(&identity.to_bytes());
     identity
 }
 
@@ -3017,10 +3008,10 @@ pub(crate) fn test_client() -> (
     let (cmd_tx, cmd_rx) = futures_mpsc::unbounded();
     let (_event_tx, event_rx) = futures_mpsc::unbounded::<network::NetworkEvent>();
 
-    let mut state = ClientState::default();
+    let mut state = ClientState::new(identity.endpoint_id());
 
     // Create a minimal server.
-    let mut server = willow_channel::Server::new("Test Server", identity.peer_id());
+    let mut server = willow_channel::Server::new("Test Server", identity.endpoint_id());
     let ch_id = server
         .create_channel("general", willow_channel::ChannelKind::Text)
         .unwrap();
@@ -3048,7 +3039,7 @@ pub(crate) fn test_client() -> (
     // Initialize event_state with the server's owner (the local identity),
     // mirroring what ClientHandle::new() does.
     state.event_state =
-        willow_state::ServerState::new(&server_id, "Test Server", identity.peer_id().to_string());
+        willow_state::ServerState::new(&server_id, "Test Server", identity.endpoint_id());
 
     // Seed event_state with the general channel so event-sourced operations
     // (e.g. pin/unpin) can find the channel.
@@ -3235,7 +3226,8 @@ mod tests {
     #[test]
     fn trust_untrust_broadcasts_events() {
         let (client, mut rx) = test_client();
-        client.trust_peer("some-peer");
+        let some_peer = Identity::generate().endpoint_id();
+        client.trust_peer(some_peer);
 
         // Should broadcast BroadcastEvent.
         let cmd1 = rx.try_recv().unwrap();
@@ -3244,7 +3236,7 @@ mod tests {
             network::NetworkCommand::BroadcastEvent { .. }
         ));
 
-        client.untrust_peer("some-peer");
+        client.untrust_peer(some_peer);
         // Should broadcast BroadcastEvent.
         let cmd2 = rx.try_recv().unwrap();
         assert!(matches!(
@@ -3293,7 +3285,7 @@ mod tests {
     fn generate_accept_invite_round_trip() {
         let (client, _rx) = test_client();
         let recipient = Identity::generate();
-        let recipient_peer_id = recipient.peer_id().to_string();
+        let recipient_peer_id = recipient.endpoint_id();
 
         let code = client.generate_invite(&recipient_peer_id).unwrap();
         assert!(!code.is_empty());
@@ -3310,8 +3302,10 @@ mod tests {
         let (client, _rx) = test_client();
 
         // Create a second server context.
-        let server2 =
-            willow_channel::Server::new("Second Server", client.shared.borrow().identity.peer_id());
+        let server2 = willow_channel::Server::new(
+            "Second Server",
+            client.shared.borrow().identity.endpoint_id(),
+        );
         let server2_id = server2.id.to_string();
         let ctx2 = ServerContext {
             server: server2,
@@ -3358,7 +3352,7 @@ mod tests {
 
         // Create a second identity (the "owner" of the other server).
         let owner = Identity::generate();
-        let mut owner_server = willow_channel::Server::new("Other Server", owner.peer_id());
+        let mut owner_server = willow_channel::Server::new("Other Server", owner.endpoint_id());
         let ch_id = owner_server
             .create_channel("lobby", willow_channel::ChannelKind::Text)
             .unwrap();
@@ -3372,19 +3366,7 @@ mod tests {
         topic_map.insert(topic, ("lobby".into(), ch_id));
 
         // Generate invite for our client.
-        let our_pub = {
-            let shared = client.shared.borrow();
-            let ed_kp = shared
-                .identity
-                .keypair()
-                .clone()
-                .try_into_ed25519()
-                .unwrap();
-            let full = ed_kp.to_bytes();
-            let mut pub_bytes = [0u8; 32];
-            pub_bytes.copy_from_slice(&full[32..]);
-            pub_bytes
-        };
+        let our_pub = *client.shared.borrow().identity.endpoint_id().as_bytes();
         let code = invite::generate_invite(&owner_server, &keys, &topic_map, &our_pub).unwrap();
 
         // Accept the invite.
@@ -3406,8 +3388,8 @@ mod tests {
 
         // Create a second identity (the "owner" of the other server).
         let owner = Identity::generate();
-        let owner_peer_id = owner.peer_id().to_string();
-        let mut owner_server = willow_channel::Server::new("Other Server", owner.peer_id());
+        let owner_peer_id = owner.endpoint_id();
+        let mut owner_server = willow_channel::Server::new("Other Server", owner.endpoint_id());
         let ch_id = owner_server
             .create_channel("lobby", willow_channel::ChannelKind::Text)
             .unwrap();
@@ -3420,19 +3402,7 @@ mod tests {
         }
         topic_map.insert(topic, ("lobby".into(), ch_id));
 
-        let our_pub = {
-            let shared = client.shared.borrow();
-            let ed_kp = shared
-                .identity
-                .keypair()
-                .clone()
-                .try_into_ed25519()
-                .unwrap();
-            let full = ed_kp.to_bytes();
-            let mut pub_bytes = [0u8; 32];
-            pub_bytes.copy_from_slice(&full[32..]);
-            pub_bytes
-        };
+        let our_pub = *client.shared.borrow().identity.endpoint_id().as_bytes();
         let code = invite::generate_invite(&owner_server, &keys, &topic_map, &our_pub).unwrap();
 
         client.accept_invite(&code).unwrap();
@@ -3451,8 +3421,8 @@ mod tests {
 
         // Create a second identity (the "owner" of the other server).
         let owner = Identity::generate();
-        let owner_peer_id = owner.peer_id().to_string();
-        let mut owner_server = willow_channel::Server::new("Other Server", owner.peer_id());
+        let owner_peer_id = owner.endpoint_id();
+        let mut owner_server = willow_channel::Server::new("Other Server", owner.endpoint_id());
         let ch_id = owner_server
             .create_channel("lobby", willow_channel::ChannelKind::Text)
             .unwrap();
@@ -3466,19 +3436,7 @@ mod tests {
         }
         topic_map.insert(topic, ("lobby".into(), ch_id));
 
-        let our_pub = {
-            let shared = client.shared.borrow();
-            let ed_kp = shared
-                .identity
-                .keypair()
-                .clone()
-                .try_into_ed25519()
-                .unwrap();
-            let full = ed_kp.to_bytes();
-            let mut pub_bytes = [0u8; 32];
-            pub_bytes.copy_from_slice(&full[32..]);
-            pub_bytes
-        };
+        let our_pub = *client.shared.borrow().identity.endpoint_id().as_bytes();
         let code = invite::generate_invite(&owner_server, &keys, &topic_map, &our_pub).unwrap();
 
         client.accept_invite(&code).unwrap();
@@ -3566,7 +3524,7 @@ mod tests {
 
         // Add a second server.
         let server2 =
-            willow_channel::Server::new("Second", client.shared.borrow().identity.peer_id());
+            willow_channel::Server::new("Second", client.shared.borrow().identity.endpoint_id());
         let server2_id = server2.id.to_string();
         client.shared.borrow_mut().state.servers.insert(
             server2_id,
@@ -3669,9 +3627,10 @@ mod tests {
     #[test]
     fn client_trust_and_permission_flow() {
         let (client, _rx) = test_client();
+        let some_peer = Identity::generate().endpoint_id();
 
         // Trust a peer.
-        client.trust_peer("some-peer");
+        client.trust_peer(some_peer);
 
         // Verify they appear in event_state.peer_permissions with Administrator.
         let shared = client.shared.borrow();
@@ -3679,17 +3638,17 @@ mod tests {
             shared
                 .state
                 .event_state
-                .has_permission("some-peer", &willow_state::Permission::Administrator),
+                .has_permission(&some_peer, &willow_state::Permission::Administrator),
             "trusted peer should have Administrator permission"
         );
         assert!(
-            shared.state.event_state.members.contains_key("some-peer"),
+            shared.state.event_state.members.contains_key(&some_peer),
             "trusted peer should be a member"
         );
         drop(shared);
 
         // Untrust them.
-        client.untrust_peer("some-peer");
+        client.untrust_peer(some_peer);
 
         // Verify Administrator permission removed.
         let shared = client.shared.borrow();
@@ -3697,7 +3656,7 @@ mod tests {
             !shared
                 .state
                 .event_state
-                .has_permission("some-peer", &willow_state::Permission::Administrator),
+                .has_permission(&some_peer, &willow_state::Permission::Administrator),
             "untrusted peer should not have Administrator permission"
         );
     }
@@ -3711,7 +3670,7 @@ mod tests {
         // Perform several actions.
         client.create_channel("test-channel").unwrap();
         client.send_message("test-channel", "hello").unwrap();
-        client.trust_peer("peer-x");
+        client.trust_peer(Identity::generate().endpoint_id());
 
         // Check event_store has the corresponding events.
         let shared = client.shared.borrow();
@@ -3760,11 +3719,11 @@ mod tests {
         let (client, _rx) = test_client();
 
         // Set display name via SetProfile event on the event_state.
-        let peer_id = client.peer_id();
+        let peer_id = client.shared.borrow().identity.endpoint_id();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
             parent_hash: client.shared.borrow().state.event_state.hash(),
-            author: peer_id.clone(),
+            author: peer_id,
             timestamp_ms: 1000,
             kind: willow_state::EventKind::SetProfile {
                 display_name: "EventAlice".into(),
@@ -3806,6 +3765,7 @@ mod tests {
     #[test]
     fn state_hash_agreement_tracks_matching_peer() {
         let (client, _rx) = test_client();
+        let peer_a = Identity::generate().endpoint_id();
 
         // Simulate a remote peer's StateVerification event with a matching hash.
         let our_hash = client.shared.borrow().state.event_state.hash();
@@ -3813,7 +3773,7 @@ mod tests {
             .shared
             .borrow_mut()
             .state_verification_results
-            .insert("peer-a".to_string(), our_hash);
+            .insert(peer_a, our_hash);
 
         let (agreeing, total) = client.state_hash_agreement();
         assert_eq!(agreeing, 1);
@@ -3823,6 +3783,7 @@ mod tests {
     #[test]
     fn state_hash_agreement_tracks_mismatched_peer() {
         let (client, _rx) = test_client();
+        let peer_b = Identity::generate().endpoint_id();
 
         // Insert a different hash for a peer.
         let wrong_hash = willow_state::StateHash::from_bytes(b"wrong");
@@ -3830,7 +3791,7 @@ mod tests {
             .shared
             .borrow_mut()
             .state_verification_results
-            .insert("peer-b".to_string(), wrong_hash);
+            .insert(peer_b, wrong_hash);
 
         let (agreeing, total) = client.state_hash_agreement();
         assert_eq!(agreeing, 0);
@@ -3840,6 +3801,8 @@ mod tests {
     #[test]
     fn state_hash_agreement_mixed() {
         let (client, _rx) = test_client();
+        let peer_a = Identity::generate().endpoint_id();
+        let peer_b = Identity::generate().endpoint_id();
         let our_hash = client.shared.borrow().state.event_state.hash();
 
         // One matching, one mismatched.
@@ -3847,15 +3810,12 @@ mod tests {
             .shared
             .borrow_mut()
             .state_verification_results
-            .insert("peer-a".to_string(), our_hash);
+            .insert(peer_a, our_hash);
         client
             .shared
             .borrow_mut()
             .state_verification_results
-            .insert(
-                "peer-b".to_string(),
-                willow_state::StateHash::from_bytes(b"different"),
-            );
+            .insert(peer_b, willow_state::StateHash::from_bytes(b"different"));
 
         let (agreeing, total) = client.state_hash_agreement();
         assert_eq!(agreeing, 1);
@@ -4045,7 +4005,7 @@ mod tests {
         assert_eq!(shared.state.event_state.server_name, "Event Test");
         assert_eq!(
             shared.state.event_state.owner,
-            shared.identity.peer_id().to_string()
+            shared.identity.endpoint_id()
         );
 
         // Event state should have the general channel.
@@ -4349,10 +4309,11 @@ mod tests {
             .clone();
 
         // Manually insert a message from a "remote" peer into event_state.
+        let remote_peer = Identity::generate().endpoint_id();
         let remote_event = willow_state::Event {
             id: "remote-msg-1".to_string(),
             parent_hash: client.shared.borrow().state.event_state.hash(),
-            author: "remote-peer-id".to_string(),
+            author: remote_peer,
             timestamp_ms: 1000,
             kind: willow_state::EventKind::Message {
                 channel_id,
@@ -4368,7 +4329,7 @@ mod tests {
         let msgs = client.messages("general");
         let remote_msg = msgs.iter().find(|m| m.body == "from remote").unwrap();
         assert!(!remote_msg.is_local);
-        assert_eq!(remote_msg.author_peer_id, "remote-peer-id");
+        assert_eq!(remote_msg.author_peer_id, remote_peer);
     }
 
     #[test]
@@ -4391,11 +4352,12 @@ mod tests {
         let (client, _rx) = test_client();
 
         // Insert a typing entry with timestamp 0 (very old, > 5 seconds ago).
+        let peer_1 = Identity::generate().endpoint_id();
         client
             .shared
             .borrow_mut()
             .typing_peers
-            .insert("peer-1".to_string(), ("general".to_string(), 0));
+            .insert(peer_1, ("general".to_string(), 0));
 
         // Should be expired (> 5 seconds old).
         let typers = client.typing_in("general");
@@ -4423,7 +4385,10 @@ mod tests {
         let (client, _rx) = test_client();
         let token_str = client.create_join_link(5, None).unwrap();
         let token = crate::ops::JoinToken::decode(&token_str).unwrap();
-        assert_eq!(token.inviter_peer_id, client.peer_id());
+        assert_eq!(
+            token.inviter_peer_id,
+            client.shared.borrow().identity.endpoint_id()
+        );
         assert!(!token.link_id.is_empty());
         assert!(!token.server_name.is_empty());
     }
@@ -4454,17 +4419,19 @@ mod tests {
         let (client, _rx) = test_client();
         client.create_server("Worker Test").unwrap();
 
-        client.authorize_workers(&["worker-peer-1".to_string(), "worker-peer-2".to_string()]);
+        let worker1 = Identity::generate().endpoint_id();
+        let worker2 = Identity::generate().endpoint_id();
+        client.authorize_workers(&[worker1, worker2]);
 
         let shared = client.shared.borrow();
         assert!(shared
             .state
             .event_state
-            .has_permission("worker-peer-1", &willow_state::Permission::SyncProvider));
+            .has_permission(&worker1, &willow_state::Permission::SyncProvider));
         assert!(shared
             .state
             .event_state
-            .has_permission("worker-peer-2", &willow_state::Permission::SyncProvider));
+            .has_permission(&worker2, &willow_state::Permission::SyncProvider));
     }
 
     #[test]

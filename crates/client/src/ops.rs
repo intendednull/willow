@@ -15,6 +15,7 @@
 //! seen before, and validates permissions before applying.
 
 use serde::{Deserialize, Serialize};
+use willow_identity::EndpointId;
 
 // Re-export wire types from willow-common so existing imports still work.
 pub use willow_common::{pack_wire, unpack_wire, VoiceSignalPayload, WireMessage};
@@ -25,7 +26,7 @@ pub use willow_common::{pack_wire, unpack_wire, VoiceSignalPayload, WireMessage}
 /// context to show the user what they're joining before connecting.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JoinToken {
-    pub inviter_peer_id: String,
+    pub inviter_peer_id: EndpointId,
     pub server_id: String,
     pub link_id: String,
     /// Human-readable server name for the join page.
@@ -94,7 +95,7 @@ mod tests {
         let event = willow_state::Event {
             id: "evt-1".to_string(),
             parent_hash: willow_state::StateHash::ZERO,
-            author: id.peer_id().to_string(),
+            author: id.endpoint_id(),
             timestamp_ms: 1000,
             kind: willow_state::EventKind::CreateChannel {
                 name: "general".to_string(),
@@ -107,11 +108,11 @@ mod tests {
         let data = pack_wire(&msg, &id).unwrap();
         let (decoded, signer) = unpack_wire(&data).unwrap();
 
-        assert_eq!(signer, id.peer_id());
+        assert_eq!(signer, id.endpoint_id());
         match decoded {
             WireMessage::Event(e) => {
                 assert_eq!(e.id, "evt-1");
-                assert_eq!(e.author, id.peer_id().to_string());
+                assert_eq!(e.author, id.endpoint_id());
             }
             _ => panic!("expected WireMessage::Event"),
         }
@@ -143,11 +144,12 @@ mod tests {
     #[test]
     fn wire_message_sync_batch_round_trip() {
         let id = Identity::generate();
+        let peer1 = Identity::generate();
         let events = vec![
             willow_state::Event {
                 id: "e1".to_string(),
                 parent_hash: willow_state::StateHash::ZERO,
-                author: "peer-1".to_string(),
+                author: peer1.endpoint_id(),
                 timestamp_ms: 100,
                 kind: willow_state::EventKind::CreateChannel {
                     name: "ch1".to_string(),
@@ -158,7 +160,7 @@ mod tests {
             willow_state::Event {
                 id: "e2".to_string(),
                 parent_hash: willow_state::StateHash::ZERO,
-                author: "peer-1".to_string(),
+                author: peer1.endpoint_id(),
                 timestamp_ms: 200,
                 kind: willow_state::EventKind::Message {
                     channel_id: "cid1".to_string(),
@@ -192,7 +194,7 @@ mod tests {
         let event = willow_state::Event {
             id: "evt-x".to_string(),
             parent_hash: willow_state::StateHash::ZERO,
-            author: "peer".to_string(),
+            author: id.endpoint_id(),
             timestamp_ms: 500,
             kind: willow_state::EventKind::DeleteChannel {
                 channel_id: "ch-1".to_string(),
@@ -209,8 +211,9 @@ mod tests {
 
     #[test]
     fn join_token_round_trip() {
+        let inviter = Identity::generate();
         let token = JoinToken {
-            inviter_peer_id: "12D3KooWTest".to_string(),
+            inviter_peer_id: inviter.endpoint_id(),
             server_id: "srv-1".to_string(),
             link_id: "link-abc".to_string(),
             server_name: "My Server".to_string(),
@@ -218,7 +221,7 @@ mod tests {
         };
         let encoded = token.encode();
         let decoded = JoinToken::decode(&encoded).unwrap();
-        assert_eq!(decoded.inviter_peer_id, "12D3KooWTest");
+        assert_eq!(decoded.inviter_peer_id, inviter.endpoint_id());
         assert_eq!(decoded.server_id, "srv-1");
         assert_eq!(decoded.link_id, "link-abc");
         assert_eq!(decoded.server_name, "My Server");
@@ -290,17 +293,18 @@ mod tests {
     #[test]
     fn wire_message_join_request_round_trip() {
         let id = Identity::generate();
+        let joiner = Identity::generate();
         let msg = WireMessage::JoinRequest {
             link_id: "link-1".to_string(),
-            peer_id: "12D3KooWJoiner".to_string(),
+            peer_id: joiner.endpoint_id(),
         };
         let data = pack_wire(&msg, &id).unwrap();
         let (decoded, signer) = unpack_wire(&data).unwrap();
-        assert_eq!(signer, id.peer_id());
+        assert_eq!(signer, id.endpoint_id());
         match decoded {
             WireMessage::JoinRequest { link_id, peer_id } => {
                 assert_eq!(link_id, "link-1");
-                assert_eq!(peer_id, "12D3KooWJoiner");
+                assert_eq!(peer_id, joiner.endpoint_id());
             }
             _ => panic!("expected JoinRequest"),
         }
@@ -309,8 +313,9 @@ mod tests {
     #[test]
     fn wire_message_join_response_round_trip() {
         let id = Identity::generate();
+        let joiner = Identity::generate();
         let msg = WireMessage::JoinResponse {
-            target_peer: "12D3KooWJoiner".to_string(),
+            target_peer: joiner.endpoint_id(),
             invite_data: "base64inviteblob".to_string(),
         };
         let data = pack_wire(&msg, &id).unwrap();
@@ -320,7 +325,7 @@ mod tests {
                 target_peer,
                 invite_data,
             } => {
-                assert_eq!(target_peer, "12D3KooWJoiner");
+                assert_eq!(target_peer, joiner.endpoint_id());
                 assert_eq!(invite_data, "base64inviteblob");
             }
             _ => panic!("expected JoinResponse"),
@@ -330,8 +335,9 @@ mod tests {
     #[test]
     fn wire_message_join_denied_round_trip() {
         let id = Identity::generate();
+        let joiner = Identity::generate();
         let msg = WireMessage::JoinDenied {
-            target_peer: "12D3KooWJoiner".to_string(),
+            target_peer: joiner.endpoint_id(),
             reason: "link_expired".to_string(),
         };
         let data = pack_wire(&msg, &id).unwrap();
@@ -341,7 +347,7 @@ mod tests {
                 target_peer,
                 reason,
             } => {
-                assert_eq!(target_peer, "12D3KooWJoiner");
+                assert_eq!(target_peer, joiner.endpoint_id());
                 assert_eq!(reason, "link_expired");
             }
             _ => panic!("expected JoinDenied"),
