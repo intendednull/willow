@@ -12,8 +12,13 @@ use crate::context::Context;
 use crate::runtime::OneshotTx;
 
 /// A type-erased, boxed async closure that processes one message.
-pub type BoxEnvelope<A> =
-    Box<dyn for<'a> FnOnce(&'a mut A, &'a mut Context<A>) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> + Send>;
+pub type BoxEnvelope<A> = Box<
+    dyn for<'a> FnOnce(
+            &'a mut A,
+            &'a mut Context<A>,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
+        + Send,
+>;
 
 /// Create an envelope for a fire-and-forget message (`send()`).
 pub fn envelope_send<A, M>(msg: M) -> BoxEnvelope<A>

@@ -17,7 +17,7 @@ pub mod supervisor;
 pub mod system;
 
 pub use actor::{Actor, Handler, Message, StreamHandler};
-pub use addr::{AnyAddr, Addr, Recipient};
+pub use addr::{Addr, AnyAddr, Recipient};
 pub use context::{Context, IntervalHandle};
 pub use error::{AskError, SendError};
 pub use supervisor::RestartPolicy;
@@ -336,7 +336,10 @@ mod tests {
             }
         }
 
-        let addr = system.spawn(TickActor { ticks: 0, _interval: None });
+        let addr = system.spawn(TickActor {
+            ticks: 0,
+            _interval: None,
+        });
 
         runtime::sleep(Duration::from_millis(110)).await;
 
@@ -480,10 +483,9 @@ mod tests {
             started_count: started.clone(),
         };
 
-        let addr = system.handle().spawn_supervised(
-            actor,
-            RestartPolicy::OnFailure { max: 3 },
-        );
+        let addr = system
+            .handle()
+            .spawn_supervised(actor, RestartPolicy::OnFailure { max: 3 });
 
         // Stop the actor — should restart.
         addr.do_send(StopMe).unwrap();

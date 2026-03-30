@@ -35,10 +35,7 @@ impl willow_actor::Message for GossipEventMsg {
 }
 
 impl<E: TopicEvents + 'static> Actor for NetworkActor<E> {
-    fn started(
-        &mut self,
-        ctx: &mut Context<Self>,
-    ) -> impl std::future::Future<Output = ()> + Send {
+    fn started(&mut self, ctx: &mut Context<Self>) -> impl std::future::Future<Output = ()> + Send {
         // Spawn a task that drains TopicEvents and forwards them as messages.
         if let Some(mut events) = self.events.take() {
             let addr = ctx.address();

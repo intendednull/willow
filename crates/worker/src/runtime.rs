@@ -6,7 +6,9 @@ use tracing::info;
 use willow_actor::System;
 use willow_network::Network;
 
-use crate::actors::{heartbeat::HeartbeatActor, network::NetworkActor, state::StateActor, sync::SyncActor};
+use crate::actors::{
+    heartbeat::HeartbeatActor, network::NetworkActor, state::StateActor, sync::SyncActor,
+};
 use crate::config::WorkerConfig;
 use crate::WorkerRole;
 
@@ -36,7 +38,11 @@ pub async fn run<N: Network>(
 
     let state_addr = system.spawn(StateActor { role });
 
-    let _network = system.spawn(NetworkActor::new(workers_events, state_addr.clone(), peer_id));
+    let _network = system.spawn(NetworkActor::new(
+        workers_events,
+        state_addr.clone(),
+        peer_id,
+    ));
 
     let _heartbeat = system.spawn(HeartbeatActor::new(
         peer_id,

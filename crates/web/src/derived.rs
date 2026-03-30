@@ -28,10 +28,7 @@ pub struct DerivedStateActor<T: PartialEq + Clone + Send + 'static> {
 }
 
 impl<T: PartialEq + Clone + Send + 'static> Actor for DerivedStateActor<T> {
-    fn started(
-        &mut self,
-        ctx: &mut Context<Self>,
-    ) -> impl std::future::Future<Output = ()> + Send {
+    fn started(&mut self, ctx: &mut Context<Self>) -> impl std::future::Future<Output = ()> + Send {
         // Subscribe to state changes.
         let recipient: Recipient<StateChanged> = ctx.address().into();
         let state_addr = self.state_addr.clone();
@@ -57,10 +54,8 @@ impl<T: PartialEq + Clone + Send + 'static> Handler<StateChanged> for DerivedSta
         let write = self.write.clone();
 
         async move {
-            let result = willow_client::client_actor::read_state(&state_addr, move |s| {
-                selector(s)
-            })
-            .await;
+            let result =
+                willow_client::client_actor::read_state(&state_addr, move |s| selector(s)).await;
 
             // Compare with cached value.
             let changed = match &cached {

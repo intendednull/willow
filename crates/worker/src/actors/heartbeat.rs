@@ -43,10 +43,7 @@ impl Message for HeartbeatTick {
 }
 
 impl<T: TopicHandle + 'static> Actor for HeartbeatActor<T> {
-    fn started(
-        &mut self,
-        ctx: &mut Context<Self>,
-    ) -> impl std::future::Future<Output = ()> + Send {
+    fn started(&mut self, ctx: &mut Context<Self>) -> impl std::future::Future<Output = ()> + Send {
         debug!("heartbeat actor started (interval: {:?})", self.interval);
         self._interval_handle = Some(ctx.run_interval(self.interval, || HeartbeatTick));
         async {}
