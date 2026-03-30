@@ -5889,6 +5889,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "willow-identity",
+ "willow-network",
  "willow-state",
  "willow-worker",
 ]
@@ -5920,6 +5921,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "willow-identity",
+ "willow-network",
  "willow-state",
  "willow-worker",
 ]

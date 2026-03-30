@@ -9,8 +9,10 @@ use std::net::{Ipv4Addr, SocketAddr};
 use anyhow::{Context, Result};
 use clap::Parser;
 use iroh_relay::server::{AccessConfig, RelayConfig, Server, ServerConfig};
+use iroh_base::RelayUrl;
 use tracing::info;
 use willow_identity::Identity;
+use willow_network::Network;
 
 #[derive(Parser)]
 #[command(name = "willow-relay", about = "Willow iroh relay + bootstrap node")]
@@ -65,15 +67,17 @@ async fn main() -> Result<()> {
             access: AccessConfig::Everyone,
         }),
         quic: None,
-        #[cfg(feature = "metrics")]
         metrics_addr: None,
     })
     .await
     .context("failed to start iroh-relay server")?;
 
-    let relay_url = relay_server
-        .http_url()
-        .context("relay server has no HTTP URL")?;
+    let relay_addr = relay_server
+        .http_addr()
+        .context("relay server has no HTTP address")?;
+    let relay_url: RelayUrl = format!("http://{relay_addr}")
+        .parse()
+        .context("failed to parse relay URL")?;
     info!(%relay_url, "iroh-relay server running");
 
     // ── Bootstrap gossip node ────────────────────────────────────────────
