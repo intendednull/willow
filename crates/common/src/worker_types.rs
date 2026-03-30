@@ -214,9 +214,7 @@ mod tests {
     #[test]
     fn worker_wire_message_departure_round_trip() {
         let pid = gen_id();
-        let msg = WorkerWireMessage::Departure {
-            peer_id: pid,
-        };
+        let msg = WorkerWireMessage::Departure { peer_id: pid };
         let bytes = bincode::serialize(&msg).unwrap();
         let decoded: WorkerWireMessage = bincode::deserialize(&bytes).unwrap();
         match decoded {

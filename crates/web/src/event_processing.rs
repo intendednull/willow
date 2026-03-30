@@ -124,7 +124,9 @@ pub fn process_event_batch(
                 write.voice.set_remote_video_streams.update(|m| {
                     m.remove(&pid_for_stream);
                 });
-                voice_manager.borrow_mut().close_connection(&peer_id.to_string());
+                voice_manager
+                    .borrow_mut()
+                    .close_connection(&peer_id.to_string());
             }
             ClientEvent::VoiceSignal {
                 from_peer, signal, ..
@@ -212,7 +214,8 @@ pub fn process_event_batch(
     }
     if needs_peer_refresh {
         let h = handle.clone();
-        let peer_list: Vec<(String, String, bool)> = h.server_members()
+        let peer_list: Vec<(String, String, bool)> = h
+            .server_members()
             .into_iter()
             .map(|(id, name, online)| (id.to_string(), name, online))
             .collect();

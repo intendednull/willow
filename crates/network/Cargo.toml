@@ -6,15 +6,11 @@ license.workspace = true
 description = "P2P networking layer for Willow using iroh"
 
 [features]
-test-utils = ["tokio/sync"]
+test-utils = []
 
 [dependencies]
 willow-identity = { path = "../identity" }
-
-iroh = { workspace = true }
 iroh-base = { workspace = true, features = ["key"] }
-iroh-gossip = { workspace = true }
-iroh-blobs = { workspace = true }
 
 async-trait = { workspace = true }
 bytes = { workspace = true }
@@ -22,9 +18,20 @@ blake3 = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-tokio = { workspace = true }
 serde = { workspace = true }
 futures-lite = "2"
+
+# Native-only: iroh networking stack (brings in tokio/mio).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+iroh = { workspace = true }
+iroh-gossip = { workspace = true }
+iroh-blobs = { workspace = true }
+tokio = { workspace = true }
+
+# WASM: only need the type definitions from gossip/blobs.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+iroh-gossip = { workspace = true, default-features = false }
+iroh-blobs = { workspace = true, default-features = false }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "sync"] }

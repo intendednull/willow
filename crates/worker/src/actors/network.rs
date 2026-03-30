@@ -211,9 +211,7 @@ mod tests {
     #[test]
     fn parse_worker_departure_ignored() {
         let my_id = gen_id();
-        let msg = WorkerWireMessage::Departure {
-            peer_id: gen_id(),
-        };
+        let msg = WorkerWireMessage::Departure { peer_id: gen_id() };
         let data = bincode::serialize(&msg).unwrap();
 
         assert!(matches!(

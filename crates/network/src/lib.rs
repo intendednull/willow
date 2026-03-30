@@ -15,6 +15,7 @@
 //! Iroh handles native/WASM transport differences internally. The same code
 //! compiles for both targets.
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod iroh;
 pub mod topics;
 pub mod traits;

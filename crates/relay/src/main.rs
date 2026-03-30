@@ -8,8 +8,8 @@ use std::net::{Ipv4Addr, SocketAddr};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use iroh_relay::server::{AccessConfig, RelayConfig, Server, ServerConfig};
 use iroh_base::RelayUrl;
+use iroh_relay::server::{AccessConfig, RelayConfig, Server, ServerConfig};
 use tracing::info;
 use willow_identity::Identity;
 use willow_network::Network;
@@ -48,8 +48,7 @@ async fn main() -> Result<()> {
 
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 

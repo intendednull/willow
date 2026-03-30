@@ -18,7 +18,10 @@ pub async fn share_file(blobs: &dyn BlobStore, data: Vec<u8>) -> Result<iroh_blo
 /// Download a file from the blob store by hash.
 ///
 /// Returns `None` if the blob is not available.
-pub async fn download_file(blobs: &dyn BlobStore, hash: iroh_blobs::Hash) -> Result<Option<Vec<u8>>> {
+pub async fn download_file(
+    blobs: &dyn BlobStore,
+    hash: iroh_blobs::Hash,
+) -> Result<Option<Vec<u8>>> {
     Ok(blobs.get(hash).await?.map(|b| b.to_vec()))
 }
 

@@ -25,10 +25,10 @@ use std::sync::Mutex;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures_lite::StreamExt;
 use iroh::protocol::Router;
 use iroh::{Endpoint, RelayMode};
 use iroh_base::{EndpointId, SecretKey};
-use futures_lite::StreamExt;
 use iroh_gossip::api::{GossipReceiver, GossipSender};
 use iroh_gossip::TopicId;
 use tracing::{debug, warn};
@@ -201,23 +201,24 @@ impl IrohNetwork {
     /// sets up the protocol router, and returns a ready-to-use network.
     pub async fn new(config: Config) -> Result<Self> {
         // 1. Build the iroh endpoint.
-        let mut builder = Endpoint::empty_builder()
-            .secret_key(config.secret_key);
+        let mut builder = Endpoint::empty_builder().secret_key(config.secret_key);
 
         // Configure relay mode.
         if let Some(relay_url) = &config.relay_url {
-            let relay_map = iroh::RelayMap::try_from_iter([relay_url.as_str()])
-                .context("invalid relay URL")?;
+            let relay_map =
+                iroh::RelayMap::try_from_iter([relay_url.as_str()]).context("invalid relay URL")?;
             builder = builder.relay_mode(RelayMode::Custom(relay_map));
         } else {
             builder = builder.relay_mode(RelayMode::Disabled);
         }
 
-        // Enable mDNS discovery if requested.
+        // Enable mDNS discovery if requested (native only — not available on WASM).
+        #[cfg(not(target_arch = "wasm32"))]
         if config.mdns {
-            builder = builder
-                .address_lookup(iroh::address_lookup::MdnsAddressLookup::builder());
+            // NOTE: requires iroh "address-lookup-mdns" feature.
+            // On WASM, mDNS is silently skipped.
         }
+        let _ = config.mdns; // suppress unused warning on WASM
 
         let endpoint = builder.bind().await.context("failed to bind endpoint")?;
 

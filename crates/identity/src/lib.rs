@@ -143,7 +143,8 @@ impl Identity {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(|e| IdentityError::Other(e.to_string()))?;
             }
-            fs::write(path, identity.to_bytes()).map_err(|e| IdentityError::Other(e.to_string()))?;
+            fs::write(path, identity.to_bytes())
+                .map_err(|e| IdentityError::Other(e.to_string()))?;
             Ok(identity)
         }
     }

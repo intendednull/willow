@@ -69,7 +69,14 @@ impl MemHub {
         })
     }
 
-    fn subscribe(&self, topic: TopicId, subscriber: EndpointId) -> (broadcast::Receiver<HubMessage>, broadcast::Receiver<GossipEvent>) {
+    fn subscribe(
+        &self,
+        topic: TopicId,
+        subscriber: EndpointId,
+    ) -> (
+        broadcast::Receiver<HubMessage>,
+        broadcast::Receiver<GossipEvent>,
+    ) {
         let mut topics = self.topics.lock().unwrap();
         let state = topics.entry(topic).or_insert_with(|| {
             let (sender, _) = broadcast::channel(256);
@@ -109,7 +116,9 @@ impl MemHub {
         let mut topics = self.topics.lock().unwrap();
         if let Some(state) = topics.get_mut(&topic) {
             state.subscribers.retain(|&id| id != subscriber);
-            let _ = state.neighbor_tx.send(GossipEvent::NeighborDown(subscriber));
+            let _ = state
+                .neighbor_tx
+                .send(GossipEvent::NeighborDown(subscriber));
         }
     }
 
@@ -437,11 +446,8 @@ mod tests {
             .unwrap();
 
         // events_b should not receive anything — timeout expected.
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            events_b.next(),
-        )
-        .await;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(100), events_b.next()).await;
 
         assert!(result.is_err(), "should have timed out");
     }

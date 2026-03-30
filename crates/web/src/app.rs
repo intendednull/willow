@@ -172,12 +172,15 @@ pub fn App() -> impl IntoView {
 
                 if let Some(ref token_str) = join_token_value {
                     if let Some(token) = willow_client::ops::JoinToken::decode(token_str) {
-                        write_for_hash.ui.set_join_token.set(Some(state::ParsedJoinToken {
-                            raw: token_str.clone(),
-                            link_id: token.link_id,
-                            server_name: token.server_name,
-                            inviter_name: token.inviter_name,
-                        }));
+                        write_for_hash
+                            .ui
+                            .set_join_token
+                            .set(Some(state::ParsedJoinToken {
+                                raw: token_str.clone(),
+                                link_id: token.link_id,
+                                server_name: token.server_name,
+                                inviter_name: token.inviter_name,
+                            }));
                         write_for_hash.ui.set_join_status.set(String::new());
                     }
                 }
@@ -759,4 +762,3 @@ pub async fn handle_voice_answer(vm: VoiceManagerHandle, from: String, sdp: Stri
     let mgr = vm.borrow();
     let _ = mgr.handle_answer(&from, &sdp).await;
 }
-

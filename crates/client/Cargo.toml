@@ -17,7 +17,7 @@ willow-common = { path = "../common" }
 
 anyhow = { workspace = true }
 bytes = { workspace = true }
-iroh-blobs = { workspace = true }
+iroh-blobs = { workspace = true, default-features = false }
 serde = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }

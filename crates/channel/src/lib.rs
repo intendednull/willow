@@ -689,7 +689,11 @@ impl Server {
     }
 
     /// Use an invite to add a new member.
-    pub fn use_invite(&mut self, invite_id: &InviteId, peer: EndpointId) -> Result<(), ChannelError> {
+    pub fn use_invite(
+        &mut self,
+        invite_id: &InviteId,
+        peer: EndpointId,
+    ) -> Result<(), ChannelError> {
         let invite = self
             .invites
             .get_mut(invite_id)

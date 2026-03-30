@@ -38,11 +38,7 @@ pub async fn run<N: Network>(
     // Spawn actors.
     let state_handle = tokio::spawn(state::run(role, state_rx));
 
-    let network_handle = tokio::spawn(network::run(
-        workers_events,
-        state_tx.clone(),
-        peer_id,
-    ));
+    let network_handle = tokio::spawn(network::run(workers_events, state_tx.clone(), peer_id));
 
     let heartbeat_handle = tokio::spawn(heartbeat::run(
         peer_id,

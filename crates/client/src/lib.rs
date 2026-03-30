@@ -24,11 +24,11 @@ pub mod emoji;
 pub mod events;
 pub mod files;
 pub mod invite;
+pub mod listeners;
 pub mod ops;
 pub mod state;
 pub mod storage;
 pub mod util;
-pub mod listeners;
 pub mod worker_cache;
 
 // Re-export key types at crate root for convenience.
@@ -446,9 +446,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
 
         reconcile_topic_map(&mut handle.shared.write().unwrap().state);
 
-        let event_loop = ClientEventLoop {
-            shared,
-        };
+        let event_loop = ClientEventLoop { shared };
 
         (handle, event_loop)
     }
@@ -517,15 +515,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 .subscribe(willow_network::topic_id(&topic_str), vec![])
                 .await
             {
-                self.topics
-                    .write()
-                    .unwrap()
-                    .insert(topic_str, sender);
-                listeners::spawn_topic_listener(
-                    events,
-                    Arc::clone(&self.shared),
-                    event_tx.clone(),
-                );
+                self.topics.write().unwrap().insert(topic_str, sender);
+                listeners::spawn_topic_listener(events, Arc::clone(&self.shared), event_tx.clone());
             }
         }
 
@@ -545,11 +536,11 @@ impl<N: willow_network::Network> ClientHandle<N> {
         if saved.display_name.is_empty() {
             return;
         }
-        let profile = willow_identity::UserProfile::new(
-            self.identity.endpoint_id(),
-            saved.display_name,
-        );
-        if let Ok(data) = willow_transport::pack_envelope(willow_transport::MessageType::Identity, &profile) {
+        let profile =
+            willow_identity::UserProfile::new(self.identity.endpoint_id(), saved.display_name);
+        if let Ok(data) =
+            willow_transport::pack_envelope(willow_transport::MessageType::Identity, &profile)
+        {
             self.broadcast_on_topic(ops::PROFILE_TOPIC, data);
         }
     }
@@ -1969,9 +1960,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let channel = shared.state.chat.current_channel.clone();
         drop(shared);
         if !channel.is_empty() {
-            let msg = ops::WireMessage::TypingIndicator {
-                channel,
-            };
+            let msg = ops::WireMessage::TypingIndicator { channel };
             if let Some(data) = ops::pack_wire(&msg, &self.identity) {
                 self.broadcast_on_topic(ops::SERVER_OPS_TOPIC, data);
             }
@@ -2001,7 +1990,12 @@ impl<N: willow_network::Network> ClientHandle<N> {
 
     /// Get the local PeerId as a string.
     pub fn peer_id(&self) -> String {
-        self.shared.read().unwrap().identity.endpoint_id().to_string()
+        self.shared
+            .read()
+            .unwrap()
+            .identity
+            .endpoint_id()
+            .to_string()
     }
 
     /// Get the local display name.
@@ -2258,7 +2252,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
         perm: &willow_state::Permission,
     ) -> bool {
         self.shared
-            .read().unwrap()
+            .read()
+            .unwrap()
             .state
             .event_state
             .has_permission(peer_id, perm)
@@ -2266,7 +2261,13 @@ impl<N: willow_network::Network> ClientHandle<N> {
 
     /// Returns the current channel name from the chat state.
     pub fn current_channel(&self) -> String {
-        self.shared.read().unwrap().state.chat.current_channel.clone()
+        self.shared
+            .read()
+            .unwrap()
+            .state
+            .chat
+            .current_channel
+            .clone()
     }
 
     /// Returns unread counts keyed by channel name for the active server.
@@ -2896,7 +2897,10 @@ mod tests {
         client.create_channel("other").unwrap();
         client.switch_channel("general");
 
-        assert_eq!(client.shared.read().unwrap().state.chat.current_channel, "general");
+        assert_eq!(
+            client.shared.read().unwrap().state.chat.current_channel,
+            "general"
+        );
     }
 
     #[test]
@@ -2979,12 +2983,20 @@ mod tests {
         };
         client
             .shared
-            .write().unwrap()
+            .write()
+            .unwrap()
             .state
             .servers
             .insert(server2_id.clone(), ctx2);
 
-        let original_id = client.shared.read().unwrap().state.active_server.clone().unwrap();
+        let original_id = client
+            .shared
+            .read()
+            .unwrap()
+            .state
+            .active_server
+            .clone()
+            .unwrap();
         assert_ne!(original_id, server2_id);
 
         client.switch_server(&server2_id);
@@ -3030,7 +3042,13 @@ mod tests {
         topic_map.insert(topic, ("lobby".into(), ch_id));
 
         // Generate invite for our client.
-        let our_pub = *client.shared.read().unwrap().identity.endpoint_id().as_bytes();
+        let our_pub = *client
+            .shared
+            .read()
+            .unwrap()
+            .identity
+            .endpoint_id()
+            .as_bytes();
         let code = invite::generate_invite(&owner_server, &keys, &topic_map, &our_pub).unwrap();
 
         // Accept the invite.
@@ -3066,7 +3084,13 @@ mod tests {
         }
         topic_map.insert(topic, ("lobby".into(), ch_id));
 
-        let our_pub = *client.shared.read().unwrap().identity.endpoint_id().as_bytes();
+        let our_pub = *client
+            .shared
+            .read()
+            .unwrap()
+            .identity
+            .endpoint_id()
+            .as_bytes();
         let code = invite::generate_invite(&owner_server, &keys, &topic_map, &our_pub).unwrap();
 
         client.accept_invite(&code).unwrap();
@@ -3100,7 +3124,13 @@ mod tests {
         }
         topic_map.insert(topic, ("lobby".into(), ch_id));
 
-        let our_pub = *client.shared.read().unwrap().identity.endpoint_id().as_bytes();
+        let our_pub = *client
+            .shared
+            .read()
+            .unwrap()
+            .identity
+            .endpoint_id()
+            .as_bytes();
         let code = invite::generate_invite(&owner_server, &keys, &topic_map, &our_pub).unwrap();
 
         client.accept_invite(&code).unwrap();
@@ -3156,7 +3186,14 @@ mod tests {
         // Send a message on server 1.
         client.send_message("general", "server1 msg").unwrap();
 
-        let server1_id = client.shared.read().unwrap().state.active_server.clone().unwrap();
+        let server1_id = client
+            .shared
+            .read()
+            .unwrap()
+            .state
+            .active_server
+            .clone()
+            .unwrap();
 
         // When viewing server 1, see server 1 messages.
         let msgs = client.messages("general");
@@ -3187,8 +3224,10 @@ mod tests {
         assert_eq!(list[0].1, "Test Server");
 
         // Add a second server.
-        let server2 =
-            willow_channel::Server::new("Second", client.shared.read().unwrap().identity.endpoint_id());
+        let server2 = willow_channel::Server::new(
+            "Second",
+            client.shared.read().unwrap().identity.endpoint_id(),
+        );
         let server2_id = server2.id.to_string();
         client.shared.write().unwrap().state.servers.insert(
             server2_id,
@@ -3282,7 +3321,14 @@ mod tests {
 
         // Verify event_state.messages has all 6 messages.
         assert_eq!(
-            client.shared.read().unwrap().state.event_state.messages.len(),
+            client
+                .shared
+                .read()
+                .unwrap()
+                .state
+                .event_state
+                .messages
+                .len(),
             6,
             "event_state should have 6 messages total"
         );
@@ -3393,7 +3439,10 @@ mod tests {
                 display_name: "EventAlice".into(),
             },
         };
-        willow_state::apply_lenient(&mut client.shared.write().unwrap().state.event_state, &event);
+        willow_state::apply_lenient(
+            &mut client.shared.write().unwrap().state.event_state,
+            &event,
+        );
 
         // Verify display_name() reads from event_state.profiles.
         assert_eq!(
@@ -3408,10 +3457,27 @@ mod tests {
     #[test]
     fn verify_state_applies_event() {
         let (client, _rx) = test_client();
-        let events_before = client.shared.read().unwrap().state.event_store.all_events().len();
+        let events_before = client
+            .shared
+            .read()
+            .unwrap()
+            .state
+            .event_store
+            .all_events()
+            .len();
         client.verify_state().unwrap();
-        let events_after = client.shared.read().unwrap().state.event_store.all_events().len();
-        assert!(events_after > events_before, "verify_state should add a StateVerification event");
+        let events_after = client
+            .shared
+            .read()
+            .unwrap()
+            .state
+            .event_store
+            .all_events()
+            .len();
+        assert!(
+            events_after > events_before,
+            "verify_state should add a StateVerification event"
+        );
     }
 
     #[test]
@@ -3431,7 +3497,8 @@ mod tests {
         let our_hash = client.shared.read().unwrap().state.event_state.hash();
         client
             .shared
-            .write().unwrap()
+            .write()
+            .unwrap()
             .state_verification_results
             .insert(peer_a, our_hash);
 
@@ -3449,7 +3516,8 @@ mod tests {
         let wrong_hash = willow_state::StateHash::from_bytes(b"wrong");
         client
             .shared
-            .write().unwrap()
+            .write()
+            .unwrap()
             .state_verification_results
             .insert(peer_b, wrong_hash);
 
@@ -3468,12 +3536,14 @@ mod tests {
         // One matching, one mismatched.
         client
             .shared
-            .write().unwrap()
+            .write()
+            .unwrap()
             .state_verification_results
             .insert(peer_a, our_hash);
         client
             .shared
-            .write().unwrap()
+            .write()
+            .unwrap()
             .state_verification_results
             .insert(peer_b, willow_state::StateHash::from_bytes(b"different"));
 
@@ -3645,7 +3715,10 @@ mod tests {
         }
 
         client.create_server("Test").unwrap();
-        assert_eq!(client.shared.read().unwrap().state.chat.current_channel, "general");
+        assert_eq!(
+            client.shared.read().unwrap().state.chat.current_channel,
+            "general"
+        );
     }
 
     #[test]
@@ -3692,7 +3765,10 @@ mod tests {
         // The server should have a topic_map entry for general.
         let shared = client.shared.read().unwrap();
         let ctx = shared.state.servers.get(&server_id).unwrap();
-        assert!(!ctx.topic_map.is_empty(), "topic_map should have an entry for general");
+        assert!(
+            !ctx.topic_map.is_empty(),
+            "topic_map should have an entry for general"
+        );
     }
 
     #[test]
@@ -3804,14 +3880,22 @@ mod tests {
         let (client, _rx) = test_client();
         assert!(client
             .shared
-            .read().unwrap()
+            .read()
+            .unwrap()
             .state
             .chat
             .seen_message_ids
             .is_empty());
 
         client.send_message("general", "test").unwrap();
-        let _ = client.shared.read().unwrap().state.chat.seen_message_ids.len();
+        let _ = client
+            .shared
+            .read()
+            .unwrap()
+            .state
+            .chat
+            .seen_message_ids
+            .len();
     }
 
     // ---- Per-server display name isolation ----
@@ -3851,7 +3935,8 @@ mod tests {
         let id1 = client.create_server("Server A").unwrap();
         assert!(client
             .shared
-            .read().unwrap()
+            .read()
+            .unwrap()
             .state
             .event_state
             .channels
@@ -3953,7 +4038,8 @@ mod tests {
         // Find the channel_id for "general" in event_state.
         let channel_id = client
             .shared
-            .read().unwrap()
+            .read()
+            .unwrap()
             .state
             .event_state
             .channels
@@ -4010,7 +4096,8 @@ mod tests {
         let peer_1 = Identity::generate().endpoint_id();
         client
             .shared
-            .write().unwrap()
+            .write()
+            .unwrap()
             .typing_peers
             .insert(peer_1, ("general".to_string(), 0));
 
