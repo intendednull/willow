@@ -10,6 +10,7 @@ willow-identity = { path = "../identity" }
 willow-transport = { path = "../transport" }
 willow-network = { path = "../network" }
 serde = { workspace = true }
+bytes = { workspace = true }
 bincode = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -18,4 +19,5 @@ anyhow = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+willow-network = { path = "../network", features = ["test-utils"] }
 tempfile = "3"

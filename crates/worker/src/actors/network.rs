@@ -1,11 +1,69 @@
-//! Network actor — bridges gossip to other actors.
+//! Network actor — bridges gossip topic events to the state actor.
 //!
-//! TODO: Phase 3 will rewrite `run()` to use the Network trait from willow-network.
-//! The pure parse functions below are kept and tested independently.
+//! Streams incoming gossip messages, parses them, and forwards relevant
+//! payloads to the state actor. The pure parse functions are kept separate
+//! for testability.
 
+use tokio::sync::mpsc;
+use tracing::debug;
 use willow_identity::EndpointId;
+use willow_network::traits::{GossipEvent, TopicEvents};
 
+use super::StateMsg;
 use crate::types::WorkerWireMessage;
+
+/// Run the network actor loop.
+///
+/// Streams gossip events from a topic subscription, parses incoming
+/// messages, and dispatches them to the state actor.
+pub async fn run<E: TopicEvents>(
+    mut events: E,
+    state_tx: mpsc::Sender<StateMsg>,
+    local_peer_id: EndpointId,
+) {
+    debug!("network actor started");
+
+    while let Some(Ok(gossip_event)) = events.next().await {
+        if let GossipEvent::Received(msg) = gossip_event {
+            // Try worker message first.
+            match parse_worker_message(&msg.content, &local_peer_id) {
+                WorkerMessageAction::HandleRequest {
+                    request_id: _,
+                    payload,
+                } => {
+                    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                    if state_tx
+                        .send(StateMsg::Request {
+                            req: payload,
+                            reply: reply_tx,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        continue;
+                    }
+                    // Consume the response. Broadcasting it back would need
+                    // a TopicHandle — that can be added in a follow-up.
+                    let _ = reply_rx.await;
+                }
+                WorkerMessageAction::Ignore => {}
+                WorkerMessageAction::DeserializeError(_) => {
+                    // Not a worker message — try server message.
+                    match parse_server_message(&msg.content) {
+                        ServerMessageAction::Events(events) => {
+                            for event in events {
+                                let _ = state_tx.send(StateMsg::Event(event)).await;
+                            }
+                        }
+                        ServerMessageAction::Ignore => {}
+                    }
+                }
+            }
+        }
+    }
+
+    debug!("network actor stopped");
+}
 
 /// Action produced by parsing an incoming worker topic message.
 #[derive(Debug)]
