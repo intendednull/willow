@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust, Leptos 0.7 (CSR), inline SVG icons (existing `icons.rs`), CSS
 
-**Spec:** `docs/superpowers/specs/2026-03-25-ux-navigation-improvements-design.md`
+**Spec:** `docs/specs/2026-03-25-ux-navigation-improvements-design.md`
 
 ---
 

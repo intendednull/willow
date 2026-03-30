@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust, Leptos 0.7 (CSR), web_sys WebRTC APIs (RTCPeerConnection, getDisplayMedia, getUserMedia, AudioContext, AnalyserNode), CSS Grid
 
-**Spec:** `docs/superpowers/specs/2026-03-26-screen-sharing-call-page-design.md`
+**Spec:** `docs/specs/2026-03-26-screen-sharing-call-page-design.md`
 
 ---
 
