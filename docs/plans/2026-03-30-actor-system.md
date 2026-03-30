@@ -47,11 +47,13 @@ crates/client/Cargo.toml                  — Add willow-actor dependency
 crates/client/src/lib.rs                  — Replace Arc<RwLock<SharedState>> with state actor
 crates/client/src/listeners.rs            — Replace spawn_topic_listener with StreamHandler actor
 crates/client/src/state.rs                — State accessor methods become ask() calls
+crates/client/src/events.rs              — Delete ClientEvent enum (replaced by derived state)
 
 crates/web/Cargo.toml                     — Add willow-actor dependency
-crates/web/src/app.rs                     — Update event loop for async handle methods
-crates/web/src/event_processing.rs        — process_event_batch becomes async
-crates/web/src/components/*.rs            — Wrap sync handle calls in spawn_local
+crates/web/src/app.rs                     — Remove event loop, wire derived signals
+crates/web/src/event_processing.rs        — DELETE (replaced by derived state actors)
+crates/web/src/state.rs                   — Rewrite: derived_signal() calls replace create_signals()
+crates/web/src/components/*.rs            — Replace handle state reads with derived signals
 
 Cargo.toml                                — Add actor to workspace members
 ```
@@ -192,7 +194,11 @@ Migrate the four hand-rolled worker actors to use `willow-actor`. This is the fi
 
 Replace `Arc<RwLock<SharedState>>` and `futures::channel::mpsc` with actors. The state actor becomes the single source of truth, with a subscriber notification mechanism for derived state.
 
-- [ ] **Step 1: Define `ClientStateActor`.** Holds `SharedState` directly (no Arc, no RwLock) plus a `Vec<Recipient<StateChanged>>` subscriber list. Audit all `shared.write()` and `shared.read()` call sites in the client crate to discover the full message set — expect ~10-15 mutation messages and ~5-10 query messages. Define message structs for each. After every mutation handler completes, the actor sends `StateChanged` to all subscribers. Also implement a `ReadState` message with a selector callback that returns a boxed value (for derived state queries). Also implement `Subscribe(Recipient<StateChanged>)` to register new watchers.
+- [ ] **Step 1: Define `ClientStateActor`.** Holds `SharedState` directly (no Arc, no RwLock) plus a `Vec<Recipient<StateChanged>>` subscriber list. Audit all `shared.write()` and `shared.read()` call sites in the client crate to discover the full message set — expect ~10-15 mutation messages and ~5-10 query messages. Define message structs for each. After every mutation handler completes, the actor sends `StateChanged` to all subscribers. Also implement:
+  - `Subscribe(Recipient<StateChanged>)` — register a new watcher
+  - `ReadState` — type-erased selector query: carries `Box<dyn FnOnce(&SharedState) -> Box<dyn Any + Send> + Send>` and replies with `Box<dyn Any + Send>`. The derived actor downcasts the response to its concrete `T`. This is the one place `Any` is required — the alternative (a typed message per selector) would need a separate message type for every derived signal.
+
+  **Contract with Task 7:** The `Subscribe`, `StateChanged`, and `ReadState` messages form the interface that `DerivedStateActor` (defined in the web crate) depends on. Design them as a stable API.
 
 - [ ] **Step 2: Define `TopicListenerActor`.** Replaces `spawn_topic_listener`. Implements `StreamHandler` for gossip events. Holds `Addr<ClientStateActor>` and `TopicHandle`. In `handle_stream_item`, sends mutations to the state actor. All state flows through the actor — typing indicators, connection status, and voice state are fields in `SharedState` mutated via messages, not separate event channels.
 
@@ -200,9 +206,11 @@ Replace `Arc<RwLock<SharedState>>` and `futures::channel::mpsc` with actors. The
 
 - [ ] **Step 4: Update `listeners.rs`.** Replace `spawn_topic_listener()` with spawning a `TopicListenerActor` on the system. Remove the manual `topic_listener_loop`.
 
-- [ ] **Step 5: Update client tests.** Tests using `test_client()` helper need updating — shared state access changes from lock-based to ask-based. Verify all `just test-client` tests pass.
+- [ ] **Step 5: Delete `ClientEvent` enum.** Remove `crates/client/src/events.rs` (or gut it). The `ClientEvent` enum, the `event_tx` channel, and all event emission are replaced by state actor mutations + subscriber notifications. Grep for `ClientEvent` across the workspace to find and remove all references.
 
-- [ ] **Step 6: Run `just test-client` and `just clippy`.** All 93+ client tests must pass with zero warnings.
+- [ ] **Step 6: Update client tests.** Tests using `test_client()` helper need updating — shared state access changes from lock-based to ask-based. Tests that asserted on `ClientEvent` emissions must switch to asserting on state actor state via `ask()`. Verify all `just test-client` tests pass.
+
+- [ ] **Step 7: Run `just test-client` and `just clippy`.** All 93+ client tests must pass with zero warnings.
 
 ---
 
@@ -237,7 +245,7 @@ Network → TopicListenerActor → mutations → ClientStateActor
 
 The `ClientEvent` channel and `process_event_batch` are eliminated for state-derived signals. Each Leptos signal is backed by a `DerivedStateActor` that watches a specific slice of `SharedState` via a selector function.
 
-- [ ] **Step 1: Implement `DerivedStateActor<T>`.** Generic actor parameterized by `T: PartialEq + Clone + Send + 'static`. Fields: `state_addr: Addr<ClientStateActor>`, `selector: Box<dyn Fn(&SharedState) -> T + Send>`, `cached: Option<T>`, `write: WriteSignalSender<T>` (a callback or channel that sets the Leptos signal — must be `Send` on WASM via `SendWrapper`). Implements `Handler<StateChanged>`: asks state actor for current derived value via `ReadState`, compares with cached, updates signal if different. Subscribes to state actor in `started()`.
+- [ ] **Step 1: Implement `DerivedStateActor<T>`.** Generic actor parameterized by `T: PartialEq + Clone + Default + Send + 'static`. Fields: `state_addr: Addr<ClientStateActor>`, `selector: Box<dyn Fn(&SharedState) -> T + Send>`, `cached: Option<T>`, `write: WriteSignalSender<T>` (a callback or channel that sets the Leptos signal — must be `Send` on WASM via `SendWrapper`). Implements `Handler<StateChanged>`: asks state actor via `ReadState` (passes a closure that calls the selector, returns `Box<dyn Any + Send>`), downcasts the `Box<dyn Any>` response to `T`, compares with cached, updates signal if different. In `started()`: subscribes to state actor via `Subscribe`, then immediately asks for the current value to seed the signal (so it doesn't show `T::default()` for long).
 
 - [ ] **Step 2: Implement `derived_signal` helper.** A function in the web crate (not in willow-actor — it depends on Leptos): `fn derived_signal<T>(state_addr, system, selector) -> ReadSignal<T>`. Creates a Leptos signal pair, spawns a `DerivedStateActor`, returns the read half. This is the primary API for connecting actor state to Leptos.
 

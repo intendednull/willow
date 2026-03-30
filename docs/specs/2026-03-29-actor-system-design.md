@@ -718,18 +718,21 @@ Network → TopicListenerActor → mutations → ClientStateActor
 ```rust
 /// Create a derived Leptos signal backed by a state actor selector.
 /// Returns a ReadSignal<T> that updates only when the selected value changes.
-fn derived_signal<T: PartialEq + Clone + Send + 'static>(
+fn derived_signal<T: PartialEq + Clone + Default + Send + 'static>(
     state_addr: &Addr<ClientStateActor>,
     system: &SystemHandle,
-    selector: impl Fn(&SharedState) -> T + Send + 'static,
+    selector: impl Fn(&SharedState) -> T + Send + Clone + 'static,
 ) -> ReadSignal<T> {
-    let (read, write) = create_signal(selector(&initial_state));
+    let (read, write) = create_signal(T::default());
     system.spawn(DerivedStateActor {
         state_addr: state_addr.clone(),
         selector,
         cached: None,
         write,
     });
+    // The DerivedStateActor's started() hook immediately asks the state
+    // actor for the current value, seeding the signal. Until that first
+    // ask completes, the signal holds T::default().
     read
 }
 ```
