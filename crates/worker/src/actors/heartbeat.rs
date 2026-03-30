@@ -5,19 +5,20 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use willow_identity::EndpointId;
+use willow_network::TopicHandle;
 
-use super::{NetworkOutMsg, StateMsg};
+use super::StateMsg;
 use crate::types::{WorkerAnnouncement, WorkerWireMessage, WORKERS_TOPIC};
 
 /// Run the heartbeat actor loop.
 ///
 /// Every `interval`, queries the state actor for role info
-/// and broadcasts an announcement via the network actor.
-pub async fn run(
+/// and broadcasts an announcement via the topic handle.
+pub async fn run<T: TopicHandle>(
     peer_id: EndpointId,
     interval: Duration,
     state_tx: mpsc::Sender<StateMsg>,
-    network_tx: mpsc::Sender<NetworkOutMsg>,
+    topic: T,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     debug!("heartbeat actor started (interval: {:?})", interval);
@@ -32,13 +33,7 @@ pub async fn run(
                         peer_id: peer_id.clone(),
                     };
                     if let Ok(bytes) = bincode::serialize(&departure) {
-                        if let Err(e) = network_tx
-                            .send(NetworkOutMsg::Publish {
-                                topic: WORKERS_TOPIC.to_string(),
-                                data: bytes,
-                            })
-                            .await
-                        {
+                        if let Err(e) = topic.broadcast(bytes::Bytes::from(bytes)).await {
                             warn!(%e, "failed to send departure message");
                         }
                     }
@@ -79,12 +74,7 @@ pub async fn run(
 
         let msg = WorkerWireMessage::Announcement(announcement);
         if let Ok(bytes) = bincode::serialize(&msg) {
-            let _ = network_tx
-                .send(NetworkOutMsg::Publish {
-                    topic: WORKERS_TOPIC.to_string(),
-                    data: bytes,
-                })
-                .await;
+            let _ = topic.broadcast(bytes::Bytes::from(bytes)).await;
         }
     }
 
@@ -97,6 +87,8 @@ mod tests {
     use crate::types::WorkerRoleInfo;
     use std::time::Duration;
     use willow_identity::Identity;
+    use willow_network::mem::{MemHub, MemNetwork};
+    use willow_network::Network;
 
     /// Minimal role info responder for testing.
     async fn fake_state_actor(mut rx: mpsc::Receiver<StateMsg>) {
@@ -117,55 +109,63 @@ mod tests {
 
     #[tokio::test]
     async fn heartbeat_sends_announcements() {
+        let hub = MemHub::new();
+        let net_a = MemNetwork::new(&hub);
+        let net_b = MemNetwork::new(&hub);
+
+        let topic_id = willow_network::topic_id(WORKERS_TOPIC);
+        let (sender_a, _events_a) = net_a.subscribe(topic_id, vec![]).await.unwrap();
+        let (_sender_b, mut events_b) = net_b.subscribe(topic_id, vec![]).await.unwrap();
+
         let (state_tx, state_rx) = mpsc::channel(32);
-        let (network_tx, mut network_rx) = mpsc::channel(32);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
         tokio::spawn(fake_state_actor(state_rx));
 
-        let test_peer = Identity::generate().endpoint_id();
+        let test_peer = net_a.id();
         let hb = tokio::spawn(run(
             test_peer,
             Duration::from_millis(50),
             state_tx,
-            network_tx,
+            sender_a,
             shutdown_rx,
         ));
 
-        // Wait for at least 1 announcement.
-        let msg = tokio::time::timeout(Duration::from_secs(1), network_rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-
-        match msg {
-            NetworkOutMsg::Publish { topic, data } => {
-                assert_eq!(topic, WORKERS_TOPIC);
-                let decoded: WorkerWireMessage = bincode::deserialize(&data).unwrap();
-                match decoded {
-                    WorkerWireMessage::Announcement(a) => {
-                        assert_eq!(a.peer_id, test_peer);
-                    }
-                    _ => panic!("expected Announcement"),
-                }
+        // Wait for at least 1 announcement — drain neighbor events first.
+        let data = loop {
+            let event = tokio::time::timeout(Duration::from_secs(2), events_b.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            if let willow_network::GossipEvent::Received(msg) = event {
+                break msg.content;
             }
-            _ => panic!("expected Publish"),
+        };
+
+        let decoded: WorkerWireMessage = bincode::deserialize(&data).unwrap();
+        match decoded {
+            WorkerWireMessage::Announcement(a) => {
+                assert_eq!(a.peer_id, test_peer);
+            }
+            _ => panic!("expected Announcement"),
         }
 
         shutdown_tx.send(true).unwrap();
         hb.await.unwrap();
 
-        // Check departure message was sent.
-        let departure = tokio::time::timeout(Duration::from_millis(100), network_rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        match departure {
-            NetworkOutMsg::Publish { data, .. } => {
-                let decoded: WorkerWireMessage = bincode::deserialize(&data).unwrap();
-                assert!(matches!(decoded, WorkerWireMessage::Departure { .. }));
+        // Check departure message was sent — drain any neighbor events.
+        let departure_data = loop {
+            let event = tokio::time::timeout(Duration::from_millis(500), events_b.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            if let willow_network::GossipEvent::Received(msg) = event {
+                break msg.content;
             }
-            _ => panic!("expected departure Publish"),
-        }
+        };
+        let decoded: WorkerWireMessage = bincode::deserialize(&departure_data).unwrap();
+        assert!(matches!(decoded, WorkerWireMessage::Departure { .. }));
     }
 }

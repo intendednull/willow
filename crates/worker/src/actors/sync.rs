@@ -4,19 +4,20 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 use tracing::debug;
+use willow_network::TopicHandle;
 
-use super::{NetworkOutMsg, StateMsg};
-use crate::types::{WorkerRequest, WorkerWireMessage, WORKERS_TOPIC};
+use super::StateMsg;
+use crate::types::{WorkerRequest, WorkerWireMessage};
 
 /// Run the sync actor loop.
 ///
 /// Every `interval`, queries the state actor for state hashes per server
 /// and broadcasts SyncRequests so other peers/workers can send missing events.
-pub async fn run(
+pub async fn run<T: TopicHandle>(
     _peer_id: willow_identity::EndpointId,
     interval: Duration,
     state_tx: mpsc::Sender<StateMsg>,
-    network_tx: mpsc::Sender<NetworkOutMsg>,
+    topic: T,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     debug!("sync actor started (interval: {:?})", interval);
@@ -58,12 +59,7 @@ pub async fn run(
                 },
             };
             if let Ok(bytes) = bincode::serialize(&msg) {
-                let _ = network_tx
-                    .send(NetworkOutMsg::Publish {
-                        topic: WORKERS_TOPIC.to_string(),
-                        data: bytes,
-                    })
-                    .await;
+                let _ = topic.broadcast(bytes::Bytes::from(bytes)).await;
             }
         }
     }
@@ -74,7 +70,10 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::WORKERS_TOPIC;
     use willow_identity::Identity;
+    use willow_network::mem::{MemHub, MemNetwork};
+    use willow_network::Network;
     use willow_state::StateHash;
 
     /// Fake state actor that returns known state hashes.
@@ -95,8 +94,15 @@ mod tests {
 
     #[tokio::test]
     async fn sync_actor_broadcasts_sync_requests() {
+        let hub = MemHub::new();
+        let net_a = MemNetwork::new(&hub);
+        let net_b = MemNetwork::new(&hub);
+
+        let topic_id = willow_network::topic_id(WORKERS_TOPIC);
+        let (sender_a, _events_a) = net_a.subscribe(topic_id, vec![]).await.unwrap();
+        let (_sender_b, mut events_b) = net_b.subscribe(topic_id, vec![]).await.unwrap();
+
         let (state_tx, state_rx) = mpsc::channel(32);
-        let (network_tx, mut network_rx) = mpsc::channel(32);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
         tokio::spawn(fake_state_actor(state_rx));
@@ -105,37 +111,29 @@ mod tests {
             Identity::generate().endpoint_id(),
             Duration::from_millis(50),
             state_tx,
-            network_tx,
+            sender_a,
             shutdown_rx,
         ));
 
-        // Should get 2 sync requests (one per server).
-        let msg1 = tokio::time::timeout(Duration::from_secs(1), network_rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        let msg2 = tokio::time::timeout(Duration::from_secs(1), network_rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-
+        // Collect 2 sync requests (one per server) — drain neighbor events.
         let mut server_ids = vec![];
-        for msg in [msg1, msg2] {
-            match msg {
-                NetworkOutMsg::Publish { topic, data } => {
-                    assert_eq!(topic, WORKERS_TOPIC);
-                    let decoded: WorkerWireMessage = bincode::deserialize(&data).unwrap();
-                    match decoded {
-                        WorkerWireMessage::Request { payload, .. } => match payload {
-                            WorkerRequest::Sync { server_id, .. } => {
-                                server_ids.push(server_id);
-                            }
-                            _ => panic!("expected Sync request"),
-                        },
-                        _ => panic!("expected Request"),
-                    }
+        while server_ids.len() < 2 {
+            let event = tokio::time::timeout(Duration::from_secs(2), events_b.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            if let willow_network::GossipEvent::Received(msg) = event {
+                let decoded: WorkerWireMessage = bincode::deserialize(&msg.content).unwrap();
+                match decoded {
+                    WorkerWireMessage::Request { payload, .. } => match payload {
+                        WorkerRequest::Sync { server_id, .. } => {
+                            server_ids.push(server_id);
+                        }
+                        _ => panic!("expected Sync request"),
+                    },
+                    _ => panic!("expected Request"),
                 }
-                _ => panic!("expected Publish"),
             }
         }
 
@@ -148,15 +146,20 @@ mod tests {
 
     #[tokio::test]
     async fn sync_actor_exits_on_shutdown() {
+        let hub = MemHub::new();
+        let net = MemNetwork::new(&hub);
+
+        let topic_id = willow_network::topic_id(WORKERS_TOPIC);
+        let (sender, _events) = net.subscribe(topic_id, vec![]).await.unwrap();
+
         let (state_tx, _state_rx) = mpsc::channel(32);
-        let (network_tx, _network_rx) = mpsc::channel(32);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
         let sync = tokio::spawn(run(
             Identity::generate().endpoint_id(),
             Duration::from_secs(60),
             state_tx,
-            network_tx,
+            sender,
             shutdown_rx,
         ));
 

@@ -1,10 +1,10 @@
 //! Actor-based concurrency system for worker nodes.
 //!
 //! Four actors communicate via tokio channels:
-//! - Network actor: owns libp2p swarm
+//! - Network actor: streams from gossip topic events
 //! - State actor: owns WorkerRole + mutable state
-//! - Heartbeat actor: periodic announcements
-//! - Sync actor: periodic state sync
+//! - Heartbeat actor: periodic announcements via TopicHandle
+//! - Sync actor: periodic state sync via TopicHandle
 
 pub mod heartbeat;
 pub mod network;
@@ -42,13 +42,4 @@ pub enum StateMsg {
 
     /// Shutdown signal.
     Shutdown,
-}
-
-/// Messages sent to the network actor for outbound publishing.
-pub enum NetworkOutMsg {
-    /// Publish raw bytes on a gossipsub topic.
-    Publish { topic: String, data: Vec<u8> },
-
-    /// Subscribe to a gossipsub topic.
-    Subscribe(String),
 }

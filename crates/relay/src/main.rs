@@ -1,131 +1,120 @@
 //! # Willow Relay Server
 //!
-//! A lightweight, stateless relay node that bridges native (TCP) and browser
-//! (WebSocket) peers. Deploy one on a VPS so browser clients can join.
-//!
-//! ## What it does
-//!
-//! - Listens on **TCP** (for native peers) and **WebSocket** (for browser peers)
-//! - Runs the libp2p **relay** protocol so NAT'd peers can connect through it
-//! - Participates in **GossipSub** to forward messages between peers
-//! - Runs **Kademlia** for peer discovery
-//! - Runs **Identify** for peer metadata exchange
-//!
-//! ## What it does NOT do
-//!
-//! - Store events (replay nodes handle state persistence)
-//! - Respond to sync requests (replay nodes handle catch-up)
-//! - Store message history (storage nodes handle archival)
+//! Wraps an iroh-relay server for NAT traversal and runs a bootstrap
+//! gossip node that subscribes to system topics so new peers can join
+//! the gossip mesh.
+
+use std::net::{Ipv4Addr, SocketAddr};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use libp2p::{futures::StreamExt, identity::Keypair, Multiaddr};
+use iroh_relay::server::{AccessConfig, RelayConfig, Server, ServerConfig};
 use tracing::info;
-
-use willow_relay::Relay;
+use willow_identity::Identity;
 
 #[derive(Parser)]
-#[command(name = "willow-relay", about = "Willow P2P relay server")]
+#[command(name = "willow-relay", about = "Willow iroh relay + bootstrap node")]
 struct Args {
-    /// TCP listen port for native peers.
-    #[arg(long, default_value = "9090")]
-    tcp_port: u16,
+    /// Port for the iroh relay HTTP server.
+    #[arg(long, default_value = "3340")]
+    relay_port: u16,
 
-    /// WebSocket listen port for browser peers.
-    #[arg(long, default_value = "9091")]
-    ws_port: u16,
-
-    /// Path to persist the relay's Ed25519 identity key.
-    /// If not set, a new identity is generated each run.
+    /// Path to persist the bootstrap node's identity key.
     #[arg(long)]
     identity: Option<std::path::PathBuf>,
 
-    /// Display name for this relay node (visible in peer lists).
-    #[arg(long, default_value = "Relay Node")]
-    name: String,
-
-    /// Print the peer ID (generating the identity if needed) and exit.
+    /// Print the bootstrap node's EndpointId and exit.
     #[arg(long)]
-    print_peer_id: bool,
+    print_id: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Handle --print-peer-id before initializing tracing to get clean output.
-    if args.print_peer_id {
-        let keypair = load_or_generate_keypair(args.identity.as_deref())?;
-        let peer_id = libp2p::PeerId::from(keypair.public());
-        println!("{peer_id}");
+    // Load or generate bootstrap identity.
+    let identity = if let Some(ref path) = args.identity {
+        Identity::load_or_generate(path)?
+    } else {
+        Identity::generate()
+    };
+
+    if args.print_id {
+        println!("{}", identity.endpoint_id());
         return Ok(());
     }
 
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info".into()),
         )
         .init();
 
-    let keypair = load_or_generate_keypair(args.identity.as_deref())?;
+    info!(id = %identity.endpoint_id().fmt_short(), "bootstrap node identity");
 
-    let mut relay = Relay::start(keypair).await?;
+    // ── iroh-relay server (plain HTTP, no TLS) ───────────────────────────
+    let relay_bind: SocketAddr = (Ipv4Addr::UNSPECIFIED, args.relay_port).into();
 
-    relay.set_display_name(&args.name);
-    info!(%relay.peer_id, name = %args.name, "starting willow relay");
+    let mut relay_server = Server::spawn(ServerConfig::<(), ()> {
+        relay: Some(RelayConfig::<(), ()> {
+            http_bind_addr: relay_bind,
+            tls: None,
+            limits: Default::default(),
+            key_cache_capacity: Some(1024),
+            access: AccessConfig::Everyone,
+        }),
+        quic: None,
+        #[cfg(feature = "metrics")]
+        metrics_addr: None,
+    })
+    .await
+    .context("failed to start iroh-relay server")?;
 
-    // Listen on TCP.
-    let tcp_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{}", args.tcp_port)
-        .parse()
-        .context("invalid TCP address")?;
-    relay.swarm.listen_on(tcp_addr)?;
+    let relay_url = relay_server
+        .http_url()
+        .context("relay server has no HTTP URL")?;
+    info!(%relay_url, "iroh-relay server running");
 
-    // Listen on WebSocket (TCP + /ws upgrade).
-    let ws_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{}/ws", args.ws_port)
-        .parse()
-        .context("invalid WebSocket address")?;
-    relay.swarm.listen_on(ws_addr)?;
+    // ── Bootstrap gossip node ────────────────────────────────────────────
+    let config = willow_network::iroh::Config {
+        secret_key: identity.secret_key().clone(),
+        relay_url: Some(relay_url),
+        bootstrap_peers: vec![],
+        mdns: true,
+    };
+    let network = willow_network::iroh::IrohNetwork::new(config)
+        .await
+        .context("failed to start bootstrap network")?;
 
-    info!(
-        tcp_port = args.tcp_port,
-        ws_port = args.ws_port,
-        "relay listening (stateless — no event storage)"
-    );
+    // Subscribe to system topics so new peers can bootstrap into the mesh.
+    let server_ops_topic = willow_network::topic_id("_willow_server_ops");
+    let workers_topic = willow_network::topic_id("_willow_workers");
+    let profiles_topic = willow_network::topic_id("_willow_profiles");
 
-    // Run the swarm event loop.
-    loop {
-        let event = relay.swarm.select_next_some().await;
-        relay.handle_swarm_event(event);
-    }
-}
+    let _ = network.subscribe(server_ops_topic, vec![]).await?;
+    let _ = network.subscribe(workers_topic, vec![]).await?;
+    let _ = network.subscribe(profiles_topic, vec![]).await?;
 
-/// Load an Ed25519 keypair from disk, or generate a fresh one.
-fn load_or_generate_keypair(path: Option<&std::path::Path>) -> Result<Keypair> {
-    use libp2p::identity::ed25519;
+    info!("bootstrap node subscribed to system topics");
+    info!("relay running — press Ctrl+C to stop");
 
-    if let Some(path) = path {
-        if let Ok(mut bytes) = std::fs::read(path) {
-            let ed_kp =
-                ed25519::Keypair::try_from_bytes(&mut bytes).context("invalid identity file")?;
-            info!(?path, "loaded identity from disk");
-            return Ok(Keypair::from(ed_kp));
+    // Wait for shutdown signal or relay task failure.
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            info!("received Ctrl+C, shutting down");
         }
-
-        // Generate and save.
-        let kp = Keypair::generate_ed25519();
-        let ed_kp = kp
-            .clone()
-            .try_into_ed25519()
-            .context("keypair conversion")?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+        result = relay_server.task_handle() => {
+            match result {
+                Ok(Ok(())) => info!("relay server exited cleanly"),
+                Ok(Err(e)) => tracing::error!(%e, "relay server error"),
+                Err(e) => tracing::error!(%e, "relay server task panicked"),
+            }
         }
-        std::fs::write(path, ed_kp.to_bytes())?;
-        info!(?path, "generated and saved new identity");
-        Ok(kp)
-    } else {
-        let kp = Keypair::generate_ed25519();
-        info!("generated ephemeral identity (no --identity flag)");
-        Ok(kp)
     }
+
+    network.shutdown().await?;
+    relay_server.shutdown().await.ok();
+    info!("shut down complete");
+    Ok(())
 }
