@@ -40,9 +40,8 @@ pub use state::{
 /// Re-export the event-sourced state crate for use by downstream consumers.
 pub use willow_state;
 
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::{Arc, RwLock};
 
 use futures::channel::mpsc as futures_mpsc;
 
@@ -70,11 +69,6 @@ impl Default for ClientConfig {
     }
 }
 
-type DeferredPair = (
-    futures_mpsc::UnboundedSender<network::NetworkEvent>,
-    futures_mpsc::UnboundedReceiver<network::NetworkCommand>,
-);
-
 /// All mutable state shared between ClientHandle and ClientEventLoop.
 pub struct SharedState {
     pub state: ClientState,
@@ -93,12 +87,25 @@ pub struct SharedState {
 }
 
 /// Cloneable command interface for UI components.
-#[derive(Clone)]
-pub struct ClientHandle {
-    pub(crate) shared: Rc<RefCell<SharedState>>,
+///
+/// Generic over the [`Network`](willow_network::Network) implementation so
+/// that production code can use a real libp2p network while tests can use
+/// an in-memory backend.
+pub struct ClientHandle<N: willow_network::Network> {
+    pub(crate) shared: Arc<RwLock<SharedState>>,
     pub(crate) cmd_tx: futures_mpsc::UnboundedSender<network::NetworkCommand>,
-    /// Holds deferred channel halves until connect() consumes them.
-    pub(crate) deferred_channels: Option<Rc<RefCell<Option<DeferredPair>>>>,
+    /// The network backend, set after [`connect()`](ClientHandle::connect).
+    pub(crate) network: Option<Arc<N>>,
+}
+
+impl<N: willow_network::Network> Clone for ClientHandle<N> {
+    fn clone(&self) -> Self {
+        Self {
+            shared: Arc::clone(&self.shared),
+            cmd_tx: self.cmd_tx.clone(),
+            network: self.network.clone(),
+        }
+    }
 }
 
 /// Async event processing loop.
@@ -107,7 +114,7 @@ pub struct ClientHandle {
 /// forwarding [`ClientEvent`]s to the provided sender. Created by
 /// [`ClientHandle::new()`] and consumed by calling [`ClientEventLoop::run()`].
 pub struct ClientEventLoop {
-    pub(crate) shared: Rc<RefCell<SharedState>>,
+    pub(crate) shared: Arc<RwLock<SharedState>>,
     pub(crate) event_rx: futures_mpsc::UnboundedReceiver<network::NetworkEvent>,
     pub(crate) cmd_tx: futures_mpsc::UnboundedSender<network::NetworkCommand>,
 }
