@@ -137,7 +137,7 @@ pub fn MemberList(
                     view! {
                         <div class="member-item">
                             <div class={if is_online { "status-dot" } else { "status-dot offline" }}></div>
-                            <span class="member-name">
+                            <span class="member-name" style=format!("color: {}", super::peer_color(&pid))>
                                 {name}
                                 <span class="member-peer-id">{
                                     let short = if pid.len() > 8 { format!("{}...", &pid[..8]) } else { pid.clone() };

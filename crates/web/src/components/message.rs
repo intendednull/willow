@@ -212,11 +212,7 @@ pub fn MessageView(
     #[prop(optional, into)]
     active_sheet_msg: Option<RwSignal<Option<String>>>,
 ) -> impl IntoView {
-    let author_class = if message.is_local {
-        "author local"
-    } else {
-        "author remote"
-    };
+    let author_color = super::peer_color(&message.author_peer_id);
     let body_class = if message.deleted {
         "body deleted"
     } else {
@@ -460,7 +456,7 @@ pub fn MessageView(
             {if show_header {
                 Some(view! {
                     <div class="meta">
-                        <span class=author_class>{author}</span>
+                        <span class="author" style=format!("color: {author_color}")>{author}</span>
                         <span class="timestamp">{timestamp}</span>
                         {if show_edited {
                             Some(view! { <span class="edited">"(edited)"</span> })

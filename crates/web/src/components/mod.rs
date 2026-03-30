@@ -1,3 +1,20 @@
+/// Derive a unique, vibrant color from a peer ID string.
+///
+/// Uses a hash of the peer ID bytes to pick a hue on the color wheel,
+/// producing visually distinct colors for different peers. The saturation
+/// and lightness are tuned for readability on both dark and light themes.
+pub fn peer_color(peer_id: &str) -> String {
+    let hash = peer_id
+        .bytes()
+        .fold(2166136261u32, |h, b| h.wrapping_mul(16777619) ^ (b as u32));
+    let hue = hash % 360;
+    // Avoid dull mid-range; keep saturation punchy and lightness bright enough
+    // for dark backgrounds while not washing out on light ones.
+    let sat = 55 + (hash / 360) % 20; // 55-74%
+    let lit = 65 + (hash / 7200) % 10; // 65-74%
+    format!("hsl({hue}, {sat}%, {lit}%)")
+}
+
 mod add_server;
 mod call_page;
 mod chat;

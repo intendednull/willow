@@ -619,8 +619,6 @@ select:focus-visible {
 }
 
 .message .author { font-weight: 600; font-size: 14px; }
-.message .author.local { color: #7289da; }
-.message .author.remote { color: #43b581; }
 .message .timestamp { font-size: 11px; color: var(--text-muted); }
 .message .edited { font-size: 10px; color: var(--text-placeholder); font-style: italic; }
 
