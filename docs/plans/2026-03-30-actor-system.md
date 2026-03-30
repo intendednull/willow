@@ -96,7 +96,7 @@ Defines the trait hierarchy and the type-erased message dispatch mechanism.
 
 - [ ] **Step 5: Implement `envelope.rs`.** `BoxEnvelope<A>` type alias: `Box<dyn FnOnce(&mut A, &mut Context<A>) -> BoxFuture<'_, ()> + Send>`. Two factory functions: `envelope_send<A, M>(msg) -> BoxEnvelope<A>` (fire-and-forget) and `envelope_ask<A, M>(msg, reply_tx) -> BoxEnvelope<A>` (captures oneshot sender). Both wrap the handler call in a closure.
 
-- [ ] **Step 6: Implement `mailbox.rs`.** `async fn run_mailbox<A: Actor>(mut actor: A, rx: Receiver<BoxEnvelope<A>>, stop: Arc<AtomicBool>)`: actor is moved in and mutated via `&mut` for its lifetime. Calls `actor.started(&mut ctx)`, loops on `rx.recv()`, executes each envelope passing `&mut actor` and `&mut ctx`, checks stop flag between messages, calls `actor.stopped()` on exit (either channel closed or stop flag set).
+- [ ] **Step 6: Implement `mailbox.rs`.** `async fn run_mailbox<A: Actor>(mut actor: A, ctx: Context<A>, rx: Receiver<BoxEnvelope<A>>, stop: Arc<AtomicBool>, done: OneshotTx<()>)`: actor is moved in and mutated via `&mut` for its lifetime. The `Context` and `done` oneshot are provided by the caller (System in Task 3, test harness here). Calls `actor.started(&mut ctx)`, loops on `rx.recv()`, executes each envelope passing `&mut actor` and `&mut ctx`, checks stop flag between messages, calls `actor.stopped()` on exit, then signals `done`. For Task 2 tests, construct a minimal `Context` with a dummy `SystemHandle`.
 
 - [ ] **Step 7: Write mailbox-level tests.** Test `run_mailbox` directly by creating a channel, sending `BoxEnvelope`s manually, and verifying the actor processes them. Test that the mailbox loop exits when the sender is dropped. Full `Addr`/`System`-level tests come in Task 3.
 
@@ -118,7 +118,7 @@ Wires everything together into the public API.
 
 - [ ] **Step 3: Implement `Context<A>`.** Fields: `addr: Addr<A>`, `system: SystemHandle`, `stop: Arc<AtomicBool>` (shared with the mailbox loop). Methods: `address()`, `stop()` (sets the `AtomicBool` — mailbox checks it between messages), `system()`, `spawn()` (delegates to system), `add_stream()` (spawns a task that polls the stream and forwards items as `StreamEnvelope`s — a separate envelope variant that calls `StreamHandler::handle_stream_item` instead of `Handler::handle`; stream end sends a `StreamFinishedEnvelope`), `run_interval()` (spawns a task that sleeps + sends a message on each tick, returns `IntervalHandle` with cancel).
 
-- [ ] **Step 4: Implement `System` / `SystemHandle`.** `System::new()` creates the handle. `SystemHandle` is `Clone` and holds a list of `AnyAddr`s (for shutdown). `spawn()` creates a channel, builds `Context`, spawns `run_mailbox` via `runtime::spawn`, returns `Addr<A>`. `shutdown()` drops all tracked addresses and waits for mailboxes to drain.
+- [ ] **Step 4: Implement `System` / `SystemHandle`.** `System::new()` creates the handle. `SystemHandle` is `Clone` and holds a list of `AnyAddr`s (for shutdown) plus a list of `OneshotRx<()>` (one per actor, signaled when `run_mailbox` exits). `spawn()` creates a channel, a done oneshot, builds `Context`, spawns `run_mailbox` via `runtime::spawn`, stores the `OneshotRx`, returns `Addr<A>`. `shutdown()` drops all tracked addresses (closing mailboxes) then awaits all done oneshots to confirm actors have stopped.
 
 - [ ] **Step 5: Implement `Recipient<M>`.** Internal `RecipientSender<M>` trait with `send()` and `ask()`. `Addr<A>` implements it for any `A: Handler<M>`. `Recipient<M>` wraps `Box<dyn RecipientSender<M>>`. `From<Addr<A>>` impl.
 
@@ -163,7 +163,7 @@ Migrate the four hand-rolled worker actors to use `willow-actor`. This is the fi
 
 - [ ] **Step 3: Rewrite `network.rs` as `NetworkActor`.** Struct holds `Addr<StateActor>`, `EndpointId`, and `Option<E>` where `E: TopicEvents` (taken in `started()`). `TopicEvents` is not a `Stream` trait — it has an async `next()` method. Write a thin adapter (`TopicEventStream`) that wraps a `TopicEvents` impl into a `futures::Stream<Item = GossipEvent>` (filtering errors with a warning log). Implement `StreamHandler<GossipEvent>` — the `handle_stream_item` replaces the `while let` loop. Keep `parse_worker_message()` and `parse_server_message()` as pure functions. In `started()`, call `self.events.take().unwrap()` to extract the topic events, wrap in `TopicEventStream`, and attach via `ctx.add_stream()`. Remove the manual `run()` function.
 
-- [ ] **Step 4: Rewrite `heartbeat.rs` as `HeartbeatActor`.** Struct holds `EndpointId`, `Addr<StateActor>`, and the `TopicHandle` (owned, not borrowed — actor owns it for its lifetime). Define `HeartbeatTick` message. Implement `Handler<HeartbeatTick>` — queries state actor via `state_addr.ask(GetRoleInfoMsg)`, broadcasts announcement. In `started()`, call `ctx.run_interval(duration, || HeartbeatTick)`. Implement `stopped()` to broadcast departure message via `self.topic.broadcast()` — the topic handle is still valid because the actor owns it. Remove `shutdown: watch::Receiver` — the actor stops when its address is dropped.
+- [ ] **Step 4: Rewrite `heartbeat.rs` as `HeartbeatActor`.** Struct holds `EndpointId`, `Addr<StateActor>`, and the `TopicHandle` (owned, not borrowed — actor owns it for its lifetime). Define `HeartbeatTick` message. Implement `Handler<HeartbeatTick>` — queries state actor via `state_addr.ask(GetRoleInfoMsg)`, broadcasts announcement. In `started()`, call `ctx.run_interval(duration, || HeartbeatTick)`. Implement `stopped()` to broadcast departure message via `self.topic.broadcast()` — best-effort (may fail silently if network is already shut down). Remove `shutdown: watch::Receiver` — the actor stops when its address is dropped.
 
 - [ ] **Step 5: Rewrite `sync.rs` as `SyncActor`.** Same pattern as heartbeat. Define `SyncTick` message. `Handler<SyncTick>` queries state hashes and broadcasts sync requests. `started()` calls `ctx.run_interval()`. Remove watch-based shutdown.
 
@@ -183,10 +183,14 @@ Migrate the four hand-rolled worker actors to use `willow-actor`. This is the fi
 - Modify: `crates/client/src/listeners.rs`
 - Modify: `crates/client/src/state.rs`
 - Modify: `crates/client/src/events.rs`
+- Modify: `crates/client/src/ops.rs`
+- Modify: `crates/client/src/invite.rs`
+- Modify: `crates/client/src/files.rs`
+- Modify: `crates/client/src/worker_cache.rs`
 
 Replace `Arc<RwLock<SharedState>>` and `futures::channel::mpsc` with actors.
 
-- [ ] **Step 1: Define `ClientStateActor`.** Holds `SharedState` directly (no Arc, no RwLock). Define message types for mutations: `ApplyEvent`, `SetConnected`, `UpdateTyping`, `JoinVoice`, `LeaveVoice`, etc. Define query messages: `GetState` (returns `ClientState` clone or specific fields), `GetPeers`, `IsConnected`, etc.
+- [ ] **Step 1: Define `ClientStateActor`.** Holds `SharedState` directly (no Arc, no RwLock). Audit all `shared.write()` and `shared.read()` call sites in the client crate to discover the full message set — expect ~10-15 mutation messages and ~5-10 query messages. Define message structs for each. Common patterns: mutations return `()` (fire-and-forget), queries return a cloned field or computed value.
 
 - [ ] **Step 2: Define `TopicListenerActor`.** Replaces `spawn_topic_listener`. Implements `StreamHandler` for gossip events. Holds `Addr<ClientStateActor>` and `TopicHandle`. In `handle_stream_item`, sends mutations to the state actor and emits `ClientEvent`s.
 
@@ -211,7 +215,7 @@ Validates WASM target correctness.
 
 - [ ] **Step 1: Update `app.rs` initialization.** Create a `System`, spawn the `ClientStateActor` and listener actors. Pass `Addr`s into Leptos context instead of `Arc<RwLock<>>`.
 
-- [ ] **Step 2: Update signal updates.** Components that read state via `Arc<RwLock<>>` switch to `ask()` on the state actor address. Leptos signals can be updated from the actor's event stream.
+- [ ] **Step 2: Update event processing.** Leptos components read state via reactive signals, not `Arc<RwLock<>>` directly. The signals are populated from `ClientEvent`s received on the event channel. Since `ClientHandle` now uses actor-based state internally, verify that `ClientEvent` emission still works correctly — the `TopicListenerActor` emits events via the `event_tx` channel, which flows into `event_processing.rs` to update signals. This path should require minimal changes.
 
 - [ ] **Step 3: Verify WASM compilation.** `just check-wasm` must pass.
 
