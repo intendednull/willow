@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 use willow_common::{WorkerRequest, WorkerResponse, WorkerRole, WorkerRoleInfo};
+use willow_network::TopicEvents;
 use willow_state::{Event, EventKind, ServerState, StateHash};
 use willow_worker::actors::state;
 use willow_worker::actors::StateMsg;
@@ -283,7 +284,6 @@ async fn events_applied_then_queried_via_request() {
 #[tokio::test]
 async fn graceful_shutdown_sends_departure() {
     use willow_network::mem::{MemHub, MemNetwork};
-    use willow_network::traits::TopicEvents;
     use willow_network::Network;
     use willow_worker::actors::heartbeat;
 
@@ -344,7 +344,6 @@ async fn graceful_shutdown_sends_departure() {
 #[tokio::test]
 async fn full_actor_orchestration_without_network() {
     use willow_network::mem::{MemHub, MemNetwork};
-    use willow_network::traits::TopicEvents;
     use willow_network::Network;
     use willow_worker::actors::{heartbeat, sync};
 

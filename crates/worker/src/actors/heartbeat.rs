@@ -86,9 +86,8 @@ mod tests {
     use super::*;
     use crate::types::{WorkerRoleInfo, WORKERS_TOPIC};
     use std::time::Duration;
-    use willow_identity::Identity;
     use willow_network::mem::{MemHub, MemNetwork};
-    use willow_network::Network;
+    use willow_network::{Network, TopicEvents};
 
     /// Minimal role info responder for testing.
     async fn fake_state_actor(mut rx: mpsc::Receiver<StateMsg>) {

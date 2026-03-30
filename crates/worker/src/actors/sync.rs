@@ -73,7 +73,7 @@ mod tests {
     use crate::types::WORKERS_TOPIC;
     use willow_identity::Identity;
     use willow_network::mem::{MemHub, MemNetwork};
-    use willow_network::Network;
+    use willow_network::{Network, TopicEvents};
     use willow_state::StateHash;
 
     /// Fake state actor that returns known state hashes.
