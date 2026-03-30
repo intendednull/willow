@@ -29,6 +29,7 @@ pub mod ops;
 pub mod state;
 pub mod storage;
 pub mod util;
+pub mod listeners;
 pub mod worker_cache;
 
 // Re-export key types at crate root for convenience.
@@ -207,7 +208,7 @@ fn on_connected(
 /// After event state is loaded or synced, the `topic_map` may have stale
 /// channel IDs (from invite acceptance or legacy storage). This updates
 /// them to match the authoritative IDs in `event_state`.
-fn reconcile_topic_map(state: &mut ClientState) {
+pub(crate) fn reconcile_topic_map(state: &mut ClientState) {
     // Collect corrections first to avoid borrow conflicts.
     let corrections: Vec<(String, willow_channel::ChannelId)> = state
         .event_state
@@ -2249,7 +2250,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
 ///
 /// This is a free function so it can be called with an already-borrowed
 /// `SharedState` from `ClientEventLoop::process_batch()`.
-fn emit_client_events_for(
+pub(crate) fn emit_client_events_for(
     shared: &mut SharedState,
     event: &willow_state::Event,
     events: &mut Vec<ClientEvent>,

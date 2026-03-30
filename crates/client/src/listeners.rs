@@ -25,7 +25,7 @@ pub fn spawn_topic_listener<E: TopicEvents + 'static>(
     event_tx: futures_mpsc::UnboundedSender<ClientEvent>,
 ) {
     #[cfg(not(target_arch = "wasm32"))]
-    tokio::spawn(topic_listener_loop(events, shared, event_tx));
+    tokio::task::spawn_local(topic_listener_loop(events, shared, event_tx));
 
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_futures::spawn_local(topic_listener_loop(events, shared, event_tx));
@@ -64,7 +64,7 @@ async fn topic_listener_loop<E: TopicEvents>(
 /// [`WireMessage`](crate::ops::WireMessage) envelope format.
 fn process_received_message(
     data: &[u8],
-    sender: EndpointId,
+    _sender: EndpointId,
     shared: &Arc<RwLock<SharedState>>,
     event_tx: &futures_mpsc::UnboundedSender<ClientEvent>,
 ) {
