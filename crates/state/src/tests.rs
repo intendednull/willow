@@ -654,8 +654,8 @@ fn full_replay_from_genesis() {
     assert_eq!(apply(&mut state, &e3), ApplyResult::Applied);
     let final_hash = state.hash();
 
-    // Now replay all events from genesis on a fresh state.
-    let (mut replayed, _owner_r) = test_state();
+    // Now replay all events from genesis on a fresh state with the SAME owner.
+    let mut replayed = ServerState::new("server-1", "Test Server", owner);
     let all_events = vec![events[0].clone(), e2, e3];
     for evt in &all_events {
         assert_eq!(apply_lenient(&mut replayed, evt), ApplyResult::Applied);
@@ -724,6 +724,7 @@ fn event_store_in_memory() {
     assert_eq!(store.latest_hash(), StateHash::ZERO);
     assert!(store.all_events().is_empty());
 
+    let owner = Identity::generate().endpoint_id();
     let evt = Event {
         id: "e1".into(),
         parent_hash: StateHash::ZERO,
@@ -1081,11 +1082,11 @@ fn multiple_permissions_per_peer() {
 // ── Multi-peer scenario tests ────────────────────────────────────────────
 
 /// Helper: create an event with a UUID and the current state hash as parent.
-fn make_event(state: &ServerState, author: &str, kind: EventKind) -> Event {
+fn make_event(state: &ServerState, author: EndpointId, kind: EventKind) -> Event {
     Event {
         id: uuid::Uuid::new_v4().to_string(),
         parent_hash: state.hash(),
-        author: author.to_string(),
+        author,
         timestamp_ms: 1000,
         kind,
     }
@@ -1112,14 +1113,15 @@ fn five_peers_concurrent_messages() {
     assert_eq!(apply(&mut state, &create_ch), ApplyResult::Applied);
 
     // 5 peers all send messages.
-    let peers = ["alice", "bob", "carol", "dave", "eve"];
+    let eve = Identity::generate().endpoint_id();
+    let peers = [alice, bob, carol, dave, eve];
     for (i, peer) in peers.iter().enumerate() {
         let msg = make_event(
             &state,
-            peer,
+            *peer,
             EventKind::Message {
                 channel_id: "ch1".into(),
-                body: format!("Hello from {peer} #{i}"),
+                body: format!("Hello from peer #{i}"),
                 reply_to: None,
             },
         );
@@ -1137,13 +1139,14 @@ fn five_peers_concurrent_messages() {
 fn permission_cascade() {
     let (mut state, owner) = test_state();
     let alice = Identity::generate().endpoint_id();
+    let bob = Identity::generate().endpoint_id();
 
     // Owner grants Admin to peer A.
     let grant_admin = make_event(
         &state,
         owner,
         EventKind::GrantPermission {
-            peer_id: "peer-a".into(),
+            peer_id: alice,
             permission: Permission::Administrator,
         },
     );
@@ -1152,9 +1155,9 @@ fn permission_cascade() {
     // Peer A grants ManageChannels to peer B (Admin can do this).
     let grant_manage = make_event(
         &state,
-        "peer-a",
+        alice,
         EventKind::GrantPermission {
-            peer_id: "peer-b".into(),
+            peer_id: bob,
             permission: Permission::ManageChannels,
         },
     );
@@ -1163,7 +1166,7 @@ fn permission_cascade() {
     // Peer B creates a channel (they have ManageChannels).
     let create_ch = make_event(
         &state,
-        "peer-b",
+        bob,
         EventKind::CreateChannel {
             name: "dev".into(),
             channel_id: "ch-dev".into(),
@@ -1174,8 +1177,8 @@ fn permission_cascade() {
 
     // Verify the channel exists and the permission chain holds.
     assert!(state.channels.contains_key("ch-dev"));
-    assert!(state.has_permission("peer-a", &Permission::Administrator));
-    assert!(state.has_permission("peer-b", &Permission::ManageChannels));
+    assert!(state.has_permission(&alice, &Permission::Administrator));
+    assert!(state.has_permission(&bob, &Permission::ManageChannels));
 }
 
 #[test]
@@ -1353,6 +1356,7 @@ fn edit_and_delete_message_lifecycle() {
 fn merge_with_concurrent_mutations() {
     // Two peers diverge from the same state.
     let (common, owner) = test_state();
+    let alice = Identity::generate().endpoint_id();
     let common_hash = common.hash();
 
     // Peer A creates channel "dev" and sends a message.
@@ -1500,12 +1504,12 @@ fn replay_100_events_produces_correct_state() {
     }
 
     // Grant permissions to 3 peers.
-    for peer in ["alice", "bob", "carol"] {
+    for peer in [alice, bob, carol] {
         let evt = make_event(
             &state,
             owner,
             EventKind::GrantPermission {
-                peer_id: peer.into(),
+                peer_id: peer,
                 permission: Permission::SendMessages,
             },
         );
@@ -1554,9 +1558,9 @@ fn replay_100_events_produces_correct_state() {
     // 1 owner + 3 granted peers.
     assert_eq!(state.members.len(), 4);
 
-    // Replay the exact same events from scratch on a fresh state.
+    // Replay the exact same events from scratch on a fresh state with the SAME owner.
     let mut store = InMemoryStore::new();
-    let (mut replay_state, _owner_rp) = test_state();
+    let mut replay_state = ServerState::new("server-1", "Test Server", owner);
 
     for evt in &all_events {
         store.append(evt.clone());
@@ -1586,9 +1590,9 @@ fn stress_1000_messages_same_channel() {
     assert_eq!(apply(&mut state, &create_ch), ApplyResult::Applied);
 
     // Rapid-fire 1000 messages from 10 different authors.
-    let authors: Vec<String> = (0..10).map(|i| format!("peer-{i}")).collect();
+    let authors: Vec<EndpointId> = (0..10).map(|_| Identity::generate().endpoint_id()).collect();
     for i in 0..1000 {
-        let author = &authors[i % 10];
+        let author = authors[i % 10];
         let msg = make_event(
             &state,
             author,
@@ -1609,7 +1613,7 @@ fn stress_1000_messages_same_channel() {
             .iter()
             .filter(|m| m.author == *author)
             .count();
-        assert_eq!(count, 100, "author {author} should have 100 messages");
+        assert_eq!(count, 100, "author {} should have 100 messages", author);
     }
 }
 
@@ -1706,29 +1710,29 @@ fn profile_history_through_events() {
     // Peer sets profile "Alice".
     let set1 = make_event(
         &state,
-        "peer-1",
+        alice,
         EventKind::SetProfile {
             display_name: "Alice".into(),
         },
     );
     assert_eq!(apply(&mut state, &set1), ApplyResult::Applied);
-    assert_eq!(state.profiles["peer-1"].display_name, "Alice");
+    assert_eq!(state.profiles[&alice].display_name, "Alice");
 
     // Then changes to "Bob".
     let set2 = make_event(
         &state,
-        "peer-1",
+        alice,
         EventKind::SetProfile {
             display_name: "Bob".into(),
         },
     );
     assert_eq!(apply(&mut state, &set2), ApplyResult::Applied);
-    assert_eq!(state.profiles["peer-1"].display_name, "Bob");
+    assert_eq!(state.profiles[&alice].display_name, "Bob");
 
     // Then to "Charlie".
     let set3 = make_event(
         &state,
-        "peer-1",
+        alice,
         EventKind::SetProfile {
             display_name: "Charlie".into(),
         },
@@ -1736,7 +1740,7 @@ fn profile_history_through_events() {
     assert_eq!(apply(&mut state, &set3), ApplyResult::Applied);
 
     // Final state should show "Charlie".
-    assert_eq!(state.profiles["peer-1"].display_name, "Charlie");
+    assert_eq!(state.profiles[&alice].display_name, "Charlie");
     // All three SetProfile events should have been applied (seen IDs).
     assert!(state.seen_event_ids.contains(&set1.id));
     assert!(state.seen_event_ids.contains(&set2.id));
@@ -1797,7 +1801,7 @@ fn state_hash_changes_on_every_mutation() {
     ];
 
     for kind in event_kinds {
-        let evt = make_event(&state, "owner", kind);
+        let evt = make_event(&state, owner, kind);
         assert_eq!(apply(&mut state, &evt), ApplyResult::Applied);
         hashes.push(state.hash());
     }
@@ -1928,7 +1932,7 @@ fn idempotency_across_all_event_kinds() {
     ];
 
     for kind in variants {
-        let evt = make_event(&state, "owner", kind);
+        let evt = make_event(&state, owner, kind);
         let first_result = apply(&mut state, &evt);
         // First application should succeed (Applied or Rejected, but not AlreadySeen).
         assert_ne!(
@@ -1954,6 +1958,7 @@ fn idempotency_across_all_event_kinds() {
 fn merge_three_way_divergence() {
     // Three peers diverge from the same state.
     let (common, owner) = test_state();
+    let alice = Identity::generate().endpoint_id();
     let common_hash = common.hash();
 
     // Peer A creates channel "alpha" and sends a message.
@@ -2054,6 +2059,7 @@ fn merge_three_way_divergence() {
 fn merge_preserves_permission_chain() {
     // Start with a common state where owner has set things up.
     let (common, owner) = test_state();
+    let bob = Identity::generate().endpoint_id();
     let common_hash = common.hash();
 
     // Peer A (owner): grants Admin to peer B (diverged from common).
@@ -2063,7 +2069,7 @@ fn merge_preserves_permission_chain() {
         owner,
         100,
         EventKind::GrantPermission {
-            peer_id: "peer-b".into(),
+            peer_id: bob,
             permission: Permission::Administrator,
         },
     )];
@@ -2074,7 +2080,7 @@ fn merge_preserves_permission_chain() {
     let events_b = vec![event_with(
         "b1",
         common_hash,
-        "peer-b",
+        bob,
         200,
         EventKind::CreateRole {
             name: "Moderator".into(),
@@ -2087,7 +2093,7 @@ fn merge_preserves_permission_chain() {
     assert_eq!(events.len(), 2);
 
     // Both the permission grant and the role should exist.
-    assert!(merged_state.has_permission("peer-b", &Permission::Administrator));
+    assert!(merged_state.has_permission(&bob, &Permission::Administrator));
     assert!(merged_state.roles.contains_key("role-mod"));
 }
 
@@ -2115,8 +2121,9 @@ fn state_verification_does_not_mutate_state() {
 
 #[test]
 fn identical_states_produce_matching_hashes() {
-    let (mut state_a, owner) = test_state();
-    let (mut state_b, _owner_b) = test_state();
+    let owner = Identity::generate().endpoint_id();
+    let mut state_a = ServerState::new("server-1", "Test Server", owner);
+    let mut state_b = ServerState::new("server-1", "Test Server", owner);
 
     // Apply the same events to both.
     let create = event(
@@ -2606,8 +2613,8 @@ fn pin_survives_state_replay() {
         .pinned_messages
         .contains("e2"));
 
-    // Replay all events on a fresh state.
-    let (mut replayed, _owner_r) = test_state();
+    // Replay all events on a fresh state with the SAME owner.
+    let mut replayed = ServerState::new("server-1", "Test Server", owner);
     apply_lenient(&mut replayed, &e1);
     apply_lenient(&mut replayed, &e2);
     apply_lenient(&mut replayed, &e3);
