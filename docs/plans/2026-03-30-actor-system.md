@@ -196,7 +196,9 @@ Replace `Arc<RwLock<SharedState>>` and `futures::channel::mpsc` with actors. The
 
 - [ ] **Step 1: Define `ClientStateActor`.** Holds `SharedState` directly (no Arc, no RwLock) plus a `Vec<Recipient<StateChanged>>` subscriber list. Audit all `shared.write()` and `shared.read()` call sites in the client crate to discover the full message set — expect ~10-15 mutation messages and ~5-10 query messages. Define message structs for each. After every mutation handler completes, the actor sends `StateChanged` to all subscribers. Also implement:
   - `Subscribe(Recipient<StateChanged>)` — register a new watcher
-  - `ReadState` — type-erased selector query: carries `Box<dyn FnOnce(&SharedState) -> Box<dyn Any + Send> + Send>` and replies with `Box<dyn Any + Send>`. The derived actor downcasts the response to its concrete `T`. This is the one place `Any` is required — the alternative (a typed message per selector) would need a separate message type for every derived signal.
+  - `ReadState` — type-erased selector query: carries `Box<dyn FnOnce(&SharedState) -> Box<dyn Any + Send> + Send>` and replies with `Box<dyn Any + Send>`. Note: the closure is `FnOnce` because each `ReadState` message is constructed fresh per notification — the derived actor holds its selector as `Fn` and wraps it in a new `FnOnce` closure for each ask. The derived actor downcasts the `Box<dyn Any>` response to its concrete `T`. This is the one place `Any` is required.
+
+  **Notification batching:** Each mutation handler sends `StateChanged` individually. If a sync batch applies 10 events, that's 10 notifications × N subscribers. This is correct but chatty. Optimization (deferred): coalesce notifications by processing all pending mailbox messages before notifying, so a burst of mutations triggers only one `StateChanged` round. Not needed initially — the PartialEq check in derived actors prevents redundant signal updates regardless.
 
   **Contract with Task 7:** The `Subscribe`, `StateChanged`, and `ReadState` messages form the interface that `DerivedStateActor` (defined in the web crate) depends on. Design them as a stable API.
 
@@ -245,24 +247,24 @@ Network → TopicListenerActor → mutations → ClientStateActor
 
 The `ClientEvent` channel and `process_event_batch` are eliminated for state-derived signals. Each Leptos signal is backed by a `DerivedStateActor` that watches a specific slice of `SharedState` via a selector function.
 
-- [ ] **Step 1: Implement `DerivedStateActor<T>`.** Generic actor parameterized by `T: PartialEq + Clone + Default + Send + 'static`. Fields: `state_addr: Addr<ClientStateActor>`, `selector: Box<dyn Fn(&SharedState) -> T + Send>`, `cached: Option<T>`, `write: WriteSignalSender<T>` (a callback or channel that sets the Leptos signal — must be `Send` on WASM via `SendWrapper`). Implements `Handler<StateChanged>`: asks state actor via `ReadState` (passes a closure that calls the selector, returns `Box<dyn Any + Send>`), downcasts the `Box<dyn Any>` response to `T`, compares with cached, updates signal if different. In `started()`: subscribes to state actor via `Subscribe`, then immediately asks for the current value to seed the signal (so it doesn't show `T::default()` for long).
+- [ ] **Step 1: Implement `DerivedStateActor<T>`.** Generic actor parameterized by `T: PartialEq + Clone + Default + Send + 'static`. Fields: `state_addr: Addr<ClientStateActor>`, `selector: Box<dyn Fn(&SharedState) -> T + Send>`, `cached: Option<T>`, `write: SendWrapper<WriteSignal<T>>` (Leptos's `WriteSignal` is `!Send` — `SendWrapper` makes it `Send`, safe on single-threaded WASM). Implements `Handler<StateChanged>`: constructs a `ReadState` message by wrapping `&self.selector` in a fresh `FnOnce` closure that returns `Box<dyn Any + Send>`, asks state actor, downcasts response to `T`, compares with cached, calls `self.write.set(new_value)` if different. In `started()`: subscribes to state actor via `Subscribe`, then immediately asks for the current value to seed the signal.
 
 - [ ] **Step 2: Implement `derived_signal` helper.** A function in the web crate (not in willow-actor — it depends on Leptos): `fn derived_signal<T>(state_addr, system, selector) -> ReadSignal<T>`. Creates a Leptos signal pair, spawns a `DerivedStateActor`, returns the read half. This is the primary API for connecting actor state to Leptos.
 
 - [ ] **Step 3: Rewrite `state.rs`.** Replace the current `create_signals()` function (which creates ~30 independent signals) with calls to `derived_signal()`. Each signal maps to a selector:
-  - `messages` → `|s| s.state.messages_for(&s.state.current_channel)`
   - `channels` → `|s| s.state.channels.clone()`
   - `peers` → `|s| s.state.chat.peers.clone()`
   - `display_name` → `|s| s.state.display_name.clone()`
+  - `messages` → `|s| s.state.messages_for(&s.state.current_channel)` — this requires `current_channel` to be in `SharedState`, not a standalone Leptos signal. **Move `current_channel` into `SharedState`** so the selector can read it. Channel switching becomes a state actor mutation (`SetCurrentChannel`), and the messages selector naturally picks up the new channel.
   - etc.
 
-  Signals that don't derive from `SharedState` (e.g., `show_settings`, `show_palette`, `current_tab`) remain as regular Leptos signals — they are pure UI state.
+  Signals that are purely local UI state (e.g., `show_settings`, `show_palette`, `current_tab`) remain as regular Leptos signals — no actor needed. The rule: if other selectors depend on it, it belongs in `SharedState`; if nothing else reads it, it stays as a local signal.
 
 - [ ] **Step 4: Update `app.rs`.** Remove the `spawn_local` event loop that drained `ClientEvent`s and called `process_event_batch`. Remove `refresh_all_signals`. The `ClientHandle` connection still happens in a `spawn_local` (network setup is async), but signal updates are now automatic via derived state actors. All state — including typing indicators, connection status, and voice participants — flows through the state actor and derived signals.
 
 - [ ] **Step 5: Delete `event_processing.rs`.** The entire module is replaced by derived state actors. The `process_event_batch` function, `needs_*_refresh` flags, `ClientEvent` enum, and event-to-signal mapping are all gone.
 
-- [ ] **Step 6: Update components.** Components that called `handle.peers()`, `handle.messages()`, etc. directly now read from their corresponding derived signal instead. Components that perform actions (send message, create channel) still call `handle.send_message()` etc., which sends a mutation message to the state actor. Grep for `handle.` in components and verify each call is either an action (keep) or a state read (replace with signal).
+- [ ] **Step 6: Update components.** Components that called `handle.peers()`, `handle.messages()`, etc. directly now read from their corresponding derived signal instead. Components that perform actions (send message, create channel) still call `handle.send_message()` etc. — these are now async (Task 6), so sync event handlers (button clicks, key presses) must wrap action calls in `spawn_local`. Grep for `handle.` in components and classify each call: state read → replace with signal, action → wrap in `spawn_local` if in a sync context.
 
 - [ ] **Step 7: Verify WASM compilation.** `just check-wasm` must pass.
 
