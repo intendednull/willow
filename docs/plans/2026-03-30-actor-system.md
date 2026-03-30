@@ -92,7 +92,10 @@ Defines the trait hierarchy and the type-erased message dispatch mechanism.
 
 - [ ] **Step 1: Define `Message` trait.** `Send + 'static` with `type Result: Send + 'static`.
 
-- [ ] **Step 2: Define `Actor` trait.** `Send + 'static + Sized` with `started()` and `stopped()` lifecycle hooks using RPITIT (not async_trait). Both have default no-op impls.
+- [ ] **Step 2: Define `Actor` trait.** `Send + 'static + Sized` with lifecycle hooks using RPITIT (not async_trait), all with default no-op impls:
+  - `started(&mut self, ctx: &mut Context<Self>)` — called once before processing messages
+  - `stopped(&mut self)` — called when the actor is shutting down
+  - `idle(&mut self, ctx: &mut Context<Self>)` — called after the mailbox drains all immediately-available messages (i.e., when `try_recv()` returns empty). Used for batched notification patterns.
 
 - [ ] **Step 3: Define `Handler<M>` trait.** `fn handle(&mut self, msg: M, ctx: &mut Context<Self>) -> impl Future<Output = M::Result> + Send`. Supertrait is `Actor`.
 
@@ -100,7 +103,16 @@ Defines the trait hierarchy and the type-erased message dispatch mechanism.
 
 - [ ] **Step 5: Implement `envelope.rs`.** `BoxEnvelope<A>` type alias: `Box<dyn FnOnce(&mut A, &mut Context<A>) -> BoxFuture<'_, ()> + Send>`. Two factory functions: `envelope_send<A, M>(msg) -> BoxEnvelope<A>` (fire-and-forget) and `envelope_ask<A, M>(msg, reply_tx) -> BoxEnvelope<A>` (captures oneshot sender). Both wrap the handler call in a closure.
 
-- [ ] **Step 6: Implement `mailbox.rs`.** `async fn run_mailbox<A: Actor>(mut actor: A, ctx: Context<A>, rx: Receiver<BoxEnvelope<A>>, stop: Arc<AtomicBool>, done: OneshotTx<()>)`: actor is moved in and mutated via `&mut` for its lifetime. The `Context` and `done` oneshot are provided by the caller (System in Task 3, test harness here). Calls `actor.started(&mut ctx)`, loops on `rx.recv()`, executes each envelope passing `&mut actor` and `&mut ctx`, checks stop flag between messages, calls `actor.stopped()` on exit, then signals `done`. For Task 2 tests, construct a minimal `Context` with a dummy `SystemHandle`.
+- [ ] **Step 6: Implement `mailbox.rs`.** `async fn run_mailbox<A: Actor>(mut actor: A, ctx: Context<A>, rx: Receiver<BoxEnvelope<A>>, stop: Arc<AtomicBool>, done: OneshotTx<()>)`: actor is moved in and mutated via `&mut` for its lifetime. The `Context` and `done` oneshot are provided by the caller (System in Task 3, test harness here). Loop structure:
+  1. Call `actor.started(&mut ctx)`
+  2. `recv().await` — blocks until at least one message arrives
+  3. Execute the envelope
+  4. `try_recv()` in a loop — drain all immediately-available messages without yielding, executing each envelope
+  5. Call `actor.idle(&mut ctx)` — queue is now empty
+  6. Check stop flag — if set, exit loop
+  7. Go to step 2
+
+  On exit (channel closed or stop flag), call `actor.stopped()`, then signal `done`. For Task 2 tests, construct a minimal `Context` with a dummy `SystemHandle`.
 
 - [ ] **Step 7: Write mailbox-level tests.** Test `run_mailbox` directly by creating a channel, sending `BoxEnvelope`s manually, and verifying the actor processes them. Test that the mailbox loop exits when the sender is dropped. Full `Addr`/`System`-level tests come in Task 3.
 
@@ -198,7 +210,7 @@ Replace `Arc<RwLock<SharedState>>` and `futures::channel::mpsc` with actors. The
   - `Subscribe(Recipient<StateChanged>)` — register a new watcher
   - `ReadState` — type-erased selector query: carries `Box<dyn FnOnce(&SharedState) -> Box<dyn Any + Send> + Send>` and replies with `Box<dyn Any + Send>`. Note: the closure is `FnOnce` because each `ReadState` message is constructed fresh per notification — the derived actor holds its selector as `Fn` and wraps it in a new `FnOnce` closure for each ask. The derived actor downcasts the `Box<dyn Any>` response to its concrete `T`. This is the one place `Any` is required.
 
-  **Notification batching:** Each mutation handler sends `StateChanged` individually. If a sync batch applies 10 events, that's 10 notifications × N subscribers. This is correct but chatty. Optimization (deferred): coalesce notifications by processing all pending mailbox messages before notifying, so a burst of mutations triggers only one `StateChanged` round. Not needed initially — the PartialEq check in derived actors prevents redundant signal updates regardless.
+  **Notification batching:** Mutations don't notify subscribers individually. Instead, the state actor uses a `dirty: bool` flag. Each mutation handler sets `dirty = true` but does not send `StateChanged` directly. The mailbox loop is modified to drain: after processing one envelope via `recv().await`, it calls `try_recv()` in a loop to process all immediately-available messages without yielding. Only after the queue is drained does it call a new `Actor::idle()` hook. The `ClientStateActor` implements `idle()`: if `dirty`, send `StateChanged` to all subscribers and reset the flag. This means a burst of N mutations from a sync batch processes all N, then sends a single `StateChanged` round. The `idle()` hook is added to the `Actor` trait in Task 2 with a default no-op.
 
   **Contract with Task 7:** The `Subscribe`, `StateChanged`, and `ReadState` messages form the interface that `DerivedStateActor` (defined in the web crate) depends on. Design them as a stable API.
 

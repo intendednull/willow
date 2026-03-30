@@ -250,6 +250,14 @@ pub trait Actor: Send + 'static + Sized {
     /// Called when the actor is stopping (mailbox closed or explicit stop).
     fn stopped(&mut self)
         -> impl Future<Output = ()> + Send { async {} }
+
+    /// Called after the mailbox drains all immediately-available messages.
+    /// The mailbox processes one message via recv().await, then drains
+    /// remaining messages via try_recv(), then calls idle(). Use this
+    /// for batched notifications — e.g., set a dirty flag in mutation
+    /// handlers, then notify subscribers in idle().
+    fn idle(&mut self, ctx: &mut Context<Self>)
+        -> impl Future<Output = ()> + Send { async {} }
 }
 ```
 
@@ -773,11 +781,13 @@ separate event channels, no special cases.
 
 ### Notification cost
 
-Each mutation triggers N `StateChanged` messages (one per subscriber)
-plus N `ReadState` ask round-trips. With ~15-20 derived signals and
-in-process message passing (no I/O, same thread on WASM), this is
-sub-millisecond total. The PartialEq check prevents signal updates
-from propagating further.
+Notifications are batched via the `Actor::idle()` hook. A burst of
+mutations (e.g., a sync batch applying 10 events) is processed in one
+drain cycle, then triggers a single `StateChanged` round. Each round
+sends N messages to subscribers (one per derived signal) plus N
+`ReadState` ask round-trips. With ~15-20 derived signals and in-process
+message passing (no I/O, same thread on WASM), this is sub-millisecond.
+The PartialEq check prevents signal updates from propagating further.
 
 ## Decisions
 
