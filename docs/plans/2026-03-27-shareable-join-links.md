@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust, Leptos 0.7, libp2p gossipsub, willow_transport serialization, localStorage persistence.
 
-**Spec:** `docs/superpowers/specs/2026-03-27-shareable-join-links-design.md`
+**Spec:** `docs/specs/2026-03-27-shareable-join-links-design.md`
 
 ---
 

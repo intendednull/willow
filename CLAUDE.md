@@ -8,6 +8,9 @@ networking, Bevy for the desktop UI, and Ed25519 cryptography for identity.
 ## Repository Structure
 
 ```
+docs/
+├── plans/       — Implementation plans for features
+└── specs/       — Design specs and technical specifications
 crates/
 ├── state/       — Pure event-sourced state machine, zero I/O (willow-state)
 ├── client/      — UI-agnostic client library wrapping state + networking (willow-client)
@@ -209,6 +212,7 @@ interaction.
 - **Documentation**: Every public type and function has a doc comment. Module-level `//!` docs explain the purpose and provide examples.
 - **Testing**: Every crate has unit tests. Use `#[cfg(test)] mod tests` at the bottom of each file.
 - **Serialization**: All wire types derive `Serialize + Deserialize`. Round-trip tests validate compatibility.
+- **Specs & Plans**: Design specs go in `docs/specs/`, implementation plans go in `docs/plans/`. Name files with date prefix: `YYYY-MM-DD-<feature-name>.md`.
 
 ## Architecture Notes
 

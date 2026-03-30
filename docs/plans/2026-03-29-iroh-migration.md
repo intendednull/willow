@@ -6,7 +6,7 @@
 
 **Tech Stack:** Rust, iroh (0.97), iroh-gossip (0.97), iroh-blobs (0.99), iroh-relay (0.97), tokio, blake3
 
-**Spec:** `docs/superpowers/specs/2026-03-29-iroh-migration-design.md`
+**Spec:** `docs/specs/2026-03-29-iroh-migration-design.md`
 
 ---
 
