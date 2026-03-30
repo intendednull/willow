@@ -84,24 +84,14 @@ the closest match to our desired API shape:
 
 **Why not adopt xtra directly:**
 
-1. **Hard `Send` bound on `Actor`**: The `Actor` trait requires
-   `Send + 'static`. On WASM, all types are trivially `Send` (single
-   thread), but this forces `Send` constraints to propagate through the
-   entire Willow type graph. Many Willow types use `Rc<RefCell<>>` in
-   WASM paths (e.g., `ClientHandle.shared`), which are not `Send`.
-   Switching to `Arc<Mutex<>>` everywhere adds overhead on WASM for no
-   benefit.
-2. **No supervision**: No restart policies or supervisor trees. Actors
+1. **No supervision**: No restart policies or supervisor trees. Actors
    that panic are simply gone.
-3. **No `Recipient<M>` / type-erased message targets**: xtra has
+2. **No `Recipient<M>` / type-erased message targets**: xtra has
    `MessageChannel` but it's less ergonomic than a standalone
    `Recipient<M>` type for pub-sub patterns.
-4. **No interval support**: No built-in periodic tick mechanism. The
+3. **No interval support**: No built-in periodic tick mechanism. The
    heartbeat/sync actors would still need manual timer loops.
-5. **No `Send` pattern**: The `Send` bound is unconditional. Our
-   design needs conditional `Send` to avoid unnecessary synchronization
-   on WASM.
-6. **Low activity**: Last release Feb 2024, limited maintenance signal.
+4. **Low activity**: Last release Feb 2024, limited maintenance signal.
 
 ### kameo — best API shape, no WASM
 
@@ -167,7 +157,7 @@ actor lifecycle) but introduces:
 - The `Send` bound issue remains (kameo won't accept a `Send`
   change upstream — it's a fundamental API decision)
 - kameo's `remote` feature (libp2p-based distributed actors) would
-  conflict with Willow's existing libp2p networking layer
+  conflict with Willow's iroh networking layer
 - kameo's dependency on `downcast-rs`, `dyn-clone`, `serde` (with
   derive) adds weight Willow doesn't need
 
@@ -237,8 +227,7 @@ concurrency patterns above the network layer are still hand-rolled:
 | Layer | Current pattern | Problem |
 |-------|----------------|---------|
 | Worker actors | `tokio::sync::mpsc` + `oneshot` + `watch`, 4 manual loops | Not reusable, manual shutdown via watch channel |
-| Client lib | `Arc<RwLock<SharedState>>` + `futures::channel::mpsc` | Event loop is a monolithic match block |
-| Bevy bridge | `std::sync::mpsc` polling | Tightly coupled to network internals |
+| Client lib | `Arc<RwLock<SharedState>>` + `futures::channel::mpsc` | Shared mutable state behind locks, monolithic event loop |
 | Web UI | `futures::channel::mpsc` + `spawn_local` | Duplicates client event loop logic |
 
 The worker crate already uses an actor pattern (state, network, heartbeat,
@@ -256,14 +245,14 @@ per-crate boilerplate.
 2. **Typed mailboxes**: each actor defines its message type, no `Box<dyn Any>`
 3. **Request-reply**: first-class `ask()` with typed responses, no manual oneshot wiring
 4. **Supervision**: restart policies for crashed actors (native), error propagation (WASM)
-5. **Lightweight**: no `Arc<Mutex<>>` in the hot path, no dynamic dispatch on send
-6. **Incremental adoption**: existing crates can migrate one actor at a time
+5. **No locks**: shared state lives inside actors, eliminating `Arc<Mutex<>>` / `Arc<RwLock<>>` — access is serialized through message passing
+6. **Lightweight**: no dynamic dispatch on send
 
 ## Non-Goals
 
-- Distributed actors / remote messaging (libp2p handles that)
+- Distributed actors / remote messaging (iroh gossip handles that)
 - Actor persistence / event sourcing (willow-state handles that)
-- Replacing Bevy's ECS (the bridge stays, but becomes thinner)
+- Bevy desktop app (out of scope for this migration)
 
 ## Core Types
 
@@ -436,9 +425,6 @@ impl System {
     /// Spawn a top-level actor and return its address.
     pub fn spawn<A: Actor>(&self, actor: A) -> Addr<A> { ... }
 
-    /// Spawn with a specific mailbox capacity (default: 256).
-    pub fn spawn_with_capacity<A: Actor>(&self, actor: A, capacity: usize) -> Addr<A> { ... }
-
     /// Get a handle that can be passed to other contexts.
     pub fn handle(&self) -> SystemHandle { ... }
 
@@ -472,7 +458,7 @@ timer abstraction) on WASM.
 
 ## Mailbox Internals
 
-Each actor gets a mailbox backed by a bounded MPSC channel. Messages are
+Each actor gets a mailbox backed by an unbounded MPSC channel. Messages are
 type-erased inside the mailbox using a closure-based envelope pattern:
 
 ```rust
@@ -524,12 +510,13 @@ Actors can subscribe to external event streams (e.g., network events,
 timers) that feed into their mailbox:
 
 ```rust
-#[async_trait(?Send)]
-pub trait StreamHandler<S: 'static + Send>: Actor {
-    async fn handle_stream_item(&mut self, item: S, ctx: &mut Context<Self>);
+pub trait StreamHandler<S: Send + 'static>: Actor {
+    fn handle_stream_item(&mut self, item: S, ctx: &mut Context<Self>)
+        -> impl Future<Output = ()> + Send;
 
     /// Called when the stream ends.
-    async fn stream_finished(&mut self, _ctx: &mut Context<Self>) {}
+    fn stream_finished(&mut self, _ctx: &mut Context<Self>)
+        -> impl Future<Output = ()> + Send { async {} }
 }
 
 impl<A: Actor> Context<A> {
@@ -575,8 +562,6 @@ impl IntervalHandle {
 pub enum SendError<M> {
     #[error("actor mailbox is closed")]
     Closed(M),
-    #[error("actor mailbox is full")]
-    Full(M),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -667,39 +652,29 @@ of a manual `tokio::select! + sleep` loop. Shutdown propagates via
 
 ### Phase 2: Client library
 
-Replace `ClientHandle<N>`'s `futures::channel::mpsc` event dispatching
-with actor addresses. The client event loop becomes an actor with
-`StreamHandler` for `TopicEvents`. The client already uses
-`Arc<RwLock<>>` — no `Rc<RefCell<>>` migration needed (iroh already
-required this).
+Replace `ClientHandle<N>`'s `Arc<RwLock<SharedState>>` with actors.
+Shared state moves into a state actor — no more locks. The client event
+loop becomes an actor with `StreamHandler` for `TopicEvents`. External
+callers use `Addr` to send commands and `ask()` to query state.
 
-### Phase 3: Network bridge
-
-The Bevy bridge becomes a thin adapter: a Bevy system polls a `Receiver`
-that an actor feeds. The bridge actor wraps iroh network interactions.
-
-### Phase 4: Web UI
+### Phase 3: Web UI
 
 The Leptos event loop becomes a `StreamHandler` on a UI actor. Signal
-updates happen in the handler. Validates WASM target correctness.
+updates happen in the handler. Validates WASM target correctness and
+completes the migration across all active crates.
 
-## Open Questions
+## Decisions
 
-1. **Backpressure policy**: When a mailbox is full, should `send()` drop
-   the message (lossy) or return an error? Current design returns
-   `SendError::Full`. An `async fn send_async()` that awaits capacity
-   is straightforward since we're always on tokio.
+1. **Mailboxes are unbounded.** `send()` returns `Err` only if the
+   actor is dead (mailbox closed). Bounded mailboxes can be added later
+   if backpressure becomes necessary.
 
-2. **Priority messages**: Should shutdown/stop bypass the queue? Current
-   design: no, messages are FIFO. Shutdown is just another message. The
-   `Context::stop()` flag is checked between messages. The
-   `CancellationToken` provides an independent shutdown signal that
-   doesn't go through the mailbox.
+2. **FIFO, no priority messages.** Shutdown is just another message.
+   `CancellationToken` provides an independent out-of-band shutdown
+   signal that doesn't go through the mailbox.
 
-3. **Bounded vs unbounded mailboxes**: The current network layers use
-   unbounded channels to avoid dropping gossipsub messages. Should
-   `System::spawn_unbounded()` be offered? Probably yes, with a lint
-   warning in docs.
-
-4. **`Rc<RefCell<>>` migration**: ~~Already done~~ — the iroh migration
-   switched the client to `Arc<RwLock<>>`. No further changes needed.
+3. **Shared state lives in actors.** `Arc<RwLock<SharedState>>` in the
+   client library is replaced by a state actor. External code queries
+   state via `ask()`. This eliminates all locks from the hot path —
+   the actor processes messages sequentially, so no synchronization is
+   needed inside the actor.
