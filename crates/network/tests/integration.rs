@@ -59,6 +59,11 @@ async fn create_two_nodes() -> (TestNode, TestNode) {
         .await
         .unwrap();
 
+    // Register each endpoint's address info in the shared discovery
+    // so they can find each other without a relay.
+    discovery.add_endpoint_info(ep_a.addr());
+    discovery.add_endpoint_info(ep_b.addr());
+
     let gossip_a = iroh_gossip::Gossip::builder()
         .max_message_size(65536)
         .spawn(ep_a.clone());
