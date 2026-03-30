@@ -362,7 +362,7 @@ abstract over the concrete actor:
 /// Type-erased handle that can send a specific message type.
 /// Useful for pub-sub patterns where the sender doesn't know the actor type.
 pub struct Recipient<M: Message> {
-    tx: Box<dyn RecipientSender<M>>,  // internal trait, not public
+    tx: Box<dyn RecipientSender<M> + Send>,  // internal trait, not public
 }
 
 impl<M: Message> Recipient<M> {
@@ -688,7 +688,7 @@ value actually changes.
 
 ```
 Network → TopicListenerActor → mutations → ClientStateActor
-                                                ↓ notifies after each mutation
+                                                ↓ idle() notifies after drain
                                            StateChanged
                                                 ↓
                               ┌──────────────────┼──────────────────┐
@@ -704,9 +704,12 @@ Network → TopicListenerActor → mutations → ClientStateActor
 
 ### How it works
 
-1. **`ClientStateActor`** holds `SharedState` and a list of
-   `Recipient<StateChanged>` subscribers. After every mutation handler
-   completes, it sends `StateChanged` to all subscribers.
+1. **`ClientStateActor`** holds `SharedState`, a list of
+   `Recipient<StateChanged>` subscribers, and a `dirty` flag. Mutation
+   handlers set `dirty = true`. The `idle()` hook (called after the
+   mailbox drains all pending messages) checks the flag, sends
+   `StateChanged` to all subscribers if dirty, and resets. This
+   batches a burst of mutations into a single notification round.
 
 2. **`DerivedStateActor<T>`** is a generic actor parameterized by:
    - A selector: `Arc<dyn Fn(&SharedState) -> T + Send + Sync>`
