@@ -30,7 +30,7 @@ pub async fn run<T: TopicHandle>(
                 if *shutdown.borrow() {
                     // Send departure before exiting.
                     let departure = WorkerWireMessage::Departure {
-                        peer_id: peer_id.clone(),
+                        peer_id,
                     };
                     if let Ok(bytes) = bincode::serialize(&departure) {
                         if let Err(e) = topic.broadcast(bytes::Bytes::from(bytes)).await {
@@ -63,7 +63,7 @@ pub async fn run<T: TopicHandle>(
         };
 
         let announcement = WorkerAnnouncement {
-            peer_id: peer_id.clone(),
+            peer_id,
             role: role_info,
             servers: vec![], // Populated by state actor in the full runtime
             timestamp: std::time::SystemTime::now()

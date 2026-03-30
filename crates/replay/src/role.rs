@@ -54,7 +54,7 @@ impl ReplayRole {
             .servers
             .entry(server_id.to_string())
             .or_insert_with(|| ServerData {
-                state: ServerState::new(server_id, server_id, event.author.clone()),
+                state: ServerState::new(server_id, server_id, event.author),
                 events: VecDeque::new(),
                 max_events: self.config.max_events_per_server,
             });

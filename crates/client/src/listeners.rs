@@ -165,11 +165,13 @@ async fn process_received_message<T: TopicHandle>(
             }
         }
         crate::ops::WireMessage::SyncRequest { state_hash, .. } => {
-            let s = shared.read().unwrap();
-            let missing = s.state.event_store.events_since(&state_hash);
+            let (missing, identity) = {
+                let s = shared.read().unwrap();
+                let m = s.state.event_store.events_since(&state_hash);
+                let id = s.identity.clone();
+                (m, id)
+            };
             if !missing.is_empty() {
-                let identity = s.identity.clone();
-                drop(s);
                 let msg = crate::ops::WireMessage::SyncBatch { events: missing };
                 if let Some(data) = crate::ops::pack_wire(&msg, &identity) {
                     let _ = topic.broadcast(bytes::Bytes::from(data)).await;
@@ -227,21 +229,26 @@ async fn process_received_message<T: TopicHandle>(
             }
         }
         crate::ops::WireMessage::JoinRequest { link_id, peer_id } => {
-            let mut s = shared.write().unwrap();
-            let valid = s
-                .join_links
-                .iter_mut()
-                .find(|l| l.link_id == link_id && l.is_valid());
-            if let Some(link) = valid {
-                link.used += 1;
-                if s.config.persistence {
-                    crate::storage::save_join_links(
-                        s.state.active_server.as_deref().unwrap_or(""),
-                        &s.join_links,
-                    );
+            let should_respond = {
+                let mut s = shared.write().unwrap();
+                let valid = s
+                    .join_links
+                    .iter_mut()
+                    .find(|l| l.link_id == link_id && l.is_valid());
+                if let Some(link) = valid {
+                    link.used += 1;
+                    if s.config.persistence {
+                        crate::storage::save_join_links(
+                            s.state.active_server.as_deref().unwrap_or(""),
+                            &s.join_links,
+                        );
+                    }
+                    Some(s.identity.clone())
+                } else {
+                    None
                 }
-                let identity = s.identity.clone();
-                drop(s);
+            };
+            if let Some(identity) = should_respond {
                 match crate::generate_invite_shared(shared, &peer_id) {
                     Ok(invite_data) => {
                         let msg = crate::ops::WireMessage::JoinResponse {
