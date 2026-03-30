@@ -5800,16 +5800,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "willow-files"
-version = "0.1.0"
-dependencies = [
- "serde",
- "sha2 0.10.9",
- "thiserror 1.0.69",
- "willow-transport",
-]
-
-[[package]]
 name = "willow-identity"
 version = "0.1.0"
 dependencies = [

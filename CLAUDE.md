@@ -231,7 +231,6 @@ willow-app → willow-crypto   → willow-identity → willow-transport
                              → willow-identity
            → willow-messaging → willow-identity
                               (defines SealedContent used by willow-crypto)
-           → willow-files    (DELETED — replaced by iroh-blobs)
 ```
 
 ### Async / Sync Boundary
@@ -332,11 +331,12 @@ consistent ordering even when system clocks drift.
 2. Check it in the relevant server methods
 3. Add tests
 
-### Adding a new libp2p protocol
+### Adding a new iroh protocol
 
-1. Add the protocol to `WillowBehaviour` in `crates/network/src/behaviour.rs`
-2. Handle its events in `run_swarm()` in `crates/network/src/node.rs`
-3. Expose relevant commands/events through `NetworkNode` and `NetworkEvent`
+1. Define the protocol in `crates/network/src/traits.rs` if needed
+2. Implement it in `crates/network/src/iroh.rs` using iroh's ALPN routing
+3. Add a test double in `crates/network/src/mem.rs`
+4. Use the trait in client/worker code
 
 ### Adding a new UI system
 
