@@ -3,6 +3,8 @@
 //! Events emitted by the client when state changes. These provide a
 //! UI-framework-agnostic notification mechanism for frontends to react to.
 
+use willow_identity::EndpointId;
+
 /// Events emitted by the client when state changes.
 #[derive(Debug, Clone)]
 pub enum ClientEvent {
@@ -24,24 +26,24 @@ pub enum ClientEvent {
         channel: String,
         message_id: String,
         emoji: String,
-        author: String,
+        author: EndpointId,
     },
-    PeerConnected(String),
-    PeerDisconnected(String),
+    PeerConnected(EndpointId),
+    PeerDisconnected(EndpointId),
     ChannelCreated(String),
     ChannelDeleted(String),
-    MemberKicked(String),
-    PeerTrusted(String),
-    PeerUntrusted(String),
+    MemberKicked(EndpointId),
+    PeerTrusted(EndpointId),
+    PeerUntrusted(EndpointId),
     ProfileUpdated {
-        peer_id: String,
+        peer_id: EndpointId,
         display_name: String,
     },
     FileAnnounced {
         channel: String,
         filename: String,
         size: u64,
-        from: String,
+        from: EndpointId,
     },
     Listening(String),
     SyncCompleted {
@@ -55,7 +57,7 @@ pub enum ClientEvent {
         role_id: String,
     },
     StateHashMismatch {
-        peer_id: String,
+        peer_id: EndpointId,
         our_hash: String,
         their_hash: String,
     },
