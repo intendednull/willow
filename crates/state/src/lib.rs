@@ -423,15 +423,15 @@ fn apply_inner(state: &mut ServerState, event: &Event) -> ApplyResult {
         } => {
             state
                 .peer_permissions
-                .entry(peer_id.clone())
+                .entry(*peer_id)
                 .or_default()
                 .insert(permission.clone());
             // Also ensure they are a member.
             state
                 .members
-                .entry(peer_id.clone())
+                .entry(*peer_id)
                 .or_insert_with(|| Member {
-                    peer_id: peer_id.clone(),
+                    peer_id: *peer_id,
                     roles: std::collections::HashSet::new(),
                     display_name: None,
                 });
@@ -465,7 +465,7 @@ fn apply_inner(state: &mut ServerState, event: &Event) -> ApplyResult {
             state.messages.push(ChatMessage {
                 id: event.id.clone(),
                 channel_id: channel_id.clone(),
-                author: event.author.clone(),
+                author: event.author,
                 body: body.clone(),
                 timestamp_ms: event.timestamp_ms,
                 edited: false,
@@ -498,15 +498,15 @@ fn apply_inner(state: &mut ServerState, event: &Event) -> ApplyResult {
                 msg.reactions
                     .entry(emoji.clone())
                     .or_default()
-                    .push(event.author.clone());
+                    .push(event.author);
             }
         }
 
         EventKind::SetProfile { display_name } => {
             state.profiles.insert(
-                event.author.clone(),
+                event.author,
                 Profile {
-                    peer_id: event.author.clone(),
+                    peer_id: event.author,
                     display_name: display_name.clone(),
                 },
             );
