@@ -98,6 +98,7 @@ impl BlobStore for IrohBlobStore {
 // ───── IrohTopicHandle ─────────────────────────────────────────────────────
 
 /// Handle to a gossip topic, wrapping [`GossipSender`].
+#[derive(Clone)]
 pub struct IrohTopicHandle {
     sender: GossipSender,
     receiver_neighbors: std::sync::Arc<std::sync::RwLock<Vec<EndpointId>>>,

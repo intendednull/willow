@@ -38,7 +38,7 @@ pub enum GossipEvent {
 ///
 /// Mirrors `iroh_gossip::GossipSender` but as a trait for testability.
 #[async_trait]
-pub trait TopicHandle: Send + Sync {
+pub trait TopicHandle: Send + Sync + Clone {
     /// Broadcast data to all peers subscribed to this topic.
     async fn broadcast(&self, data: Bytes) -> Result<()>;
 

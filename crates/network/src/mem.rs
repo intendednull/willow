@@ -179,6 +179,7 @@ impl BlobStore for MemBlobStore {
 // ───── MemTopicHandle ───────────────────────────────────────────────────────
 
 /// Topic handle backed by a broadcast channel.
+#[derive(Clone)]
 pub struct MemTopicHandle {
     id: EndpointId,
     topic: TopicId,
