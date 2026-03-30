@@ -54,6 +54,10 @@ crates/
             ├── channels.rs   — Channel/role/member management, invites, trust
             ├── settings.rs   — Settings view systems
             └── files.rs      — File picker systems
+
+docs/superpowers/
+├── specs/   — Design specs for new features and architecture changes
+└── plans/   — Implementation plans referencing the specs
 ```
 
 ## Build & Test
