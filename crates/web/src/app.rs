@@ -34,10 +34,7 @@ pub fn toggle_theme() {
 const LOADING_TIMEOUT_MS: u32 = 5_000;
 
 /// Wrapper around `willow_client::ClientHandle` that is `Send` for single-threaded WASM.
-#[cfg(not(target_arch = "wasm32"))]
 pub type WebClientHandle = SendWrapper<ClientHandle<willow_network::iroh::IrohNetwork>>;
-#[cfg(target_arch = "wasm32")]
-pub type WebClientHandle = SendWrapper<ClientHandle<willow_network::stub::StubNetwork>>;
 
 /// Wrapper around `Rc<RefCell<VoiceManager>>` that is `Send` for single-threaded WASM.
 pub type VoiceManagerHandle = SendWrapper<Rc<RefCell<VoiceManager>>>;
@@ -51,10 +48,7 @@ fn new_client() -> (WebClientHandle, willow_client::ClientEventLoop) {
         relay_addr: Some(DEFAULT_RELAY.to_string()),
         ..ClientConfig::default()
     };
-    #[cfg(not(target_arch = "wasm32"))]
     let (handle, event_loop) = ClientHandle::<willow_network::iroh::IrohNetwork>::new(config);
-    #[cfg(target_arch = "wasm32")]
-    let (handle, event_loop) = ClientHandle::<willow_network::stub::StubNetwork>::new(config);
     (SendWrapper::new(handle), event_loop)
 }
 

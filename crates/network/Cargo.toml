@@ -10,8 +10,9 @@ test-utils = []
 
 [dependencies]
 willow-identity = { path = "../identity" }
+iroh = { workspace = true }
 iroh-base = { workspace = true, features = ["key"] }
-iroh-gossip = { workspace = true, default-features = false }
+iroh-gossip = { workspace = true }
 
 async-trait = { workspace = true }
 bytes = { workspace = true }
@@ -22,9 +23,9 @@ tracing = { workspace = true }
 serde = { workspace = true }
 futures-lite = "2"
 
-# Native-only: full iroh networking (pulls in tokio, mio, etc.)
+# iroh-blobs pulls in bao-tree → tokio net (mio) which doesn't compile
+# on WASM. Gate as native-only; use BlobHash wrapper for cross-platform.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-iroh = { workspace = true }
 iroh-blobs = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 
