@@ -96,7 +96,7 @@ Defines the trait hierarchy and the type-erased message dispatch mechanism.
 
 - [ ] **Step 5: Implement `envelope.rs`.** `BoxEnvelope<A>` type alias: `Box<dyn FnOnce(&mut A, &mut Context<A>) -> BoxFuture<'_, ()> + Send>`. Two factory functions: `envelope_send<A, M>(msg) -> BoxEnvelope<A>` (fire-and-forget) and `envelope_ask<A, M>(msg, reply_tx) -> BoxEnvelope<A>` (captures oneshot sender). Both wrap the handler call in a closure.
 
-- [ ] **Step 6: Implement `mailbox.rs`.** `async fn run_mailbox<A: Actor>(actor: A, rx: Receiver<BoxEnvelope<A>>)`: calls `actor.started()`, loops on `rx.recv()`, executes each envelope, calls `actor.stopped()` on exit. Checks a stop flag between messages.
+- [ ] **Step 6: Implement `mailbox.rs`.** `async fn run_mailbox<A: Actor>(mut actor: A, rx: Receiver<BoxEnvelope<A>>, stop: Arc<AtomicBool>)`: actor is moved in and mutated via `&mut` for its lifetime. Calls `actor.started(&mut ctx)`, loops on `rx.recv()`, executes each envelope passing `&mut actor` and `&mut ctx`, checks stop flag between messages, calls `actor.stopped()` on exit (either channel closed or stop flag set).
 
 - [ ] **Step 7: Write mailbox-level tests.** Test `run_mailbox` directly by creating a channel, sending `BoxEnvelope`s manually, and verifying the actor processes them. Test that the mailbox loop exits when the sender is dropped. Full `Addr`/`System`-level tests come in Task 3.
 
@@ -116,7 +116,7 @@ Wires everything together into the public API.
 
 - [ ] **Step 2: Implement `AnyAddr`.** Type-erased address that can only signal stop (drops a held sender) and check liveness. `From<Addr<A>>` impl.
 
-- [ ] **Step 3: Implement `Context<A>`.** Fields: `addr: Addr<A>`, `system: SystemHandle`. The mailbox loop holds the stop flag internally (not in Context). Methods: `address()`, `stop()` (sets a flag on a shared `Arc<AtomicBool>` checked by the mailbox between messages), `system()`, `spawn()` (delegates to system), `add_stream()` (spawns a task that forwards stream items as envelopes into the actor's mailbox), `run_interval()` (spawns a task that sleeps + sends a message on each tick, returns `IntervalHandle` with cancel).
+- [ ] **Step 3: Implement `Context<A>`.** Fields: `addr: Addr<A>`, `system: SystemHandle`, `stop: Arc<AtomicBool>` (shared with the mailbox loop). Methods: `address()`, `stop()` (sets the `AtomicBool` — mailbox checks it between messages), `system()`, `spawn()` (delegates to system), `add_stream()` (spawns a task that polls the stream and forwards items as `StreamEnvelope`s — a separate envelope variant that calls `StreamHandler::handle_stream_item` instead of `Handler::handle`; stream end sends a `StreamFinishedEnvelope`), `run_interval()` (spawns a task that sleeps + sends a message on each tick, returns `IntervalHandle` with cancel).
 
 - [ ] **Step 4: Implement `System` / `SystemHandle`.** `System::new()` creates the handle. `SystemHandle` is `Clone` and holds a list of `AnyAddr`s (for shutdown). `spawn()` creates a channel, builds `Context`, spawns `run_mailbox` via `runtime::spawn`, returns `Addr<A>`. `shutdown()` drops all tracked addresses and waits for mailboxes to drain.
 
@@ -138,7 +138,7 @@ Wires everything together into the public API.
 
 - [ ] **Step 1: Define `RestartPolicy`.** Enum: `Never`, `OnFailure { max: u32 }`, `Backoff { initial: Duration, max_delay: Duration, max_retries: u32 }`.
 
-- [ ] **Step 2: Implement `Context::spawn_supervised()`.** Takes `child: C` where `C: Actor + Clone` and `policy: RestartPolicy`. Spawns the actor in a wrapper task that catches panics via `catch_unwind` and restarts according to the policy. Returns `Addr<C>` (stable across restarts — the wrapper re-creates the mailbox and re-attaches the address's sender).
+- [ ] **Step 2: Implement `Context::spawn_supervised()`.** Takes `child: C` where `C: Actor + Clone` and `policy: RestartPolicy`. The wrapper task owns both the channel receiver and the actor clone. On restart, it clones the original actor, creates a fresh stop flag, and re-enters `run_mailbox` — but reuses the same channel. The `Addr<C>` returned to callers points at this stable channel, so it remains valid across restarts. Panics are caught via `std::panic::catch_unwind` (requires `AssertUnwindSafe` wrapper). The wrapper respects `RestartPolicy` limits and backoff delays.
 
 - [ ] **Step 3: Write tests.** Test: actor that panics after N messages gets restarted up to `max` times. Test: `Never` policy does not restart. Test: `Backoff` delays between restarts.
 
@@ -161,7 +161,7 @@ Migrate the four hand-rolled worker actors to use `willow-actor`. This is the fi
 
 - [ ] **Step 2: Rewrite `state.rs` as `StateActor`.** Struct holds `Box<dyn WorkerRole>`. Implement `Actor` (no lifecycle hooks needed). Implement `Handler<EventMsg>`, `Handler<WorkerRequestMsg>`, `Handler<GetRoleInfoMsg>`, `Handler<GetStateHashesMsg>`, `Handler<ServerDiscoveredMsg>`. Each handler is 1-3 lines — delegates to `self.role`. Remove the manual `run()` function and its `while let` loop.
 
-- [ ] **Step 3: Rewrite `network.rs` as `NetworkActor`.** Struct holds `Addr<StateActor>` and `EndpointId`. `TopicEvents` is not a `Stream` trait — it has an async `next()` method. Write a thin adapter (`TopicEventStream`) that wraps a `TopicEvents` impl into a `futures::Stream<Item = GossipEvent>` (filtering errors with a warning log). Implement `StreamHandler<GossipEvent>` — the `handle_stream_item` replaces the `while let` loop. Keep `parse_worker_message()` and `parse_server_message()` as pure functions. In `started()`, attach the adapted stream via `ctx.add_stream()`. Remove the manual `run()` function.
+- [ ] **Step 3: Rewrite `network.rs` as `NetworkActor`.** Struct holds `Addr<StateActor>`, `EndpointId`, and `Option<E>` where `E: TopicEvents` (taken in `started()`). `TopicEvents` is not a `Stream` trait — it has an async `next()` method. Write a thin adapter (`TopicEventStream`) that wraps a `TopicEvents` impl into a `futures::Stream<Item = GossipEvent>` (filtering errors with a warning log). Implement `StreamHandler<GossipEvent>` — the `handle_stream_item` replaces the `while let` loop. Keep `parse_worker_message()` and `parse_server_message()` as pure functions. In `started()`, call `self.events.take().unwrap()` to extract the topic events, wrap in `TopicEventStream`, and attach via `ctx.add_stream()`. Remove the manual `run()` function.
 
 - [ ] **Step 4: Rewrite `heartbeat.rs` as `HeartbeatActor`.** Struct holds `EndpointId`, `Addr<StateActor>`, and the `TopicHandle` (owned, not borrowed — actor owns it for its lifetime). Define `HeartbeatTick` message. Implement `Handler<HeartbeatTick>` — queries state actor via `state_addr.ask(GetRoleInfoMsg)`, broadcasts announcement. In `started()`, call `ctx.run_interval(duration, || HeartbeatTick)`. Implement `stopped()` to broadcast departure message via `self.topic.broadcast()` — the topic handle is still valid because the actor owns it. Remove `shutdown: watch::Receiver` — the actor stops when its address is dropped.
 
@@ -190,7 +190,7 @@ Replace `Arc<RwLock<SharedState>>` and `futures::channel::mpsc` with actors.
 
 - [ ] **Step 2: Define `TopicListenerActor`.** Replaces `spawn_topic_listener`. Implements `StreamHandler` for gossip events. Holds `Addr<ClientStateActor>` and `TopicHandle`. In `handle_stream_item`, sends mutations to the state actor and emits `ClientEvent`s.
 
-- [ ] **Step 3: Refactor `ClientHandle<N>`.** Replace `shared: Arc<RwLock<SharedState>>` with `state: Addr<ClientStateActor>`. Keep `event_tx: futures_mpsc::UnboundedSender<ClientEvent>` as a plain channel — `ClientEvent`s flow to the UI layer (Leptos signals / Bevy ECS) which are not actors. The channel is the boundary between actor world and UI framework. Client methods that read shared state switch from `shared.read().unwrap()` to `state.ask(GetState).await`. Methods that mutate state switch from `shared.write().unwrap()` to `state.send(mutation)`.
+- [ ] **Step 3: Refactor `ClientHandle<N>`.** Replace `shared: Arc<RwLock<SharedState>>` with `state: Addr<ClientStateActor>`. Keep `event_tx: futures_mpsc::UnboundedSender<ClientEvent>` as a plain channel — `ClientEvent`s flow to the UI layer which is not an actor. **Note:** this makes previously-synchronous state accessors async (`shared.read()` → `state.ask().await`). All callers in `lib.rs`, `ops.rs`, `invite.rs`, `files.rs`, and `worker_cache.rs` must be updated to `.await` state queries. Methods that were `fn` become `async fn`.
 
 - [ ] **Step 4: Update `listeners.rs`.** Replace `spawn_topic_listener()` with spawning a `TopicListenerActor` on the system. Remove the manual `topic_listener_loop`.
 
