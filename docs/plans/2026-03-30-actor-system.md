@@ -194,9 +194,9 @@ Replace `Arc<RwLock<SharedState>>` and `futures::channel::mpsc` with actors. The
 
 - [ ] **Step 1: Define `ClientStateActor`.** Holds `SharedState` directly (no Arc, no RwLock) plus a `Vec<Recipient<StateChanged>>` subscriber list. Audit all `shared.write()` and `shared.read()` call sites in the client crate to discover the full message set — expect ~10-15 mutation messages and ~5-10 query messages. Define message structs for each. After every mutation handler completes, the actor sends `StateChanged` to all subscribers. Also implement a `ReadState` message with a selector callback that returns a boxed value (for derived state queries). Also implement `Subscribe(Recipient<StateChanged>)` to register new watchers.
 
-- [ ] **Step 2: Define `TopicListenerActor`.** Replaces `spawn_topic_listener`. Implements `StreamHandler` for gossip events. Holds `Addr<ClientStateActor>` and `TopicHandle`. In `handle_stream_item`, sends mutations to the state actor. No longer emits `ClientEvent`s — the state actor's subscriber notification replaces the event channel for state-derived signals. Ephemeral events (typing indicators, connection status changes) that aren't part of `SharedState` can still use a lightweight channel or a separate notification actor.
+- [ ] **Step 2: Define `TopicListenerActor`.** Replaces `spawn_topic_listener`. Implements `StreamHandler` for gossip events. Holds `Addr<ClientStateActor>` and `TopicHandle`. In `handle_stream_item`, sends mutations to the state actor. All state flows through the actor — typing indicators, connection status, and voice state are fields in `SharedState` mutated via messages, not separate event channels.
 
-- [ ] **Step 3: Refactor `ClientHandle<N>`.** Replace `shared: Arc<RwLock<SharedState>>` with `state: Addr<ClientStateActor>`. Also move `topics: Arc<RwLock<HashMap<String, N::Topic>>>` into the state actor (or a dedicated topic actor). Remove `event_tx` for state synchronization — derived state actors replace it. Keep a small ephemeral event channel for non-state notifications (typing, connection). **Note:** this makes previously-synchronous state accessors async (`shared.read()` → `state.ask().await`). All callers in `lib.rs`, `ops.rs`, `invite.rs`, `files.rs`, and `worker_cache.rs` must be updated to `.await` state queries. Methods that were `fn` become `async fn`.
+- [ ] **Step 3: Refactor `ClientHandle<N>`.** Replace `shared: Arc<RwLock<SharedState>>` with `state: Addr<ClientStateActor>`. Also move `topics: Arc<RwLock<HashMap<String, N::Topic>>>` into the state actor (or a dedicated topic actor). Remove `event_tx` entirely — derived state actors replace the event channel for all UI updates (including ephemeral state like typing and connection status). **Note:** this makes previously-synchronous state accessors async (`shared.read()` → `state.ask().await`). All callers in `lib.rs`, `ops.rs`, `invite.rs`, `files.rs`, and `worker_cache.rs` must be updated to `.await` state queries. Methods that were `fn` become `async fn`.
 
 - [ ] **Step 4: Update `listeners.rs`.** Replace `spawn_topic_listener()` with spawning a `TopicListenerActor` on the system. Remove the manual `topic_listener_loop`.
 
@@ -250,17 +250,15 @@ The `ClientEvent` channel and `process_event_batch` are eliminated for state-der
 
   Signals that don't derive from `SharedState` (e.g., `show_settings`, `show_palette`, `current_tab`) remain as regular Leptos signals — they are pure UI state.
 
-- [ ] **Step 4: Update `app.rs`.** Remove the `spawn_local` event loop that drained `ClientEvent`s and called `process_event_batch`. Remove `refresh_all_signals`. The `ClientHandle` connection still happens in a `spawn_local` (network setup is async), but signal updates are now automatic via derived state actors. Handle ephemeral events (typing indicators, connection status) via a small separate channel or dedicated actors.
+- [ ] **Step 4: Update `app.rs`.** Remove the `spawn_local` event loop that drained `ClientEvent`s and called `process_event_batch`. Remove `refresh_all_signals`. The `ClientHandle` connection still happens in a `spawn_local` (network setup is async), but signal updates are now automatic via derived state actors. All state — including typing indicators, connection status, and voice participants — flows through the state actor and derived signals.
 
-- [ ] **Step 5: Delete `event_processing.rs`.** The entire module is replaced by derived state actors. The `process_event_batch` function, `needs_*_refresh` flags, and event-to-signal mapping are all gone.
+- [ ] **Step 5: Delete `event_processing.rs`.** The entire module is replaced by derived state actors. The `process_event_batch` function, `needs_*_refresh` flags, `ClientEvent` enum, and event-to-signal mapping are all gone.
 
 - [ ] **Step 6: Update components.** Components that called `handle.peers()`, `handle.messages()`, etc. directly now read from their corresponding derived signal instead. Components that perform actions (send message, create channel) still call `handle.send_message()` etc., which sends a mutation message to the state actor. Grep for `handle.` in components and verify each call is either an action (keep) or a state read (replace with signal).
 
-- [ ] **Step 7: Handle ephemeral events.** Typing indicators, connection status changes, and voice signals are transient — they aren't part of `SharedState` and don't need derived actors. Options: (a) add them to `SharedState` and let selectors handle them, (b) keep a small `futures::channel::mpsc` for ephemeral events with a dedicated `spawn_local` consumer, (c) use dedicated actors with their own signals. Choose (a) if the events map cleanly to state fields; (b) for truly transient notifications.
+- [ ] **Step 7: Verify WASM compilation.** `just check-wasm` must pass.
 
-- [ ] **Step 8: Verify WASM compilation.** `just check-wasm` must pass.
-
-- [ ] **Step 9: Run `just test-browser`.** All 39+ browser tests must pass.
+- [ ] **Step 8: Run `just test-browser`.** All 39+ browser tests must pass.
 
 ---
 

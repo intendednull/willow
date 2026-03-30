@@ -734,6 +734,25 @@ fn derived_signal<T: PartialEq + Clone + Send + 'static>(
 }
 ```
 
+### Ephemeral state is the same pattern
+
+Typing indicators, connection status, voice participants — these are
+all just state owned by an actor. There's no reason to treat them
+differently. Each gets its own actor (or they live as fields in a
+single actor) with the same selector/notify pattern:
+
+- **`ConnectionActor`**: holds connected peers, relay status. Selectors:
+  `|s| s.peers.len()`, `|s| s.connection_status.clone()`
+- **`TypingActor`**: holds typing peer map with expiry. Selectors:
+  `|s| s.typing_in("general")`
+- **`VoiceActor`**: holds voice participants, mute/deafen state.
+  Selectors: `|s| s.participants.clone()`
+
+Or these can all be fields in `ClientStateActor` — the derived state
+pattern works the same regardless. The key insight is that **all UI
+state flows through actors with selector-based notification**. No
+separate event channels, no special cases.
+
 ### Benefits
 
 - **No stale data**: signals always reflect the latest state
@@ -742,9 +761,12 @@ fn derived_signal<T: PartialEq + Clone + Send + 'static>(
   `process_event_batch` function matching events to signal updates
 - **Decoupled**: adding a new signal is one `derived_signal()` call,
   no changes to event processing
-- **Eliminates `ClientEvent` for state sync**: `ClientEvent` becomes
-  purely for ephemeral notifications (typing indicators, connection
-  status) that aren't part of `SharedState`
+- **Uniform**: persistent state, ephemeral state, and UI state all
+  use the same actor → selector → signal pattern. No special channels
+  or event types for different categories of state.
+- **Eliminates `ClientEvent` entirely**: all state flows through actors.
+  The `ClientEvent` enum, the event channel, and `process_event_batch`
+  are all removed.
 
 ### Notification cost
 
