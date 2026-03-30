@@ -483,7 +483,12 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 .write()
                 .unwrap()
                 .insert(ops_topic_str.to_string(), sender.clone());
-            listeners::spawn_topic_listener(events, sender, Arc::clone(&self.shared), event_tx.clone());
+            listeners::spawn_topic_listener(
+                events,
+                sender,
+                Arc::clone(&self.shared),
+                event_tx.clone(),
+            );
         }
 
         // Subscribe to the global profile broadcast topic.
@@ -496,7 +501,12 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 .write()
                 .unwrap()
                 .insert(profile_topic_str.to_string(), sender.clone());
-            listeners::spawn_topic_listener(events, sender, Arc::clone(&self.shared), event_tx.clone());
+            listeners::spawn_topic_listener(
+                events,
+                sender,
+                Arc::clone(&self.shared),
+                event_tx.clone(),
+            );
         }
 
         // Subscribe to channel topics from all servers.
@@ -515,8 +525,16 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 .subscribe(willow_network::topic_id(&topic_str), vec![])
                 .await
             {
-                self.topics.write().unwrap().insert(topic_str, sender.clone());
-                listeners::spawn_topic_listener(events, sender, Arc::clone(&self.shared), event_tx.clone());
+                self.topics
+                    .write()
+                    .unwrap()
+                    .insert(topic_str, sender.clone());
+                listeners::spawn_topic_listener(
+                    events,
+                    sender,
+                    Arc::clone(&self.shared),
+                    event_tx.clone(),
+                );
             }
         }
 
