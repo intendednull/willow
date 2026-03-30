@@ -12,12 +12,12 @@ willow-channel = { path = "../channel" }
 willow-network = { path = "../network" }
 willow-transport = { path = "../transport" }
 willow-crypto = { path = "../crypto" }
-willow-files = { path = "../files" }
 willow-state = { path = "../state" }
 willow-common = { path = "../common" }
 
 anyhow = { workspace = true }
 bytes = { workspace = true }
+iroh-blobs = { workspace = true }
 serde = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
