@@ -44,7 +44,7 @@ fn event_with(id: &str, parent: StateHash, author: EndpointId, ts: u64, kind: Ev
 #[test]
 fn apply_is_deterministic() {
     let alice = Identity::generate().endpoint_id();
-    let events = vec![
+    let events = [
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
@@ -605,7 +605,7 @@ fn full_replay_from_genesis() {
     let (mut state, owner) = test_state();
     let alice = Identity::generate().endpoint_id();
 
-    let events = vec![event(
+    let e1 = event(
         &state,
         "e1", owner,
         EventKind::CreateChannel {
@@ -613,8 +613,8 @@ fn full_replay_from_genesis() {
             channel_id: "ch1".into(),
             kind: "text".to_string(),
         },
-    )];
-    assert_eq!(apply(&mut state, &events[0]), ApplyResult::Applied);
+    );
+    assert_eq!(apply(&mut state, &e1), ApplyResult::Applied);
     let hash_after_e1 = state.hash();
 
     let e2 = event(
@@ -641,7 +641,7 @@ fn full_replay_from_genesis() {
 
     // Now replay all events from genesis on a fresh state with the SAME owner.
     let mut replayed = ServerState::new("server-1", "Test Server", owner);
-    let all_events = vec![events[0].clone(), e2, e3];
+    let all_events = vec![e1, e2, e3];
     for evt in &all_events {
         assert_eq!(apply_lenient(&mut replayed, evt), ApplyResult::Applied);
     }
@@ -689,10 +689,10 @@ fn merge_produces_same_state() {
     );
 
     // Merge from A's perspective.
-    let (state_a, events_a) = merge(&[evt_a.clone()], &[evt_b.clone()], &common);
+    let (state_a, events_a) = merge(std::slice::from_ref(&evt_a), std::slice::from_ref(&evt_b), &common);
 
     // Merge from B's perspective.
-    let (state_b, events_b) = merge(&[evt_b], &[evt_a], &common);
+    let (state_b, events_b) = merge(std::slice::from_ref(&evt_b), std::slice::from_ref(&evt_a), &common);
 
     // Both should produce the same state and event order.
     assert_eq!(state_a.hash(), state_b.hash());
