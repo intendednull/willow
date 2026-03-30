@@ -651,9 +651,108 @@ callers use `Addr` to send commands and `ask()` to query state.
 
 ### Phase 3: Web UI
 
-The Leptos event loop becomes a `StreamHandler` on a UI actor. Signal
-updates happen in the handler. Validates WASM target correctness and
-completes the migration across all active crates.
+Derived state actors bridge the actor system to Leptos signals. See
+"Reactive Derived State" section below.
+
+## Reactive Derived State
+
+### Problem
+
+The UI needs to reactively update when shared state changes. Naive
+approaches have drawbacks:
+
+- **Pull on every event** (`ask()` in `process_event_batch`): every
+  `ClientEvent` triggers async queries for all state slices, even if
+  most didn't change. Stale data possible between events.
+- **Push full snapshots**: state actor sends complete state to the UI
+  on every mutation. Causes full re-renders, wasteful when only one
+  field changed.
+- **`ClientEvent`-based flags** (current approach): `needs_msg_refresh`,
+  `needs_peer_refresh`, etc. — manually maintained, error-prone, and
+  tightly couples event types to signal updates.
+
+### Solution: Selector-Based Derived State
+
+Inspired by Yewdux's `use_selector` pattern. The state actor is the
+single source of truth. Derived state actors subscribe to state changes,
+run a selector function, and only update their signal when the selected
+value actually changes.
+
+```
+Network → TopicListenerActor → mutations → ClientStateActor
+                                                ↓ notifies after each mutation
+                                           StateChanged
+                                                ↓
+                              ┌──────────────────┼──────────────────┐
+                              ▼                  ▼                  ▼
+                    DerivedActor           DerivedActor       DerivedActor
+                    selector: peers()     selector: msgs()   selector: channels()
+                    cached: [A, B]        cached: [m1, m2]   cached: [#gen, #dev]
+                              │                  │                  │
+                         (if changed)       (if changed)      (if changed)
+                              ▼                  ▼                  ▼
+                       signal.set([A,B,C])  (no update)    signal.set(...)
+```
+
+### How it works
+
+1. **`ClientStateActor`** holds `SharedState` and a list of
+   `Recipient<StateChanged>` subscribers. After every mutation handler
+   completes, it sends `StateChanged` to all subscribers.
+
+2. **`DerivedStateActor<T>`** is a generic actor parameterized by:
+   - A selector: `Fn(&SharedState) -> T` (extracts a slice)
+   - A cached value: `Option<T>` (last known value)
+   - A signal writer (Leptos `WriteSignal<T>` or a callback)
+
+3. On receiving `StateChanged`, the derived actor sends a
+   `ReadState(selector)` ask to the state actor, which runs the
+   selector against current state and returns `T`.
+
+4. The derived actor compares the new `T` with its cached value. If
+   different (via `PartialEq`), it updates the signal and caches the
+   new value. If equal, it does nothing — no re-render.
+
+### API sketch (web crate, not in willow-actor)
+
+```rust
+/// Create a derived Leptos signal backed by a state actor selector.
+/// Returns a ReadSignal<T> that updates only when the selected value changes.
+fn derived_signal<T: PartialEq + Clone + Send + 'static>(
+    state_addr: &Addr<ClientStateActor>,
+    system: &SystemHandle,
+    selector: impl Fn(&SharedState) -> T + Send + 'static,
+) -> ReadSignal<T> {
+    let (read, write) = create_signal(selector(&initial_state));
+    system.spawn(DerivedStateActor {
+        state_addr: state_addr.clone(),
+        selector,
+        cached: None,
+        write,
+    });
+    read
+}
+```
+
+### Benefits
+
+- **No stale data**: signals always reflect the latest state
+- **Minimal re-renders**: only updates when the selected slice changes
+- **No manual event mapping**: no `needs_msg_refresh` flags, no
+  `process_event_batch` function matching events to signal updates
+- **Decoupled**: adding a new signal is one `derived_signal()` call,
+  no changes to event processing
+- **Eliminates `ClientEvent` for state sync**: `ClientEvent` becomes
+  purely for ephemeral notifications (typing indicators, connection
+  status) that aren't part of `SharedState`
+
+### Notification cost
+
+Each mutation triggers N `StateChanged` messages (one per subscriber)
+plus N `ReadState` ask round-trips. With ~15-20 derived signals and
+in-process message passing (no I/O, same thread on WASM), this is
+sub-millisecond total. The PartialEq check prevents signal updates
+from propagating further.
 
 ## Decisions
 
@@ -669,3 +768,7 @@ completes the migration across all active crates.
    state via `ask()`. This eliminates all locks from the hot path —
    the actor processes messages sequentially, so no synchronization is
    needed inside the actor.
+
+4. **Derived state for UI signals.** Leptos signals are updated via
+   selector-based derived state actors, not event batch processing.
+   Signals only re-render when their selected value actually changes.
