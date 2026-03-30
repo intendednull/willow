@@ -8,7 +8,7 @@ use willow_identity::EndpointId;
 use willow_network::TopicHandle;
 
 use super::StateMsg;
-use crate::types::{WorkerAnnouncement, WorkerWireMessage, WORKERS_TOPIC};
+use crate::types::{WorkerAnnouncement, WorkerWireMessage};
 
 /// Run the heartbeat actor loop.
 ///
@@ -84,7 +84,7 @@ pub async fn run<T: TopicHandle>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::WorkerRoleInfo;
+    use crate::types::{WorkerRoleInfo, WORKERS_TOPIC};
     use std::time::Duration;
     use willow_identity::Identity;
     use willow_network::mem::{MemHub, MemNetwork};
