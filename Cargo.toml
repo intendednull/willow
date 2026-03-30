@@ -21,23 +21,6 @@ thiserror = "1"
 tokio = { version = "1", features = ["full"] }
 
 # Crypto & Networking
-libp2p = { version = "0.53", features = [
-    "tokio",
-    "gossipsub",
-    "kad",
-    "mdns",
-    "noise",
-    "yamux",
-    "tcp",
-    "dns",
-    "relay",
-    "identify",
-    "request-response",
-    "cbor",
-    "macros",
-    "ed25519",
-    "serde",
-] }
 iroh = { version = "0.97", features = ["address-lookup-mdns"] }
 iroh-base = "0.97"
 iroh-gossip = "0.97"

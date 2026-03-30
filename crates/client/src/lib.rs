@@ -91,7 +91,7 @@ pub struct SharedState {
 /// Cloneable command interface for UI components.
 ///
 /// Generic over the [`Network`](willow_network::Network) implementation so
-/// that production code can use a real libp2p network while tests can use
+/// that production code can use a real iroh network while tests can use
 /// an in-memory backend.
 pub struct ClientHandle<N: willow_network::Network> {
     pub(crate) shared: Arc<RwLock<SharedState>>,
@@ -2172,7 +2172,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             .collect()
     }
 
-    /// Get the list of connected peers (libp2p-level connections).
+    /// Get the list of connected peers (network-level connections).
     pub fn peers(&self) -> Vec<willow_identity::EndpointId> {
         self.shared.read().unwrap().state.chat.peers.clone()
     }

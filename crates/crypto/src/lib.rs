@@ -258,8 +258,7 @@ pub fn open_content(sealed: &SealedContent, key: &ChannelKey) -> Result<Content,
 /// Convert an Ed25519 identity to an X25519 static secret.
 ///
 /// The conversion follows RFC 7748: SHA-512 hash the Ed25519 seed, take the
-/// first 32 bytes with clamping. This matches what libp2p's Noise does
-/// internally for the same keypair.
+/// first 32 bytes with clamping. This matches the standard Ed25519-to-X25519 conversion.
 pub fn identity_to_x25519(identity: &Identity) -> Result<X25519Secret, CryptoError> {
     use sha2::{Digest, Sha512};
 
