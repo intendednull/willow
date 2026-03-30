@@ -58,9 +58,9 @@ with 84 passing browser tests. Key details:
    `Send + Sync`. This is stricter than necessary — actors are
    single-owner by design, so `Sync` is never needed.
 4. **`tokio_with_wasm` dependency**: Pulls in a full tokio-compatible
-   shim for WASM. Willow already uses `futures::channel::mpsc` and
-   `wasm_bindgen_futures::spawn_local` directly — adding another layer
-   of abstraction over tokio's API on WASM is unnecessary indirection.
+   shim for WASM. Willow uses iroh (which handles WASM internally) +
+   `wasm_bindgen_futures::spawn_local` — adding another abstraction
+   layer over tokio's API on WASM is unnecessary indirection.
 5. **Heavy dependency tree**: `dashmap`, `bon`, `strum`, `once_cell`,
    plus the full `tokio_with_wasm` crate on WASM. Willow's actor system
    needs only channels, oneshot, and spawn.
@@ -113,58 +113,23 @@ flags for alternative runtimes.
 ### kameo fork feasibility
 
 A source audit of kameo's tokio coupling reveals it is **shallow and
-concentrated**. All tokio usage falls into 6 primitives across 4 files:
-
-| Primitive | Call sites | WASM replacement |
-|-----------|-----------|------------------|
-| `tokio::spawn` | 5 | `wasm_bindgen_futures::spawn_local` |
-| `tokio::sync::mpsc` (bounded+unbounded) | 1 module (~15 method delegations) | `futures::channel::mpsc` |
-| `tokio::sync::Mutex` | 1 | `futures::lock::Mutex` |
-| `tokio::sync::SetOnce` | 2 | `OnceCell` or custom |
-| `tokio::select!` | 1 | `futures::select!` |
-| `tokio::runtime::Handle` | 1 (for `spawn_in_thread`) | `#[cfg(not(wasm32))]` gate |
-| `task_local!` | 1 | `thread_local!` (WASM is single-threaded) |
-
-**Total estimated changes**: ~150-200 lines to introduce a `runtime`
-abstraction module with `cfg(target_arch = "wasm32")` branches, plus
-Cargo.toml feature flag changes. The supervision module has **zero**
-production tokio usage. The mailbox module is the densest — it wraps
-tokio mpsc types — but it's a clean 1:1 delegation layer that maps
-directly to `futures::channel::mpsc`.
-
-**Challenges:**
-
-1. **`Send` bounds everywhere**: kameo requires `Actor: Send + 'static`
-   and all futures must be `Send`. On WASM this compiles (everything is
-   trivially Send on single-threaded targets) but it forces Willow types
-   that currently use `Rc<RefCell<>>` to switch to `Arc<Mutex<>>`. This
-   is a Willow-side change, not a kameo fork issue.
-2. **`spawn_in_thread()`**: Uses `tokio::runtime::Handle::current()` and
-   `std::thread::spawn`. Must be `cfg`-gated out on WASM entirely.
-3. **`blocking_send()` / `blocking_recv()`**: These tokio mpsc methods
-   have no WASM equivalent. Must be gated or removed on WASM.
-4. **Minimum Rust 1.88.0**: kameo requires edition 2024 / Rust 1.88+.
-   Willow would need to match this MSRV.
-5. **Upstream maintenance**: kameo is actively developed (v0.19.2, last
-   commit March 2026). Forking means maintaining divergence or getting
-   the runtime abstraction upstreamed.
+concentrated** — 6 primitives across 4 core files. The supervision
+module has zero production tokio usage. With iroh now providing tokio
+on WASM, the fork effort shrinks further (no need to swap channel
+implementations — tokio mpsc works on both targets). Main remaining
+work: `cfg`-gate `spawn_in_thread()` and `blocking_send/recv` on WASM,
+replace `tokio::spawn` with `spawn_local` on WASM (~150 lines).
 
 **Verdict: fork is feasible but not clearly better than writing our own.**
 
-The fork saves ~800 lines of actor machinery (mailbox, supervision,
-actor lifecycle) but introduces:
-- Ongoing merge burden with an actively evolving upstream
-- The `Send` bound issue remains (kameo won't accept a `Send`
-  change upstream — it's a fundamental API decision)
-- kameo's `remote` feature (libp2p-based distributed actors) would
-  conflict with Willow's iroh networking layer
-- kameo's dependency on `downcast-rs`, `dyn-clone`, `serde` (with
-  derive) adds weight Willow doesn't need
+The fork saves ~800 lines of actor machinery but introduces:
+- Ongoing merge burden with an actively evolving upstream (v0.19.2)
+- kameo's `remote` feature (libp2p-based) conflicts with iroh
+- Extra deps: `downcast-rs`, `dyn-clone`, `serde` derive
+- MSRV 1.88.0 (edition 2024)
 
-Writing `willow-actor` from scratch is estimated at ~1000-1500 lines
-for the core (message, actor, handler, addr, context, mailbox, envelope,
-runtime, error modules). This is comparable to the fork effort when
-accounting for the abstraction layer + ongoing maintenance cost.
+Writing `willow-actor` from scratch: ~1000-1500 lines for the core.
+Comparable effort, no maintenance burden.
 
 ### Iroh integration (complete)
 
@@ -175,29 +140,36 @@ broadcast. See `docs/specs/2026-03-29-iroh-migration-design.md`.
 
 **Key facts for the actor system:**
 
-1. **Tokio everywhere.** Iroh depends on tokio for both native and WASM.
-   The client already uses `Arc<RwLock<>>` (not `Rc<RefCell<>>`). All
-   futures must be `Send`. Channels are `tokio::sync::mpsc` throughout.
+1. **Split runtime.** Tokio is native-only (`cfg(not(wasm32))`). On
+   WASM, the codebase uses `wasm-bindgen-futures::spawn_local`,
+   `futures::channel::mpsc`, and `gloo-timers`. The actor system needs
+   a thin runtime abstraction for spawn, channels, and timers — just
+   like the original design proposed.
 
-2. **`Network` trait is generic.** Workers and client are generic over
+2. **`Send` is still required.** The `Network` trait and its associated
+   types require `Send + Sync`. The client uses `Arc<RwLock<>>`. All
+   types in the shared path must be `Send`. On WASM, everything is
+   trivially `Send` (single-threaded), so this compiles without issue.
+
+3. **`Network` trait is generic.** Workers and client are generic over
    `N: Network`, with `IrohNetwork` for production and `MemNetwork` for
    tests. Actor types should also be generic over `Network` where they
    interact with gossip, following the same pattern.
 
-3. **`TopicEvents` is a stream.** The `TopicEvents` trait has
+4. **`TopicEvents` is a stream.** The `TopicEvents` trait has
    `async fn next() -> Option<Result<GossipEvent>>` — a natural fit for
    `StreamHandler`. The network actor currently wraps this in a manual
    `while let` loop; the actor system replaces that.
 
-4. **`TopicHandle` for broadcast.** The heartbeat and sync actors
+5. **`TopicHandle` for broadcast.** The heartbeat and sync actors
    currently take `T: TopicHandle` and call `topic.broadcast()`. With
    the actor system, they hold the `TopicHandle` as actor state and
    call it from message handlers.
 
-5. **Shutdown via `watch` channel.** Workers currently use
+6. **Shutdown via `watch` channel.** Workers currently use
    `tokio::sync::watch` for shutdown signaling. The actor system
-   replaces this with `CancellationToken` (used by iroh internally)
-   or simply dropping the `Addr` (closing the mailbox).
+   replaces this — dropping all `Addr` handles closes the mailbox,
+   or `CancellationToken` provides explicit out-of-band shutdown.
 
 ### Recommendation: build `willow-actor`
 
@@ -207,14 +179,12 @@ combines:
 
 - **xtra/kameo's `Handler<M>` pattern** — per-message-type trait impls
   with typed returns, not a single enum
-- **tokio channels directly** — no runtime abstraction needed since iroh
-  already provides tokio on both native and WASM
-- **`Send` unconditionally** — matches iroh's requirement, compiles on
-  WASM (everything is trivially Send on single-threaded targets)
-- **`CancellationToken` for lifecycle** — aligns with iroh's shutdown
-  pattern
-- **Supervision, intervals, `Recipient<M>`** — features missing from
-  xtra
+- **Thin runtime abstraction** — `cfg`-switched spawn/channel/timer for
+  tokio (native) vs futures-channel + gloo-timers (WASM)
+- **`Send` unconditionally** — matches the `Network` trait's bounds,
+  compiles on WASM (everything is trivially Send on single-threaded targets)
+- **Supervision, intervals, streams, `Recipient<M>`** — features
+  missing from xtra
 
 ---
 
@@ -246,7 +216,7 @@ per-crate boilerplate.
 3. **Request-reply**: first-class `ask()` with typed responses, no manual oneshot wiring
 4. **Supervision**: restart policies for crashed actors (native), error propagation (WASM)
 5. **No locks**: shared state lives inside actors, eliminating `Arc<Mutex<>>` / `Arc<RwLock<>>` — access is serialized through message passing
-6. **Lightweight**: no dynamic dispatch on send
+6. **Lightweight**: `Addr<A>` send path has no dynamic dispatch (type-erased `Recipient<M>` is opt-in)
 
 ## Non-Goals
 
@@ -309,7 +279,6 @@ is type-checked at compile time.
 pub struct Context<A: Actor> {
     addr: Addr<A>,
     system: SystemHandle,
-    cancel: CancellationToken,
 }
 
 impl<A: Actor> Context<A> {
@@ -322,10 +291,6 @@ impl<A: Actor> Context<A> {
     /// Request a graceful stop after the current message finishes.
     pub fn stop(&mut self) { ... }
 
-    /// Get the cancellation token (child of the system's root token).
-    /// Integrates with iroh's CancellationToken-based shutdown.
-    pub fn cancellation_token(&self) -> &CancellationToken { ... }
-
     /// Access the actor system (for spawning unrelated actors).
     pub fn system(&self) -> &SystemHandle { ... }
 }
@@ -337,7 +302,7 @@ impl<A: Actor> Context<A> {
 /// Type-safe handle for sending messages to an actor.
 /// Cheaply cloneable (wraps an Arc'd channel sender).
 pub struct Addr<A: Actor> {
-    tx: MessageSender,       // platform-specific channel sender
+    tx: MessageSender,       // unbounded mpsc sender (type-erased via runtime module)
     _phantom: PhantomData<A>,
 }
 
@@ -435,8 +400,9 @@ impl System {
 
 ## Platform Abstraction
 
-Since iroh already depends on tokio for both native and WASM, the
-runtime module is minimal — only task spawning differs by platform:
+Tokio is native-only. On WASM, the codebase uses `futures` channels and
+`wasm-bindgen-futures`. The actor crate needs a thin `runtime` module
+that abstracts over the three primitives that differ:
 
 ```rust
 // crate::runtime (internal)
@@ -449,12 +415,38 @@ pub fn spawn<F: Future<Output = ()> + Send + 'static>(fut: F) {
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_futures::spawn_local(fut);
 }
+
+/// Unbounded MPSC channel.
+pub fn unbounded_channel<T: Send + 'static>() -> (Sender<T>, Receiver<T>) {
+    #[cfg(not(target_arch = "wasm32"))]
+    { /* tokio::sync::mpsc::unbounded_channel */ }
+
+    #[cfg(target_arch = "wasm32")]
+    { /* futures::channel::mpsc::unbounded */ }
+}
+
+/// One-shot channel.
+pub fn oneshot<T: Send + 'static>() -> (OneshotTx<T>, OneshotRx<T>) {
+    #[cfg(not(target_arch = "wasm32"))]
+    { /* tokio::sync::oneshot */ }
+
+    #[cfg(target_arch = "wasm32")]
+    { /* futures::channel::oneshot */ }
+}
+
+/// Sleep for a duration.
+pub async fn sleep(duration: Duration) {
+    #[cfg(not(target_arch = "wasm32"))]
+    tokio::time::sleep(duration).await;
+
+    #[cfg(target_arch = "wasm32")]
+    gloo_timers::future::sleep(duration).await;
+}
 ```
 
-Channels use `tokio::sync::mpsc` and `tokio::sync::oneshot` on both
-targets — iroh's WASM shim makes these available. Timers use
-`tokio::time::sleep` on native and `gloo_timers` (or iroh's internal
-timer abstraction) on WASM.
+The `Sender`/`Receiver` types are thin wrappers that unify the
+`tokio::sync::mpsc` and `futures::channel::mpsc` APIs behind a common
+interface. Both are unbounded and have nearly identical semantics.
 
 ## Mailbox Internals
 
@@ -587,7 +579,7 @@ crates/actor/
     ├── mailbox.rs      — tokio mpsc wrapper, recv loop
     ├── runtime.rs      — spawn abstraction (tokio::spawn vs spawn_local)
     ├── supervisor.rs   — RestartPolicy, supervised spawn
-    ├── system.rs       — System, SystemHandle (CancellationToken)
+    ├── system.rs       — System, SystemHandle
     └── error.rs        — SendError, AskError
 ```
 
@@ -595,17 +587,19 @@ crates/actor/
 
 ```
 willow-actor (new)
-├── tokio               (sync: mpsc, oneshot; time: sleep, interval)
-├── tokio-util          (CancellationToken)
-├── futures-core        (Stream trait)
+├── futures-core                    (Stream trait)
 ├── thiserror
 ├── tracing
-└── [wasm] wasm-bindgen-futures  (spawn_local)
+├── [native] tokio                  (sync: mpsc, oneshot; time: sleep)
+├── [native] tokio-util             (CancellationToken)
+└── [wasm]   wasm-bindgen-futures   (spawn_local)
+             futures-channel        (mpsc, oneshot)
+             gloo-timers            (sleep)
 ```
 
 No `async-trait` needed — uses RPITIT (Rust 1.75+). `willow-actor` has
 **no dependency on any other willow crate**. It is a pure infrastructure
-crate. It shares `tokio` with iroh — no additional runtime overhead.
+crate.
 
 ## Migration Path
 
@@ -647,8 +641,9 @@ pub async fn run<N: Network>(role: Box<dyn WorkerRole>, config: WorkerConfig, ne
 
 The `NetworkActor` uses `StreamHandler<GossipEvent>` to receive from
 `TopicEvents`. The `HeartbeatActor` uses `ctx.run_interval()` instead
-of a manual `tokio::select! + sleep` loop. Shutdown propagates via
-`CancellationToken` — no more `watch` channel.
+of a manual `tokio::select! + sleep` loop. Shutdown is implicit —
+`system.shutdown()` drops all addresses, closing mailboxes. No more
+`watch` channel.
 
 ### Phase 2: Client library
 
@@ -669,9 +664,8 @@ completes the migration across all active crates.
    actor is dead (mailbox closed). Bounded mailboxes can be added later
    if backpressure becomes necessary.
 
-2. **FIFO, no priority messages.** Shutdown is just another message.
-   `CancellationToken` provides an independent out-of-band shutdown
-   signal that doesn't go through the mailbox.
+2. **FIFO, no priority messages.** Shutdown is achieved by dropping all
+   `Addr` handles (closes the mailbox) or via `Context::stop()`.
 
 3. **Shared state lives in actors.** `Arc<RwLock<SharedState>>` in the
    client library is replaced by a state actor. External code queries
