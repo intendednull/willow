@@ -43,13 +43,13 @@ pub type VoiceManagerHandle = SendWrapper<Rc<RefCell<VoiceManager>>>;
 pub const DEFAULT_RELAY: &str =
     "/dns4/willow.intendednull.com/tcp/9443/wss/p2p/12D3KooWMBmUF1rHYG5CneKi8JZfKdMAciJd4oCgknTJkbwCUurd";
 
-fn new_client() -> (WebClientHandle, willow_client::ClientEventLoop) {
+fn new_client() -> WebClientHandle {
     let config = ClientConfig {
         relay_addr: Some(DEFAULT_RELAY.to_string()),
         ..ClientConfig::default()
     };
-    let (handle, event_loop) = ClientHandle::<willow_network::iroh::IrohNetwork>::new(config);
-    (SendWrapper::new(handle), event_loop)
+    let (handle, _event_loop) = ClientHandle::<willow_network::iroh::IrohNetwork>::new(config);
+    SendWrapper::new(handle)
 }
 
 /// Root application component. Creates the `ClientHandle`, connects to the P2P
@@ -60,7 +60,7 @@ pub fn App() -> impl IntoView {
     init_theme();
 
     // Create the client (connection happens async below).
-    let (handle, event_loop) = new_client();
+    let handle = new_client();
 
     // Create all signals.
     let (app_state, write) = state::create_signals();
@@ -195,19 +195,36 @@ pub fn App() -> impl IntoView {
 
     // Spawn the event loop and signal updater.
     {
+        let mut handle_for_connect = (*handle).clone();
         let handle_for_events = handle.clone();
         let write_for_events = write;
         let state_for_events = app_state;
         let vm_for_events = voice_manager.clone();
 
-        let (client_event_tx, mut client_event_rx) =
-            futures::channel::mpsc::unbounded::<ClientEvent>();
-
-        // Spawn the event loop — processes network events and sends ClientEvents.
-        wasm_bindgen_futures::spawn_local(event_loop.run(client_event_tx));
-
-        // Spawn the signal updater — receives ClientEvents and updates signals.
+        // Spawn a single async task that creates the network, connects,
+        // and then processes the resulting ClientEvent stream.
         wasm_bindgen_futures::spawn_local(async move {
+            // Build the iroh network configuration from our identity.
+            let iroh_config = willow_network::iroh::Config {
+                secret_key: handle_for_connect.identity().secret_key().clone(),
+                relay_url: None,
+                bootstrap_peers: vec![],
+                mdns: false,
+            };
+
+            // Create the iroh network node.
+            let network = match willow_network::iroh::IrohNetwork::new(iroh_config).await {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::error!(%e, "failed to create IrohNetwork");
+                    return;
+                }
+            };
+
+            // Connect to the P2P network. This subscribes to topics, spawns
+            // listeners, and returns the event receiver.
+            let mut client_event_rx = handle_for_connect.connect(network).await;
+
             use futures::StreamExt;
             while let Some(event) = client_event_rx.next().await {
                 // Collect all pending events into a batch.

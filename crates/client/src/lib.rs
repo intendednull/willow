@@ -482,8 +482,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
             self.topics
                 .write()
                 .unwrap()
-                .insert(ops_topic_str.to_string(), sender);
-            listeners::spawn_topic_listener(events, Arc::clone(&self.shared), event_tx.clone());
+                .insert(ops_topic_str.to_string(), sender.clone());
+            listeners::spawn_topic_listener(events, sender, Arc::clone(&self.shared), event_tx.clone());
         }
 
         // Subscribe to the global profile broadcast topic.
@@ -495,8 +495,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
             self.topics
                 .write()
                 .unwrap()
-                .insert(profile_topic_str.to_string(), sender);
-            listeners::spawn_topic_listener(events, Arc::clone(&self.shared), event_tx.clone());
+                .insert(profile_topic_str.to_string(), sender.clone());
+            listeners::spawn_topic_listener(events, sender, Arc::clone(&self.shared), event_tx.clone());
         }
 
         // Subscribe to channel topics from all servers.
@@ -515,8 +515,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 .subscribe(willow_network::topic_id(&topic_str), vec![])
                 .await
             {
-                self.topics.write().unwrap().insert(topic_str, sender);
-                listeners::spawn_topic_listener(events, Arc::clone(&self.shared), event_tx.clone());
+                self.topics.write().unwrap().insert(topic_str, sender.clone());
+                listeners::spawn_topic_listener(events, sender, Arc::clone(&self.shared), event_tx.clone());
             }
         }
 
@@ -1987,6 +1987,14 @@ impl<N: willow_network::Network> ClientHandle<N> {
     }
 
     // ---- Accessor methods ----
+
+    /// Get a clone of the local identity.
+    ///
+    /// Useful for constructing network configurations that require the
+    /// identity's secret key.
+    pub fn identity(&self) -> Identity {
+        self.identity.clone()
+    }
 
     /// Get the local PeerId as a string.
     pub fn peer_id(&self) -> String {

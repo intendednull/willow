@@ -12,35 +12,42 @@ use willow_identity::EndpointId;
 use willow_network::traits::{GossipEvent, TopicEvents};
 use willow_state::EventStore as _;
 
+use willow_network::traits::TopicHandle;
+
 use crate::events::ClientEvent;
 use crate::SharedState;
 
 /// Spawn an async task that listens for gossip events on a topic,
 /// processes incoming wire messages, and emits [`ClientEvent`]s.
 ///
-/// The task runs until the [`TopicEvents`] stream ends.
-pub fn spawn_topic_listener<E: TopicEvents + 'static>(
+/// The task runs until the [`TopicEvents`] stream ends. The `topic`
+/// handle is used to broadcast responses (sync batches, join responses)
+/// back to peers.
+pub fn spawn_topic_listener<T: TopicHandle + 'static, E: TopicEvents + 'static>(
     events: E,
+    topic: T,
     shared: Arc<RwLock<SharedState>>,
     event_tx: futures_mpsc::UnboundedSender<ClientEvent>,
 ) {
     #[cfg(not(target_arch = "wasm32"))]
-    tokio::task::spawn_local(topic_listener_loop(events, shared, event_tx));
+    tokio::task::spawn_local(topic_listener_loop(events, topic, shared, event_tx));
 
     #[cfg(target_arch = "wasm32")]
-    wasm_bindgen_futures::spawn_local(topic_listener_loop(events, shared, event_tx));
+    wasm_bindgen_futures::spawn_local(topic_listener_loop(events, topic, shared, event_tx));
 }
 
 /// The core async loop that drains a [`TopicEvents`] stream.
-async fn topic_listener_loop<E: TopicEvents>(
+async fn topic_listener_loop<T: TopicHandle, E: TopicEvents>(
     mut events: E,
+    topic: T,
     shared: Arc<RwLock<SharedState>>,
     event_tx: futures_mpsc::UnboundedSender<ClientEvent>,
 ) {
     while let Some(Ok(gossip_event)) = events.next().await {
         match gossip_event {
             GossipEvent::Received(msg) => {
-                process_received_message(&msg.content, msg.sender, &shared, &event_tx);
+                process_received_message(&msg.content, msg.sender, &shared, &event_tx, &topic)
+                    .await;
             }
             GossipEvent::NeighborUp(id) => {
                 let mut s = shared.write().unwrap();
@@ -62,11 +69,12 @@ async fn topic_listener_loop<E: TopicEvents>(
 ///
 /// Tries profile broadcast first, then falls back to the signed
 /// [`WireMessage`](crate::ops::WireMessage) envelope format.
-fn process_received_message(
+async fn process_received_message<T: TopicHandle>(
     data: &[u8],
     _sender: EndpointId,
     shared: &Arc<RwLock<SharedState>>,
     event_tx: &futures_mpsc::UnboundedSender<ClientEvent>,
+    topic: &T,
 ) {
     // Try profile broadcast first (unsigned envelope, Identity message type).
     if let Ok((profile, willow_transport::MessageType::Identity)) =
@@ -157,17 +165,15 @@ fn process_received_message(
             }
         }
         crate::ops::WireMessage::SyncRequest { state_hash, .. } => {
-            // Respond with missing events.
-            // NOTE: We need a TopicHandle to broadcast the response.
-            // For now, just log — the response mechanism will be wired
-            // when connect() is fully implemented.
             let s = shared.read().unwrap();
             let missing = s.state.event_store.events_since(&state_hash);
             if !missing.is_empty() {
-                tracing::info!(
-                    count = missing.len(),
-                    "sync request: have events to send (not yet wired)"
-                );
+                let identity = s.identity.clone();
+                drop(s);
+                let msg = crate::ops::WireMessage::SyncBatch { events: missing };
+                if let Some(data) = crate::ops::pack_wire(&msg, &identity) {
+                    let _ = topic.broadcast(bytes::Bytes::from(data)).await;
+                }
             }
         }
         crate::ops::WireMessage::TypingIndicator { channel } => {
@@ -228,12 +234,26 @@ fn process_received_message(
                 .find(|l| l.link_id == link_id && l.is_valid());
             if let Some(link) = valid {
                 link.used += 1;
-                // TODO: generate invite and respond via topic broadcast.
-                tracing::info!(
-                    %link_id,
-                    %peer_id,
-                    "join link request (invite generation not yet wired)"
-                );
+                if s.config.persistence {
+                    crate::storage::save_join_links(
+                        s.state.active_server.as_deref().unwrap_or(""),
+                        &s.join_links,
+                    );
+                }
+                let identity = s.identity.clone();
+                drop(s);
+                match crate::generate_invite_shared(shared, &peer_id) {
+                    Ok(invite_data) => {
+                        let msg = crate::ops::WireMessage::JoinResponse {
+                            target_peer: peer_id,
+                            invite_data,
+                        };
+                        if let Some(data) = crate::ops::pack_wire(&msg, &identity) {
+                            let _ = topic.broadcast(bytes::Bytes::from(data)).await;
+                        }
+                    }
+                    Err(e) => tracing::warn!(%e, "failed to generate invite for join link"),
+                }
             }
         }
         crate::ops::WireMessage::JoinResponse {
