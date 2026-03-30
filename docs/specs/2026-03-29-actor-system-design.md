@@ -790,6 +790,16 @@ sends N messages to subscribers (one per derived signal) plus N
 message passing (no I/O, same thread on WASM), this is sub-millisecond.
 The PartialEq check prevents signal updates from propagating further.
 
+### Cloning cost
+
+Selectors return owned `T`, so each `ReadState` clones data out of the
+actor. For expensive fields (e.g., `Vec<DisplayMessage>` with hundreds
+of entries), wrap the field in `Arc` inside `SharedState`. The selector
+then clones the `Arc` (cheap pointer bump) instead of deep-cloning.
+`PartialEq` on `Arc<Vec<T>>` compares pointers first — if the `Arc`
+wasn't replaced, the check is O(1). Apply `Arc` wrapping selectively
+to fields where cloning is measurably expensive.
+
 ## Decisions
 
 1. **Mailboxes are unbounded.** `send()` returns `Err` only if the
