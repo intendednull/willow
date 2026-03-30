@@ -17,6 +17,7 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod iroh;
+pub mod stub;
 pub mod topics;
 pub mod traits;
 
@@ -28,6 +29,6 @@ pub use topics::{
     channel_topic, topic_id, voice_topic, PROFILES_TOPIC, SERVER_OPS_TOPIC, WORKERS_TOPIC,
 };
 pub use traits::{
-    BlobStore, ConnectionEvent, ConnectionEventStream, GossipEvent, GossipMessage, Network,
-    TopicEvents, TopicHandle,
+    BlobHash, BlobStore, ConnectionEvent, ConnectionEventStream, GossipEvent, GossipMessage,
+    Network, TopicEvents, TopicHandle,
 };

@@ -9,6 +9,32 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use iroh_base::EndpointId;
 use iroh_gossip::TopicId;
+use serde::{Deserialize, Serialize};
+
+/// A 32-byte content-addressed blob hash (BLAKE3).
+///
+/// Wrapper around a raw hash so the crate compiles on WASM where
+/// `iroh_blobs` is not available. On native, convert to/from
+/// `BlobHash` via the named methods.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct BlobHash(pub [u8; 32]);
+
+impl BlobHash {
+    /// Compute the BLAKE3 hash of data.
+    pub fn new(data: &[u8]) -> Self {
+        Self(*blake3::hash(data).as_bytes())
+    }
+
+    /// Create from raw bytes.
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Return the raw bytes.
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
 
 // ───── Gossip types ─────────────────────────────────────────────────────────
 
@@ -71,16 +97,16 @@ pub trait TopicEvents: Send {
 #[async_trait]
 pub trait BlobStore: Send + Sync {
     /// Add data to the store, returning its content hash.
-    async fn add(&self, data: Bytes) -> Result<iroh_blobs::Hash>;
+    async fn add(&self, data: Bytes) -> Result<BlobHash>;
 
     /// Retrieve data by hash. Returns `None` if not found.
-    async fn get(&self, hash: iroh_blobs::Hash) -> Result<Option<Bytes>>;
+    async fn get(&self, hash: BlobHash) -> Result<Option<Bytes>>;
 
     /// Check whether a blob exists in the store.
-    async fn has(&self, hash: iroh_blobs::Hash) -> bool;
+    async fn has(&self, hash: BlobHash) -> bool;
 
     /// Remove a blob from the store. Returns `true` if it existed.
-    async fn remove(&self, hash: iroh_blobs::Hash) -> Result<bool>;
+    async fn remove(&self, hash: BlobHash) -> Result<bool>;
 
     /// Current store size in bytes. Returns `None` if unsupported.
     async fn store_size(&self) -> Option<u64>;

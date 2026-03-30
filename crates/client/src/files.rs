@@ -11,7 +11,7 @@ use willow_network::BlobStore;
 ///
 /// Returns the content hash. The caller should broadcast the hash
 /// (along with filename and metadata) over gossip so peers can download.
-pub async fn share_file(blobs: &dyn BlobStore, data: Vec<u8>) -> Result<iroh_blobs::Hash> {
+pub async fn share_file(blobs: &dyn BlobStore, data: Vec<u8>) -> Result<willow_network::BlobHash> {
     blobs.add(bytes::Bytes::from(data)).await
 }
 
@@ -20,7 +20,7 @@ pub async fn share_file(blobs: &dyn BlobStore, data: Vec<u8>) -> Result<iroh_blo
 /// Returns `None` if the blob is not available.
 pub async fn download_file(
     blobs: &dyn BlobStore,
-    hash: iroh_blobs::Hash,
+    hash: willow_network::BlobHash,
 ) -> Result<Option<Vec<u8>>> {
     Ok(blobs.get(hash).await?.map(|b| b.to_vec()))
 }
@@ -48,7 +48,7 @@ mod tests {
         let hub = MemHub::new();
         let net = MemNetwork::new(&hub);
 
-        let fake_hash = iroh_blobs::Hash::new(b"nonexistent");
+        let fake_hash = willow_network::BlobHash::new(b"nonexistent");
         let result = download_file(net.blobs(), fake_hash).await.unwrap();
         assert!(result.is_none());
     }

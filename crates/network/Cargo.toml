@@ -11,6 +11,7 @@ test-utils = []
 [dependencies]
 willow-identity = { path = "../identity" }
 iroh-base = { workspace = true, features = ["key"] }
+iroh-gossip = { workspace = true, default-features = false }
 
 async-trait = { workspace = true }
 bytes = { workspace = true }
@@ -21,17 +22,11 @@ tracing = { workspace = true }
 serde = { workspace = true }
 futures-lite = "2"
 
-# Native-only: iroh networking stack (brings in tokio/mio).
+# Native-only: full iroh networking (pulls in tokio, mio, etc.)
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 iroh = { workspace = true }
-iroh-gossip = { workspace = true }
 iroh-blobs = { workspace = true }
-tokio = { workspace = true }
-
-# WASM: only need the type definitions from gossip/blobs.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-iroh-gossip = { workspace = true, default-features = false }
-iroh-blobs = { workspace = true, default-features = false }
+tokio = { workspace = true, features = ["full"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "sync"] }

@@ -12,7 +12,7 @@ willow-network = { path = "../network" }
 serde = { workspace = true }
 bytes = { workspace = true }
 bincode = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 anyhow = { workspace = true }

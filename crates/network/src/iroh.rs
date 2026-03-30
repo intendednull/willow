@@ -58,7 +58,7 @@ pub struct Config {
 /// This is a simple implementation suitable for ephemeral usage.
 /// A persistent store can be swapped in later.
 pub struct IrohBlobStore {
-    store: Mutex<HashMap<iroh_blobs::Hash, Bytes>>,
+    store: Mutex<HashMap<crate::BlobHash, Bytes>>,
 }
 
 impl IrohBlobStore {
@@ -71,21 +71,21 @@ impl IrohBlobStore {
 
 #[async_trait]
 impl BlobStore for IrohBlobStore {
-    async fn add(&self, data: Bytes) -> Result<iroh_blobs::Hash> {
-        let hash = iroh_blobs::Hash::new(&data);
+    async fn add(&self, data: Bytes) -> Result<crate::BlobHash> {
+        let hash = crate::BlobHash::new(&data);
         self.store.lock().unwrap().insert(hash, data);
         Ok(hash)
     }
 
-    async fn get(&self, hash: iroh_blobs::Hash) -> Result<Option<Bytes>> {
+    async fn get(&self, hash: crate::BlobHash) -> Result<Option<Bytes>> {
         Ok(self.store.lock().unwrap().get(&hash).cloned())
     }
 
-    async fn has(&self, hash: iroh_blobs::Hash) -> bool {
+    async fn has(&self, hash: crate::BlobHash) -> bool {
         self.store.lock().unwrap().contains_key(&hash)
     }
 
-    async fn remove(&self, hash: iroh_blobs::Hash) -> Result<bool> {
+    async fn remove(&self, hash: crate::BlobHash) -> Result<bool> {
         Ok(self.store.lock().unwrap().remove(&hash).is_some())
     }
 

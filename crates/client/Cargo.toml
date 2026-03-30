@@ -17,14 +17,13 @@ willow-common = { path = "../common" }
 
 anyhow = { workspace = true }
 bytes = { workspace = true }
-iroh-blobs = { workspace = true, default-features = false }
 serde = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
 futures = "0.3"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 dirs = "6"
 rusqlite = { version = "0.31", features = ["bundled"] }
 

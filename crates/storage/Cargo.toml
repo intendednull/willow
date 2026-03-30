@@ -17,7 +17,7 @@ clap = { version = "4", features = ["derive"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 bincode = { workspace = true }
 serde = { workspace = true }
 

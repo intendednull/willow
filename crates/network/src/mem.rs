@@ -148,7 +148,7 @@ impl Default for MemHub {
 
 /// In-memory blob store for tests.
 pub struct MemBlobStore {
-    store: Mutex<HashMap<iroh_blobs::Hash, Bytes>>,
+    store: Mutex<HashMap<crate::BlobHash, Bytes>>,
 }
 
 impl MemBlobStore {
@@ -161,21 +161,21 @@ impl MemBlobStore {
 
 #[async_trait]
 impl BlobStore for MemBlobStore {
-    async fn add(&self, data: Bytes) -> Result<iroh_blobs::Hash> {
-        let hash = iroh_blobs::Hash::new(&data);
+    async fn add(&self, data: Bytes) -> Result<crate::BlobHash> {
+        let hash = crate::BlobHash::new(&data);
         self.store.lock().unwrap().insert(hash, data);
         Ok(hash)
     }
 
-    async fn get(&self, hash: iroh_blobs::Hash) -> Result<Option<Bytes>> {
+    async fn get(&self, hash: crate::BlobHash) -> Result<Option<Bytes>> {
         Ok(self.store.lock().unwrap().get(&hash).cloned())
     }
 
-    async fn has(&self, hash: iroh_blobs::Hash) -> bool {
+    async fn has(&self, hash: crate::BlobHash) -> bool {
         self.store.lock().unwrap().contains_key(&hash)
     }
 
-    async fn remove(&self, hash: iroh_blobs::Hash) -> Result<bool> {
+    async fn remove(&self, hash: crate::BlobHash) -> Result<bool> {
         Ok(self.store.lock().unwrap().remove(&hash).is_some())
     }
 

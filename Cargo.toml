@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/*"]
-exclude = ["crates/app"]
+exclude = ["crates/app", "crates/relay", "crates/worker", "crates/replay", "crates/storage"]
 resolver = "2"
 
 [workspace.package]
@@ -17,8 +17,8 @@ bincode = "1.3"
 anyhow = "1"
 thiserror = "1"
 
-# Async runtime
-tokio = { version = "1", features = ["full"] }
+# Async runtime — no features at workspace level to avoid WASM mio conflict
+tokio = { version = "1" }
 
 # Crypto & Networking
 iroh = "0.97"

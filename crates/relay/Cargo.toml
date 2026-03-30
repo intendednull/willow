@@ -18,7 +18,7 @@ iroh-base = { workspace = true }
 iroh-relay = { workspace = true, features = ["server"] }
 iroh-gossip = { workspace = true }
 
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
