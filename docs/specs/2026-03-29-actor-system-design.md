@@ -2,7 +2,6 @@
 
 **Date**: 2026-03-29
 **Status**: Ready for implementation
-**Depends on**: ~~iroh integration~~ (complete — merged to main)
 
 ## Existing Solutions
 
@@ -145,10 +144,10 @@ broadcast. See `docs/specs/2026-03-29-iroh-migration-design.md`.
    a thin runtime abstraction for spawn, channels, and timers — just
    like the original design proposed.
 
-2. **`Send` is still required.** The `Network` trait and its associated
-   types require `Send + Sync`. The client uses `Arc<RwLock<>>`. All
-   types in the shared path must be `Send`. On WASM, everything is
-   trivially `Send` (single-threaded), so this compiles without issue.
+2. **`Send` is required.** The `Network` trait and its associated types
+   require `Send + Sync`. The client currently uses `Arc<RwLock<>>` (to
+   be replaced by actors in Phase 2). On WASM, everything is trivially
+   `Send` (single-threaded), so this compiles without issue.
 
 3. **`Network` trait is generic.** Workers and client are generic over
    `N: Network`, with `IrohNetwork` for production and `MemNetwork` for
@@ -355,7 +354,7 @@ abstract over the concrete actor:
 /// Type-erased handle that can send a specific message type.
 /// Useful for pub-sub patterns where the sender doesn't know the actor type.
 pub struct Recipient<M: Message> {
-    tx: Box<dyn RecipientSender<M>>,
+    tx: Box<dyn RecipientSender<M>>,  // internal trait, not public
 }
 
 impl<M: Message> Recipient<M> {
