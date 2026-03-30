@@ -12,18 +12,18 @@ willow-channel = { path = "../channel" }
 willow-network = { path = "../network" }
 willow-transport = { path = "../transport" }
 willow-crypto = { path = "../crypto" }
-willow-files = { path = "../files" }
 willow-state = { path = "../state" }
 willow-common = { path = "../common" }
 
 anyhow = { workspace = true }
+bytes = { workspace = true }
 serde = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
 futures = "0.3"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 dirs = "6"
 rusqlite = { version = "0.31", features = ["bundled"] }
 
@@ -36,3 +36,4 @@ gloo-timers = { version = "0.3", features = ["futures"] }
 
 [dev-dependencies]
 tempfile = "3"
+willow-network = { path = "../network", features = ["test-utils"] }

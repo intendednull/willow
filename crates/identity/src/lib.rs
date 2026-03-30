@@ -9,12 +9,12 @@
 //! ## Key concepts
 //!
 //! - **[`Identity`]** — your secret keypair. Never leaves the local machine.
-//! - **[`PeerId`]** — a public identifier derived from the keypair. Safe to
-//!   share with anyone.
-//! - **[`UserProfile`]** — display name, avatar, status, etc. Attached to a
-//!   `PeerId`.
-//! - **[`SignedPayload`]** / [`pack`] / [`unpack`] — sign arbitrary data so
-//!   that recipients can verify the sender.
+//! - **[`EndpointId`]** — a public identifier (= Ed25519 public key). Safe to
+//!   share with anyone. Used as the peer address throughout the codebase.
+//! - **[`UserProfile`]** — display name, avatar, status, etc. Attached to an
+//!   `EndpointId`.
+//! - **[`pack`] / [`unpack`]** — sign arbitrary data so that recipients can
+//!   verify the sender.
 //!
 //! ## Examples
 //!
@@ -25,16 +25,17 @@
 //! let data = String::from("hello from alice");
 //! let signed = pack(&data, &alice).unwrap();
 //!
-//! let (msg, peer_id) = unpack::<String>(&signed).unwrap();
+//! let (msg, endpoint_id) = unpack::<String>(&signed).unwrap();
 //! assert_eq!(msg, "hello from alice");
-//! assert_eq!(peer_id, alice.peer_id());
+//! assert_eq!(endpoint_id, alice.endpoint_id());
 //! ```
 
-use std::sync::Arc;
-
 use chrono::{DateTime, Utc};
-use libp2p::identity::{Keypair, PublicKey};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+
+// Re-export iroh identity types so downstream crates can use them
+// without depending on iroh-base directly.
+pub use iroh_base::{EndpointId, PublicKey, SecretKey, Signature};
 
 // ───── Errors ────────────────────────────────────────────────────────────────
 
@@ -62,63 +63,6 @@ pub enum IdentityError {
     Other(String),
 }
 
-// ───── PeerId ────────────────────────────────────────────────────────────────
-
-/// A globally unique, cryptographically derived peer identifier.
-///
-/// Wraps [`libp2p::PeerId`] in an `Arc` so it can be cheaply cloned and shared
-/// across async tasks. Implements `Serialize` / `Deserialize` for wire
-/// transport.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash)]
-pub struct PeerId(Arc<libp2p::PeerId>);
-
-impl PeerId {
-    /// Return a reference to the inner [`libp2p::PeerId`].
-    pub fn inner(&self) -> &libp2p::PeerId {
-        &self.0
-    }
-
-    /// Parse a base58-encoded PeerId string.
-    pub fn parse(s: &str) -> Option<Self> {
-        let inner: libp2p::PeerId = s.parse().ok()?;
-        Some(Self(Arc::new(inner)))
-    }
-}
-
-/// Extract Ed25519 public key bytes from a PeerId string.
-///
-/// Returns `None` if the string is not a valid PeerId or doesn't contain
-/// an Ed25519 key.
-pub fn ed25519_public_from_peer_id(peer_id_str: &str) -> Option<[u8; 32]> {
-    let inner: libp2p::PeerId = peer_id_str.parse().ok()?;
-    let digest = inner.as_ref().digest();
-    // Ed25519 protobuf encoding: [0x08, 0x01, 0x12, 0x20, ...32 bytes...]
-    if digest.len() >= 36
-        && digest[0] == 0x08
-        && digest[1] == 0x01
-        && digest[2] == 0x12
-        && digest[3] == 0x20
-    {
-        let mut key = [0u8; 32];
-        key.copy_from_slice(&digest[4..36]);
-        Some(key)
-    } else {
-        None
-    }
-}
-
-impl std::fmt::Display for PeerId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<libp2p::PeerId> for PeerId {
-    fn from(id: libp2p::PeerId) -> Self {
-        Self(Arc::new(id))
-    }
-}
-
 // ───── Identity ──────────────────────────────────────────────────────────────
 
 /// A local cryptographic identity backed by an Ed25519 keypair.
@@ -126,74 +70,83 @@ impl From<libp2p::PeerId> for PeerId {
 /// This is the "secret" side of your presence on the network — it lets you
 /// sign messages to prove they came from you.
 ///
-/// `Identity` is cheap to clone (the keypair lives behind an [`Arc`]) and is
-/// `Send + Sync` so it can be shared across tokio tasks.
+/// `Identity` is cheap to clone (the secret key is 32 bytes, copied on clone)
+/// and is `Send + Sync` so it can be shared across tokio tasks.
 #[derive(Clone)]
-pub struct Identity(Arc<Keypair>);
+pub struct Identity {
+    secret_key: SecretKey,
+}
 
 impl Identity {
     /// Generate a fresh random Ed25519 identity.
     pub fn generate() -> Self {
-        Self(Arc::new(Keypair::generate_ed25519()))
+        Self {
+            secret_key: SecretKey::generate(&mut rand::rng()),
+        }
     }
 
-    /// Create an identity from raw Ed25519 keypair bytes (64 bytes).
+    /// Create an identity from raw Ed25519 secret key bytes (32 bytes).
     ///
-    /// Returns `None` if the bytes are invalid.
-    pub fn from_ed25519_bytes(bytes: &[u8]) -> Option<Self> {
-        let mut buf = bytes.to_vec();
-        let ed_kp = libp2p::identity::ed25519::Keypair::try_from_bytes(&mut buf).ok()?;
-        Some(Self(Arc::new(Keypair::from(ed_kp))))
+    /// Returns `None` if the bytes are not exactly 32 bytes.
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        let bytes: [u8; 32] = bytes.try_into().ok()?;
+        Some(Self {
+            secret_key: SecretKey::from_bytes(&bytes),
+        })
     }
 
-    /// Export this identity as raw Ed25519 keypair bytes (64 bytes).
+    /// Export this identity as raw Ed25519 secret key bytes (32 bytes).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.secret_key.to_bytes().to_vec()
+    }
+
+    /// Derive the public [`EndpointId`] for this identity.
     ///
-    /// Returns `None` if the keypair is not Ed25519.
-    pub fn to_ed25519_bytes(&self) -> Option<Vec<u8>> {
-        let ed_kp = (*self.0).clone().try_into_ed25519().ok()?;
-        Some(ed_kp.to_bytes().to_vec())
+    /// This is the peer's address on the network — a 32-byte Ed25519 public key.
+    pub fn endpoint_id(&self) -> EndpointId {
+        self.secret_key.public()
+    }
+
+    /// Access the underlying [`SecretKey`] (e.g. for configuring iroh endpoints).
+    pub fn secret_key(&self) -> &SecretKey {
+        &self.secret_key
+    }
+
+    /// Access the public key.
+    pub fn public_key(&self) -> PublicKey {
+        self.secret_key.public()
+    }
+
+    /// Sign arbitrary data with this identity's secret key.
+    pub fn sign(&self, data: &[u8]) -> Signature {
+        self.secret_key.sign(data)
     }
 
     /// Load an identity from a file, or generate and save a new one.
-    #[cfg(not(target_arch = "wasm32"))]
     ///
-    /// The file stores the raw 64-byte Ed25519 keypair. Parent directories
+    /// The file stores the raw 32-byte Ed25519 secret key. Parent directories
     /// are created if they don't exist.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn load_or_generate(path: impl AsRef<std::path::Path>) -> Result<Self, IdentityError> {
         use std::fs;
 
         let path = path.as_ref();
-        if let Ok(mut bytes) = fs::read(path) {
-            let ed_kp = libp2p::identity::ed25519::Keypair::try_from_bytes(&mut bytes)
-                .map_err(|e| IdentityError::Other(e.to_string()))?;
-            Ok(Self(Arc::new(Keypair::from(ed_kp))))
+        if let Ok(bytes) = fs::read(path) {
+            Self::from_bytes(&bytes).ok_or_else(|| {
+                IdentityError::Other(format!(
+                    "invalid key file: expected 32 bytes, got {}",
+                    bytes.len()
+                ))
+            })
         } else {
             let identity = Self::generate();
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(|e| IdentityError::Other(e.to_string()))?;
             }
-            let kp: Keypair = (*identity.0).clone();
-            let ed_kp = kp
-                .try_into_ed25519()
+            fs::write(path, identity.to_bytes())
                 .map_err(|e| IdentityError::Other(e.to_string()))?;
-            fs::write(path, ed_kp.to_bytes()).map_err(|e| IdentityError::Other(e.to_string()))?;
             Ok(identity)
         }
-    }
-
-    /// Derive the public [`PeerId`] for this identity.
-    pub fn peer_id(&self) -> PeerId {
-        PeerId::from(self.0.public().to_peer_id())
-    }
-
-    /// Access the underlying [`Keypair`] (e.g. for configuring libp2p).
-    pub fn keypair(&self) -> &Keypair {
-        &self.0
-    }
-
-    /// Access the public key.
-    pub fn public_key(&self) -> PublicKey {
-        self.0.public()
     }
 }
 
@@ -205,20 +158,29 @@ impl Default for Identity {
 
 impl std::fmt::Debug for Identity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("Identity").field(&self.peer_id()).finish()
+        f.debug_tuple("Identity")
+            .field(&self.endpoint_id())
+            .finish()
     }
 }
 
-// ───── User profile ──────────────────────────────────────────────────────────
+// ───── Standalone verification ──────────────────────────────────────────────
 
-/// A human-readable profile attached to a [`PeerId`].
+/// Verify a signature against a public key without needing an [`Identity`].
+pub fn verify(key: &PublicKey, data: &[u8], sig: &Signature) -> bool {
+    key.verify(data, sig).is_ok()
+}
+
+// ───── User profile ─────────────────────────────────────────────────────────
+
+/// A human-readable profile attached to an [`EndpointId`].
 ///
 /// Profiles are gossiped across the network so that peers can show display
-/// names and avatars instead of raw peer IDs.
+/// names and avatars instead of raw endpoint IDs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserProfile {
     /// The peer this profile belongs to.
-    pub peer_id: PeerId,
+    pub peer_id: EndpointId,
     /// Display name shown in the UI.
     pub display_name: String,
     /// Optional avatar (URL or content-addressed hash).
@@ -233,7 +195,7 @@ pub struct UserProfile {
 
 impl UserProfile {
     /// Create a minimal profile with just a display name.
-    pub fn new(peer_id: PeerId, display_name: impl Into<String>) -> Self {
+    pub fn new(peer_id: EndpointId, display_name: impl Into<String>) -> Self {
         Self {
             peer_id,
             display_name: display_name.into(),
@@ -245,34 +207,46 @@ impl UserProfile {
     }
 }
 
-// ───── Signed message envelope ───────────────────────────────────────────────
+// ───── Signed message envelope ──────────────────────────────────────────────
 
 /// Internal wire format for a signed payload.
 #[derive(Serialize, Deserialize)]
 struct SignedMessage {
-    /// The signer's public key in protobuf encoding.
+    /// The signer's Ed25519 public key (32 bytes).
     public_key: Vec<u8>,
-    /// Ed25519 signature over `payload`.
+    /// Ed25519 signature over `payload` (64 bytes).
     signature: Vec<u8>,
     /// The serialized inner data.
     payload: Vec<u8>,
 }
 
 impl SignedMessage {
-    /// Verify the signature and return the signer's [`libp2p::PeerId`].
-    fn verify(&self) -> Result<libp2p::PeerId, IdentityError> {
-        let public_key = PublicKey::try_decode_protobuf(&self.public_key)
+    /// Verify the signature and return the signer's [`PublicKey`].
+    fn verify(&self) -> Result<PublicKey, IdentityError> {
+        let pk_bytes: [u8; 32] = self
+            .public_key
+            .as_slice()
+            .try_into()
+            .map_err(|_| IdentityError::PublicKeyDecode("expected 32 bytes".into()))?;
+        let public_key = PublicKey::from_bytes(&pk_bytes)
             .map_err(|e| IdentityError::PublicKeyDecode(e.to_string()))?;
 
-        if public_key.verify(&self.payload, &self.signature) {
-            Ok(public_key.to_peer_id())
+        let sig_bytes: [u8; 64] = self
+            .signature
+            .as_slice()
+            .try_into()
+            .map_err(|_| IdentityError::InvalidSignature)?;
+        let signature = Signature::from_bytes(&sig_bytes);
+
+        if public_key.verify(&self.payload, &signature).is_ok() {
+            Ok(public_key)
         } else {
             Err(IdentityError::InvalidSignature)
         }
     }
 }
 
-// ───── Public API ────────────────────────────────────────────────────────────
+// ───── Public API ───────────────────────────────────────────────────────────
 
 /// Sign and serialize `payload` using the given [`Identity`].
 ///
@@ -282,20 +256,16 @@ impl SignedMessage {
 ///
 /// # Errors
 ///
-/// Returns [`IdentityError::Serde`] if serialization fails, or
-/// [`IdentityError::SignError`] if the keypair cannot produce a signature.
+/// Returns [`IdentityError::Serde`] if serialization fails.
 pub fn pack<T: Serialize>(payload: &T, identity: &Identity) -> Result<Vec<u8>, IdentityError> {
     let payload_bytes =
         willow_transport::pack(payload).map_err(|e| IdentityError::Serde(e.to_string()))?;
 
-    let signature = identity
-        .0
-        .sign(&payload_bytes)
-        .map_err(|e| IdentityError::SignError(e.to_string()))?;
+    let signature = identity.sign(&payload_bytes);
 
     let message = SignedMessage {
-        public_key: identity.public_key().encode_protobuf(),
-        signature,
+        public_key: identity.public_key().as_bytes().to_vec(),
+        signature: signature.to_bytes().to_vec(),
         payload: payload_bytes,
     };
 
@@ -304,25 +274,25 @@ pub fn pack<T: Serialize>(payload: &T, identity: &Identity) -> Result<Vec<u8>, I
 
 /// Verify the signature on `data` and deserialize the inner payload.
 ///
-/// Returns both the deserialized value and the [`PeerId`] of the signer, so
-/// the caller can check *who* sent the message.
+/// Returns both the deserialized value and the [`EndpointId`] of the signer,
+/// so the caller can check *who* sent the message.
 ///
 /// # Errors
 ///
 /// Returns an error if the bytes are malformed, the signature is invalid, or
 /// the inner payload can't be deserialized into `T`.
-pub fn unpack<T: DeserializeOwned>(data: &[u8]) -> Result<(T, PeerId), IdentityError> {
+pub fn unpack<T: DeserializeOwned>(data: &[u8]) -> Result<(T, EndpointId), IdentityError> {
     let message: SignedMessage =
         willow_transport::unpack(data).map_err(|e| IdentityError::Serde(e.to_string()))?;
 
-    let libp2p_peer = message.verify()?;
+    let public_key = message.verify()?;
     let payload: T = willow_transport::unpack(&message.payload)
         .map_err(|e| IdentityError::Serde(e.to_string()))?;
 
-    Ok((payload, PeerId::from(libp2p_peer)))
+    Ok((payload, public_key))
 }
 
-// ───── Tests ─────────────────────────────────────────────────────────────────
+// ───── Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -332,14 +302,14 @@ mod tests {
     fn generate_identity_is_unique() {
         let a = Identity::generate();
         let b = Identity::generate();
-        assert_ne!(a.peer_id(), b.peer_id());
+        assert_ne!(a.endpoint_id(), b.endpoint_id());
     }
 
     #[test]
-    fn peer_id_round_trip_serde() {
-        let id = Identity::generate().peer_id();
+    fn endpoint_id_round_trip_serde() {
+        let id = Identity::generate().endpoint_id();
         let bytes = willow_transport::pack(&id).unwrap();
-        let decoded: PeerId = willow_transport::unpack(&bytes).unwrap();
+        let decoded: EndpointId = willow_transport::unpack(&bytes).unwrap();
         assert_eq!(decoded, id);
     }
 
@@ -349,10 +319,10 @@ mod tests {
         let payload = "hello from alice";
 
         let data = pack(&payload, &alice).unwrap();
-        let (msg, peer) = unpack::<String>(&data).unwrap();
+        let (msg, endpoint) = unpack::<String>(&data).unwrap();
 
         assert_eq!(msg, payload);
-        assert_eq!(peer, alice.peer_id());
+        assert_eq!(endpoint, alice.endpoint_id());
     }
 
     #[test]
@@ -372,8 +342,8 @@ mod tests {
 
     #[test]
     fn user_profile_new() {
-        let peer = Identity::generate().peer_id();
-        let profile = UserProfile::new(peer.clone(), "Alice");
+        let peer = Identity::generate().endpoint_id();
+        let profile = UserProfile::new(peer, "Alice");
 
         assert_eq!(profile.peer_id, peer);
         assert_eq!(profile.display_name, "Alice");
@@ -384,7 +354,7 @@ mod tests {
 
     #[test]
     fn user_profile_serde_round_trip() {
-        let peer = Identity::generate().peer_id();
+        let peer = Identity::generate().endpoint_id();
         let mut profile = UserProfile::new(peer, "Bob");
         profile.status = Some("Online".into());
         profile.bio = Some("Just a test user".into());
@@ -399,14 +369,16 @@ mod tests {
     fn identity_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<Identity>();
-        assert_send_sync::<PeerId>();
+        assert_send_sync::<EndpointId>();
     }
 
     #[test]
-    fn peer_id_display() {
-        let peer = Identity::generate().peer_id();
-        let display = format!("{peer}");
+    fn endpoint_id_display() {
+        let endpoint = Identity::generate().endpoint_id();
+        let display = format!("{endpoint}");
         assert!(!display.is_empty());
+        // EndpointId displays as 64-char hex string
+        assert_eq!(display.len(), 64);
     }
 
     #[test]
@@ -427,38 +399,38 @@ mod tests {
         // Second call: loads the same identity.
         let id2 = Identity::load_or_generate(&path).unwrap();
 
-        assert_eq!(id1.peer_id(), id2.peer_id());
+        assert_eq!(id1.endpoint_id(), id2.endpoint_id());
 
         // Cleanup.
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn from_ed25519_bytes_round_trip() {
+    fn from_bytes_round_trip() {
         let id = Identity::generate();
-        let bytes = id.to_ed25519_bytes().expect("should export bytes");
-        let restored = Identity::from_ed25519_bytes(&bytes).expect("should restore");
-        assert_eq!(restored.peer_id(), id.peer_id());
+        let bytes = id.to_bytes();
+        let restored = Identity::from_bytes(&bytes).expect("should restore");
+        assert_eq!(restored.endpoint_id(), id.endpoint_id());
     }
 
     #[test]
-    fn from_ed25519_bytes_invalid_returns_none() {
-        assert!(Identity::from_ed25519_bytes(&[0u8; 10]).is_none());
-        assert!(Identity::from_ed25519_bytes(&[]).is_none());
-        assert!(Identity::from_ed25519_bytes(&[0xFF; 64]).is_none());
+    fn from_bytes_invalid_returns_none() {
+        // Wrong length
+        assert!(Identity::from_bytes(&[0u8; 10]).is_none());
+        assert!(Identity::from_bytes(&[]).is_none());
     }
 
     #[test]
-    fn to_ed25519_bytes_length() {
+    fn to_bytes_length() {
         let id = Identity::generate();
-        let bytes = id.to_ed25519_bytes().unwrap();
-        assert_eq!(bytes.len(), 64); // Ed25519 keypair = 32 seed + 32 public
+        let bytes = id.to_bytes();
+        assert_eq!(bytes.len(), 32); // Ed25519 secret key = 32 bytes
     }
 
     #[test]
     fn user_profile_all_fields() {
-        let peer = Identity::generate().peer_id();
-        let mut profile = UserProfile::new(peer.clone(), "Alice");
+        let peer = Identity::generate().endpoint_id();
+        let mut profile = UserProfile::new(peer, "Alice");
         profile.avatar = Some("https://example.com/avatar.png".into());
         profile.status = Some("Online".into());
         profile.bio = Some("Willow developer".into());
@@ -477,23 +449,27 @@ mod tests {
     }
 
     #[test]
-    fn ed25519_public_from_peer_id_round_trip() {
+    fn sign_and_verify_standalone() {
         let id = Identity::generate();
-        let peer_str = id.peer_id().to_string();
-        let pub_bytes = ed25519_public_from_peer_id(&peer_str).unwrap();
+        let data = b"test data";
+        let sig = id.sign(data);
 
-        // Compare with what we get from the keypair directly.
-        let ed_kp = id.keypair().clone().try_into_ed25519().unwrap();
-        let full = ed_kp.to_bytes();
-        let mut expected = [0u8; 32];
-        expected.copy_from_slice(&full[32..]);
-
-        assert_eq!(pub_bytes, expected);
+        assert!(verify(&id.public_key(), data, &sig));
+        assert!(!verify(&id.public_key(), b"wrong data", &sig));
     }
 
     #[test]
-    fn ed25519_public_from_peer_id_invalid() {
-        assert!(ed25519_public_from_peer_id("not-a-peer-id").is_none());
-        assert!(ed25519_public_from_peer_id("").is_none());
+    fn endpoint_id_hash_map_key() {
+        use std::collections::HashMap;
+        let a = Identity::generate().endpoint_id();
+        let b = Identity::generate().endpoint_id();
+
+        let mut map = HashMap::new();
+        map.insert(a, "alice");
+        map.insert(b, "bob");
+
+        assert_eq!(map.get(&a), Some(&"alice"));
+        assert_eq!(map.get(&b), Some(&"bob"));
+        assert_eq!(map.len(), 2);
     }
 }

@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
+use willow_identity::EndpointId;
 
 /// A named conversation space inside a server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,8 +43,8 @@ pub struct Role {
 /// A peer's membership record within a server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Member {
-    /// The peer's ID string.
-    pub peer_id: String,
+    /// The peer's endpoint ID.
+    pub peer_id: EndpointId,
     /// Role IDs assigned to this member.
     pub roles: HashSet<String>,
     /// Optional display name override.
@@ -57,8 +58,8 @@ pub struct ChatMessage {
     pub id: String,
     /// The channel this message belongs to.
     pub channel_id: String,
-    /// Author's peer ID.
-    pub author: String,
+    /// Author's endpoint ID.
+    pub author: EndpointId,
     /// Message body text.
     pub body: String,
     /// Wall-clock timestamp in milliseconds.
@@ -67,8 +68,8 @@ pub struct ChatMessage {
     pub edited: bool,
     /// Whether this message has been soft-deleted.
     pub deleted: bool,
-    /// Reactions: emoji string -> list of reactor peer IDs.
-    pub reactions: HashMap<String, Vec<String>>,
+    /// Reactions: emoji string -> list of reactor endpoint IDs.
+    pub reactions: HashMap<String, Vec<EndpointId>>,
     /// If this is a reply, the ID of the parent message.
     pub reply_to: Option<String>,
 }
@@ -99,8 +100,8 @@ pub enum Permission {
 /// A peer's display profile.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Profile {
-    /// The peer's ID string.
-    pub peer_id: String,
+    /// The peer's endpoint ID.
+    pub peer_id: EndpointId,
     /// Display name.
     pub display_name: String,
 }

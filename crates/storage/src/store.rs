@@ -45,7 +45,7 @@ impl StorageEventStore {
                 event.id,
                 server_id,
                 channel_id,
-                event.author,
+                event.author.to_string(),
                 event.timestamp_ms,
                 event_data,
             ],

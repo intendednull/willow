@@ -3,26 +3,22 @@ name = "willow-relay"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
-description = "Relay server for Willow P2P chat — bridges native TCP and browser WebSocket peers"
+description = "Iroh relay server + bootstrap gossip node for Willow"
+
+[[bin]]
+name = "willow-relay"
+path = "src/main.rs"
 
 [dependencies]
-libp2p = { version = "0.53", features = [
-    "tokio",
-    "gossipsub",
-    "kad",
-    "noise",
-    "yamux",
-    "tcp",
-    "dns",
-    "relay",
-    "identify",
-    "macros",
-    "ed25519",
-    "websocket",
-] }
 willow-identity = { path = "../identity" }
-willow-transport = { path = "../transport" }
-tokio = { workspace = true }
+willow-network = { path = "../network" }
+
+iroh = { workspace = true }
+iroh-base = { workspace = true }
+iroh-relay = { workspace = true, features = ["server"] }
+iroh-gossip = { workspace = true }
+
+tokio = { workspace = true, features = ["full"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

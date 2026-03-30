@@ -94,7 +94,7 @@ pub fn process_event_batch(
                 peer_id,
             } => {
                 let ch = channel_id.clone();
-                let pid = peer_id.clone();
+                let pid = peer_id.to_string();
                 write.voice.set_voice_participants_map.update(|m| {
                     let participants = m.entry(ch.clone()).or_default();
                     if !participants.contains(&pid) {
@@ -113,24 +113,26 @@ pub fn process_event_batch(
                 peer_id,
             } => {
                 let ch = channel_id.clone();
-                let pid = peer_id.clone();
+                let pid = peer_id.to_string();
                 write.voice.set_voice_participants_map.update(|m| {
                     if let Some(v) = m.get_mut(&ch) {
                         v.retain(|p| p != &pid);
                     }
                 });
                 // Remove remote video stream for this peer.
-                let pid_for_stream = peer_id.clone();
+                let pid_for_stream = peer_id.to_string();
                 write.voice.set_remote_video_streams.update(|m| {
                     m.remove(&pid_for_stream);
                 });
-                voice_manager.borrow_mut().close_connection(peer_id);
+                voice_manager
+                    .borrow_mut()
+                    .close_connection(&peer_id.to_string());
             }
             ClientEvent::VoiceSignal {
                 from_peer, signal, ..
             } => {
                 let vm = voice_manager.clone();
-                let from = from_peer.clone();
+                let from = from_peer.to_string();
                 match signal {
                     VoiceSignalPayload::Offer(sdp) => {
                         let s = sdp.clone();
@@ -212,7 +214,11 @@ pub fn process_event_batch(
     }
     if needs_peer_refresh {
         let h = handle.clone();
-        let peer_list = h.server_members();
+        let peer_list: Vec<(String, String, bool)> = h
+            .server_members()
+            .into_iter()
+            .map(|(id, name, online)| (id.to_string(), name, online))
+            .collect();
         let count = peer_list.iter().filter(|(_, _, online)| *online).count();
         write.network.set_peers.set(peer_list);
         write.network.set_peer_count.set(count);

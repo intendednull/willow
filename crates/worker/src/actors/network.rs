@@ -1,68 +1,61 @@
-//! Network actor — owns the libp2p swarm, bridges gossipsub to other actors.
+//! Network actor — bridges gossip topic events to the state actor.
+//!
+//! Streams incoming gossip messages, parses them, and forwards relevant
+//! payloads to the state actor. The pure parse functions are kept separate
+//! for testability.
 
 use tokio::sync::mpsc;
-use tracing::{debug, trace, warn};
+use tracing::debug;
+use willow_identity::EndpointId;
+use willow_network::traits::{GossipEvent, TopicEvents};
 
-use willow_network::{NetworkEvent, NetworkNode};
-
-use super::{NetworkOutMsg, StateMsg};
-use crate::types::{WorkerWireMessage, WORKERS_TOPIC};
+use super::StateMsg;
+use crate::types::WorkerWireMessage;
 
 /// Run the network actor loop.
 ///
-/// Receives gossipsub events from the swarm, dispatches to the state
-/// actor. Receives outbound messages from other actors and publishes
-/// to gossipsub.
-pub async fn run(
-    node: NetworkNode,
-    mut events: mpsc::UnboundedReceiver<NetworkEvent>,
+/// Streams gossip events from a topic subscription, parses incoming
+/// messages, and dispatches them to the state actor.
+pub async fn run<E: TopicEvents>(
+    mut events: E,
     state_tx: mpsc::Sender<StateMsg>,
-    mut outbound_rx: mpsc::Receiver<NetworkOutMsg>,
-    local_peer_id: String,
+    local_peer_id: EndpointId,
 ) {
     debug!("network actor started");
 
-    // Subscribe to the workers topic.
-    if let Err(e) = node.subscribe(WORKERS_TOPIC) {
-        warn!(%e, "failed to subscribe to workers topic");
-    }
-
-    loop {
-        tokio::select! {
-            event = events.recv() => {
-                let Some(event) = event else { break };
-                match event {
-                    NetworkEvent::Message { topic, data, .. } => {
-                        handle_incoming_message(
-                            &topic,
-                            &data,
-                            &state_tx,
-                            &node,
-                            &local_peer_id,
-                        )
-                        .await;
+    while let Some(Ok(gossip_event)) = events.next().await {
+        if let GossipEvent::Received(msg) = gossip_event {
+            // Try worker message first.
+            match parse_worker_message(&msg.content, &local_peer_id) {
+                WorkerMessageAction::HandleRequest {
+                    request_id: _,
+                    payload,
+                } => {
+                    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                    if state_tx
+                        .send(StateMsg::Request {
+                            req: payload,
+                            reply: reply_tx,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        continue;
                     }
-                    NetworkEvent::PeerConnected(peer) => {
-                        debug!(%peer, "peer connected");
-                    }
-                    NetworkEvent::PeerDisconnected(peer) => {
-                        debug!(%peer, "peer disconnected");
-                    }
-                    _ => {}
+                    // Consume the response. Broadcasting it back would need
+                    // a TopicHandle — that can be added in a follow-up.
+                    let _ = reply_rx.await;
                 }
-            }
-            msg = outbound_rx.recv() => {
-                let Some(msg) = msg else { break };
-                match msg {
-                    NetworkOutMsg::Publish { topic, data } => {
-                        if let Err(e) = node.publish(&topic, data) {
-                            trace!(%e, %topic, "failed to publish");
+                WorkerMessageAction::Ignore => {}
+                WorkerMessageAction::DeserializeError(_) => {
+                    // Not a worker message — try server message.
+                    match parse_server_message(&msg.content) {
+                        ServerMessageAction::Events(events) => {
+                            for event in events {
+                                let _ = state_tx.send(StateMsg::Event(event)).await;
+                            }
                         }
-                    }
-                    NetworkOutMsg::Subscribe(topic) => {
-                        if let Err(e) = node.subscribe(&topic) {
-                            warn!(%e, %topic, "failed to subscribe");
-                        }
+                        ServerMessageAction::Ignore => {}
                     }
                 }
             }
@@ -90,7 +83,7 @@ pub enum WorkerMessageAction {
 ///
 /// This is a pure function — no I/O, no channels — so it's easily
 /// testable. The caller handles the actual I/O.
-pub fn parse_worker_message(data: &[u8], local_peer_id: &str) -> WorkerMessageAction {
+pub fn parse_worker_message(data: &[u8], local_peer_id: &EndpointId) -> WorkerMessageAction {
     let msg = match bincode::deserialize::<WorkerWireMessage>(data) {
         Ok(m) => m,
         Err(e) => return WorkerMessageAction::DeserializeError(e.to_string()),
@@ -102,7 +95,7 @@ pub fn parse_worker_message(data: &[u8], local_peer_id: &str) -> WorkerMessageAc
             payload,
             request_id,
         } => {
-            if target_peer.is_empty() || target_peer == local_peer_id {
+            if target_peer == *local_peer_id {
                 WorkerMessageAction::HandleRequest {
                     request_id,
                     payload,
@@ -142,86 +135,23 @@ pub fn parse_server_message(data: &[u8]) -> ServerMessageAction {
     }
 }
 
-async fn handle_incoming_message(
-    topic: &str,
-    data: &[u8],
-    state_tx: &mpsc::Sender<StateMsg>,
-    node: &NetworkNode,
-    local_peer_id: &str,
-) {
-    if topic == WORKERS_TOPIC {
-        match parse_worker_message(data, local_peer_id) {
-            WorkerMessageAction::HandleRequest {
-                request_id,
-                payload,
-            } => {
-                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                if state_tx
-                    .send(StateMsg::Request {
-                        req: payload,
-                        reply: reply_tx,
-                    })
-                    .await
-                    .is_err()
-                {
-                    warn!("state actor unavailable for request {request_id}");
-                    return;
-                }
-
-                let resp =
-                    match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
-                        Ok(Ok(resp)) => resp,
-                        Ok(Err(_)) => {
-                            warn!(%request_id, "state actor dropped reply channel");
-                            return;
-                        }
-                        Err(_) => {
-                            warn!(%request_id, "request timed out after 5s");
-                            return;
-                        }
-                    };
-
-                let response_msg = WorkerWireMessage::Response {
-                    request_id: request_id.clone(),
-                    target_peer: String::new(),
-                    payload: Box::new(resp),
-                };
-                if let Ok(bytes) = bincode::serialize(&response_msg) {
-                    if let Err(e) = node.publish(WORKERS_TOPIC, bytes) {
-                        debug!(%e, %request_id, "failed to publish response");
-                    }
-                }
-            }
-            WorkerMessageAction::Ignore => {}
-            WorkerMessageAction::DeserializeError(e) => {
-                debug!(%e, "failed to deserialize worker message");
-            }
-        }
-    } else {
-        match parse_server_message(data) {
-            ServerMessageAction::Events(events) => {
-                for event in events {
-                    let _ = state_tx.send(StateMsg::Event(event)).await;
-                }
-            }
-            ServerMessageAction::Ignore => {
-                trace!(topic, bytes = data.len(), "unrecognized message on topic");
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use willow_common::{WorkerRequest, WorkerResponse};
+    use willow_identity::Identity;
     use willow_state::StateHash;
+
+    fn gen_id() -> EndpointId {
+        Identity::generate().endpoint_id()
+    }
 
     #[test]
     fn parse_worker_request_targeted_at_us() {
+        let my_id = gen_id();
         let msg = WorkerWireMessage::Request {
             request_id: "req-1".to_string(),
-            target_peer: "my-peer".to_string(),
+            target_peer: my_id,
             payload: WorkerRequest::Sync {
                 server_id: "srv".to_string(),
                 state_hash: StateHash::ZERO,
@@ -229,7 +159,7 @@ mod tests {
         };
         let data = bincode::serialize(&msg).unwrap();
 
-        match parse_worker_message(&data, "my-peer") {
+        match parse_worker_message(&data, &my_id) {
             WorkerMessageAction::HandleRequest { request_id, .. } => {
                 assert_eq!(request_id, "req-1");
             }
@@ -238,30 +168,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_worker_request_broadcast() {
-        let msg = WorkerWireMessage::Request {
-            request_id: "req-2".to_string(),
-            target_peer: String::new(), // broadcast
-            payload: WorkerRequest::Sync {
-                server_id: "srv".to_string(),
-                state_hash: StateHash::ZERO,
-            },
-        };
-        let data = bincode::serialize(&msg).unwrap();
-
-        match parse_worker_message(&data, "any-peer") {
-            WorkerMessageAction::HandleRequest { request_id, .. } => {
-                assert_eq!(request_id, "req-2");
-            }
-            other => panic!("expected HandleRequest, got {:?}", other),
-        }
-    }
-
-    #[test]
     fn parse_worker_request_not_for_us() {
+        let my_id = gen_id();
+        let other_id = gen_id();
         let msg = WorkerWireMessage::Request {
             request_id: "req-3".to_string(),
-            target_peer: "other-peer".to_string(),
+            target_peer: other_id,
             payload: WorkerRequest::Sync {
                 server_id: "srv".to_string(),
                 state_hash: StateHash::ZERO,
@@ -270,15 +182,16 @@ mod tests {
         let data = bincode::serialize(&msg).unwrap();
 
         assert!(matches!(
-            parse_worker_message(&data, "my-peer"),
+            parse_worker_message(&data, &my_id),
             WorkerMessageAction::Ignore
         ));
     }
 
     #[test]
     fn parse_worker_announcement_ignored() {
+        let my_id = gen_id();
         let msg = WorkerWireMessage::Announcement(willow_common::WorkerAnnouncement {
-            peer_id: "w1".to_string(),
+            peer_id: gen_id(),
             role: willow_common::WorkerRoleInfo::Replay {
                 servers_loaded: 1,
                 events_buffered: 0,
@@ -290,29 +203,29 @@ mod tests {
         let data = bincode::serialize(&msg).unwrap();
 
         assert!(matches!(
-            parse_worker_message(&data, "my-peer"),
+            parse_worker_message(&data, &my_id),
             WorkerMessageAction::Ignore
         ));
     }
 
     #[test]
     fn parse_worker_departure_ignored() {
-        let msg = WorkerWireMessage::Departure {
-            peer_id: "w1".to_string(),
-        };
+        let my_id = gen_id();
+        let msg = WorkerWireMessage::Departure { peer_id: gen_id() };
         let data = bincode::serialize(&msg).unwrap();
 
         assert!(matches!(
-            parse_worker_message(&data, "my-peer"),
+            parse_worker_message(&data, &my_id),
             WorkerMessageAction::Ignore
         ));
     }
 
     #[test]
     fn parse_worker_response_ignored() {
+        let my_id = gen_id();
         let msg = WorkerWireMessage::Response {
             request_id: "r1".to_string(),
-            target_peer: "my-peer".to_string(),
+            target_peer: my_id,
             payload: Box::new(WorkerResponse::Denied {
                 reason: "test".to_string(),
             }),
@@ -320,23 +233,25 @@ mod tests {
         let data = bincode::serialize(&msg).unwrap();
 
         assert!(matches!(
-            parse_worker_message(&data, "my-peer"),
+            parse_worker_message(&data, &my_id),
             WorkerMessageAction::Ignore
         ));
     }
 
     #[test]
     fn parse_worker_garbage_data() {
+        let my_id = gen_id();
         assert!(matches!(
-            parse_worker_message(b"not valid bincode", "peer"),
+            parse_worker_message(b"not valid bincode", &my_id),
             WorkerMessageAction::DeserializeError(_)
         ));
     }
 
     #[test]
     fn parse_worker_empty_data() {
+        let my_id = gen_id();
         assert!(matches!(
-            parse_worker_message(&[], "peer"),
+            parse_worker_message(&[], &my_id),
             WorkerMessageAction::DeserializeError(_)
         ));
     }
@@ -347,7 +262,7 @@ mod tests {
         let event = willow_state::Event {
             id: "e1".to_string(),
             parent_hash: StateHash::ZERO,
-            author: id.peer_id().to_string(),
+            author: id.endpoint_id(),
             timestamp_ms: 1000,
             kind: willow_state::EventKind::Message {
                 channel_id: "general".to_string(),
@@ -375,7 +290,7 @@ mod tests {
             willow_state::Event {
                 id: "e1".to_string(),
                 parent_hash: StateHash::ZERO,
-                author: "p".to_string(),
+                author: id.endpoint_id(),
                 timestamp_ms: 100,
                 kind: willow_state::EventKind::CreateChannel {
                     name: "ch".to_string(),
@@ -386,7 +301,7 @@ mod tests {
             willow_state::Event {
                 id: "e2".to_string(),
                 parent_hash: StateHash::ZERO,
-                author: "p".to_string(),
+                author: id.endpoint_id(),
                 timestamp_ms: 200,
                 kind: willow_state::EventKind::Message {
                     channel_id: "c1".to_string(),

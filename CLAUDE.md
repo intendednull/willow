@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Willow is a P2P Discord replacement built in Rust. It uses libp2p for
+Willow is a P2P Discord replacement built in Rust. It uses iroh for
 networking, Bevy for the desktop UI, and Ed25519 cryptography for identity.
 
 ## Repository Structure
@@ -19,8 +19,13 @@ crates/
 ├── messaging/   — Chat messages, HLC ordering, message store (willow-messaging)
 ├── crypto/      — E2E encryption: ChaCha20-Poly1305, X25519 key exchange (willow-crypto)
 ├── channel/     — Servers, channels, roles, permissions (willow-channel)
-├── files/       — Content-addressed file chunking and reassembly (willow-files)
-├── network/     — libp2p P2P networking layer (willow-network)
+├── network/     — iroh-based P2P networking (willow-network)
+│   └── src/
+│       ├── lib.rs      — Module exports, re-exports
+│       ├── traits.rs   — Network, TopicHandle, TopicEvents, BlobStore traits
+│       ├── iroh.rs     — IrohNetwork production implementation
+│       ├── mem.rs      — MemNetwork test double (test-utils feature)
+│       └── topics.rs   — TopicId registry (blake3 hashing)
 ├── relay/       — Relay server for bridging TCP and WebSocket peers (willow-relay)
 ├── web/         — Leptos web UI application (willow-web)
 └── app/         — Bevy desktop UI application (willow-app)
@@ -110,9 +115,10 @@ When adding new code, ensure WASM compatibility:
 - **No `std::thread`** or **tokio** in library crates — these are native-only
 - **RNG**: `getrandom` needs the `js` (v0.2) / `wasm_js` (v0.3) features on WASM
 - **UUID**: workspace dep includes the `js` feature for WASM v4 generation
-- **Network**: mDNS and TCP are native-only; WASM uses WebSocket via relay
+- **Network**: iroh handles WASM transport differences internally, so most
+  `#[cfg(target_arch = "wasm32")]` gates for networking are no longer needed
 - Use `#[cfg(target_arch = "wasm32")]` / `#[cfg(not(target_arch = "wasm32"))]`
-  for platform-specific code paths
+  for platform-specific code paths (storage backends, timers, etc.)
 
 ### Testing Strategy (420+ tests)
 
@@ -135,7 +141,7 @@ Willow uses a multi-tier testing strategy:
 - Uses `test_app()` with `MinimalPlugins` — no window/GPU
 
 **4. Network integration tests** (`just test-app`, 14 tests):
-- Real libp2p nodes on localhost TCP
+- Real iroh nodes on localhost
 - Message round-trips, channel isolation, encryption
 - Server op sync, file chunks, 3-node propagation
 
@@ -173,7 +179,7 @@ interaction.
 | Multi-peer behavior (sync, messaging) | Playwright E2E | `e2e/multi-peer-sync.spec.ts` | `just test-e2e-sync` |
 | Permissions (trust, kick, roles) | Playwright E2E | `e2e/permissions.spec.ts` | `just test-e2e-perms` |
 | Mobile UI (touch, sidebar, action sheet) | Playwright E2E | `e2e/mobile.spec.ts` or `e2e/multi-peer-mobile.spec.ts` | `just test-e2e-ui` |
-| Network protocol (libp2p, relay) | Network integration | `crates/app/tests/e2e_flow.rs` | `just test-app` |
+| Network protocol (iroh, relay) | Network integration | `crates/app/tests/e2e_flow.rs` | `just test-app` |
 
 ### Adding Tests
 
@@ -220,21 +226,20 @@ interaction.
 
 ```
 willow-app → willow-crypto   → willow-identity → willow-transport
-           → willow-network  → willow-identity
-                             → willow-files
+           → willow-network  → willow-identity (iroh, iroh-gossip, iroh-blobs)
            → willow-channel  → willow-crypto
                              → willow-identity
            → willow-messaging → willow-identity
                               (defines SealedContent used by willow-crypto)
-           → willow-files
 ```
 
 ### Async / Sync Boundary
 
-- **Network layer**: Fully async (tokio on native, wasm-bindgen-futures on WASM).
+- **Network layer**: Fully async using iroh's QUIC transport with gossip protocol.
   Runs on a background thread (native) or via spawn_local (WASM).
 - **Bevy app**: Synchronous ECS. Communicates with the network via `std::sync::mpsc` channels.
-- **Bridge**: `network_bridge.rs` converts between the two worlds.
+- **Bridge**: `network_bridge.rs` (Bevy app specific, not yet migrated) converts
+  between the async iroh network and the synchronous Bevy ECS.
 - **Deferred startup**: Network doesn't start until `ConnectCommand` is sent,
   allowing the UI to configure relay addresses first.
 
@@ -242,19 +247,19 @@ willow-app → willow-crypto   → willow-identity → willow-transport
 
 1. User types in Bevy UI → `Message::text()` creates cleartext message
 2. If channel key exists → `seal_content()` encrypts Content → `Content::Encrypted`
-3. `pack_envelope()` serializes → `identity::pack()` signs with Ed25519
-4. `NetworkBridgeCommand::Publish` → bridge sends to network task
-5. libp2p GossipSub floods to subscribed peers
-6. Remote peer receives → `NetworkEvent::Message`
-7. Bridge forwards to Bevy → `NetworkBridgeEvent::MessageReceived`
-8. `identity::unpack()` verifies signature → `unpack_envelope()`
+3. `pack_wire()` signs with Ed25519 → `TopicHandle::broadcast()` sends to gossip
+4. iroh gossip delivers to subscribed peers
+5. Listener task receives `GossipEvent::Received` → `unpack_wire()` verifies
+6. Bridge forwards to Bevy → `NetworkBridgeEvent::MessageReceived`
+7. `identity::unpack()` verifies signature → `unpack_envelope()`
 9. If `Content::Encrypted`, `open_content()` decrypts
 10. Emoji shortcodes expanded → message rendered in UI
 
 ### Server State Sync
 
 Server mutations (channels, roles, permissions, kicks) are synchronized
-via `StampedOp` over gossipsub topic `_willow_server_ops`.
+via `StampedOp` over iroh gossip topic `_willow_server_ops`. Operations
+are broadcast and received through the `Network` trait.
 
 - **StampedOp**: wraps a `ServerOp` with UUID (dedup), HLC timestamp
   (ordering), and author PeerId (verified against Ed25519 signature).
@@ -326,11 +331,12 @@ consistent ordering even when system clocks drift.
 2. Check it in the relevant server methods
 3. Add tests
 
-### Adding a new libp2p protocol
+### Adding a new iroh protocol
 
-1. Add the protocol to `WillowBehaviour` in `crates/network/src/behaviour.rs`
-2. Handle its events in `run_swarm()` in `crates/network/src/node.rs`
-3. Expose relevant commands/events through `NetworkNode` and `NetworkEvent`
+1. Define the protocol in `crates/network/src/traits.rs` if needed
+2. Implement it in `crates/network/src/iroh.rs` using iroh's ALPN routing
+3. Add a test double in `crates/network/src/mem.rs`
+4. Use the trait in client/worker code
 
 ### Adding a new UI system
 

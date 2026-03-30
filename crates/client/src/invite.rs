@@ -33,14 +33,13 @@ pub struct InvitePayload {
     pub server_name: String,
     /// Server ID (for constructing gossipsub topics).
     pub server_id: String,
-    /// PeerId of the server owner (root of trust chain).
+    /// EndpointId of the server owner (root of trust chain).
     /// This is a *hint* — verify by checking event history.
-    #[serde(default)]
-    pub owner: String,
+    pub owner: willow_identity::EndpointId,
     /// Suggested peers that can provide full history (SyncProvider permission).
     /// These are *hints* — the joining peer should verify from multiple sources.
     #[serde(default)]
-    pub sync_providers: Vec<String>,
+    pub sync_providers: Vec<willow_identity::EndpointId>,
     /// Per-channel encrypted keys. Each channel key is encrypted for the
     /// specific recipient -- only they can decrypt with their Ed25519 key.
     pub channels: Vec<EncryptedChannel>,
@@ -86,7 +85,7 @@ pub fn generate_invite(
     let payload = InvitePayload {
         server_name: server.name.clone(),
         server_id: server.id.to_string(),
-        owner: server.owner.to_string(),
+        owner: server.owner,
         sync_providers: Vec::new(), // populated by caller if known
         channels,
     };
@@ -128,17 +127,19 @@ pub fn accept_invite(
 pub struct AcceptedInvite {
     pub server_name: String,
     pub server_id: String,
-    /// Suggested owner PeerId (verify via event history).
-    pub owner: String,
+    /// Suggested owner EndpointId (verify via event history).
+    pub owner: willow_identity::EndpointId,
     /// Suggested sync providers (verify via event history).
-    pub sync_providers: Vec<String>,
+    pub sync_providers: Vec<willow_identity::EndpointId>,
     /// topic -> (channel_name, decrypted key)
     pub channel_keys: HashMap<String, (String, ChannelKey)>,
 }
 
-/// Extract the 32-byte Ed25519 public key from a PeerId string.
-pub fn peer_id_to_ed25519_public(peer_id_str: &str) -> Option<[u8; 32]> {
-    willow_identity::ed25519_public_from_peer_id(peer_id_str)
+/// Extract the 32-byte Ed25519 public key from an EndpointId.
+///
+/// Since `EndpointId` IS the Ed25519 public key, this just returns its bytes.
+pub fn endpoint_id_to_ed25519_public(endpoint_id: &willow_identity::EndpointId) -> [u8; 32] {
+    *endpoint_id.as_bytes()
 }
 
 #[cfg(test)]
@@ -154,7 +155,7 @@ mod tests {
         let recipient = Identity::generate();
 
         // Owner creates a server with a channel.
-        let mut server = willow_channel::Server::new("Secure Server", owner.peer_id());
+        let mut server = willow_channel::Server::new("Secure Server", owner.endpoint_id());
         let ch_id = server.create_channel("general", ChannelKind::Text).unwrap();
 
         let mut keys = HashMap::new();
@@ -192,7 +193,7 @@ mod tests {
         let intended = Identity::generate();
         let intruder = Identity::generate();
 
-        let mut server = willow_channel::Server::new("Secure", owner.peer_id());
+        let mut server = willow_channel::Server::new("Secure", owner.endpoint_id());
         let ch_id = server.create_channel("secret", ChannelKind::Text).unwrap();
 
         let mut keys = HashMap::new();
@@ -222,11 +223,11 @@ mod tests {
     }
 
     #[test]
-    fn peer_id_to_public_key_round_trip() {
+    fn endpoint_id_to_public_key_round_trip() {
         let id = Identity::generate();
-        let peer_id_str = id.peer_id().to_string();
+        let endpoint_id = id.endpoint_id();
 
-        let pub_bytes = peer_id_to_ed25519_public(&peer_id_str).unwrap();
+        let pub_bytes = endpoint_id_to_ed25519_public(&endpoint_id);
         let expected = recipient_public_bytes(&id);
 
         assert_eq!(pub_bytes, expected);
@@ -239,7 +240,7 @@ mod tests {
         let owner = Identity::generate();
         let recipient = Identity::generate();
 
-        let mut server = willow_channel::Server::new("Multi", owner.peer_id());
+        let mut server = willow_channel::Server::new("Multi", owner.endpoint_id());
         let ch1 = server.create_channel("general", ChannelKind::Text).unwrap();
         let ch2 = server.create_channel("random", ChannelKind::Text).unwrap();
         let ch3 = server.create_channel("voice", ChannelKind::Voice).unwrap();
@@ -264,10 +265,6 @@ mod tests {
 
     /// Helper to extract Ed25519 public key bytes from an Identity.
     fn recipient_public_bytes(identity: &Identity) -> [u8; 32] {
-        let ed_kp = identity.keypair().clone().try_into_ed25519().unwrap();
-        let full = ed_kp.to_bytes();
-        let mut pub_bytes = [0u8; 32];
-        pub_bytes.copy_from_slice(&full[32..]);
-        pub_bytes
+        *identity.endpoint_id().as_bytes()
     }
 }

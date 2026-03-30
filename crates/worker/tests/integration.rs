@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 use willow_common::{WorkerRequest, WorkerResponse, WorkerRole, WorkerRoleInfo};
+use willow_network::TopicEvents;
 use willow_state::{Event, EventKind, ServerState, StateHash};
 use willow_worker::actors::state;
 use willow_worker::actors::StateMsg;
@@ -19,9 +20,10 @@ struct TestReplayRole {
 }
 
 impl TestReplayRole {
-    fn new(server_id: &str, owner: &str, max_events: usize) -> Self {
+    fn new(server_id: &str, _owner: &str, max_events: usize) -> Self {
+        let owner_id = willow_identity::Identity::generate().endpoint_id();
         Self {
-            state: ServerState::new(server_id, server_id, owner.to_string()),
+            state: ServerState::new(server_id, server_id, owner_id),
             events: Vec::new(),
             max_events,
         }
@@ -69,7 +71,7 @@ fn make_message(id: &str, ts: u64) -> Event {
     Event {
         id: id.to_string(),
         parent_hash: StateHash::ZERO,
-        author: "peer-1".to_string(),
+        author: willow_identity::Identity::generate().endpoint_id(),
         timestamp_ms: ts,
         kind: EventKind::Message {
             channel_id: "general".to_string(),
@@ -148,46 +150,57 @@ async fn state_actor_with_replay_role_full_flow() {
 
 #[tokio::test]
 async fn heartbeat_and_state_actor_interaction() {
-    use willow_worker::actors::{heartbeat, NetworkOutMsg};
+    use willow_network::mem::{MemHub, MemNetwork};
+    use willow_network::Network;
+    use willow_worker::actors::heartbeat;
+
+    let hub = MemHub::new();
+    let net_a = MemNetwork::new(&hub);
+    let net_b = MemNetwork::new(&hub);
+
+    let topic_id = willow_network::topic_id(willow_common::WORKERS_TOPIC);
+    let (sender_a, _events_a) = net_a.subscribe(topic_id, vec![]).await.unwrap();
+    let (_sender_b, mut events_b) = net_b.subscribe(topic_id, vec![]).await.unwrap();
 
     let (state_tx, state_rx) = mpsc::channel(64);
-    let (network_tx, mut network_rx) = mpsc::channel(64);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     let role = Box::new(TestReplayRole::new("srv-1", "owner", 100));
     let state_handle = tokio::spawn(state::run(role, state_rx));
 
+    let test_worker_id = net_a.id();
     let hb_handle = tokio::spawn(heartbeat::run(
-        "test-worker".to_string(),
+        test_worker_id,
         Duration::from_millis(50),
         state_tx.clone(),
-        network_tx,
+        sender_a,
         shutdown_rx,
     ));
 
-    // Wait for a heartbeat.
-    let msg = tokio::time::timeout(Duration::from_secs(1), network_rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    // Wait for a heartbeat — drain neighbor events first.
+    let data = loop {
+        let event = tokio::time::timeout(Duration::from_secs(2), events_b.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        if let willow_network::GossipEvent::Received(msg) = event {
+            break msg.content;
+        }
+    };
 
-    match msg {
-        NetworkOutMsg::Publish { data, .. } => {
-            let decoded: willow_common::WorkerWireMessage = bincode::deserialize(&data).unwrap();
-            match decoded {
-                willow_common::WorkerWireMessage::Announcement(a) => {
-                    assert_eq!(a.peer_id, "test-worker");
-                    match a.role {
-                        WorkerRoleInfo::Replay {
-                            events_buffered, ..
-                        } => assert_eq!(events_buffered, 0),
-                        _ => panic!("expected Replay"),
-                    }
-                }
-                _ => panic!("expected Announcement"),
+    let decoded: willow_common::WorkerWireMessage = bincode::deserialize(&data).unwrap();
+    match decoded {
+        willow_common::WorkerWireMessage::Announcement(a) => {
+            assert_eq!(a.peer_id, test_worker_id);
+            match a.role {
+                WorkerRoleInfo::Replay {
+                    events_buffered, ..
+                } => assert_eq!(events_buffered, 0),
+                _ => panic!("expected Replay"),
             }
         }
-        _ => panic!("expected Publish"),
+        _ => panic!("expected Announcement"),
     }
 
     shutdown_tx.send(true).unwrap();
@@ -270,20 +283,30 @@ async fn events_applied_then_queried_via_request() {
 
 #[tokio::test]
 async fn graceful_shutdown_sends_departure() {
-    use willow_worker::actors::{heartbeat, NetworkOutMsg};
+    use willow_network::mem::{MemHub, MemNetwork};
+    use willow_network::Network;
+    use willow_worker::actors::heartbeat;
+
+    let hub = MemHub::new();
+    let net_a = MemNetwork::new(&hub);
+    let net_b = MemNetwork::new(&hub);
+
+    let topic_id = willow_network::topic_id(willow_common::WORKERS_TOPIC);
+    let (sender_a, _events_a) = net_a.subscribe(topic_id, vec![]).await.unwrap();
+    let (_sender_b, mut events_b) = net_b.subscribe(topic_id, vec![]).await.unwrap();
 
     let (state_tx, state_rx) = mpsc::channel(64);
-    let (network_tx, mut network_rx) = mpsc::channel(64);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     let role = Box::new(TestReplayRole::new("srv-1", "owner", 100));
     let state_handle = tokio::spawn(state::run(role, state_rx));
 
+    let departing_id = net_a.id();
     let hb_handle = tokio::spawn(heartbeat::run(
-        "departing-worker".to_string(),
+        departing_id,
         Duration::from_secs(60), // Long interval — won't fire naturally
         state_tx.clone(),
-        network_tx,
+        sender_a,
         shutdown_rx,
     ));
 
@@ -291,23 +314,23 @@ async fn graceful_shutdown_sends_departure() {
     shutdown_tx.send(true).unwrap();
     hb_handle.await.unwrap();
 
-    // Should have a departure message.
-    let msg = tokio::time::timeout(Duration::from_millis(100), network_rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-
-    match msg {
-        NetworkOutMsg::Publish { data, .. } => {
-            let decoded: willow_common::WorkerWireMessage = bincode::deserialize(&data).unwrap();
-            match decoded {
-                willow_common::WorkerWireMessage::Departure { peer_id } => {
-                    assert_eq!(peer_id, "departing-worker");
-                }
-                _ => panic!("expected Departure"),
+    // Should have a departure message — drain neighbor events.
+    let departure_data = loop {
+        match tokio::time::timeout(Duration::from_millis(500), events_b.next()).await {
+            Ok(Some(Ok(willow_network::GossipEvent::Received(msg)))) => {
+                break msg.content;
             }
+            Ok(Some(Ok(_))) => continue,
+            _ => panic!("expected departure message"),
         }
-        _ => panic!("expected Publish"),
+    };
+
+    let decoded: willow_common::WorkerWireMessage = bincode::deserialize(&departure_data).unwrap();
+    match decoded {
+        willow_common::WorkerWireMessage::Departure { peer_id } => {
+            assert_eq!(peer_id, departing_id);
+        }
+        _ => panic!("expected Departure"),
     }
 
     let _ = state_tx.send(StateMsg::Shutdown).await;
@@ -317,31 +340,41 @@ async fn graceful_shutdown_sends_departure() {
 /// Tests the full actor wiring pattern used by runtime::run() —
 /// state + heartbeat + sync actors coordinating via channels.
 /// Validates that the orchestration pattern works without needing
-/// a real libp2p network node.
+/// a real network node.
 #[tokio::test]
 async fn full_actor_orchestration_without_network() {
-    use willow_worker::actors::{heartbeat, sync, NetworkOutMsg};
+    use willow_network::mem::{MemHub, MemNetwork};
+    use willow_network::Network;
+    use willow_worker::actors::{heartbeat, sync};
+
+    let hub = MemHub::new();
+    let net_a = MemNetwork::new(&hub);
+    let net_b = MemNetwork::new(&hub);
+
+    let topic_id = willow_network::topic_id(willow_common::WORKERS_TOPIC);
+    let (sender_a, _events_a) = net_a.subscribe(topic_id, vec![]).await.unwrap();
+    let (_sender_b, mut events_b) = net_b.subscribe(topic_id, vec![]).await.unwrap();
 
     let (state_tx, state_rx) = mpsc::channel(256);
-    let (network_tx, mut network_rx) = mpsc::channel(256);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     let role = Box::new(TestReplayRole::new("srv-1", "owner", 100));
 
     // Spawn all three non-network actors.
     let state_handle = tokio::spawn(state::run(role, state_rx));
+    let orch_id = net_a.id();
     let hb_handle = tokio::spawn(heartbeat::run(
-        "orch-test".to_string(),
+        orch_id,
         Duration::from_millis(50),
         state_tx.clone(),
-        network_tx.clone(),
+        sender_a.clone(),
         shutdown_rx.clone(),
     ));
     let sync_handle = tokio::spawn(sync::run(
-        "orch-test".to_string(),
+        orch_id,
         Duration::from_millis(80),
         state_tx.clone(),
-        network_tx,
+        sender_a,
         shutdown_rx,
     ));
 
@@ -360,11 +393,12 @@ async fn full_actor_orchestration_without_network() {
     let mut announcement_count = 0;
     let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
     while tokio::time::Instant::now() < deadline {
-        match tokio::time::timeout(Duration::from_millis(30), network_rx.recv()).await {
-            Ok(Some(NetworkOutMsg::Publish { data, .. })) => {
-                // Could be announcement or sync request.
-                if let Ok(msg) = bincode::deserialize::<willow_common::WorkerWireMessage>(&data) {
-                    match msg {
+        match tokio::time::timeout(Duration::from_millis(30), events_b.next()).await {
+            Ok(Some(Ok(willow_network::GossipEvent::Received(msg)))) => {
+                if let Ok(decoded) =
+                    bincode::deserialize::<willow_common::WorkerWireMessage>(&msg.content)
+                {
+                    match decoded {
                         willow_common::WorkerWireMessage::Announcement(_) => {
                             announcement_count += 1;
                         }
@@ -408,29 +442,34 @@ async fn full_actor_orchestration_without_network() {
 /// from regular members at the data level.
 #[test]
 fn sync_provider_permission_identifies_workers() {
+    use willow_identity::Identity;
     use willow_state::{EventKind, Permission, ServerState};
 
-    let mut state = ServerState::new("srv", "Test", "owner-peer".to_string());
+    let owner = Identity::generate().endpoint_id();
+    let worker = Identity::generate().endpoint_id();
+    let random = Identity::generate().endpoint_id();
+
+    let mut state = ServerState::new("srv", "Test", owner);
 
     // Grant SyncProvider to a worker.
     let grant = willow_state::Event {
         id: "grant-1".to_string(),
         parent_hash: state.hash(),
-        author: "owner-peer".to_string(),
+        author: owner,
         timestamp_ms: 1000,
         kind: EventKind::GrantPermission {
-            peer_id: "worker-peer".to_string(),
+            peer_id: worker,
             permission: Permission::SyncProvider,
         },
     };
     willow_state::apply_lenient(&mut state, &grant);
 
     // Worker should have SyncProvider.
-    assert!(state.has_permission("worker-peer", &Permission::SyncProvider));
+    assert!(state.has_permission(&worker, &Permission::SyncProvider));
     // Owner has implicit all-permissions (root of trust).
-    assert!(state.has_permission("owner-peer", &Permission::SyncProvider));
+    assert!(state.has_permission(&owner, &Permission::SyncProvider));
     // Random peer should not.
-    assert!(!state.has_permission("random-peer", &Permission::SyncProvider));
+    assert!(!state.has_permission(&random, &Permission::SyncProvider));
     // The member list excludes owner from the infra section even though
     // they have the permission — that filtering is in the component, not state.
 }
