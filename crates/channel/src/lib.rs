@@ -374,7 +374,7 @@ impl Server {
     /// Create a new server. The owner is automatically added as a member.
     pub fn new(name: impl Into<String>, owner: EndpointId) -> Self {
         let mut members = HashMap::new();
-        members.insert(owner.clone(), Member::new(owner.clone()));
+        members.insert(owner, Member::new(owner));
 
         Self {
             id: ServerId::new(),
@@ -573,7 +573,7 @@ impl Server {
         let member = self
             .members
             .get_mut(peer)
-            .ok_or_else(|| ChannelError::NotAMember(peer.clone()))?;
+            .ok_or(ChannelError::NotAMember(*peer))?;
 
         member.roles.insert(role_id.clone());
         Ok(())
@@ -582,7 +582,7 @@ impl Server {
     /// Add a new member to the server.
     pub fn add_member(&mut self, peer: EndpointId) {
         self.members
-            .entry(peer.clone())
+            .entry(peer)
             .or_insert_with(|| Member::new(peer));
     }
 
@@ -596,14 +596,14 @@ impl Server {
     ) -> Result<HashMap<ChannelId, willow_crypto::ChannelKey>, ChannelError> {
         if *peer == self.owner {
             return Err(ChannelError::PermissionDenied(
-                peer.clone(),
+                *peer,
                 Permission::Administrator,
             ));
         }
 
         self.members
             .remove(peer)
-            .ok_or_else(|| ChannelError::NotAMember(peer.clone()))?;
+            .ok_or(ChannelError::NotAMember(*peer))?;
 
         // Rotate all channel keys so the removed member can't read future messages.
         let mut new_keys = HashMap::new();
@@ -718,7 +718,7 @@ mod tests {
 
     fn owner_and_server() -> (EndpointId, Server) {
         let owner = Identity::generate().endpoint_id();
-        let server = Server::new("Test Server", owner.clone());
+        let server = Server::new("Test Server", owner);
         (owner, server)
     }
 

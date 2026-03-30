@@ -41,9 +41,9 @@ impl WorkerCache {
     /// Update the cache from a heartbeat announcement.
     pub fn update(&mut self, announcement: &WorkerAnnouncement) {
         self.workers.insert(
-            announcement.peer_id.clone(),
+            announcement.peer_id,
             WorkerInfo {
-                peer_id: announcement.peer_id.clone(),
+                peer_id: announcement.peer_id,
                 role: announcement.role.clone(),
                 servers: announcement.servers.clone(),
                 last_seen: Instant::now(),
