@@ -59,9 +59,8 @@ fn new_client() -> (WebClientHandle, willow_client::ClientEventLoop) {
 pub fn App() -> impl IntoView {
     init_theme();
 
-    // Create and connect the client.
+    // Create the client (connection happens async below).
     let (handle, event_loop) = new_client();
-    handle.connect();
 
     // Create all signals.
     let (app_state, write) = state::create_signals();

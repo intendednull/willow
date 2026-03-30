@@ -127,7 +127,6 @@ impl<N: willow_network::Network> Clone for ClientHandle<N> {
 pub struct ClientEventLoop {
     #[allow(dead_code)]
     pub(crate) shared: Arc<RwLock<SharedState>>,
-    pub(crate) event_rx: futures_mpsc::UnboundedReceiver<network::NetworkEvent>,
 }
 
 /// Helper: apply an event to the event-sourced state and store it.
@@ -256,7 +255,6 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let identity = load_identity();
 
         let (event_tx, _discard_rx) = futures_mpsc::unbounded::<ClientEvent>();
-        let (_discard_tx, event_rx) = futures_mpsc::unbounded::<network::NetworkEvent>();
 
         let mut state = ClientState::new(identity.endpoint_id());
 
@@ -451,7 +449,6 @@ impl<N: willow_network::Network> ClientHandle<N> {
 
         let event_loop = ClientEventLoop {
             shared,
-            event_rx,
         };
 
         (handle, event_loop)
@@ -2603,12 +2600,11 @@ impl ClientEventLoop {
     /// Run the event processing loop (legacy no-op).
     ///
     /// Listeners now handle all incoming gossip events via
-    /// [`listeners::spawn_topic_listener`]. This method simply drains the
-    /// internal channel until it closes, for backward compatibility.
-    pub async fn run(mut self, _tx: futures_mpsc::UnboundedSender<ClientEvent>) {
-        use futures::StreamExt;
-        // Drain the (empty) event_rx to keep the future alive.
-        while self.event_rx.next().await.is_some() {}
+    /// [`listeners::spawn_topic_listener`]. This method exists for
+    /// backward compatibility only.
+    pub async fn run(self, _tx: futures_mpsc::UnboundedSender<ClientEvent>) {
+        // No-op: all event processing is done by per-topic listener tasks.
+        futures::future::pending::<()>().await;
     }
 }
 
