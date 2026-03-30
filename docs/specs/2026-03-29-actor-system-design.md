@@ -114,11 +114,10 @@ flags for alternative runtimes.
 
 A source audit of kameo's tokio coupling reveals it is **shallow and
 concentrated** — 6 primitives across 4 core files. The supervision
-module has zero production tokio usage. With iroh now providing tokio
-on WASM, the fork effort shrinks further (no need to swap channel
-implementations — tokio mpsc works on both targets). Main remaining
-work: `cfg`-gate `spawn_in_thread()` and `blocking_send/recv` on WASM,
-replace `tokio::spawn` with `spawn_local` on WASM (~150 lines).
+module has zero production tokio usage. Main work: swap `tokio::sync::mpsc`
+for `futures::channel::mpsc` on WASM, `cfg`-gate `spawn_in_thread()`
+and `blocking_send/recv`, replace `tokio::spawn` with `spawn_local`
+(~200 lines).
 
 **Verdict: fork is feasible but not clearly better than writing our own.**
 
@@ -169,7 +168,7 @@ broadcast. See `docs/specs/2026-03-29-iroh-migration-design.md`.
 6. **Shutdown via `watch` channel.** Workers currently use
    `tokio::sync::watch` for shutdown signaling. The actor system
    replaces this — dropping all `Addr` handles closes the mailbox,
-   or `CancellationToken` provides explicit out-of-band shutdown.
+   or `Context::stop()` signals graceful shutdown from within.
 
 ### Recommendation: build `willow-actor`
 
@@ -205,9 +204,9 @@ sync actors communicating via channels), but it's hand-rolled and not
 reusable. The client and web crates reinvent the same pattern: spawn a
 task, create channels, loop on `select!`, handle shutdown.
 
-`willow-actor` formalizes this into a single crate, building on iroh's
-tokio runtime (available on both native and WASM) to eliminate the
-per-crate boilerplate.
+`willow-actor` formalizes this into a single crate with a thin runtime
+abstraction (tokio on native, futures-channel + gloo-timers on WASM) to
+eliminate the per-crate boilerplate.
 
 ## Goals
 
@@ -237,8 +236,8 @@ pub trait Message: Send + 'static {
 ```
 
 `Send` is required unconditionally. On WASM (single-threaded), all types
-are trivially `Send`, so this compiles without issue. This matches iroh's
-requirement that all futures and channel payloads are `Send`.
+are trivially `Send`, so this compiles without issue. This matches the
+`Network` trait's bounds (`Send + Sync` on associated types).
 
 ### Actor Trait
 
@@ -576,8 +575,8 @@ crates/actor/
     ├── addr.rs         — Addr<A>, AnyAddr, Recipient<M>
     ├── context.rs      — Context<A>, interval, stream attachment
     ├── envelope.rs     — BoxEnvelope, type-erased message dispatch
-    ├── mailbox.rs      — tokio mpsc wrapper, recv loop
-    ├── runtime.rs      — spawn abstraction (tokio::spawn vs spawn_local)
+    ├── mailbox.rs      — unbounded channel recv loop
+    ├── runtime.rs      — platform abstraction (spawn, channels, timers)
     ├── supervisor.rs   — RestartPolicy, supervised spawn
     ├── system.rs       — System, SystemHandle
     └── error.rs        — SendError, AskError
@@ -591,7 +590,6 @@ willow-actor (new)
 ├── thiserror
 ├── tracing
 ├── [native] tokio                  (sync: mpsc, oneshot; time: sleep)
-├── [native] tokio-util             (CancellationToken)
 └── [wasm]   wasm-bindgen-futures   (spawn_local)
              futures-channel        (mpsc, oneshot)
              gloo-timers            (sleep)
