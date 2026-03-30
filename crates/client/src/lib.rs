@@ -24,7 +24,6 @@ pub mod emoji;
 pub mod events;
 pub mod files;
 pub mod invite;
-pub mod network;
 pub mod ops;
 pub mod state;
 pub mod storage;
@@ -490,7 +489,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         }
 
         // Subscribe to the global profile broadcast topic.
-        let profile_topic_str = network::PROFILE_TOPIC;
+        let profile_topic_str = ops::PROFILE_TOPIC;
         if let Ok((sender, events)) = network
             .subscribe(willow_network::topic_id(profile_topic_str), vec![])
             .await
@@ -551,7 +550,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             saved.display_name,
         );
         if let Ok(data) = willow_transport::pack_envelope(willow_transport::MessageType::Identity, &profile) {
-            self.broadcast_on_topic(network::PROFILE_TOPIC, data);
+            self.broadcast_on_topic(ops::PROFILE_TOPIC, data);
         }
     }
 

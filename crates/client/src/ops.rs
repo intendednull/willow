@@ -84,6 +84,9 @@ pub use willow_state::Event;
 /// The gossipsub topic for server operations.
 pub const SERVER_OPS_TOPIC: &str = "_willow_server_ops";
 
+/// Global gossipsub topic for profile broadcasts.
+pub const PROFILE_TOPIC: &str = "_willow_profiles";
+
 #[cfg(test)]
 mod tests {
     use super::*;

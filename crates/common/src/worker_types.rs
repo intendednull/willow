@@ -5,6 +5,7 @@
 //! (including WASM) and `willow-worker` (native-only) can use them.
 
 use serde::{Deserialize, Serialize};
+use willow_identity::EndpointId;
 use willow_state::{Event, ServerState, StateHash};
 
 /// Gossipsub topic for worker discovery and request/response.
@@ -43,7 +44,7 @@ impl WorkerRoleInfo {
 /// Periodic heartbeat broadcast by workers on `_willow_workers`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkerAnnouncement {
-    pub peer_id: String,
+    pub peer_id: EndpointId,
     pub role: WorkerRoleInfo,
     pub servers: Vec<String>,
     pub timestamp: u64,
@@ -56,19 +57,19 @@ pub enum WorkerWireMessage {
     Announcement(WorkerAnnouncement),
 
     /// Graceful departure notification.
-    Departure { peer_id: String },
+    Departure { peer_id: EndpointId },
 
     /// Client requesting a service from a specific worker.
     Request {
         request_id: String,
-        target_peer: String,
+        target_peer: EndpointId,
         payload: WorkerRequest,
     },
 
     /// Worker responding to a client request.
     Response {
         request_id: String,
-        target_peer: String,
+        target_peer: EndpointId,
         payload: Box<WorkerResponse>,
     },
 }
@@ -137,6 +138,11 @@ pub enum AllocationStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use willow_identity::Identity;
+
+    fn gen_id() -> EndpointId {
+        Identity::generate().endpoint_id()
+    }
 
     #[test]
     fn worker_role_info_replay_round_trip() {
@@ -167,7 +173,7 @@ mod tests {
     #[test]
     fn worker_announcement_round_trip() {
         let ann = WorkerAnnouncement {
-            peer_id: "12D3KooWTest".to_string(),
+            peer_id: gen_id(),
             role: WorkerRoleInfo::Replay {
                 servers_loaded: 1,
                 events_buffered: 100,
@@ -183,8 +189,9 @@ mod tests {
 
     #[test]
     fn worker_wire_message_announcement_round_trip() {
+        let pid = gen_id();
         let msg = WorkerWireMessage::Announcement(WorkerAnnouncement {
-            peer_id: "peer1".to_string(),
+            peer_id: pid,
             role: WorkerRoleInfo::Storage {
                 servers_tracked: 2,
                 total_events_stored: 5000,
@@ -197,7 +204,7 @@ mod tests {
         let decoded: WorkerWireMessage = bincode::deserialize(&bytes).unwrap();
         match decoded {
             WorkerWireMessage::Announcement(a) => {
-                assert_eq!(a.peer_id, "peer1");
+                assert_eq!(a.peer_id, pid);
                 assert_eq!(a.servers.len(), 1);
             }
             _ => panic!("expected Announcement"),
@@ -206,14 +213,15 @@ mod tests {
 
     #[test]
     fn worker_wire_message_departure_round_trip() {
+        let pid = gen_id();
         let msg = WorkerWireMessage::Departure {
-            peer_id: "leaving-peer".to_string(),
+            peer_id: pid,
         };
         let bytes = bincode::serialize(&msg).unwrap();
         let decoded: WorkerWireMessage = bincode::deserialize(&bytes).unwrap();
         match decoded {
             WorkerWireMessage::Departure { peer_id } => {
-                assert_eq!(peer_id, "leaving-peer");
+                assert_eq!(peer_id, pid);
             }
             _ => panic!("expected Departure"),
         }
@@ -333,9 +341,10 @@ mod tests {
 
     #[test]
     fn worker_wire_message_request_round_trip() {
+        let pid = gen_id();
         let msg = WorkerWireMessage::Request {
             request_id: "req-123".to_string(),
-            target_peer: "worker-peer".to_string(),
+            target_peer: pid,
             payload: WorkerRequest::Sync {
                 server_id: "srv".to_string(),
                 state_hash: StateHash::ZERO,
@@ -350,7 +359,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(request_id, "req-123");
-                assert_eq!(target_peer, "worker-peer");
+                assert_eq!(target_peer, pid);
             }
             _ => panic!("expected Request"),
         }
@@ -358,9 +367,10 @@ mod tests {
 
     #[test]
     fn worker_wire_message_response_round_trip() {
+        let pid = gen_id();
         let msg = WorkerWireMessage::Response {
             request_id: "req-456".to_string(),
-            target_peer: "client-peer".to_string(),
+            target_peer: pid,
             payload: Box::new(WorkerResponse::Denied {
                 reason: "unknown server".to_string(),
             }),
@@ -374,7 +384,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(request_id, "req-456");
-                assert_eq!(target_peer, "client-peer");
+                assert_eq!(target_peer, pid);
             }
             _ => panic!("expected Response"),
         }

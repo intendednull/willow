@@ -3,6 +3,8 @@
 //! TODO: Phase 3 will rewrite `run()` to use the Network trait from willow-network.
 //! The pure parse functions below are kept and tested independently.
 
+use willow_identity::EndpointId;
+
 use crate::types::WorkerWireMessage;
 
 /// Action produced by parsing an incoming worker topic message.
@@ -23,7 +25,7 @@ pub enum WorkerMessageAction {
 ///
 /// This is a pure function — no I/O, no channels — so it's easily
 /// testable. The caller handles the actual I/O.
-pub fn parse_worker_message(data: &[u8], local_peer_id: &str) -> WorkerMessageAction {
+pub fn parse_worker_message(data: &[u8], local_peer_id: &EndpointId) -> WorkerMessageAction {
     let msg = match bincode::deserialize::<WorkerWireMessage>(data) {
         Ok(m) => m,
         Err(e) => return WorkerMessageAction::DeserializeError(e.to_string()),
@@ -35,7 +37,7 @@ pub fn parse_worker_message(data: &[u8], local_peer_id: &str) -> WorkerMessageAc
             payload,
             request_id,
         } => {
-            if target_peer.is_empty() || target_peer == local_peer_id {
+            if target_peer == *local_peer_id {
                 WorkerMessageAction::HandleRequest {
                     request_id,
                     payload,
@@ -79,13 +81,19 @@ pub fn parse_server_message(data: &[u8]) -> ServerMessageAction {
 mod tests {
     use super::*;
     use willow_common::{WorkerRequest, WorkerResponse};
+    use willow_identity::Identity;
     use willow_state::StateHash;
+
+    fn gen_id() -> EndpointId {
+        Identity::generate().endpoint_id()
+    }
 
     #[test]
     fn parse_worker_request_targeted_at_us() {
+        let my_id = gen_id();
         let msg = WorkerWireMessage::Request {
             request_id: "req-1".to_string(),
-            target_peer: "my-peer".to_string(),
+            target_peer: my_id,
             payload: WorkerRequest::Sync {
                 server_id: "srv".to_string(),
                 state_hash: StateHash::ZERO,
@@ -93,7 +101,7 @@ mod tests {
         };
         let data = bincode::serialize(&msg).unwrap();
 
-        match parse_worker_message(&data, "my-peer") {
+        match parse_worker_message(&data, &my_id) {
             WorkerMessageAction::HandleRequest { request_id, .. } => {
                 assert_eq!(request_id, "req-1");
             }
@@ -102,30 +110,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_worker_request_broadcast() {
-        let msg = WorkerWireMessage::Request {
-            request_id: "req-2".to_string(),
-            target_peer: String::new(), // broadcast
-            payload: WorkerRequest::Sync {
-                server_id: "srv".to_string(),
-                state_hash: StateHash::ZERO,
-            },
-        };
-        let data = bincode::serialize(&msg).unwrap();
-
-        match parse_worker_message(&data, "any-peer") {
-            WorkerMessageAction::HandleRequest { request_id, .. } => {
-                assert_eq!(request_id, "req-2");
-            }
-            other => panic!("expected HandleRequest, got {:?}", other),
-        }
-    }
-
-    #[test]
     fn parse_worker_request_not_for_us() {
+        let my_id = gen_id();
+        let other_id = gen_id();
         let msg = WorkerWireMessage::Request {
             request_id: "req-3".to_string(),
-            target_peer: "other-peer".to_string(),
+            target_peer: other_id,
             payload: WorkerRequest::Sync {
                 server_id: "srv".to_string(),
                 state_hash: StateHash::ZERO,
@@ -134,15 +124,16 @@ mod tests {
         let data = bincode::serialize(&msg).unwrap();
 
         assert!(matches!(
-            parse_worker_message(&data, "my-peer"),
+            parse_worker_message(&data, &my_id),
             WorkerMessageAction::Ignore
         ));
     }
 
     #[test]
     fn parse_worker_announcement_ignored() {
+        let my_id = gen_id();
         let msg = WorkerWireMessage::Announcement(willow_common::WorkerAnnouncement {
-            peer_id: "w1".to_string(),
+            peer_id: gen_id(),
             role: willow_common::WorkerRoleInfo::Replay {
                 servers_loaded: 1,
                 events_buffered: 0,
@@ -154,29 +145,31 @@ mod tests {
         let data = bincode::serialize(&msg).unwrap();
 
         assert!(matches!(
-            parse_worker_message(&data, "my-peer"),
+            parse_worker_message(&data, &my_id),
             WorkerMessageAction::Ignore
         ));
     }
 
     #[test]
     fn parse_worker_departure_ignored() {
+        let my_id = gen_id();
         let msg = WorkerWireMessage::Departure {
-            peer_id: "w1".to_string(),
+            peer_id: gen_id(),
         };
         let data = bincode::serialize(&msg).unwrap();
 
         assert!(matches!(
-            parse_worker_message(&data, "my-peer"),
+            parse_worker_message(&data, &my_id),
             WorkerMessageAction::Ignore
         ));
     }
 
     #[test]
     fn parse_worker_response_ignored() {
+        let my_id = gen_id();
         let msg = WorkerWireMessage::Response {
             request_id: "r1".to_string(),
-            target_peer: "my-peer".to_string(),
+            target_peer: my_id,
             payload: Box::new(WorkerResponse::Denied {
                 reason: "test".to_string(),
             }),
@@ -184,23 +177,25 @@ mod tests {
         let data = bincode::serialize(&msg).unwrap();
 
         assert!(matches!(
-            parse_worker_message(&data, "my-peer"),
+            parse_worker_message(&data, &my_id),
             WorkerMessageAction::Ignore
         ));
     }
 
     #[test]
     fn parse_worker_garbage_data() {
+        let my_id = gen_id();
         assert!(matches!(
-            parse_worker_message(b"not valid bincode", "peer"),
+            parse_worker_message(b"not valid bincode", &my_id),
             WorkerMessageAction::DeserializeError(_)
         ));
     }
 
     #[test]
     fn parse_worker_empty_data() {
+        let my_id = gen_id();
         assert!(matches!(
-            parse_worker_message(&[], "peer"),
+            parse_worker_message(&[], &my_id),
             WorkerMessageAction::DeserializeError(_)
         ));
     }

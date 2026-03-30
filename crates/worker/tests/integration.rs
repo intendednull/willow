@@ -158,8 +158,9 @@ async fn heartbeat_and_state_actor_interaction() {
     let role = Box::new(TestReplayRole::new("srv-1", "owner", 100));
     let state_handle = tokio::spawn(state::run(role, state_rx));
 
+    let test_worker_id = willow_identity::Identity::generate().endpoint_id();
     let hb_handle = tokio::spawn(heartbeat::run(
-        "test-worker".to_string(),
+        test_worker_id,
         Duration::from_millis(50),
         state_tx.clone(),
         network_tx,
@@ -177,7 +178,7 @@ async fn heartbeat_and_state_actor_interaction() {
             let decoded: willow_common::WorkerWireMessage = bincode::deserialize(&data).unwrap();
             match decoded {
                 willow_common::WorkerWireMessage::Announcement(a) => {
-                    assert_eq!(a.peer_id, "test-worker");
+                    assert_eq!(a.peer_id, test_worker_id);
                     match a.role {
                         WorkerRoleInfo::Replay {
                             events_buffered, ..
@@ -280,8 +281,9 @@ async fn graceful_shutdown_sends_departure() {
     let role = Box::new(TestReplayRole::new("srv-1", "owner", 100));
     let state_handle = tokio::spawn(state::run(role, state_rx));
 
+    let departing_id = willow_identity::Identity::generate().endpoint_id();
     let hb_handle = tokio::spawn(heartbeat::run(
-        "departing-worker".to_string(),
+        departing_id,
         Duration::from_secs(60), // Long interval — won't fire naturally
         state_tx.clone(),
         network_tx,
@@ -303,7 +305,7 @@ async fn graceful_shutdown_sends_departure() {
             let decoded: willow_common::WorkerWireMessage = bincode::deserialize(&data).unwrap();
             match decoded {
                 willow_common::WorkerWireMessage::Departure { peer_id } => {
-                    assert_eq!(peer_id, "departing-worker");
+                    assert_eq!(peer_id, departing_id);
                 }
                 _ => panic!("expected Departure"),
             }
@@ -331,15 +333,16 @@ async fn full_actor_orchestration_without_network() {
 
     // Spawn all three non-network actors.
     let state_handle = tokio::spawn(state::run(role, state_rx));
+    let orch_id = willow_identity::Identity::generate().endpoint_id();
     let hb_handle = tokio::spawn(heartbeat::run(
-        "orch-test".to_string(),
+        orch_id,
         Duration::from_millis(50),
         state_tx.clone(),
         network_tx.clone(),
         shutdown_rx.clone(),
     ));
     let sync_handle = tokio::spawn(sync::run(
-        "orch-test".to_string(),
+        orch_id,
         Duration::from_millis(80),
         state_tx.clone(),
         network_tx,

@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
+use willow_identity::EndpointId;
 
 use super::{NetworkOutMsg, StateMsg};
 use crate::types::{WorkerAnnouncement, WorkerWireMessage, WORKERS_TOPIC};
@@ -13,7 +14,7 @@ use crate::types::{WorkerAnnouncement, WorkerWireMessage, WORKERS_TOPIC};
 /// Every `interval`, queries the state actor for role info
 /// and broadcasts an announcement via the network actor.
 pub async fn run(
-    peer_id: String,
+    peer_id: EndpointId,
     interval: Duration,
     state_tx: mpsc::Sender<StateMsg>,
     network_tx: mpsc::Sender<NetworkOutMsg>,
@@ -95,6 +96,7 @@ mod tests {
     use super::*;
     use crate::types::WorkerRoleInfo;
     use std::time::Duration;
+    use willow_identity::Identity;
 
     /// Minimal role info responder for testing.
     async fn fake_state_actor(mut rx: mpsc::Receiver<StateMsg>) {
@@ -121,8 +123,9 @@ mod tests {
 
         tokio::spawn(fake_state_actor(state_rx));
 
+        let test_peer = Identity::generate().endpoint_id();
         let hb = tokio::spawn(run(
-            "test-peer".to_string(),
+            test_peer,
             Duration::from_millis(50),
             state_tx,
             network_tx,
@@ -141,7 +144,7 @@ mod tests {
                 let decoded: WorkerWireMessage = bincode::deserialize(&data).unwrap();
                 match decoded {
                     WorkerWireMessage::Announcement(a) => {
-                        assert_eq!(a.peer_id, "test-peer");
+                        assert_eq!(a.peer_id, test_peer);
                     }
                     _ => panic!("expected Announcement"),
                 }

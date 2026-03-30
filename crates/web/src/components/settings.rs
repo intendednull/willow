@@ -158,7 +158,7 @@ pub fn SettingsPanel(
                 <div class="settings-section">
                     <label>"Your Peer ID"</label>
                     <div class="peer-id-display">
-                        <code class="peer-id-text">{move || peer_id.get()}</code>
+                        <code class="peer-id-text">{move || { let id = peer_id.get(); id.get(..10).unwrap_or(&id).to_string() }}</code>
                         <button class="btn btn-sm" on:click=on_copy_peer_id_profile>"Copy"</button>
                     </div>
                 </div>
@@ -291,7 +291,7 @@ pub fn SettingsPanel(
                     <h3>"Your Peer ID"</h3>
                     <p class="settings-hint">"Share this with others so they can invite you to their servers."</p>
                     <div class="peer-id-display">
-                        <code class="peer-id-text">{move || peer_id.get()}</code>
+                        <code class="peer-id-text">{move || { let id = peer_id.get(); id.get(..10).unwrap_or(&id).to_string() }}</code>
                         <button class="btn btn-sm" on:click=on_copy_peer_id_server>"Copy"</button>
                     </div>
                 </div>

@@ -13,7 +13,7 @@ use crate::types::{WorkerRequest, WorkerWireMessage, WORKERS_TOPIC};
 /// Every `interval`, queries the state actor for state hashes per server
 /// and broadcasts SyncRequests so other peers/workers can send missing events.
 pub async fn run(
-    _peer_id: String,
+    _peer_id: willow_identity::EndpointId,
     interval: Duration,
     state_tx: mpsc::Sender<StateMsg>,
     network_tx: mpsc::Sender<NetworkOutMsg>,
@@ -51,7 +51,7 @@ pub async fn run(
         for (server_id, state_hash) in hashes {
             let msg = WorkerWireMessage::Request {
                 request_id: uuid::Uuid::new_v4().to_string(),
-                target_peer: String::new(), // Broadcast — any peer can respond
+                target_peer: _peer_id, // Self-addressed — peers match on topic
                 payload: WorkerRequest::Sync {
                     server_id,
                     state_hash,
@@ -74,6 +74,7 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use willow_identity::Identity;
     use willow_state::StateHash;
 
     /// Fake state actor that returns known state hashes.
@@ -101,7 +102,7 @@ mod tests {
         tokio::spawn(fake_state_actor(state_rx));
 
         let sync = tokio::spawn(run(
-            "test-peer".to_string(),
+            Identity::generate().endpoint_id(),
             Duration::from_millis(50),
             state_tx,
             network_tx,
@@ -152,7 +153,7 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
         let sync = tokio::spawn(run(
-            "test-peer".to_string(),
+            Identity::generate().endpoint_id(),
             Duration::from_secs(60),
             state_tx,
             network_tx,
