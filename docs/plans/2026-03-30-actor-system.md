@@ -49,7 +49,9 @@ crates/client/src/listeners.rs            — Replace spawn_topic_listener with 
 crates/client/src/state.rs                — State accessor methods become ask() calls
 
 crates/web/Cargo.toml                     — Add willow-actor dependency
-crates/web/src/app.rs                     — Spawn actors instead of manual event loop
+crates/web/src/app.rs                     — Update event loop for async handle methods
+crates/web/src/event_processing.rs        — process_event_batch becomes async
+crates/web/src/components/*.rs            — Wrap sync handle calls in spawn_local
 
 Cargo.toml                                — Add actor to workspace members
 ```
@@ -161,7 +163,7 @@ Migrate the four hand-rolled worker actors to use `willow-actor`. This is the fi
 
 - [ ] **Step 2: Rewrite `state.rs` as `StateActor`.** Struct holds `Box<dyn WorkerRole>`. Implement `Actor` (no lifecycle hooks needed). Implement `Handler<EventMsg>`, `Handler<WorkerRequestMsg>`, `Handler<GetRoleInfoMsg>`, `Handler<GetStateHashesMsg>`, `Handler<ServerDiscoveredMsg>`. Each handler is 1-3 lines — delegates to `self.role`. Remove the manual `run()` function and its `while let` loop.
 
-- [ ] **Step 3: Rewrite `network.rs` as `NetworkActor`.** Struct holds `Addr<StateActor>`, `EndpointId`, and `Option<E>` where `E: TopicEvents` (taken in `started()`). `TopicEvents` is not a `Stream` trait — it has an async `next()` method. Write a thin adapter (`TopicEventStream`) that wraps a `TopicEvents` impl into a `futures::Stream<Item = GossipEvent>` (filtering errors with a warning log). Implement `StreamHandler<GossipEvent>` — the `handle_stream_item` replaces the `while let` loop. Keep `parse_worker_message()` and `parse_server_message()` as pure functions. In `started()`, call `self.events.take().unwrap()` to extract the topic events, wrap in `TopicEventStream`, and attach via `ctx.add_stream()`. Remove the manual `run()` function.
+- [ ] **Step 3: Rewrite `network.rs` as `NetworkActor`.** Struct holds `Addr<StateActor>`, `EndpointId`, and `Option<E>` where `E: TopicEvents + 'static` (the `'static` bound is required because `Actor: 'static`; taken in `started()`). `TopicEvents` is not a `Stream` trait — it has an async `next()` method. Write a thin adapter (`TopicEventStream`) that wraps a `TopicEvents` impl into a `futures::Stream<Item = GossipEvent>` (filtering errors with a warning log). Implement `StreamHandler<GossipEvent>` — the `handle_stream_item` replaces the `while let` loop. Keep `parse_worker_message()` and `parse_server_message()` as pure functions. In `started()`, call `self.events.take().unwrap()` to extract the topic events, wrap in `TopicEventStream`, and attach via `ctx.add_stream()`. Remove the manual `run()` function.
 
 - [ ] **Step 4: Rewrite `heartbeat.rs` as `HeartbeatActor`.** Struct holds `EndpointId`, `Addr<StateActor>`, and the `TopicHandle` (owned, not borrowed — actor owns it for its lifetime). Define `HeartbeatTick` message. Implement `Handler<HeartbeatTick>` — queries state actor via `state_addr.ask(GetRoleInfoMsg)`, broadcasts announcement. In `started()`, call `ctx.run_interval(duration, || HeartbeatTick)`. Implement `stopped()` to broadcast departure message via `self.topic.broadcast()` — best-effort (may fail silently if network is already shut down). Remove `shutdown: watch::Receiver` — the actor stops when its address is dropped.
 
@@ -192,7 +194,7 @@ Replace `Arc<RwLock<SharedState>>` and `futures::channel::mpsc` with actors.
 
 - [ ] **Step 1: Define `ClientStateActor`.** Holds `SharedState` directly (no Arc, no RwLock). Audit all `shared.write()` and `shared.read()` call sites in the client crate to discover the full message set — expect ~10-15 mutation messages and ~5-10 query messages. Define message structs for each. Common patterns: mutations return `()` (fire-and-forget), queries return a cloned field or computed value.
 
-- [ ] **Step 2: Define `TopicListenerActor`.** Replaces `spawn_topic_listener`. Implements `StreamHandler` for gossip events. Holds `Addr<ClientStateActor>` and `TopicHandle`. In `handle_stream_item`, sends mutations to the state actor and emits `ClientEvent`s.
+- [ ] **Step 2: Define `TopicListenerActor`.** Replaces `spawn_topic_listener`. Implements `StreamHandler` for gossip events. Holds `Addr<ClientStateActor>`, `TopicHandle`, and the `event_tx` channel sender (needed to emit `ClientEvent`s to the UI). In `handle_stream_item`, sends mutations to the state actor and emits `ClientEvent`s on `event_tx`.
 
 - [ ] **Step 3: Refactor `ClientHandle<N>`.** Replace `shared: Arc<RwLock<SharedState>>` with `state: Addr<ClientStateActor>`. Also move `topics: Arc<RwLock<HashMap<String, N::Topic>>>` into the state actor (or a dedicated topic actor) — this is another lock to eliminate. Keep `event_tx: futures_mpsc::UnboundedSender<ClientEvent>` as a plain channel — `ClientEvent`s flow to the UI layer which is not an actor. **Note:** this makes previously-synchronous state accessors async (`shared.read()` → `state.ask().await`). All callers in `lib.rs`, `ops.rs`, `invite.rs`, `files.rs`, and `worker_cache.rs` must be updated to `.await` state queries. Methods that were `fn` become `async fn`.
 
@@ -235,7 +237,7 @@ The `ClientEvent` channel remains the boundary between the actor world and Lepto
 
 **Alternative considered:** have the state actor push full state snapshots into a signal directly, eliminating the `ClientEvent` → `process_event_batch` → signal path. Rejected: the snapshot approach would re-render everything on every state change. The event-based approach is more efficient (only flags `needs_msg_refresh`, `needs_peer_refresh`, etc.).
 
-- [ ] **Step 1: Update `app.rs` initialization.** The `System` is created by the client library (Task 6), not the web crate. `app.rs` receives the `ClientHandle<N>` which already owns actor addresses internally. No `System::new()` call needed here. Update the `spawn_local` event loop: the `while let Some(event) = client_event_rx.next().await` loop stays, but `process_event_batch` is now called with `.await`.
+- [ ] **Step 1: Update `app.rs` initialization.** The `System` is created inside `ClientHandle::new()` (Task 6) and owned by the client. `app.rs` receives the `ClientHandle<N>` which already owns actor addresses internally. No `System::new()` call needed in the web crate. Update the `spawn_local` event loop: the `while let Some(event) = client_event_rx.next().await` loop stays, but `process_event_batch` is now called with `.await`.
 
 - [ ] **Step 2: Make `process_event_batch` async.** Currently `fn`, becomes `async fn`. All `handle.peers()`, `handle.messages()`, `handle.channels()`, etc. calls gain `.await`. The function is called inside a `spawn_local` async block, so this is straightforward. Same for `refresh_all_signals`.
 
