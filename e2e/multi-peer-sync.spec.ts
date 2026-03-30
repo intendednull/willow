@@ -15,6 +15,7 @@ import {
   deleteMessage,
   reactToMessage,
   waitForPeerCount,
+  openSidebar,
 } from './helpers';
 
 test.describe('Multi-peer state synchronization', () => {
@@ -80,7 +81,8 @@ test.describe('Multi-peer state synchronization', () => {
       // Peer 2: Join.
       await joinViaInvite(page2, inviteCode, 'Bob');
 
-      // Peer 2 should see all 3 channels.
+      // Peer 2 should see all 3 channels (open sidebar on mobile).
+      await openSidebar(page2);
       await expect(page2.locator('.channel-item', { hasText: 'general' }))
         .toBeVisible({ timeout: 15_000 });
       await expect(page2.locator('.channel-item', { hasText: 'announcements' }))
@@ -99,7 +101,8 @@ test.describe('Multi-peer state synchronization', () => {
       // Alice creates a new channel after both are connected.
       await createChannel(page1, 'new-channel');
 
-      // Bob should see the new channel.
+      // Bob should see the new channel (open sidebar on mobile).
+      await openSidebar(page2);
       await expect(page2.locator('.channel-item', { hasText: 'new-channel' }))
         .toBeVisible({ timeout: 15_000 });
     } finally {
@@ -114,7 +117,8 @@ test.describe('Multi-peer state synchronization', () => {
       // Alice creates a new channel.
       await createChannel(page1, 'dev');
 
-      // Wait for Bob to see it.
+      // Wait for Bob to see it (open sidebar on mobile).
+      await openSidebar(page2);
       await expect(page2.locator('.channel-item', { hasText: 'dev' }))
         .toBeVisible({ timeout: 15_000 });
 

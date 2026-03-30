@@ -1,8 +1,13 @@
 import { test, expect } from '@playwright/test';
-import { freshStart, createServer, sendMessage, waitForMessage, openSidebar } from './helpers';
+import { freshStart, createServer, sendMessage, waitForMessage, waitForApp, openSidebar } from './helpers';
 
 test.describe('Join via shareable link', () => {
-  test('peer joins via link URL and sees messages', async ({ browser }) => {
+  // Skip on Firefox — clipboard permissions are not supported.
+  test.beforeEach(({}, testInfo) => {
+    test.skip(testInfo.project.name.includes('firefox'), 'clipboard permissions not supported in Firefox');
+  });
+
+  test('peer joins via link URL and sees messages', async ({ browser, baseURL }) => {
     const ctxA = await browser.newContext({
       permissions: ['clipboard-read', 'clipboard-write'],
     });
@@ -21,17 +26,22 @@ test.describe('Join via shareable link', () => {
     const clipboardUrl = await pageA.evaluate(() => navigator.clipboard.readText());
     expect(clipboardUrl).toContain('#join=');
 
+    // Extract the hash fragment and construct URL using test baseURL
+    // (the app may generate a URL with a different origin).
+    const hashFragment = clipboardUrl.substring(clipboardUrl.indexOf('#'));
+    const joinUrl = `${baseURL}/${hashFragment}`;
+
     // Go back to chat.
     await pageA.locator('text=Back').click();
 
-    // Peer B opens the join link URL.
+    // Peer B opens the join link URL directly (full page load with hash).
     const ctxB = await browser.newContext();
     const pageB = await ctxB.newPage();
-    await freshStart(pageB);
-    await pageB.goto(clipboardUrl);
+    await pageB.goto(joinUrl);
+    await waitForApp(pageB);
 
     // Should see the JoinPage with server name.
-    await expect(pageB.locator('.join-card-server')).toContainText('Link Test');
+    await expect(pageB.locator('.join-card-server')).toContainText('Link Test', { timeout: 10_000 });
     await expect(pageB.locator('.join-card-inviter')).toContainText('Alice');
 
     // Enter name and click Join.

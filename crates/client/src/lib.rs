@@ -2460,6 +2460,20 @@ fn emit_client_events_for(
                 author: event.author.clone(),
             });
         }
+        willow_state::EventKind::SetProfile { display_name } => {
+            // Also update the gossipsub ProfileStore so both systems stay
+            // in sync, and emit a ProfileUpdated so the UI refreshes the
+            // member list with the new display name.
+            shared
+                .state
+                .profiles
+                .names
+                .insert(event.author.clone(), display_name.clone());
+            events.push(ClientEvent::ProfileUpdated {
+                peer_id: event.author.clone(),
+                display_name: display_name.clone(),
+            });
+        }
         willow_state::EventKind::StateVerification { state_hash } => {
             let our_hash = shared.state.event_state.hash();
             shared
@@ -2581,6 +2595,12 @@ impl ClientEventLoop {
                     }
 
                     let mut shared = self.shared.borrow_mut();
+                    // Track the sender as an online peer — receiving a signed
+                    // event proves they are connected (possibly through the relay).
+                    if !from.is_empty() && !shared.state.chat.peers.contains(&from) {
+                        shared.state.chat.peers.push(from.clone());
+                        events.push(ClientEvent::PeerConnected(from.clone()));
+                    }
                     // Apply to event-sourced state.
                     let result = willow_state::apply_lenient(&mut shared.state.event_state, &event);
                     if matches!(result, willow_state::ApplyResult::Applied) {
@@ -2658,6 +2678,20 @@ impl ClientEventLoop {
                         events.push(ClientEvent::SyncCompleted { ops_applied: count });
                         // Signal that state verification is needed (done outside borrow).
                         needs_verify = true;
+
+                        // Re-broadcast our profile after receiving a sync batch.
+                        // The initial BroadcastProfile/SetProfile may be lost if
+                        // the gossipsub mesh wasn't formed when we first joined.
+                        // By this point the mesh is confirmed working (we just
+                        // received data through it).
+                        let saved = storage::load_profile().unwrap_or_default();
+                        if !saved.display_name.is_empty() {
+                            let _ = self.cmd_tx.unbounded_send(
+                                network::NetworkCommand::BroadcastProfile {
+                                    display_name: saved.display_name,
+                                },
+                            );
+                        }
                     }
                 }
 
@@ -2677,7 +2711,28 @@ impl ClientEventLoop {
                         if !saved.display_name.is_empty() {
                             let _ = self.cmd_tx.unbounded_send(
                                 network::NetworkCommand::BroadcastProfile {
+                                    display_name: saved.display_name.clone(),
+                                },
+                            );
+                            // Also re-broadcast the event-sourced SetProfile so
+                            // the peer's member list picks it up immediately
+                            // (the initial broadcast may be lost if the gossipsub
+                            // mesh wasn't formed yet).
+                            let pid = shared.identity.peer_id().to_string();
+                            let event = willow_state::Event {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                parent_hash: shared.state.event_state.hash(),
+                                author: pid,
+                                timestamp_ms: util::current_time_ms(),
+                                kind: willow_state::EventKind::SetProfile {
                                     display_name: saved.display_name,
+                                },
+                            };
+                            apply_event_on_shared(&mut shared, &event);
+                            let _ = self.cmd_tx.unbounded_send(
+                                network::NetworkCommand::BroadcastEvent {
+                                    event,
+                                    topic: None,
                                 },
                             );
                         }

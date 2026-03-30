@@ -8,6 +8,7 @@ services:
       - "9091:9091"
     volumes:
       - relay-identity:/etc/willow
+      - shared:/shared
     restart: unless-stopped
 
   replay-1:
@@ -16,8 +17,8 @@ services:
       dockerfile: docker/replay.Dockerfile
     volumes:
       - replay-1-identity:/etc/willow
+      - shared:/shared:ro
     environment:
-      - RELAY_ADDR=/dns4/relay/tcp/9091/ws/p2p/${RELAY_PEER_ID}
       - MAX_EVENTS_PER_SERVER=1000
       - SYNC_INTERVAL=30
     depends_on:
@@ -30,8 +31,8 @@ services:
       dockerfile: docker/replay.Dockerfile
     volumes:
       - replay-2-identity:/etc/willow
+      - shared:/shared:ro
     environment:
-      - RELAY_ADDR=/dns4/relay/tcp/9091/ws/p2p/${RELAY_PEER_ID}
       - MAX_EVENTS_PER_SERVER=1000
       - SYNC_INTERVAL=30
     depends_on:
@@ -45,8 +46,8 @@ services:
     volumes:
       - storage-1-identity:/etc/willow
       - storage-1-data:/var/lib/willow
+      - shared:/shared:ro
     environment:
-      - RELAY_ADDR=/dns4/relay/tcp/9091/ws/p2p/${RELAY_PEER_ID}
       - SYNC_INTERVAL=60
     depends_on:
       - relay
@@ -59,8 +60,8 @@ services:
     volumes:
       - storage-2-identity:/etc/willow
       - storage-2-data:/var/lib/willow
+      - shared:/shared:ro
     environment:
-      - RELAY_ADDR=/dns4/relay/tcp/9091/ws/p2p/${RELAY_PEER_ID}
       - SYNC_INTERVAL=60
     depends_on:
       - relay
@@ -71,13 +72,14 @@ services:
       context: .
       dockerfile: docker/web.Dockerfile
     ports:
-      - "80:80"
+      - "${WILLOW_WEB_PORT:-8080}:80"
     depends_on:
       - relay
     restart: unless-stopped
 
 volumes:
   relay-identity:
+  shared:
   replay-1-identity:
   replay-2-identity:
   storage-1-identity:

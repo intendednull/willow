@@ -207,6 +207,10 @@ pub fn MessageView(
     /// Whether this message is a reply to the local user (highlights it).
     #[prop(default = false)]
     is_mention: bool,
+    /// Shared signal tracking which message ID has the action sheet open.
+    /// Lives in `MessageList` so it survives message-list re-renders.
+    #[prop(optional, into)]
+    active_sheet_msg: Option<RwSignal<Option<String>>>,
 ) -> impl IntoView {
     let author_class = if message.is_local {
         "author local"
@@ -271,8 +275,22 @@ pub fn MessageView(
     let on_react_for_reactions = on_react;
 
     // Long-press to show mobile action sheet.
-    // All state managed via Leptos signals — no js_sys::eval.
-    let (show_sheet, set_show_sheet) = signal(false);
+    // The open/close state is shared with the parent `MessageList` via
+    // `active_sheet_msg` so it survives message-list re-renders caused by
+    // sync events.  When the parent signal is not provided we fall back to
+    // a local signal (standalone usage).
+    let msg_id_for_sheet = message.id.clone();
+    let fallback = RwSignal::new(Option::<String>::None);
+    let sheet_signal = active_sheet_msg.unwrap_or(fallback);
+    let show_sheet = {
+        let id = msg_id_for_sheet.clone();
+        Memo::new(move |_| sheet_signal.get().as_deref() == Some(id.as_str()))
+    };
+    let set_show_sheet_open = {
+        let id = msg_id_for_sheet.clone();
+        move || sheet_signal.set(Some(id.clone()))
+    };
+    let set_show_sheet_close = move || sheet_signal.set(None);
     let (long_press_active, set_long_press_active) = signal(false);
     // Swipe-down-to-dismiss state for the action sheet.
     let (sheet_drag_y, set_sheet_drag_y) = signal(0.0f64);
@@ -330,7 +348,7 @@ pub fn MessageView(
             0.0
         };
         if drag > 80.0 || velocity > 200.0 {
-            set_show_sheet.set(false);
+            set_show_sheet_close();
         }
         set_sheet_drag_y.set(0.0);
     };
@@ -359,9 +377,10 @@ pub fn MessageView(
         set_long_press_active.set(true);
         // Start 500ms timer via web_sys.
         if let Some(window) = web_sys::window() {
+            let open_sheet = set_show_sheet_open.clone();
             let cb = wasm_bindgen::closure::Closure::once(move || {
                 set_long_press_active.set(false);
-                set_show_sheet.set(true);
+                open_sheet();
                 // Haptic feedback.
                 if let Some(w) = web_sys::window() {
                     let nav = w.navigator();
@@ -673,9 +692,7 @@ pub fn MessageView(
                 let react_cb2 = on_react;
                 let react_msg2 = message.clone();
 
-                let close_sheet = move || {
-                    set_show_sheet.set(false);
-                };
+                let close_sheet = set_show_sheet_close;
 
                 Some(view! {
                     <div

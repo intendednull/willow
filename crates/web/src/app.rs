@@ -159,6 +159,36 @@ pub fn App() -> impl IntoView {
         }
     }
 
+    // Listen for hash changes so navigation to #join=... works after initial load.
+    {
+        use wasm_bindgen::JsCast;
+        let write_for_hash = write;
+        let closure = wasm_bindgen::closure::Closure::<dyn Fn(web_sys::Event)>::new(
+            move |_ev: web_sys::Event| {
+                let join_token_value = web_sys::window()
+                    .and_then(|w| w.location().hash().ok())
+                    .and_then(|hash| hash.strip_prefix("#join=").map(|s| s.to_string()));
+
+                if let Some(ref token_str) = join_token_value {
+                    if let Some(token) = willow_client::ops::JoinToken::decode(token_str) {
+                        write_for_hash.ui.set_join_token.set(Some(state::ParsedJoinToken {
+                            raw: token_str.clone(),
+                            link_id: token.link_id,
+                            server_name: token.server_name,
+                            inviter_name: token.inviter_name,
+                        }));
+                        write_for_hash.ui.set_join_status.set(String::new());
+                    }
+                }
+            },
+        );
+        if let Some(window) = web_sys::window() {
+            let _ = window
+                .add_event_listener_with_callback("hashchange", closure.as_ref().unchecked_ref());
+        }
+        closure.forget();
+    }
+
     // Spawn the event loop and signal updater.
     {
         let handle_for_events = handle.clone();
@@ -728,3 +758,4 @@ pub async fn handle_voice_answer(vm: VoiceManagerHandle, from: String, sdp: Stri
     let mgr = vm.borrow();
     let _ = mgr.handle_answer(&from, &sdp).await;
 }
+

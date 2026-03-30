@@ -43,17 +43,29 @@ struct Args {
     /// Display name for this relay node (visible in peer lists).
     #[arg(long, default_value = "Relay Node")]
     name: String,
+
+    /// Print the peer ID (generating the identity if needed) and exit.
+    #[arg(long)]
+    print_peer_id: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = Args::parse();
+
+    // Handle --print-peer-id before initializing tracing to get clean output.
+    if args.print_peer_id {
+        let keypair = load_or_generate_keypair(args.identity.as_deref())?;
+        let peer_id = libp2p::PeerId::from(keypair.public());
+        println!("{peer_id}");
+        return Ok(());
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
-
-    let args = Args::parse();
 
     let keypair = load_or_generate_keypair(args.identity.as_deref())?;
 

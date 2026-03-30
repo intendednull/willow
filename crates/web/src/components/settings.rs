@@ -214,7 +214,10 @@ pub fn SettingsPanel(
                     let on_create_link = move |_| {
                         match handle_gen.create_join_link(5, None) {
                             Ok(token) => {
-                                let url = format!("https://willow.intendednull.com/#join={token}");
+                                let origin = web_sys::window()
+                                    .and_then(|w| w.location().origin().ok())
+                                    .unwrap_or_else(|| "https://willow.intendednull.com".to_string());
+                                let url = format!("{origin}/#join={token}");
                                 copy_to_clipboard(&url);
                                 set_link_copied.set(true);
                                 let set_copied = set_link_copied;
