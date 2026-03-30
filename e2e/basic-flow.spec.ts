@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { freshStart, createServer, sendMessage, getMessages, waitForApp, waitForMessage } from './helpers';
+import { freshStart, createServer, sendMessage, getMessages, waitForApp, waitForMessage, openSidebar, reactToMessage } from './helpers';
 
 test.describe('Basic app flow', () => {
   test('welcome screen shows on fresh start', async ({ page }) => {
@@ -33,6 +33,9 @@ test.describe('Basic app flow', () => {
     await freshStart(page);
     await createServer(page, 'Channel Test');
 
+    // Open sidebar on mobile (no-op on desktop).
+    await openSidebar(page);
+
     // Click the + button.
     await page.locator('.channel-add-btn').click();
     await page.waitForTimeout(200);
@@ -51,6 +54,9 @@ test.describe('Basic app flow', () => {
     await freshStart(page);
     await createServer(page, 'Voice Test');
 
+    // Open sidebar on mobile (no-op on desktop).
+    await openSidebar(page);
+
     // Click +.
     await page.locator('.channel-add-btn').click();
     await page.waitForTimeout(200);
@@ -68,8 +74,8 @@ test.describe('Basic app flow', () => {
     // Should see the voice channel with speaker icon.
     const voiceChannel = page.locator('.channel-item', { hasText: 'voice-chat' });
     await expect(voiceChannel).toBeVisible();
-    // Voice channels show 🔊 prefix.
-    await expect(voiceChannel).toContainText('🔊');
+    // Voice channels show a volume SVG icon prefix.
+    await expect(voiceChannel.locator('.icon-volume')).toBeVisible();
   });
 
   test('messages persist after refresh', async ({ page }) => {
@@ -97,20 +103,8 @@ test.describe('Basic app flow', () => {
     await sendMessage(page, 'react to me');
     await page.waitForTimeout(500);
 
-    // Open dropdown on desktop, react.
-    const msg = page.locator('.message').first();
-    await msg.hover();
-    await page.waitForTimeout(200);
-    await page.locator('.action-trigger').first().click();
-    await page.waitForTimeout(200);
-
-    // Click React.
-    await page.locator('.dropdown-item', { hasText: 'React' }).click();
-    await page.waitForTimeout(200);
-
-    // Click first emoji.
-    await page.locator('.dropdown-emoji-row button').first().click();
-    await page.waitForTimeout(500);
+    // React to the message (handles both desktop and mobile).
+    await reactToMessage(page, 'react to me');
 
     // Should see reaction.
     await expect(page.locator('.reaction')).toBeVisible();

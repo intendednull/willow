@@ -337,7 +337,11 @@ pub fn CallPage(
                             let local_spk = speaking.contains(&local_peer_id);
                             (local_name.clone(), local_video_stream.get(), muted, local_spk, true, video_source == Some(VideoSource::Camera))
                         } else {
-                            let name = handle.peer_display_name(&focused_pid);
+                            let name = if let Ok(eid) = focused_pid.parse::<willow_identity::EndpointId>() {
+                                handle.peer_display_name(&eid)
+                            } else {
+                                focused_pid.clone()
+                            };
                             let stream = remote_streams.get(&focused_pid).cloned();
                             let is_spk = speaking.contains(&focused_pid);
                             (name, stream, false, is_spk, false, false)
@@ -382,7 +386,11 @@ pub fn CallPage(
                         if *pid == fpid {
                             continue;
                         }
-                        let name = handle.peer_display_name(pid);
+                        let name = if let Ok(eid) = pid.parse::<willow_identity::EndpointId>() {
+                            handle.peer_display_name(&eid)
+                        } else {
+                            pid.clone()
+                        };
                         let stream = remote_streams.get(pid).cloned();
                         let is_spk = speaking.contains(pid);
                         thumb_views.push(render_tile(
@@ -424,7 +432,11 @@ pub fn CallPage(
 
                     // Remote participant tiles.
                     for pid in &remote_participants {
-                        let name = handle.peer_display_name(pid);
+                        let name = if let Ok(eid) = pid.parse::<willow_identity::EndpointId>() {
+                            handle.peer_display_name(&eid)
+                        } else {
+                            pid.clone()
+                        };
                         let stream = remote_streams.get(pid).cloned();
                         let is_spk = speaking.contains(pid);
                         tiles.push(render_tile(

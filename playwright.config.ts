@@ -1,6 +1,8 @@
 import { defineConfig, devices } from '@playwright/test';
 
-const BASE_URL = process.env.WILLOW_TEST_URL || 'https://willow.intendednull.com';
+// Use WILLOW_TEST_URL to override. Defaults to local trunk serve.
+// For prod: WILLOW_TEST_URL=https://willow.intendednull.com npx playwright test
+const BASE_URL = process.env.WILLOW_TEST_URL || 'http://127.0.0.1:8080';
 
 export default defineConfig({
   testDir: './e2e',

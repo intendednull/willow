@@ -89,7 +89,7 @@ PIDS+=("$RELAY_PID")
 RELAY_PEER_ID=""
 for i in $(seq 1 50); do
     if [ -f "$RELAY_LOG" ]; then
-        RELAY_PEER_ID=$(grep -oP 'peer_id[= ]+\K[A-Za-z0-9]+' "$RELAY_LOG" 2>/dev/null | head -1 || true)
+        RELAY_PEER_ID=$(sed 's/\x1b\[[0-9;]*m//g' "$RELAY_LOG" 2>/dev/null | grep -oP 'peer_id\s*=\s*\K[A-Za-z0-9]+' | head -1 || true)
         if [ -n "$RELAY_PEER_ID" ]; then
             break
         fi

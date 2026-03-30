@@ -181,7 +181,9 @@ sshpass -p 'WillowP2P2026deploy!' ssh -o StrictHostKeyChecking=no root@172.234.2
 
 ## Quick deploy (web only)
 
-For CSS/component changes that don't touch binaries:
+For changes to the web UI (CSS, Leptos components, Rust code in `crates/web/`).
+Note: `trunk build` recompiles the WASM binary, so this covers both CSS-only
+and Rust component changes — no need for a separate `cargo build` step.
 
 ```bash
 cd crates/web && trunk build --release && cd ../.. && sshpass -p 'WillowP2P2026deploy!' scp -o StrictHostKeyChecking=no crates/web/dist/* root@172.234.217.219:/var/www/willow/ && sshpass -p 'WillowP2P2026deploy!' ssh -o StrictHostKeyChecking=no root@172.234.217.219 'chmod 644 /var/www/willow/*'

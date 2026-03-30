@@ -37,9 +37,13 @@ test.describe('Worker nodes infrastructure', () => {
     // Wait for relay connection.
     await page.waitForTimeout(5000);
 
-    // Member list should show at least Alice + relay.
+    // Member list should show at least Alice + relay (workers may also appear).
     const members = page.locator('.member-item');
-    await expect(members).toHaveCount(2, { timeout: 15_000 });
+    const count = await members.count();
+    // Wait for at least 2 members (Alice + relay); workers may add more.
+    await expect(async () => {
+      expect(await members.count()).toBeGreaterThanOrEqual(2);
+    }).toPass({ timeout: 15_000 });
   });
 
   test('infrastructure section hidden when no workers have SyncProvider', async ({ page }) => {

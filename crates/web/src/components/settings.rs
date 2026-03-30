@@ -32,7 +32,7 @@ pub fn SettingsPanel(
     let handle_owner = handle.clone();
     let is_owner = move || {
         let pid = peer_id.get();
-        handle_owner.server_owner() == pid
+        handle_owner.server_owner().to_string() == pid
     };
 
     // Tab display name.
@@ -72,7 +72,11 @@ pub fn SettingsPanel(
             set_status_msg.set("Enter a recipient Peer ID.".to_string());
             return;
         }
-        match handle_invite.generate_invite(recipient.trim()) {
+        let Ok(recipient_eid) = recipient.trim().parse::<willow_identity::EndpointId>() else {
+            set_status_msg.set("Invalid Peer ID format.".to_string());
+            return;
+        };
+        match handle_invite.generate_invite(&recipient_eid) {
             Ok(code) => {
                 set_invite_code.set(code);
                 set_status_msg.set("Invite generated.".to_string());
@@ -154,7 +158,7 @@ pub fn SettingsPanel(
                 <div class="settings-section">
                     <label>"Your Peer ID"</label>
                     <div class="peer-id-display">
-                        <code class="peer-id-text">{move || peer_id.get()}</code>
+                        <code class="peer-id-text">{move || { let id = peer_id.get(); id.get(..10).unwrap_or(&id).to_string() }}</code>
                         <button class="btn btn-sm" on:click=on_copy_peer_id_profile>"Copy"</button>
                     </div>
                 </div>
@@ -214,7 +218,10 @@ pub fn SettingsPanel(
                     let on_create_link = move |_| {
                         match handle_gen.create_join_link(5, None) {
                             Ok(token) => {
-                                let url = format!("https://willow.intendednull.com/#join={token}");
+                                let origin = web_sys::window()
+                                    .and_then(|w| w.location().origin().ok())
+                                    .unwrap_or_else(|| "https://willow.intendednull.com".to_string());
+                                let url = format!("{origin}/#join={token}");
                                 copy_to_clipboard(&url);
                                 set_link_copied.set(true);
                                 let set_copied = set_link_copied;
@@ -284,7 +291,7 @@ pub fn SettingsPanel(
                     <h3>"Your Peer ID"</h3>
                     <p class="settings-hint">"Share this with others so they can invite you to their servers."</p>
                     <div class="peer-id-display">
-                        <code class="peer-id-text">{move || peer_id.get()}</code>
+                        <code class="peer-id-text">{move || { let id = peer_id.get(); id.get(..10).unwrap_or(&id).to_string() }}</code>
                         <button class="btn btn-sm" on:click=on_copy_peer_id_server>"Copy"</button>
                     </div>
                 </div>

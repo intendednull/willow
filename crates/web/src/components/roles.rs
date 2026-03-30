@@ -43,7 +43,7 @@ pub fn RoleManager(
     let handle_owner = handle.clone();
     let is_owner = move || {
         let pid = peer_id.get();
-        handle_owner.server_owner() == pid
+        handle_owner.server_owner().to_string() == pid
     };
 
     // Create role handler.
@@ -225,7 +225,9 @@ pub fn RoleManager(
                                                     on:click=move |_| {
                                                         let pid = assign_peer.get_untracked();
                                                         if !pid.trim().is_empty() {
-                                                            let _ = ha.assign_role(pid.trim(), &rid);
+                                                            if let Ok(eid) = pid.trim().parse::<willow_identity::EndpointId>() {
+                                                                let _ = ha.assign_role(eid, &rid);
+                                                            }
                                                             set_assign_peer.set(String::new());
                                                         }
                                                     }

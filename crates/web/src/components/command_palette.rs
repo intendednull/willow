@@ -58,10 +58,11 @@ fn build_results(handle: &WebClientHandle, query: &str) -> Vec<PaletteItem> {
     // Members.
     let members = handle.server_members();
     for (pid, name, _online) in &members {
-        if q.is_empty() || name.to_lowercase().contains(&q) || pid.to_lowercase().contains(&q) {
+        let pid_str = pid.to_string();
+        if q.is_empty() || name.to_lowercase().contains(&q) || pid_str.to_lowercase().contains(&q) {
             items.push(PaletteItem {
                 label: name.clone(),
-                id: pid.clone(),
+                id: pid_str,
                 category: PaletteCategory::Member,
                 is_voice: false,
             });

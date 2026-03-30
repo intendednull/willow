@@ -3,9 +3,9 @@ WORKDIR /build
 COPY . .
 RUN cargo build --release -p willow-replay
 
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
+FROM rust:slim
 COPY --from=builder /build/target/release/willow-replay /usr/local/bin/willow-replay
+COPY docker/replay-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
-ENTRYPOINT ["willow-replay"]
-CMD ["--identity-path", "/etc/willow/replay.key"]
+ENTRYPOINT ["/entrypoint.sh"]

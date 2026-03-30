@@ -3,6 +3,8 @@
 //! Events emitted by the client when state changes. These provide a
 //! UI-framework-agnostic notification mechanism for frontends to react to.
 
+use willow_identity::EndpointId;
+
 /// Events emitted by the client when state changes.
 #[derive(Debug, Clone)]
 pub enum ClientEvent {
@@ -24,17 +26,17 @@ pub enum ClientEvent {
         channel: String,
         message_id: String,
         emoji: String,
-        author: String,
+        author: EndpointId,
     },
-    PeerConnected(String),
-    PeerDisconnected(String),
+    PeerConnected(EndpointId),
+    PeerDisconnected(EndpointId),
     ChannelCreated(String),
     ChannelDeleted(String),
-    MemberKicked(String),
-    PeerTrusted(String),
-    PeerUntrusted(String),
+    MemberKicked(EndpointId),
+    PeerTrusted(EndpointId),
+    PeerUntrusted(EndpointId),
     ProfileUpdated {
-        peer_id: String,
+        peer_id: EndpointId,
         display_name: String,
     },
     FileAnnounced {
@@ -55,7 +57,7 @@ pub enum ClientEvent {
         role_id: String,
     },
     StateHashMismatch {
-        peer_id: String,
+        peer_id: EndpointId,
         our_hash: String,
         their_hash: String,
     },
@@ -76,17 +78,17 @@ pub enum ClientEvent {
     /// A peer joined a voice channel.
     VoiceJoined {
         channel_id: String,
-        peer_id: String,
+        peer_id: EndpointId,
     },
     /// A peer left a voice channel.
     VoiceLeft {
         channel_id: String,
-        peer_id: String,
+        peer_id: EndpointId,
     },
     /// A voice signaling message was received.
     VoiceSignal {
         channel_id: String,
-        from_peer: String,
+        from_peer: EndpointId,
         signal: crate::ops::VoiceSignalPayload,
     },
     /// A join-via-link response was received — auto-join can proceed.

@@ -35,7 +35,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use willow_identity::PeerId;
+use willow_identity::EndpointId;
 
 use crate::hlc::HlcTimestamp;
 
@@ -185,7 +185,7 @@ pub struct Message {
     /// The channel this message belongs to.
     pub channel_id: ChannelId,
     /// Who sent this message.
-    pub author: PeerId,
+    pub author: EndpointId,
     /// What the message contains.
     pub content: Content,
     /// Wall-clock time when the message was created.
@@ -198,7 +198,7 @@ impl Message {
     /// Create a new text message.
     pub fn text(
         channel_id: ChannelId,
-        author: PeerId,
+        author: EndpointId,
         body: impl Into<String>,
         hlc: &mut hlc::HLC,
     ) -> Self {
@@ -215,7 +215,7 @@ impl Message {
     /// Create a reaction to another message.
     pub fn reaction(
         channel_id: ChannelId,
-        author: PeerId,
+        author: EndpointId,
         target: MessageId,
         emoji: impl Into<String>,
         hlc: &mut hlc::HLC,
@@ -236,7 +236,7 @@ impl Message {
     /// Create a reply to another message.
     pub fn reply(
         channel_id: ChannelId,
-        author: PeerId,
+        author: EndpointId,
         parent: MessageId,
         body: impl Into<String>,
         hlc: &mut hlc::HLC,
@@ -257,7 +257,7 @@ impl Message {
     /// Create a file-sharing message.
     pub fn file(
         channel_id: ChannelId,
-        author: PeerId,
+        author: EndpointId,
         hash: impl Into<String>,
         filename: impl Into<String>,
         mime_type: impl Into<String>,
@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn create_text_message() {
         let mut hlc = hlc::HLC::new();
-        let peer = Identity::generate().peer_id();
+        let peer = Identity::generate().endpoint_id();
         let channel = ChannelId::new();
 
         let msg = Message::text(channel.clone(), peer.clone(), "hello!", &mut hlc);
@@ -310,7 +310,7 @@ mod tests {
     #[test]
     fn create_reaction() {
         let mut hlc = hlc::HLC::new();
-        let peer = Identity::generate().peer_id();
+        let peer = Identity::generate().endpoint_id();
         let channel = ChannelId::new();
         let target = MessageId::new();
 
@@ -325,7 +325,7 @@ mod tests {
     #[test]
     fn create_reply() {
         let mut hlc = hlc::HLC::new();
-        let peer = Identity::generate().peer_id();
+        let peer = Identity::generate().endpoint_id();
         let channel = ChannelId::new();
         let parent = MessageId::new();
 
@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn message_serde_round_trip() {
         let mut hlc = hlc::HLC::new();
-        let peer = Identity::generate().peer_id();
+        let peer = Identity::generate().endpoint_id();
         let channel = ChannelId::new();
 
         let msg = Message::text(channel, peer, "serialize me", &mut hlc);
@@ -355,7 +355,7 @@ mod tests {
     #[test]
     fn create_file_message() {
         let mut hlc = hlc::HLC::new();
-        let peer = Identity::generate().peer_id();
+        let peer = Identity::generate().endpoint_id();
         let channel = ChannelId::new();
 
         let msg = Message::file(
@@ -431,7 +431,7 @@ mod tests {
     #[test]
     fn file_message_serde_round_trip() {
         let mut hlc = hlc::HLC::new();
-        let peer = Identity::generate().peer_id();
+        let peer = Identity::generate().endpoint_id();
         let channel = ChannelId::new();
 
         let msg = Message::file(
@@ -453,7 +453,7 @@ mod tests {
     #[test]
     fn unicode_message_body() {
         let mut hlc = hlc::HLC::new();
-        let peer = Identity::generate().peer_id();
+        let peer = Identity::generate().endpoint_id();
         let channel = ChannelId::new();
 
         let body = "Hello 🌍 こんにちは 안녕하세요 مرحبا";
@@ -470,7 +470,7 @@ mod tests {
     #[test]
     fn empty_message_body() {
         let mut hlc = hlc::HLC::new();
-        let peer = Identity::generate().peer_id();
+        let peer = Identity::generate().endpoint_id();
         let channel = ChannelId::new();
 
         let msg = Message::text(channel, peer, "", &mut hlc);

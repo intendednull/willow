@@ -75,6 +75,10 @@ pub fn MessageList(
 ) -> impl IntoView {
     let list_ref = NodeRef::<leptos::html::Div>::new();
     let (show_scroll_btn, set_show_scroll_btn) = signal(false);
+    // Tracks which message ID has the mobile action sheet open.
+    // Lives here (outside the reactive closure) so it survives
+    // message-list re-renders caused by sync events.
+    let active_sheet_msg = RwSignal::new(Option::<String>::None);
 
     // When messages change, check if we should auto-scroll.
     Effect::new(move |prev_len: Option<usize>| {
@@ -190,6 +194,7 @@ pub fn MessageList(
                                     show_header=show_header
                                     is_own=is_own
                                     is_mention=is_mention
+                                    active_sheet_msg=active_sheet_msg
                                 />
                             };
                             // We need to build with all props. Re-create to pass them.
@@ -200,9 +205,6 @@ pub fn MessageList(
                                 let del_cb = on_del;
                                 let re_cb = on_re;
                                 let pn_cb = on_pn;
-                                // Unfortunately we need to re-create the view
-                                // to pass all optional props. Using nested if/else
-                                // creates mismatched types, so use into_any().
                                 builder = view! {
                                     <MessageView
                                         message=m2
@@ -215,6 +217,7 @@ pub fn MessageList(
                                         on_react=re_cb.unwrap_or_else(|| Callback::new(|_| {}))
                                         on_pin=pn_cb.unwrap_or_else(|| Callback::new(|_| {}))
                                         pin_label=pin_label
+                                        active_sheet_msg=active_sheet_msg
                                     />
                                 };
                             }

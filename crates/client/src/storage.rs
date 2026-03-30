@@ -396,7 +396,7 @@ impl willow_state::EventStore for SqliteEventStore {
             rusqlite::params![
                 event.id,
                 event.parent_hash.0.as_slice(),
-                event.author,
+                event.author.to_string(),
                 event.timestamp_ms as i64,
                 event_data,
             ],
@@ -673,10 +673,11 @@ mod tests {
     use willow_state::{Event, EventKind, EventStore, StateHash};
 
     fn make_event(id: &str, parent: StateHash) -> Event {
+        let peer = willow_identity::Identity::generate();
         Event {
             id: id.to_string(),
             parent_hash: parent,
-            author: "peer-1".to_string(),
+            author: peer.endpoint_id(),
             timestamp_ms: 1000,
             kind: EventKind::CreateChannel {
                 name: "general".to_string(),
