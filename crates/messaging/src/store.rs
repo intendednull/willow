@@ -62,7 +62,7 @@ pub trait MessageStore: Send + Sync {
 ///
 /// let mut store = InMemoryStore::new();
 /// let mut hlc = HLC::new();
-/// let peer = Identity::generate().peer_id();
+/// let peer = Identity::generate().endpoint_id();
 /// let channel = ChannelId::new();
 ///
 /// let msg = Message::text(channel.clone(), peer, "hello", &mut hlc);
@@ -136,7 +136,7 @@ mod tests {
     use willow_identity::Identity;
 
     fn make_text_msg(channel: &ChannelId, hlc: &mut HLC) -> Message {
-        let peer = Identity::generate().peer_id();
+        let peer = Identity::generate().endpoint_id();
         Message::text(channel.clone(), peer, "test", hlc)
     }
 

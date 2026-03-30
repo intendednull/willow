@@ -263,15 +263,10 @@ pub fn open_content(sealed: &SealedContent, key: &ChannelKey) -> Result<Content,
 pub fn identity_to_x25519(identity: &Identity) -> Result<X25519Secret, CryptoError> {
     use sha2::{Digest, Sha512};
 
-    let ed_kp = identity
-        .keypair()
-        .clone()
-        .try_into_ed25519()
-        .map_err(|_| CryptoError::KeyConversionFailed)?;
-    let seed = &ed_kp.to_bytes()[..32]; // first 32 bytes = Ed25519 seed
+    let seed = identity.to_bytes();
 
     // SHA-512(seed), take first 32 bytes = X25519 secret (clamping done by x25519-dalek).
-    let hash = Sha512::digest(seed);
+    let hash = Sha512::digest(&seed);
     let mut x25519_bytes = [0u8; 32];
     x25519_bytes.copy_from_slice(&hash[..32]);
 
@@ -364,12 +359,7 @@ mod tests {
     use willow_messaging::MessageId;
 
     fn recipient_public_bytes(identity: &Identity) -> [u8; 32] {
-        let ed_kp = identity.keypair().clone().try_into_ed25519().unwrap();
-        let full = ed_kp.to_bytes();
-        // Public key is last 32 bytes of the 64-byte keypair.
-        let mut pub_bytes = [0u8; 32];
-        pub_bytes.copy_from_slice(&full[32..]);
-        pub_bytes
+        *identity.public_key().as_bytes()
     }
 
     #[test]

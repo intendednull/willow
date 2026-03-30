@@ -90,12 +90,13 @@ impl EventStore for InMemoryStore {
 mod tests {
     use super::*;
     use crate::EventKind;
+    use willow_identity::Identity;
 
     fn make_event(id: &str, parent: StateHash) -> Event {
         Event {
             id: id.to_string(),
             parent_hash: parent,
-            author: "peer-1".to_string(),
+            author: Identity::generate().endpoint_id(),
             timestamp_ms: 1000,
             kind: EventKind::CreateChannel {
                 name: "general".to_string(),

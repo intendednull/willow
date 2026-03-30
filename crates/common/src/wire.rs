@@ -5,6 +5,7 @@
 //! and deserialize.
 
 use serde::{Deserialize, Serialize};
+use willow_identity::EndpointId;
 
 /// All network communication uses `WireMessage` wrappers around
 /// [`willow_state::Event`]s.
@@ -35,33 +36,39 @@ pub enum WireMessage {
         /// The voice channel being joined.
         channel_id: String,
         /// The peer who joined.
-        peer_id: String,
+        peer_id: EndpointId,
     },
     /// A peer left a voice channel.
     VoiceLeave {
         /// The voice channel being left.
         channel_id: String,
         /// The peer who left.
-        peer_id: String,
+        peer_id: EndpointId,
     },
     /// A WebRTC signaling message for voice chat.
     VoiceSignal {
         /// The voice channel this signal relates to.
         channel_id: String,
         /// The intended recipient peer.
-        target_peer: String,
+        target_peer: EndpointId,
         /// The signaling payload.
         signal: VoiceSignalPayload,
     },
     /// A peer is requesting to join via a shareable link.
-    JoinRequest { link_id: String, peer_id: String },
+    JoinRequest {
+        link_id: String,
+        peer_id: EndpointId,
+    },
     /// The inviter's response with an encrypted invite for the requester.
     JoinResponse {
-        target_peer: String,
+        target_peer: EndpointId,
         invite_data: String,
     },
     /// The inviter denied the join request.
-    JoinDenied { target_peer: String, reason: String },
+    JoinDenied {
+        target_peer: EndpointId,
+        reason: String,
+    },
 }
 
 /// WebRTC signaling payload for voice chat negotiation.
@@ -83,7 +90,7 @@ pub fn pack_wire(msg: &WireMessage, identity: &willow_identity::Identity) -> Opt
 }
 
 /// Verify and deserialize a [`WireMessage`] from a signed envelope.
-pub fn unpack_wire(data: &[u8]) -> Option<(WireMessage, willow_identity::PeerId)> {
+pub fn unpack_wire(data: &[u8]) -> Option<(WireMessage, willow_identity::EndpointId)> {
     let (envelope_bytes, signer) = willow_identity::unpack::<Vec<u8>>(data).ok()?;
     let (msg, willow_transport::MessageType::Channel) =
         willow_transport::unpack_envelope::<WireMessage>(&envelope_bytes).ok()?
@@ -105,7 +112,7 @@ mod tests {
         let event = willow_state::Event {
             id: "evt-1".to_string(),
             parent_hash: StateHash::ZERO,
-            author: id.peer_id().to_string(),
+            author: id.endpoint_id(),
             timestamp_ms: 1000,
             kind: EventKind::Message {
                 channel_id: "general".to_string(),
@@ -118,7 +125,7 @@ mod tests {
         let data = pack_wire(&msg, &id).unwrap();
         let (decoded, signer) = unpack_wire(&data).unwrap();
 
-        assert_eq!(signer, id.peer_id());
+        assert_eq!(signer, id.endpoint_id());
         match decoded {
             WireMessage::Event(e) => assert_eq!(e.id, "evt-1"),
             _ => panic!("expected Event"),
@@ -131,7 +138,7 @@ mod tests {
         let events = vec![willow_state::Event {
             id: "e1".to_string(),
             parent_hash: StateHash::ZERO,
-            author: "peer".to_string(),
+            author: id.endpoint_id(),
             timestamp_ms: 100,
             kind: EventKind::CreateChannel {
                 name: "ch".to_string(),
@@ -176,7 +183,7 @@ mod tests {
         let msg = WireMessage::Event(willow_state::Event {
             id: "e".to_string(),
             parent_hash: StateHash::ZERO,
-            author: "p".to_string(),
+            author: id.endpoint_id(),
             timestamp_ms: 0,
             kind: EventKind::DeleteChannel {
                 channel_id: "c".to_string(),

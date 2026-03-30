@@ -102,12 +102,17 @@ fn events_after(events: &[Event], hash: &StateHash) -> Vec<Event> {
 mod tests {
     use super::*;
     use crate::EventKind;
+    use willow_identity::Identity;
 
-    fn make_event(id: &str, parent: StateHash, ts: u64) -> Event {
+    fn owner_id() -> willow_identity::EndpointId {
+        Identity::generate().endpoint_id()
+    }
+
+    fn make_event(id: &str, parent: StateHash, ts: u64, author: willow_identity::EndpointId) -> Event {
         Event {
             id: id.to_string(),
             parent_hash: parent,
-            author: "owner".to_string(),
+            author,
             timestamp_ms: ts,
             kind: EventKind::CreateChannel {
                 name: format!("ch-{id}"),
@@ -119,8 +124,9 @@ mod tests {
 
     #[test]
     fn find_common_ancestor_at_genesis() {
-        let our = vec![make_event("e1", StateHash::ZERO, 100)];
-        let their = vec![make_event("e2", StateHash::ZERO, 200)];
+        let owner = owner_id();
+        let our = vec![make_event("e1", StateHash::ZERO, 100, owner)];
+        let their = vec![make_event("e2", StateHash::ZERO, 200, owner)];
 
         let ancestor = find_common_ancestor(&our, &their);
         assert_eq!(ancestor, Some(StateHash::ZERO));
@@ -128,14 +134,15 @@ mod tests {
 
     #[test]
     fn find_common_ancestor_after_shared_prefix() {
+        let owner = owner_id();
         let shared_hash = StateHash::from_bytes(b"shared");
         let our = vec![
-            make_event("e1", StateHash::ZERO, 100),
-            make_event("e2", shared_hash.clone(), 200),
+            make_event("e1", StateHash::ZERO, 100, owner),
+            make_event("e2", shared_hash.clone(), 200, owner),
         ];
         let their = vec![
-            make_event("e1", StateHash::ZERO, 100),
-            make_event("e3", shared_hash.clone(), 300),
+            make_event("e1", StateHash::ZERO, 100, owner),
+            make_event("e3", shared_hash.clone(), 300, owner),
         ];
 
         let ancestor = find_common_ancestor(&our, &their);
@@ -144,8 +151,9 @@ mod tests {
 
     #[test]
     fn find_common_ancestor_disjoint() {
-        let our = vec![make_event("e1", StateHash::from_bytes(b"a"), 100)];
-        let their = vec![make_event("e2", StateHash::from_bytes(b"b"), 200)];
+        let owner = owner_id();
+        let our = vec![make_event("e1", StateHash::from_bytes(b"a"), 100, owner)];
+        let their = vec![make_event("e2", StateHash::from_bytes(b"b"), 200, owner)];
 
         let ancestor = find_common_ancestor(&our, &their);
         assert_eq!(ancestor, None);
@@ -153,10 +161,11 @@ mod tests {
 
     #[test]
     fn merge_deduplicates_events() {
-        let common = ServerState::new("s1", "Test", "owner");
+        let owner = owner_id();
+        let common = ServerState::new("s1", "Test", owner);
         let common_hash = common.hash();
 
-        let shared = make_event("e1", common_hash.clone(), 100);
+        let shared = make_event("e1", common_hash.clone(), 100, owner);
         let our = vec![shared.clone()];
         let their = vec![shared];
 
@@ -166,11 +175,12 @@ mod tests {
 
     #[test]
     fn merge_sorts_by_timestamp() {
-        let common = ServerState::new("s1", "Test", "owner");
+        let owner = owner_id();
+        let common = ServerState::new("s1", "Test", owner);
         let common_hash = common.hash();
 
-        let our = vec![make_event("e2", common_hash.clone(), 200)];
-        let their = vec![make_event("e1", common_hash, 100)];
+        let our = vec![make_event("e2", common_hash.clone(), 200, owner)];
+        let their = vec![make_event("e1", common_hash, 100, owner)];
 
         let (_, events) = merge(&our, &their, &common);
         assert_eq!(events.len(), 2);

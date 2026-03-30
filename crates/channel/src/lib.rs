@@ -27,7 +27,7 @@
 //! use willow_identity::Identity;
 //!
 //! let owner = Identity::generate();
-//! let mut server = Server::new("My Server", owner.peer_id());
+//! let mut server = Server::new("My Server", owner.endpoint_id());
 //!
 //! server.create_channel("general", ChannelKind::Text).unwrap();
 //! server.create_channel("voice-chat", ChannelKind::Voice).unwrap();
@@ -41,7 +41,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use willow_identity::PeerId;
+use willow_identity::EndpointId;
 
 // ───── IDs ───────────────────────────────────────────────────────────────────
 
@@ -134,7 +134,7 @@ impl Default for InviteId {
 pub enum ChannelError {
     /// The caller does not have the required permission.
     #[error("permission denied: {0} requires {1:?}")]
-    PermissionDenied(PeerId, Permission),
+    PermissionDenied(EndpointId, Permission),
 
     /// A channel with this name already exists in the server.
     #[error("duplicate channel name: {0}")]
@@ -150,7 +150,7 @@ pub enum ChannelError {
 
     /// The peer is not a member of this server.
     #[error("not a member: {0}")]
-    NotAMember(PeerId),
+    NotAMember(EndpointId),
 
     /// The invite has expired or already been used.
     #[error("invite expired or invalid")]
@@ -277,7 +277,7 @@ impl Channel {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Member {
     /// The peer.
-    pub peer_id: PeerId,
+    pub peer_id: EndpointId,
     /// Roles assigned to this member.
     pub roles: HashSet<RoleId>,
     /// When they joined.
@@ -286,7 +286,7 @@ pub struct Member {
 
 impl Member {
     /// Create a new member with no roles.
-    pub fn new(peer_id: PeerId) -> Self {
+    pub fn new(peer_id: EndpointId) -> Self {
         Self {
             peer_id,
             roles: HashSet::new(),
@@ -308,7 +308,7 @@ pub struct Invite {
     /// The server this invite is for.
     pub server_id: ServerId,
     /// Who created the invite.
-    pub created_by: PeerId,
+    pub created_by: EndpointId,
     /// When the invite was created.
     pub created_at: DateTime<Utc>,
     /// When the invite expires (if ever).
@@ -355,13 +355,13 @@ pub struct Server {
     /// Optional description.
     pub description: Option<String>,
     /// The peer who created and owns this server.
-    pub owner: PeerId,
+    pub owner: EndpointId,
     /// When the server was created.
     pub created_at: DateTime<Utc>,
 
     channels: HashMap<ChannelId, Channel>,
     roles: HashMap<RoleId, Role>,
-    members: HashMap<PeerId, Member>,
+    members: HashMap<EndpointId, Member>,
     invites: HashMap<InviteId, Invite>,
 
     /// Per-channel symmetric encryption keys. Not serialized — keys are
@@ -372,7 +372,7 @@ pub struct Server {
 
 impl Server {
     /// Create a new server. The owner is automatically added as a member.
-    pub fn new(name: impl Into<String>, owner: PeerId) -> Self {
+    pub fn new(name: impl Into<String>, owner: EndpointId) -> Self {
         let mut members = HashMap::new();
         members.insert(owner.clone(), Member::new(owner.clone()));
 
@@ -413,14 +413,14 @@ impl Server {
     }
 
     /// Check whether a peer is a member of this server.
-    pub fn is_member(&self, peer: &PeerId) -> bool {
+    pub fn is_member(&self, peer: &EndpointId) -> bool {
         self.members.contains_key(peer)
     }
 
     /// Check whether a peer has a specific permission.
     ///
     /// The server owner always has all permissions.
-    pub fn has_permission(&self, peer: &PeerId, perm: Permission) -> bool {
+    pub fn has_permission(&self, peer: &EndpointId, perm: Permission) -> bool {
         if *peer == self.owner {
             return true;
         }
@@ -565,7 +565,7 @@ impl Server {
     }
 
     /// Assign a role to a member.
-    pub fn assign_role(&mut self, peer: &PeerId, role_id: &RoleId) -> Result<(), ChannelError> {
+    pub fn assign_role(&mut self, peer: &EndpointId, role_id: &RoleId) -> Result<(), ChannelError> {
         if !self.roles.contains_key(role_id) {
             return Err(ChannelError::RoleNotFound(role_id.clone()));
         }
@@ -580,7 +580,7 @@ impl Server {
     }
 
     /// Add a new member to the server.
-    pub fn add_member(&mut self, peer: PeerId) {
+    pub fn add_member(&mut self, peer: EndpointId) {
         self.members
             .entry(peer.clone())
             .or_insert_with(|| Member::new(peer));
@@ -592,7 +592,7 @@ impl Server {
     /// can distribute them to remaining members.
     pub fn remove_member(
         &mut self,
-        peer: &PeerId,
+        peer: &EndpointId,
     ) -> Result<HashMap<ChannelId, willow_crypto::ChannelKey>, ChannelError> {
         if *peer == self.owner {
             return Err(ChannelError::PermissionDenied(
@@ -620,7 +620,7 @@ impl Server {
     /// Create an invite without encrypted keys (for backwards compat / tests).
     pub fn create_invite(
         &mut self,
-        created_by: PeerId,
+        created_by: EndpointId,
         expires_at: Option<DateTime<Utc>>,
         max_uses: Option<u32>,
     ) -> Result<InviteId, ChannelError> {
@@ -651,7 +651,7 @@ impl Server {
     /// X25519 DH so only the intended recipient can decrypt.
     pub fn create_invite_for(
         &mut self,
-        created_by: PeerId,
+        created_by: EndpointId,
         recipient_ed25519_public: &[u8; 32],
         expires_at: Option<DateTime<Utc>>,
         max_uses: Option<u32>,
@@ -689,7 +689,7 @@ impl Server {
     }
 
     /// Use an invite to add a new member.
-    pub fn use_invite(&mut self, invite_id: &InviteId, peer: PeerId) -> Result<(), ChannelError> {
+    pub fn use_invite(&mut self, invite_id: &InviteId, peer: EndpointId) -> Result<(), ChannelError> {
         let invite = self
             .invites
             .get_mut(invite_id)
@@ -712,8 +712,8 @@ mod tests {
     use super::*;
     use willow_identity::Identity;
 
-    fn owner_and_server() -> (PeerId, Server) {
-        let owner = Identity::generate().peer_id();
+    fn owner_and_server() -> (EndpointId, Server) {
+        let owner = Identity::generate().endpoint_id();
         let server = Server::new("Test Server", owner.clone());
         (owner, server)
     }
@@ -736,7 +736,7 @@ mod tests {
     #[test]
     fn non_member_has_no_permissions() {
         let (_, server) = owner_and_server();
-        let stranger = Identity::generate().peer_id();
+        let stranger = Identity::generate().endpoint_id();
         assert!(!server.has_permission(&stranger, Permission::ReadMessages));
     }
 
@@ -785,7 +785,7 @@ mod tests {
     #[test]
     fn roles_and_permissions() {
         let (_, mut server) = owner_and_server();
-        let alice = Identity::generate().peer_id();
+        let alice = Identity::generate().endpoint_id();
         server.add_member(alice.clone());
 
         // Alice starts with no permissions.
@@ -808,7 +808,7 @@ mod tests {
     #[test]
     fn administrator_role_grants_everything() {
         let (_, mut server) = owner_and_server();
-        let bob = Identity::generate().peer_id();
+        let bob = Identity::generate().endpoint_id();
         server.add_member(bob.clone());
 
         let mut admin_role = Role::new("Admin");
@@ -828,7 +828,7 @@ mod tests {
         let role = Role::new("Test");
         let role_id = server.create_role(role);
 
-        let stranger = Identity::generate().peer_id();
+        let stranger = Identity::generate().endpoint_id();
         assert!(matches!(
             server.assign_role(&stranger, &role_id),
             Err(ChannelError::NotAMember(_))
@@ -838,7 +838,7 @@ mod tests {
     #[test]
     fn remove_member() {
         let (_, mut server) = owner_and_server();
-        let alice = Identity::generate().peer_id();
+        let alice = Identity::generate().endpoint_id();
         server.add_member(alice.clone());
 
         server.remove_member(&alice).unwrap();
@@ -859,12 +859,12 @@ mod tests {
         let invite_id = server.create_invite(owner, None, Some(1)).unwrap();
 
         // A new peer uses it.
-        let newcomer = Identity::generate().peer_id();
+        let newcomer = Identity::generate().endpoint_id();
         server.use_invite(&invite_id, newcomer.clone()).unwrap();
         assert!(server.is_member(&newcomer));
 
         // Second use fails (max_uses = 1).
-        let another = Identity::generate().peer_id();
+        let another = Identity::generate().endpoint_id();
         assert!(matches!(
             server.use_invite(&invite_id, another),
             Err(ChannelError::InvalidInvite)
@@ -879,7 +879,7 @@ mod tests {
         let past = Utc::now() - chrono::Duration::hours(1);
         let invite_id = server.create_invite(owner, Some(past), None).unwrap();
 
-        let peer = Identity::generate().peer_id();
+        let peer = Identity::generate().endpoint_id();
         assert!(matches!(
             server.use_invite(&invite_id, peer),
             Err(ChannelError::InvalidInvite)
@@ -911,13 +911,11 @@ mod tests {
         let ch_id = server.create_channel("general", ChannelKind::Text).unwrap();
 
         let newcomer = Identity::generate();
-        let ed_kp = newcomer.keypair().clone().try_into_ed25519().unwrap();
-        let full = ed_kp.to_bytes();
-        let mut pub_bytes = [0u8; 32];
-        pub_bytes.copy_from_slice(&full[32..]);
+        let public_key = newcomer.public_key();
+        let pub_bytes = public_key.as_bytes();
 
         let invite_id = server
-            .create_invite_for(owner, &pub_bytes, None, Some(1))
+            .create_invite_for(owner, pub_bytes, None, Some(1))
             .unwrap();
 
         let invite = server.invite(&invite_id).unwrap();
@@ -939,7 +937,7 @@ mod tests {
         let ch_id = server.create_channel("general", ChannelKind::Text).unwrap();
         let original_key = server.channel_key(&ch_id).unwrap().as_bytes().to_owned();
 
-        let alice = Identity::generate().peer_id();
+        let alice = Identity::generate().endpoint_id();
         server.add_member(alice.clone());
 
         let new_keys = server.remove_member(&alice).unwrap();
@@ -959,7 +957,7 @@ mod tests {
         let ch1 = server.create_channel("general", ChannelKind::Text).unwrap();
         let ch2 = server.create_channel("random", ChannelKind::Text).unwrap();
 
-        let alice = Identity::generate().peer_id();
+        let alice = Identity::generate().endpoint_id();
         server.add_member(alice.clone());
 
         let new_keys = server.remove_member(&alice).unwrap();
@@ -988,21 +986,21 @@ mod tests {
         let future = Utc::now() + chrono::Duration::hours(1);
         let invite_id = server.create_invite(owner, Some(future), Some(2)).unwrap();
 
-        let newcomer1 = Identity::generate().peer_id();
+        let newcomer1 = Identity::generate().endpoint_id();
         server.use_invite(&invite_id, newcomer1).unwrap();
 
-        let newcomer2 = Identity::generate().peer_id();
+        let newcomer2 = Identity::generate().endpoint_id();
         server.use_invite(&invite_id, newcomer2).unwrap();
 
         // Third use should fail (max_uses=2).
-        let newcomer3 = Identity::generate().peer_id();
+        let newcomer3 = Identity::generate().endpoint_id();
         assert!(server.use_invite(&invite_id, newcomer3).is_err());
     }
 
     #[test]
     fn non_member_cannot_create_invite() {
         let (_, mut server) = owner_and_server();
-        let stranger = Identity::generate().peer_id();
+        let stranger = Identity::generate().endpoint_id();
         assert!(server.create_invite(stranger, None, None).is_err());
     }
 
