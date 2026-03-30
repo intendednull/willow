@@ -7228,6 +7228,7 @@ dependencies = [
  "wasm-bindgen-test",
  "web-sys",
  "willow-client",
+ "willow-identity",
 ]
 
 [[package]]

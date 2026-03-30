@@ -54,8 +54,8 @@ impl Relay {
                 .clone()
                 .try_into_ed25519()
                 .expect("keypair should be ed25519");
-            let bytes = ed_kp.to_bytes();
-            willow_identity::Identity::from_ed25519_bytes(&bytes).expect("valid ed25519 bytes")
+            let seed = &ed_kp.to_bytes()[..32];
+            willow_identity::Identity::from_bytes(seed).expect("valid ed25519 bytes")
         };
 
         let swarm = SwarmBuilder::with_existing_identity(keypair)
@@ -209,7 +209,7 @@ impl Relay {
             return;
         }
         let profile = willow_identity::UserProfile::new(
-            willow_identity::PeerId::from(self.peer_id),
+            self.identity.endpoint_id(),
             self.display_name.clone(),
         );
         if let Ok(data) =

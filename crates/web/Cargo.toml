@@ -7,6 +7,7 @@ description = "Leptos web UI for the Willow P2P chat network"
 
 [dependencies]
 willow-client = { path = "../client" }
+willow-identity = { path = "../identity" }
 leptos = { version = "0.7", features = ["csr"] }
 tracing = { workspace = true }
 wasm-bindgen = "0.2"

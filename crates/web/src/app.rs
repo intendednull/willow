@@ -88,7 +88,9 @@ pub fn App() -> impl IntoView {
                     "ice" => VoiceSignalPayload::IceCandidate(payload.to_string()),
                     _ => return,
                 };
-                voice_signal_handle.send_voice_signal(&ch_id, target_peer, signal);
+                if let Ok(target) = target_peer.parse::<willow_identity::EndpointId>() {
+                    voice_signal_handle.send_voice_signal(&ch_id, target, signal);
+                }
             },
             move |peer_id: &str, stream: Option<web_sys::MediaStream>| {
                 let pid = peer_id.to_string();
@@ -505,7 +507,7 @@ pub fn App() -> impl IntoView {
                                         // This ensures that on reconnect we pick up peers
                                         // who are already in the channel (their VoiceJoined
                                         // event was received before we joined).
-                                        let parts = vc.voice_participants(&ch_name);
+                                        let parts: Vec<String> = vc.voice_participants(&ch_name).iter().map(|p| p.to_string()).collect();
                                         write.voice.set_voice_participants_map.update(|m| {
                                             let list = m.entry(ch_name.clone()).or_default();
                                             for p in parts {

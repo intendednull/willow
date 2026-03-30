@@ -32,7 +32,7 @@ pub fn SettingsPanel(
     let handle_owner = handle.clone();
     let is_owner = move || {
         let pid = peer_id.get();
-        handle_owner.server_owner() == pid
+        handle_owner.server_owner().to_string() == pid
     };
 
     // Tab display name.
@@ -72,7 +72,11 @@ pub fn SettingsPanel(
             set_status_msg.set("Enter a recipient Peer ID.".to_string());
             return;
         }
-        match handle_invite.generate_invite(recipient.trim()) {
+        let Ok(recipient_eid) = recipient.trim().parse::<willow_identity::EndpointId>() else {
+            set_status_msg.set("Invalid Peer ID format.".to_string());
+            return;
+        };
+        match handle_invite.generate_invite(&recipient_eid) {
             Ok(code) => {
                 set_invite_code.set(code);
                 set_status_msg.set("Invite generated.".to_string());

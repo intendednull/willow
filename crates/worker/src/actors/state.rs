@@ -94,7 +94,7 @@ mod tests {
         Event {
             id: uuid::Uuid::new_v4().to_string(),
             parent_hash: StateHash::ZERO,
-            author: "test-peer".to_string(),
+            author: willow_identity::Identity::generate().endpoint_id(),
             timestamp_ms: 1000,
             kind: EventKind::Message {
                 channel_id: "general".to_string(),

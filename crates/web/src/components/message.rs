@@ -212,7 +212,7 @@ pub fn MessageView(
     #[prop(optional, into)]
     active_sheet_msg: Option<RwSignal<Option<String>>>,
 ) -> impl IntoView {
-    let author_color = super::peer_color(&message.author_peer_id);
+    let author_color = super::peer_color(&message.author_peer_id.to_string());
     let body_class = if message.deleted {
         "body deleted"
     } else {

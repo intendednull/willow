@@ -19,9 +19,10 @@ struct TestReplayRole {
 }
 
 impl TestReplayRole {
-    fn new(server_id: &str, owner: &str, max_events: usize) -> Self {
+    fn new(server_id: &str, _owner: &str, max_events: usize) -> Self {
+        let owner_id = willow_identity::Identity::generate().endpoint_id();
         Self {
-            state: ServerState::new(server_id, server_id, owner.to_string()),
+            state: ServerState::new(server_id, server_id, owner_id),
             events: Vec::new(),
             max_events,
         }
@@ -69,7 +70,7 @@ fn make_message(id: &str, ts: u64) -> Event {
     Event {
         id: id.to_string(),
         parent_hash: StateHash::ZERO,
-        author: "peer-1".to_string(),
+        author: willow_identity::Identity::generate().endpoint_id(),
         timestamp_ms: ts,
         kind: EventKind::Message {
             channel_id: "general".to_string(),
@@ -408,29 +409,34 @@ async fn full_actor_orchestration_without_network() {
 /// from regular members at the data level.
 #[test]
 fn sync_provider_permission_identifies_workers() {
+    use willow_identity::Identity;
     use willow_state::{EventKind, Permission, ServerState};
 
-    let mut state = ServerState::new("srv", "Test", "owner-peer".to_string());
+    let owner = Identity::generate().endpoint_id();
+    let worker = Identity::generate().endpoint_id();
+    let random = Identity::generate().endpoint_id();
+
+    let mut state = ServerState::new("srv", "Test", owner);
 
     // Grant SyncProvider to a worker.
     let grant = willow_state::Event {
         id: "grant-1".to_string(),
         parent_hash: state.hash(),
-        author: "owner-peer".to_string(),
+        author: owner,
         timestamp_ms: 1000,
         kind: EventKind::GrantPermission {
-            peer_id: "worker-peer".to_string(),
+            peer_id: worker,
             permission: Permission::SyncProvider,
         },
     };
     willow_state::apply_lenient(&mut state, &grant);
 
     // Worker should have SyncProvider.
-    assert!(state.has_permission("worker-peer", &Permission::SyncProvider));
+    assert!(state.has_permission(&worker, &Permission::SyncProvider));
     // Owner has implicit all-permissions (root of trust).
-    assert!(state.has_permission("owner-peer", &Permission::SyncProvider));
+    assert!(state.has_permission(&owner, &Permission::SyncProvider));
     // Random peer should not.
-    assert!(!state.has_permission("random-peer", &Permission::SyncProvider));
+    assert!(!state.has_permission(&random, &Permission::SyncProvider));
     // The member list excludes owner from the infra section even though
     // they have the permission — that filtering is in the component, not state.
 }
