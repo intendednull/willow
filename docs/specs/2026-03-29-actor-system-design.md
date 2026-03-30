@@ -709,9 +709,10 @@ Network → TopicListenerActor → mutations → ClientStateActor
    completes, it sends `StateChanged` to all subscribers.
 
 2. **`DerivedStateActor<T>`** is a generic actor parameterized by:
-   - A selector: `Fn(&SharedState) -> T` (extracts a slice)
+   - A selector: `Arc<dyn Fn(&SharedState) -> T + Send + Sync>`
+     (Arc because it's cloned into each `ReadState` closure)
    - A cached value: `Option<T>` (last known value)
-   - A signal writer (Leptos `WriteSignal<T>` or a callback)
+   - A signal writer (Leptos `WriteSignal<T>` via `SendWrapper`)
 
 3. On receiving `StateChanged`, the derived actor sends a
    `ReadState(selector)` ask to the state actor, which runs the
@@ -729,14 +730,14 @@ Network → TopicListenerActor → mutations → ClientStateActor
 fn derived_signal<T: PartialEq + Clone + Default + Send + 'static>(
     state_addr: &Addr<ClientStateActor>,
     system: &SystemHandle,
-    selector: impl Fn(&SharedState) -> T + Send + Clone + 'static,
+    selector: impl Fn(&SharedState) -> T + Send + Sync + 'static,
 ) -> ReadSignal<T> {
     let (read, write) = create_signal(T::default());
     system.spawn(DerivedStateActor {
         state_addr: state_addr.clone(),
-        selector,
+        selector: Arc::new(selector),
         cached: None,
-        write,
+        write: SendWrapper::new(write),
     });
     // The DerivedStateActor's started() hook immediately asks the state
     // actor for the current value, seeding the signal. Until that first

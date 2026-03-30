@@ -73,7 +73,7 @@ The platform abstraction is the foundation everything else builds on. It must co
 
 - [ ] **Step 1: Create crate skeleton.** `Cargo.toml` with workspace edition/version, dependencies split by target: `tokio` (native), `wasm-bindgen-futures` + `futures-channel` + `gloo-timers` (WASM). Shared deps: `futures-core`, `thiserror`, `tracing`. Add `actor` to workspace `Cargo.toml` members.
 
-- [ ] **Step 2: Implement `runtime.rs`.** Four functions: `spawn()` (tokio::spawn vs spawn_local), `unbounded_channel()` (tokio mpsc vs futures mpsc), `oneshot()` (tokio vs futures), `sleep()` (tokio vs gloo-timers). Define `Sender<T>` / `Receiver<T>` / `OneshotTx<T>` / `OneshotRx<T>` wrapper types that unify the two backends behind a common API. The `Receiver` must implement `async fn recv() -> Option<T>`.
+- [ ] **Step 2: Implement `runtime.rs`.** Four functions: `spawn()` (tokio::spawn vs spawn_local), `unbounded_channel()` (tokio mpsc vs futures mpsc), `oneshot()` (tokio vs futures), `sleep()` (tokio vs gloo-timers). Define `Sender<T>` / `Receiver<T>` / `OneshotTx<T>` / `OneshotRx<T>` wrapper types that unify the two backends behind a common API. The `Receiver` must implement both `async fn recv() -> Option<T>` (blocks until a message arrives) and `fn try_recv() -> Option<T>` (non-blocking, returns `None` if empty). `try_recv` is required for the mailbox drain loop (Task 2 Step 6). Both `tokio::sync::mpsc::UnboundedReceiver` and `futures::channel::mpsc::UnboundedReceiver` support this.
 
 - [ ] **Step 3: Implement `error.rs`.** `SendError<M>` with `Closed(M)` variant. `AskError` with `Closed` and `NoResponse` variants. Both derive `Debug`, `thiserror::Error`.
 
@@ -140,7 +140,7 @@ Wires everything together into the public API.
 
 - [ ] **Step 6: Wire up `lib.rs` re-exports.** Public API: `Actor`, `Handler`, `StreamHandler`, `Message`, `Addr`, `AnyAddr`, `Recipient`, `Context`, `System`, `SystemHandle`, `SendError`, `AskError`, `IntervalHandle`. (`RestartPolicy` added in Task 4.)
 
-- [ ] **Step 7: Write integration tests.** Multi-actor test: spawn two actors, actor A sends to actor B, B replies. Test `StreamHandler` with a `futures::stream::iter`. Test `run_interval` fires expected number of times. Test shutdown stops all actors.
+- [ ] **Step 7: Write integration tests.** Multi-actor test: spawn two actors, actor A sends to actor B, B replies. Test `StreamHandler` with a `futures::stream::iter`. Test `run_interval` fires expected number of times. Test shutdown stops all actors. Test `idle()` batching: send N messages at once, verify `idle()` is called once (not N times) by checking a counter in the actor.
 
 - [ ] **Step 8: Verify WASM compilation.** `cargo check -p willow-actor --target wasm32-unknown-unknown`. Add to `just check-wasm`.
 
@@ -259,7 +259,7 @@ Network → TopicListenerActor → mutations → ClientStateActor
 
 The `ClientEvent` channel and `process_event_batch` are eliminated for state-derived signals. Each Leptos signal is backed by a `DerivedStateActor` that watches a specific slice of `SharedState` via a selector function.
 
-- [ ] **Step 1: Implement `DerivedStateActor<T>`.** Generic actor parameterized by `T: PartialEq + Clone + Default + Send + 'static`. Fields: `state_addr: Addr<ClientStateActor>`, `selector: Box<dyn Fn(&SharedState) -> T + Send>`, `cached: Option<T>`, `write: SendWrapper<WriteSignal<T>>` (Leptos's `WriteSignal` is `!Send` — `SendWrapper` makes it `Send`, safe on single-threaded WASM). Implements `Handler<StateChanged>`: constructs a `ReadState` message by wrapping `&self.selector` in a fresh `FnOnce` closure that returns `Box<dyn Any + Send>`, asks state actor, downcasts response to `T`, compares with cached, calls `self.write.set(new_value)` if different. In `started()`: subscribes to state actor via `Subscribe`, then immediately asks for the current value to seed the signal.
+- [ ] **Step 1: Implement `DerivedStateActor<T>`.** Generic actor parameterized by `T: PartialEq + Clone + Default + Send + 'static`. Fields: `state_addr: Addr<ClientStateActor>`, `selector: Arc<dyn Fn(&SharedState) -> T + Send + Sync>` (must be `Arc` so it can be cloned into each `ReadState` closure — a `Box` borrow would not be `'static`), `cached: Option<T>`, `write: SendWrapper<WriteSignal<T>>` (Leptos's `WriteSignal` is `!Send` — `SendWrapper` makes it `Send`, safe on single-threaded WASM). Implements `Handler<StateChanged>`: clones the `Arc` selector, constructs a `ReadState { Box::new(move |state| Box::new(selector(state))) }`, asks state actor, downcasts `Box<dyn Any>` response to `T`, compares with cached, calls `self.write.set(new_value)` if different. In `started()`: subscribes to state actor via `Subscribe`, then immediately asks for the current value to seed the signal.
 
 - [ ] **Step 2: Implement `derived_signal` helper.** A function in the web crate (not in willow-actor — it depends on Leptos): `fn derived_signal<T>(state_addr, system, selector) -> ReadSignal<T>`. Creates a Leptos signal pair, spawns a `DerivedStateActor`, returns the read half. This is the primary API for connecting actor state to Leptos.
 
