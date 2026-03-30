@@ -1,5 +1,6 @@
 mod app;
 mod components;
+pub mod derived;
 mod event_processing;
 mod handlers;
 #[allow(dead_code)]

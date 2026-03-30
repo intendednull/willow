@@ -1,69 +1,93 @@
 //! Network actor — bridges gossip topic events to the state actor.
 //!
-//! Streams incoming gossip messages, parses them, and forwards relevant
-//! payloads to the state actor. The pure parse functions are kept separate
-//! for testability.
+//! Uses [`StreamHandler`] to receive gossip events and dispatches
+//! parsed messages to the state actor via typed [`Addr`] messages.
 
-use tokio::sync::mpsc;
-use tracing::debug;
+use willow_actor::{Actor, Addr, Context, Handler};
 use willow_identity::EndpointId;
 use willow_network::traits::{GossipEvent, TopicEvents};
 
-use super::StateMsg;
+use super::state::StateActor;
+use super::{EventMsg, WorkerRequestMsg};
 use crate::types::WorkerWireMessage;
 
-/// Run the network actor loop.
-///
-/// Streams gossip events from a topic subscription, parses incoming
-/// messages, and dispatches them to the state actor.
-pub async fn run<E: TopicEvents>(
-    mut events: E,
-    state_tx: mpsc::Sender<StateMsg>,
+/// Network actor that streams gossip events and forwards them to the state actor.
+pub struct NetworkActor<E: TopicEvents + 'static> {
+    state_addr: Addr<StateActor>,
     local_peer_id: EndpointId,
-) {
-    debug!("network actor started");
+    events: Option<E>,
+}
 
-    while let Some(Ok(gossip_event)) = events.next().await {
-        if let GossipEvent::Received(msg) = gossip_event {
-            // Try worker message first.
-            match parse_worker_message(&msg.content, &local_peer_id) {
-                WorkerMessageAction::HandleRequest {
-                    request_id: _,
-                    payload,
-                } => {
-                    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                    if state_tx
-                        .send(StateMsg::Request {
-                            req: payload,
-                            reply: reply_tx,
-                        })
-                        .await
-                        .is_err()
-                    {
-                        continue;
+impl<E: TopicEvents + 'static> NetworkActor<E> {
+    pub fn new(events: E, state_addr: Addr<StateActor>, local_peer_id: EndpointId) -> Self {
+        Self {
+            state_addr,
+            local_peer_id,
+            events: Some(events),
+        }
+    }
+}
+
+/// Internal message wrapping a gossip event for the network actor.
+struct GossipEventMsg(GossipEvent);
+impl willow_actor::Message for GossipEventMsg {
+    type Result = ();
+}
+
+impl<E: TopicEvents + 'static> Actor for NetworkActor<E> {
+    fn started(
+        &mut self,
+        ctx: &mut Context<Self>,
+    ) -> impl std::future::Future<Output = ()> + Send {
+        // Spawn a task that drains TopicEvents and forwards them as messages.
+        if let Some(mut events) = self.events.take() {
+            let addr = ctx.address();
+            willow_actor::runtime::spawn(async move {
+                while let Some(Ok(event)) = events.next().await {
+                    if addr.do_send(GossipEventMsg(event)).is_err() {
+                        break;
                     }
-                    // Consume the response. Broadcasting it back would need
-                    // a TopicHandle — that can be added in a follow-up.
-                    let _ = reply_rx.await;
                 }
-                WorkerMessageAction::Ignore => {}
-                WorkerMessageAction::DeserializeError(_) => {
-                    // Not a worker message — try server message.
-                    match parse_server_message(&msg.content) {
-                        ServerMessageAction::Events(events) => {
-                            for event in events {
-                                let _ = state_tx.send(StateMsg::Event(event)).await;
+            });
+        }
+        async {}
+    }
+}
+
+impl<E: TopicEvents + 'static> Handler<GossipEventMsg> for NetworkActor<E> {
+    fn handle(
+        &mut self,
+        msg: GossipEventMsg,
+        _ctx: &mut Context<Self>,
+    ) -> impl std::future::Future<Output = ()> + Send {
+        let state_addr = self.state_addr.clone();
+        let local_peer_id = self.local_peer_id;
+        let event = msg.0;
+
+        async move {
+            if let GossipEvent::Received(msg) = event {
+                match parse_worker_message(&msg.content, &local_peer_id) {
+                    WorkerMessageAction::HandleRequest { payload, .. } => {
+                        let _ = state_addr.ask(WorkerRequestMsg(payload)).await;
+                    }
+                    WorkerMessageAction::Ignore => {}
+                    WorkerMessageAction::DeserializeError(_) => {
+                        match parse_server_message(&msg.content) {
+                            ServerMessageAction::Events(events) => {
+                                for event in events {
+                                    let _ = state_addr.do_send(EventMsg(event));
+                                }
                             }
+                            ServerMessageAction::Ignore => {}
                         }
-                        ServerMessageAction::Ignore => {}
                     }
                 }
             }
         }
     }
-
-    debug!("network actor stopped");
 }
+
+// ───── Pure parse functions (unchanged) ────────────────────────────────────
 
 /// Action produced by parsing an incoming worker topic message.
 #[derive(Debug)]

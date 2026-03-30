@@ -20,6 +20,7 @@
 //! ```
 
 pub mod base64;
+pub mod client_actor;
 pub mod emoji;
 pub mod events;
 pub mod files;
@@ -95,6 +96,8 @@ pub struct SharedState {
 /// an in-memory backend.
 pub struct ClientHandle<N: willow_network::Network> {
     pub(crate) shared: Arc<RwLock<SharedState>>,
+    pub(crate) state_addr: Option<willow_actor::Addr<client_actor::ClientStateActor>>,
+    pub(crate) system: Option<willow_actor::SystemHandle>,
     /// The network backend, set after [`connect()`](ClientHandle::connect).
     pub(crate) network: Option<Arc<N>>,
     /// Maps topic string names to their `N::Topic` handles for broadcasting.
@@ -109,6 +112,8 @@ impl<N: willow_network::Network> Clone for ClientHandle<N> {
     fn clone(&self) -> Self {
         Self {
             shared: Arc::clone(&self.shared),
+            state_addr: self.state_addr.clone(),
+            system: self.system.clone(),
             network: self.network.clone(),
             topics: Arc::clone(&self.topics),
             event_tx: self.event_tx.clone(),
@@ -438,6 +443,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
 
         let handle = ClientHandle {
             shared: Arc::clone(&shared),
+            state_addr: None,
+            system: None,
             network: None,
             topics: Arc::new(RwLock::new(HashMap::new())),
             event_tx,
@@ -2014,14 +2021,10 @@ impl<N: willow_network::Network> ClientHandle<N> {
         self.identity.clone()
     }
 
+
     /// Get the local PeerId as a string.
     pub fn peer_id(&self) -> String {
-        self.shared
-            .read()
-            .unwrap()
-            .identity
-            .endpoint_id()
-            .to_string()
+        self.identity.endpoint_id().to_string()
     }
 
     /// Get the local display name.
@@ -2791,6 +2794,8 @@ pub(crate) fn test_client() -> (
 
     let client = ClientHandle {
         shared,
+        state_addr: None,
+        system: None,
         network: None,
         topics: Arc::new(RwLock::new(HashMap::new())),
         event_tx,

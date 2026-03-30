@@ -221,6 +221,9 @@ pub fn App() -> impl IntoView {
                 }
             };
 
+            // Initialize the actor system (requires async runtime).
+            handle_for_connect.init_actor_system();
+
             // Connect to the P2P network. This subscribes to topics, spawns
             // listeners, and returns the event receiver.
             let mut client_event_rx = handle_for_connect.connect(network).await;

@@ -5,12 +5,11 @@
 
 use std::time::Duration;
 
-use tokio::sync::{mpsc, oneshot};
+use willow_actor::System;
 use willow_common::{WorkerRequest, WorkerResponse, WorkerRole, WorkerRoleInfo};
-use willow_network::TopicEvents;
 use willow_state::{Event, EventKind, ServerState, StateHash};
-use willow_worker::actors::state;
-use willow_worker::actors::StateMsg;
+use willow_worker::actors::state::StateActor;
+use willow_worker::actors::{EventMsg, GetRoleInfoMsg, WorkerRequestMsg};
 
 /// Full replay role that tracks a single server.
 struct TestReplayRole {
@@ -81,29 +80,22 @@ fn make_message(id: &str, ts: u64) -> Event {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn state_actor_with_replay_role_full_flow() {
-    let (tx, rx) = mpsc::channel(64);
-    let role = Box::new(TestReplayRole::new("srv-1", "owner", 100));
-
-    let handle = tokio::spawn(state::run(role, rx));
+    let system = System::new();
+    let addr = system.spawn(StateActor {
+        role: Box::new(TestReplayRole::new("srv-1", "owner", 100)),
+    });
 
     // 1. Ingest 5 events.
     for i in 0..5u64 {
-        tx.send(StateMsg::Event(make_message(
-            &format!("e{i}"),
-            (i + 1) * 1000,
-        )))
-        .await
-        .unwrap();
+        addr.do_send(EventMsg(make_message(&format!("e{i}"), (i + 1) * 1000)))
+            .unwrap();
     }
 
     // 2. Verify role info shows 5 buffered events.
-    let (reply_tx, reply_rx) = oneshot::channel();
-    tx.send(StateMsg::GetRoleInfo { reply: reply_tx })
-        .await
-        .unwrap();
-    match reply_rx.await.unwrap() {
+    let info = addr.ask(GetRoleInfoMsg).await.unwrap();
+    match info {
         WorkerRoleInfo::Replay {
             events_buffered, ..
         } => assert_eq!(events_buffered, 5),
@@ -111,48 +103,41 @@ async fn state_actor_with_replay_role_full_flow() {
     }
 
     // 3. Sync request with ZERO hash — should return all events.
-    let (reply_tx, reply_rx) = oneshot::channel();
-    tx.send(StateMsg::Request {
-        req: WorkerRequest::Sync {
+    let resp = addr
+        .ask(WorkerRequestMsg(WorkerRequest::Sync {
             server_id: "srv-1".to_string(),
             state_hash: StateHash::ZERO,
-        },
-        reply: reply_tx,
-    })
-    .await
-    .unwrap();
-    match reply_rx.await.unwrap() {
+        }))
+        .await
+        .unwrap();
+    match resp {
         WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 5),
         _ => panic!("expected SyncBatch"),
     }
 
     // 4. History request — should be denied.
-    let (reply_tx, reply_rx) = oneshot::channel();
-    tx.send(StateMsg::Request {
-        req: WorkerRequest::History {
+    let resp = addr
+        .ask(WorkerRequestMsg(WorkerRequest::History {
             server_id: "srv-1".to_string(),
             channel: "general".to_string(),
             before_timestamp: None,
             limit: 10,
-        },
-        reply: reply_tx,
-    })
-    .await
-    .unwrap();
-    match reply_rx.await.unwrap() {
+        }))
+        .await
+        .unwrap();
+    match resp {
         WorkerResponse::Denied { .. } => {}
         _ => panic!("expected Denied"),
     }
 
-    tx.send(StateMsg::Shutdown).await.unwrap();
-    handle.await.unwrap();
+    system.shutdown().await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn heartbeat_and_state_actor_interaction() {
     use willow_network::mem::{MemHub, MemNetwork};
-    use willow_network::Network;
-    use willow_worker::actors::heartbeat;
+    use willow_network::{Network, TopicEvents};
+    use willow_worker::actors::heartbeat::HeartbeatActor;
 
     let hub = MemHub::new();
     let net_a = MemNetwork::new(&hub);
@@ -162,19 +147,18 @@ async fn heartbeat_and_state_actor_interaction() {
     let (sender_a, _events_a) = net_a.subscribe(topic_id, vec![]).await.unwrap();
     let (_sender_b, mut events_b) = net_b.subscribe(topic_id, vec![]).await.unwrap();
 
-    let (state_tx, state_rx) = mpsc::channel(64);
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let system = System::new();
 
-    let role = Box::new(TestReplayRole::new("srv-1", "owner", 100));
-    let state_handle = tokio::spawn(state::run(role, state_rx));
+    let state_addr = system.spawn(StateActor {
+        role: Box::new(TestReplayRole::new("srv-1", "owner", 100)),
+    });
 
     let test_worker_id = net_a.id();
-    let hb_handle = tokio::spawn(heartbeat::run(
+    let _hb = system.spawn(HeartbeatActor::new(
         test_worker_id,
         Duration::from_millis(50),
-        state_tx.clone(),
+        state_addr.clone(),
         sender_a,
-        shutdown_rx,
     ));
 
     // Wait for a heartbeat — drain neighbor events first.
@@ -203,89 +187,72 @@ async fn heartbeat_and_state_actor_interaction() {
         _ => panic!("expected Announcement"),
     }
 
-    shutdown_tx.send(true).unwrap();
-    let _ = state_tx.send(StateMsg::Shutdown).await;
-    let _ = tokio::join!(state_handle, hb_handle);
+    system.shutdown().await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_requests_all_resolve() {
-    let (tx, rx) = mpsc::channel(256);
-    let role = Box::new(TestReplayRole::new("srv-1", "owner", 100));
-
-    let handle = tokio::spawn(state::run(role, rx));
+    let system = System::new();
+    let addr = system.spawn(StateActor {
+        role: Box::new(TestReplayRole::new("srv-1", "owner", 100)),
+    });
 
     // Fire 50 concurrent requests.
-    let mut reply_rxs = vec![];
+    let mut futs = vec![];
     for _ in 0..50 {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        tx.send(StateMsg::Request {
-            req: WorkerRequest::Sync {
-                server_id: "srv-1".to_string(),
-                state_hash: StateHash::ZERO,
-            },
-            reply: reply_tx,
-        })
-        .await
-        .unwrap();
-        reply_rxs.push(reply_rx);
+        let f = addr.ask(WorkerRequestMsg(WorkerRequest::Sync {
+            server_id: "srv-1".to_string(),
+            state_hash: StateHash::ZERO,
+        }));
+        futs.push(f);
     }
 
     // All 50 should resolve.
-    for rx in reply_rxs {
-        let resp = tokio::time::timeout(Duration::from_secs(5), rx)
+    for f in futs {
+        let resp = tokio::time::timeout(Duration::from_secs(5), f)
             .await
             .unwrap()
             .unwrap();
         assert!(matches!(resp, WorkerResponse::SyncBatch { .. }));
     }
 
-    tx.send(StateMsg::Shutdown).await.unwrap();
-    handle.await.unwrap();
+    system.shutdown().await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn events_applied_then_queried_via_request() {
-    let (tx, rx) = mpsc::channel(64);
-    let role = Box::new(TestReplayRole::new("srv-1", "owner", 5));
-
-    let handle = tokio::spawn(state::run(role, rx));
+    let system = System::new();
+    let addr = system.spawn(StateActor {
+        role: Box::new(TestReplayRole::new("srv-1", "owner", 5)),
+    });
 
     // Ingest 10 events into a buffer of size 5.
     for i in 0..10u64 {
-        tx.send(StateMsg::Event(make_message(
-            &format!("e{i}"),
-            (i + 1) * 1000,
-        )))
-        .await
-        .unwrap();
+        addr.do_send(EventMsg(make_message(&format!("e{i}"), (i + 1) * 1000)))
+            .unwrap();
     }
 
     // Query — should only get 5 (buffer evicted oldest).
-    let (reply_tx, reply_rx) = oneshot::channel();
-    tx.send(StateMsg::Request {
-        req: WorkerRequest::Sync {
+    let resp = addr
+        .ask(WorkerRequestMsg(WorkerRequest::Sync {
             server_id: "srv-1".to_string(),
             state_hash: StateHash::ZERO,
-        },
-        reply: reply_tx,
-    })
-    .await
-    .unwrap();
-    match reply_rx.await.unwrap() {
+        }))
+        .await
+        .unwrap();
+    match resp {
         WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 5),
         _ => panic!("expected SyncBatch"),
     }
 
-    tx.send(StateMsg::Shutdown).await.unwrap();
-    handle.await.unwrap();
+    system.shutdown().await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn graceful_shutdown_sends_departure() {
     use willow_network::mem::{MemHub, MemNetwork};
-    use willow_network::Network;
-    use willow_worker::actors::heartbeat;
+    use willow_network::{Network, TopicEvents};
+    use willow_worker::actors::heartbeat::HeartbeatActor;
 
     let hub = MemHub::new();
     let net_a = MemNetwork::new(&hub);
@@ -295,24 +262,22 @@ async fn graceful_shutdown_sends_departure() {
     let (sender_a, _events_a) = net_a.subscribe(topic_id, vec![]).await.unwrap();
     let (_sender_b, mut events_b) = net_b.subscribe(topic_id, vec![]).await.unwrap();
 
-    let (state_tx, state_rx) = mpsc::channel(64);
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let system = System::new();
 
-    let role = Box::new(TestReplayRole::new("srv-1", "owner", 100));
-    let state_handle = tokio::spawn(state::run(role, state_rx));
+    let state_addr = system.spawn(StateActor {
+        role: Box::new(TestReplayRole::new("srv-1", "owner", 100)),
+    });
 
     let departing_id = net_a.id();
-    let hb_handle = tokio::spawn(heartbeat::run(
+    let _hb = system.spawn(HeartbeatActor::new(
         departing_id,
         Duration::from_secs(60), // Long interval — won't fire naturally
-        state_tx.clone(),
+        state_addr,
         sender_a,
-        shutdown_rx,
     ));
 
-    // Immediately signal shutdown.
-    shutdown_tx.send(true).unwrap();
-    hb_handle.await.unwrap();
+    // Immediately shut down.
+    system.shutdown().await;
 
     // Should have a departure message — drain neighbor events.
     let departure_data = loop {
@@ -332,20 +297,16 @@ async fn graceful_shutdown_sends_departure() {
         }
         _ => panic!("expected Departure"),
     }
-
-    let _ = state_tx.send(StateMsg::Shutdown).await;
-    state_handle.await.unwrap();
 }
 
 /// Tests the full actor wiring pattern used by runtime::run() —
 /// state + heartbeat + sync actors coordinating via channels.
-/// Validates that the orchestration pattern works without needing
-/// a real network node.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn full_actor_orchestration_without_network() {
     use willow_network::mem::{MemHub, MemNetwork};
-    use willow_network::Network;
-    use willow_worker::actors::{heartbeat, sync};
+    use willow_network::{Network, TopicEvents};
+    use willow_worker::actors::heartbeat::HeartbeatActor;
+    use willow_worker::actors::sync::SyncActor;
 
     let hub = MemHub::new();
     let net_a = MemNetwork::new(&hub);
@@ -355,37 +316,30 @@ async fn full_actor_orchestration_without_network() {
     let (sender_a, _events_a) = net_a.subscribe(topic_id, vec![]).await.unwrap();
     let (_sender_b, mut events_b) = net_b.subscribe(topic_id, vec![]).await.unwrap();
 
-    let (state_tx, state_rx) = mpsc::channel(256);
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let system = System::new();
 
-    let role = Box::new(TestReplayRole::new("srv-1", "owner", 100));
+    let state_addr = system.spawn(StateActor {
+        role: Box::new(TestReplayRole::new("srv-1", "owner", 100)),
+    });
 
-    // Spawn all three non-network actors.
-    let state_handle = tokio::spawn(state::run(role, state_rx));
     let orch_id = net_a.id();
-    let hb_handle = tokio::spawn(heartbeat::run(
+    let _hb = system.spawn(HeartbeatActor::new(
         orch_id,
         Duration::from_millis(50),
-        state_tx.clone(),
+        state_addr.clone(),
         sender_a.clone(),
-        shutdown_rx.clone(),
     ));
-    let sync_handle = tokio::spawn(sync::run(
+    let _sync = system.spawn(SyncActor::new(
         orch_id,
         Duration::from_millis(80),
-        state_tx.clone(),
+        state_addr.clone(),
         sender_a,
-        shutdown_rx,
     ));
 
     // Ingest some events.
     for i in 0..3u64 {
-        state_tx
-            .send(StateMsg::Event(make_message(
-                &format!("orch-{i}"),
-                (i + 1) * 1000,
-            )))
-            .await
+        state_addr
+            .do_send(EventMsg(make_message(&format!("orch-{i}"), (i + 1) * 1000)))
             .unwrap();
     }
 
@@ -419,22 +373,15 @@ async fn full_actor_orchestration_without_network() {
     );
 
     // Verify state actor still responds after all this.
-    let (reply_tx, reply_rx) = oneshot::channel();
-    state_tx
-        .send(StateMsg::GetRoleInfo { reply: reply_tx })
-        .await
-        .unwrap();
-    match reply_rx.await.unwrap() {
+    let info = state_addr.ask(GetRoleInfoMsg).await.unwrap();
+    match info {
         WorkerRoleInfo::Replay {
             events_buffered, ..
         } => assert_eq!(events_buffered, 3),
         _ => panic!("expected Replay"),
     }
 
-    // Shutdown all actors.
-    shutdown_tx.send(true).unwrap();
-    let _ = state_tx.send(StateMsg::Shutdown).await;
-    let _ = tokio::join!(state_handle, hb_handle, sync_handle);
+    system.shutdown().await;
 }
 
 /// Tests that the member list component's worker detection logic
@@ -464,12 +411,7 @@ fn sync_provider_permission_identifies_workers() {
     };
     willow_state::apply_lenient(&mut state, &grant);
 
-    // Worker should have SyncProvider.
     assert!(state.has_permission(&worker, &Permission::SyncProvider));
-    // Owner has implicit all-permissions (root of trust).
     assert!(state.has_permission(&owner, &Permission::SyncProvider));
-    // Random peer should not.
     assert!(!state.has_permission(&random, &Permission::SyncProvider));
-    // The member list excludes owner from the infra section even though
-    // they have the permission — that filtering is in the component, not state.
 }

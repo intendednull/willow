@@ -3,57 +3,92 @@
 //! All mutable state access goes through this actor. No locks needed
 //! because only this task touches the role.
 
-use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::debug;
+use willow_actor::{Actor, Context, Handler};
 
-use super::StateMsg;
+use super::{EventMsg, GetRoleInfoMsg, GetStateHashesMsg, ServerDiscoveredMsg, WorkerRequestMsg};
 use crate::WorkerRole;
 
-/// Run the state actor loop.
-///
-/// Receives messages on `rx`, dispatches to the `role` implementation.
-/// Exits when `rx` is closed (all senders dropped) or Shutdown is received.
-pub async fn run(mut role: Box<dyn WorkerRole>, mut rx: mpsc::Receiver<StateMsg>) {
-    debug!("state actor started");
+/// The state actor holds the worker's mutable role and processes messages sequentially.
+pub struct StateActor {
+    pub role: Box<dyn WorkerRole>,
+}
 
-    while let Some(msg) = rx.recv().await {
-        match msg {
-            StateMsg::Event(event) => {
-                role.on_event(&event);
-            }
-            StateMsg::Request { req, reply } => {
-                let response = role.handle_request(req);
-                if reply.send(response).is_err() {
-                    warn!("request reply channel closed");
-                }
-            }
-            StateMsg::GetRoleInfo { reply } => {
-                let info = role.role_info();
-                let _ = reply.send(info);
-            }
-            StateMsg::GetStateHashes { reply } => {
-                // Default: no state hashes. Replay nodes override this
-                // behavior via their WorkerRole implementation.
-                let _ = reply.send(vec![]);
-            }
-            StateMsg::ServerDiscovered { server_id } => {
-                debug!(%server_id, "server discovered by state actor");
-            }
-            StateMsg::Shutdown => {
-                debug!("state actor shutting down");
-                break;
-            }
-        }
+impl Actor for StateActor {
+    fn started(
+        &mut self,
+        _ctx: &mut Context<Self>,
+    ) -> impl std::future::Future<Output = ()> + Send {
+        debug!("state actor started");
+        async {}
     }
 
-    debug!("state actor stopped");
+    fn stopped(&mut self) -> impl std::future::Future<Output = ()> + Send {
+        debug!("state actor stopped");
+        async {}
+    }
+}
+
+impl Handler<EventMsg> for StateActor {
+    fn handle(
+        &mut self,
+        msg: EventMsg,
+        _ctx: &mut Context<Self>,
+    ) -> impl std::future::Future<Output = ()> + Send {
+        self.role.on_event(&msg.0);
+        async {}
+    }
+}
+
+impl Handler<WorkerRequestMsg> for StateActor {
+    fn handle(
+        &mut self,
+        msg: WorkerRequestMsg,
+        _ctx: &mut Context<Self>,
+    ) -> impl std::future::Future<Output = crate::types::WorkerResponse> + Send {
+        let response = self.role.handle_request(msg.0);
+        async move { response }
+    }
+}
+
+impl Handler<GetRoleInfoMsg> for StateActor {
+    fn handle(
+        &mut self,
+        _msg: GetRoleInfoMsg,
+        _ctx: &mut Context<Self>,
+    ) -> impl std::future::Future<Output = crate::types::WorkerRoleInfo> + Send {
+        let info = self.role.role_info();
+        async move { info }
+    }
+}
+
+impl Handler<GetStateHashesMsg> for StateActor {
+    fn handle(
+        &mut self,
+        _msg: GetStateHashesMsg,
+        _ctx: &mut Context<Self>,
+    ) -> impl std::future::Future<Output = Vec<(String, willow_state::StateHash)>> + Send {
+        // Default: no state hashes. Replay nodes override via WorkerRole.
+        async { vec![] }
+    }
+}
+
+impl Handler<ServerDiscoveredMsg> for StateActor {
+    fn handle(
+        &mut self,
+        msg: ServerDiscoveredMsg,
+        _ctx: &mut Context<Self>,
+    ) -> impl std::future::Future<Output = ()> + Send {
+        debug!(server_id = %msg.server_id, "server discovered by state actor");
+        async {}
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::{WorkerRequest, WorkerResponse, WorkerRoleInfo};
-    use tokio::sync::oneshot;
+    use willow_actor::System;
     use willow_state::{Event, EventKind, StateHash};
 
     /// A minimal test role that counts events and echoes requests.
@@ -104,22 +139,18 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn state_actor_processes_events() {
-        let (tx, rx) = mpsc::channel(32);
-        let role = Box::new(TestRole::new());
-
-        let handle = tokio::spawn(run(role, rx));
+        let system = System::new();
+        let addr = system.spawn(StateActor {
+            role: Box::new(TestRole::new()),
+        });
 
         for _ in 0..3 {
-            tx.send(StateMsg::Event(make_test_event())).await.unwrap();
+            addr.do_send(EventMsg(make_test_event())).unwrap();
         }
 
-        let (reply_tx, reply_rx) = oneshot::channel();
-        tx.send(StateMsg::GetRoleInfo { reply: reply_tx })
-            .await
-            .unwrap();
-        let info = reply_rx.await.unwrap();
+        let info = addr.ask(GetRoleInfoMsg).await.unwrap();
         match info {
             WorkerRoleInfo::Replay {
                 events_buffered, ..
@@ -127,96 +158,82 @@ mod tests {
             _ => panic!("expected Replay"),
         }
 
-        tx.send(StateMsg::Shutdown).await.unwrap();
-        handle.await.unwrap();
+        system.shutdown().await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn state_actor_handles_requests() {
-        let (tx, rx) = mpsc::channel(32);
-        let role = Box::new(TestRole::new());
-
-        let handle = tokio::spawn(run(role, rx));
+        let system = System::new();
+        let addr = system.spawn(StateActor {
+            role: Box::new(TestRole::new()),
+        });
 
         // Sync request.
-        let (reply_tx, reply_rx) = oneshot::channel();
-        tx.send(StateMsg::Request {
-            req: WorkerRequest::Sync {
+        let resp = addr
+            .ask(WorkerRequestMsg(WorkerRequest::Sync {
                 server_id: "srv".to_string(),
                 state_hash: StateHash::ZERO,
-            },
-            reply: reply_tx,
-        })
-        .await
-        .unwrap();
-        match reply_rx.await.unwrap() {
+            }))
+            .await
+            .unwrap();
+        match resp {
             WorkerResponse::SyncBatch { events } => assert!(events.is_empty()),
             _ => panic!("expected SyncBatch"),
         }
 
         // History request (denied by replay role).
-        let (reply_tx, reply_rx) = oneshot::channel();
-        tx.send(StateMsg::Request {
-            req: WorkerRequest::History {
+        let resp = addr
+            .ask(WorkerRequestMsg(WorkerRequest::History {
                 server_id: "srv".to_string(),
                 channel: "general".to_string(),
                 before_timestamp: None,
                 limit: 50,
-            },
-            reply: reply_tx,
-        })
-        .await
-        .unwrap();
-        match reply_rx.await.unwrap() {
+            }))
+            .await
+            .unwrap();
+        match resp {
             WorkerResponse::Denied { reason } => assert!(reason.contains("not a storage")),
             _ => panic!("expected Denied"),
         }
 
-        tx.send(StateMsg::Shutdown).await.unwrap();
-        handle.await.unwrap();
+        system.shutdown().await;
     }
 
-    #[tokio::test]
-    async fn state_actor_exits_on_channel_close() {
-        let (tx, rx) = mpsc::channel(32);
-        let role = Box::new(TestRole::new());
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn state_actor_exits_on_shutdown() {
+        let system = System::new();
+        let addr = system.spawn(StateActor {
+            role: Box::new(TestRole::new()),
+        });
 
-        let handle = tokio::spawn(run(role, rx));
-
-        drop(tx);
-        handle.await.unwrap();
+        assert!(addr.is_alive());
+        system.shutdown().await;
+        assert!(!addr.is_alive());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn state_actor_handles_multiple_concurrent_requests() {
-        let (tx, rx) = mpsc::channel(64);
-        let role = Box::new(TestRole::new());
+        let system = System::new();
+        let addr = system.spawn(StateActor {
+            role: Box::new(TestRole::new()),
+        });
 
-        let handle = tokio::spawn(run(role, rx));
-
-        let mut reply_rxs = vec![];
+        let mut futs = vec![];
         for _ in 0..10 {
-            let (reply_tx, reply_rx) = oneshot::channel();
-            tx.send(StateMsg::Request {
-                req: WorkerRequest::Sync {
-                    server_id: "srv".to_string(),
-                    state_hash: StateHash::ZERO,
-                },
-                reply: reply_tx,
-            })
-            .await
-            .unwrap();
-            reply_rxs.push(reply_rx);
+            let f = addr.ask(WorkerRequestMsg(WorkerRequest::Sync {
+                server_id: "srv".to_string(),
+                state_hash: StateHash::ZERO,
+            }));
+            futs.push(f);
         }
 
-        for rx in reply_rxs {
-            match rx.await.unwrap() {
+        for f in futs {
+            match f.await.unwrap() {
                 WorkerResponse::SyncBatch { .. } => {}
                 _ => panic!("expected SyncBatch"),
             }
         }
 
-        tx.send(StateMsg::Shutdown).await.unwrap();
-        handle.await.unwrap();
+        system.shutdown().await;
     }
 }
