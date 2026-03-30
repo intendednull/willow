@@ -1,8 +1,8 @@
 # Actor System Design Spec
 
 **Date**: 2026-03-29
-**Status**: Draft
-**Depends on**: iroh integration (implementation blocked until complete)
+**Status**: Ready for implementation
+**Depends on**: ~~iroh integration~~ (complete — merged to main)
 
 ## Existing Solutions
 
@@ -176,63 +176,38 @@ for the core (message, actor, handler, addr, context, mailbox, envelope,
 runtime, error modules). This is comparable to the fork effort when
 accounting for the abstraction layer + ongoing maintenance cost.
 
-### Iroh as a foundation
+### Iroh integration (complete)
 
-If Willow migrates from libp2p to [iroh](https://github.com/n0-computer/iroh)
-(n0-computer's QUIC-based P2P connectivity library), this changes the
-runtime story significantly:
+Willow has migrated from libp2p to iroh. The networking layer now uses
+trait-based abstractions (`Network`, `TopicHandle`, `TopicEvents`,
+`BlobStore`) backed by iroh's QUIC transport and `iroh-gossip` for
+broadcast. See `docs/specs/2026-03-29-iroh-migration-design.md`.
 
-**What iroh is:**
-- A peer-to-peer QUIC connectivity library: dial peers by Ed25519 public
-  key, get hole-punching + relay fallback transparently
-- **Not** libp2p — a complete replacement for the transport layer
-- Point-to-point connections (QUIC streams + datagrams), not message-
-  oriented pub/sub. `iroh-gossip` provides broadcast overlay separately.
-- `ProtocolHandler` trait for multiplexing ALPN protocols over a single
-  `Endpoint`
+**Key facts for the actor system:**
 
-**Iroh's runtime model:**
-- Built on **tokio** (mpsc, oneshot, CancellationToken, task spawning)
-- **First-class WASM support**: `cfg(wasm_browser)` gates throughout,
-  CI validates WASM compilation, `spawn_local` on WASM via an internal
-  `Runtime` struct
-- On WASM: only relay/WebSocket transport (no UDP/direct), all tasks
-  run via `spawn_local`
-- **`Send` bounds are required** at compile time on both native and WASM
-  (iroh's `Runtime::spawn` takes `Future + Send`)
+1. **Tokio everywhere.** Iroh depends on tokio for both native and WASM.
+   The client already uses `Arc<RwLock<>>` (not `Rc<RefCell<>>`). All
+   futures must be `Send`. Channels are `tokio::sync::mpsc` throughout.
 
-**Impact on willow-actor:**
+2. **`Network` trait is generic.** Workers and client are generic over
+   `N: Network`, with `IrohNetwork` for production and `MemNetwork` for
+   tests. Actor types should also be generic over `Network` where they
+   interact with gossip, following the same pattern.
 
-1. **`Send` is unnecessary.** Iroh requires `Send` everywhere.
-   Since the actor system runs within iroh's tokio runtime, all futures
-   must be `Send` regardless of target. The `Send` pattern was
-   designed to allow `Rc<RefCell<>>` on WASM, but iroh's `Send`
-   requirement already prevents that. **Use `Send` unconditionally** —
-   it compiles fine on WASM (single-threaded, everything is trivially
-   Send) and matches iroh's constraints.
+3. **`TopicEvents` is a stream.** The `TopicEvents` trait has
+   `async fn next() -> Option<Result<GossipEvent>>` — a natural fit for
+   `StreamHandler`. The network actor currently wraps this in a manual
+   `while let` loop; the actor system replaces that.
 
-2. **Runtime module simplifies.** Instead of abstracting over
-   tokio vs `futures::channel` vs `wasm_bindgen_futures`, use tokio
-   channels on both targets (iroh already depends on tokio for WASM
-   via its internal runtime shim). The runtime module shrinks to just
-   `spawn()` (tokio::spawn on native, spawn_local on WASM) and
-   `sleep()` — channels are always `tokio::sync::mpsc`.
+4. **`TopicHandle` for broadcast.** The heartbeat and sync actors
+   currently take `T: TopicHandle` and call `topic.broadcast()`. With
+   the actor system, they hold the `TopicHandle` as actor state and
+   call it from message handlers.
 
-3. **`CancellationToken` for shutdown.** Iroh uses
-   `tokio_util::sync::CancellationToken` pervasively. The actor system
-   should adopt the same pattern for graceful shutdown instead of custom
-   stop flags, so actor lifecycle integrates cleanly with iroh endpoint
-   shutdown.
-
-4. **`ProtocolHandler` as actor entry point.** Iroh's `Router` dispatches
-   incoming connections by ALPN to `ProtocolHandler::accept()` impls.
-   A network actor can implement `ProtocolHandler`, bridging iroh
-   connections into actor messages.
-
-5. **No built-in gossipsub.** Without libp2p's gossipsub, broadcast
-   patterns change. `iroh-gossip` provides a gossip overlay, or actors
-   can use point-to-point messaging with explicit fan-out. The actor
-   system doesn't need to handle this — it's a networking layer concern.
+5. **Shutdown via `watch` channel.** Workers currently use
+   `tokio::sync::watch` for shutdown signaling. The actor system
+   replaces this with `CancellationToken` (used by iroh internally)
+   or simply dropping the `Addr` (closing the mailbox).
 
 ### Recommendation: build `willow-actor`
 
@@ -255,24 +230,25 @@ combines:
 
 ## Overview
 
-Willow has five different channel/concurrency patterns across its crates:
+With the iroh migration complete, Willow's networking is now trait-based
+(`Network`, `TopicHandle`, `TopicEvents`) and generic — but the
+concurrency patterns above the network layer are still hand-rolled:
 
-| Layer | Channels | Target |
-|-------|----------|--------|
-| Bevy bridge | `std::sync::mpsc` | native |
-| libp2p node | `tokio::sync::mpsc` (native) / `futures::channel::mpsc` (WASM) | both |
-| Client lib | `futures::channel::mpsc` | both |
-| Worker actors | `tokio::sync::mpsc` + `oneshot` + `watch` | native only |
-| Web UI | `futures::channel::mpsc` + `spawn_local` | WASM only |
+| Layer | Current pattern | Problem |
+|-------|----------------|---------|
+| Worker actors | `tokio::sync::mpsc` + `oneshot` + `watch`, 4 manual loops | Not reusable, manual shutdown via watch channel |
+| Client lib | `Arc<RwLock<SharedState>>` + `futures::channel::mpsc` | Event loop is a monolithic match block |
+| Bevy bridge | `std::sync::mpsc` polling | Tightly coupled to network internals |
+| Web UI | `futures::channel::mpsc` + `spawn_local` | Duplicates client event loop logic |
 
 The worker crate already uses an actor pattern (state, network, heartbeat,
-sync actors communicating via channels), but it's hand-rolled, tokio-only,
-and not reusable. Every other crate reinvents the same pattern: spawn a
+sync actors communicating via channels), but it's hand-rolled and not
+reusable. The client and web crates reinvent the same pattern: spawn a
 task, create channels, loop on `select!`, handle shutdown.
 
-`willow-actor` formalizes this into a single crate that works on both
-native and WASM, eliminating the per-crate boilerplate while preserving
-the existing architecture's strengths.
+`willow-actor` formalizes this into a single crate, building on iroh's
+tokio runtime (available on both native and WASM) to eliminate the
+per-crate boilerplate.
 
 ## Goals
 
@@ -648,89 +624,59 @@ crate. It shares `tokio` with iroh — no additional runtime overhead.
 
 ## Migration Path
 
-**Prerequisite**: iroh integration must be complete before implementation
-begins. The actor system depends on iroh's tokio runtime being available
-on both native and WASM targets. Once iroh is integrated, the networking
-layer will already use iroh's `Endpoint`, `Router`, and `ProtocolHandler`
-— the actor system builds on that foundation.
-
 ### Phase 1: Core crate + worker migration
 
 Create `crates/actor/` with the core types. Migrate the worker crate's
 four hand-rolled actor loops to use `willow-actor`. This is the smallest
-useful scope — workers are native-only, so WASM correctness isn't tested
-yet but the API is designed for it.
-
-**Before** (current `crates/worker/src/actors/state.rs`):
-```rust
-pub async fn run(mut role: Box<dyn WorkerRole>, mut rx: mpsc::Receiver<StateMsg>) {
-    while let Some(msg) = rx.recv().await {
-        match msg {
-            StateMsg::Event(event) => role.on_event(&event),
-            StateMsg::Request { req, reply } => {
-                let response = role.handle_request(req);
-                let _ = reply.send(response);
-            }
-            StateMsg::Shutdown => break,
-        }
-    }
-}
-```
-
-**After**:
-```rust
-pub struct StateActor {
-    role: Box<dyn WorkerRole>,
-}
-
-impl Actor for StateActor {}
-
-impl Handler<EventMsg> for StateActor {
-    async fn handle(&mut self, msg: EventMsg, _ctx: &mut Context<Self>) {
-        self.role.on_event(&msg.0);
-    }
-}
-
-impl Handler<RequestMsg> for StateActor {
-    async fn handle(&mut self, msg: RequestMsg, _ctx: &mut Context<Self>) -> WorkerResponse {
-        self.role.handle_request(msg.0)
-    }
-}
-```
+useful scope and the cleanest test case — the workers already have
+well-defined actor boundaries.
 
 **Before** (current `crates/worker/src/runtime.rs`):
 ```rust
-let (state_tx, state_rx) = mpsc::channel::<StateMsg>(256);
-let (network_tx, network_rx) = mpsc::channel::<NetworkOutMsg>(256);
-let (shutdown_tx, shutdown_rx) = watch::channel(false);
-
-let state_handle = tokio::spawn(state::run(role, state_rx));
-let heartbeat_handle = tokio::spawn(heartbeat::run(..., shutdown_rx.clone()));
-// ... manual join + shutdown
+pub async fn run<N: Network>(role: Box<dyn WorkerRole>, config: WorkerConfig, network: N) {
+    let (state_tx, state_rx) = mpsc::channel::<StateMsg>(256);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let state_handle = tokio::spawn(state::run(role, state_rx));
+    let network_handle = tokio::spawn(network::run(workers_events, state_tx.clone(), peer_id));
+    let heartbeat_handle = tokio::spawn(heartbeat::run(peer_id, ..., workers_sender.clone(), shutdown_rx.clone()));
+    let sync_handle = tokio::spawn(sync::run(peer_id, ..., workers_sender, shutdown_rx));
+    tokio::signal::ctrl_c().await?;
+    let _ = shutdown_tx.send(true);
+    let _ = state_tx.send(StateMsg::Shutdown).await;
+    let _ = tokio::join!(state_handle, network_handle, heartbeat_handle, sync_handle);
+}
 ```
 
 **After**:
 ```rust
-let system = System::new();
-let state_addr = system.spawn(StateActor { role });
-let network_addr = system.spawn(NetworkActor::new(node, events, state_addr.clone()));
-let _heartbeat = system.spawn(HeartbeatActor::new(peer_id, state_addr.clone(), network_addr.clone()));
-let _sync = system.spawn(SyncActor::new(peer_id, state_addr, network_addr));
-
-tokio::signal::ctrl_c().await?;
-system.shutdown().await;
+pub async fn run<N: Network>(role: Box<dyn WorkerRole>, config: WorkerConfig, network: N) {
+    let system = System::new();
+    let state_addr = system.spawn(StateActor { role });
+    let _network = system.spawn(NetworkActor::new(workers_events, state_addr.clone(), peer_id));
+    let _heartbeat = system.spawn(HeartbeatActor::new(peer_id, state_addr.clone(), workers_sender.clone()));
+    let _sync = system.spawn(SyncActor::new(peer_id, state_addr, workers_sender));
+    tokio::signal::ctrl_c().await?;
+    system.shutdown().await;
+}
 ```
+
+The `NetworkActor` uses `StreamHandler<GossipEvent>` to receive from
+`TopicEvents`. The `HeartbeatActor` uses `ctx.run_interval()` instead
+of a manual `tokio::select! + sleep` loop. Shutdown propagates via
+`CancellationToken` — no more `watch` channel.
 
 ### Phase 2: Client library
 
-Replace `ClientHandle`'s channel pair with actor addresses. The
-`ClientEventLoop` becomes an actor with `StreamHandler` for iroh
-network events. `Rc<RefCell<SharedState>>` becomes `Arc<Mutex<>>`.
+Replace `ClientHandle<N>`'s `futures::channel::mpsc` event dispatching
+with actor addresses. The client event loop becomes an actor with
+`StreamHandler` for `TopicEvents`. The client already uses
+`Arc<RwLock<>>` — no `Rc<RefCell<>>` migration needed (iroh already
+required this).
 
 ### Phase 3: Network bridge
 
 The Bevy bridge becomes a thin adapter: a Bevy system polls a `Receiver`
-that an actor feeds. The bridge actor wraps the iroh `Endpoint`.
+that an actor feeds. The bridge actor wraps iroh network interactions.
 
 ### Phase 4: Web UI
 
@@ -755,8 +701,5 @@ updates happen in the handler. Validates WASM target correctness.
    `System::spawn_unbounded()` be offered? Probably yes, with a lint
    warning in docs.
 
-4. **`Rc<RefCell<>>` migration**: Willow's client library currently uses
-   `Rc<RefCell<SharedState>>` on WASM paths. With `Send` required
-   unconditionally, these must become `Arc<Mutex<>>`. On WASM the
-   overhead is negligible (no actual locking), but this is a codebase-
-   wide change that should happen before or alongside actor adoption.
+4. **`Rc<RefCell<>>` migration**: ~~Already done~~ — the iroh migration
+   switched the client to `Arc<RwLock<>>`. No further changes needed.
