@@ -108,7 +108,12 @@ mod tests {
         Identity::generate().endpoint_id()
     }
 
-    fn make_event(id: &str, parent: StateHash, ts: u64, author: willow_identity::EndpointId) -> Event {
+    fn make_event(
+        id: &str,
+        parent: StateHash,
+        ts: u64,
+        author: willow_identity::EndpointId,
+    ) -> Event {
         Event {
             id: id.to_string(),
             parent_hash: parent,

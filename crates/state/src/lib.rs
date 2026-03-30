@@ -427,14 +427,11 @@ fn apply_inner(state: &mut ServerState, event: &Event) -> ApplyResult {
                 .or_default()
                 .insert(permission.clone());
             // Also ensure they are a member.
-            state
-                .members
-                .entry(*peer_id)
-                .or_insert_with(|| Member {
-                    peer_id: *peer_id,
-                    roles: std::collections::HashSet::new(),
-                    display_name: None,
-                });
+            state.members.entry(*peer_id).or_insert_with(|| Member {
+                peer_id: *peer_id,
+                roles: std::collections::HashSet::new(),
+                display_name: None,
+            });
         }
 
         EventKind::RevokePermission {

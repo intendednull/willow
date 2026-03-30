@@ -170,7 +170,8 @@ fn send_and_edit_message() {
     // Create a channel first.
     let create_ch = event(
         &state,
-        "e0", owner,
+        "e0",
+        owner,
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
@@ -182,7 +183,8 @@ fn send_and_edit_message() {
     // Send a message.
     let msg = event(
         &state,
-        "msg1", owner,
+        "msg1",
+        owner,
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "Hello, world!".into(),
@@ -196,7 +198,8 @@ fn send_and_edit_message() {
     // Edit the message.
     let edit = event(
         &state,
-        "e2", owner,
+        "e2",
+        owner,
         EventKind::EditMessage {
             message_id: "msg1".into(),
             new_body: "Hello, edited!".into(),
@@ -212,7 +215,8 @@ fn delete_message_is_soft() {
     let (mut state, owner) = test_state();
     let create_ch = event(
         &state,
-        "e0", owner,
+        "e0",
+        owner,
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
@@ -223,7 +227,8 @@ fn delete_message_is_soft() {
 
     let msg = event(
         &state,
-        "msg1", owner,
+        "msg1",
+        owner,
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "to be deleted".into(),
@@ -234,7 +239,8 @@ fn delete_message_is_soft() {
 
     let delete = event(
         &state,
-        "e2", owner,
+        "e2",
+        owner,
         EventKind::DeleteMessage {
             message_id: "msg1".into(),
         },
@@ -252,7 +258,8 @@ fn reaction_added_to_message() {
     let (mut state, owner) = test_state();
     let create_ch = event(
         &state,
-        "e0", owner,
+        "e0",
+        owner,
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
@@ -263,7 +270,8 @@ fn reaction_added_to_message() {
 
     let msg = event(
         &state,
-        "msg1", owner,
+        "msg1",
+        owner,
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "react to me".into(),
@@ -274,7 +282,8 @@ fn reaction_added_to_message() {
 
     let reaction = event(
         &state,
-        "e2", owner,
+        "e2",
+        owner,
         EventKind::Reaction {
             message_id: "msg1".into(),
             emoji: ":+1:".into(),
@@ -294,7 +303,8 @@ fn grant_and_revoke_permission() {
     // Grant a permission.
     let grant = event(
         &state,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::GrantPermission {
             peer_id: alice,
             permission: Permission::ManageChannels,
@@ -307,7 +317,8 @@ fn grant_and_revoke_permission() {
     // Revoke.
     let revoke = event(
         &state,
-        "e2", owner,
+        "e2",
+        owner,
         EventKind::RevokePermission {
             peer_id: alice,
             permission: Permission::ManageChannels,
@@ -349,7 +360,8 @@ fn unpermitted_author_rejected() {
     // An unpermitted peer tries to create a channel.
     let evt = event(
         &state,
-        "e1", stranger,
+        "e1",
+        stranger,
         EventKind::CreateChannel {
             name: "hacked".into(),
             channel_id: "ch1".into(),
@@ -369,7 +381,8 @@ fn unpermitted_peer_can_send_messages() {
 
     let create_ch = event(
         &state,
-        "e0", owner,
+        "e0",
+        owner,
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
@@ -381,7 +394,8 @@ fn unpermitted_peer_can_send_messages() {
     // A peer with no permissions sends a message -- this should be accepted.
     let msg = event(
         &state,
-        "msg1", stranger,
+        "msg1",
+        stranger,
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "hi from stranger".into(),
@@ -399,7 +413,8 @@ fn permission_enforcement() {
     // Grant alice only SendMessages.
     let grant = event(
         &state,
-        "e0", owner,
+        "e0",
+        owner,
         EventKind::GrantPermission {
             peer_id: alice,
             permission: Permission::SendMessages,
@@ -410,7 +425,8 @@ fn permission_enforcement() {
     // Alice should NOT be able to create channels (requires ManageChannels).
     let create = event(
         &state,
-        "e1", alice,
+        "e1",
+        alice,
         EventKind::CreateChannel {
             name: "unauthorized".into(),
             channel_id: "ch1".into(),
@@ -431,7 +447,8 @@ fn admin_permission_grants_all() {
     // Grant alice Administrator.
     let grant = event(
         &state,
-        "e0", owner,
+        "e0",
+        owner,
         EventKind::GrantPermission {
             peer_id: alice,
             permission: Permission::Administrator,
@@ -442,7 +459,8 @@ fn admin_permission_grants_all() {
     // Admin can create channels.
     let create = event(
         &state,
-        "e1", alice,
+        "e1",
+        alice,
         EventKind::CreateChannel {
             name: "admin-channel".into(),
             channel_id: "ch1".into(),
@@ -455,7 +473,8 @@ fn admin_permission_grants_all() {
     // Admin can create roles.
     let create_role = event(
         &state,
-        "e2", alice,
+        "e2",
+        alice,
         EventKind::CreateRole {
             name: "Moderator".into(),
             role_id: "role1".into(),
@@ -468,7 +487,8 @@ fn admin_permission_grants_all() {
     // First add bob as a member.
     let grant_bob = event(
         &state,
-        "e3", alice,
+        "e3",
+        alice,
         EventKind::GrantPermission {
             peer_id: bob,
             permission: Permission::SendMessages,
@@ -477,13 +497,7 @@ fn admin_permission_grants_all() {
     assert_eq!(apply(&mut state, &grant_bob), ApplyResult::Applied);
     assert!(state.members.contains_key(&bob));
 
-    let kick = event(
-        &state,
-        "e4", alice,
-        EventKind::KickMember {
-            peer_id: bob,
-        },
-    );
+    let kick = event(&state, "e4", alice, EventKind::KickMember { peer_id: bob });
     assert_eq!(apply(&mut state, &kick), ApplyResult::Applied);
     assert!(!state.members.contains_key(&bob));
 }
@@ -510,7 +524,8 @@ fn fine_grained_permissions() {
     // Grant alice only SendMessages.
     let grant = event(
         &state,
-        "e0", owner,
+        "e0",
+        owner,
         EventKind::GrantPermission {
             peer_id: alice,
             permission: Permission::SendMessages,
@@ -521,7 +536,8 @@ fn fine_grained_permissions() {
     // Create a channel (as owner) so alice can send messages.
     let create_ch = event(
         &state,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
@@ -533,7 +549,8 @@ fn fine_grained_permissions() {
     // Alice can send messages (messages don't require permissions).
     let msg = event(
         &state,
-        "msg1", alice,
+        "msg1",
+        alice,
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "hello from alice".into(),
@@ -546,7 +563,8 @@ fn fine_grained_permissions() {
     // Alice cannot create channels.
     let create = event(
         &state,
-        "e2", alice,
+        "e2",
+        alice,
         EventKind::CreateChannel {
             name: "unauthorized".into(),
             channel_id: "ch2".into(),
@@ -561,17 +579,17 @@ fn fine_grained_permissions() {
     // Alice cannot kick members.
     let kick = event(
         &state,
-        "e3", alice,
-        EventKind::KickMember {
-            peer_id: owner,
-        },
+        "e3",
+        alice,
+        EventKind::KickMember { peer_id: owner },
     );
     assert!(matches!(apply(&mut state, &kick), ApplyResult::Rejected(_)));
 
     // Alice cannot create roles.
     let create_role = event(
         &state,
-        "e4", alice,
+        "e4",
+        alice,
         EventKind::CreateRole {
             name: "Admin".into(),
             role_id: "role1".into(),
@@ -585,7 +603,8 @@ fn fine_grained_permissions() {
     // Alice cannot grant permissions.
     let grant_perm = event(
         &state,
-        "e5", alice,
+        "e5",
+        alice,
         EventKind::GrantPermission {
             peer_id: bob,
             permission: Permission::Administrator,
@@ -607,7 +626,8 @@ fn full_replay_from_genesis() {
 
     let e1 = event(
         &state,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
@@ -619,7 +639,8 @@ fn full_replay_from_genesis() {
 
     let e2 = event(
         &state,
-        "e2", owner,
+        "e2",
+        owner,
         EventKind::GrantPermission {
             peer_id: alice,
             permission: Permission::ManageChannels,
@@ -629,7 +650,8 @@ fn full_replay_from_genesis() {
 
     let e3 = event(
         &state,
-        "e3", owner,
+        "e3",
+        owner,
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "Hello".into(),
@@ -679,7 +701,8 @@ fn merge_produces_same_state() {
     // Peer B creates channel "beta".
     let evt_b = event_with(
         "eb1",
-        common_hash, owner,
+        common_hash,
+        owner,
         200,
         EventKind::CreateChannel {
             name: "beta".into(),
@@ -689,10 +712,18 @@ fn merge_produces_same_state() {
     );
 
     // Merge from A's perspective.
-    let (state_a, events_a) = merge(std::slice::from_ref(&evt_a), std::slice::from_ref(&evt_b), &common);
+    let (state_a, events_a) = merge(
+        std::slice::from_ref(&evt_a),
+        std::slice::from_ref(&evt_b),
+        &common,
+    );
 
     // Merge from B's perspective.
-    let (state_b, events_b) = merge(std::slice::from_ref(&evt_b), std::slice::from_ref(&evt_a), &common);
+    let (state_b, events_b) = merge(
+        std::slice::from_ref(&evt_b),
+        std::slice::from_ref(&evt_a),
+        &common,
+    );
 
     // Both should produce the same state and event order.
     assert_eq!(state_a.hash(), state_b.hash());
@@ -742,7 +773,8 @@ fn create_role_and_assign() {
     // Grant alice ManageRoles so she becomes a member.
     let grant = event(
         &state,
-        "e0", owner,
+        "e0",
+        owner,
         EventKind::GrantPermission {
             peer_id: alice,
             permission: Permission::ManageRoles,
@@ -753,7 +785,8 @@ fn create_role_and_assign() {
     // Create a role.
     let create_role = event(
         &state,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::CreateRole {
             name: "Moderator".into(),
             role_id: "role1".into(),
@@ -765,7 +798,8 @@ fn create_role_and_assign() {
     // Set a permission.
     let set_perm = event(
         &state,
-        "e2", owner,
+        "e2",
+        owner,
         EventKind::SetPermission {
             role_id: "role1".into(),
             permission: "ManageMessages".into(),
@@ -778,7 +812,8 @@ fn create_role_and_assign() {
     // Assign role to alice.
     let assign = event(
         &state,
-        "e3", owner,
+        "e3",
+        owner,
         EventKind::AssignRole {
             peer_id: alice,
             role_id: "role1".into(),
@@ -795,7 +830,8 @@ fn delete_role_removes_from_members() {
 
     let grant = event(
         &state,
-        "e0", owner,
+        "e0",
+        owner,
         EventKind::GrantPermission {
             peer_id: alice,
             permission: Permission::ManageRoles,
@@ -805,7 +841,8 @@ fn delete_role_removes_from_members() {
 
     let create = event(
         &state,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::CreateRole {
             name: "Temp".into(),
             role_id: "role1".into(),
@@ -815,7 +852,8 @@ fn delete_role_removes_from_members() {
 
     let assign = event(
         &state,
-        "e2", owner,
+        "e2",
+        owner,
         EventKind::AssignRole {
             peer_id: alice,
             role_id: "role1".into(),
@@ -826,7 +864,8 @@ fn delete_role_removes_from_members() {
 
     let delete = event(
         &state,
-        "e3", owner,
+        "e3",
+        owner,
         EventKind::DeleteRole {
             role_id: "role1".into(),
         },
@@ -845,7 +884,8 @@ fn kick_member_removes_and_revokes_permissions() {
 
     let grant = event(
         &state,
-        "e0", owner,
+        "e0",
+        owner,
         EventKind::GrantPermission {
             peer_id: alice,
             permission: Permission::ManageChannels,
@@ -857,10 +897,9 @@ fn kick_member_removes_and_revokes_permissions() {
 
     let kick = event(
         &state,
-        "e1", owner,
-        EventKind::KickMember {
-            peer_id: alice,
-        },
+        "e1",
+        owner,
+        EventKind::KickMember { peer_id: alice },
     );
     assert_eq!(apply(&mut state, &kick), ApplyResult::Applied);
     assert!(!state.members.contains_key(&alice));
@@ -872,10 +911,9 @@ fn cannot_kick_owner() {
     let (mut state, owner) = test_state();
     let kick = event(
         &state,
-        "e1", owner,
-        EventKind::KickMember {
-            peer_id: owner,
-        },
+        "e1",
+        owner,
+        EventKind::KickMember { peer_id: owner },
     );
     assert_eq!(apply(&mut state, &kick), ApplyResult::Applied);
     // Owner should still be a member.
@@ -889,17 +927,15 @@ fn set_profile() {
     let (mut state, owner) = test_state();
     let evt = event(
         &state,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::SetProfile {
             display_name: "Alice".into(),
         },
     );
     assert_eq!(apply(&mut state, &evt), ApplyResult::Applied);
     assert_eq!(state.profiles[&owner].display_name, "Alice");
-    assert_eq!(
-        state.members[&owner].display_name.as_deref(),
-        Some("Alice")
-    );
+    assert_eq!(state.members[&owner].display_name.as_deref(), Some("Alice"));
 }
 
 // ── Delete channel also removes messages ─────────────────────────────────
@@ -909,7 +945,8 @@ fn delete_channel_removes_messages() {
     let (mut state, owner) = test_state();
     let create = event(
         &state,
-        "e0", owner,
+        "e0",
+        owner,
         EventKind::CreateChannel {
             name: "temp".into(),
             channel_id: "ch1".into(),
@@ -920,7 +957,8 @@ fn delete_channel_removes_messages() {
 
     let msg = event(
         &state,
-        "msg1", owner,
+        "msg1",
+        owner,
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "will be removed".into(),
@@ -932,7 +970,8 @@ fn delete_channel_removes_messages() {
 
     let delete = event(
         &state,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::DeleteChannel {
             channel_id: "ch1".into(),
         },
@@ -952,7 +991,8 @@ fn sync_provider_permission() {
 
     let grant = event(
         &state,
-        "e0", owner,
+        "e0",
+        owner,
         EventKind::GrantPermission {
             peer_id: alice,
             permission: Permission::SyncProvider,
@@ -981,7 +1021,8 @@ fn is_trusted_compat() {
     // Grant any permission makes a peer "trusted".
     let grant = event(
         &state,
-        "e0", owner,
+        "e0",
+        owner,
         EventKind::GrantPermission {
             peer_id: alice,
             permission: Permission::SendMessages,
@@ -993,7 +1034,8 @@ fn is_trusted_compat() {
     // Revoke all permissions makes peer untrusted again.
     let revoke = event(
         &state,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::RevokePermission {
             peer_id: alice,
             permission: Permission::SendMessages,
@@ -1011,7 +1053,8 @@ fn multiple_permissions_per_peer() {
     let alice = Identity::generate().endpoint_id();
     let g1 = event(
         &state,
-        "e0", owner,
+        "e0",
+        owner,
         EventKind::GrantPermission {
             peer_id: alice,
             permission: Permission::ManageChannels,
@@ -1021,7 +1064,8 @@ fn multiple_permissions_per_peer() {
 
     let g2 = event(
         &state,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::GrantPermission {
             peer_id: alice,
             permission: Permission::KickMembers,
@@ -1036,7 +1080,8 @@ fn multiple_permissions_per_peer() {
     // Revoke one, keep the other.
     let r1 = event(
         &state,
-        "e2", owner,
+        "e2",
+        owner,
         EventKind::RevokePermission {
             peer_id: alice,
             permission: Permission::ManageChannels,
@@ -1178,13 +1223,7 @@ fn kick_revokes_all_permissions() {
     assert!(state.has_permission(&alice, &Permission::KickMembers));
 
     // Owner kicks the peer.
-    let kick = make_event(
-        &state,
-        owner,
-        EventKind::KickMember {
-            peer_id: alice,
-        },
-    );
+    let kick = make_event(&state, owner, EventKind::KickMember { peer_id: alice });
     assert_eq!(apply(&mut state, &kick), ApplyResult::Applied);
 
     // All permissions and membership should be revoked.
@@ -1232,7 +1271,8 @@ fn concurrent_channel_create_same_name() {
 
     let evt_b = event_with(
         "eb1",
-        common_hash, owner,
+        common_hash,
+        owner,
         200,
         EventKind::CreateChannel {
             name: "dev-duplicate".into(),
@@ -1272,7 +1312,8 @@ fn edit_and_delete_message_lifecycle() {
     // Peer sends message.
     let msg = event(
         &state,
-        "msg1", alice,
+        "msg1",
+        alice,
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "original text".into(),
@@ -1368,7 +1409,8 @@ fn merge_with_concurrent_mutations() {
     );
     let evt_b2 = event_with(
         "eb2",
-        common_hash, owner,
+        common_hash,
+        owner,
         151,
         EventKind::GrantPermission {
             peer_id: alice,
@@ -1434,7 +1476,8 @@ fn merge_with_conflicting_deletes() {
     // Peer B deletes "beta".
     let del_b = event_with(
         "db1",
-        common_hash, owner,
+        common_hash,
+        owner,
         200,
         EventKind::DeleteChannel {
             channel_id: "ch-beta".into(),
@@ -1559,7 +1602,9 @@ fn stress_1000_messages_same_channel() {
     assert_eq!(apply(&mut state, &create_ch), ApplyResult::Applied);
 
     // Rapid-fire 1000 messages from 10 different authors.
-    let authors: Vec<EndpointId> = (0..10).map(|_| Identity::generate().endpoint_id()).collect();
+    let authors: Vec<EndpointId> = (0..10)
+        .map(|_| Identity::generate().endpoint_id())
+        .collect();
     for i in 0..1000 {
         let author = authors[i % 10];
         let msg = make_event(
@@ -1646,13 +1691,7 @@ fn untrusted_peer_cant_escalate() {
     assert!(!state.has_permission(&stranger, &Permission::Administrator));
 
     // Stranger tries to kick another peer (should fail).
-    let kick = make_event(
-        &state,
-        stranger,
-        EventKind::KickMember {
-            peer_id: owner,
-        },
-    );
+    let kick = make_event(&state, stranger, EventKind::KickMember { peer_id: owner });
     assert!(matches!(apply(&mut state, &kick), ApplyResult::Rejected(_)));
     assert!(state.members.contains_key(&owner));
 
@@ -1826,7 +1865,8 @@ fn idempotency_across_all_event_kinds() {
     // Send a message so we have a message to edit/delete/react to.
     let msg_evt = event(
         &state,
-        "msg-idem", owner,
+        "msg-idem",
+        owner,
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "test".into(),
@@ -1995,7 +2035,8 @@ fn merge_three_way_divergence() {
         ),
         event_with(
             "c2",
-            common_hash, owner,
+            common_hash,
+            owner,
             301,
             EventKind::GrantPermission {
                 peer_id: alice,
@@ -2073,7 +2114,8 @@ fn state_verification_does_not_mutate_state() {
 
     let evt = event(
         &state,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::StateVerification {
             state_hash: hash_before.clone(),
         },
@@ -2093,7 +2135,8 @@ fn identical_states_produce_matching_hashes() {
     // Apply the same events to both.
     let create = event(
         &state_a,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
@@ -2114,7 +2157,8 @@ fn state_verification_accepted_from_any_peer() {
     // A stranger can send a StateVerification event.
     let evt = event(
         &state,
-        "e1", stranger,
+        "e1",
+        stranger,
         EventKind::StateVerification {
             state_hash: state.hash(),
         },
@@ -2131,7 +2175,8 @@ fn owner_can_rename_server() {
 
     let evt = event(
         &state,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::RenameServer {
             new_name: "Renamed Server".into(),
         },
@@ -2148,7 +2193,8 @@ fn non_owner_cannot_rename_server() {
     // Grant alice ManageChannels to ensure she has some perms but is not owner.
     let grant = event(
         &state,
-        "e0", owner,
+        "e0",
+        owner,
         EventKind::GrantPermission {
             peer_id: alice,
             permission: Permission::ManageChannels,
@@ -2158,7 +2204,8 @@ fn non_owner_cannot_rename_server() {
 
     let rename = event(
         &state,
-        "e1", alice,
+        "e1",
+        alice,
         EventKind::RenameServer {
             new_name: "Hacked".into(),
         },
@@ -2177,7 +2224,8 @@ fn rename_server_changes_hash() {
 
     let evt = event(
         &state,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::RenameServer {
             new_name: "New Name".into(),
         },
@@ -2195,7 +2243,8 @@ fn owner_can_set_server_description() {
 
     let evt = event(
         &state,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::SetServerDescription {
             description: "A cool server".into(),
         },
@@ -2211,7 +2260,8 @@ fn non_owner_cannot_set_server_description() {
 
     let grant = event(
         &state,
-        "e0", owner,
+        "e0",
+        owner,
         EventKind::GrantPermission {
             peer_id: alice,
             permission: Permission::Administrator,
@@ -2221,7 +2271,8 @@ fn non_owner_cannot_set_server_description() {
 
     let desc = event(
         &state,
-        "e1", alice,
+        "e1",
+        alice,
         EventKind::SetServerDescription {
             description: "Unauthorized".into(),
         },
@@ -2236,7 +2287,8 @@ fn description_is_stored_and_accessible() {
 
     let evt = event(
         &state,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::SetServerDescription {
             description: "Welcome to the server".into(),
         },
@@ -2247,7 +2299,8 @@ fn description_is_stored_and_accessible() {
     // Updating description replaces it.
     let evt2 = event(
         &state,
-        "e2", owner,
+        "e2",
+        owner,
         EventKind::SetServerDescription {
             description: "Updated description".into(),
         },
@@ -2263,7 +2316,8 @@ fn description_changes_hash() {
 
     let evt = event(
         &state,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::SetServerDescription {
             description: "Something".into(),
         },
@@ -2317,7 +2371,8 @@ fn pin_message_adds_to_channel() {
     // Create a channel.
     let e1 = event(
         &state,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
@@ -2329,7 +2384,8 @@ fn pin_message_adds_to_channel() {
     // Send a message.
     let e2 = event(
         &state,
-        "e2", owner,
+        "e2",
+        owner,
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "hello".into(),
@@ -2341,7 +2397,8 @@ fn pin_message_adds_to_channel() {
     // Pin the message.
     let e3 = event(
         &state,
-        "e3", owner,
+        "e3",
+        owner,
         EventKind::PinMessage {
             channel_id: "ch1".into(),
             message_id: "e2".into(),
@@ -2360,7 +2417,8 @@ fn unpin_message_removes_from_channel() {
 
     let e1 = event(
         &state,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
@@ -2371,7 +2429,8 @@ fn unpin_message_removes_from_channel() {
 
     let e2 = event(
         &state,
-        "e2", owner,
+        "e2",
+        owner,
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "hello".into(),
@@ -2383,7 +2442,8 @@ fn unpin_message_removes_from_channel() {
     // Pin.
     let e3 = event(
         &state,
-        "e3", owner,
+        "e3",
+        owner,
         EventKind::PinMessage {
             channel_id: "ch1".into(),
             message_id: "e2".into(),
@@ -2400,7 +2460,8 @@ fn unpin_message_removes_from_channel() {
     // Unpin.
     let e4 = event(
         &state,
-        "e4", owner,
+        "e4",
+        owner,
         EventKind::UnpinMessage {
             channel_id: "ch1".into(),
             message_id: "e2".into(),
@@ -2427,7 +2488,8 @@ fn pin_duplicate_is_idempotent() {
 
     let e1 = event(
         &state,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
@@ -2438,7 +2500,8 @@ fn pin_duplicate_is_idempotent() {
 
     let e2 = event(
         &state,
-        "e2", owner,
+        "e2",
+        owner,
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "hello".into(),
@@ -2450,7 +2513,8 @@ fn pin_duplicate_is_idempotent() {
     // Pin the message.
     let e3 = event(
         &state,
-        "e3", owner,
+        "e3",
+        owner,
         EventKind::PinMessage {
             channel_id: "ch1".into(),
             message_id: "e2".into(),
@@ -2461,7 +2525,8 @@ fn pin_duplicate_is_idempotent() {
     // Pin the same message again (different event ID, same message_id).
     let e4 = event(
         &state,
-        "e4", owner,
+        "e4",
+        owner,
         EventKind::PinMessage {
             channel_id: "ch1".into(),
             message_id: "e2".into(),
@@ -2482,7 +2547,8 @@ fn pin_message_on_nonexistent_channel_is_noop() {
     // Pin to a channel that doesn't exist — should not panic, still Applied.
     let e1 = event(
         &state,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::PinMessage {
             channel_id: "no-such-channel".into(),
             message_id: "msg1".into(),
@@ -2501,7 +2567,8 @@ fn unpin_nonexistent_message_is_noop() {
     // Create a channel.
     let e1 = event(
         &state,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
@@ -2513,7 +2580,8 @@ fn unpin_nonexistent_message_is_noop() {
     // Unpin a message that was never pinned — should not panic.
     let e2 = event(
         &state,
-        "e2", owner,
+        "e2",
+        owner,
         EventKind::UnpinMessage {
             channel_id: "ch1".into(),
             message_id: "never-pinned".into(),
@@ -2536,7 +2604,8 @@ fn pin_survives_state_replay() {
     // Create a channel.
     let e1 = event(
         &state,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
@@ -2548,7 +2617,8 @@ fn pin_survives_state_replay() {
     // Send a message.
     let e2 = event(
         &state,
-        "e2", owner,
+        "e2",
+        owner,
         EventKind::Message {
             channel_id: "ch1".into(),
             body: "important".into(),
@@ -2560,7 +2630,8 @@ fn pin_survives_state_replay() {
     // Pin it.
     let e3 = event(
         &state,
-        "e3", owner,
+        "e3",
+        owner,
         EventKind::PinMessage {
             channel_id: "ch1".into(),
             message_id: "e2".into(),
@@ -2591,7 +2662,8 @@ fn multiple_pins_per_channel() {
 
     let e1 = event(
         &state,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
@@ -2605,7 +2677,8 @@ fn multiple_pins_per_channel() {
         let eid = format!("msg{}", i);
         let e = event(
             &state,
-            &eid, owner,
+            &eid,
+            owner,
             EventKind::Message {
                 channel_id: "ch1".into(),
                 body: format!("message {}", i),
@@ -2617,7 +2690,8 @@ fn multiple_pins_per_channel() {
         let pin_eid = format!("pin{}", i);
         let pin = event(
             &state,
-            &pin_eid, owner,
+            &pin_eid,
+            owner,
             EventKind::PinMessage {
                 channel_id: "ch1".into(),
                 message_id: msg_id.to_string(),
@@ -2640,7 +2714,8 @@ fn pin_across_channels() {
     // Create two channels.
     let e1 = event(
         &state,
-        "e1", owner,
+        "e1",
+        owner,
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
@@ -2651,7 +2726,8 @@ fn pin_across_channels() {
 
     let e2 = event(
         &state,
-        "e2", owner,
+        "e2",
+        owner,
         EventKind::CreateChannel {
             name: "random".into(),
             channel_id: "ch2".into(),
@@ -2663,7 +2739,8 @@ fn pin_across_channels() {
     // Pin a message in ch1.
     let e3 = event(
         &state,
-        "e3", owner,
+        "e3",
+        owner,
         EventKind::PinMessage {
             channel_id: "ch1".into(),
             message_id: "msg-a".into(),
@@ -2674,7 +2751,8 @@ fn pin_across_channels() {
     // Pin a different message in ch2.
     let e4 = event(
         &state,
-        "e4", owner,
+        "e4",
+        owner,
         EventKind::PinMessage {
             channel_id: "ch2".into(),
             message_id: "msg-b".into(),
