@@ -98,7 +98,7 @@ Defines the trait hierarchy and the type-erased message dispatch mechanism.
 
 - [ ] **Step 6: Implement `mailbox.rs`.** `async fn run_mailbox<A: Actor>(actor: A, rx: Receiver<BoxEnvelope<A>>)`: calls `actor.started()`, loops on `rx.recv()`, executes each envelope, calls `actor.stopped()` on exit. Checks a stop flag between messages.
 
-- [ ] **Step 7: Write unit tests.** Test a simple counter actor: define `Increment` (fire-and-forget) and `GetCount` (returns u32) messages. Verify send/ask/stop lifecycle. Test on native with `#[tokio::test]`.
+- [ ] **Step 7: Write mailbox-level tests.** Test `run_mailbox` directly by creating a channel, sending `BoxEnvelope`s manually, and verifying the actor processes them. Test that the mailbox loop exits when the sender is dropped. Full `Addr`/`System`-level tests come in Task 3.
 
 ---
 
@@ -116,13 +116,13 @@ Wires everything together into the public API.
 
 - [ ] **Step 2: Implement `AnyAddr`.** Type-erased address that can only signal stop (drops a held sender) and check liveness. `From<Addr<A>>` impl.
 
-- [ ] **Step 3: Implement `Context<A>`.** Fields: `addr: Addr<A>`, `system: SystemHandle`, `stop: bool`. Methods: `address()`, `stop()`, `system()`, `spawn()` (delegates to system), `add_stream()` (spawns a task that forwards stream items as envelopes into the actor's mailbox), `run_interval()` (spawns a task that sleeps + sends a message on each tick, returns `IntervalHandle` with cancel).
+- [ ] **Step 3: Implement `Context<A>`.** Fields: `addr: Addr<A>`, `system: SystemHandle`. The mailbox loop holds the stop flag internally (not in Context). Methods: `address()`, `stop()` (sets a flag on a shared `Arc<AtomicBool>` checked by the mailbox between messages), `system()`, `spawn()` (delegates to system), `add_stream()` (spawns a task that forwards stream items as envelopes into the actor's mailbox), `run_interval()` (spawns a task that sleeps + sends a message on each tick, returns `IntervalHandle` with cancel).
 
 - [ ] **Step 4: Implement `System` / `SystemHandle`.** `System::new()` creates the handle. `SystemHandle` is `Clone` and holds a list of `AnyAddr`s (for shutdown). `spawn()` creates a channel, builds `Context`, spawns `run_mailbox` via `runtime::spawn`, returns `Addr<A>`. `shutdown()` drops all tracked addresses and waits for mailboxes to drain.
 
 - [ ] **Step 5: Implement `Recipient<M>`.** Internal `RecipientSender<M>` trait with `send()` and `ask()`. `Addr<A>` implements it for any `A: Handler<M>`. `Recipient<M>` wraps `Box<dyn RecipientSender<M>>`. `From<Addr<A>>` impl.
 
-- [ ] **Step 6: Wire up `lib.rs` re-exports.** Public API: `Actor`, `Handler`, `StreamHandler`, `Message`, `Addr`, `AnyAddr`, `Recipient`, `Context`, `System`, `SystemHandle`, `SendError`, `AskError`, `IntervalHandle`, `RestartPolicy`.
+- [ ] **Step 6: Wire up `lib.rs` re-exports.** Public API: `Actor`, `Handler`, `StreamHandler`, `Message`, `Addr`, `AnyAddr`, `Recipient`, `Context`, `System`, `SystemHandle`, `SendError`, `AskError`, `IntervalHandle`. (`RestartPolicy` added in Task 4.)
 
 - [ ] **Step 7: Write integration tests.** Multi-actor test: spawn two actors, actor A sends to actor B, B replies. Test `StreamHandler` with a `futures::stream::iter`. Test `run_interval` fires expected number of times. Test shutdown stops all actors.
 
@@ -161,9 +161,9 @@ Migrate the four hand-rolled worker actors to use `willow-actor`. This is the fi
 
 - [ ] **Step 2: Rewrite `state.rs` as `StateActor`.** Struct holds `Box<dyn WorkerRole>`. Implement `Actor` (no lifecycle hooks needed). Implement `Handler<EventMsg>`, `Handler<WorkerRequestMsg>`, `Handler<GetRoleInfoMsg>`, `Handler<GetStateHashesMsg>`, `Handler<ServerDiscoveredMsg>`. Each handler is 1-3 lines — delegates to `self.role`. Remove the manual `run()` function and its `while let` loop.
 
-- [ ] **Step 3: Rewrite `network.rs` as `NetworkActor`.** Struct holds `Addr<StateActor>` and `EndpointId`. Implement `StreamHandler<Result<GossipEvent>>` — the `handle_stream_item` replaces the `while let` loop. Keep `parse_worker_message()` and `parse_server_message()` as pure functions. In `started()`, attach the `TopicEvents` stream via `ctx.add_stream()`. Remove the manual `run()` function.
+- [ ] **Step 3: Rewrite `network.rs` as `NetworkActor`.** Struct holds `Addr<StateActor>` and `EndpointId`. `TopicEvents` is not a `Stream` trait — it has an async `next()` method. Write a thin adapter (`TopicEventStream`) that wraps a `TopicEvents` impl into a `futures::Stream<Item = GossipEvent>` (filtering errors with a warning log). Implement `StreamHandler<GossipEvent>` — the `handle_stream_item` replaces the `while let` loop. Keep `parse_worker_message()` and `parse_server_message()` as pure functions. In `started()`, attach the adapted stream via `ctx.add_stream()`. Remove the manual `run()` function.
 
-- [ ] **Step 4: Rewrite `heartbeat.rs` as `HeartbeatActor`.** Struct holds `EndpointId`, `Addr<StateActor>`, and the `TopicHandle`. Define `HeartbeatTick` message. Implement `Handler<HeartbeatTick>` — queries state actor via `state_addr.ask(GetRoleInfoMsg)`, broadcasts announcement. In `started()`, call `ctx.run_interval(duration, || HeartbeatTick)`. Implement `stopped()` to broadcast departure. Remove `shutdown: watch::Receiver` — the actor stops when its address is dropped.
+- [ ] **Step 4: Rewrite `heartbeat.rs` as `HeartbeatActor`.** Struct holds `EndpointId`, `Addr<StateActor>`, and the `TopicHandle` (owned, not borrowed — actor owns it for its lifetime). Define `HeartbeatTick` message. Implement `Handler<HeartbeatTick>` — queries state actor via `state_addr.ask(GetRoleInfoMsg)`, broadcasts announcement. In `started()`, call `ctx.run_interval(duration, || HeartbeatTick)`. Implement `stopped()` to broadcast departure message via `self.topic.broadcast()` — the topic handle is still valid because the actor owns it. Remove `shutdown: watch::Receiver` — the actor stops when its address is dropped.
 
 - [ ] **Step 5: Rewrite `sync.rs` as `SyncActor`.** Same pattern as heartbeat. Define `SyncTick` message. `Handler<SyncTick>` queries state hashes and broadcasts sync requests. `started()` calls `ctx.run_interval()`. Remove watch-based shutdown.
 
@@ -190,7 +190,7 @@ Replace `Arc<RwLock<SharedState>>` and `futures::channel::mpsc` with actors.
 
 - [ ] **Step 2: Define `TopicListenerActor`.** Replaces `spawn_topic_listener`. Implements `StreamHandler` for gossip events. Holds `Addr<ClientStateActor>` and `TopicHandle`. In `handle_stream_item`, sends mutations to the state actor and emits `ClientEvent`s.
 
-- [ ] **Step 3: Refactor `ClientHandle<N>`.** Replace `shared: Arc<RwLock<SharedState>>` with `state: Addr<ClientStateActor>`. Replace `event_tx: futures_mpsc::UnboundedSender<ClientEvent>` with `events: Addr<EventBroadcastActor>` or keep as a channel (events go to UI, which may not be an actor). Client methods that read shared state switch from `shared.read().unwrap()` to `state.ask(GetState).await`. Methods that mutate state switch from `shared.write().unwrap()` to `state.send(mutation)`.
+- [ ] **Step 3: Refactor `ClientHandle<N>`.** Replace `shared: Arc<RwLock<SharedState>>` with `state: Addr<ClientStateActor>`. Keep `event_tx: futures_mpsc::UnboundedSender<ClientEvent>` as a plain channel — `ClientEvent`s flow to the UI layer (Leptos signals / Bevy ECS) which are not actors. The channel is the boundary between actor world and UI framework. Client methods that read shared state switch from `shared.read().unwrap()` to `state.ask(GetState).await`. Methods that mutate state switch from `shared.write().unwrap()` to `state.send(mutation)`.
 
 - [ ] **Step 4: Update `listeners.rs`.** Replace `spawn_topic_listener()` with spawning a `TopicListenerActor` on the system. Remove the manual `topic_listener_loop`.
 
