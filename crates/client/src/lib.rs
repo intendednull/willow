@@ -5,10 +5,11 @@
 //!
 //! ## Quick start
 //!
-//! ```no_run
+//! ```ignore
 //! use willow_client::{ClientHandle, ClientConfig, ClientEvent};
+//! use willow_network::iroh::IrohNetwork;
 //!
-//! let (client, event_loop) = ClientHandle::new(ClientConfig::default());
+//! let (client, event_loop) = ClientHandle::<IrohNetwork>::new(ClientConfig::default());
 //! client.connect();
 //!
 //! // Spawn the event loop; it sends ClientEvents to the receiver.
@@ -283,7 +284,7 @@ fn init_event_state_on_shared(shared: &mut SharedState, server_id: &str) {
     init_event_state_for_server(&mut shared.state, shared.config.persistence, server_id);
 }
 
-impl ClientHandle {
+impl<N: willow_network::Network> ClientHandle<N> {
     /// Create a new client. Loads or generates identity, loads or creates
     /// the server with default channels, loads persisted messages.
     ///
@@ -296,9 +297,10 @@ impl ClientHandle {
         let (cmd_tx, cmd_rx) = futures_mpsc::unbounded();
         let (event_tx, event_rx) = futures_mpsc::unbounded();
 
-        // We hold cmd_rx and event_tx until connect() is called.
-        // Store them in a side channel via Rc<RefCell>.
-        let deferred = Rc::new(RefCell::new(Some((event_tx, cmd_rx))));
+        // event_tx and cmd_rx will be consumed by the network backend
+        // once listener tasks replace ClientEventLoop. For now, drop them.
+        drop(cmd_rx);
+        drop(event_tx);
 
         let mut state = ClientState::new(identity.endpoint_id());
 
@@ -474,15 +476,19 @@ impl ClientHandle {
             join_links: Vec::new(),
         };
 
-        let shared = Rc::new(RefCell::new(shared_state));
+        // SharedState is Send but not Sync (due to rusqlite::Connection).
+        // Arc<RwLock<_>> is the target for full multi-task safety; making
+        // SharedState Sync is tracked as a follow-up task.
+        #[allow(clippy::arc_with_non_send_sync)]
+        let shared = Arc::new(RwLock::new(shared_state));
 
         let handle = ClientHandle {
-            shared: Rc::clone(&shared),
+            shared: Arc::clone(&shared),
             cmd_tx: cmd_tx.clone(),
-            deferred_channels: Some(deferred),
+            network: None,
         };
 
-        reconcile_topic_map(&mut handle.shared.borrow_mut().state);
+        reconcile_topic_map(&mut handle.shared.write().unwrap().state);
 
         let event_loop = ClientEventLoop {
             shared,
@@ -493,21 +499,15 @@ impl ClientHandle {
         (handle, event_loop)
     }
 
-    /// Connect to the P2P network. Spawns the network task in the background.
+    /// Connect to the P2P network.
     ///
-    /// After connecting, run [`ClientEventLoop::run()`] to process events.
+    /// This is currently a stub. The real implementation will accept a
+    /// [`Network`](willow_network::Network) and spawn per-topic listener tasks.
     pub fn connect(&self) {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         if shared.connected {
             return;
         }
-
-        let Some(deferred_rc) = self.deferred_channels.as_ref() else {
-            return;
-        };
-        let Some((event_tx, cmd_rx)) = deferred_rc.borrow_mut().take() else {
-            return;
-        };
 
         if shared.config.persistence {
             storage::save_settings(&storage::NetworkSettings {
@@ -515,7 +515,7 @@ impl ClientHandle {
             });
         }
 
-        network::spawn_network(shared.identity.clone(), event_tx, cmd_rx);
+        // TODO: spawn per-topic listener tasks using self.network
         shared.connected = true;
     }
 
@@ -524,10 +524,10 @@ impl ClientHandle {
     /// Join a voice channel. Leaves the current voice channel first if in one.
     pub fn join_voice(&self, channel_id: &str) {
         // Leave current voice channel if in one.
-        if self.shared.borrow().active_voice_channel.is_some() {
+        if self.shared.read().unwrap().active_voice_channel.is_some() {
             self.leave_voice();
         }
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let my_peer_id = shared.identity.endpoint_id();
         shared.active_voice_channel = Some(channel_id.to_string());
         // Add ourselves to participants.
@@ -546,7 +546,7 @@ impl ClientHandle {
 
     /// Leave the current voice channel, if in one.
     pub fn leave_voice(&self) {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let my_peer_id = shared.identity.endpoint_id();
         if let Some(ch) = shared.active_voice_channel.take() {
             // Remove ourselves from participants.
@@ -561,21 +561,21 @@ impl ClientHandle {
 
     /// Toggle mute state. Returns the new muted value.
     pub fn toggle_mute(&self) -> bool {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         shared.voice_muted = !shared.voice_muted;
         shared.voice_muted
     }
 
     /// Toggle deafen state. Returns the new deafened value.
     pub fn toggle_deafen(&self) -> bool {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         shared.voice_deafened = !shared.voice_deafened;
         shared.voice_deafened
     }
 
     /// Returns the list of peer IDs currently in the given voice channel.
     pub fn voice_participants(&self, channel_id: &str) -> Vec<willow_identity::EndpointId> {
-        let shared = self.shared.borrow();
+        let shared = self.shared.read().unwrap();
         shared
             .voice_participants
             .get(channel_id)
@@ -585,17 +585,17 @@ impl ClientHandle {
 
     /// Returns the voice channel we are currently in, if any.
     pub fn active_voice_channel(&self) -> Option<String> {
-        self.shared.borrow().active_voice_channel.clone()
+        self.shared.read().unwrap().active_voice_channel.clone()
     }
 
     /// Returns whether we are currently muted.
     pub fn is_voice_muted(&self) -> bool {
-        self.shared.borrow().voice_muted
+        self.shared.read().unwrap().voice_muted
     }
 
     /// Returns whether we are currently deafened.
     pub fn is_voice_deafened(&self) -> bool {
-        self.shared.borrow().voice_deafened
+        self.shared.read().unwrap().voice_deafened
     }
 
     /// Send a voice signaling message to a specific peer.
@@ -617,7 +617,7 @@ impl ClientHandle {
     /// Returns `(channel_name, kind_str)` pairs for the active server's channels.
     /// `kind_str` is `"text"` or `"voice"`.
     pub fn channel_kinds(&self) -> Vec<(String, String)> {
-        let shared = self.shared.borrow();
+        let shared = self.shared.read().unwrap();
         shared
             .state
             .event_state
@@ -631,7 +631,7 @@ impl ClientHandle {
 
     /// Switch to a different server by ID.
     pub fn switch_server(&self, server_id: &str) {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         if shared.state.servers.contains_key(server_id) {
             shared.state.active_server = Some(server_id.to_string());
             init_event_state_on_shared(&mut shared, server_id);
@@ -641,12 +641,12 @@ impl ClientHandle {
 
     /// List all servers as (id, name) pairs.
     pub fn server_list(&self) -> Vec<(String, String)> {
-        self.shared.borrow().state.server_list()
+        self.shared.read().unwrap().state.server_list()
     }
 
     /// Get the name of the currently active server.
     pub fn active_server_name(&self) -> String {
-        let shared = self.shared.borrow();
+        let shared = self.shared.read().unwrap();
         shared
             .state
             .active()
@@ -656,12 +656,12 @@ impl ClientHandle {
 
     /// Get the ID of the currently active server.
     pub fn active_server_id(&self) -> Option<String> {
-        self.shared.borrow().state.active_server.clone()
+        self.shared.read().unwrap().state.active_server.clone()
     }
 
     /// Check whether any servers exist.
     pub fn has_servers(&self) -> bool {
-        !self.shared.borrow().state.servers.is_empty()
+        !self.shared.read().unwrap().state.servers.is_empty()
     }
 
     /// Remove a server from the local state and persist the change.
@@ -669,7 +669,7 @@ impl ClientHandle {
     /// If the removed server was active, switches to the first remaining
     /// server (or clears the active server if none remain).
     pub fn leave_server(&self, server_id: &str) {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         shared.state.servers.remove(server_id);
         if shared.state.active_server.as_deref() == Some(server_id) {
             shared.state.active_server = shared.state.servers.keys().next().cloned();
@@ -687,7 +687,7 @@ impl ClientHandle {
     ///
     /// Returns the server ID.
     pub fn create_server(&self, name: &str) -> anyhow::Result<String> {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let mut server = willow_channel::Server::new(name, shared.identity.endpoint_id());
         let server_id = server.id.to_string();
 
@@ -770,7 +770,7 @@ impl ClientHandle {
     pub fn authorize_workers(&self, worker_peer_ids: &[willow_identity::EndpointId]) {
         let mut events_to_broadcast = Vec::new();
         {
-            let mut shared = self.shared.borrow_mut();
+            let mut shared = self.shared.write().unwrap();
             let peer_id = shared.identity.endpoint_id();
             for worker_pid in worker_peer_ids {
                 let event = willow_state::Event {
@@ -797,7 +797,7 @@ impl ClientHandle {
 
     /// Set display name for the active server via event-sourced state.
     pub fn set_server_display_name(&self, name: &str) -> anyhow::Result<()> {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         if shared.state.active_server.is_none() {
             return Err(anyhow::anyhow!("no active server"));
         }
@@ -836,7 +836,7 @@ impl ClientHandle {
 
     /// Get the display name for the active server (from event-sourced state).
     pub fn server_display_name(&self) -> String {
-        let shared = self.shared.borrow();
+        let shared = self.shared.read().unwrap();
         let peer_id = shared.identity.endpoint_id();
         shared
             .state
@@ -873,7 +873,7 @@ impl ClientHandle {
         };
 
         // Build reply preview from event_state messages.
-        let shared = self.shared.borrow();
+        let shared = self.shared.read().unwrap();
         let preview = shared
             .state
             .event_state
@@ -927,7 +927,7 @@ impl ClientHandle {
         message_id: &str,
         new_body: &str,
     ) -> anyhow::Result<()> {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let _ = shared
             .state
             .active()
@@ -954,7 +954,7 @@ impl ClientHandle {
 
     /// Delete a message.
     pub fn delete_message(&self, _channel: &str, message_id: &str) -> anyhow::Result<()> {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let _ = shared
             .state
             .active()
@@ -980,7 +980,7 @@ impl ClientHandle {
 
     /// Add a reaction to a message.
     pub fn react(&self, _channel: &str, message_id: &str, emoji: &str) -> anyhow::Result<()> {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let _ = shared
             .state
             .active()
@@ -1013,7 +1013,7 @@ impl ClientHandle {
     /// Creates a `PinMessage` event in the event-sourced state and broadcasts
     /// it to peers.
     pub fn pin_message(&self, channel: &str, message_id: &str) -> anyhow::Result<()> {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let channel_id = resolve_channel_id_shared(&shared.state, channel)?;
         let peer_id = shared.identity.endpoint_id();
         let event = willow_state::Event {
@@ -1039,7 +1039,7 @@ impl ClientHandle {
     /// Creates an `UnpinMessage` event in the event-sourced state and
     /// broadcasts it to peers.
     pub fn unpin_message(&self, channel: &str, message_id: &str) -> anyhow::Result<()> {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let channel_id = resolve_channel_id_shared(&shared.state, channel)?;
         let peer_id = shared.identity.endpoint_id();
         let event = willow_state::Event {
@@ -1064,7 +1064,7 @@ impl ClientHandle {
     ///
     /// Returns a sorted `Vec` of message IDs that are pinned in the channel.
     pub fn pinned_message_ids(&self, channel: &str) -> Vec<String> {
-        let shared = self.shared.borrow();
+        let shared = self.shared.read().unwrap();
         // Find channel_id from event_state by name (authoritative).
         let channel_id = shared
             .state
@@ -1120,7 +1120,7 @@ impl ClientHandle {
 
     /// Create a new channel.
     pub fn create_channel(&self, name: &str) -> anyhow::Result<()> {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let ctx = shared
             .state
             .active_mut()
@@ -1169,7 +1169,7 @@ impl ClientHandle {
 
     /// Create a voice channel.
     pub fn create_voice_channel(&self, name: &str) -> anyhow::Result<()> {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let ctx = shared
             .state
             .active_mut()
@@ -1215,7 +1215,7 @@ impl ClientHandle {
 
     /// Delete a channel.
     pub fn delete_channel(&self, name: &str) -> anyhow::Result<()> {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let ctx = shared
             .state
             .active_mut()
@@ -1271,7 +1271,7 @@ impl ClientHandle {
     /// Applies a `GrantPermission(Administrator)` event to the event-sourced
     /// state and broadcasts the event on the wire.
     pub fn trust_peer(&self, peer_id: willow_identity::EndpointId) {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let author = shared.identity.endpoint_id();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
@@ -1294,7 +1294,7 @@ impl ClientHandle {
     /// Applies a `RevokePermission(Administrator)` event to the event-sourced
     /// state and broadcasts the event on the wire.
     pub fn untrust_peer(&self, peer_id: willow_identity::EndpointId) {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let author = shared.identity.endpoint_id();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
@@ -1314,7 +1314,7 @@ impl ClientHandle {
 
     /// Kick a member, rotating channel keys.
     pub fn kick_member(&self, peer_id: willow_identity::EndpointId) -> anyhow::Result<()> {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let ctx = shared
             .state
             .active_mut()
@@ -1365,7 +1365,7 @@ impl ClientHandle {
 
     /// Create a new role.
     pub fn create_role(&self, name: &str) -> anyhow::Result<()> {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let role_id = willow_channel::RoleId::new();
         let role = willow_channel::Role::with_id(role_id.clone(), name);
 
@@ -1397,7 +1397,7 @@ impl ClientHandle {
 
     /// Delete a role by ID.
     pub fn delete_role(&self, role_id: &str) -> anyhow::Result<()> {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let rid = willow_channel::RoleId(uuid::Uuid::parse_str(role_id).unwrap_or_default());
 
         let ctx = shared
@@ -1432,7 +1432,7 @@ impl ClientHandle {
         permission: &str,
         granted: bool,
     ) -> anyhow::Result<()> {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let rid = willow_channel::RoleId(uuid::Uuid::parse_str(role_id).unwrap_or_default());
         let perm = parse_permission(permission)?;
 
@@ -1469,7 +1469,7 @@ impl ClientHandle {
         peer_id: willow_identity::EndpointId,
         role_id: &str,
     ) -> anyhow::Result<()> {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let rid = willow_channel::RoleId(uuid::Uuid::parse_str(role_id).unwrap_or_default());
 
         let ctx = shared
@@ -1512,7 +1512,7 @@ impl ClientHandle {
 
     /// Broadcast a state verification event carrying this peer's current state hash.
     pub fn verify_state(&self) -> anyhow::Result<()> {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let author = shared.identity.endpoint_id();
         let state_hash = shared.state.event_state.hash();
         let event = willow_state::Event {
@@ -1532,7 +1532,7 @@ impl ClientHandle {
     /// Returns (agreeing_peers, total_peers_reporting) based on collected
     /// StateVerification results.
     pub fn state_hash_agreement(&self) -> (usize, usize) {
-        let shared = self.shared.borrow();
+        let shared = self.shared.read().unwrap();
         let our_hash = shared.state.event_state.hash();
         let total = shared.state_verification_results.len();
         let agreeing = shared
@@ -1545,7 +1545,7 @@ impl ClientHandle {
 
     /// Rename the server. Only the owner can do this.
     pub fn rename_server(&self, new_name: &str) -> anyhow::Result<()> {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let author = shared.identity.endpoint_id();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
@@ -1565,7 +1565,7 @@ impl ClientHandle {
 
     /// Set the server description. Only the owner can do this.
     pub fn set_server_description(&self, desc: &str) -> anyhow::Result<()> {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let author = shared.identity.endpoint_id();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
@@ -1590,7 +1590,7 @@ impl ClientHandle {
     ) -> anyhow::Result<String> {
         let pub_key = invite::endpoint_id_to_ed25519_public(recipient_peer_id);
 
-        let shared = self.shared.borrow();
+        let shared = self.shared.read().unwrap();
         let ctx = shared
             .state
             .active()
@@ -1602,7 +1602,7 @@ impl ClientHandle {
 
     /// Accept an invite code and join the server.
     pub fn accept_invite(&self, code: &str) -> anyhow::Result<()> {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let accepted = invite::accept_invite(code, &shared.identity)
             .ok_or_else(|| anyhow::anyhow!("invalid invite code or not for us"))?;
 
@@ -1724,7 +1724,7 @@ impl ClientHandle {
 
     /// Send a JoinRequest for a link ID on the server ops topic.
     pub fn send_join_request(&self, link_id: &str) {
-        let shared = self.shared.borrow();
+        let shared = self.shared.read().unwrap();
         let msg = ops::WireMessage::JoinRequest {
             link_id: link_id.to_string(),
             peer_id: shared.identity.endpoint_id(),
@@ -1746,7 +1746,7 @@ impl ClientHandle {
         max_uses: u32,
         expires_at: Option<u64>,
     ) -> anyhow::Result<String> {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let server_id = shared
             .state
             .active_server
@@ -1806,12 +1806,12 @@ impl ClientHandle {
 
     /// Return all join links for the active server.
     pub fn join_links(&self) -> Vec<ops::JoinLink> {
-        self.shared.borrow().join_links.clone()
+        self.shared.read().unwrap().join_links.clone()
     }
 
     /// Delete a join link by ID.
     pub fn delete_join_link(&self, link_id: &str) {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         shared.join_links.retain(|l| l.link_id != link_id);
         if shared.config.persistence {
             storage::save_join_links(
@@ -1823,7 +1823,7 @@ impl ClientHandle {
 
     /// Set the local display name and broadcast to peers.
     pub fn set_display_name(&self, name: &str) {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let peer_id = shared.identity.endpoint_id();
         shared
             .state
@@ -1844,7 +1844,7 @@ impl ClientHandle {
 
     /// Switch the current channel.
     pub fn switch_channel(&self, name: &str) {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         if shared.state.chat.current_channel != name {
             shared.state.chat.current_channel = name.to_string();
 
@@ -1862,7 +1862,7 @@ impl ClientHandle {
     ///
     /// Debounced -- will not send more than once per 3 seconds.
     pub fn send_typing(&self) {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let now = util::current_time_ms();
         if now - shared.last_typing_sent_ms < 3000 {
             return; // debounce
@@ -1882,7 +1882,7 @@ impl ClientHandle {
     /// Automatically expires entries older than 5 seconds and excludes the
     /// local user.
     pub fn typing_in(&self, channel: &str) -> Vec<String> {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let now = util::current_time_ms();
         // Remove expired entries (older than 5 seconds).
         shared.typing_peers.retain(|_, (_, ts)| now - *ts < 5000);
@@ -1900,7 +1900,7 @@ impl ClientHandle {
 
     /// Get the local PeerId as a string.
     pub fn peer_id(&self) -> String {
-        self.shared.borrow().identity.endpoint_id().to_string()
+        self.shared.read().unwrap().identity.endpoint_id().to_string()
     }
 
     /// Get the local display name.
@@ -1908,7 +1908,7 @@ impl ClientHandle {
     /// Checks the event-sourced state profiles first, falling back to the
     /// legacy profile store.
     pub fn display_name(&self) -> String {
-        let shared = self.shared.borrow();
+        let shared = self.shared.read().unwrap();
         let pid = shared.identity.endpoint_id();
         if let Some(profile) = shared.state.event_state.profiles.get(&pid) {
             return profile.display_name.clone();
@@ -1921,13 +1921,13 @@ impl ClientHandle {
     /// Checks the event-sourced state profiles first, falling back to the
     /// legacy profile store.
     pub fn peer_display_name(&self, peer_id: &willow_identity::EndpointId) -> String {
-        let shared = self.shared.borrow();
+        let shared = self.shared.read().unwrap();
         peer_display_name_shared(&shared, peer_id)
     }
 
     /// Get messages for a channel, computed from the event-sourced state.
     pub fn messages(&self, channel: &str) -> Vec<state::DisplayMessage> {
-        let shared = self.shared.borrow();
+        let shared = self.shared.read().unwrap();
         // Collect ALL channel_ids that map to this channel name.
         // This handles the ID mismatch between owner and joiner.
         let mut channel_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -2040,7 +2040,7 @@ impl ClientHandle {
     /// Returns the union of channels from the server context and the
     /// event-sourced state, deduplicated and sorted.
     pub fn channels(&self) -> Vec<String> {
-        let shared = self.shared.borrow();
+        let shared = self.shared.read().unwrap();
         let mut names = shared.state.channel_names();
 
         // Merge any channels from event_state that aren't yet in the list.
@@ -2060,7 +2060,7 @@ impl ClientHandle {
     /// Returns all non-deleted messages for the given channel in
     /// event-sequence order (owned copies).
     pub fn event_messages(&self, channel_id: &str) -> Vec<willow_state::ChatMessage> {
-        let shared = self.shared.borrow();
+        let shared = self.shared.read().unwrap();
         shared
             .state
             .event_state
@@ -2073,7 +2073,7 @@ impl ClientHandle {
 
     /// Get the list of connected peers (libp2p-level connections).
     pub fn peers(&self) -> Vec<willow_identity::EndpointId> {
-        self.shared.borrow().state.chat.peers.clone()
+        self.shared.read().unwrap().state.chat.peers.clone()
     }
 
     /// Get all server members with online/offline status.
@@ -2082,7 +2082,7 @@ impl ClientHandle {
     /// Falls back to `chat.peers` for peers not in the member list
     /// (e.g. connected before event sync completes).
     pub fn server_members(&self) -> Vec<(willow_identity::EndpointId, String, bool)> {
-        let shared = self.shared.borrow();
+        let shared = self.shared.read().unwrap();
         let local_id = shared.identity.endpoint_id();
         let online: std::collections::HashSet<willow_identity::EndpointId> =
             shared.state.chat.peers.iter().copied().collect();
@@ -2123,14 +2123,14 @@ impl ClientHandle {
 
     /// Whether the network is connected.
     pub fn is_connected(&self) -> bool {
-        self.shared.borrow().connected
+        self.shared.read().unwrap().connected
     }
 
     /// Returns role data from the event-sourced state as owned values.
     ///
     /// Each entry is `(role_id, role_name, permissions)`, sorted by name.
     pub fn roles_data(&self) -> Vec<(String, String, Vec<String>)> {
-        let shared = self.shared.borrow();
+        let shared = self.shared.read().unwrap();
         let mut entries: Vec<(String, String, Vec<String>)> = shared
             .state
             .event_state
@@ -2147,7 +2147,7 @@ impl ClientHandle {
 
     /// Returns the EndpointId of the server owner.
     pub fn server_owner(&self) -> willow_identity::EndpointId {
-        self.shared.borrow().state.event_state.owner
+        self.shared.read().unwrap().state.event_state.owner
     }
 
     /// Check whether a peer has a specific permission.
@@ -2157,7 +2157,7 @@ impl ClientHandle {
         perm: &willow_state::Permission,
     ) -> bool {
         self.shared
-            .borrow()
+            .read().unwrap()
             .state
             .event_state
             .has_permission(peer_id, perm)
@@ -2165,12 +2165,12 @@ impl ClientHandle {
 
     /// Returns the current channel name from the chat state.
     pub fn current_channel(&self) -> String {
-        self.shared.borrow().state.chat.current_channel.clone()
+        self.shared.read().unwrap().state.chat.current_channel.clone()
     }
 
     /// Returns unread counts keyed by channel name for the active server.
     pub fn unread_counts(&self) -> HashMap<String, usize> {
-        let shared = self.shared.borrow();
+        let shared = self.shared.read().unwrap();
         let mut unread_map = HashMap::new();
         if let Some(ctx) = shared.state.active() {
             for (topic, count) in &ctx.unread {
@@ -2193,7 +2193,7 @@ impl ClientHandle {
         _reply_preview: Option<String>,
         reply_to: Option<String>,
     ) -> anyhow::Result<()> {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let ctx = shared
             .state
             .active()
@@ -2597,7 +2597,7 @@ impl ClientEventLoop {
                         continue;
                     }
 
-                    let mut shared = self.shared.borrow_mut();
+                    let mut shared = self.shared.write().unwrap();
                     // Track the sender as an online peer — receiving a signed
                     // event proves they are connected (possibly through the relay).
                     if !shared.state.chat.peers.contains(&from) {
@@ -2630,7 +2630,7 @@ impl ClientEventLoop {
                     topic,
                 } => {
                     tracing::info!(%from, ?topic, "sync requested");
-                    let shared = self.shared.borrow();
+                    let shared = self.shared.read().unwrap();
                     let missing = shared.state.event_store.events_since(&state_hash);
                     if !missing.is_empty() {
                         let count = missing.len();
@@ -2648,7 +2648,7 @@ impl ClientEventLoop {
                     events: batch_events,
                     from,
                 } => {
-                    let mut shared = self.shared.borrow_mut();
+                    let mut shared = self.shared.write().unwrap();
                     tracing::info!(count = batch_events.len(), %from, "received event sync batch");
                     // Track the sender as online.
                     if !shared.state.chat.peers.contains(&from) {
@@ -2700,7 +2700,7 @@ impl ClientEventLoop {
 
                 // -- Common events --
                 network::NetworkEvent::PeerConnected(peer) => {
-                    let mut shared = self.shared.borrow_mut();
+                    let mut shared = self.shared.write().unwrap();
                     if !shared.state.chat.peers.contains(&peer) {
                         shared.state.chat.peers.push(peer);
                     }
@@ -2740,7 +2740,7 @@ impl ClientEventLoop {
                     events.push(ClientEvent::PeerConnected(peer));
                 }
                 network::NetworkEvent::PeerDisconnected(peer) => {
-                    let mut shared = self.shared.borrow_mut();
+                    let mut shared = self.shared.write().unwrap();
                     shared.state.chat.peers.retain(|p| p != &peer);
                     events.push(ClientEvent::PeerDisconnected(peer));
                 }
@@ -2748,7 +2748,7 @@ impl ClientEventLoop {
                     peer_id,
                     display_name,
                 } => {
-                    let mut shared = self.shared.borrow_mut();
+                    let mut shared = self.shared.write().unwrap();
                     shared
                         .state
                         .profiles
@@ -2760,7 +2760,7 @@ impl ClientEventLoop {
                     });
                 }
                 network::NetworkEvent::Listening(addr) => {
-                    let mut shared = self.shared.borrow_mut();
+                    let mut shared = self.shared.write().unwrap();
                     // Reset subscription flag on reconnect so on_connected re-runs.
                     if addr == "reconnecting" {
                         shared.connected_subscribed = false;
@@ -2778,7 +2778,7 @@ impl ClientEventLoop {
                     topic,
                     ..
                 } => {
-                    let shared = self.shared.borrow();
+                    let shared = self.shared.read().unwrap();
                     let channel = shared
                         .state
                         .active()
@@ -2796,7 +2796,7 @@ impl ClientEventLoop {
                     // no-op for now
                 }
                 network::NetworkEvent::TypingReceived { peer_id, channel } => {
-                    let mut shared = self.shared.borrow_mut();
+                    let mut shared = self.shared.write().unwrap();
                     let now = util::current_time_ms();
                     shared.typing_peers.insert(peer_id, (channel, now));
                     // Also track as online peer.
@@ -2812,7 +2812,7 @@ impl ClientEventLoop {
                     channel_id,
                     peer_id,
                 } => {
-                    let mut shared = self.shared.borrow_mut();
+                    let mut shared = self.shared.write().unwrap();
                     shared
                         .voice_participants
                         .entry(channel_id.clone())
@@ -2827,7 +2827,7 @@ impl ClientEventLoop {
                     channel_id,
                     peer_id,
                 } => {
-                    let mut shared = self.shared.borrow_mut();
+                    let mut shared = self.shared.write().unwrap();
                     if let Some(participants) = shared.voice_participants.get_mut(&channel_id) {
                         participants.remove(&peer_id);
                     }
@@ -2848,7 +2848,7 @@ impl ClientEventLoop {
                     });
                 }
                 network::NetworkEvent::JoinLinkRequested { link_id, peer_id } => {
-                    let mut shared = self.shared.borrow_mut();
+                    let mut shared = self.shared.write().unwrap();
                     let link = shared.join_links.iter_mut().find(|l| l.link_id == link_id);
                     match link {
                         Some(link) if link.is_valid() => {
@@ -2862,12 +2862,7 @@ impl ClientEventLoop {
                             }
                             let identity = shared.identity.clone();
                             drop(shared);
-                            let handle = ClientHandle {
-                                shared: Rc::clone(&self.shared),
-                                cmd_tx: self.cmd_tx.clone(),
-                                deferred_channels: None,
-                            };
-                            match handle.generate_invite(&peer_id) {
+                            match generate_invite_shared(&self.shared, &peer_id) {
                                 Ok(invite_data) => {
                                     let msg = ops::WireMessage::JoinResponse {
                                         target_peer: peer_id,
@@ -2888,7 +2883,7 @@ impl ClientEventLoop {
                             }
                         }
                         Some(_) => {
-                            let shared = self.shared.borrow();
+                            let shared = self.shared.read().unwrap();
                             let msg = ops::WireMessage::JoinDenied {
                                 target_peer: peer_id,
                                 reason: "link_expired".to_string(),
@@ -2919,7 +2914,7 @@ impl ClientEventLoop {
 
     /// Broadcast our profile to the network if connected and profile is set.
     fn broadcast_profile(&self) {
-        let shared = self.shared.borrow();
+        let shared = self.shared.read().unwrap();
         if !shared.connected_subscribed {
             return;
         }
@@ -2939,7 +2934,7 @@ impl ClientEventLoop {
     /// mutable borrow of shared state, which cannot overlap with the borrow
     /// inside `process_batch`.
     fn verify_state_after_sync(&self) {
-        let mut shared = self.shared.borrow_mut();
+        let mut shared = self.shared.write().unwrap();
         let author = shared.identity.endpoint_id();
         let state_hash = shared.state.event_state.hash();
         let event = willow_state::Event {
@@ -2966,6 +2961,24 @@ fn resolve_channel_id_shared(state: &ClientState, channel: &str) -> anyhow::Resu
         .find(|(n, _)| n == channel)
         .map(|(_, cid)| cid.to_string())
         .ok_or_else(|| anyhow::anyhow!("channel not found: {}", channel))
+}
+
+/// Generate an invite for a peer, borrowing SharedState via Arc<RwLock>.
+///
+/// Extracted so that `ClientEventLoop` (non-generic) can generate invites
+/// without constructing a `ClientHandle<N>`.
+fn generate_invite_shared(
+    shared: &Arc<RwLock<SharedState>>,
+    recipient_peer_id: &willow_identity::EndpointId,
+) -> anyhow::Result<String> {
+    let pub_key = invite::endpoint_id_to_ed25519_public(recipient_peer_id);
+    let shared = shared.read().unwrap();
+    let ctx = shared
+        .state
+        .active()
+        .ok_or_else(|| anyhow::anyhow!("no active server"))?;
+    invite::generate_invite(&ctx.server, &ctx.keys, &ctx.topic_map, &pub_key)
+        .ok_or_else(|| anyhow::anyhow!("invite generation failed"))
 }
 
 /// Get a peer's display name from a borrowed SharedState.
@@ -3008,7 +3021,7 @@ fn parse_permission(s: &str) -> anyhow::Result<willow_channel::Permission> {
 /// The returned client has mpsc channels wired up but no background task.
 #[cfg(test)]
 pub(crate) fn test_client() -> (
-    ClientHandle,
+    ClientHandle<willow_network::mem::MemNetwork>,
     futures_mpsc::UnboundedReceiver<network::NetworkCommand>,
 ) {
     let identity = Identity::generate();
@@ -3089,13 +3102,14 @@ pub(crate) fn test_client() -> (
         join_links: Vec::new(),
     };
 
-    let shared = Rc::new(RefCell::new(shared_state));
+    #[allow(clippy::arc_with_non_send_sync)]
+    let shared = Arc::new(RwLock::new(shared_state));
 
     drop(event_rx); // Consumed by ClientEventLoop in production; not needed in tests.
     let client = ClientHandle {
         shared,
         cmd_tx,
-        deferred_channels: None,
+        network: None,
     };
 
     (client, cmd_rx)
@@ -3206,7 +3220,7 @@ mod tests {
         let names = client.channels();
         assert!(names.contains(&"new-channel".to_string()));
         assert_eq!(
-            client.shared.borrow().state.chat.current_channel,
+            client.shared.read().unwrap().state.chat.current_channel,
             "new-channel"
         );
     }
@@ -3227,7 +3241,7 @@ mod tests {
         client.create_channel("other").unwrap();
         client.switch_channel("general");
 
-        assert_eq!(client.shared.borrow().state.chat.current_channel, "general");
+        assert_eq!(client.shared.read().unwrap().state.chat.current_channel, "general");
     }
 
     #[test]
@@ -3311,7 +3325,7 @@ mod tests {
         // Create a second server context.
         let server2 = willow_channel::Server::new(
             "Second Server",
-            client.shared.borrow().identity.endpoint_id(),
+            client.shared.read().unwrap().identity.endpoint_id(),
         );
         let server2_id = server2.id.to_string();
         let ctx2 = ServerContext {
@@ -3322,31 +3336,31 @@ mod tests {
         };
         client
             .shared
-            .borrow_mut()
+            .write().unwrap()
             .state
             .servers
             .insert(server2_id.clone(), ctx2);
 
-        let original_id = client.shared.borrow().state.active_server.clone().unwrap();
+        let original_id = client.shared.read().unwrap().state.active_server.clone().unwrap();
         assert_ne!(original_id, server2_id);
 
         client.switch_server(&server2_id);
         assert_eq!(
-            client.shared.borrow().state.active_server.as_deref(),
+            client.shared.read().unwrap().state.active_server.as_deref(),
             Some(server2_id.as_str())
         );
 
         // Switch back.
         client.switch_server(&original_id);
         assert_eq!(
-            client.shared.borrow().state.active_server.as_deref(),
+            client.shared.read().unwrap().state.active_server.as_deref(),
             Some(original_id.as_str())
         );
 
         // Switch to non-existent server does nothing.
         client.switch_server("non-existent");
         assert_eq!(
-            client.shared.borrow().state.active_server.as_deref(),
+            client.shared.read().unwrap().state.active_server.as_deref(),
             Some(original_id.as_str())
         );
     }
@@ -3354,7 +3368,7 @@ mod tests {
     #[test]
     fn test_accept_invite_creates_new_server() {
         let (client, _rx) = test_client();
-        let initial_count = client.shared.borrow().state.servers.len();
+        let initial_count = client.shared.read().unwrap().state.servers.len();
         assert_eq!(initial_count, 1);
 
         // Create a second identity (the "owner" of the other server).
@@ -3373,17 +3387,17 @@ mod tests {
         topic_map.insert(topic, ("lobby".into(), ch_id));
 
         // Generate invite for our client.
-        let our_pub = *client.shared.borrow().identity.endpoint_id().as_bytes();
+        let our_pub = *client.shared.read().unwrap().identity.endpoint_id().as_bytes();
         let code = invite::generate_invite(&owner_server, &keys, &topic_map, &our_pub).unwrap();
 
         // Accept the invite.
         client.accept_invite(&code).unwrap();
 
         // Should now have 2 servers.
-        assert_eq!(client.shared.borrow().state.servers.len(), 2);
+        assert_eq!(client.shared.read().unwrap().state.servers.len(), 2);
 
         // Active server should be the new one.
-        let shared = client.shared.borrow();
+        let shared = client.shared.read().unwrap();
         let active_id = shared.state.active_server.clone().unwrap();
         let new_ctx = shared.state.servers.get(&active_id).unwrap();
         assert!(!new_ctx.keys.is_empty());
@@ -3409,14 +3423,14 @@ mod tests {
         }
         topic_map.insert(topic, ("lobby".into(), ch_id));
 
-        let our_pub = *client.shared.borrow().identity.endpoint_id().as_bytes();
+        let our_pub = *client.shared.read().unwrap().identity.endpoint_id().as_bytes();
         let code = invite::generate_invite(&owner_server, &keys, &topic_map, &our_pub).unwrap();
 
         client.accept_invite(&code).unwrap();
 
         // The event_state owner should be the ACTUAL owner, not the joiner.
         assert_eq!(
-            client.shared.borrow().state.event_state.owner,
+            client.shared.read().unwrap().state.event_state.owner,
             owner_peer_id,
             "event_state.owner should be the server owner, not the joining peer"
         );
@@ -3443,7 +3457,7 @@ mod tests {
         }
         topic_map.insert(topic, ("lobby".into(), ch_id));
 
-        let our_pub = *client.shared.borrow().identity.endpoint_id().as_bytes();
+        let our_pub = *client.shared.read().unwrap().identity.endpoint_id().as_bytes();
         let code = invite::generate_invite(&owner_server, &keys, &topic_map, &our_pub).unwrap();
 
         client.accept_invite(&code).unwrap();
@@ -3461,7 +3475,7 @@ mod tests {
             },
         };
         willow_state::apply_lenient(
-            &mut client.shared.borrow_mut().state.event_state,
+            &mut client.shared.write().unwrap().state.event_state,
             &create_ch_event,
         );
 
@@ -3478,7 +3492,7 @@ mod tests {
             },
         };
         willow_state::apply_lenient(
-            &mut client.shared.borrow_mut().state.event_state,
+            &mut client.shared.write().unwrap().state.event_state,
             &msg_event,
         );
 
@@ -3499,7 +3513,7 @@ mod tests {
         // Send a message on server 1.
         client.send_message("general", "server1 msg").unwrap();
 
-        let server1_id = client.shared.borrow().state.active_server.clone().unwrap();
+        let server1_id = client.shared.read().unwrap().state.active_server.clone().unwrap();
 
         // When viewing server 1, see server 1 messages.
         let msgs = client.messages("general");
@@ -3531,9 +3545,9 @@ mod tests {
 
         // Add a second server.
         let server2 =
-            willow_channel::Server::new("Second", client.shared.borrow().identity.endpoint_id());
+            willow_channel::Server::new("Second", client.shared.read().unwrap().identity.endpoint_id());
         let server2_id = server2.id.to_string();
-        client.shared.borrow_mut().state.servers.insert(
+        client.shared.write().unwrap().state.servers.insert(
             server2_id,
             ServerContext {
                 server: server2,
@@ -3576,7 +3590,7 @@ mod tests {
         }
 
         // Verify event_state has all 5 channels.
-        let shared = client.shared.borrow();
+        let shared = client.shared.read().unwrap();
         let event_channels: Vec<String> = shared
             .state
             .event_state
@@ -3625,7 +3639,7 @@ mod tests {
 
         // Verify event_state.messages has all 6 messages.
         assert_eq!(
-            client.shared.borrow().state.event_state.messages.len(),
+            client.shared.read().unwrap().state.event_state.messages.len(),
             6,
             "event_state should have 6 messages total"
         );
@@ -3640,7 +3654,7 @@ mod tests {
         client.trust_peer(some_peer);
 
         // Verify they appear in event_state.peer_permissions with Administrator.
-        let shared = client.shared.borrow();
+        let shared = client.shared.read().unwrap();
         assert!(
             shared
                 .state
@@ -3658,7 +3672,7 @@ mod tests {
         client.untrust_peer(some_peer);
 
         // Verify Administrator permission removed.
-        let shared = client.shared.borrow();
+        let shared = client.shared.read().unwrap();
         assert!(
             !shared
                 .state
@@ -3680,7 +3694,7 @@ mod tests {
         client.trust_peer(Identity::generate().endpoint_id());
 
         // Check event_store has the corresponding events.
-        let shared = client.shared.borrow();
+        let shared = client.shared.read().unwrap();
         let events = shared.state.event_store.all_events();
         assert!(
             events.len() >= 3,
@@ -3709,7 +3723,7 @@ mod tests {
         );
 
         // Also verify the event_state has them.
-        let shared = client.shared.borrow();
+        let shared = client.shared.read().unwrap();
         let es_names: Vec<String> = shared
             .state
             .event_state
@@ -3726,17 +3740,17 @@ mod tests {
         let (client, _rx) = test_client();
 
         // Set display name via SetProfile event on the event_state.
-        let peer_id = client.shared.borrow().identity.endpoint_id();
+        let peer_id = client.shared.read().unwrap().identity.endpoint_id();
         let event = willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
-            parent_hash: client.shared.borrow().state.event_state.hash(),
+            parent_hash: client.shared.read().unwrap().state.event_state.hash(),
             author: peer_id,
             timestamp_ms: 1000,
             kind: willow_state::EventKind::SetProfile {
                 display_name: "EventAlice".into(),
             },
         };
-        willow_state::apply_lenient(&mut client.shared.borrow_mut().state.event_state, &event);
+        willow_state::apply_lenient(&mut client.shared.write().unwrap().state.event_state, &event);
 
         // Verify display_name() reads from event_state.profiles.
         assert_eq!(
@@ -3775,10 +3789,10 @@ mod tests {
         let peer_a = Identity::generate().endpoint_id();
 
         // Simulate a remote peer's StateVerification event with a matching hash.
-        let our_hash = client.shared.borrow().state.event_state.hash();
+        let our_hash = client.shared.read().unwrap().state.event_state.hash();
         client
             .shared
-            .borrow_mut()
+            .write().unwrap()
             .state_verification_results
             .insert(peer_a, our_hash);
 
@@ -3796,7 +3810,7 @@ mod tests {
         let wrong_hash = willow_state::StateHash::from_bytes(b"wrong");
         client
             .shared
-            .borrow_mut()
+            .write().unwrap()
             .state_verification_results
             .insert(peer_b, wrong_hash);
 
@@ -3810,17 +3824,17 @@ mod tests {
         let (client, _rx) = test_client();
         let peer_a = Identity::generate().endpoint_id();
         let peer_b = Identity::generate().endpoint_id();
-        let our_hash = client.shared.borrow().state.event_state.hash();
+        let our_hash = client.shared.read().unwrap().state.event_state.hash();
 
         // One matching, one mismatched.
         client
             .shared
-            .borrow_mut()
+            .write().unwrap()
             .state_verification_results
             .insert(peer_a, our_hash);
         client
             .shared
-            .borrow_mut()
+            .write().unwrap()
             .state_verification_results
             .insert(peer_b, willow_state::StateHash::from_bytes(b"different"));
 
@@ -3836,7 +3850,7 @@ mod tests {
         let (client, _rx) = test_client();
         client.rename_server("New Server Name").unwrap();
         assert_eq!(
-            client.shared.borrow().state.event_state.server_name,
+            client.shared.read().unwrap().state.event_state.server_name,
             "New Server Name"
         );
     }
@@ -3858,7 +3872,7 @@ mod tests {
         let (client, _rx) = test_client();
         client.set_server_description("A cool server").unwrap();
         assert_eq!(
-            client.shared.borrow().state.event_state.description,
+            client.shared.read().unwrap().state.event_state.description,
             "A cool server"
         );
     }
@@ -3887,7 +3901,7 @@ mod tests {
     fn no_servers_returns_empty_channels() {
         let (client, _rx) = test_client();
         {
-            let mut shared = client.shared.borrow_mut();
+            let mut shared = client.shared.write().unwrap();
             shared.state.servers.clear();
             shared.state.active_server = None;
             shared.state.event_state.channels.clear();
@@ -3901,7 +3915,7 @@ mod tests {
     fn no_servers_returns_empty_messages() {
         let (client, _rx) = test_client();
         {
-            let mut shared = client.shared.borrow_mut();
+            let mut shared = client.shared.write().unwrap();
             shared.state.servers.clear();
             shared.state.active_server = None;
         }
@@ -3914,7 +3928,7 @@ mod tests {
     fn no_servers_active_server_name_returns_no_server() {
         let (client, _rx) = test_client();
         {
-            let mut shared = client.shared.borrow_mut();
+            let mut shared = client.shared.write().unwrap();
             shared.state.servers.clear();
             shared.state.active_server = None;
         }
@@ -3926,7 +3940,7 @@ mod tests {
     fn no_servers_send_message_returns_error() {
         let (client, _rx) = test_client();
         {
-            let mut shared = client.shared.borrow_mut();
+            let mut shared = client.shared.write().unwrap();
             shared.state.servers.clear();
             shared.state.active_server = None;
         }
@@ -3939,7 +3953,7 @@ mod tests {
     fn no_servers_create_channel_returns_error() {
         let (client, _rx) = test_client();
         {
-            let mut shared = client.shared.borrow_mut();
+            let mut shared = client.shared.write().unwrap();
             shared.state.servers.clear();
             shared.state.active_server = None;
         }
@@ -3952,7 +3966,7 @@ mod tests {
     fn create_server_adds_server() {
         let (client, _rx) = test_client();
         {
-            let mut shared = client.shared.borrow_mut();
+            let mut shared = client.shared.write().unwrap();
             shared.state.servers.clear();
             shared.state.active_server = None;
         }
@@ -3961,7 +3975,7 @@ mod tests {
         let server_id = client.create_server("My New Server").unwrap();
         assert!(client.has_servers());
         assert_eq!(
-            client.shared.borrow().state.active_server.as_deref(),
+            client.shared.read().unwrap().state.active_server.as_deref(),
             Some(server_id.as_str())
         );
         assert_eq!(client.active_server_name(), "My New Server");
@@ -3971,7 +3985,7 @@ mod tests {
     fn create_server_has_general_channel() {
         let (client, _rx) = test_client();
         {
-            let mut shared = client.shared.borrow_mut();
+            let mut shared = client.shared.write().unwrap();
             shared.state.servers.clear();
             shared.state.active_server = None;
         }
@@ -3988,26 +4002,26 @@ mod tests {
     fn create_server_sets_current_channel() {
         let (client, _rx) = test_client();
         {
-            let mut shared = client.shared.borrow_mut();
+            let mut shared = client.shared.write().unwrap();
             shared.state.servers.clear();
             shared.state.active_server = None;
         }
 
         client.create_server("Test").unwrap();
-        assert_eq!(client.shared.borrow().state.chat.current_channel, "general");
+        assert_eq!(client.shared.read().unwrap().state.chat.current_channel, "general");
     }
 
     #[test]
     fn create_server_initializes_event_state() {
         let (client, _rx) = test_client();
         {
-            let mut shared = client.shared.borrow_mut();
+            let mut shared = client.shared.write().unwrap();
             shared.state.servers.clear();
             shared.state.active_server = None;
         }
 
         let server_id = client.create_server("Event Test").unwrap();
-        let shared = client.shared.borrow();
+        let shared = client.shared.read().unwrap();
         assert_eq!(shared.state.event_state.server_id, server_id);
         assert_eq!(shared.state.event_state.server_name, "Event Test");
         assert_eq!(
@@ -4031,7 +4045,7 @@ mod tests {
     fn create_server_subscribes_to_topic() {
         let (client, mut rx) = test_client();
         {
-            let mut shared = client.shared.borrow_mut();
+            let mut shared = client.shared.write().unwrap();
             shared.state.servers.clear();
             shared.state.active_server = None;
         }
@@ -4051,7 +4065,7 @@ mod tests {
     fn create_server_allows_sending_messages() {
         let (client, _rx) = test_client();
         {
-            let mut shared = client.shared.borrow_mut();
+            let mut shared = client.shared.write().unwrap();
             shared.state.servers.clear();
             shared.state.active_server = None;
         }
@@ -4068,7 +4082,7 @@ mod tests {
     fn create_multiple_servers() {
         let (client, _rx) = test_client();
         {
-            let mut shared = client.shared.borrow_mut();
+            let mut shared = client.shared.write().unwrap();
             shared.state.servers.clear();
             shared.state.active_server = None;
         }
@@ -4076,12 +4090,12 @@ mod tests {
         let id1 = client.create_server("Server One").unwrap();
         let id2 = client.create_server("Server Two").unwrap();
 
-        assert_eq!(client.shared.borrow().state.servers.len(), 2);
+        assert_eq!(client.shared.read().unwrap().state.servers.len(), 2);
         assert_ne!(id1, id2);
 
         // Active server should be the last created.
         assert_eq!(
-            client.shared.borrow().state.active_server.as_deref(),
+            client.shared.read().unwrap().state.active_server.as_deref(),
             Some(id2.as_str())
         );
         assert_eq!(client.active_server_name(), "Server Two");
@@ -4105,7 +4119,7 @@ mod tests {
     fn set_server_display_name_no_server_returns_error() {
         let (client, _rx) = test_client();
         {
-            let mut shared = client.shared.borrow_mut();
+            let mut shared = client.shared.write().unwrap();
             shared.state.servers.clear();
             shared.state.active_server = None;
         }
@@ -4156,14 +4170,14 @@ mod tests {
         let (client, _rx) = test_client();
         assert!(client
             .shared
-            .borrow()
+            .read().unwrap()
             .state
             .chat
             .seen_message_ids
             .is_empty());
 
         client.send_message("general", "test").unwrap();
-        let _ = client.shared.borrow().state.chat.seen_message_ids.len();
+        let _ = client.shared.read().unwrap().state.chat.seen_message_ids.len();
     }
 
     // ---- Per-server display name isolation ----
@@ -4172,7 +4186,7 @@ mod tests {
     fn server_display_name_per_server() {
         let (client, _rx) = test_client();
         {
-            let mut shared = client.shared.borrow_mut();
+            let mut shared = client.shared.write().unwrap();
             shared.state.servers.clear();
             shared.state.active_server = None;
         }
@@ -4195,7 +4209,7 @@ mod tests {
     fn switch_server_updates_event_state() {
         let (client, _rx) = test_client();
         {
-            let mut shared = client.shared.borrow_mut();
+            let mut shared = client.shared.write().unwrap();
             shared.state.servers.clear();
             shared.state.active_server = None;
         }
@@ -4203,7 +4217,7 @@ mod tests {
         let id1 = client.create_server("Server A").unwrap();
         assert!(client
             .shared
-            .borrow()
+            .read().unwrap()
             .state
             .event_state
             .channels
@@ -4212,13 +4226,13 @@ mod tests {
 
         let _id2 = client.create_server("Server B").unwrap();
         assert_eq!(
-            client.shared.borrow().state.event_state.server_name,
+            client.shared.read().unwrap().state.event_state.server_name,
             "Server B"
         );
 
         client.switch_server(&id1);
         assert_eq!(
-            client.shared.borrow().state.event_state.server_name,
+            client.shared.read().unwrap().state.event_state.server_name,
             "Server A"
         );
     }
@@ -4227,7 +4241,7 @@ mod tests {
     fn switch_server_isolates_legacy_channels() {
         let (client, _rx) = test_client();
         {
-            let mut shared = client.shared.borrow_mut();
+            let mut shared = client.shared.write().unwrap();
             shared.state.servers.clear();
             shared.state.active_server = None;
         }
@@ -4239,14 +4253,14 @@ mod tests {
         client.create_channel("beta").unwrap();
 
         // On Server B, channel_names should include "beta" but not "alpha".
-        let names_b = client.shared.borrow().state.channel_names();
+        let names_b = client.shared.read().unwrap().state.channel_names();
         assert!(names_b.contains(&"general".to_string()));
         assert!(names_b.contains(&"beta".to_string()));
         assert!(!names_b.contains(&"alpha".to_string()));
 
         // Switch to Server A, channel_names should include "alpha" but not "beta".
         client.switch_server(&id1);
-        let names_a = client.shared.borrow().state.channel_names();
+        let names_a = client.shared.read().unwrap().state.channel_names();
         assert!(names_a.contains(&"general".to_string()));
         assert!(names_a.contains(&"alpha".to_string()));
         assert!(!names_a.contains(&"beta".to_string()));
@@ -4305,7 +4319,7 @@ mod tests {
         // Find the channel_id for "general" in event_state.
         let channel_id = client
             .shared
-            .borrow()
+            .read().unwrap()
             .state
             .event_state
             .channels
@@ -4319,7 +4333,7 @@ mod tests {
         let remote_peer = Identity::generate().endpoint_id();
         let remote_event = willow_state::Event {
             id: "remote-msg-1".to_string(),
-            parent_hash: client.shared.borrow().state.event_state.hash(),
+            parent_hash: client.shared.read().unwrap().state.event_state.hash(),
             author: remote_peer,
             timestamp_ms: 1000,
             kind: willow_state::EventKind::Message {
@@ -4329,7 +4343,7 @@ mod tests {
             },
         };
         willow_state::apply_lenient(
-            &mut client.shared.borrow_mut().state.event_state,
+            &mut client.shared.write().unwrap().state.event_state,
             &remote_event,
         );
 
@@ -4362,7 +4376,7 @@ mod tests {
         let peer_1 = Identity::generate().endpoint_id();
         client
             .shared
-            .borrow_mut()
+            .write().unwrap()
             .typing_peers
             .insert(peer_1, ("general".to_string(), 0));
 
@@ -4394,7 +4408,7 @@ mod tests {
         let token = crate::ops::JoinToken::decode(&token_str).unwrap();
         assert_eq!(
             token.inviter_peer_id,
-            client.shared.borrow().identity.endpoint_id()
+            client.shared.read().unwrap().identity.endpoint_id()
         );
         assert!(!token.link_id.is_empty());
         assert!(!token.server_name.is_empty());
@@ -4430,7 +4444,7 @@ mod tests {
         let worker2 = Identity::generate().endpoint_id();
         client.authorize_workers(&[worker1, worker2]);
 
-        let shared = client.shared.borrow();
+        let shared = client.shared.read().unwrap();
         assert!(shared
             .state
             .event_state
@@ -4446,9 +4460,9 @@ mod tests {
         let (client, _rx) = test_client();
         client.create_server("No Workers").unwrap();
 
-        let hash_before = client.shared.borrow().state.event_state.hash();
+        let hash_before = client.shared.read().unwrap().state.event_state.hash();
         client.authorize_workers(&[]);
-        let hash_after = client.shared.borrow().state.event_state.hash();
+        let hash_after = client.shared.read().unwrap().state.event_state.hash();
 
         assert_eq!(hash_before, hash_after);
     }

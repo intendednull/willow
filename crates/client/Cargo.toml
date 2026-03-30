@@ -36,3 +36,4 @@ gloo-timers = { version = "0.3", features = ["futures"] }
 
 [dev-dependencies]
 tempfile = "3"
+willow-network = { path = "../network", features = ["test-utils"] }

@@ -7229,6 +7229,7 @@ dependencies = [
  "web-sys",
  "willow-client",
  "willow-identity",
+ "willow-network",
 ]
 
 [[package]]
