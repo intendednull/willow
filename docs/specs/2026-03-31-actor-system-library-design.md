@@ -1,0 +1,696 @@
+# Actor System Library — Extended Actor Types
+
+**Date**: 2026-03-31
+**Status**: Draft
+**Issue**: https://github.com/intendednull/willow/issues/17
+
+## Motivation
+
+The `willow-actor` crate provides a solid foundation: `Actor`, `Handler<M>`,
+`StreamHandler<S>`, `Addr<A>`, `Recipient<M>`, supervision, and intervals.
+But higher-level patterns like state management, derived state, and output
+streaming are currently hand-built in downstream crates (`willow-client`,
+`willow-web`). These patterns are general-purpose and should live in the
+actor crate itself, making it publishable as a standalone library.
+
+### What exists today
+
+| Pattern | Location | Problem |
+|---------|----------|---------|
+| `ClientStateActor` | `willow-client/src/client_actor.rs` | Hardcoded to `SharedState`, uses `Box<dyn Any>` downcasting |
+| `DerivedStateActor<T>` | `willow-web/src/derived.rs` | Coupled to Leptos `WriteSignal`, can only derive from one source |
+| Worker `StateActor` | `willow-worker/src/actors/state.rs` | Hand-rolled, no generic get/set/subscribe interface |
+| Stream consumption | `StreamHandler<S>` | Can consume streams, but no way to *produce* a stream from an actor |
+
+### Goal
+
+Extract generic versions of these patterns into `willow-actor` so they can
+be reused across the codebase and by external consumers. The actor crate
+should remain dependency-free (no Leptos, no willow-specific types).
+
+---
+
+## 1. State Actor
+
+A generic actor that owns a value of type `S` and provides a uniform
+interface for reading, mutating, and subscribing to changes.
+
+### Design
+
+```rust
+/// An actor that owns state of type `S` with get/set/subscribe semantics.
+///
+/// Mutations are batched — subscriber notifications fire in `idle()` after
+/// all pending messages are drained, so a burst of mutations triggers a
+/// single notification round.
+pub struct StateActor<S: Send + 'static> {
+    state: S,
+    dirty: bool,
+    subscribers: Vec<Recipient<Notify>>,
+}
+```
+
+### Messages
+
+```rust
+/// Get the current state (clones it out).
+pub struct Get;
+impl Message for Get { type Result = S; }
+// Requires S: Clone
+
+/// Set the state to a new value. Marks dirty.
+pub struct Set<S>(pub S);
+impl Message for Set<S> { type Result = (); }
+
+/// Mutate state via a type-erased closure. Returns a type-erased result.
+/// Use the `mutate()` helper for type-safe access.
+pub struct Mutate(pub Box<dyn FnOnce(&mut S) -> Box<dyn Any + Send> + Send>);
+impl Message for Mutate { type Result = Box<dyn Any + Send>; }
+
+/// Read state via a type-erased selector. Returns a type-erased result.
+/// Use the `select()` helper for type-safe access.
+pub struct Select(pub Box<dyn FnOnce(&S) -> Box<dyn Any + Send> + Send>);
+impl Message for Select { type Result = Box<dyn Any + Send>; }
+
+/// Subscribe to state change notifications.
+pub struct Subscribe(pub Recipient<Notify>);
+impl Message for Subscribe { type Result = (); }
+
+/// Notification sent to subscribers after mutations.
+#[derive(Clone)]
+pub struct Notify;
+impl Message for Notify { type Result = (); }
+```
+
+### Typed helpers
+
+```rust
+/// Type-safe read via selector.
+pub async fn select<S, T>(addr: &Addr<StateActor<S>>, f: impl FnOnce(&S) -> T) -> T
+where S: Send + 'static, T: Send + 'static { ... }
+
+/// Type-safe mutation with return value.
+pub async fn mutate<S, T>(addr: &Addr<StateActor<S>>, f: impl FnOnce(&mut S) -> T) -> T
+where S: Send + 'static, T: Send + 'static { ... }
+```
+
+### Lifecycle
+
+- `idle()`: if `dirty`, sends `Notify` to all subscribers, resets flag.
+  This batches a burst of `Set`/`Mutate` messages into one notification.
+- Subscribers that are dead (send fails) are pruned on each notify cycle.
+
+### Example
+
+```rust
+let system = System::new();
+let state = system.spawn(StateActor::new(AppState::default()));
+
+// Read a slice
+let count = select(&state, |s| s.message_count).await;
+
+// Mutate
+mutate(&state, |s| s.message_count += 1).await;
+
+// Subscribe
+let my_recipient: Recipient<Notify> = my_addr.into();
+state.do_send(Subscribe(my_recipient)).unwrap();
+```
+
+### Why generic over `S`
+
+The current `ClientStateActor` is hardcoded to `SharedState`. The worker
+`StateActor` is hardcoded to `Box<dyn WorkerRole>`. Both are the same
+pattern: own state, provide read/mutate, notify subscribers. A generic
+`StateActor<S>` eliminates this duplication. Downstream crates parameterize
+with their specific state type.
+
+---
+
+## 2. Derived Actor
+
+A generic actor that derives its value from one or more source actors.
+Subscribes to source notifications, runs a combiner/selector, caches
+the result, and only notifies downstream when the value changes.
+
+### Single-source derived
+
+```rust
+/// Derives a value of type `T` from a `StateActor<S>`.
+pub struct DerivedActor<S, T>
+where
+    S: Send + 'static,
+    T: PartialEq + Clone + Send + 'static,
+{
+    source: Addr<StateActor<S>>,
+    selector: Arc<dyn Fn(&S) -> T + Send + Sync>,
+    cached: Option<T>,
+    subscribers: Vec<Recipient<Notify>>,
+    dirty: bool,
+}
+```
+
+On receiving `Notify` from its source:
+1. Runs `select(&source, selector)` to get the current derived value
+2. Compares with `cached` via `PartialEq`
+3. If changed: updates cache, marks `dirty`
+4. In `idle()`: notifies own subscribers (same batching as `StateActor`)
+
+### Multi-source derived
+
+For deriving from 2+ sources (e.g., combine user state + network state):
+
+```rust
+/// Derives a value from two state actor sources.
+pub struct Derived2Actor<S1, S2, T>
+where
+    S1: Send + 'static,
+    S2: Send + 'static,
+    T: PartialEq + Clone + Send + 'static,
+{
+    source1: Addr<StateActor<S1>>,
+    source2: Addr<StateActor<S2>>,
+    combiner: Arc<dyn Fn(&S1, &S2) -> T + Send + Sync>,
+    cached: Option<T>,
+    subscribers: Vec<Recipient<Notify>>,
+    dirty: bool,
+}
+```
+
+On `Notify` from either source: re-runs the combiner against both
+sources (via two `select()` calls) and compares.
+
+### Chaining
+
+Derived actors implement the same `Subscribe`/`Notify`/`Select` interface
+as state actors. This means a `DerivedActor` can be the source for another
+`DerivedActor`, forming a reactive computation graph:
+
+```
+StateActor<AppState>
+    ├── DerivedActor (peers list)
+    │       └── DerivedActor (online count)
+    └── DerivedActor (channels list)
+            └── DerivedActor (unread counts)
+```
+
+### Trait: `Observable`
+
+To enable chaining without caring whether the source is a `StateActor` or
+`DerivedActor`, both implement a common trait:
+
+```rust
+/// An actor that can be subscribed to and selected from.
+///
+/// This is not an object-safe trait — it's used as a generic bound to
+/// write code that works with both StateActor and DerivedActor.
+pub trait Observable<S: Send + 'static>: Actor + Handler<Subscribe> + Handler<Select> {}
+
+impl<S: Clone + Send + 'static> Observable<S> for StateActor<S> {}
+impl<S, T> Observable<T> for DerivedActor<S, T>
+where
+    S: Send + 'static,
+    T: PartialEq + Clone + Send + 'static,
+{}
+```
+
+**Alternative: address-based approach.** Rather than a trait, we could
+provide a `StateRef<S>` handle that wraps `Addr<A>` and exposes only
+`select()` and `subscribe()`. This would allow type-erased composition
+at the cost of dynamic dispatch for reads. Worth considering if the trait
+approach creates too many generic parameters.
+
+### Convenience constructors
+
+```rust
+/// Create a derived actor from a single source.
+pub fn derived<S, T>(
+    system: &SystemHandle,
+    source: &Addr<StateActor<S>>,
+    selector: impl Fn(&S) -> T + Send + Sync + 'static,
+) -> Addr<DerivedActor<S, T>>
+
+/// Create a derived actor from two sources.
+pub fn derived2<S1, S2, T>(
+    system: &SystemHandle,
+    source1: &Addr<StateActor<S1>>,
+    source2: &Addr<StateActor<S2>>,
+    combiner: impl Fn(&S1, &S2) -> T + Send + Sync + 'static,
+) -> Addr<Derived2Actor<S1, S2, T>>
+```
+
+---
+
+## 3. Stream Actor
+
+An actor whose output can be consumed as a `futures::Stream`. This is the
+inverse of `StreamHandler` (which consumes streams). A stream actor
+*produces* values that external code can iterate over asynchronously.
+
+### Design
+
+```rust
+/// Wraps any actor, providing a stream of output values.
+///
+/// When the wrapped actor sends `Emit<T>` to itself (via its context),
+/// the value is pushed to all active stream subscribers.
+pub struct StreamOutput<T: Send + Clone + 'static> {
+    subscribers: Vec<runtime::Sender<T>>,
+}
+```
+
+### How it works
+
+Any actor that wants to produce a stream holds a `StreamOutput<T>` and
+calls `emit()` to push values:
+
+```rust
+impl<T: Send + Clone + 'static> StreamOutput<T> {
+    /// Push a value to all active stream consumers.
+    /// Dead consumers (closed channels) are pruned.
+    pub fn emit(&mut self, value: T) { ... }
+
+    /// Create a new stream consumer. Returns a Stream<Item = T>.
+    pub fn subscribe(&mut self) -> OutputStream<T> { ... }
+}
+
+/// A stream of values produced by an actor.
+/// Implements `futures::Stream<Item = T>`.
+pub struct OutputStream<T> {
+    rx: runtime::Receiver<T>,
+}
+```
+
+### Usage pattern
+
+```rust
+struct SensorActor {
+    output: StreamOutput<f64>,
+}
+
+impl Actor for SensorActor {
+    fn started(&mut self, ctx: &mut Context<Self>) {
+        ctx.run_interval(Duration::from_secs(1), || ReadSensor);
+    }
+}
+
+impl Handler<ReadSensor> for SensorActor {
+    fn handle(&mut self, _msg: ReadSensor, _ctx: &mut Context<Self>) -> impl Future<Output = ()> + Send {
+        let value = read_sensor();
+        self.output.emit(value);
+        async {}
+    }
+}
+
+// Consumer side — the stream can be consumed by another actor or by
+// any async code:
+let sensor = system.spawn(SensorActor { output: StreamOutput::new() });
+
+// Option A: attach to another actor via StreamHandler
+let stream = select(&sensor_state, ...).await; // get a subscription
+ctx.add_stream(stream);
+
+// Option B: consume in plain async code
+let mut stream = sensor.ask(SubscribeStream).await?;
+while let Some(value) = stream.next().await {
+    println!("sensor: {value}");
+}
+```
+
+### SubscribeStream message
+
+To get a stream subscription from outside, actors expose a standard message:
+
+```rust
+pub struct SubscribeStream;
+impl Message for SubscribeStream {
+    type Result = OutputStream<T>;
+}
+```
+
+The actor's `Handler<SubscribeStream>` calls `self.output.subscribe()`.
+
+### Backpressure
+
+Output streams use bounded channels. If a consumer falls behind, the
+oldest unread values are dropped (ring buffer semantics) rather than
+blocking the actor. The buffer size is configurable at subscribe time:
+
+```rust
+impl<T: Send + Clone + 'static> StreamOutput<T> {
+    /// Subscribe with a custom buffer size (default: 64).
+    pub fn subscribe_with_capacity(&mut self, capacity: usize) -> OutputStream<T> { ... }
+}
+```
+
+---
+
+## 4. Pub/Sub Broker
+
+A generic topic-based publish/subscribe actor. Useful for decoupling
+producers and consumers that don't need to know about each other.
+
+### Design
+
+```rust
+/// Topic-based pub/sub broker.
+///
+/// Publishers send `Publish<T>` messages. Subscribers register with
+/// `TopicSubscribe<T>` and receive values via `Recipient<T>`.
+pub struct Broker<T: Message<Result = ()> + Clone + Send + 'static> {
+    subscribers: Vec<Recipient<T>>,
+}
+```
+
+### Messages
+
+```rust
+/// Publish a value to all subscribers.
+pub struct Publish<T>(pub T);
+impl<T: Message<Result = ()> + Clone> Message for Publish<T> {
+    type Result = ();
+}
+
+/// Subscribe to receive published values.
+pub struct BrokerSubscribe<T: Message<Result = ()>>(pub Recipient<T>);
+impl<T: Message<Result = ()>> Message for BrokerSubscribe<T> {
+    type Result = ();
+}
+
+/// Unsubscribe from the broker.
+pub struct BrokerUnsubscribe<T: Message<Result = ()>>(pub Recipient<T>);
+impl<T: Message<Result = ()>> Message for BrokerUnsubscribe<T> {
+    type Result = ();
+}
+```
+
+### Why separate from StateActor
+
+`StateActor` notifies subscribers that *something changed* (via `Notify`),
+then subscribers pull the new value via `select()`. The broker pushes the
+actual values directly. This is better for event-like data (chat messages,
+connection events, errors) where there's no persistent state to query —
+just a stream of occurrences.
+
+### Example
+
+```rust
+let broker: Addr<Broker<ChatMessage>> = system.spawn(Broker::new());
+
+// Publisher
+broker.do_send(Publish(ChatMessage { body: "hello".into(), .. }));
+
+// Subscriber
+let recipient: Recipient<ChatMessage> = my_actor.into();
+broker.do_send(BrokerSubscribe(recipient));
+```
+
+---
+
+## 5. Finite State Machine Actor
+
+An actor that enforces typed state transitions. The state determines which
+messages are valid, preventing illegal transitions at the type level where
+possible and at runtime otherwise.
+
+### Design
+
+```rust
+/// A state machine actor with explicit transitions.
+pub trait StateMachine: Send + 'static {
+    /// The state type (usually an enum).
+    type State: Send + Clone + 'static;
+
+    /// The input type (usually an enum of events/commands).
+    type Input: Message<Result = TransitionResult<Self::State>> + Send + 'static;
+
+    /// Compute the next state from current state + input.
+    /// Returns `Ok(new_state)` or `Err(reason)` if the transition is invalid.
+    fn transition(&self, state: &Self::State, input: &Self::Input)
+        -> Result<Self::State, String>;
+
+    /// Side effects to run after a successful transition.
+    fn on_enter(&mut self, _old: &Self::State, _new: &Self::State, _ctx: &mut Context<FsmActor<Self>>) {}
+}
+
+pub struct FsmActor<M: StateMachine> {
+    machine: M,
+    state: M::State,
+    subscribers: Vec<Recipient<Notify>>,
+    dirty: bool,
+}
+
+pub enum TransitionResult<S> {
+    Ok(S),
+    Rejected(String),
+}
+```
+
+### Use cases
+
+- **Connection lifecycle**: `Disconnected -> Connecting -> Connected -> Disconnecting`
+- **Voice call state**: `Idle -> Joining -> InCall -> Leaving`
+- **File transfer**: `Pending -> Transferring(progress) -> Complete | Failed`
+
+### Example
+
+```rust
+#[derive(Clone)]
+enum ConnState { Disconnected, Connecting, Connected }
+
+enum ConnInput { Connect, Connected, Disconnect, Error(String) }
+impl Message for ConnInput { type Result = TransitionResult<ConnState>; }
+
+struct ConnMachine;
+
+impl StateMachine for ConnMachine {
+    type State = ConnState;
+    type Input = ConnInput;
+
+    fn transition(&self, state: &ConnState, input: &ConnInput) -> Result<ConnState, String> {
+        match (state, input) {
+            (ConnState::Disconnected, ConnInput::Connect) => Ok(ConnState::Connecting),
+            (ConnState::Connecting, ConnInput::Connected) => Ok(ConnState::Connected),
+            (ConnState::Connected, ConnInput::Disconnect) => Ok(ConnState::Disconnected),
+            (_, ConnInput::Error(_)) => Ok(ConnState::Disconnected),
+            _ => Err(format!("invalid transition from {state:?}")),
+        }
+    }
+}
+```
+
+FSM actors support the same `Subscribe`/`Notify`/`Select` interface as
+state actors, so they can feed into derived actors and the reactive graph.
+
+---
+
+## 6. Pool Actor
+
+Distributes work across a fixed set of identical worker actors using
+round-robin or least-loaded routing.
+
+### Design
+
+```rust
+/// A pool of identical actors that distributes messages round-robin.
+pub struct Pool<A: Actor + Clone> {
+    workers: Vec<Addr<A>>,
+    next: usize,
+}
+
+impl<A: Actor + Clone> Pool<A> {
+    pub fn new(system: &SystemHandle, actor: A, size: usize) -> Self { ... }
+}
+```
+
+### Messages
+
+The pool forwards any message the underlying actor handles:
+
+```rust
+impl<A, M> Handler<M> for Pool<A>
+where
+    A: Actor + Clone + Handler<M>,
+    M: Message,
+{
+    fn handle(&mut self, msg: M, _ctx: &mut Context<Self>) -> impl Future<Output = M::Result> + Send {
+        let worker = &self.workers[self.next % self.workers.len()];
+        self.next += 1;
+        let addr = worker.clone();
+        async move { addr.ask(msg).await.expect("pool worker alive") }
+    }
+}
+```
+
+### Use cases
+
+- CPU-intensive message processing (encryption, hashing)
+- Parallel I/O operations (file chunk processing)
+- Rate-limited external API calls (one connection per worker)
+
+---
+
+## 7. Debounce / Throttle Actor
+
+Rate-limits message forwarding to a target actor. Useful for UI inputs
+(typing indicators, search-as-you-type) and network events.
+
+### Design
+
+```rust
+/// Debounce: forwards only the last message after a quiet period.
+pub struct Debounce<M: Message<Result = ()> + Send + 'static> {
+    target: Recipient<M>,
+    delay: Duration,
+    pending: Option<M>,
+    timer: Option<IntervalHandle>,
+}
+
+/// Throttle: forwards at most one message per interval.
+pub struct Throttle<M: Message<Result = ()> + Send + 'static> {
+    target: Recipient<M>,
+    interval: Duration,
+    last_sent: Option<Instant>,
+    pending: Option<M>,
+}
+```
+
+### Debounce behavior
+
+1. Receive message -> store as `pending`, reset timer
+2. Timer fires -> forward `pending` to target, clear
+3. New message before timer -> replace `pending`, restart timer
+
+### Throttle behavior
+
+1. Receive message -> if enough time since `last_sent`, forward immediately
+2. Otherwise store as `pending`
+3. Timer fires -> forward `pending` if present
+
+### Example
+
+```rust
+let search_actor = system.spawn(SearchActor::new());
+let debounced = system.spawn(Debounce::new(
+    search_actor.into(),  // Recipient<SearchQuery>
+    Duration::from_millis(300),
+));
+
+// Typing fast — only the last query within 300ms gets forwarded
+debounced.do_send(SearchQuery("h".into()));
+debounced.do_send(SearchQuery("he".into()));
+debounced.do_send(SearchQuery("hel".into()));
+debounced.do_send(SearchQuery("hello".into()));
+// → only SearchQuery("hello") reaches SearchActor
+```
+
+---
+
+## Summary of Actor Types
+
+| Type | Purpose | Key trait |
+|------|---------|-----------|
+| `StateActor<S>` | Own state, get/set/subscribe | `Observable` |
+| `DerivedActor<S,T>` | Reactive derived value from source(s) | `Observable` |
+| `StreamOutput<T>` | Produce an async stream from an actor | — (composable) |
+| `Broker<T>` | Topic-based pub/sub, push values directly | — |
+| `FsmActor<M>` | Typed state machine with transitions | `Observable` |
+| `Pool<A>` | Round-robin work distribution | Forwards `Handler<M>` |
+| `Debounce<M>` / `Throttle<M>` | Rate-limit message forwarding | — |
+
+---
+
+## Crate Organization
+
+All new types go into the existing `willow-actor` crate under feature-gated
+modules. The core actor primitives (`Actor`, `Handler`, `Addr`, etc.) remain
+ungated — they're always available.
+
+```
+crates/actor/src/
+├── lib.rs              — existing core re-exports
+├── actor.rs            — Actor, Handler, StreamHandler, Message (existing)
+├── addr.rs             — Addr, AnyAddr, Recipient (existing)
+├── context.rs          — Context, IntervalHandle (existing)
+├── envelope.rs         — BoxEnvelope (existing)
+├── mailbox.rs          — message loop (existing)
+├── runtime.rs          — platform abstraction (existing)
+├── supervisor.rs       — RestartPolicy (existing)
+├── system.rs           — System, SystemHandle (existing)
+├── error.rs            — SendError, AskError (existing)
+├── state.rs        NEW — StateActor<S>, Select, Mutate, Get, Set
+├── derived.rs      NEW — DerivedActor, Derived2Actor, derived()
+├── stream.rs       NEW — StreamOutput<T>, OutputStream<T>
+├── broker.rs       NEW — Broker<T>, Publish, BrokerSubscribe
+├── fsm.rs          NEW — StateMachine trait, FsmActor<M>
+├── pool.rs         NEW — Pool<A>
+└── debounce.rs     NEW — Debounce<M>, Throttle<M>
+```
+
+No new dependencies required. All types use the existing `runtime` module
+for platform abstraction.
+
+---
+
+## Migration Plan
+
+### Phase 1: StateActor + DerivedActor in willow-actor
+
+1. Implement `StateActor<S>` in `crates/actor/src/state.rs`
+2. Implement `DerivedActor<S,T>` in `crates/actor/src/derived.rs`
+3. Add tests for both (subscribe, notify, caching, chaining)
+
+### Phase 2: Migrate willow-client
+
+1. Replace `ClientStateActor` with `StateActor<SharedState>`
+2. Keep the typed `read_state`/`mutate_state` helpers as thin wrappers
+   around the generic `select()`/`mutate()`
+
+### Phase 3: Migrate willow-web
+
+1. Replace the Leptos-specific `DerivedStateActor<T>` with a thin wrapper
+   that bridges generic `DerivedActor` notifications to Leptos signals
+2. The `derived_signal()` function becomes:
+   ```rust
+   fn derived_signal<T>(...) -> ReadSignal<T> {
+       let derived_addr = derived(system, state_addr, selector);
+       // Subscribe a tiny bridge actor that updates the WriteSignal
+   }
+   ```
+
+### Phase 4: StreamOutput, Broker, remaining types
+
+1. Implement `StreamOutput<T>` and `Broker<T>`
+2. Implement `FsmActor`, `Pool`, `Debounce`/`Throttle`
+3. Migrate remaining hand-rolled patterns across the codebase
+
+### Phase 5: Publish
+
+1. Ensure `willow-actor` has zero willow-specific dependencies
+2. Add `README.md`, examples, docs
+3. Publish to crates.io
+
+---
+
+## Open Questions
+
+1. **`Observable` trait vs `StateRef<S>` handle** — The trait approach is
+   more Rusty but adds generic parameters. The handle approach is simpler
+   but requires dynamic dispatch. Need to prototype both and see which
+   composes better in practice.
+
+2. **Multi-source derived actor ergonomics** — `Derived2Actor<S1, S2, T>`
+   works for two sources. Beyond that, a tuple-based or macro approach may
+   be needed. How many sources do we realistically combine? (Currently the
+   web UI only derives from a single `SharedState`.)
+
+3. **Pool routing strategy** — Start with round-robin. Add least-loaded
+   routing later if needed (requires workers to report queue depth).
+
+4. **StreamOutput buffer overflow policy** — Drop oldest vs. drop newest
+   vs. disconnect slow consumers. Drop oldest (ring buffer) is proposed
+   but some use cases may want guaranteed delivery.
+
+5. **Naming for the published crate** — `willow-actor` is coupled to the
+   Willow project name. Consider renaming to something generic (e.g.,
+   `microactor`, `tinyact`) before publishing.
