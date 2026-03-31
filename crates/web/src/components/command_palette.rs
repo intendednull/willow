@@ -94,7 +94,13 @@ pub fn CommandPalette(
         let channel_kinds = app_state.server.channel_kinds.get_untracked();
         let servers = app_state.server.servers.get_untracked();
         let members = app_state.network.peers.get_untracked();
-        let items = build_results(&channels, &channel_kinds, &servers, &members, &query.get_untracked());
+        let items = build_results(
+            &channels,
+            &channel_kinds,
+            &servers,
+            &members,
+            &query.get_untracked(),
+        );
         let len = items.len();
         match ev.key().as_str() {
             "Escape" => {

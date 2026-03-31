@@ -229,6 +229,8 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
     let (display_name, set_display_name) = signal(String::new());
     let (server_owner, set_server_owner) = signal(String::new());
     let (channel_kinds, set_channel_kinds) = signal(Vec::<(String, String)>::new());
+    let (sync_provider_ids, set_sync_provider_ids) = signal(HashSet::<String>::new());
+    let (admin_ids, set_admin_ids) = signal(HashSet::<String>::new());
 
     // UI panel signals (purely local — never derived)
     let (show_settings, set_show_settings) = signal(false);
@@ -286,6 +288,8 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
             display_name,
             server_owner,
             channel_kinds,
+            sync_provider_ids,
+            admin_ids,
         },
         ui: UiState {
             show_settings,
@@ -340,6 +344,8 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
             set_display_name,
             set_server_owner,
             set_channel_kinds,
+            set_sync_provider_ids,
+            set_admin_ids,
         },
         ui: UiWriteSignals {
             set_show_settings,
@@ -380,6 +386,7 @@ pub fn wire_derived_signals(
     system: &willow_actor::SystemHandle,
     write: &AppWriteSignals,
 ) {
+    let write = *write;
     use crate::derived::derived_signal;
 
     // ── Server-derived signals ──────────────────────────────────────
@@ -456,6 +463,39 @@ pub fn wire_derived_signals(
     });
     leptos::prelude::Effect::new(move || write.server.set_server_owner.set(owner.get()));
 
+    // ── Sync provider IDs ───────────────────────────────────────────
+    let sync_provider_ids = derived_signal(state_addr, system, |s| {
+        s.state
+            .event_state
+            .peer_permissions
+            .iter()
+            .filter(|(_, perms)| {
+                perms.contains(&willow_client::willow_state::Permission::SyncProvider)
+            })
+            .map(|(pid, _)| pid.to_string())
+            .collect::<std::collections::HashSet<String>>()
+    });
+    leptos::prelude::Effect::new(move || {
+        write
+            .server
+            .set_sync_provider_ids
+            .set(sync_provider_ids.get())
+    });
+
+    // ── Admin IDs ─────────────────────────────────────────────────
+    let admin_ids = derived_signal(state_addr, system, |s| {
+        s.state
+            .event_state
+            .peer_permissions
+            .iter()
+            .filter(|(_, perms)| {
+                perms.contains(&willow_client::willow_state::Permission::Administrator)
+            })
+            .map(|(pid, _)| pid.to_string())
+            .collect::<std::collections::HashSet<String>>()
+    });
+    leptos::prelude::Effect::new(move || write.server.set_admin_ids.set(admin_ids.get()));
+
     // ── Channel kinds ──────────────────────────────────────────────
     let channel_kinds = derived_signal(state_addr, system, |s| {
         s.state
@@ -465,12 +505,7 @@ pub fn wire_derived_signals(
             .map(|ch| (ch.name.clone(), ch.kind.clone()))
             .collect::<Vec<_>>()
     });
-    leptos::prelude::Effect::new(move || {
-        write
-            .server
-            .set_channel_kinds
-            .set(channel_kinds.get())
-    });
+    leptos::prelude::Effect::new(move || write.server.set_channel_kinds.set(channel_kinds.get()));
 
     // ── Peer list (with display names and online status) ────────────
     let peers = derived_signal(state_addr, system, |s| {

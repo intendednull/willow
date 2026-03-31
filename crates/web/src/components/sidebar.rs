@@ -160,13 +160,11 @@ pub fn Sidebar(
                         let ch_voice_join = channel.clone();
                         let on_click = on_channel_click.clone();
                         let on_voice = on_voice_join.clone();
-                        let handle_kind = handle.clone();
                         let active = move || current_channel.get() == ch_active;
 
                         // Reactively check if this is a voice channel.
                         let is_voice = {
                             let name = ch_kind.clone();
-                            let _hk = handle_kind.clone();
                             move || {
                                 app_state.server.channel_kinds.get().iter().any(|(n, k)| n == &name && k == "voice")
                             }

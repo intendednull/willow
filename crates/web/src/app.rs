@@ -620,7 +620,10 @@ pub fn App() -> impl IntoView {
                                     let on_typing_cb = {
                                         let h = handle_ty.clone();
                                         Callback::new(move |_: ()| {
-                                            h.send_typing();
+                                            let h = h.clone();
+                                            wasm_bindgen_futures::spawn_local(async move {
+                                                h.send_typing().await;
+                                            });
                                         })
                                     };
                                     let on_pin_cb = {

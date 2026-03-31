@@ -2,6 +2,7 @@ use leptos::prelude::*;
 
 use crate::app::WebClientHandle;
 use crate::components::ConfirmDialog;
+use crate::state::AppState;
 
 /// List of all permission names that can be toggled on a role.
 const PERMISSION_NAMES: &[&str] = &[
@@ -29,6 +30,7 @@ pub fn RoleManager(
     #[prop(into)] roles: Signal<Vec<RoleEntry>>,
 ) -> impl IntoView {
     let handle = use_context::<WebClientHandle>().unwrap();
+    let app_state = use_context::<AppState>().unwrap();
 
     let (creating, set_creating) = signal(false);
     let (new_name, set_new_name) = signal(String::new());
@@ -40,10 +42,10 @@ pub fn RoleManager(
     let handle_del_confirm = handle.clone();
 
     // Determine if the local user is the server owner.
-    let handle_owner = handle.clone();
+    let server_owner_signal = app_state.server.server_owner;
     let is_owner = move || {
         let pid = peer_id.get();
-        handle_owner.server_owner().to_string() == pid
+        server_owner_signal.get() == pid
     };
 
     // Create role handler.
@@ -52,7 +54,10 @@ pub fn RoleManager(
         let name = new_name.get_untracked();
         let name = name.trim().to_string();
         if !name.is_empty() {
-            let _ = handle_create.create_role(&name);
+            let h = handle_create.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = h.create_role(&name).await;
+            });
         }
         set_new_name.set(String::new());
         set_creating.set(false);
@@ -192,7 +197,12 @@ pub fn RoleManager(
                                                     prop:disabled=move || !oc_t()
                                                     on:change=move |ev| {
                                                         let granted = event_target_checked(&ev);
-                                                        let _ = hp_t.set_permission(&rid_t, &perm_toggle, granted);
+                                                        let h = hp_t.clone();
+                                                        let rid = rid_t.clone();
+                                                        let perm = perm_toggle.clone();
+                                                        wasm_bindgen_futures::spawn_local(async move {
+                                                            let _ = h.set_permission(&rid, &perm, granted).await;
+                                                        });
                                                     }
                                                 />
                                                 <span>{perm_label}</span>
@@ -226,7 +236,11 @@ pub fn RoleManager(
                                                         let pid = assign_peer.get_untracked();
                                                         if !pid.trim().is_empty() {
                                                             if let Ok(eid) = pid.trim().parse::<willow_identity::EndpointId>() {
-                                                                let _ = ha.assign_role(eid, &rid);
+                                                                let h = ha.clone();
+                                                                let r = rid.clone();
+                                                                wasm_bindgen_futures::spawn_local(async move {
+                                                                    let _ = h.assign_role(eid, &r).await;
+                                                                });
                                                             }
                                                             set_assign_peer.set(String::new());
                                                         }
@@ -268,7 +282,10 @@ pub fn RoleManager(
                 danger=true
                 on_confirm=Callback::new(move |_| {
                     if let Some((rid, _)) = pending_del_role.get_untracked() {
-                        let _ = handle_del_confirm.delete_role(&rid);
+                        let h = handle_del_confirm.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            let _ = h.delete_role(&rid).await;
+                        });
                     }
                     set_pending_del_role.set(None);
                     set_show_del_confirm.set(false);

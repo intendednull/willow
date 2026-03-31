@@ -35,16 +35,21 @@ pub fn AddServerPanel(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Int
             set_status_msg.set("Please enter a server name.".to_string());
             return;
         }
-        match handle_create.create_server(name.trim()) {
-            Ok(_) => {
-                let dn = create_display_name.get_untracked();
-                if !dn.trim().is_empty() {
-                    let _ = handle_create.set_server_display_name(dn.trim());
+        let h = handle_create.clone();
+        let n = name.trim().to_string();
+        let dn = create_display_name.get_untracked();
+        let done_cb = on_done_create.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            match h.create_server(&n).await {
+                Ok(_) => {
+                    if !dn.trim().is_empty() {
+                        let _ = h.set_server_display_name(dn.trim()).await;
+                    }
+                    done_cb(());
                 }
-                on_done_create(());
+                Err(e) => set_status_msg.set(format!("Error: {e}")),
             }
-            Err(e) => set_status_msg.set(format!("Error: {e}")),
-        }
+        });
     };
 
     // Join step 1.
@@ -103,21 +108,25 @@ pub fn AddServerPanel(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Int
                         let done_cb = on_done_rc.clone();
                         let confirm = move |_: web_sys::MouseEvent| {
                             let code = validated_code.get_untracked();
-                            match hj.accept_invite(&code) {
-                                Ok(()) => {
-                                    let name = join_profile_name.get_untracked();
-                                    if !name.trim().is_empty() {
-                                        let _ = hj.set_server_display_name(name.trim());
+                            let h = hj.clone();
+                            let done = done_cb.clone();
+                            let name = join_profile_name.get_untracked();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                match h.accept_invite(&code).await {
+                                    Ok(()) => {
+                                        if !name.trim().is_empty() {
+                                            let _ = h.set_server_display_name(name.trim()).await;
+                                        }
+                                        set_join_code.set(String::new());
+                                        set_join_step.set(false);
+                                        (done)(());
                                     }
-                                    set_join_code.set(String::new());
-                                    set_join_step.set(false);
-                                    (done_cb)(());
+                                    Err(e) => {
+                                        set_status_msg.set(format!("Invalid invite code: {e}"));
+                                        set_join_step.set(false);
+                                    }
                                 }
-                                Err(e) => {
-                                    set_status_msg.set(format!("Invalid invite code: {e}"));
-                                    set_join_step.set(false);
-                                }
-                            }
+                            });
                         };
                         view! {
                             <div>
