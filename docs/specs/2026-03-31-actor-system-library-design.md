@@ -171,7 +171,7 @@ pub struct StateRef<S: Send + 'static> {
 impl<S: Send + 'static> StateRef<S> {
     /// Create from any Addr whose actor handles Subscribe + Select.
     pub fn from_addr<A>(addr: Addr<A>) -> Self
-    where A: Handler<Subscribe> + Handler<Select<S>> { ... }
+    where A: Handler<Subscribe> + Handler<Select> { ... }
 
     /// Subscribe a recipient to change notifications.
     pub fn subscribe(&self, recipient: Recipient<Notify>) { ... }
@@ -186,6 +186,14 @@ impl<S: Send + 'static> StateRef<S> {
 
 impl<S: Clone + Send + 'static> From<&Addr<StateActor<S>>> for StateRef<S> { ... }
 ```
+
+#### Prerequisite: make `Recipient<M>` cloneable
+
+The existing `Recipient<M>` wraps `Box<dyn RecipientSender<M> + Send>`.
+Multi-source derived actors need to subscribe the same recipient to
+multiple sources. This requires changing the internals from `Box` to
+`Arc` so `Recipient` implements `Clone`. This is a backwards-compatible
+change — `Arc<dyn Trait>` supports all the same operations.
 
 #### DeriveSource trait
 
@@ -218,6 +226,7 @@ where
 {
     type Snapshot = (S1, S2);
     fn subscribe_all(&self, recipient: Recipient<Notify>) {
+        // Recipient must be Clone — requires changing internals from Box to Arc.
         self.0.subscribe(recipient.clone());
         self.1.subscribe(recipient);
     }
@@ -255,9 +264,19 @@ pub struct DerivedActor<Src: DeriveSource, T: PartialEq + Clone + Send + 'static
 On receiving `Notify` from any source:
 1. Calls `sources.snapshot()` to fetch current values from all sources
 2. Runs `selector(&snapshot)` to compute the derived value
-3. Compares with `cached` via `PartialEq`
-4. If changed: updates cache, marks `dirty`
-5. In `idle()`: notifies own subscribers (same batching as `StateActor`)
+3. Sends the result back to self via an internal `UpdateCache<T>` message
+
+The `UpdateCache<T>` handler (synchronous, no await):
+4. Compares new value with `cached` via `PartialEq`
+5. If changed: updates `cached`, marks `dirty`
+6. In `idle()`: notifies own subscribers (same batching as `StateActor`)
+
+**Why the self-message?** RPITIT handlers return `impl Future + Send` which
+cannot borrow `&mut self` across an `.await` point. The `snapshot()` call
+is async, so we can't update `self.cached` after it completes. The
+self-message pattern splits the work: the async part runs in the Notify
+handler's future, then the synchronous cache update happens in a separate
+handler invocation with full `&mut self` access.
 
 ### Chaining
 
@@ -396,19 +415,20 @@ while let Some(value) = stream.next().await {
 To get a stream subscription from outside, actors expose a standard message:
 
 ```rust
-pub struct SubscribeStream;
-impl Message for SubscribeStream {
+pub struct SubscribeStream<T: Send + 'static>(PhantomData<T>);
+impl<T: Send + 'static> Message for SubscribeStream<T> {
     type Result = OutputStream<T>;
 }
 ```
 
-The actor's `Handler<SubscribeStream>` calls `self.output.subscribe()`.
+The actor's `Handler<SubscribeStream<T>>` calls `self.output.subscribe()`.
 
 ### Backpressure
 
-Output streams use bounded channels. If a consumer falls behind, the
-oldest unread values are dropped (ring buffer semantics) rather than
-blocking the actor. The buffer size is configurable at subscribe time:
+Output streams use bounded channels. If a consumer falls behind, new
+values are dropped (via `try_send`) rather than blocking the actor. The
+actor logs a warning on drop so slow consumers are visible. The buffer
+size is configurable at subscribe time:
 
 ```rust
 impl<T: Send + Clone + 'static> StreamOutput<T> {
@@ -748,11 +768,12 @@ for platform abstraction.
 
 ### Phase 1: Core extension + StateActor + DerivedActor
 
-1. Add `Context::run_after()` and `TimerHandle` to existing context module
-2. Implement `StateActor<S>` in `crates/actor/src/state.rs`
-3. Implement `DeriveSource` trait + tuple macro in `crates/actor/src/derived.rs`
-4. Implement `DerivedActor<Src, T>` with `StateRef<S>` handles
-5. Tests: subscribe, notify batching, caching, multi-source, chaining
+1. Make `Recipient<M>` cloneable (change `Box` to `Arc` internally)
+2. Add `Context::run_after()` and `TimerHandle` to existing context module
+3. Implement `StateActor<S>` in `crates/actor/src/state.rs`
+4. Implement `DeriveSource` trait + tuple macro in `crates/actor/src/derived.rs`
+5. Implement `DerivedActor<Src, T>` with `StateRef<S>` handles
+6. Tests: subscribe, notify batching, caching, multi-source, chaining
 
 ### Phase 2: StreamOutput + Broker
 
@@ -789,9 +810,10 @@ for platform abstraction.
 3. **Pool routing strategy** — Start with round-robin. Add least-loaded
    routing later if needed (requires workers to report queue depth).
 
-4. **StreamOutput buffer overflow policy** — Drop oldest vs. drop newest
-   vs. disconnect slow consumers. Drop oldest (ring buffer) is proposed
-   but some use cases may want guaranteed delivery.
+4. **StreamOutput buffer overflow policy** — Current proposal drops new
+   values via `try_send` when buffer is full. Alternative: disconnect
+   slow consumers entirely. Some use cases may want guaranteed delivery
+   (unbounded), which is opt-in via `subscribe_unbounded()`.
 
 5. **Naming for the published crate** — `willow-actor` is coupled to the
    Willow project name. Consider renaming to something generic (e.g.,
