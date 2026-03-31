@@ -6,6 +6,7 @@ license.workspace = true
 description = "Leptos web UI for the Willow P2P chat network"
 
 [dependencies]
+willow-actor = { path = "../actor" }
 willow-client = { path = "../client" }
 willow-identity = { path = "../identity" }
 willow-network = { path = "../network" }

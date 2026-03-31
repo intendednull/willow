@@ -6,6 +6,7 @@ license.workspace = true
 description = "UI-agnostic client library for the Willow P2P chat network"
 
 [dependencies]
+willow-actor = { path = "../actor" }
 willow-identity = { path = "../identity" }
 willow-messaging = { path = "../messaging" }
 willow-channel = { path = "../channel" }

@@ -62,10 +62,12 @@ pub fn FileShareButton(channel: ReadSignal<String>) -> impl IntoView {
             let uint8 = js_sys::Uint8Array::new(&array_buf);
             let data = uint8.to_vec();
 
-            if let Err(e) = handle_inner.share_file_inline(&ch, &filename, &data) {
-                let window = web_sys::window().unwrap();
-                let _ = window.alert_with_message(&format!("Failed to share file: {e}"));
-            }
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Err(e) = handle_inner.share_file_inline(&ch, &filename, &data).await {
+                    let window = web_sys::window().unwrap();
+                    let _ = window.alert_with_message(&format!("Failed to share file: {e}"));
+                }
+            });
         });
 
         reader.set_onloadend(Some(cb.as_ref().unchecked_ref()));

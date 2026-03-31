@@ -44,6 +44,7 @@ pub fn Sidebar(
     on_voice_disconnect: Option<Callback<()>>,
 ) -> impl IntoView {
     let handle = use_context::<WebClientHandle>().unwrap();
+    let app_state = use_context::<crate::state::AppState>().unwrap();
 
     let (creating, set_creating) = signal(false);
     let (new_name, set_new_name) = signal(String::new());
@@ -60,11 +61,15 @@ pub fn Sidebar(
         let name = name.trim().to_string();
         let is_voice = create_voice.get_untracked();
         if !name.is_empty() {
-            if is_voice {
-                let _ = handle_create.create_voice_channel(&name);
-            } else {
-                let _ = handle_create.create_channel(&name);
-            }
+            let h = handle_create.clone();
+            let name = name.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if is_voice {
+                    let _ = h.create_voice_channel(&name).await;
+                } else {
+                    let _ = h.create_channel(&name).await;
+                }
+            });
             on_channel_created(());
         }
         set_new_name.set(String::new());
@@ -84,8 +89,6 @@ pub fn Sidebar(
             }
         }
     };
-
-    let handle_user = handle.clone();
 
     // Peer ID copy state.
     let (show_copied, set_show_copied) = signal(false);
@@ -161,15 +164,13 @@ pub fn Sidebar(
                         let ch_voice_join = channel.clone();
                         let on_click = on_channel_click.clone();
                         let on_voice = on_voice_join.clone();
-                        let handle_kind = handle.clone();
                         let active = move || current_channel.get() == ch_active;
 
                         // Reactively check if this is a voice channel.
                         let is_voice = {
-                            let hk = handle_kind.clone();
                             let name = ch_kind.clone();
                             move || {
-                                hk.channel_kinds().iter().any(|(n, k)| n == &name && k == "voice")
+                                app_state.server.channel_kinds.get().iter().any(|(n, k)| n == &name && k == "voice")
                             }
                         };
 
@@ -282,9 +283,8 @@ pub fn Sidebar(
                 <div class="status-dot"></div>
                 <span style="font-size: 12px; color: var(--text-muted);">
                     {
-                        let hu = handle_user.clone();
                         move || {
-                            let name = hu.display_name();
+                            let name = app_state.server.display_name.get();
                             if name.len() > 20 { format!("{}...", &name[..20]) } else { name }
                         }
                     }
@@ -332,7 +332,10 @@ pub fn Sidebar(
                 danger=true
                 on_confirm=Callback::new(move |_| {
                     if let Some(name) = pending_del_channel.get_untracked() {
-                        let _ = handle_del_confirm.delete_channel(&name);
+                        let h = handle_del_confirm.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            let _ = h.delete_channel(&name).await;
+                        });
                     }
                     set_pending_del_channel.set(None);
                     set_show_del_confirm.set(false);

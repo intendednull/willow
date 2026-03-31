@@ -300,7 +300,13 @@ pub fn CallPage(
                 let ch = app_state.voice.voice_channel.get().unwrap_or_default();
                 let participants_map = app_state.voice.voice_participants_map.get();
                 let local_peer_id = handle.peer_id();
-                let local_name = handle.display_name();
+                // Build a peer-id → name lookup from the peers signal.
+                let peer_list = app_state.network.peers.get();
+                let peer_names: std::collections::HashMap<String, String> = peer_list
+                    .iter()
+                    .map(|(pid, name, _)| (pid.clone(), name.clone()))
+                    .collect();
+                let local_name = app_state.server.display_name.get();
                 let remote_participants: Vec<String> = participants_map
                     .get(&ch)
                     .cloned()
@@ -337,11 +343,7 @@ pub fn CallPage(
                             let local_spk = speaking.contains(&local_peer_id);
                             (local_name.clone(), local_video_stream.get(), muted, local_spk, true, video_source == Some(VideoSource::Camera))
                         } else {
-                            let name = if let Ok(eid) = focused_pid.parse::<willow_identity::EndpointId>() {
-                                handle.peer_display_name(&eid)
-                            } else {
-                                focused_pid.clone()
-                            };
+                            let name = peer_names.get(&focused_pid).cloned().unwrap_or_else(|| focused_pid.clone());
                             let stream = remote_streams.get(&focused_pid).cloned();
                             let is_spk = speaking.contains(&focused_pid);
                             (name, stream, false, is_spk, false, false)
@@ -386,11 +388,7 @@ pub fn CallPage(
                         if *pid == fpid {
                             continue;
                         }
-                        let name = if let Ok(eid) = pid.parse::<willow_identity::EndpointId>() {
-                            handle.peer_display_name(&eid)
-                        } else {
-                            pid.clone()
-                        };
+                        let name = peer_names.get(pid).cloned().unwrap_or_else(|| pid.clone());
                         let stream = remote_streams.get(pid).cloned();
                         let is_spk = speaking.contains(pid);
                         thumb_views.push(render_tile(
@@ -432,11 +430,7 @@ pub fn CallPage(
 
                     // Remote participant tiles.
                     for pid in &remote_participants {
-                        let name = if let Ok(eid) = pid.parse::<willow_identity::EndpointId>() {
-                            handle.peer_display_name(&eid)
-                        } else {
-                            pid.clone()
-                        };
+                        let name = peer_names.get(pid).cloned().unwrap_or_else(|| pid.clone());
                         let stream = remote_streams.get(pid).cloned();
                         let is_spk = speaking.contains(pid);
                         tiles.push(render_tile(

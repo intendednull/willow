@@ -22,7 +22,7 @@ pub fn JoinPage() -> impl IntoView {
     let status = state.ui.join_status;
 
     // Pre-fill name from saved profile.
-    let (name, set_name) = signal(handle.display_name());
+    let (name, set_name) = signal(state.server.display_name.get_untracked());
 
     // Retry timer: exponential backoff while status == "connecting".
     {
@@ -47,14 +47,18 @@ pub fn JoinPage() -> impl IntoView {
         let h = handle.clone();
         move |_| {
             let n = name.get_untracked();
-            if !n.trim().is_empty() {
-                h.set_display_name(n.trim());
-            }
-            write.ui.set_join_status.set("connecting".to_string());
-            // Send initial JoinRequest.
-            if let Some(t) = token.get_untracked() {
-                h.send_join_request(&t.link_id);
-            }
+            let h2 = h.clone();
+            let t = token.get_untracked();
+            wasm_bindgen_futures::spawn_local(async move {
+                if !n.trim().is_empty() {
+                    h2.set_display_name(n.trim()).await;
+                }
+                write.ui.set_join_status.set("connecting".to_string());
+                // Send initial JoinRequest.
+                if let Some(t) = t {
+                    h2.send_join_request(&t.link_id);
+                }
+            });
         }
     };
 

@@ -9,7 +9,7 @@ use crate::components::{
     AddServerPanel, CallPage, ChannelHeader, ChatInput, CommandPalette, FileShareButton, JoinPage,
     MemberList, MessageList, PinnedPanel, ServerList, SettingsPanel, Sidebar, WelcomeScreen,
 };
-use crate::event_processing::{extract_roles, process_event_batch, refresh_all_signals};
+use crate::event_processing::process_event_batch;
 use crate::handlers;
 use crate::icons;
 use crate::state::{self, ChannelViewState, SettingsTab};
@@ -138,8 +138,8 @@ pub fn App() -> impl IntoView {
         closure.forget();
     }
 
-    // Populate initial state from the client.
-    refresh_all_signals(&handle, &write);
+    // Wire derived signals that auto-update from state actor changes.
+    crate::state::wire_derived_signals(handle.state_addr(), handle.actor_system(), &write);
 
     // Detect join link from URL fragment.
     {
@@ -266,7 +266,7 @@ pub fn App() -> impl IntoView {
             loop {
                 gloo_timers::future::TimeoutFuture::new(2_000).await;
                 let ch = state_typing.chat.current_channel.get_untracked();
-                let typers = handle_typing.typing_in(&ch);
+                let typers = handle_typing.typing_in(&ch).await;
                 // Read the current channel_views, extract typing for this channel.
                 let current_views = state_typing.chat.channel_views.get_untracked();
                 let current_typing = current_views
@@ -320,7 +320,10 @@ pub fn App() -> impl IntoView {
     let vm_disconnect = voice_manager.clone();
     let handle_voice_leave = handle.clone();
     let on_voice_disconnect = move |_: ()| {
-        handle_voice_leave.leave_voice();
+        let handle_voice_leave = handle_voice_leave.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            handle_voice_leave.leave_voice().await;
+        });
         vm_disconnect.borrow_mut().close_all();
         write.voice.set_voice_channel.set(None);
         write.voice.set_voice_channel_name.set(String::new());
@@ -341,16 +344,16 @@ pub fn App() -> impl IntoView {
             .set(crate::state::CallLayout::default());
     };
 
-    // Welcome screen callback that refreshes all signals.
+    // Welcome screen callback — notify actor so derived signals refresh.
     let handle_welcome = handle.clone();
     let on_welcome_done = move |_: ()| {
-        refresh_all_signals(&handle_welcome, &write);
+        handle_welcome.notify_mutation();
     };
 
     // Store refresh function for reactive closures.
     let handle_for_refresh = handle.clone();
     let refresh_stored = StoredValue::new(SendWrapper::new(Rc::new(move || {
-        refresh_all_signals(&handle_for_refresh, &write);
+        handle_for_refresh.notify_mutation();
     }) as Rc<dyn Fn()>));
 
     // Aliases for view closures.
@@ -468,7 +471,10 @@ pub fn App() -> impl IntoView {
                                     // If in a different voice channel, disconnect from the old one first.
                                     let current_vc = app_state.voice.voice_channel.get_untracked();
                                     if current_vc.is_some() && current_vc.as_deref() != Some(&channel_name) {
-                                        vc_handle.leave_voice();
+                                        let vc_leave = vc_handle.clone();
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            vc_leave.leave_voice().await;
+                                        });
                                         vm.borrow_mut().close_all();
                                         write.voice.set_voice_channel.set(None);
                                         write.voice.set_voice_channel_name.set(String::new());
@@ -520,25 +526,27 @@ pub fn App() -> impl IntoView {
                                         use wasm_bindgen::JsCast;
                                         let stream: web_sys::MediaStream = stream.unchecked_into();
                                         vm2.borrow_mut().set_local_stream(stream);
-                                        vc.join_voice(&ch_name);
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            vc.join_voice(&ch_name).await;
 
-                                        // Seed participants from client state after joining.
-                                        // This ensures that on reconnect we pick up peers
-                                        // who are already in the channel (their VoiceJoined
-                                        // event was received before we joined).
-                                        let parts: Vec<String> = vc.voice_participants(&ch_name).iter().map(|p| p.to_string()).collect();
-                                        write.voice.set_voice_participants_map.update(|m| {
-                                            let list = m.entry(ch_name.clone()).or_default();
-                                            for p in parts {
-                                                if !list.contains(&p) {
-                                                    list.push(p);
+                                            // Seed participants from client state after joining.
+                                            // This ensures that on reconnect we pick up peers
+                                            // who are already in the channel (their VoiceJoined
+                                            // event was received before we joined).
+                                            let parts: Vec<String> = vc.voice_participants(&ch_name).await.iter().map(|p| p.to_string()).collect();
+                                            write.voice.set_voice_participants_map.update(|m| {
+                                                let list = m.entry(ch_name.clone()).or_default();
+                                                for p in parts {
+                                                    if !list.contains(&p) {
+                                                        list.push(p);
+                                                    }
                                                 }
-                                            }
-                                            // Also add the local user.
-                                            let my_id = vc.peer_id();
-                                            if !list.contains(&my_id) {
-                                                list.push(my_id);
-                                            }
+                                                // Also add the local user.
+                                                let my_id = vc.peer_id();
+                                                if !list.contains(&my_id) {
+                                                    list.push(my_id);
+                                                }
+                                            });
                                         });
                                     });
                                     let on_error = wasm_bindgen::closure::Closure::once(move |_err: wasm_bindgen::JsValue| {
@@ -562,8 +570,7 @@ pub fn App() -> impl IntoView {
                             on_channel_created={
                                 let ch_handle = handle_cc.clone();
                                 move |_| {
-                                    write.chat.set_channels.set(ch_handle.channels());
-                                    write.server.set_roles.set(extract_roles(&ch_handle));
+                                    ch_handle.notify_mutation();
                                 }
                             }
                         />
@@ -613,7 +620,10 @@ pub fn App() -> impl IntoView {
                                     let on_typing_cb = {
                                         let h = handle_ty.clone();
                                         Callback::new(move |_: ()| {
-                                            h.send_typing();
+                                            let h = h.clone();
+                                            wasm_bindgen_futures::spawn_local(async move {
+                                                h.send_typing().await;
+                                            });
                                         })
                                     };
                                     let on_pin_cb = {

@@ -188,7 +188,10 @@ pub fn ServerList(
             danger=true
             on_confirm=Callback::new(move |_| {
                 if let Some(sid) = leave_server_id.get_untracked() {
-                    handle_leave.leave_server(&sid);
+                    let h = handle_leave.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        h.leave_server(&sid).await;
+                    });
                 }
                 set_leave_server_id.set(None);
                 set_show_leave_confirm.set(false);

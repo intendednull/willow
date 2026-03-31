@@ -29,10 +29,9 @@ pub fn SettingsPanel(
     let (status_msg, set_status_msg) = signal(String::new());
 
     // Determine if the local user is the server owner.
-    let handle_owner = handle.clone();
     let is_owner = move || {
         let pid = peer_id.get();
-        handle_owner.server_owner().to_string() == pid
+        app_state.server.server_owner.get() == pid
     };
 
     // Tab display name.
@@ -43,14 +42,18 @@ pub fn SettingsPanel(
     };
 
     // ── Profile tab handlers ─────────────────────────────────────────
-    let (display_name, set_display_name) = signal(handle.server_display_name());
-    let server_name = handle.active_server_name();
+    let (display_name, set_display_name) = signal(app_state.server.display_name.get_untracked());
+    let server_name = app_state.server.active_server_name.get_untracked();
 
     let handle_save = handle.clone();
     let on_save = move |_| {
         let name = display_name.get_untracked();
         if !name.trim().is_empty() {
-            let _ = handle_save.set_server_display_name(name.trim());
+            let h = handle_save.clone();
+            let name = name.trim().to_string();
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = h.set_server_display_name(&name).await;
+            });
         }
         set_status_msg.set("Saved.".to_string());
     };
@@ -76,15 +79,18 @@ pub fn SettingsPanel(
             set_status_msg.set("Invalid Peer ID format.".to_string());
             return;
         };
-        match handle_invite.generate_invite(&recipient_eid) {
-            Ok(code) => {
-                set_invite_code.set(code);
-                set_status_msg.set("Invite generated.".to_string());
+        let h = handle_invite.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            match h.generate_invite(&recipient_eid).await {
+                Ok(code) => {
+                    set_invite_code.set(code);
+                    set_status_msg.set("Invite generated.".to_string());
+                }
+                Err(e) => {
+                    set_status_msg.set(format!("Error: {e}"));
+                }
             }
-            Err(e) => {
-                set_status_msg.set(format!("Error: {e}"));
-            }
-        }
+        });
     };
 
     let on_copy_invite = move |_| {
@@ -125,7 +131,7 @@ pub fn SettingsPanel(
                     on:click=move |_| set_active_tab.set(SettingsTab::Server)
                 >"Server"</button>
                 {
-                    let owner_check = is_owner.clone();
+                    let owner_check = is_owner;
                     move || {
                         if owner_check() {
                             Some(view! {
@@ -211,28 +217,41 @@ pub fn SettingsPanel(
                 // ── Invite Links ──────────────────────────────────────
                 {
                     let (link_copied, set_link_copied) = signal(false);
-                    let (link_list, set_link_list) = signal(handle.join_links());
+                    let (link_list, set_link_list) = signal(Vec::new());
+
+                    // Load initial link list asynchronously.
+                    {
+                        let h = handle.clone();
+                        let set_ll = set_link_list;
+                        wasm_bindgen_futures::spawn_local(async move {
+                            set_ll.set(h.join_links().await);
+                        });
+                    }
 
                     let handle_gen = handle.clone();
                     let set_status = set_status_msg;
                     let on_create_link = move |_| {
-                        match handle_gen.create_join_link(5, None) {
-                            Ok(token) => {
-                                let origin = web_sys::window()
-                                    .and_then(|w| w.location().origin().ok())
-                                    .unwrap_or_else(|| "https://willow.intendednull.com".to_string());
-                                let url = format!("{origin}/#join={token}");
-                                copy_to_clipboard(&url);
-                                set_link_copied.set(true);
-                                let set_copied = set_link_copied;
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    gloo_timers::future::TimeoutFuture::new(1500).await;
-                                    set_copied.set(false);
-                                });
-                                set_link_list.set(handle_gen.join_links());
+                        let h = handle_gen.clone();
+                        let set_ll = set_link_list;
+                        wasm_bindgen_futures::spawn_local(async move {
+                            match h.create_join_link(5, None).await {
+                                Ok(token) => {
+                                    let origin = web_sys::window()
+                                        .and_then(|w| w.location().origin().ok())
+                                        .unwrap_or_else(|| "https://willow.intendednull.com".to_string());
+                                    let url = format!("{origin}/#join={token}");
+                                    copy_to_clipboard(&url);
+                                    set_link_copied.set(true);
+                                    let set_copied = set_link_copied;
+                                    wasm_bindgen_futures::spawn_local(async move {
+                                        gloo_timers::future::TimeoutFuture::new(1500).await;
+                                        set_copied.set(false);
+                                    });
+                                    set_ll.set(h.join_links().await);
+                                }
+                                Err(e) => set_status.set(format!("Error: {e}")),
                             }
-                            Err(e) => set_status.set(format!("Error: {e}")),
-                        }
+                        });
                     };
 
                     let handle_links = handle.clone();
@@ -272,8 +291,12 @@ pub fn SettingsPanel(
                                                     let h2 = h.clone();
                                                     let lid2 = lid.clone();
                                                     move |_| {
-                                                        h2.delete_join_link(&lid2);
-                                                        set_ll.set(h2.join_links());
+                                                        let h3 = h2.clone();
+                                                        let lid3 = lid2.clone();
+                                                        wasm_bindgen_futures::spawn_local(async move {
+                                                            h3.delete_join_link(&lid3).await;
+                                                            set_ll.set(h3.join_links().await);
+                                                        });
                                                     }
                                                 }>
                                                     {icons::icon_trash()}

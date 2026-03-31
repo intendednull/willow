@@ -3,6 +3,7 @@ use leptos::prelude::*;
 use crate::app::WebClientHandle;
 use crate::components::ConfirmDialog;
 use crate::icons;
+use crate::state::AppState;
 
 /// Parse a string peer ID into an [`willow_identity::EndpointId`], returning
 /// `None` if parsing fails.
@@ -21,29 +22,27 @@ pub fn MemberList(
     peer_id: ReadSignal<String>,
 ) -> impl IntoView {
     let handle = use_context::<WebClientHandle>().unwrap();
+    let app_state = use_context::<AppState>().unwrap();
 
     // Kick confirmation state.
     let (show_kick_confirm, set_show_kick_confirm) = signal(false);
     let (pending_kick_peer, set_pending_kick_peer) = signal(Option::<(String, String)>::None);
     let handle_kick_confirm = handle.clone();
 
-    let handle_split = handle.clone();
-    let handle_members = handle.clone();
     let handle_for_items = handle.clone();
-    let handle_empty = handle.clone();
 
     view! {
         <div class="member-list">
             // ── Infrastructure (worker nodes) ──────────────────────
             {
-                let hs = handle_split.clone();
                 move || {
                     let all = peers.get();
-                    let owner_str = hs.server_owner().to_string();
+                    let owner_str = app_state.server.server_owner.get();
+                    let sync_providers = app_state.server.sync_provider_ids.get();
                     let workers: Vec<_> = all
                         .iter()
                         .filter(|(pid, _, _)| {
-                            parse_eid(pid).is_some_and(|eid| hs.has_permission(&eid, &willow_client::willow_state::Permission::SyncProvider))
+                            sync_providers.contains(pid)
                                 && pid != &peer_id.get_untracked()
                                 && *pid != owner_str
                         })
@@ -53,7 +52,6 @@ pub fn MemberList(
                     if workers.is_empty() {
                         None
                     } else {
-                        let _hs2 = hs.clone();
                         Some(view! {
                             <h3 class="section-header infra-header">
                                 {icons::icon_server()}
@@ -117,12 +115,12 @@ pub fn MemberList(
             <For
                 each=move || {
                     let all = peers.get();
-                    let hs = handle_members.clone();
-                    let owner_str = hs.server_owner().to_string();
+                    let owner_str = app_state.server.server_owner.get();
+                    let sync_providers = app_state.server.sync_provider_ids.get();
                     all.into_iter()
                         .filter(|(pid, _, _)| {
                             // Exclude workers from the members section.
-                            !parse_eid(pid).is_some_and(|eid| hs.has_permission(&eid, &willow_client::willow_state::Permission::SyncProvider))
+                            !sync_providers.contains(pid)
                                 || pid == &peer_id.get_untracked()
                                 || *pid == owner_str
                         })
@@ -139,7 +137,6 @@ pub fn MemberList(
                     let pid_untrust = pid.clone();
                     let pid_kick = pid.clone();
                     let pid_self = pid.clone();
-                    let handle_badge = handle_for_items.clone();
                     let handle_trust = handle_for_items.clone();
                     let handle_untrust = handle_for_items.clone();
                     view! {
@@ -154,12 +151,12 @@ pub fn MemberList(
                             </span>
                             {
                                 let pb = pid_badge.clone();
-                                let hb = handle_badge.clone();
                                 move || {
-                                    let owner = hb.server_owner().to_string();
+                                    let owner = app_state.server.server_owner.get();
+                                    let admins = app_state.server.admin_ids.get();
                                     if pb == owner {
                                         Some(view! { <span class="badge owner-badge">"Owner"</span> })
-                                    } else if parse_eid(&pb).is_some_and(|eid| hb.has_permission(&eid, &willow_client::willow_state::Permission::Administrator)) {
+                                    } else if admins.contains(&pb) {
                                         Some(view! { <span class="badge trusted-badge">"Trusted"</span> })
                                     } else {
                                         None
@@ -177,9 +174,8 @@ pub fn MemberList(
                                     let pu = pid_untrust.clone();
                                     let hu = handle_untrust.clone();
                                     let pk = pid_kick.clone();
-                                    let hb2 = handle_badge.clone();
                                     move || {
-                                        let is_owner = hb2.server_owner().to_string() == peer_id.get_untracked();
+                                        let is_owner = app_state.server.server_owner.get() == peer_id.get_untracked();
                                         if is_self() || !is_owner {
                                             None
                                         } else {
@@ -192,8 +188,22 @@ pub fn MemberList(
                                                 let kick_name = name_for_kick.clone();
                                                 let kick_pid = pk.clone();
                                                 Some(view! {
-                                                    <button class="btn btn-sm" on:click=move |_| { if let Some(eid) = parse_eid(&pt) { ht.trust_peer(eid); } }>"Trust"</button>
-                                                    <button class="btn btn-sm" on:click=move |_| { if let Some(eid) = parse_eid(&pu) { hu.untrust_peer(eid); } }>"Untrust"</button>
+                                                    <button class="btn btn-sm" on:click=move |_| {
+                                                        if let Some(eid) = parse_eid(&pt) {
+                                                            let ht = ht.clone();
+                                                            wasm_bindgen_futures::spawn_local(async move {
+                                                                ht.trust_peer(eid).await;
+                                                            });
+                                                        }
+                                                    }>"Trust"</button>
+                                                    <button class="btn btn-sm" on:click=move |_| {
+                                                        if let Some(eid) = parse_eid(&pu) {
+                                                            let hu = hu.clone();
+                                                            wasm_bindgen_futures::spawn_local(async move {
+                                                                hu.untrust_peer(eid).await;
+                                                            });
+                                                        }
+                                                    }>"Untrust"</button>
                                                     <button class="btn btn-sm btn-danger" on:click=move |_| {
                                                         set_pending_kick_peer.set(Some((kick_pid.clone(), kick_name.clone())));
                                                         set_show_kick_confirm.set(true);
@@ -210,9 +220,10 @@ pub fn MemberList(
             </For>
             {move || {
                 let all = peers.get();
-                let owner_str = handle_empty.server_owner().to_string();
+                let owner_str = app_state.server.server_owner.get();
+                let sync_providers = app_state.server.sync_provider_ids.get();
                 let non_worker_count = all.iter().filter(|(pid, _, _)| {
-                    !parse_eid(pid).is_some_and(|eid| handle_empty.has_permission(&eid, &willow_client::willow_state::Permission::SyncProvider))
+                    !sync_providers.contains(pid)
                         || pid == &peer_id.get_untracked()
                         || *pid == owner_str
                 }).count();
@@ -235,7 +246,10 @@ pub fn MemberList(
                 on_confirm=Callback::new(move |_| {
                     if let Some((pid, _)) = pending_kick_peer.get_untracked() {
                         if let Some(eid) = parse_eid(&pid) {
-                            let _ = handle_kick_confirm.kick_member(eid);
+                            let hk = handle_kick_confirm.clone();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                let _ = hk.kick_member(eid).await;
+                            });
                         }
                     }
                     set_pending_kick_peer.set(None);

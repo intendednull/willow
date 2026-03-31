@@ -5688,6 +5688,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
 
 [[package]]
+name = "willow-actor"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "futures-channel",
+ "futures-core",
+ "gloo-timers",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "willow-channel"
 version = "0.1.0"
 dependencies = [
@@ -5721,6 +5735,7 @@ dependencies = [
  "uuid",
  "wasm-bindgen-futures",
  "web-sys",
+ "willow-actor",
  "willow-channel",
  "willow-common",
  "willow-crypto",
@@ -5905,6 +5920,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "web-sys",
+ "willow-actor",
  "willow-client",
  "willow-identity",
  "willow-network",
@@ -5918,11 +5934,13 @@ dependencies = [
  "bincode",
  "bytes",
  "clap",
+ "futures-core",
  "serde",
  "tempfile",
  "tokio",
  "tracing",
  "uuid",
+ "willow-actor",
  "willow-common",
  "willow-identity",
  "willow-network",
