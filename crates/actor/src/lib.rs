@@ -8,18 +8,32 @@
 
 pub mod actor;
 pub mod addr;
+pub mod broker;
 pub mod context;
+pub mod debounce;
+pub mod derived;
 pub mod envelope;
 pub mod error;
+pub mod fsm;
 pub mod mailbox;
+pub mod pool;
 pub mod runtime;
+pub mod state;
+pub mod stream;
 pub mod supervisor;
 pub mod system;
 
 pub use actor::{Actor, Handler, Message, StreamHandler};
 pub use addr::{Addr, AnyAddr, Recipient};
-pub use context::{Context, IntervalHandle};
+pub use broker::{Broker, BrokerSubscribe, BrokerUnsubscribe, Publish, SubscriptionId};
+pub use context::{Context, IntervalHandle, TimerHandle};
+pub use debounce::{Debounce, Enqueue, Throttle};
+pub use derived::{derived, DeriveSource, DerivedActor};
 pub use error::{AskError, SendError};
+pub use fsm::{FsmActor, Input, StateMachine, TransitionResult};
+pub use pool::Pool;
+pub use state::{get, mutate, select, subscribe, Get, Mutate, Notify, Select, Set, StateActor, StateRef, Subscribe};
+pub use stream::{OutputStream, StreamOutput, SubscribeStream};
 pub use supervisor::RestartPolicy;
 pub use system::{System, SystemHandle};
 
