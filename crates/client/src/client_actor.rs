@@ -1,11 +1,9 @@
 //! # Client State Actor
 //!
-//! Wraps access to [`SharedState`] through the actor system, providing
-//! notification-based derived state. The actor holds an `Arc<RwLock<SharedState>>`
-//! (same reference as `ClientHandle::shared`), ensuring a single source of truth.
-//!
-//! Mutations mark the actor "dirty", and after a batch of mutations drain,
-//! the `idle()` hook notifies all subscribers.
+//! Notification-based derived state for UI frameworks. The actor wraps
+//! `Arc<RwLock<SharedState>>` and provides subscriber notifications when
+//! state is mutated. Derived state actors subscribe and run selectors
+//! to efficiently update UI signals.
 
 use std::any::Any;
 use std::sync::{Arc, RwLock};
@@ -14,15 +12,15 @@ use willow_actor::{Actor, Context, Handler, Message, Recipient};
 
 use crate::SharedState;
 
-/// The client state actor -- notification hub for state changes.
+/// Client state actor — notification hub for state changes.
 pub struct ClientStateActor {
     pub(crate) shared: Arc<RwLock<SharedState>>,
     pub(crate) dirty: bool,
     pub(crate) subscribers: Vec<Recipient<StateChanged>>,
 }
 
-// Safety: ClientStateActor holds an Arc<RwLock<SharedState>>. The RwLock
-// provides synchronized access. On WASM (single-threaded), this is trivially safe.
+// Safety: Arc<RwLock> provides synchronized access. SharedState is !Send
+// due to rusqlite but is safe behind the lock. On WASM, trivially safe.
 unsafe impl Send for ClientStateActor {}
 
 impl Actor for ClientStateActor {
@@ -61,11 +59,9 @@ impl Handler<Subscribe> for ClientStateActor {
     }
 }
 
-/// Type-erased selector closure: `&SharedState -> Box<dyn Any + Send>`.
+/// Type-erased selector closure.
+#[allow(clippy::type_complexity)]
 pub type StateSelector = Box<dyn FnOnce(&SharedState) -> Box<dyn Any + Send> + Send>;
-
-/// Type-erased mutator closure: `&mut SharedState -> Box<dyn Any + Send>`.
-pub type StateMutator = Box<dyn FnOnce(&mut SharedState) -> Box<dyn Any + Send> + Send>;
 
 /// Read state via a type-erased selector.
 pub struct ReadState(pub StateSelector);
@@ -79,35 +75,13 @@ impl Handler<ReadState> for ClientStateActor {
         msg: ReadState,
         _ctx: &mut Context<Self>,
     ) -> impl std::future::Future<Output = Box<dyn Any + Send>> + Send {
-        let shared = self.shared.read().unwrap();
-        let result = (msg.0)(&shared);
-        async move { result }
-    }
-}
-
-/// Mutate state via a closure. Sets dirty flag for subscriber notification.
-pub struct MutateState(pub StateMutator);
-impl Message for MutateState {
-    type Result = Box<dyn Any + Send>;
-}
-
-impl Handler<MutateState> for ClientStateActor {
-    fn handle(
-        &mut self,
-        msg: MutateState,
-        _ctx: &mut Context<Self>,
-    ) -> impl std::future::Future<Output = Box<dyn Any + Send>> + Send {
-        let mut shared = self.shared.write().unwrap();
-        let result = (msg.0)(&mut shared);
-        self.dirty = true;
-        async move { result }
+        let s = self.shared.read().unwrap();
+        let r = (msg.0)(&s);
+        async move { r }
     }
 }
 
 /// Notify the actor that state has been mutated externally.
-///
-/// Call this after mutating state through the `Arc<RwLock<SharedState>>`
-/// to trigger subscriber notifications on the next idle cycle.
 pub struct NotifyMutation;
 impl Message for NotifyMutation {
     type Result = ();
@@ -124,32 +98,54 @@ impl Handler<NotifyMutation> for ClientStateActor {
     }
 }
 
-/// Typed read: run a closure on `&SharedState` and return `T` directly.
+/// Typed read: run a selector on `&SharedState` and return `T`.
 pub async fn read_state<T: Send + 'static>(
     addr: &willow_actor::Addr<ClientStateActor>,
     f: impl FnOnce(&SharedState) -> T + Send + 'static,
 ) -> T {
-    let result = addr
+    let r = addr
         .ask(ReadState(Box::new(move |s| {
             Box::new(f(s)) as Box<dyn Any + Send>
         })))
         .await
-        .expect("state actor is alive");
-    *result.downcast::<T>().expect("type mismatch in read_state")
+        .expect("state actor alive");
+    *r.downcast::<T>().expect("type mismatch")
 }
 
-/// Typed mutate: run a closure on `&mut SharedState` and return `T` directly.
+/// Type-erased mutator closure.
+#[allow(clippy::type_complexity)]
+pub type StateMutator = Box<dyn FnOnce(&mut SharedState) -> Box<dyn Any + Send> + Send>;
+
+/// Mutate state via a closure. Sets dirty flag for subscriber notification.
+pub struct MutateState(pub StateMutator);
+impl Message for MutateState {
+    type Result = Box<dyn Any + Send>;
+}
+
+impl Handler<MutateState> for ClientStateActor {
+    fn handle(
+        &mut self,
+        msg: MutateState,
+        _ctx: &mut Context<Self>,
+    ) -> impl std::future::Future<Output = Box<dyn Any + Send>> + Send {
+        let mut s = self.shared.write().unwrap();
+        let r = (msg.0)(&mut s);
+        drop(s);
+        self.dirty = true;
+        async move { r }
+    }
+}
+
+/// Typed mutate: run a closure on `&mut SharedState` and return `T`.
 pub async fn mutate_state<T: Send + 'static>(
     addr: &willow_actor::Addr<ClientStateActor>,
     f: impl FnOnce(&mut SharedState) -> T + Send + 'static,
 ) -> T {
-    let result = addr
+    let r = addr
         .ask(MutateState(Box::new(move |s| {
             Box::new(f(s)) as Box<dyn Any + Send>
         })))
         .await
-        .expect("state actor is alive");
-    *result
-        .downcast::<T>()
-        .expect("type mismatch in mutate_state")
+        .expect("state actor alive");
+    *r.downcast::<T>().expect("type mismatch")
 }

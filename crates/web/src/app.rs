@@ -224,6 +224,14 @@ pub fn App() -> impl IntoView {
             // Initialize the actor system (requires async runtime).
             handle_for_connect.init_actor_system();
 
+            // Wire derived signals that auto-update from state changes.
+            if let (Some(state_addr), Some(system)) = (
+                handle_for_connect.state_addr(),
+                handle_for_connect.actor_system(),
+            ) {
+                crate::state::wire_derived_signals(state_addr, system, &write_for_events);
+            }
+
             // Connect to the P2P network. This subscribes to topics, spawns
             // listeners, and returns the event receiver.
             let mut client_event_rx = handle_for_connect.connect(network).await;

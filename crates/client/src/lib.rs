@@ -96,8 +96,8 @@ pub struct SharedState {
 /// an in-memory backend.
 pub struct ClientHandle<N: willow_network::Network> {
     pub(crate) shared: Arc<RwLock<SharedState>>,
-    pub(crate) state_addr: Option<willow_actor::Addr<client_actor::ClientStateActor>>,
-    pub(crate) system: Option<willow_actor::SystemHandle>,
+    pub(crate) state_addr: willow_actor::Addr<client_actor::ClientStateActor>,
+    pub(crate) system: willow_actor::SystemHandle,
     /// The network backend, set after [`connect()`](ClientHandle::connect).
     pub(crate) network: Option<Arc<N>>,
     /// Maps topic string names to their `N::Topic` handles for broadcasting.
@@ -441,10 +441,17 @@ impl<N: willow_network::Network> ClientHandle<N> {
         #[allow(clippy::arc_with_non_send_sync)]
         let shared = Arc::new(RwLock::new(shared_state));
 
+        let system = willow_actor::System::new();
+        let state_addr = system.spawn(client_actor::ClientStateActor {
+            shared: Arc::clone(&shared),
+            dirty: false,
+            subscribers: Vec::new(),
+        });
+
         let handle = ClientHandle {
             shared: Arc::clone(&shared),
-            state_addr: None,
-            system: None,
+            state_addr,
+            system: system.handle(),
             network: None,
             topics: Arc::new(RwLock::new(HashMap::new())),
             event_tx,
@@ -465,9 +472,6 @@ impl<N: willow_network::Network> ClientHandle<N> {
     ///
     /// Returns a receiver for [`ClientEvent`]s emitted by listener tasks.
     pub async fn connect(&mut self, network: N) -> futures_mpsc::UnboundedReceiver<ClientEvent> {
-        // Initialize the actor system if not already done (requires async runtime).
-        self.init_actor_system();
-
         let network = Arc::new(network);
         self.network = Some(Arc::clone(&network));
 
@@ -496,7 +500,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             listeners::spawn_topic_listener(
                 events,
                 sender,
-                Arc::clone(&self.shared),
+                self.state_addr.clone(),
                 event_tx.clone(),
             );
         }
@@ -514,7 +518,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             listeners::spawn_topic_listener(
                 events,
                 sender,
-                Arc::clone(&self.shared),
+                self.state_addr.clone(),
                 event_tx.clone(),
             );
         }
@@ -542,7 +546,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 listeners::spawn_topic_listener(
                     events,
                     sender,
-                    Arc::clone(&self.shared),
+                    self.state_addr.clone(),
                     event_tx.clone(),
                 );
             }
@@ -2024,39 +2028,18 @@ impl<N: willow_network::Network> ClientHandle<N> {
         self.identity.clone()
     }
 
-    /// Get the state actor address for derived state subscriptions.
-    pub fn state_addr(&self) -> Option<&willow_actor::Addr<client_actor::ClientStateActor>> {
-        self.state_addr.as_ref()
+    /// Get the state actor address.
+    pub fn state_addr(&self) -> &willow_actor::Addr<client_actor::ClientStateActor> {
+        &self.state_addr
     }
-
     /// Get the actor system handle.
-    pub fn actor_system(&self) -> Option<&willow_actor::SystemHandle> {
-        self.system.as_ref()
+    pub fn actor_system(&self) -> &willow_actor::SystemHandle {
+        &self.system
     }
-
-    /// Initialize the actor system. Call from an async context (e.g. after connecting).
-    pub fn init_actor_system(&mut self) {
-        if self.state_addr.is_some() {
-            return;
-        }
-        let system = willow_actor::System::new();
-        let addr = system.spawn(client_actor::ClientStateActor {
-            shared: std::sync::Arc::clone(&self.shared),
-            dirty: false,
-            subscribers: Vec::new(),
-        });
-        self.state_addr = Some(addr);
-        self.system = Some(system.handle());
-    }
-
-    /// Notify the state actor that shared state has been mutated.
-    /// Triggers subscriber notifications on the next idle cycle.
+    /// Notify the state actor that shared state was mutated.
     pub fn notify_mutation(&self) {
-        if let Some(addr) = &self.state_addr {
-            let _ = addr.do_send(client_actor::NotifyMutation);
-        }
+        let _ = self.state_addr.do_send(client_actor::NotifyMutation);
     }
-
     /// Get the local PeerId as a string.
     pub fn peer_id(&self) -> String {
         self.identity.endpoint_id().to_string()
@@ -2703,6 +2686,24 @@ fn generate_invite_shared(
         .ok_or_else(|| anyhow::anyhow!("invite generation failed"))
 }
 
+/// Generate an invite via the actor system (used by listeners).
+pub(crate) async fn generate_invite_via_actor(
+    state_addr: &willow_actor::Addr<client_actor::ClientStateActor>,
+    recipient_peer_id: &willow_identity::EndpointId,
+) -> anyhow::Result<String> {
+    let peer_id = *recipient_peer_id;
+    client_actor::read_state(state_addr, move |s| {
+        let pub_key = invite::endpoint_id_to_ed25519_public(&peer_id);
+        let ctx = s
+            .state
+            .active()
+            .ok_or_else(|| anyhow::anyhow!("no active server"))?;
+        invite::generate_invite(&ctx.server, &ctx.keys, &ctx.topic_map, &pub_key)
+            .ok_or_else(|| anyhow::anyhow!("invite generation failed"))
+    })
+    .await
+}
+
 /// Get a peer's display name from a borrowed SharedState.
 fn peer_display_name_shared(shared: &SharedState, peer_id: &willow_identity::EndpointId) -> String {
     if let Some(profile) = shared.state.event_state.profiles.get(peer_id) {
@@ -2827,10 +2828,24 @@ pub(crate) fn test_client() -> (
     #[allow(clippy::arc_with_non_send_sync)]
     let shared = Arc::new(RwLock::new(shared_state));
 
+    // Create a tokio runtime for the actor system (tests run synchronously).
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let _guard = rt.enter();
+    let sys = willow_actor::System::new();
+    let sa = sys.spawn(client_actor::ClientStateActor {
+        shared: Arc::clone(&shared),
+        dirty: false,
+        subscribers: Vec::new(),
+    });
+    let sh = sys.handle();
+    // Leak the runtime and system so actors stay alive for the test duration.
+    std::mem::forget(rt);
+    std::mem::forget(sys);
+
     let client = ClientHandle {
         shared,
-        state_addr: None,
-        system: None,
+        state_addr: sa,
+        system: sh,
         network: None,
         topics: Arc::new(RwLock::new(HashMap::new())),
         event_tx,

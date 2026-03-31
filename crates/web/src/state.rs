@@ -104,7 +104,7 @@ pub struct VoiceState {
     pub voice_channel: ReadSignal<Option<String>>,
     pub voice_muted: ReadSignal<bool>,
     pub voice_deafened: ReadSignal<bool>,
-    /// Participants per voice channel. Not yet rendered but tracked for future use.
+    /// Participants per voice channel.
     #[allow(dead_code)]
     pub voice_participants_map: ReadSignal<HashMap<String, Vec<String>>>,
     pub voice_channel_name: ReadSignal<String>,
@@ -112,12 +112,10 @@ pub struct VoiceState {
     pub speaking_peers: ReadSignal<HashSet<String>>,
     pub remote_video_streams:
         ReadSignal<HashMap<String, send_wrapper::SendWrapper<web_sys::MediaStream>>>,
-    /// Local video stream (camera or screen share). Stored globally so it
-    /// survives call-page component remounts.
     pub local_video_stream: ReadSignal<Option<send_wrapper::SendWrapper<web_sys::MediaStream>>>,
 }
 
-// ── Write signals (NOT in context — held by event processing) ────────
+// ── Write signals (for local UI state only) ─────────────────────────
 
 #[derive(Clone, Copy)]
 pub struct AppWriteSignals {
@@ -190,6 +188,10 @@ pub struct VoiceWriteSignals {
 }
 
 /// Create all signal pairs and return the read/write halves.
+///
+/// Signals that reflect `SharedState` are created via `derived_signal()` when
+/// a state actor is available; otherwise they fall back to regular signals
+/// that are updated via `refresh_all_signals()`.
 pub fn create_signals() -> (AppState, AppWriteSignals) {
     // Chat signals
     let (messages, set_messages) = signal(Vec::<DisplayMessage>::new());
@@ -216,7 +218,7 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
     let (roles, set_roles) = signal(Vec::<(String, String, Vec<String>)>::new());
     let (display_name, set_display_name) = signal(String::new());
 
-    // UI panel signals
+    // UI panel signals (purely local — never derived)
     let (show_settings, set_show_settings) = signal(false);
     let (show_sidebar, set_show_sidebar) = signal(false);
     let (show_members, set_show_members) = signal(false);
@@ -350,4 +352,85 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
     };
 
     (app_state, write_signals)
+}
+
+/// Wire up derived signals that auto-update from the state actor.
+///
+/// Call this after the actor system is initialized. These derived signals
+/// replace the manual `refresh_all_signals()` / `process_event_batch()` flow.
+/// Each signal only re-renders when its selected value actually changes.
+pub fn wire_derived_signals(
+    state_addr: &willow_actor::Addr<willow_client::client_actor::ClientStateActor>,
+    system: &willow_actor::SystemHandle,
+    write: &AppWriteSignals,
+) {
+    use crate::derived::derived_signal;
+
+    // ── Server-derived signals ──────────────────────────────────────
+    let servers = derived_signal(state_addr, system, |s| s.state.server_list());
+    leptos::prelude::Effect::new(move || write.server.set_servers.set(servers.get()));
+
+    let active_id = derived_signal(state_addr, system, |s| {
+        s.state.active_server.clone().unwrap_or_default()
+    });
+    leptos::prelude::Effect::new(move || write.server.set_active_server_id.set(active_id.get()));
+
+    let active_name = derived_signal(state_addr, system, |s| {
+        s.state
+            .active()
+            .map(|ctx| ctx.server.name.clone())
+            .unwrap_or_else(|| "No Server".to_string())
+    });
+    leptos::prelude::Effect::new(move || {
+        write.server.set_active_server_name.set(active_name.get())
+    });
+
+    let display_name = derived_signal(state_addr, system, |s| {
+        let eid = s.identity.endpoint_id();
+        s.state.profiles.display_name(&eid)
+    });
+    leptos::prelude::Effect::new(move || write.server.set_display_name.set(display_name.get()));
+
+    // ── Channel-derived signals ─────────────────────────────────────
+    let channels = derived_signal(state_addr, system, |s| s.state.channel_names());
+    leptos::prelude::Effect::new(move || write.chat.set_channels.set(channels.get()));
+
+    let unread = derived_signal(state_addr, system, |s| {
+        s.state
+            .active()
+            .map(|ctx| ctx.unread.clone())
+            .unwrap_or_default()
+    });
+    leptos::prelude::Effect::new(move || write.server.set_unread.set(unread.get()));
+
+    // ── Network-derived signals ─────────────────────────────────────
+    let peer_id = derived_signal(state_addr, system, |s| s.identity.endpoint_id().to_string());
+    leptos::prelude::Effect::new(move || write.network.set_peer_id.set(peer_id.get()));
+
+    let peer_count = derived_signal(state_addr, system, |s| s.state.chat.peers.len());
+    leptos::prelude::Effect::new(move || write.network.set_peer_count.set(peer_count.get()));
+
+    let connection = derived_signal(state_addr, system, |s| {
+        if s.connected {
+            "connected".to_string()
+        } else {
+            "connecting".to_string()
+        }
+    });
+    leptos::prelude::Effect::new(move || write.network.set_connection_status.set(connection.get()));
+
+    // ── Roles ───────────────────────────────────────────────────────
+    let roles = derived_signal(state_addr, system, |s| {
+        s.state
+            .event_state
+            .roles
+            .iter()
+            .map(|(id, role)| {
+                let perms: Vec<String> =
+                    role.permissions.iter().map(|p| format!("{p:?}")).collect();
+                (id.clone(), role.name.clone(), perms)
+            })
+            .collect::<Vec<_>>()
+    });
+    leptos::prelude::Effect::new(move || write.server.set_roles.set(roles.get()));
 }

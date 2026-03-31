@@ -1,24 +1,22 @@
-//! Per-topic listener tasks that stream GossipEvents and emit ClientEvents.
+//! Per-topic listener tasks that stream GossipEvents and mutate state via the actor.
 //!
 //! Each server subscription spawns one listener via [`spawn_topic_listener`].
 //! The listener calls [`TopicEvents::next()`] in a loop and routes incoming
-//! wire messages to the shared state machine, emitting [`ClientEvent`]s for
-//! the UI layer.
-
-use std::sync::{Arc, RwLock};
+//! wire messages to the state actor via [`MutateState`] messages.
 
 use futures::channel::mpsc as futures_mpsc;
+use willow_actor::Addr;
 use willow_identity::EndpointId;
 use willow_network::traits::{GossipEvent, TopicEvents};
 use willow_state::EventStore as _;
 
 use willow_network::traits::TopicHandle;
 
+use crate::client_actor::ClientStateActor;
 use crate::events::ClientEvent;
-use crate::SharedState;
 
 /// Spawn an async task that listens for gossip events on a topic,
-/// processes incoming wire messages, and emits [`ClientEvent`]s.
+/// processes incoming wire messages, and mutates state via the actor.
 ///
 /// The task runs until the [`TopicEvents`] stream ends. The `topic`
 /// handle is used to broadcast responses (sync batches, join responses)
@@ -26,39 +24,45 @@ use crate::SharedState;
 pub fn spawn_topic_listener<T: TopicHandle + 'static, E: TopicEvents + 'static>(
     events: E,
     topic: T,
-    shared: Arc<RwLock<SharedState>>,
+    state_addr: Addr<ClientStateActor>,
     event_tx: futures_mpsc::UnboundedSender<ClientEvent>,
 ) {
     #[cfg(not(target_arch = "wasm32"))]
-    tokio::task::spawn_local(topic_listener_loop(events, topic, shared, event_tx));
+    tokio::task::spawn_local(topic_listener_loop(events, topic, state_addr, event_tx));
 
     #[cfg(target_arch = "wasm32")]
-    wasm_bindgen_futures::spawn_local(topic_listener_loop(events, topic, shared, event_tx));
+    wasm_bindgen_futures::spawn_local(topic_listener_loop(events, topic, state_addr, event_tx));
 }
 
 /// The core async loop that drains a [`TopicEvents`] stream.
 async fn topic_listener_loop<T: TopicHandle, E: TopicEvents>(
     mut events: E,
     topic: T,
-    shared: Arc<RwLock<SharedState>>,
+    state_addr: Addr<ClientStateActor>,
     event_tx: futures_mpsc::UnboundedSender<ClientEvent>,
 ) {
     while let Some(Ok(gossip_event)) = events.next().await {
         match gossip_event {
             GossipEvent::Received(msg) => {
-                process_received_message(&msg.content, msg.sender, &shared, &event_tx, &topic)
+                process_received_message(&msg.content, msg.sender, &state_addr, &event_tx, &topic)
                     .await;
             }
             GossipEvent::NeighborUp(id) => {
-                let mut s = shared.write().unwrap();
-                if !s.state.chat.peers.contains(&id) {
-                    s.state.chat.peers.push(id);
-                }
+                let id2 = id;
+                let _ = crate::client_actor::mutate_state(&state_addr, move |s| {
+                    if !s.state.chat.peers.contains(&id2) {
+                        s.state.chat.peers.push(id2);
+                    }
+                })
+                .await;
                 let _ = event_tx.unbounded_send(ClientEvent::PeerConnected(id));
             }
             GossipEvent::NeighborDown(id) => {
-                let mut s = shared.write().unwrap();
-                s.state.chat.peers.retain(|p| p != &id);
+                let id2 = id;
+                let _ = crate::client_actor::mutate_state(&state_addr, move |s| {
+                    s.state.chat.peers.retain(|p| p != &id2);
+                })
+                .await;
                 let _ = event_tx.unbounded_send(ClientEvent::PeerDisconnected(id));
             }
         }
@@ -72,7 +76,7 @@ async fn topic_listener_loop<T: TopicHandle, E: TopicEvents>(
 async fn process_received_message<T: TopicHandle>(
     data: &[u8],
     _sender: EndpointId,
-    shared: &Arc<RwLock<SharedState>>,
+    state_addr: &Addr<ClientStateActor>,
     event_tx: &futures_mpsc::UnboundedSender<ClientEvent>,
     topic: &T,
 ) {
@@ -80,11 +84,12 @@ async fn process_received_message<T: TopicHandle>(
     if let Ok((profile, willow_transport::MessageType::Identity)) =
         willow_transport::unpack_envelope::<willow_identity::UserProfile>(data)
     {
-        let mut s = shared.write().unwrap();
-        s.state
-            .profiles
-            .names
-            .insert(profile.peer_id, profile.display_name.clone());
+        let peer_id = profile.peer_id;
+        let display_name = profile.display_name.clone();
+        let _ = crate::client_actor::mutate_state(state_addr, move |s| {
+            s.state.profiles.names.insert(peer_id, display_name.clone());
+        })
+        .await;
         let _ = event_tx.unbounded_send(ClientEvent::ProfileUpdated {
             peer_id: profile.peer_id,
             display_name: profile.display_name,
@@ -104,73 +109,81 @@ async fn process_received_message<T: TopicHandle>(
                 return;
             }
 
-            let mut s = shared.write().unwrap();
-            // Track sender as an online peer.
-            if !s.state.chat.peers.contains(&signer) {
-                s.state.chat.peers.push(signer);
-                let _ = event_tx.unbounded_send(ClientEvent::PeerConnected(signer));
-            }
-            // Apply to event-sourced state.
-            let result = willow_state::apply_lenient(&mut s.state.event_state, &event);
-            if matches!(result, willow_state::ApplyResult::Applied) {
-                s.state.event_store.append(event.clone());
-                let hash = s.state.event_state.hash();
-                s.state.event_store.set_latest_hash(hash);
-                // Persist if configured.
-                if s.config.persistence {
-                    if let Some(sid) = &s.state.active_server {
-                        crate::storage::save_server_state(sid, &s.state.event_state);
-                    }
+            let event_clone = event.clone();
+            let _event_tx = event_tx.clone();
+            let client_events = crate::client_actor::mutate_state(state_addr, move |s| {
+                // Track sender as an online peer.
+                if !s.state.chat.peers.contains(&signer) {
+                    s.state.chat.peers.push(signer);
                 }
-                // Emit client events derived from the applied event.
-                let mut events = Vec::new();
-                crate::emit_client_events_for(&mut s, &event, &mut events);
-                drop(s);
-                for e in events {
+                // Apply to event-sourced state.
+                let result = willow_state::apply_lenient(&mut s.state.event_state, &event_clone);
+                if matches!(result, willow_state::ApplyResult::Applied) {
+                    s.state.event_store.append(event_clone.clone());
+                    let hash = s.state.event_state.hash();
+                    s.state.event_store.set_latest_hash(hash);
+                    if s.config.persistence {
+                        if let Some(sid) = &s.state.active_server {
+                            crate::storage::save_server_state(sid, &s.state.event_state);
+                        }
+                    }
+                    let mut events = Vec::new();
+                    crate::emit_client_events_for(s, &event_clone, &mut events);
+                    events
+                } else {
+                    vec![]
+                }
+            })
+            .await;
+            // Emit peer connected if new.
+            if !client_events.is_empty() {
+                for e in client_events {
                     let _ = event_tx.unbounded_send(e);
                 }
             }
         }
         crate::ops::WireMessage::SyncBatch { events: batch } => {
-            let mut s = shared.write().unwrap();
-            if !s.state.chat.peers.contains(&signer) {
-                s.state.chat.peers.push(signer);
-                let _ = event_tx.unbounded_send(ClientEvent::PeerConnected(signer));
-            }
-            let mut sorted = batch;
-            sorted.sort_by_key(|e| e.timestamp_ms);
-            let count = sorted.len();
-            let mut client_events = Vec::new();
-            for event in &sorted {
-                let result = willow_state::apply_lenient(&mut s.state.event_state, event);
-                if matches!(result, willow_state::ApplyResult::Applied) {
-                    s.state.event_store.append(event.clone());
-                    let hash = s.state.event_state.hash();
-                    s.state.event_store.set_latest_hash(hash);
-                    crate::emit_client_events_for(&mut s, event, &mut client_events);
+            let _event_tx = event_tx.clone();
+            let client_events = crate::client_actor::mutate_state(state_addr, move |s| {
+                if !s.state.chat.peers.contains(&signer) {
+                    s.state.chat.peers.push(signer);
                 }
-            }
-            if count > 0 {
-                if s.config.persistence {
-                    if let Some(sid) = &s.state.active_server {
-                        crate::storage::save_server_state(sid, &s.state.event_state);
+                let mut sorted = batch;
+                sorted.sort_by_key(|e| e.timestamp_ms);
+                let count = sorted.len();
+                let mut client_events = Vec::new();
+                for event in &sorted {
+                    let result = willow_state::apply_lenient(&mut s.state.event_state, event);
+                    if matches!(result, willow_state::ApplyResult::Applied) {
+                        s.state.event_store.append(event.clone());
+                        let hash = s.state.event_state.hash();
+                        s.state.event_store.set_latest_hash(hash);
+                        crate::emit_client_events_for(s, event, &mut client_events);
                     }
                 }
-                crate::reconcile_topic_map(&mut s.state);
-                client_events.push(ClientEvent::SyncCompleted { ops_applied: count });
-            }
-            drop(s);
+                if count > 0 {
+                    if s.config.persistence {
+                        if let Some(sid) = &s.state.active_server {
+                            crate::storage::save_server_state(sid, &s.state.event_state);
+                        }
+                    }
+                    crate::reconcile_topic_map(&mut s.state);
+                    client_events.push(ClientEvent::SyncCompleted { ops_applied: count });
+                }
+                client_events
+            })
+            .await;
             for e in client_events {
                 let _ = event_tx.unbounded_send(e);
             }
         }
         crate::ops::WireMessage::SyncRequest { state_hash, .. } => {
-            let (missing, identity) = {
-                let s = shared.read().unwrap();
+            let (missing, identity) = crate::client_actor::read_state(state_addr, move |s| {
                 let m = s.state.event_store.events_since(&state_hash);
                 let id = s.identity.clone();
                 (m, id)
-            };
+            })
+            .await;
             if !missing.is_empty() {
                 let msg = crate::ops::WireMessage::SyncBatch { events: missing };
                 if let Some(data) = crate::ops::pack_wire(&msg, &identity) {
@@ -179,23 +192,24 @@ async fn process_received_message<T: TopicHandle>(
             }
         }
         crate::ops::WireMessage::TypingIndicator { channel } => {
-            let mut s = shared.write().unwrap();
-            let now = crate::util::current_time_ms();
-            s.typing_peers.insert(signer, (channel, now));
-            if !s.state.chat.peers.contains(&signer) {
-                s.state.chat.peers.push(signer);
-                let _ = event_tx.unbounded_send(ClientEvent::PeerConnected(signer));
-            }
+            let _ = crate::client_actor::mutate_state(state_addr, move |s| {
+                let now = crate::util::current_time_ms();
+                s.typing_peers.insert(signer, (channel, now));
+                if !s.state.chat.peers.contains(&signer) {
+                    s.state.chat.peers.push(signer);
+                }
+            })
+            .await;
         }
         crate::ops::WireMessage::VoiceJoin {
             channel_id,
             peer_id,
         } => {
-            let mut s = shared.write().unwrap();
-            s.voice_participants
-                .entry(channel_id.clone())
-                .or_default()
-                .insert(peer_id);
+            let ch = channel_id.clone();
+            let _ = crate::client_actor::mutate_state(state_addr, move |s| {
+                s.voice_participants.entry(ch).or_default().insert(peer_id);
+            })
+            .await;
             let _ = event_tx.unbounded_send(ClientEvent::VoiceJoined {
                 channel_id,
                 peer_id,
@@ -205,10 +219,13 @@ async fn process_received_message<T: TopicHandle>(
             channel_id,
             peer_id,
         } => {
-            let mut s = shared.write().unwrap();
-            if let Some(p) = s.voice_participants.get_mut(&channel_id) {
-                p.remove(&peer_id);
-            }
+            let ch = channel_id.clone();
+            let _ = crate::client_actor::mutate_state(state_addr, move |s| {
+                if let Some(p) = s.voice_participants.get_mut(&ch) {
+                    p.remove(&peer_id);
+                }
+            })
+            .await;
             let _ = event_tx.unbounded_send(ClientEvent::VoiceLeft {
                 channel_id,
                 peer_id,
@@ -219,7 +236,8 @@ async fn process_received_message<T: TopicHandle>(
             target_peer,
             signal,
         } => {
-            let our_id = shared.read().unwrap().identity.endpoint_id();
+            let our_id =
+                crate::client_actor::read_state(state_addr, |s| s.identity.endpoint_id()).await;
             if target_peer == our_id {
                 let _ = event_tx.unbounded_send(ClientEvent::VoiceSignal {
                     channel_id,
@@ -229,8 +247,7 @@ async fn process_received_message<T: TopicHandle>(
             }
         }
         crate::ops::WireMessage::JoinRequest { link_id, peer_id } => {
-            let should_respond = {
-                let mut s = shared.write().unwrap();
+            let should_respond = crate::client_actor::mutate_state(state_addr, move |s| {
                 let valid = s
                     .join_links
                     .iter_mut()
@@ -247,9 +264,10 @@ async fn process_received_message<T: TopicHandle>(
                 } else {
                     None
                 }
-            };
+            })
+            .await;
             if let Some(identity) = should_respond {
-                match crate::generate_invite_shared(shared, &peer_id) {
+                match crate::generate_invite_via_actor(state_addr, &peer_id).await {
                     Ok(invite_data) => {
                         let msg = crate::ops::WireMessage::JoinResponse {
                             target_peer: peer_id,
@@ -267,7 +285,8 @@ async fn process_received_message<T: TopicHandle>(
             target_peer,
             invite_data,
         } => {
-            let our_id = shared.read().unwrap().identity.endpoint_id();
+            let our_id =
+                crate::client_actor::read_state(state_addr, |s| s.identity.endpoint_id()).await;
             if target_peer == our_id {
                 let _ = event_tx.unbounded_send(ClientEvent::JoinLinkResponse { invite_data });
             }
@@ -276,7 +295,8 @@ async fn process_received_message<T: TopicHandle>(
             target_peer,
             reason,
         } => {
-            let our_id = shared.read().unwrap().identity.endpoint_id();
+            let our_id =
+                crate::client_actor::read_state(state_addr, |s| s.identity.endpoint_id()).await;
             if target_peer == our_id {
                 let _ = event_tx.unbounded_send(ClientEvent::JoinLinkDenied { reason });
             }
