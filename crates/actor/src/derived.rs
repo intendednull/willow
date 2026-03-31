@@ -88,6 +88,7 @@ impl<T: Send + 'static> Message for UpdateCache<T> {
 ///
 /// Subscribes to sources on start, recomputes when notified, and only
 /// propagates to its own subscribers when the derived value changes.
+#[allow(clippy::type_complexity)]
 pub struct DerivedActor<Src: DeriveSource, T: PartialEq + Send + Sync + 'static> {
     sources: Src,
     selector: Arc<dyn Fn(&Src::Snapshot) -> T + Send + Sync>,
@@ -143,11 +144,7 @@ impl<Src: DeriveSource, T: PartialEq + Send + Sync + 'static> Actor for DerivedA
 impl<Src: DeriveSource, T: PartialEq + Send + Sync + 'static> Handler<Notify>
     for DerivedActor<Src, T>
 {
-    fn handle(
-        &mut self,
-        _msg: Notify,
-        ctx: &mut Context<Self>,
-    ) -> impl Future<Output = ()> + Send {
+    fn handle(&mut self, _msg: Notify, ctx: &mut Context<Self>) -> impl Future<Output = ()> + Send {
         let sources = self.sources.clone();
         let selector = Arc::clone(&self.selector);
         let addr = ctx.address();
@@ -248,9 +245,7 @@ impl<Src: DeriveSource, T: PartialEq + Send + Sync + 'static> From<&Addr<Derived
             }),
             Arc::new(move || {
                 let addr = addr_get.clone();
-                Box::pin(async move {
-                    addr.ask(Get(PhantomData)).await.unwrap()
-                })
+                Box::pin(async move { addr.ask(Get(PhantomData)).await.unwrap() })
             }),
             Arc::new(move |f| {
                 let addr = addr_sel.clone();
@@ -345,9 +340,11 @@ mod tests {
         let s2 = system.spawn(StateActor::new(7u32));
         let r1 = StateRef::from(&s1);
         let r2 = StateRef::from(&s2);
-        let d = derived(&system.handle(), (r1, r2), |(a, b): &(Arc<u32>, Arc<u32>)| {
-            **a + **b
-        });
+        let d = derived(
+            &system.handle(),
+            (r1, r2),
+            |(a, b): &(Arc<u32>, Arc<u32>)| **a + **b,
+        );
         runtime::sleep(Duration::from_millis(50)).await;
         assert_eq!(*d.get().await, 10);
         system.shutdown().await;

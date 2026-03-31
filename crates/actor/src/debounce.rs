@@ -70,11 +70,7 @@ impl<M: Message<Result = ()> + Send + 'static> Handler<Enqueue<M>> for Debounce<
 }
 
 impl<M: Message<Result = ()> + Send + 'static> Handler<Flush> for Debounce<M> {
-    fn handle(
-        &mut self,
-        _msg: Flush,
-        _ctx: &mut Context<Self>,
-    ) -> impl Future<Output = ()> + Send {
+    fn handle(&mut self, _msg: Flush, _ctx: &mut Context<Self>) -> impl Future<Output = ()> + Send {
         if let Some(pending) = self.pending.take() {
             let _ = self.target.do_send(pending);
         }
@@ -203,10 +199,7 @@ mod tests {
     async fn debounce_single_message() {
         let system = System::new();
         let (collector, count, last) = setup_collector(&system);
-        let debounce = system.spawn(Debounce::new(
-            collector.into(),
-            Duration::from_millis(50),
-        ));
+        let debounce = system.spawn(Debounce::new(collector.into(), Duration::from_millis(50)));
 
         debounce.do_send(Enqueue(Ping(1))).unwrap();
         runtime::sleep(Duration::from_millis(100)).await;
@@ -220,10 +213,7 @@ mod tests {
     async fn debounce_rapid_messages() {
         let system = System::new();
         let (collector, count, last) = setup_collector(&system);
-        let debounce = system.spawn(Debounce::new(
-            collector.into(),
-            Duration::from_millis(50),
-        ));
+        let debounce = system.spawn(Debounce::new(collector.into(), Duration::from_millis(50)));
 
         for i in 0..5 {
             debounce.do_send(Enqueue(Ping(i))).unwrap();
@@ -239,10 +229,7 @@ mod tests {
     async fn debounce_timer_reset() {
         let system = System::new();
         let (collector, count, last) = setup_collector(&system);
-        let debounce = system.spawn(Debounce::new(
-            collector.into(),
-            Duration::from_millis(60),
-        ));
+        let debounce = system.spawn(Debounce::new(collector.into(), Duration::from_millis(60)));
 
         debounce.do_send(Enqueue(Ping(1))).unwrap();
         runtime::sleep(Duration::from_millis(30)).await;
@@ -259,10 +246,7 @@ mod tests {
     async fn debounce_separate_bursts() {
         let system = System::new();
         let (collector, count, _) = setup_collector(&system);
-        let debounce = system.spawn(Debounce::new(
-            collector.into(),
-            Duration::from_millis(30),
-        ));
+        let debounce = system.spawn(Debounce::new(collector.into(), Duration::from_millis(30)));
 
         debounce.do_send(Enqueue(Ping(1))).unwrap();
         debounce.do_send(Enqueue(Ping(2))).unwrap();
@@ -280,10 +264,7 @@ mod tests {
     async fn throttle_immediate_first() {
         let system = System::new();
         let (collector, count, last) = setup_collector(&system);
-        let throttle = system.spawn(Throttle::new(
-            collector.into(),
-            Duration::from_millis(100),
-        ));
+        let throttle = system.spawn(Throttle::new(collector.into(), Duration::from_millis(100)));
 
         throttle.do_send(Enqueue(Ping(1))).unwrap();
         runtime::sleep(Duration::from_millis(20)).await;
@@ -297,10 +278,7 @@ mod tests {
     async fn throttle_rate_limited() {
         let system = System::new();
         let (collector, count, _) = setup_collector(&system);
-        let throttle = system.spawn(Throttle::new(
-            collector.into(),
-            Duration::from_millis(100),
-        ));
+        let throttle = system.spawn(Throttle::new(collector.into(), Duration::from_millis(100)));
 
         throttle.do_send(Enqueue(Ping(1))).unwrap();
         runtime::sleep(Duration::from_millis(10)).await;
@@ -316,10 +294,7 @@ mod tests {
     async fn throttle_pending_forwarded() {
         let system = System::new();
         let (collector, count, last) = setup_collector(&system);
-        let throttle = system.spawn(Throttle::new(
-            collector.into(),
-            Duration::from_millis(50),
-        ));
+        let throttle = system.spawn(Throttle::new(collector.into(), Duration::from_millis(50)));
 
         throttle.do_send(Enqueue(Ping(1))).unwrap();
         runtime::sleep(Duration::from_millis(10)).await;
@@ -335,10 +310,7 @@ mod tests {
     async fn throttle_only_latest_pending() {
         let system = System::new();
         let (collector, count, last) = setup_collector(&system);
-        let throttle = system.spawn(Throttle::new(
-            collector.into(),
-            Duration::from_millis(50),
-        ));
+        let throttle = system.spawn(Throttle::new(collector.into(), Duration::from_millis(50)));
 
         throttle.do_send(Enqueue(Ping(1))).unwrap();
         runtime::sleep(Duration::from_millis(10)).await;

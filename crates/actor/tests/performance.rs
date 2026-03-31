@@ -419,10 +419,7 @@ async fn perf_debounce_overhead() {
     let receiver = system.spawn(PingReceiver {
         received: received.clone(),
     });
-    let debounce = system.spawn(Debounce::new(
-        receiver.into(),
-        Duration::from_millis(50),
-    ));
+    let debounce = system.spawn(Debounce::new(receiver.into(), Duration::from_millis(50)));
 
     let start = Instant::now();
     debounce.do_send(Enqueue(Ping)).unwrap();

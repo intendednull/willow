@@ -231,7 +231,9 @@ impl<T: Send + 'static> futures_core::Stream for BoundedReceiver<T> {
 }
 
 /// Create a bounded MPSC channel with the given capacity.
-pub fn bounded_channel<T: Send + 'static>(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
+pub fn bounded_channel<T: Send + 'static>(
+    capacity: usize,
+) -> (BoundedSender<T>, BoundedReceiver<T>) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let (tx, rx) = tokio::sync::mpsc::channel(capacity);

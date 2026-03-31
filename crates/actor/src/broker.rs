@@ -134,7 +134,13 @@ mod tests {
         }
     }
 
-    fn collector(system: &System) -> (crate::Addr<EventCollector>, Arc<AtomicU32>, Arc<std::sync::Mutex<Option<u32>>>) {
+    fn collector(
+        system: &System,
+    ) -> (
+        crate::Addr<EventCollector>,
+        Arc<AtomicU32>,
+        Arc<std::sync::Mutex<Option<u32>>>,
+    ) {
         let count = Arc::new(AtomicU32::new(0));
         let last = Arc::new(std::sync::Mutex::new(None));
         let addr = system.spawn(EventCollector {
@@ -151,14 +157,8 @@ mod tests {
         let (c1, count1, _) = collector(&system);
         let (c2, count2, _) = collector(&system);
 
-        broker
-            .ask(BrokerSubscribe(c1.into()))
-            .await
-            .unwrap();
-        broker
-            .ask(BrokerSubscribe(c2.into()))
-            .await
-            .unwrap();
+        broker.ask(BrokerSubscribe(c1.into())).await.unwrap();
+        broker.ask(BrokerSubscribe(c2.into())).await.unwrap();
 
         broker.do_send(Publish(Event(42))).unwrap();
         runtime::sleep(Duration::from_millis(50)).await;
@@ -214,7 +214,10 @@ mod tests {
         let (c1, _, _) = collector(&system);
         let (c2, count2, _) = collector(&system);
 
-        broker.ask(BrokerSubscribe(c1.clone().into())).await.unwrap();
+        broker
+            .ask(BrokerSubscribe(c1.clone().into()))
+            .await
+            .unwrap();
         broker.ask(BrokerSubscribe(c2.into())).await.unwrap();
 
         drop(c1); // Kill first subscriber

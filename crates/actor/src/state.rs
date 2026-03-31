@@ -48,9 +48,12 @@ impl<S: Send + Sync + 'static> Message for Set<S> {
     type Result = ();
 }
 
+/// Type alias for the mutator closure passed to `Mutate`.
+pub type MutatorFn = Box<dyn FnOnce(&mut dyn Any) -> Box<dyn Any + Send> + Send>;
+
 /// Read a projection of the state via a closure. The closure receives `&dyn Any`
 /// (downcast to `&S` internally) and returns a boxed result.
-pub struct Select(pub Box<dyn FnOnce(&dyn Any) -> Box<dyn Any + Send> + Send>);
+pub struct Select(pub SelectorFn);
 
 impl Message for Select {
     type Result = Box<dyn Any + Send>;
@@ -58,7 +61,7 @@ impl Message for Select {
 
 /// Mutate the state via a closure. Uses copy-on-write (`Arc::make_mut`).
 /// The closure receives `&mut dyn Any` (downcast to `&mut S` internally).
-pub struct Mutate(pub Box<dyn FnOnce(&mut dyn Any) -> Box<dyn Any + Send> + Send>);
+pub struct Mutate(pub MutatorFn);
 
 impl Message for Mutate {
     type Result = Box<dyn Any + Send>;
@@ -110,11 +113,7 @@ impl<S: Send + Sync + 'static> Handler<Get<S>> for StateActor<S> {
 }
 
 impl<S: Send + Sync + 'static> Handler<Set<S>> for StateActor<S> {
-    fn handle(
-        &mut self,
-        msg: Set<S>,
-        _ctx: &mut Context<Self>,
-    ) -> impl Future<Output = ()> + Send {
+    fn handle(&mut self, msg: Set<S>, _ctx: &mut Context<Self>) -> impl Future<Output = ()> + Send {
         self.state = Arc::new(msg.0);
         self.dirty = true;
         async {}
@@ -211,35 +210,37 @@ where
 
 // ───── StateRef ───────────────────────────────────────────────────────────
 
+/// Closure type for subscribing to notifications.
+type SubscribeFn = Arc<dyn Fn(Recipient<Notify>) + Send + Sync>;
+
+/// Closure type for getting the current state.
+type GetFn<S> = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Arc<S>> + Send>> + Send + Sync>;
+
+/// Closure type for selecting a projection of state.
+type SelectFn = Arc<
+    dyn Fn(
+            Box<dyn FnOnce(&dyn Any) -> Box<dyn Any + Send> + Send>,
+        ) -> Pin<Box<dyn Future<Output = Box<dyn Any + Send>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Type alias for the boxed selector closure passed to `Select` and `StateRef::select`.
+pub type SelectorFn = Box<dyn FnOnce(&dyn Any) -> Box<dyn Any + Send> + Send>;
+
 /// Type-erased, cloneable handle for observable state actors.
 ///
 /// Works with both [`StateActor`] and [`DerivedActor`](crate::derived::DerivedActor).
 /// Enables composition and chaining of reactive state.
 pub struct StateRef<S: Send + Sync + 'static> {
-    subscribe_fn: Arc<dyn Fn(Recipient<Notify>) + Send + Sync>,
-    get_fn: Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Arc<S>> + Send>> + Send + Sync>,
-    select_fn: Arc<
-        dyn Fn(
-                Box<dyn FnOnce(&dyn Any) -> Box<dyn Any + Send> + Send>,
-            ) -> Pin<Box<dyn Future<Output = Box<dyn Any + Send>> + Send>>
-            + Send
-            + Sync,
-    >,
+    subscribe_fn: SubscribeFn,
+    get_fn: GetFn<S>,
+    select_fn: SelectFn,
 }
 
 impl<S: Send + Sync + 'static> StateRef<S> {
     /// Construct a `StateRef` from raw closures. Used by `DerivedActor` and `FsmActor`.
-    pub fn new(
-        subscribe_fn: Arc<dyn Fn(Recipient<Notify>) + Send + Sync>,
-        get_fn: Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Arc<S>> + Send>> + Send + Sync>,
-        select_fn: Arc<
-            dyn Fn(
-                    Box<dyn FnOnce(&dyn Any) -> Box<dyn Any + Send> + Send>,
-                ) -> Pin<Box<dyn Future<Output = Box<dyn Any + Send>> + Send>>
-                + Send
-                + Sync,
-        >,
-    ) -> Self {
+    pub fn new(subscribe_fn: SubscribeFn, get_fn: GetFn<S>, select_fn: SelectFn) -> Self {
         Self {
             subscribe_fn,
             get_fn,
@@ -260,7 +261,7 @@ impl<S: Send + Sync + 'static> StateRef<S> {
     /// Read a projection of the state.
     pub fn select(
         &self,
-        f: Box<dyn FnOnce(&dyn Any) -> Box<dyn Any + Send> + Send>,
+        f: SelectorFn,
     ) -> Pin<Box<dyn Future<Output = Box<dyn Any + Send>> + Send>> {
         (self.select_fn)(f)
     }

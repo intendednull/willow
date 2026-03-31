@@ -32,7 +32,10 @@ pub use derived::{derived, DeriveSource, DerivedActor};
 pub use error::{AskError, SendError};
 pub use fsm::{FsmActor, Input, StateMachine, TransitionResult};
 pub use pool::Pool;
-pub use state::{get, mutate, select, subscribe, Get, Mutate, Notify, Select, Set, StateActor, StateRef, Subscribe};
+pub use state::{
+    get, mutate, select, subscribe, Get, Mutate, Notify, Select, Set, StateActor, StateRef,
+    Subscribe,
+};
 pub use stream::{OutputStream, StreamOutput, SubscribeStream};
 pub use supervisor::RestartPolicy;
 pub use system::{System, SystemHandle};

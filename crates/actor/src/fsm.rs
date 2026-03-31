@@ -62,7 +62,7 @@ impl<M: StateMachine> Message for Input<M> {
 /// notifies subscribers on state changes.
 pub struct FsmActor<M: StateMachine> {
     machine: M,
-    state: M::State,
+    state: Arc<M::State>,
     subscribers: Vec<Recipient<Notify>>,
     dirty: bool,
 }
@@ -72,7 +72,7 @@ impl<M: StateMachine> FsmActor<M> {
     pub fn new(machine: M, initial_state: M::State) -> Self {
         Self {
             machine,
-            state: initial_state,
+            state: Arc::new(initial_state),
             subscribers: Vec::new(),
             dirty: false,
         }
@@ -98,8 +98,8 @@ impl<M: StateMachine> Handler<Input<M>> for FsmActor<M> {
         let result = self.machine.transition(&self.state, &msg.0);
         let transition_result = match result {
             Ok(new_state) => {
-                let old = self.state.clone();
-                self.state = new_state.clone();
+                let old = Arc::clone(&self.state);
+                self.state = Arc::new(new_state.clone());
                 self.dirty = true;
                 self.machine.on_enter(&old, &new_state, ctx);
                 TransitionResult::Ok(new_state)
@@ -127,7 +127,7 @@ impl<M: StateMachine> Handler<Select> for FsmActor<M> {
         msg: Select,
         _ctx: &mut Context<Self>,
     ) -> impl Future<Output = Box<dyn Any + Send>> + Send {
-        let state_ref: &dyn Any = &self.state;
+        let state_ref: &dyn Any = &*self.state;
         let result = (msg.0)(state_ref);
         async move { result }
     }
@@ -139,7 +139,7 @@ impl<M: StateMachine> Handler<Get<M::State>> for FsmActor<M> {
         _msg: Get<M::State>,
         _ctx: &mut Context<Self>,
     ) -> impl Future<Output = Arc<M::State>> + Send {
-        let state = Arc::new(self.state.clone());
+        let state = Arc::clone(&self.state);
         async move { state }
     }
 }
@@ -158,9 +158,8 @@ impl<M: StateMachine> From<&Addr<FsmActor<M>>> for StateRef<M::State> {
             }),
             Arc::new(move || {
                 let addr = addr_get.clone();
-                Box::pin(async move {
-                    addr.ask(Get(PhantomData)).await.unwrap()
-                }) as Pin<Box<dyn Future<Output = Arc<M::State>> + Send>>
+                Box::pin(async move { addr.ask(Get(PhantomData)).await.unwrap() })
+                    as Pin<Box<dyn Future<Output = Arc<M::State>> + Send>>
             }),
             Arc::new(move |f| {
                 let addr = addr_sel.clone();
@@ -203,12 +202,7 @@ mod tests {
             }
         }
 
-        fn on_enter(
-            &mut self,
-            _old: &Light,
-            _new: &Light,
-            _ctx: &mut Context<FsmActor<Self>>,
-        ) {
+        fn on_enter(&mut self, _old: &Light, _new: &Light, _ctx: &mut Context<FsmActor<Self>>) {
             self.on_enter_called.store(true, Ordering::SeqCst);
         }
     }

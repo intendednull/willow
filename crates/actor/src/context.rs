@@ -121,11 +121,7 @@ impl<A: Actor> Context<A> {
     }
 
     /// Schedule a one-shot delayed message. Returns a handle that can cancel delivery.
-    pub fn run_after<M>(
-        &self,
-        delay: Duration,
-        msg: M,
-    ) -> TimerHandle
+    pub fn run_after<M>(&self, delay: Duration, msg: M) -> TimerHandle
     where
         A: Handler<M>,
         M: Message<Result = ()>,
