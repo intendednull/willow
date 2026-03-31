@@ -104,6 +104,8 @@ pub struct SharedState {
 /// that production code can use a real iroh network while tests can use
 /// an in-memory backend.
 pub struct ClientHandle<N: willow_network::Network> {
+    // Legacy monolithic state actor — used during incremental migration.
+    // Will be removed once all callers use domain-specific actors.
     pub(crate) state_addr: willow_actor::Addr<client_actor::ClientStateActor>,
     pub(crate) system: willow_actor::SystemHandle,
     /// The network backend, set after [`connect()`](ClientHandle::connect).
@@ -114,6 +116,24 @@ pub struct ClientHandle<N: willow_network::Network> {
     pub(crate) event_tx: futures_mpsc::UnboundedSender<ClientEvent>,
     /// The local identity, needed for signing broadcasts.
     pub(crate) identity: Identity,
+
+    // ── Domain-specific state actors (Phase 2) ─────────────────────────
+    /// Event-sourced server state.
+    pub(crate) event_state_addr: willow_actor::Addr<willow_actor::StateActor<willow_state::ServerState>>,
+    /// Server registry (servers map, active server, topic maps, keys).
+    pub(crate) server_registry_addr: willow_actor::Addr<willow_actor::StateActor<state_actors::ServerRegistry>>,
+    /// Chat session metadata (current channel, peers, dedup).
+    pub(crate) chat_meta_addr: willow_actor::Addr<willow_actor::StateActor<state_actors::ChatMeta>>,
+    /// Global profile display names.
+    pub(crate) profile_state_addr: willow_actor::Addr<willow_actor::StateActor<state_actors::ProfileState>>,
+    /// Network connection state.
+    pub(crate) network_meta_addr: willow_actor::Addr<willow_actor::StateActor<state_actors::NetworkMeta>>,
+    /// Voice call state.
+    pub(crate) voice_state_addr: willow_actor::Addr<willow_actor::StateActor<state_actors::VoiceState>>,
+    /// Persistence actor (owns rusqlite).
+    pub(crate) persistence_addr: willow_actor::Addr<persistence_actor::PersistenceActor>,
+    /// HLC clock (mutation-time concern, not reactive state).
+    pub(crate) hlc: Arc<std::sync::Mutex<willow_messaging::hlc::HLC>>,
 }
 
 impl<N: willow_network::Network> Clone for ClientHandle<N> {
@@ -125,6 +145,14 @@ impl<N: willow_network::Network> Clone for ClientHandle<N> {
             topics: Arc::clone(&self.topics),
             event_tx: self.event_tx.clone(),
             identity: self.identity.clone(),
+            event_state_addr: self.event_state_addr.clone(),
+            server_registry_addr: self.server_registry_addr.clone(),
+            chat_meta_addr: self.chat_meta_addr.clone(),
+            profile_state_addr: self.profile_state_addr.clone(),
+            network_meta_addr: self.network_meta_addr.clone(),
+            voice_state_addr: self.voice_state_addr.clone(),
+            persistence_addr: self.persistence_addr.clone(),
+            hlc: Arc::clone(&self.hlc),
         }
     }
 }
@@ -426,6 +454,53 @@ impl<N: willow_network::Network> ClientHandle<N> {
         }
 
         let identity_clone = identity.clone();
+
+        // Spawn domain-specific state actors (Phase 2).
+        // Must happen BEFORE state is moved into SharedState.
+        let system = willow_actor::System::new();
+        let event_state_addr = system.spawn(willow_actor::StateActor::new(state.event_state.clone()));
+        let server_registry_addr = {
+            let mut registry = state_actors::ServerRegistry::default();
+            for (id, ctx) in &state.servers {
+                registry.servers.insert(id.clone(), state_actors::ServerEntry {
+                    name: ctx.server.name.clone(),
+                    topic_map: ctx.topic_map.clone(),
+                    keys: ctx.keys.clone(),
+                    unread: ctx.unread.clone(),
+                });
+            }
+            registry.active_server = state.active_server.clone();
+            system.spawn(willow_actor::StateActor::new(registry))
+        };
+        let chat_meta_addr = {
+            let meta = state_actors::ChatMeta {
+                current_channel: state.chat.current_channel.clone(),
+                peers: state.chat.peers.clone(),
+                seen_message_ids: state.chat.seen_message_ids.clone(),
+            };
+            system.spawn(willow_actor::StateActor::new(meta))
+        };
+        let profile_state_addr = system.spawn(willow_actor::StateActor::new(
+            state_actors::ProfileState { names: state.profiles.names.clone() },
+        ));
+        let network_meta_addr = system.spawn(willow_actor::StateActor::new(
+            state_actors::NetworkMeta::default(),
+        ));
+        let voice_state_addr = system.spawn(willow_actor::StateActor::new(
+            state_actors::VoiceState::default(),
+        ));
+        let persistence_enabled = config.persistence;
+        let persistence_addr = system.spawn(
+            persistence_actor::PersistenceActor::new(persistence_enabled),
+        );
+        // Open event store on the persistence actor if we have an active server.
+        if let Some(sid) = &state.active_server {
+            let _ = persistence_addr.do_send(persistence_actor::OpenEventStore {
+                server_id: sid.clone(),
+            });
+        }
+        let hlc = Arc::new(std::sync::Mutex::new(willow_messaging::hlc::HLC::new()));
+
         let mut shared_state = SharedState {
             state,
             identity,
@@ -443,11 +518,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
         };
 
         // SharedState is Send but not Sync (due to rusqlite::Connection).
-        // Arc<RwLock<_>> is the target for full multi-task safety; making
-        // SharedState Sync is tracked as a follow-up task.
         reconcile_topic_map(&mut shared_state.state);
 
-        let system = willow_actor::System::new();
         let state_addr = system.spawn(client_actor::ClientStateActor {
             shared: shared_state,
             dirty: false,
@@ -461,6 +533,14 @@ impl<N: willow_network::Network> ClientHandle<N> {
             topics: Arc::new(RwLock::new(HashMap::new())),
             event_tx,
             identity: identity_clone,
+            event_state_addr,
+            server_registry_addr,
+            chat_meta_addr,
+            profile_state_addr,
+            network_meta_addr,
+            voice_state_addr,
+            persistence_addr,
+            hlc,
         };
 
         // reconcile_topic_map called above before spawning actor
@@ -1001,6 +1081,38 @@ pub(crate) fn test_client() -> (
     );
 
     let identity_clone = identity.clone();
+    let sys = willow_actor::System::new();
+
+    // Spawn domain actors BEFORE state is moved into SharedState.
+    let event_state_addr = sys.spawn(willow_actor::StateActor::new(state.event_state.clone()));
+    let mut registry = state_actors::ServerRegistry::default();
+    for (id, ctx) in &state.servers {
+        registry.servers.insert(id.clone(), state_actors::ServerEntry {
+            name: ctx.server.name.clone(),
+            topic_map: ctx.topic_map.clone(),
+            keys: ctx.keys.clone(),
+            unread: ctx.unread.clone(),
+        });
+    }
+    registry.active_server = state.active_server.clone();
+    let server_registry_addr = sys.spawn(willow_actor::StateActor::new(registry));
+    let chat_meta_addr = sys.spawn(willow_actor::StateActor::new(state_actors::ChatMeta {
+        current_channel: state.chat.current_channel.clone(),
+        peers: state.chat.peers.clone(),
+        seen_message_ids: state.chat.seen_message_ids.clone(),
+    }));
+    let profile_state_addr = sys.spawn(willow_actor::StateActor::new(
+        state_actors::ProfileState { names: state.profiles.names.clone() },
+    ));
+    let network_meta_addr = sys.spawn(willow_actor::StateActor::new(
+        state_actors::NetworkMeta::default(),
+    ));
+    let voice_state_addr = sys.spawn(willow_actor::StateActor::new(
+        state_actors::VoiceState::default(),
+    ));
+    let persistence_addr = sys.spawn(persistence_actor::PersistenceActor::new(false));
+    let hlc = Arc::new(std::sync::Mutex::new(willow_messaging::hlc::HLC::new()));
+
     let shared_state = SharedState {
         state,
         identity,
@@ -1020,7 +1132,6 @@ pub(crate) fn test_client() -> (
         join_links: Vec::new(),
     };
 
-    let sys = willow_actor::System::new();
     let sa = sys.spawn(client_actor::ClientStateActor {
         shared: shared_state,
         dirty: false,
@@ -1037,6 +1148,14 @@ pub(crate) fn test_client() -> (
         topics: Arc::new(RwLock::new(HashMap::new())),
         event_tx,
         identity: identity_clone,
+        event_state_addr,
+        server_registry_addr,
+        chat_meta_addr,
+        profile_state_addr,
+        network_meta_addr,
+        voice_state_addr,
+        persistence_addr,
+        hlc,
     };
 
     (client, event_rx)
