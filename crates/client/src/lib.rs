@@ -1018,8 +1018,6 @@ pub(crate) fn test_client() -> (
         join_links: Vec::new(),
     };
 
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-    let _guard = rt.enter();
     let sys = willow_actor::System::new();
     let sa = sys.spawn(client_actor::ClientStateActor {
         shared: shared_state,
@@ -1027,8 +1025,7 @@ pub(crate) fn test_client() -> (
         subscribers: Vec::new(),
     });
     let sh = sys.handle();
-    // Leak the runtime and system so actors stay alive for the test duration.
-    std::mem::forget(rt);
+    // Leak the system so actors stay alive for the test duration.
     std::mem::forget(sys);
 
     let client = ClientHandle {
