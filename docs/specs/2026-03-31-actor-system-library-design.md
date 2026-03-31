@@ -797,6 +797,178 @@ WASM: `futures::channel::mpsc::channel`).
 
 ---
 
+## Test Plan
+
+All tests live in `crates/actor/`. Unit tests go in each module's
+`#[cfg(test)] mod tests` block. Performance tests go in a dedicated
+`crates/actor/tests/performance.rs` integration test file, run via
+a new `just test-actor-perf` command.
+
+### StateActor tests
+
+| Test | What it verifies |
+|------|-----------------|
+| `state_get_returns_current` | `Get` returns the initial state value |
+| `state_set_updates` | `Set` changes the value, subsequent `Get` reflects it |
+| `state_select_slice` | `select()` helper returns a projected field |
+| `state_mutate_modifies` | `mutate()` helper modifies state in place |
+| `state_mutate_returns_value` | `mutate()` returns the closure's return value |
+| `state_subscribe_notifies` | Subscriber receives `Notify` after mutation |
+| `state_no_notify_without_mutation` | No `Notify` sent if no mutation occurred |
+| `state_batch_notifications` | 10 rapid `Set` messages produce fewer than 10 `Notify` (idle batching) |
+| `state_dead_subscribers_pruned` | Stopped subscriber is removed on next notify cycle |
+| `state_multiple_subscribers` | Multiple subscribers all receive `Notify` |
+
+### DerivedActor tests
+
+| Test | What it verifies |
+|------|-----------------|
+| `derived_single_source` | Derived value updates when source changes |
+| `derived_caches_unchanged` | No downstream `Notify` when selector returns same value |
+| `derived_multi_source_tuple2` | Derived from `(StateRef<A>, StateRef<B>)` updates on either source change |
+| `derived_multi_source_tuple3` | Derived from 3 sources works |
+| `derived_chain` | Derived → Derived chain propagates updates |
+| `derived_chain_caches` | Middle derived unchanged → leaf not notified |
+| `derived_initial_value` | Derived computes initial value on `started()` |
+| `derived_source_dies` | Derived handles source actor shutdown gracefully |
+| `derived_update_cache_self_message` | Cache is actually updated (not stale across notifications) |
+
+### StateRef tests
+
+| Test | What it verifies |
+|------|-----------------|
+| `state_ref_from_state_actor` | `StateRef` created from `Addr<StateActor<S>>` works |
+| `state_ref_from_derived_actor` | `StateRef` created from `DerivedActor` works |
+| `state_ref_clone` | Cloned `StateRef` points to same actor |
+| `state_ref_get` | `get()` returns cloned full state |
+| `state_ref_select` | `select()` returns projected slice |
+
+### StreamOutput tests
+
+| Test | What it verifies |
+|------|-----------------|
+| `stream_output_single_consumer` | Emitted values arrive in order |
+| `stream_output_multi_consumer` | All consumers receive all values |
+| `stream_output_consumer_drop` | Dropped consumer is pruned, doesn't block emitter |
+| `stream_output_backpressure` | Full buffer drops new values via `try_send` |
+| `stream_output_custom_capacity` | `subscribe_with_capacity` respects the buffer size |
+| `stream_output_subscribe_stream_message` | `ask(SubscribeStream)` returns a working `OutputStream` |
+
+### Broker tests
+
+| Test | What it verifies |
+|------|-----------------|
+| `broker_publish_to_subscribers` | Published value delivered to all subscribers |
+| `broker_no_subscribers` | Publish with zero subscribers doesn't panic |
+| `broker_subscribe_returns_id` | `BrokerSubscribe` returns a unique `SubscriptionId` |
+| `broker_unsubscribe_by_id` | Unsubscribed recipient stops receiving |
+| `broker_dead_subscriber_pruned` | Stopped subscriber auto-removed on next publish |
+| `broker_multiple_publishers` | Multiple senders can publish to the same broker |
+
+### FsmActor tests
+
+| Test | What it verifies |
+|------|-----------------|
+| `fsm_valid_transition` | Valid input returns `Ok(new_state)` and updates state |
+| `fsm_rejected_transition` | Invalid input returns `Rejected` and state unchanged |
+| `fsm_on_enter_called` | Side effect fires after successful transition |
+| `fsm_on_enter_not_called_on_reject` | No side effect on rejected transition |
+| `fsm_notifies_subscribers` | Subscribers notified on state change |
+| `fsm_no_notify_on_reject` | No `Notify` when transition is rejected |
+| `fsm_select_current_state` | Can read current FSM state via `Select` |
+
+### Pool tests
+
+| Test | What it verifies |
+|------|-----------------|
+| `pool_round_robin_distribution` | Messages cycle through workers evenly |
+| `pool_send_fire_and_forget` | `send()` delivers without reply |
+| `pool_ask_returns_result` | `ask()` returns the worker's response |
+| `pool_worker_dies` | Dead worker returns error, doesn't crash pool |
+| `pool_size_one` | Single-worker pool works correctly |
+
+### Debounce / Throttle tests
+
+| Test | What it verifies |
+|------|-----------------|
+| `debounce_single_message` | Single message forwarded after delay |
+| `debounce_rapid_messages` | Only last message forwarded after quiet period |
+| `debounce_timer_reset` | New message resets the delay |
+| `debounce_separate_bursts` | Two bursts separated by > delay both forward |
+| `throttle_immediate_first` | First message forwarded immediately |
+| `throttle_rate_limited` | Second message within interval is delayed |
+| `throttle_pending_forwarded` | Pending message sent when cooldown expires |
+| `throttle_only_latest_pending` | Rapid messages during cooldown only forward the last |
+
+### TimerHandle / run_after tests
+
+| Test | What it verifies |
+|------|-----------------|
+| `run_after_fires` | Message delivered after the specified delay |
+| `run_after_cancel` | Cancelled timer does not deliver the message |
+| `run_after_cancel_and_restart` | Cancel then create new timer works |
+
+### Recipient Clone tests
+
+| Test | What it verifies |
+|------|-----------------|
+| `recipient_clone_both_deliver` | Cloned recipient sends to same actor |
+| `recipient_clone_independence` | Dropping one clone doesn't affect the other |
+
+### Performance tests (`crates/actor/tests/performance.rs`)
+
+These tests measure throughput and latency. They print results with
+`--nocapture` and assert minimum performance thresholds to catch
+regressions. Added to justfile as `just test-actor-perf`.
+
+| Test | What it measures | Threshold |
+|------|-----------------|-----------|
+| `perf_state_actor_throughput` | `mutate()` calls per second (10k mutations, measure total time) | > 100k ops/sec |
+| `perf_state_actor_select_throughput` | `select()` calls per second (10k selects) | > 100k ops/sec |
+| `perf_state_notify_fanout` | Time to notify N subscribers (N = 1, 10, 100, 1000) | < 1ms for 100 subs |
+| `perf_derived_propagation_latency` | End-to-end time from source mutation to derived cache update | < 1ms |
+| `perf_derived_chain_depth` | Propagation through chain of 10 derived actors | < 5ms |
+| `perf_derived_multi_source_snapshot` | Snapshot fetch time for 2, 4, 6 sources | < 2ms for 6 sources |
+| `perf_broker_fanout` | Publish to N subscribers (N = 1, 10, 100, 1000) | < 1ms for 100 subs |
+| `perf_stream_output_throughput` | Emit rate to single consumer (100k values) | > 500k emits/sec |
+| `perf_stream_output_multi_consumer` | Emit rate with 10 consumers | > 100k emits/sec |
+| `perf_pool_round_robin_throughput` | `ask()` round-trips through 4-worker pool (10k messages) | > 50k ops/sec |
+| `perf_debounce_overhead` | Latency added by debounce for a single message (no contention) | < 2ms over configured delay |
+| `perf_state_actor_memory` | Memory per StateActor with 100 subscribers | Report only (no threshold) |
+| `perf_derived_idle_batching_efficiency` | Ratio of notifications to mutations under burst load (1000 mutations) | < 10% notification ratio |
+
+#### Performance test structure
+
+```rust
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn perf_state_actor_throughput() {
+    let system = System::new();
+    let state = system.spawn(StateActor::new(0u64));
+
+    let start = Instant::now();
+    let n = 10_000;
+    for i in 0..n {
+        mutate(&state, move |s| *s += 1).await;
+    }
+    let elapsed = start.elapsed();
+    let ops_per_sec = n as f64 / elapsed.as_secs_f64();
+
+    println!("state_actor_throughput: {ops_per_sec:.0} ops/sec ({elapsed:?} for {n} mutations)");
+    assert!(ops_per_sec > 100_000.0, "expected >100k ops/sec, got {ops_per_sec:.0}");
+
+    system.shutdown().await;
+}
+```
+
+#### Justfile addition
+
+```
+test-actor-perf:
+    cargo test -p willow-actor --test performance -- --nocapture
+```
+
+---
+
 ## Open Questions
 
 1. **`DeriveSource` tuple arity limit** — Macro-generated impls up to 6
