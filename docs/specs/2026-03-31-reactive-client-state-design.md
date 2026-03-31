@@ -169,31 +169,40 @@ Fields that don't belong to any domain actor live directly on `ClientHandle`:
 Owns all `!Send` resources. Runs on a single-threaded mailbox — no
 `unsafe impl Send` needed.
 
+**Subscribes to state changes and auto-persists.** Callers never send
+explicit persist messages — the actor watches relevant `StateRef`s via
+`Notify` subscriptions and writes to disk whenever state changes.
+
 ```rust
 struct PersistenceActor {
     event_store: PersistentEventStore,   // SqliteEventStore or LocalStorageEventStore
     server_id: Option<String>,
     persistence_enabled: bool,
+    // StateRef handles for subscription
+    event_state: StateRef<EventState>,
+    server_registry: StateRef<ServerRegistry>,
+    profiles: StateRef<ProfileState>,
 }
 ```
 
-**Write messages** (fire-and-forget via `do_send`):
-- `PersistEvent { event, new_hash }` — append event + update hash
-- `PersistServerState { server_id, state }` — save full state snapshot
-- `PersistServerConfig { server, keys }` — save server config
-- `PersistServerList { ids }` — save server ID list
-- `PersistProfile { display_name }` — save local profile
-- `PersistJoinLinks { server_id, links }` — save join links
-- `OpenEventStore { server_id }` — open/switch event store
+On startup, the actor subscribes to `Notify` on each source `StateRef`.
+When notified, it fetches the current snapshot via `state_ref.get()` and
+persists it. This means:
+
+- **Event state changes** → auto-saves `ServerState` + appends to event store
+- **Server registry changes** → auto-saves server config, keys, server list
+- **Profile changes** → auto-saves local profile
+
+Debouncing via the actor's `idle()` hook batches rapid mutations into a
+single persist operation.
 
 **Read messages** (ask-based, used at startup/sync):
 - `LoadAllEvents` → `Vec<Event>`
 - `GetLatestHash` → `StateHash`
 - `LoadEventsSince { hash }` → `Vec<Event>`
+- `OpenEventStore { server_id }` — open/switch event store
 
-Mutations that currently call `storage::save_*()` inline become
-`persistence_addr.do_send(PersistServerState { .. })`. The mutation
-no longer blocks on I/O.
+No write messages needed — persistence is fully reactive.
 
 ### 3. Layer 2 — Derived Views
 
@@ -357,75 +366,242 @@ subscription to a pre-computed view.
 ┌──────────────────┐  ┌────────────────────┐  ┌──────────────┐  ┌──────────────┐
 │ PersistenceActor │  │ Broker<ClientEvent>│  │ NetworkMeta  │  │  VoiceState  │
 │ (owns rusqlite)  │  │ (event fan-out)    │  │  StateActor  │  │  StateActor  │
-└──────────────────┘  └────────────────────┘  └──────────────┘  └──────────────┘
+│ subscribes to:   │  └────────────────────┘  └──────────────┘  └──────────────┘
+│  EventState      │
+│  ServerRegistry  │              ┌───────────────────┐
+│  ProfileState    │              │  ClientMutations   │ ← user code calls this
+└──────────────────┘              │  (typed interface)  │
+                                  └───────────────────┘
 ```
 
-## Mutation Patterns
+## Mutation Handle
 
-### Simple single-domain mutation
+User code should not interact with domain actors directly. Instead, a
+`ClientMutations` handle provides a typed interface that routes each
+operation to the correct domain actors, builds events, and broadcasts.
+Callers never see `StateActor`, `mutate()`, or actor addresses.
+
 ```rust
-// Toggle voice mute
-pub async fn toggle_mute(&self) -> bool {
-    willow_actor::state::mutate(&self.voice_state_addr, |v| {
-        v.muted = !v.muted;
-        v.muted
-    }).await
+/// Typed mutation interface. Routes operations to domain actors.
+///
+/// Cloneable — hand to UI handlers, listener tasks, etc.
+pub struct ClientMutations {
+    event_state: Addr<StateActor<EventState>>,
+    server_registry: Addr<StateActor<ServerRegistry>>,
+    chat_meta: Addr<StateActor<ChatMeta>>,
+    profiles: Addr<StateActor<ProfileState>>,
+    network: Addr<StateActor<NetworkMeta>>,
+    voice: Addr<StateActor<VoiceState>>,
+    persistence: Addr<PersistenceActor>,
+    event_broker: Addr<Broker<ClientEvent>>,
+    identity: Identity,
+    hlc: Arc<Mutex<HLC>>,
+    join_links: Arc<Mutex<Vec<JoinLink>>>,
+    topics: Arc<RwLock<HashMap<String, TopicHandle>>>,
+    persistence_enabled: bool,
 }
 ```
 
-### Cross-domain mutation
-```rust
-// Apply an event: touches EventState + PersistenceActor
-pub async fn apply_and_persist(&self, event: &Event) {
-    // 1. Apply to event-sourced state
-    willow_actor::state::mutate(&self.event_state_addr, |es| {
-        willow_state::apply_lenient(es, event);
-    }).await;
+### Chat mutations
 
-    // 2. Persist (fire-and-forget, non-blocking)
-    let hash = willow_actor::state::select(&self.event_state_addr, |es| es.hash()).await;
-    self.persistence_addr.do_send(PersistEvent {
-        event: event.clone(),
-        new_hash: hash,
-    });
+```rust
+impl ClientMutations {
+    /// Send a text message to a channel.
+    pub async fn send_message(&self, channel: &str, body: &str) -> Result<()> {
+        let event = self.build_event(EventKind::Message {
+            channel_id: self.resolve_channel_id(channel).await?,
+            body: body.to_string(),
+            reply_to: None,
+        }).await;
+        self.apply_event(&event).await;
+        self.broadcast_event(&event);
+        Ok(())
+    }
+
+    /// Edit a message.
+    pub async fn edit_message(&self, message_id: &str, new_body: &str) -> Result<()> { ... }
+
+    /// Delete a message.
+    pub async fn delete_message(&self, message_id: &str) -> Result<()> { ... }
+
+    /// React to a message.
+    pub async fn react(&self, message_id: &str, emoji: &str) -> Result<()> { ... }
+
+    /// Pin/unpin a message.
+    pub async fn pin_message(&self, channel: &str, message_id: &str) -> Result<()> { ... }
+    pub async fn unpin_message(&self, channel: &str, message_id: &str) -> Result<()> { ... }
+
+    /// Switch current channel.
+    pub async fn switch_channel(&self, channel: &str) {
+        let ch = channel.to_string();
+        state::mutate(&self.chat_meta, move |c| c.current_channel = ch).await;
+    }
 }
 ```
 
-### Channel creation (touches ServerRegistry + EventState)
+### Server mutations
+
 ```rust
-pub async fn create_channel(&self, name: &str) -> Result<()> {
-    let name = name.to_string();
-    let peer_id = self.identity.endpoint_id();
+impl ClientMutations {
+    /// Create a new channel.
+    pub async fn create_channel(&self, name: &str) -> Result<()> {
+        let name = name.to_string();
 
-    // 1. Mutate server registry (creates channel in Server object)
-    let (event, topic) = willow_actor::state::mutate(&self.server_registry_addr, |reg| {
-        let entry = reg.active_mut().ok_or(anyhow!("no active server"))?;
-        let ch_id = entry.server.create_channel(&name, ChannelKind::Text)?;
-        let topic = make_topic(&entry.server, &name);
-        entry.topic_map.insert(topic.clone(), (name.clone(), ch_id));
-        // ... build event
-        Ok((event, topic))
-    }).await?;
+        // Mutate registry (creates channel in Server object + topic map)
+        let event = state::mutate(&self.server_registry, |reg| {
+            let entry = reg.active_mut().ok_or(anyhow!("no active server"))?;
+            let ch_id = entry.server.create_channel(&name, ChannelKind::Text)?;
+            let topic = make_topic(&entry.server, &name);
+            entry.topic_map.insert(topic, (name.clone(), ch_id.clone()));
+            // ... return built event
+        }).await?;
 
-    // 2. Apply event to event-sourced state
-    self.apply_and_persist(&event).await;
+        // Apply to event-sourced state (persistence auto-triggers)
+        self.apply_event(&event).await;
 
-    // 3. Update current channel
-    willow_actor::state::mutate(&self.chat_meta_addr, |c| {
-        c.current_channel = name;
-    }).await;
+        // Update current channel
+        state::mutate(&self.chat_meta, |c| c.current_channel = name).await;
 
-    // 4. Persist server config
-    let (server, keys) = willow_actor::state::select(&self.server_registry_addr, |reg| {
-        let e = reg.active().unwrap();
-        (e.server.clone(), e.keys.clone())
-    }).await;
-    self.persistence_addr.do_send(PersistServerConfig { server, keys });
+        self.broadcast_event(&event);
+        Ok(())
+    }
 
-    // 5. Broadcast
-    self.broadcast_event(&event);
-    Ok(())
+    /// Delete a channel.
+    pub async fn delete_channel(&self, name: &str) -> Result<()> { ... }
+
+    /// Create/delete roles.
+    pub async fn create_role(&self, name: &str) -> Result<()> { ... }
+    pub async fn delete_role(&self, role_id: &str) -> Result<()> { ... }
+
+    /// Trust/untrust/kick members.
+    pub async fn trust_peer(&self, peer_id: EndpointId) { ... }
+    pub async fn untrust_peer(&self, peer_id: EndpointId) { ... }
+    pub async fn kick_member(&self, peer_id: EndpointId) -> Result<()> { ... }
+
+    /// Create/switch/leave servers.
+    pub async fn create_server(&self, name: &str) -> Result<String> { ... }
+    pub async fn switch_server(&self, server_id: &str) { ... }
+    pub async fn leave_server(&self, server_id: &str) { ... }
 }
+```
+
+### Voice mutations
+
+```rust
+impl ClientMutations {
+    pub async fn join_voice(&self, channel_id: &str) { ... }
+    pub async fn leave_voice(&self) { ... }
+    pub async fn toggle_mute(&self) -> bool {
+        state::mutate(&self.voice, |v| { v.muted = !v.muted; v.muted }).await
+    }
+    pub async fn toggle_deafen(&self) -> bool { ... }
+}
+```
+
+### Network mutations (called by listeners)
+
+```rust
+impl ClientMutations {
+    /// Apply an incoming event from a peer.
+    pub async fn apply_event(&self, event: &Event) {
+        state::mutate(&self.event_state, |es| {
+            willow_state::apply_lenient(es, event);
+        }).await;
+        // PersistenceActor auto-persists via subscription — no manual call.
+    }
+
+    /// Track a peer as online.
+    pub async fn peer_connected(&self, peer_id: EndpointId) {
+        state::mutate(&self.chat_meta, move |c| {
+            if !c.peers.contains(&peer_id) {
+                c.peers.push(peer_id);
+            }
+        }).await;
+        self.event_broker.do_send(Publish(ClientEvent::PeerConnected(peer_id)));
+    }
+
+    /// Track a peer as offline.
+    pub async fn peer_disconnected(&self, peer_id: EndpointId) { ... }
+
+    /// Update a peer's profile.
+    pub async fn update_profile(&self, peer_id: EndpointId, name: String) { ... }
+
+    /// Record a typing indicator.
+    pub async fn record_typing(&self, peer_id: EndpointId, channel: String) { ... }
+}
+```
+
+### Internal helpers
+
+```rust
+impl ClientMutations {
+    /// Build an event with the next HLC timestamp and current state hash.
+    async fn build_event(&self, kind: EventKind) -> Event {
+        let parent_hash = state::select(&self.event_state, |es| es.hash()).await;
+        let ts = self.hlc.lock().unwrap().now().as_u64();
+        Event {
+            id: Uuid::new_v4().to_string(),
+            parent_hash,
+            author: self.identity.endpoint_id(),
+            timestamp_ms: ts,
+            kind,
+        }
+    }
+
+    /// Resolve channel name → channel ID via event state.
+    async fn resolve_channel_id(&self, channel: &str) -> Result<String> { ... }
+
+    /// Broadcast a signed event to peers.
+    fn broadcast_event(&self, event: &Event) { ... }
+}
+```
+
+### ClientHandle composition
+
+`ClientHandle` composes views (read) and mutations (write) into one
+user-facing type:
+
+```rust
+pub struct ClientHandle<N: Network> {
+    /// Read state at any granularity.
+    views: ClientViewHandle,
+    /// Typed mutation interface.
+    mutations: ClientMutations,
+    /// The network backend.
+    network: Option<Arc<N>>,
+    /// Local identity.
+    identity: Identity,
+}
+
+impl<N: Network> ClientHandle<N> {
+    /// Access reactive state views.
+    pub fn views(&self) -> &ClientViewHandle { &self.views }
+
+    /// Access mutation interface.
+    pub fn mutations(&self) -> &ClientMutations { &self.mutations }
+
+    /// Convenience: delegate common operations to mutations.
+    pub async fn send_message(&self, channel: &str, body: &str) -> Result<()> {
+        self.mutations.send_message(channel, body).await
+    }
+    // ... more delegations for backward compat
+}
+```
+
+User code becomes:
+```rust
+// Read:
+let msgs = client.views().messages.get().await;
+let channels = client.views().channels.get().await;
+
+// Write:
+client.mutations().send_message("general", "hello").await?;
+client.mutations().create_channel("dev").await?;
+client.mutations().toggle_mute().await;
+
+// Subscribe:
+let msgs_ref = &client.views().messages;
+state::subscribe(msgs_ref, my_notification_recipient);
 ```
 
 ## Scope
