@@ -142,36 +142,12 @@ A generic actor that derives its value from one or more source actors.
 Subscribes to source notifications, runs a combiner/selector, caches
 the result, and only notifies downstream when the value changes.
 
-### Single-source derived
+### Design (tuple-based, Bevy-style)
 
-```rust
-/// Derives a value of type `T` from a `StateActor<S>`.
-pub struct DerivedActor<S, T>
-where
-    S: Send + 'static,
-    T: PartialEq + Clone + Send + 'static,
-{
-    source: Addr<StateActor<S>>,
-    selector: Arc<dyn Fn(&S) -> T + Send + Sync>,
-    cached: Option<T>,
-    subscribers: Vec<Recipient<Notify>>,
-    dirty: bool,
-}
-```
-
-On receiving `Notify` from its source:
-1. Runs `select(&source, selector)` to get the current derived value
-2. Compares with `cached` via `PartialEq`
-3. If changed: updates cache, marks `dirty`
-4. In `idle()`: notifies own subscribers (same batching as `StateActor`)
-
-### Multi-source derived (tuple-based, Bevy-style)
-
-Rather than separate `DerivedActor`, `Derived2Actor`, `Derived3Actor` types,
-we use a single `DerivedActor<Sources, T>` that is generic over a `Sources`
-tuple. A `DeriveSource` trait is implemented for single sources and tuples
-of sources (up to a reasonable arity), similar to how Bevy implements
-`WorldQuery` for tuples.
+A single `DerivedActor<Src, T>` is generic over a `DeriveSource` which
+can be a single `StateRef<S>` or a tuple of them. A `DeriveSource` trait
+is implemented for single sources and tuples of sources (up to arity 6),
+similar to how Bevy implements `WorldQuery` for tuples.
 
 ```rust
 /// A type-erased handle to any observable actor.
@@ -190,6 +166,16 @@ impl<S: Send + 'static> StateRef<S> {
     /// Create from any Addr whose actor handles Subscribe + Select.
     pub fn from_addr<A>(addr: Addr<A>) -> Self
     where A: Handler<Subscribe> + Handler<Select<S>> { ... }
+
+    /// Subscribe a recipient to change notifications.
+    pub fn subscribe(&self, recipient: Recipient<Notify>) { ... }
+
+    /// Read the full state (clone). Sugar for `select(|s| s.clone())`.
+    /// Requires S: Clone.
+    pub async fn get(&self) -> S where S: Clone { ... }
+
+    /// Read a slice of state via selector.
+    pub async fn select<T: Send + 'static>(&self, f: impl FnOnce(&S) -> T + Send + 'static) -> T { ... }
 }
 
 impl<S: Clone + Send + 'static> From<&Addr<StateActor<S>>> for StateRef<S> { ... }
@@ -587,19 +573,26 @@ impl<A: Actor + Clone> Pool<A> {
 
 ### Messages
 
-The pool forwards any message the underlying actor handles:
+The pool cannot implement `Handler<M>` generically for all `M` (Rust
+doesn't support blanket handler impls on concrete types). Instead, it
+provides forwarding methods:
 
 ```rust
-impl<A, M> Handler<M> for Pool<A>
-where
-    A: Actor + Clone + Handler<M>,
-    M: Message,
-{
-    fn handle(&mut self, msg: M, _ctx: &mut Context<Self>) -> impl Future<Output = M::Result> + Send {
+impl<A: Actor + Clone> Pool<A> {
+    /// Fire-and-forget: forward to the next worker (round-robin).
+    pub fn send<M>(&mut self, msg: M) -> Result<(), SendError<M>>
+    where A: Handler<M>, M: Message<Result = ()> {
         let worker = &self.workers[self.next % self.workers.len()];
         self.next += 1;
-        let addr = worker.clone();
-        async move { addr.ask(msg).await.expect("pool worker alive") }
+        worker.do_send(msg)
+    }
+
+    /// Request-reply: forward to the next worker and await the response.
+    pub async fn ask<M>(&mut self, msg: M) -> Result<M::Result, AskError>
+    where A: Handler<M>, M: Message {
+        let worker = &self.workers[self.next % self.workers.len()];
+        self.next += 1;
+        worker.ask(msg).await
     }
 }
 ```
@@ -619,13 +612,34 @@ Rate-limits message forwarding to a target actor. Useful for UI inputs
 
 ### Design
 
+Requires a new `Context::run_after(duration, msg)` primitive — a one-shot
+delayed message send. Unlike `run_interval` (repeating), this fires once
+after a delay and returns a cancellable handle. Debounce cancels the
+previous timer on each new message and starts a fresh one.
+
+```rust
+/// One-shot delayed message. Cancel to prevent delivery.
+pub struct TimerHandle { ... }
+impl TimerHandle {
+    pub fn cancel(self) { ... }
+}
+
+impl<A: Actor> Context<A> {
+    /// Send a message to self after a delay. Returns a cancellable handle.
+    pub fn run_after<M: Message<Result = ()>>(
+        &self, delay: Duration, msg: M,
+    ) -> TimerHandle
+    where A: Handler<M> { ... }
+}
+```
+
 ```rust
 /// Debounce: forwards only the last message after a quiet period.
 pub struct Debounce<M: Message<Result = ()> + Send + 'static> {
     target: Recipient<M>,
     delay: Duration,
     pending: Option<M>,
-    timer: Option<IntervalHandle>,
+    timer: Option<TimerHandle>,
 }
 
 /// Throttle: forwards at most one message per interval.
@@ -693,7 +707,7 @@ crates/actor/src/
 ├── lib.rs              — existing core re-exports
 ├── actor.rs            — Actor, Handler, StreamHandler, Message (existing)
 ├── addr.rs             — Addr, AnyAddr, Recipient (existing)
-├── context.rs          — Context, IntervalHandle (existing)
+├── context.rs          — Context, IntervalHandle, TimerHandle (existing, extended)
 ├── envelope.rs         — BoxEnvelope (existing)
 ├── mailbox.rs          — message loop (existing)
 ├── runtime.rs          — platform abstraction (existing)
@@ -716,12 +730,13 @@ for platform abstraction.
 
 ## Implementation Plan
 
-### Phase 1: StateActor + DerivedActor
+### Phase 1: Core extension + StateActor + DerivedActor
 
-1. Implement `StateActor<S>` in `crates/actor/src/state.rs`
-2. Implement `DeriveSource` trait + tuple macro in `crates/actor/src/derived.rs`
-3. Implement `DerivedActor<Src, T>` with `StateRef<S>` handles
-4. Tests: subscribe, notify batching, caching, multi-source, chaining
+1. Add `Context::run_after()` and `TimerHandle` to existing context module
+2. Implement `StateActor<S>` in `crates/actor/src/state.rs`
+3. Implement `DeriveSource` trait + tuple macro in `crates/actor/src/derived.rs`
+4. Implement `DerivedActor<Src, T>` with `StateRef<S>` handles
+5. Tests: subscribe, notify batching, caching, multi-source, chaining
 
 ### Phase 2: StreamOutput + Broker
 
