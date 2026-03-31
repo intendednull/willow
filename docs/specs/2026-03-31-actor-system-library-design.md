@@ -47,7 +47,7 @@ interface for reading, mutating, and subscribing to changes.
 /// Mutations are batched — subscriber notifications fire in `idle()` after
 /// all pending messages are drained, so a burst of mutations triggers a
 /// single notification round.
-pub struct StateActor<S: Send + 'static> {
+pub struct StateActor<S: Send + Sync + 'static> {
     state: Arc<S>,
     dirty: bool,
     subscribers: Vec<Recipient<Notify>>,
@@ -64,22 +64,27 @@ State is stored as `Arc<S>`. This gives:
   `Arc::make_mut(&mut self.state)` clones only if the refcount > 1 (i.e., someone
   is still holding a previous `Arc<S>` from a `get()`). If refcount == 1 (common
   case after subscribers have processed their snapshots), mutation is in-place.
-- **Users never see `Arc`** — The `mutate()` helper accepts `FnOnce(&mut S)`.
-  The `get()` helper returns `Arc<S>`. The CoW is an internal optimization.
+- **Mutations never see `Arc`** — The `mutate()` helper accepts `FnOnce(&mut S)`.
+  CoW is an internal optimization. `get()` returns `Arc<S>` for cheap sharing.
+
+**Bounds:** `S: Send + Sync + 'static` is required because `Arc<S>: Send`
+needs `S: Sync`. `S: Clone` is only required for `Mutate` (the `Handler<Mutate>`
+impl has a stricter bound than the struct, so actors that only use `Get`/`Select`
+don't need `S: Clone`).
 
 ### Messages
 
 ```rust
 /// Get the current state. Returns an Arc — no deep clone.
 pub struct Get<S>(PhantomData<S>);
-impl<S: Send + 'static> Message for Get<S> { type Result = Arc<S>; }
+impl<S: Send + Sync + 'static> Message for Get<S> { type Result = Arc<S>; }
 
 /// Set the state to a new value. Marks dirty.
-pub struct Set<S: Send + 'static>(pub S);
-impl<S: Send + 'static> Message for Set<S> { type Result = (); }
+pub struct Set<S: Send + Sync + 'static>(pub S);
+impl<S: Send + Sync + 'static> Message for Set<S> { type Result = (); }
 
 /// Mutate state via a type-erased closure. Returns a type-erased result.
-/// Internally uses `Arc::make_mut()` for copy-on-write.
+/// Internally uses `Arc::make_mut()` for copy-on-write (requires S: Clone).
 /// Use the `mutate()` helper for type-safe access.
 pub struct Mutate(pub Box<dyn FnOnce(&mut dyn Any) -> Box<dyn Any + Send> + Send>);
 impl Message for Mutate { type Result = Box<dyn Any + Send>; }
@@ -111,21 +116,21 @@ The typed `select()`/`mutate()` helpers hide the `Any` plumbing.
 ```rust
 /// Type-safe read via selector. Runs the closure inside the actor.
 pub async fn select<S, T>(addr: &Addr<StateActor<S>>, f: impl FnOnce(&S) -> T) -> T
-where S: Send + 'static, T: Send + 'static { ... }
+where S: Send + Sync + 'static, T: Send + 'static { ... }
 
 /// Type-safe mutation with return value. The closure receives `&mut S`.
 /// Internally uses Arc::make_mut() for copy-on-write.
 pub async fn mutate<S, T>(addr: &Addr<StateActor<S>>, f: impl FnOnce(&mut S) -> T) -> T
-where S: Send + 'static, T: Send + 'static { ... }
+where S: Clone + Send + Sync + 'static, T: Send + 'static { ... }
 
 /// Get the full state as an Arc (no deep clone).
 pub async fn get<S>(addr: &Addr<StateActor<S>>) -> Arc<S>
-where S: Send + 'static { ... }
+where S: Send + Sync + 'static { ... }
 
 /// Subscribe any actor that handles Notify to state changes.
 pub fn subscribe<S, A>(state: &Addr<StateActor<S>>, subscriber: &Addr<A>)
 where
-    S: Send + 'static,
+    S: Send + Sync + 'static,
     A: Handler<Notify>,
 {
     let recipient: Recipient<Notify> = subscriber.clone().into();
@@ -189,18 +194,20 @@ similar to how Bevy implements `WorldQuery` for tuples.
 /// produce StateRef handles, so they're interchangeable as sources.
 /// Clone is cheap (Arc bumps).
 #[derive(Clone)]
-pub struct StateRef<S: Send + 'static> {
+pub struct StateRef<S: Send + Sync + 'static> {
     /// Subscribe to change notifications.
     subscribe: Arc<dyn Fn(Recipient<Notify>) + Send + Sync>,
+    /// Read full state as Arc (no deep clone).
+    get: Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Arc<S>> + Send>> + Send + Sync>,
     /// Read current state via type-erased selector closure.
     select: Arc<dyn Fn(Box<dyn FnOnce(&dyn Any) -> Box<dyn Any + Send> + Send>) -> Pin<Box<dyn Future<Output = Box<dyn Any + Send>> + Send>> + Send + Sync>,
     _phantom: PhantomData<S>,
 }
 
-impl<S: Send + 'static> StateRef<S> {
-    /// Create from any Addr whose actor handles Subscribe + Select.
+impl<S: Send + Sync + 'static> StateRef<S> {
+    /// Create from any Addr whose actor handles Subscribe, Select, and Get.
     pub fn from_addr<A>(addr: Addr<A>) -> Self
-    where A: Handler<Subscribe> + Handler<Select> { ... }
+    where A: Handler<Subscribe> + Handler<Select> + Handler<Get<S>> { ... }
 
     /// Subscribe a recipient to change notifications.
     pub fn subscribe(&self, recipient: Recipient<Notify>) { ... }
@@ -212,7 +219,7 @@ impl<S: Send + 'static> StateRef<S> {
     pub async fn select<T: Send + 'static>(&self, f: impl FnOnce(&S) -> T + Send + 'static) -> T { ... }
 }
 
-impl<S: Send + 'static> From<&Addr<StateActor<S>>> for StateRef<S> { ... }
+impl<S: Send + Sync + 'static> From<&Addr<StateActor<S>>> for StateRef<S> { ... }
 ```
 
 #### DeriveSource trait
@@ -235,7 +242,7 @@ pub trait DeriveSource: Clone + Send + 'static {
 }
 
 // Single source — snapshot is Arc<S> (pointer bump from StateRef::get()).
-impl<S: Send + 'static> DeriveSource for StateRef<S> {
+impl<S: Send + Sync + 'static> DeriveSource for StateRef<S> {
     type Snapshot = Arc<S>;
     fn subscribe_all(&self, recipient: Recipient<Notify>) { ... }
     async fn snapshot(&self) -> Arc<S> { ... }
@@ -244,8 +251,8 @@ impl<S: Send + 'static> DeriveSource for StateRef<S> {
 // Two sources — snapshot is a tuple of Arcs.
 impl<S1, S2> DeriveSource for (StateRef<S1>, StateRef<S2>)
 where
-    S1: Send + 'static,
-    S2: Send + 'static,
+    S1: Send + Sync + 'static,
+    S2: Send + Sync + 'static,
 {
     type Snapshot = (Arc<S1>, Arc<S2>);
     fn subscribe_all(&self, recipient: Recipient<Notify>) {
@@ -258,7 +265,7 @@ where
     }
 }
 
-// Three sources — snapshot is (S1, S2, S3). And so on up to arity 6.
+// Three sources — snapshot is (Arc<S1>, Arc<S2>, Arc<S3>). And so on up to arity 6.
 // A macro generates these impls.
 macro_rules! impl_derive_source_tuple {
     ($($idx:tt: $S:ident),+) => { ... }
@@ -332,7 +339,7 @@ pub fn derived<Src, T>(
 ) -> StateRef<T>
 where
     Src: DeriveSource,
-    T: PartialEq + Clone + Send + 'static,
+    T: PartialEq + Send + 'static,
 ```
 
 ### Usage
@@ -869,7 +876,7 @@ a new `just test-actor-perf` command.
 | `state_ref_from_state_actor` | `StateRef` created from `Addr<StateActor<S>>` works |
 | `state_ref_from_derived_actor` | `StateRef` created from `DerivedActor` works |
 | `state_ref_clone` | Cloned `StateRef` points to same actor |
-| `state_ref_get` | `get()` returns cloned full state |
+| `state_ref_get` | `get()` returns `Arc<S>` (no deep clone) |
 | `state_ref_select` | `select()` returns projected slice |
 
 ### StreamOutput tests

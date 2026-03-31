@@ -73,23 +73,23 @@ The foundational state container that all other stateful actor types build on.
 - [ ] **Step 1: Define message types.** In `state.rs`:
   - `Notify` — `Clone`, `Message<Result = ()>`. Sent to subscribers after mutation.
   - `Subscribe(Recipient<Notify>)` — `Message<Result = ()>`.
-  - `Get<S>(PhantomData<S>)` — `Message<Result = Arc<S>>`. Returns cheaply via `Arc::clone`.
-  - `Set<S>(S)` — `Message<Result = ()>`.
+  - `Get<S>(PhantomData<S>)` — `Message<Result = Arc<S>>` where `S: Send + Sync`. Returns cheaply via `Arc::clone`.
+  - `Set<S>(S)` — `Message<Result = ()>` where `S: Send + Sync`.
   - `Select(Box<dyn FnOnce(&dyn Any) -> Box<dyn Any + Send> + Send>)` — `Message<Result = Box<dyn Any + Send>>`.
-  - `Mutate(Box<dyn FnOnce(&mut dyn Any) -> Box<dyn Any + Send> + Send>)` — `Message<Result = Box<dyn Any + Send>>`.
+  - `Mutate(Box<dyn FnOnce(&mut dyn Any) -> Box<dyn Any + Send> + Send>)` — `Message<Result = Box<dyn Any + Send>>`. Note: the handler impl requires `S: Clone` for `Arc::make_mut()`.
 
-- [ ] **Step 2: Implement `StateActor<S>`.** Fields: `state: Arc<S>`, `dirty: bool`, `subscribers: Vec<Recipient<Notify>>`. Constructor: `StateActor::new(initial: S)` wraps in `Arc::new(initial)`. Implement `Actor` with `idle()` that checks `dirty`, sends `Notify` to all subscribers (pruning dead ones where `do_send` fails), resets `dirty`. Implement handlers:
+- [ ] **Step 2: Implement `StateActor<S>`.** Struct bound: `S: Send + Sync + 'static`. Fields: `state: Arc<S>`, `dirty: bool`, `subscribers: Vec<Recipient<Notify>>`. Constructor: `StateActor::new(initial: S)` wraps in `Arc::new(initial)`. Implement `Actor` with `idle()` that checks `dirty`, sends `Notify` to all subscribers (pruning dead ones where `do_send` fails), resets `dirty`. Implement handlers:
   - `Handler<Get<S>>` — returns `Arc::clone(&self.state)` (pointer bump, no deep clone).
   - `Handler<Set<S>>` — `self.state = Arc::new(msg.0); self.dirty = true;`.
   - `Handler<Select>` — downcast `&*self.state as &dyn Any`, call the closure, return result. Panic on downcast failure (type mismatch is a programming error).
-  - `Handler<Mutate>` — call `Arc::make_mut(&mut self.state)` for copy-on-write (clones only if refcount > 1), downcast the `&mut S` to `&mut dyn Any`, call the closure, set `self.dirty = true`, return result.
+  - `Handler<Mutate>` — requires `S: Clone` on the impl (stricter than the struct bound). Call `Arc::make_mut(&mut self.state)` for copy-on-write (clones only if refcount > 1), downcast the `&mut S` to `&mut dyn Any`, call the closure, set `self.dirty = true`, return result.
   - `Handler<Subscribe>` — push recipient to `self.subscribers`.
 
 - [ ] **Step 3: Implement typed helpers.** Free functions:
-  - `pub async fn get<S>(addr) -> Arc<S>` — calls `addr.ask(Get(PhantomData))`, returns `Arc<S>`.
-  - `pub async fn select<S, T>(addr, f) -> T` — wraps `f` in a `Select` closure that downcasts `&dyn Any` to `&S`, calls `addr.ask(Select(...))`, downcasts result `Box<dyn Any>` to `T`.
-  - `pub async fn mutate<S, T>(addr, f) -> T` — wraps `f` in a `Mutate` closure. The `StateActor` handler calls `Arc::make_mut()` internally before downcasting to `&mut S`, so the closure receives `&mut S` transparently.
-  - `pub fn subscribe<S, A>(state, subscriber)` — converts subscriber addr to `Recipient<Notify>`, sends `Subscribe`.
+  - `pub async fn get<S>(addr) -> Arc<S>` where `S: Send + Sync` — calls `addr.ask(Get(PhantomData))`, returns `Arc<S>`.
+  - `pub async fn select<S, T>(addr, f) -> T` where `S: Send + Sync` — wraps `f` in a `Select` closure that downcasts `&dyn Any` to `&S`, calls `addr.ask(Select(...))`, downcasts result `Box<dyn Any>` to `T`.
+  - `pub async fn mutate<S, T>(addr, f) -> T` where `S: Clone + Send + Sync` — wraps `f` in a `Mutate` closure. The `StateActor` handler calls `Arc::make_mut()` internally before downcasting to `&mut S`, so the closure receives `&mut S` transparently. The `Clone` bound is only on this helper, not on `get`/`select`.
+  - `pub fn subscribe<S, A>(state, subscriber)` where `S: Send + Sync` — converts subscriber addr to `Recipient<Notify>`, sends `Subscribe`.
 
 - [ ] **Step 4: Implement `StateRef<S>`.** Fields: `subscribe: Arc<dyn Fn(Recipient<Notify>) + Send + Sync>`, `select: Arc<dyn Fn(...) -> Pin<Box<...>> + Send + Sync>`, `get: Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Arc<S>> + Send>> + Send + Sync>`, `_phantom: PhantomData<S>`. Methods: `subscribe()`, `get() -> Arc<S>` (no deep clone), `select()`. `from_addr<A>(addr)` — generic constructor for any `A: Handler<Subscribe> + Handler<Select> + Handler<Get<S>>`. `From<&Addr<StateActor<S>>>` impl constructs the closures by capturing a cloned `Addr` — `get` forwards to `ask(Get(PhantomData))`, `select` forwards to `ask(Select(...))`. Derive `Clone`.
 
