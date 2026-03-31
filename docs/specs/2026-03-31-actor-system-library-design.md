@@ -40,28 +40,46 @@ interface for reading, mutating, and subscribing to changes.
 ```rust
 /// An actor that owns state of type `S` with get/set/subscribe semantics.
 ///
+/// State is stored as `Arc<S>` internally for cheap reads. Mutations use
+/// copy-on-write via `Arc::make_mut()` — the user writes normal `&mut S`
+/// closures and never sees the `Arc`.
+///
 /// Mutations are batched — subscriber notifications fire in `idle()` after
 /// all pending messages are drained, so a burst of mutations triggers a
 /// single notification round.
 pub struct StateActor<S: Send + 'static> {
-    state: S,
+    state: Arc<S>,
     dirty: bool,
     subscribers: Vec<Recipient<Notify>>,
 }
 ```
 
+### Copy-on-write semantics
+
+State is stored as `Arc<S>`. This gives:
+
+- **Reads are free** — `get()` returns `Arc<S>` (pointer bump, no deep clone).
+  `select()` runs a closure against `&S` and returns a small projected value.
+- **Mutations are transparent** — `mutate()` gives the user `&mut S`. Internally,
+  `Arc::make_mut(&mut self.state)` clones only if the refcount > 1 (i.e., someone
+  is still holding a previous `Arc<S>` from a `get()`). If refcount == 1 (common
+  case after subscribers have processed their snapshots), mutation is in-place.
+- **Users never see `Arc`** — The `mutate()` helper accepts `FnOnce(&mut S)`.
+  The `get()` helper returns `Arc<S>`. The CoW is an internal optimization.
+
 ### Messages
 
 ```rust
-/// Get the current state (clones it out). Requires S: Clone.
+/// Get the current state. Returns an Arc — no deep clone.
 pub struct Get<S>(PhantomData<S>);
-impl<S: Clone + Send + 'static> Message for Get<S> { type Result = S; }
+impl<S: Send + 'static> Message for Get<S> { type Result = Arc<S>; }
 
 /// Set the state to a new value. Marks dirty.
 pub struct Set<S: Send + 'static>(pub S);
 impl<S: Send + 'static> Message for Set<S> { type Result = (); }
 
 /// Mutate state via a type-erased closure. Returns a type-erased result.
+/// Internally uses `Arc::make_mut()` for copy-on-write.
 /// Use the `mutate()` helper for type-safe access.
 pub struct Mutate(pub Box<dyn FnOnce(&mut dyn Any) -> Box<dyn Any + Send> + Send>);
 impl Message for Mutate { type Result = Box<dyn Any + Send>; }
@@ -84,18 +102,25 @@ impl Message for Notify { type Result = (); }
 The `Mutate` and `Select` closures use `&dyn Any`/`&mut dyn Any` so the
 message types are not generic over `S` — this keeps them usable with
 `Recipient` and avoids monomorphization. The `StateActor<S>` handler
-downcasts internally. The typed `select()`/`mutate()` helpers hide this.
+downcasts internally. For `Mutate`, the handler calls
+`Arc::make_mut(&mut self.state)` to get `&mut S`, then downcasts.
+The typed `select()`/`mutate()` helpers hide the `Any` plumbing.
 
 ### Typed helpers
 
 ```rust
-/// Type-safe read via selector.
+/// Type-safe read via selector. Runs the closure inside the actor.
 pub async fn select<S, T>(addr: &Addr<StateActor<S>>, f: impl FnOnce(&S) -> T) -> T
 where S: Send + 'static, T: Send + 'static { ... }
 
-/// Type-safe mutation with return value.
+/// Type-safe mutation with return value. The closure receives `&mut S`.
+/// Internally uses Arc::make_mut() for copy-on-write.
 pub async fn mutate<S, T>(addr: &Addr<StateActor<S>>, f: impl FnOnce(&mut S) -> T) -> T
 where S: Send + 'static, T: Send + 'static { ... }
+
+/// Get the full state as an Arc (no deep clone).
+pub async fn get<S>(addr: &Addr<StateActor<S>>) -> Arc<S>
+where S: Send + 'static { ... }
 
 /// Subscribe any actor that handles Notify to state changes.
 pub fn subscribe<S, A>(state: &Addr<StateActor<S>>, subscriber: &Addr<A>)
@@ -120,10 +145,13 @@ where
 let system = System::new();
 let state = system.spawn(StateActor::new(AppState::default()));
 
-// Read a slice
+// Get full state — Arc, no deep clone
+let snapshot: Arc<AppState> = get(&state).await;
+
+// Read a slice — only the selected value crosses the boundary
 let count = select(&state, |s| s.message_count).await;
 
-// Mutate
+// Mutate — user writes &mut S, CoW is invisible
 mutate(&state, |s| s.message_count += 1).await;
 
 // Subscribe
@@ -177,15 +205,14 @@ impl<S: Send + 'static> StateRef<S> {
     /// Subscribe a recipient to change notifications.
     pub fn subscribe(&self, recipient: Recipient<Notify>) { ... }
 
-    /// Read the full state (clone). Sugar for `select(|s| s.clone())`.
-    /// Requires S: Clone.
-    pub async fn get(&self) -> S where S: Clone { ... }
+    /// Read the full state as Arc (no deep clone).
+    pub async fn get(&self) -> Arc<S> { ... }
 
     /// Read a slice of state via selector.
     pub async fn select<T: Send + 'static>(&self, f: impl FnOnce(&S) -> T + Send + 'static) -> T { ... }
 }
 
-impl<S: Clone + Send + 'static> From<&Addr<StateActor<S>>> for StateRef<S> { ... }
+impl<S: Send + 'static> From<&Addr<StateActor<S>>> for StateRef<S> { ... }
 ```
 
 #### DeriveSource trait
@@ -207,25 +234,25 @@ pub trait DeriveSource: Clone + Send + 'static {
     fn snapshot(&self) -> impl Future<Output = Self::Snapshot> + Send;
 }
 
-// Single source — snapshot is just S itself.
-impl<S: Clone + Send + 'static> DeriveSource for StateRef<S> {
-    type Snapshot = S;
+// Single source — snapshot is Arc<S> (pointer bump from StateRef::get()).
+impl<S: Send + 'static> DeriveSource for StateRef<S> {
+    type Snapshot = Arc<S>;
     fn subscribe_all(&self, recipient: Recipient<Notify>) { ... }
-    async fn snapshot(&self) -> S { ... }
+    async fn snapshot(&self) -> Arc<S> { ... }
 }
 
-// Two sources — snapshot is a tuple (S1, S2).
+// Two sources — snapshot is a tuple of Arcs.
 impl<S1, S2> DeriveSource for (StateRef<S1>, StateRef<S2>)
 where
-    S1: Clone + Send + 'static,
-    S2: Clone + Send + 'static,
+    S1: Send + 'static,
+    S2: Send + 'static,
 {
-    type Snapshot = (S1, S2);
+    type Snapshot = (Arc<S1>, Arc<S2>);
     fn subscribe_all(&self, recipient: Recipient<Notify>) {
         self.0.subscribe(recipient.clone());
         self.1.subscribe(recipient);
     }
-    async fn snapshot(&self) -> (S1, S2) {
+    async fn snapshot(&self) -> (Arc<S1>, Arc<S2>) {
         let (a, b) = futures::join!(self.0.get(), self.1.get());
         (a, b)
     }
@@ -246,24 +273,29 @@ impl_derive_source_tuple!(0: S1, 1: S2, 2: S3, 3: S4);
 
 ```rust
 /// Derives a value of type `T` from one or more source actors.
-pub struct DerivedActor<Src: DeriveSource, T: PartialEq + Clone + Send + 'static> {
+/// The cached value is stored as `Arc<T>` — downstream reads are pointer bumps.
+pub struct DerivedActor<Src: DeriveSource, T: PartialEq + Send + 'static> {
     sources: Src,
     selector: Arc<dyn Fn(&Src::Snapshot) -> T + Send + Sync>,
-    cached: Option<T>,
+    cached: Option<Arc<T>>,
     subscribers: Vec<Recipient<Notify>>,
     dirty: bool,
 }
 ```
 
 On receiving `Notify` from any source:
-1. Calls `sources.snapshot()` to fetch current values from all sources
-2. Runs `selector(&snapshot)` to compute the derived value
+1. Calls `sources.snapshot()` to fetch current values (returns `Arc`s — cheap)
+2. Runs `selector(&snapshot)` to compute the derived value `T`
 3. Sends the result back to self via an internal `UpdateCache<T>` message
 
 The `UpdateCache<T>` handler (synchronous, no await):
-4. Compares new value with `cached` via `PartialEq`
-5. If changed: updates `cached`, marks `dirty`
+4. Compares new value with `cached` via `PartialEq` (deref through `Arc`)
+5. If changed: `cached = Some(Arc::new(new_value))`, marks `dirty`
 6. In `idle()`: notifies own subscribers (same batching as `StateActor`)
+
+Downstream `get()` on the `StateRef<T>` returns `Arc<T>` — another pointer
+bump. The only allocation is the `Arc::new()` in step 5, which happens
+only when the value actually changes.
 
 **Why the self-message?** RPITIT handlers return `impl Future + Send` which
 cannot borrow `&mut self` across an `.await` point. The `snapshot()` call
@@ -309,10 +341,10 @@ where
 let app_state: StateRef<AppState> = system.spawn(StateActor::new(AppState::default())).into();
 let net_state: StateRef<NetState> = system.spawn(StateActor::new(NetState::default())).into();
 
-// Single source — selector receives &AppState
+// Single source — selector receives &Arc<AppState>
 let peers = derived(&system, app_state.clone(), |s| s.peers.clone());
 
-// Two sources — selector receives &(AppState, NetState)
+// Two sources — selector receives &(Arc<AppState>, Arc<NetState>)
 let dashboard = derived(&system, (app_state.clone(), net_state.clone()), |(app, net)| {
     DashboardData {
         peer_count: app.peers.len(),
@@ -320,7 +352,8 @@ let dashboard = derived(&system, (app_state.clone(), net_state.clone()), |(app, 
     }
 });
 
-// Chain: derive from another derived
+// Chain: derive from another derived — gets &Arc<Vec<Peer>>
+// The Arc is from the DerivedActor's cache, so this is cheap.
 let online_count = derived(&system, peers.clone(), |peers| {
     peers.iter().filter(|p| p.online).count()
 });
@@ -801,11 +834,14 @@ a new `just test-actor-perf` command.
 
 | Test | What it verifies |
 |------|-----------------|
-| `state_get_returns_current` | `Get` returns the initial state value |
+| `state_get_returns_arc` | `Get` returns `Arc<S>`, not a deep clone |
+| `state_get_arc_shares_identity` | Two `get()` calls without mutation return same `Arc` (ptr equality) |
 | `state_set_updates` | `Set` changes the value, subsequent `Get` reflects it |
 | `state_select_slice` | `select()` helper returns a projected field |
-| `state_mutate_modifies` | `mutate()` helper modifies state in place |
+| `state_mutate_modifies` | `mutate()` helper modifies state in place via `&mut S` |
 | `state_mutate_returns_value` | `mutate()` returns the closure's return value |
+| `state_mutate_cow_clones_when_held` | `mutate()` while an `Arc` ref is held triggers CoW (old Arc unchanged) |
+| `state_mutate_inplace_when_sole` | `mutate()` with no outstanding `Arc` refs is in-place (no clone) |
 | `state_subscribe_notifies` | Subscriber receives `Notify` after mutation |
 | `state_no_notify_without_mutation` | No `Notify` sent if no mutation occurred |
 | `state_batch_notifications` | 10 rapid `Set` messages produce fewer than 10 `Notify` (idle batching) |
@@ -910,7 +946,9 @@ regressions. Added to justfile as `just test-actor-perf`.
 | Test | What it measures | Threshold |
 |------|-----------------|-----------|
 | `perf_state_actor_throughput` | `mutate()` calls per second (10k mutations, measure total time) | > 100k ops/sec |
+| `perf_state_actor_get_throughput` | `get()` calls per second (10k gets, Arc clone only) | > 500k ops/sec |
 | `perf_state_actor_select_throughput` | `select()` calls per second (10k selects) | > 100k ops/sec |
+| `perf_state_actor_cow_vs_clone` | `mutate()` with/without outstanding Arc refs (measure CoW overhead) | Report only |
 | `perf_state_notify_fanout` | Time to notify N subscribers (N = 1, 10, 100, 1000) | < 1ms for 100 subs |
 | `perf_derived_propagation_latency` | End-to-end time from source mutation to derived cache update | < 1ms |
 | `perf_derived_chain_depth` | Propagation through chain of 10 derived actors | < 5ms |

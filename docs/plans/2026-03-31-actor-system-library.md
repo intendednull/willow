@@ -73,28 +73,29 @@ The foundational state container that all other stateful actor types build on.
 - [ ] **Step 1: Define message types.** In `state.rs`:
   - `Notify` — `Clone`, `Message<Result = ()>`. Sent to subscribers after mutation.
   - `Subscribe(Recipient<Notify>)` — `Message<Result = ()>`.
-  - `Get<S>(PhantomData<S>)` — `Message<Result = S>` where `S: Clone`.
+  - `Get<S>(PhantomData<S>)` — `Message<Result = Arc<S>>`. Returns cheaply via `Arc::clone`.
   - `Set<S>(S)` — `Message<Result = ()>`.
   - `Select(Box<dyn FnOnce(&dyn Any) -> Box<dyn Any + Send> + Send>)` — `Message<Result = Box<dyn Any + Send>>`.
   - `Mutate(Box<dyn FnOnce(&mut dyn Any) -> Box<dyn Any + Send> + Send>)` — `Message<Result = Box<dyn Any + Send>>`.
 
-- [ ] **Step 2: Implement `StateActor<S>`.** Fields: `state: S`, `dirty: bool`, `subscribers: Vec<Recipient<Notify>>`. Constructor: `StateActor::new(initial: S)`. Implement `Actor` with `idle()` that checks `dirty`, sends `Notify` to all subscribers (pruning dead ones where `do_send` fails), resets `dirty`. Implement handlers:
-  - `Handler<Get<S>>` — returns `self.state.clone()` (requires `S: Clone`).
-  - `Handler<Set<S>>` — `self.state = msg.0; self.dirty = true;`.
-  - `Handler<Select>` — downcast `&self.state as &dyn Any`, call the closure, return result. Panic on downcast failure (type mismatch is a programming error).
-  - `Handler<Mutate>` — downcast `&mut self.state as &mut dyn Any`, call the closure, set `self.dirty = true`, return result.
+- [ ] **Step 2: Implement `StateActor<S>`.** Fields: `state: Arc<S>`, `dirty: bool`, `subscribers: Vec<Recipient<Notify>>`. Constructor: `StateActor::new(initial: S)` wraps in `Arc::new(initial)`. Implement `Actor` with `idle()` that checks `dirty`, sends `Notify` to all subscribers (pruning dead ones where `do_send` fails), resets `dirty`. Implement handlers:
+  - `Handler<Get<S>>` — returns `Arc::clone(&self.state)` (pointer bump, no deep clone).
+  - `Handler<Set<S>>` — `self.state = Arc::new(msg.0); self.dirty = true;`.
+  - `Handler<Select>` — downcast `&*self.state as &dyn Any`, call the closure, return result. Panic on downcast failure (type mismatch is a programming error).
+  - `Handler<Mutate>` — call `Arc::make_mut(&mut self.state)` for copy-on-write (clones only if refcount > 1), downcast the `&mut S` to `&mut dyn Any`, call the closure, set `self.dirty = true`, return result.
   - `Handler<Subscribe>` — push recipient to `self.subscribers`.
 
 - [ ] **Step 3: Implement typed helpers.** Free functions:
+  - `pub async fn get<S>(addr) -> Arc<S>` — calls `addr.ask(Get(PhantomData))`, returns `Arc<S>`.
   - `pub async fn select<S, T>(addr, f) -> T` — wraps `f` in a `Select` closure that downcasts `&dyn Any` to `&S`, calls `addr.ask(Select(...))`, downcasts result `Box<dyn Any>` to `T`.
-  - `pub async fn mutate<S, T>(addr, f) -> T` — same pattern with `Mutate` and `&mut dyn Any`.
+  - `pub async fn mutate<S, T>(addr, f) -> T` — wraps `f` in a `Mutate` closure. The `StateActor` handler calls `Arc::make_mut()` internally before downcasting to `&mut S`, so the closure receives `&mut S` transparently.
   - `pub fn subscribe<S, A>(state, subscriber)` — converts subscriber addr to `Recipient<Notify>`, sends `Subscribe`.
 
-- [ ] **Step 4: Implement `StateRef<S>`.** Fields: `subscribe: Arc<dyn Fn(Recipient<Notify>) + Send + Sync>`, `select: Arc<dyn Fn(...) -> Pin<Box<...>> + Send + Sync>`, `_phantom: PhantomData<S>`. Methods: `subscribe()`, `get()` (requires `S: Clone`), `select()`. `from_addr<A>(addr)` — generic constructor for any `A: Handler<Subscribe> + Handler<Select>`. `From<&Addr<StateActor<S>>>` impl constructs the closures by capturing a cloned `Addr` and forwarding to `do_send(Subscribe(...))` / `ask(Select(...))`. Derive `Clone`.
+- [ ] **Step 4: Implement `StateRef<S>`.** Fields: `subscribe: Arc<dyn Fn(Recipient<Notify>) + Send + Sync>`, `select: Arc<dyn Fn(...) -> Pin<Box<...>> + Send + Sync>`, `get: Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Arc<S>> + Send>> + Send + Sync>`, `_phantom: PhantomData<S>`. Methods: `subscribe()`, `get() -> Arc<S>` (no deep clone), `select()`. `from_addr<A>(addr)` — generic constructor for any `A: Handler<Subscribe> + Handler<Select> + Handler<Get<S>>`. `From<&Addr<StateActor<S>>>` impl constructs the closures by capturing a cloned `Addr` — `get` forwards to `ask(Get(PhantomData))`, `select` forwards to `ask(Select(...))`. Derive `Clone`.
 
-- [ ] **Step 5: Write unit tests.** All 10 StateActor tests from the test plan: `state_get_returns_current`, `state_set_updates`, `state_select_slice`, `state_mutate_modifies`, `state_mutate_returns_value`, `state_subscribe_notifies`, `state_no_notify_without_mutation`, `state_batch_notifications`, `state_dead_subscribers_pruned`, `state_multiple_subscribers`. Plus 5 StateRef tests: `state_ref_from_state_actor`, `state_ref_clone`, `state_ref_get`, `state_ref_select`.
+- [ ] **Step 5: Write unit tests.** All 13 StateActor tests from the test plan: `state_get_returns_arc`, `state_get_arc_shares_identity`, `state_set_updates`, `state_select_slice`, `state_mutate_modifies`, `state_mutate_returns_value`, `state_mutate_cow_clones_when_held`, `state_mutate_inplace_when_sole`, `state_subscribe_notifies`, `state_no_notify_without_mutation`, `state_batch_notifications`, `state_dead_subscribers_pruned`, `state_multiple_subscribers`. Plus 5 StateRef tests: `state_ref_from_state_actor`, `state_ref_clone`, `state_ref_get`, `state_ref_select`.
 
-- [ ] **Step 6: Add to `lib.rs`.** `pub mod state;` and re-exports: `StateActor`, `StateRef`, `Notify`, `Subscribe`, `Get`, `Set`, `Select`, `Mutate`, `select`, `mutate`, `subscribe`.
+- [ ] **Step 6: Add to `lib.rs`.** `pub mod state;` and re-exports: `StateActor`, `StateRef`, `Notify`, `Subscribe`, `Get`, `Set`, `Select`, `Mutate`, `get`, `select`, `mutate`, `subscribe`.
 
 ---
 
@@ -108,13 +109,13 @@ Depends on Task 2 (StateActor, StateRef, Notify, Subscribe).
 
 - [ ] **Step 1: Define `DeriveSource` trait.** `Clone + Send + 'static` with associated type `Snapshot: Send + 'static`. Methods: `fn subscribe_all(&self, recipient: Recipient<Notify>)` and `fn snapshot(&self) -> impl Future<Output = Self::Snapshot> + Send`.
 
-- [ ] **Step 2: Implement `DeriveSource` for `StateRef<S>`.** `Snapshot = S`. `subscribe_all` calls `self.subscribe(recipient)`. `snapshot` calls `self.get()`.
+- [ ] **Step 2: Implement `DeriveSource` for `StateRef<S>`.** `Snapshot = Arc<S>`. `subscribe_all` calls `self.subscribe(recipient)`. `snapshot` calls `self.get()` which returns `Arc<S>` (pointer bump).
 
-- [ ] **Step 3: Implement tuple macro.** `impl_derive_source_tuple!` macro that generates `DeriveSource` impls for `(StateRef<S0>, StateRef<S1>)` through `(StateRef<S0>, ..., StateRef<S5>)`. `Snapshot` is the corresponding tuple type. `subscribe_all` clones the recipient for each element (last one moves). `snapshot` uses `futures::join!` for parallel fetch. Generate invocations for arities 2 through 6.
+- [ ] **Step 3: Implement tuple macro.** `impl_derive_source_tuple!` macro that generates `DeriveSource` impls for `(StateRef<S0>, StateRef<S1>)` through `(StateRef<S0>, ..., StateRef<S5>)`. `Snapshot` is a tuple of `Arc`s (e.g., `(Arc<S0>, Arc<S1>)`). `subscribe_all` clones the recipient for each element (last one moves). `snapshot` uses `futures::join!` for parallel `get()` — all returns are `Arc` so no deep cloning. Generate invocations for arities 2 through 6.
 
 - [ ] **Step 4: Define internal `UpdateCache<T>` message.** `Message<Result = ()>`. This is private to the module — used by `DerivedActor` to update its cached value after the async snapshot completes.
 
-- [ ] **Step 5: Implement `DerivedActor<Src, T>`.** Fields: `sources: Src`, `selector: Arc<dyn Fn(&Src::Snapshot) -> T + Send + Sync>`, `cached: Option<T>`, `subscribers: Vec<Recipient<Notify>>`, `dirty: bool`. Implement `Actor::started()` — calls `sources.subscribe_all(ctx.address().into())`, then does an initial snapshot + selector computation and sends `UpdateCache` to self. Implement `Handler<Notify>` — clones `sources` and `selector` into async block, fetches snapshot, computes value, sends `UpdateCache(value)` to self via `ctx.address()`. Implement `Handler<UpdateCache<T>>` — compares with `cached` via `PartialEq`, updates if changed, sets `dirty`. Implement `Actor::idle()` — same pattern as StateActor (notify subscribers if dirty). Implement `Handler<Subscribe>` — push to subscribers list. Implement `Handler<Select>` — downcast to `T`, read from `cached`.
+- [ ] **Step 5: Implement `DerivedActor<Src, T>`.** Fields: `sources: Src`, `selector: Arc<dyn Fn(&Src::Snapshot) -> T + Send + Sync>`, `cached: Option<Arc<T>>`, `subscribers: Vec<Recipient<Notify>>`, `dirty: bool`. Implement `Actor::started()` — calls `sources.subscribe_all(ctx.address().into())`, then does an initial snapshot + selector computation and sends `UpdateCache` to self. Implement `Handler<Notify>` — clones `sources` and `selector` into async block, fetches snapshot (returns `Arc`s — cheap), computes value via selector, sends `UpdateCache(value)` to self via `ctx.address()`. Implement `Handler<UpdateCache<T>>` — compares with `cached` via `PartialEq` (deref through `Arc`), if changed: `cached = Some(Arc::new(new_value))`, sets `dirty`. Implement `Actor::idle()` — same pattern as StateActor (notify subscribers if dirty). Implement `Handler<Subscribe>` — push to subscribers list. Implement `Handler<Select>` — read from `cached`, return `Arc::clone`. Implement `Handler<Get<T>>` — return `Arc::clone(&self.cached.unwrap())`.
 
 - [ ] **Step 6: Implement `StateRef<T>` for DerivedActor.** `From<&Addr<DerivedActor<Src, T>>>` impl that constructs `StateRef<T>` by capturing the derived actor's address. The `select` closure sends `Select` to the derived actor. The `subscribe` closure sends `Subscribe`.
 
@@ -242,7 +243,9 @@ Depends on all previous tasks.
 
 - [ ] **Step 2: Implement throughput tests.** In `performance.rs`:
   - `perf_state_actor_throughput` — 10k `mutate()` calls, assert >100k ops/sec.
+  - `perf_state_actor_get_throughput` — 10k `get()` calls (Arc clone only), assert >500k ops/sec.
   - `perf_state_actor_select_throughput` — 10k `select()` calls, assert >100k ops/sec.
+  - `perf_state_actor_cow_vs_clone` — compare `mutate()` throughput with and without outstanding `Arc` refs. Report only (informational).
   - `perf_stream_output_throughput` — 100k emits to single consumer, assert >500k emits/sec.
   - `perf_pool_round_robin_throughput` — 10k `ask()` through 4-worker pool, assert >50k ops/sec.
 
