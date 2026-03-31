@@ -164,8 +164,8 @@ similar to how Bevy implements `WorldQuery` for tuples.
 pub struct StateRef<S: Send + 'static> {
     /// Subscribe to change notifications.
     subscribe: Arc<dyn Fn(Recipient<Notify>) + Send + Sync>,
-    /// Read current state via type-erased selector.
-    select: Arc<dyn Fn(StateSelector<S>) -> Pin<Box<dyn Future<Output = Box<dyn Any + Send>> + Send>> + Send + Sync>,
+    /// Read current state via type-erased selector closure.
+    select: Arc<dyn Fn(Box<dyn FnOnce(&dyn Any) -> Box<dyn Any + Send> + Send>) -> Pin<Box<dyn Future<Output = Box<dyn Any + Send>> + Send>> + Send + Sync>,
 }
 
 impl<S: Send + 'static> StateRef<S> {
@@ -231,8 +231,11 @@ where
         self.1.subscribe(recipient);
     }
     async fn snapshot(&self) -> (S1, S2) {
-        // Fetch both in parallel
-        let (a, b) = futures::join!(self.0.get(), self.1.get());
+        // Sequential — avoids adding `futures` crate dependency.
+        // In-process message passing is sub-microsecond, so no
+        // meaningful benefit from parallelizing.
+        let a = self.0.get().await;
+        let b = self.1.get().await;
         (a, b)
     }
 }
@@ -343,10 +346,10 @@ inverse of `StreamHandler` (which consumes streams). A stream actor
 ### Design
 
 ```rust
-/// Wraps any actor, providing a stream of output values.
+/// Multi-consumer output stream, held as a field inside any actor.
 ///
-/// When the wrapped actor sends `Emit<T>` to itself (via its context),
-/// the value is pushed to all active stream subscribers.
+/// Call `emit()` from message handlers to push values to all active
+/// stream consumers. Call `subscribe()` to create new consumers.
 pub struct StreamOutput<T: Send + Clone + 'static> {
     subscribers: Vec<runtime::Sender<T>>,
 }
@@ -450,9 +453,10 @@ producers and consumers that don't need to know about each other.
 /// Topic-based pub/sub broker.
 ///
 /// Publishers send `Publish<T>` messages. Subscribers register with
-/// `TopicSubscribe<T>` and receive values via `Recipient<T>`.
+/// `BrokerSubscribe<T>` and receive values via `Recipient<T>`.
 pub struct Broker<T: Message<Result = ()> + Clone + Send + 'static> {
-    subscribers: Vec<Recipient<T>>,
+    subscribers: Vec<(SubscriptionId, Recipient<T>)>,
+    next_id: u64,
 }
 ```
 
@@ -585,15 +589,16 @@ state actors, so they can feed into derived actors and the reactive graph.
 
 ---
 
-## 6. Pool Actor
+## 6. Pool
 
-Distributes work across a fixed set of identical worker actors using
-round-robin or least-loaded routing.
+A utility struct (not itself an actor) that distributes work across a
+fixed set of identical worker actors using round-robin routing.
 
 ### Design
 
 ```rust
 /// A pool of identical actors that distributes messages round-robin.
+/// Not an actor itself — held by the caller and used to forward messages.
 pub struct Pool<A: Actor + Clone> {
     workers: Vec<Addr<A>>,
     next: usize,
@@ -727,7 +732,7 @@ debounced.do_send(SearchQuery("hello".into()));
 | `StreamOutput<T>` | Produce an async stream from an actor | — (composable) |
 | `Broker<T>` | Topic-based pub/sub, push values directly | — |
 | `FsmActor<M>` | Typed state machine with transitions | Produces `StateRef<M::State>` |
-| `Pool<A>` | Round-robin work distribution | Forwards `Handler<M>` |
+| `Pool<A>` | Round-robin work distribution | Utility (not an actor) |
 | `Debounce<M>` / `Throttle<M>` | Rate-limit message forwarding | — |
 
 ---
