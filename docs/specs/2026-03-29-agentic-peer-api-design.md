@@ -74,16 +74,29 @@ processes enables:
 ```
 ┌─────────────┐     MCP        ┌──────────────────┐   gossipsub   ┌───────────┐
 │  AI Agent   │───────────────▶│  willow-agent    │◀────────────▶│  Willow   │
-│  (Claude,   │  stdio / SSE   │                  │   libp2p      │  Network  │
-│   scripts)  │◀───────────────│  ClientHandle    │               │           │
+│  (Claude,   │  stdio / SSE   │                  │   iroh QUIC   │  Network  │
+│   scripts)  │◀───────────────│  ClientHandle<N> │               │           │
 │             │  notifications │  + MCP server    │               │           │
 └─────────────┘                └──────────────────┘               └───────────┘
 ```
 
+### Internal Architecture
+
+The `willow-agent` binary owns a `ClientHandle<IrohNetwork>` backed by
+the `willow-actor` system. `ClientHandle<N>` is generic over the
+`Network` trait and communicates with a `ClientStateActor` for all state
+reads and mutations. All `ClientHandle` methods are async — they send
+messages to the actor and await responses. This maps naturally to the
+MCP request/response model.
+
+Peer identities use `EndpointId` (an Ed25519 public key from iroh),
+which displays as a 64-character hex string. All tool parameters and
+resource fields that reference peers use this hex format.
+
 ### Components
 
 **1. `willow-agent` binary** (`crates/agent/`)
-- Owns a `ClientHandle` + `ClientEventLoop`
+- Owns a `ClientHandle<IrohNetwork>` connected to the actor system
 - Runs an MCP server supporting all three transports:
   - **stdio** (default) — AI clients spawn the binary directly
   - **SSE** — `http://127.0.0.1:9100/sse` for network clients
@@ -132,7 +145,7 @@ discoverable via `tools/list` and include full JSON Schema for params.
 ```
 
 Other server tools: `switch_server`, `leave_server`, `rename_server`,
-`set_server_description`.
+`set_server_description`, `authorize_workers`.
 
 #### Messaging
 
@@ -140,6 +153,7 @@ Other server tools: `switch_server`, `leave_server`, `rename_server`,
 |---|---|---|
 | `send_message` | `channel`, `body` | Send a text message |
 | `send_reply` | `channel`, `parent_id`, `body` | Reply to a message |
+| `share_file_inline` | `channel`, `filename`, `data` | Share file (base64, max 256KB) |
 | `edit_message` | `channel`, `message_id`, `new_body` | Edit a message |
 | `delete_message` | `channel`, `message_id` | Delete a message |
 | `react` | `channel`, `message_id`, `emoji` | Add emoji reaction |
@@ -157,6 +171,9 @@ Other server tools: `switch_server`, `leave_server`, `rename_server`,
 
 #### Permissions & Members
 
+All `peer_id` parameters accept an `EndpointId` as a 64-character hex
+string (the Ed25519 public key of the target peer).
+
 | Tool | Parameters | Description |
 |---|---|---|
 | `trust_peer` | `peer_id` | Grant Administrator permission |
@@ -166,6 +183,11 @@ Other server tools: `switch_server`, `leave_server`, `rename_server`,
 | `delete_role` | `role_id` | Delete a role |
 | `set_permission` | `role_id`, `permission`, `granted` | Set role permission |
 | `assign_role` | `peer_id`, `role_id` | Assign role to peer |
+| `authorize_workers` | `worker_peer_ids` | Grant SyncProvider to workers |
+
+Valid `permission` values: `SyncProvider`, `ManageChannels`,
+`ManageRoles`, `KickMembers`, `SendMessages`, `CreateInvite`,
+`Administrator`.
 
 #### Identity
 
@@ -184,6 +206,15 @@ Other server tools: `switch_server`, `leave_server`, `rename_server`,
 | `create_join_link` | `max_uses`, `expires_at?` | Create shareable link |
 | `delete_join_link` | `link_id` | Delete a join link |
 
+#### Voice
+
+| Tool | Parameters | Description |
+|---|---|---|
+| `join_voice` | `channel_id` | Join a voice channel |
+| `leave_voice` | | Leave current voice channel |
+| `toggle_mute` | | Toggle mute state, returns new state |
+| `toggle_deafen` | | Toggle deafen state, returns new state |
+
 #### State
 
 | Tool | Parameters | Description |
@@ -195,11 +226,15 @@ Other server tools: `switch_server`, `leave_server`, `rename_server`,
 Read-only state accessors are exposed as MCP resources. AI agents can
 read these via `resources/read` without needing to call tools.
 
+All `peer_id` and `author` fields in resource responses are
+`EndpointId` values — 64-character hex strings representing Ed25519
+public keys.
+
 #### Static Resources (always available)
 
 | URI | Description | Returns |
 |---|---|---|
-| `willow://identity` | Agent's peer ID and display name | `{ peer_id, display_name }` |
+| `willow://identity` | Agent's endpoint ID and display name | `{ peer_id, display_name }` |
 | `willow://connection` | Network connection status | `{ connected, peer_count, peers }` |
 | `willow://servers` | List of joined servers | `[{ id, name }]` |
 
@@ -208,14 +243,16 @@ read these via `resources/read` without needing to call tools.
 | URI Template | Description | Returns |
 |---|---|---|
 | `willow://server/current` | Active server info | `{ id, name, owner, description }` |
-| `willow://server/channels` | All channels | `[{ name, kind }]` |
+| `willow://server/channels` | All channels with type | `[{ name, kind }]` |
 | `willow://server/members` | All members with status | `[{ peer_id, display_name, is_online }]` |
-| `willow://server/roles` | All roles and permissions | `[{ role_id, name, permissions }]` |
-| `willow://channel/{name}/messages` | Messages in channel | `[{ id, author, body, timestamp }]` |
+| `willow://server/roles` | Roles with permissions | `[{ role_id, name, permissions }]` |
+| `willow://channel/{name}/messages` | Messages in channel | `[{ id, author, body, timestamp, edited, reply_to, reactions }]` |
 | `willow://channel/{name}/pins` | Pinned messages | `[{ id, author, body }]` |
 | `willow://server/unread` | Unread counts per channel | `{ channel: count }` |
 | `willow://server/join-links` | Active join links | `[{ id, max_uses, uses }]` |
 | `willow://server/state-agreement` | State hash consensus | `{ agreeing, total }` |
+| `willow://voice/status` | Voice channel state | `{ active_channel, muted, deafened }` |
+| `willow://voice/{channel}/participants` | Voice participants | `[{ peer_id }]` |
 
 Resources support MCP's `resources/subscribe` for change notifications.
 When underlying state changes (new message, member joins, channel
@@ -263,6 +300,11 @@ All `ClientEvent` variants are forwarded:
 | `StateHashMismatch` | `peer_id`, `our_hash`, `their_hash` |
 | `MessagePinned` | `channel`, `message_id` |
 | `MessageUnpinned` | `channel`, `message_id` |
+| `ServerDescriptionChanged` | `description` |
+| `VoiceJoined` | `channel_id`, `peer_id` |
+| `VoiceLeft` | `channel_id`, `peer_id` |
+| `JoinLinkResponse` | `invite_data` |
+| `JoinLinkDenied` | `reason` |
 
 ## `willow-agent` Binary
 
@@ -288,15 +330,18 @@ Options:
 ### Startup Flow
 
 1. Load or generate Ed25519 identity
-2. Create `ClientHandle` with config
-3. Connect to relay
-4. If `--invite`, accept it; if `--server`, switch to it
-5. Start MCP server on the selected transport:
+2. Start `willow-actor` system
+3. Create `ClientHandle<IrohNetwork>` with config (spawns
+   `ClientStateActor`)
+4. Call `client.connect(network)` — starts iroh node, subscribes to
+   gossipsub topics, spawns topic listener tasks
+5. If `--invite`, accept it; if `--server`, switch to it
+6. Start MCP server on the selected transport:
    - **stdio**: read JSON-RPC from stdin, write to stdout (default)
    - **sse**: generate bearer token, start HTTP server with SSE endpoint
    - **http**: generate bearer token, start Streamable HTTP endpoint
-6. Spawn `ClientEventLoop`, forward events as MCP notifications
-7. Block until stdin closes (stdio) or SIGTERM/SIGINT (sse/http)
+7. Forward `ClientEvent`s from the event channel as MCP notifications
+8. Block until stdin closes (stdio) or SIGTERM/SIGINT (sse/http)
 
 ### AI Client Configuration
 
@@ -337,7 +382,7 @@ discovers all tools/resources automatically via `initialize`.
 
 ```
 $ willow-agent --relay /ip4/1.2.3.4/tcp/9091/ws --name "BuildBot" --transport sse
-Agent peer ID: 12D3KooWAbc...
+Agent endpoint ID: a1b2c3d4e5f6...  (64-char hex)
 MCP server listening on: http://127.0.0.1:9100
 Bearer token: wlw_a1b2c3d4e5f6...
 
@@ -533,6 +578,8 @@ crates/agent-sdk/
 [dependencies]
 willow-client = { path = "../client" }
 willow-identity = { path = "../identity" }
+willow-network = { path = "../network" }
+willow-actor = { path = "../actor" }
 rmcp = { version = "0.1", features = ["server", "transport-sse", "transport-io"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
