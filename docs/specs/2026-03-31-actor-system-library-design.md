@@ -156,35 +156,113 @@ On receiving `Notify` from its source:
 3. If changed: updates cache, marks `dirty`
 4. In `idle()`: notifies own subscribers (same batching as `StateActor`)
 
-### Multi-source derived
+### Multi-source derived (tuple-based, Bevy-style)
 
-For deriving from 2+ sources (e.g., combine user state + network state):
+Rather than separate `DerivedActor`, `Derived2Actor`, `Derived3Actor` types,
+we use a single `DerivedActor<Sources, T>` that is generic over a `Sources`
+tuple. A `DeriveSource` trait is implemented for single sources and tuples
+of sources (up to a reasonable arity), similar to how Bevy implements
+`WorldQuery` for tuples.
 
 ```rust
-/// Derives a value from two state actor sources.
-pub struct Derived2Actor<S1, S2, T>
+/// A type-erased handle to any observable actor.
+/// Supports subscribing to notifications and reading state via selector.
+///
+/// This is the key to composition — both StateActor and DerivedActor
+/// produce StateRef handles, so they're interchangeable as sources.
+pub struct StateRef<S: Send + 'static> {
+    /// Subscribe to change notifications.
+    subscribe: Box<dyn Fn(Recipient<Notify>) + Send + Sync>,
+    /// Read current state via type-erased selector.
+    select: Arc<dyn Fn(StateSelector<S>) -> Pin<Box<dyn Future<Output = Box<dyn Any + Send>> + Send>> + Send + Sync>,
+}
+
+impl<S: Send + 'static> StateRef<S> {
+    /// Create from any Addr whose actor handles Subscribe + Select.
+    pub fn from_addr<A>(addr: Addr<A>) -> Self
+    where A: Handler<Subscribe> + Handler<Select<S>> { ... }
+}
+
+impl<S: Clone + Send + 'static> From<&Addr<StateActor<S>>> for StateRef<S> { ... }
+```
+
+#### DeriveSource trait
+
+```rust
+/// Trait for single sources and tuples of sources.
+/// Implemented for StateRef<S> and tuples (StateRef<S1>, StateRef<S2>), etc.
+pub trait DeriveSource: Send + 'static {
+    /// The combined snapshot type passed to the selector.
+    type Snapshot: Send + 'static;
+
+    /// Subscribe to all sources.
+    fn subscribe_all(&self, recipient: Recipient<Notify>);
+
+    /// Fetch current values from all sources.
+    fn snapshot(&self) -> impl Future<Output = Self::Snapshot> + Send;
+}
+
+// Single source — snapshot is just S itself.
+impl<S: Clone + Send + 'static> DeriveSource for StateRef<S> {
+    type Snapshot = S;
+    fn subscribe_all(&self, recipient: Recipient<Notify>) { ... }
+    async fn snapshot(&self) -> S { ... }
+}
+
+// Two sources — snapshot is a tuple (S1, S2).
+impl<S1, S2> DeriveSource for (StateRef<S1>, StateRef<S2>)
 where
-    S1: Send + 'static,
-    S2: Send + 'static,
-    T: PartialEq + Clone + Send + 'static,
+    S1: Clone + Send + 'static,
+    S2: Clone + Send + 'static,
 {
-    source1: Addr<StateActor<S1>>,
-    source2: Addr<StateActor<S2>>,
-    combiner: Arc<dyn Fn(&S1, &S2) -> T + Send + Sync>,
+    type Snapshot = (S1, S2);
+    fn subscribe_all(&self, recipient: Recipient<Notify>) {
+        self.0.subscribe(recipient.clone());
+        self.1.subscribe(recipient);
+    }
+    async fn snapshot(&self) -> (S1, S2) {
+        // Fetch both in parallel
+        let (a, b) = futures::join!(self.0.get(), self.1.get());
+        (a, b)
+    }
+}
+
+// Three sources — snapshot is (S1, S2, S3). And so on up to arity 6.
+// A macro generates these impls.
+macro_rules! impl_derive_source_tuple {
+    ($($idx:tt: $S:ident),+) => { ... }
+}
+impl_derive_source_tuple!(0: S1, 1: S2);
+impl_derive_source_tuple!(0: S1, 1: S2, 2: S3);
+impl_derive_source_tuple!(0: S1, 1: S2, 2: S3, 3: S4);
+// ... up to 6
+```
+
+#### Unified DerivedActor
+
+```rust
+/// Derives a value of type `T` from one or more source actors.
+pub struct DerivedActor<Src: DeriveSource, T: PartialEq + Clone + Send + 'static> {
+    sources: Src,
+    selector: Arc<dyn Fn(&Src::Snapshot) -> T + Send + Sync>,
     cached: Option<T>,
     subscribers: Vec<Recipient<Notify>>,
     dirty: bool,
 }
 ```
 
-On `Notify` from either source: re-runs the combiner against both
-sources (via two `select()` calls) and compares.
+On receiving `Notify` from any source:
+1. Calls `sources.snapshot()` to fetch current values from all sources
+2. Runs `selector(&snapshot)` to compute the derived value
+3. Compares with `cached` via `PartialEq`
+4. If changed: updates cache, marks `dirty`
+5. In `idle()`: notifies own subscribers (same batching as `StateActor`)
 
 ### Chaining
 
-Derived actors implement the same `Subscribe`/`Notify`/`Select` interface
-as state actors. This means a `DerivedActor` can be the source for another
-`DerivedActor`, forming a reactive computation graph:
+`DerivedActor` produces a `StateRef<T>` just like `StateActor`, so it can
+be used as a source for another `DerivedActor`. This forms a reactive
+computation graph:
 
 ```
 StateActor<AppState>
@@ -194,49 +272,44 @@ StateActor<AppState>
             └── DerivedActor (unread counts)
 ```
 
-### Trait: `Observable`
+### Convenience constructor
 
-To enable chaining without caring whether the source is a `StateActor` or
-`DerivedActor`, both implement a common trait:
+A single `derived()` function handles all arities via the `DeriveSource`
+trait:
 
 ```rust
-/// An actor that can be subscribed to and selected from.
-///
-/// This is not an object-safe trait — it's used as a generic bound to
-/// write code that works with both StateActor and DerivedActor.
-pub trait Observable<S: Send + 'static>: Actor + Handler<Subscribe> + Handler<Select> {}
-
-impl<S: Clone + Send + 'static> Observable<S> for StateActor<S> {}
-impl<S, T> Observable<T> for DerivedActor<S, T>
+/// Create a derived actor. Works with single sources or tuples.
+pub fn derived<Src, T>(
+    system: &SystemHandle,
+    sources: Src,
+    selector: impl Fn(&Src::Snapshot) -> T + Send + Sync + 'static,
+) -> StateRef<T>
 where
-    S: Send + 'static,
+    Src: DeriveSource,
     T: PartialEq + Clone + Send + 'static,
-{}
 ```
 
-**Alternative: address-based approach.** Rather than a trait, we could
-provide a `StateRef<S>` handle that wraps `Addr<A>` and exposes only
-`select()` and `subscribe()`. This would allow type-erased composition
-at the cost of dynamic dispatch for reads. Worth considering if the trait
-approach creates too many generic parameters.
-
-### Convenience constructors
+### Usage
 
 ```rust
-/// Create a derived actor from a single source.
-pub fn derived<S, T>(
-    system: &SystemHandle,
-    source: &Addr<StateActor<S>>,
-    selector: impl Fn(&S) -> T + Send + Sync + 'static,
-) -> Addr<DerivedActor<S, T>>
+let app_state: StateRef<AppState> = system.spawn(StateActor::new(AppState::default())).into();
+let net_state: StateRef<NetState> = system.spawn(StateActor::new(NetState::default())).into();
 
-/// Create a derived actor from two sources.
-pub fn derived2<S1, S2, T>(
-    system: &SystemHandle,
-    source1: &Addr<StateActor<S1>>,
-    source2: &Addr<StateActor<S2>>,
-    combiner: impl Fn(&S1, &S2) -> T + Send + Sync + 'static,
-) -> Addr<Derived2Actor<S1, S2, T>>
+// Single source — selector receives &AppState
+let peers = derived(&system, app_state.clone(), |s| s.peers.clone());
+
+// Two sources — selector receives &(AppState, NetState)
+let dashboard = derived(&system, (app_state.clone(), net_state.clone()), |(app, net)| {
+    DashboardData {
+        peer_count: app.peers.len(),
+        connected: net.is_connected,
+    }
+});
+
+// Chain: derive from another derived
+let online_count = derived(&system, peers.clone(), |peers| {
+    peers.iter().filter(|p| p.online).count()
+});
 ```
 
 ---
@@ -590,11 +663,11 @@ debounced.do_send(SearchQuery("hello".into()));
 
 | Type | Purpose | Key trait |
 |------|---------|-----------|
-| `StateActor<S>` | Own state, get/set/subscribe | `Observable` |
-| `DerivedActor<S,T>` | Reactive derived value from source(s) | `Observable` |
+| `StateActor<S>` | Own state, get/set/subscribe | Produces `StateRef<S>` |
+| `DerivedActor<Src,T>` | Reactive derived value from source(s) | Produces `StateRef<T>` |
 | `StreamOutput<T>` | Produce an async stream from an actor | — (composable) |
 | `Broker<T>` | Topic-based pub/sub, push values directly | — |
-| `FsmActor<M>` | Typed state machine with transitions | `Observable` |
+| `FsmActor<M>` | Typed state machine with transitions | Produces `StateRef<M::State>` |
 | `Pool<A>` | Round-robin work distribution | Forwards `Handler<M>` |
 | `Debounce<M>` / `Throttle<M>` | Rate-limit message forwarding | — |
 
@@ -619,7 +692,7 @@ crates/actor/src/
 ├── system.rs           — System, SystemHandle (existing)
 ├── error.rs            — SendError, AskError (existing)
 ├── state.rs        NEW — StateActor<S>, Select, Mutate, Get, Set
-├── derived.rs      NEW — DerivedActor, Derived2Actor, derived()
+├── derived.rs      NEW — DeriveSource trait, DerivedActor, derived()
 ├── stream.rs       NEW — StreamOutput<T>, OutputStream<T>
 ├── broker.rs       NEW — Broker<T>, Publish, BrokerSubscribe
 ├── fsm.rs          NEW — StateMachine trait, FsmActor<M>
@@ -674,15 +747,14 @@ for platform abstraction.
 
 ## Open Questions
 
-1. **`Observable` trait vs `StateRef<S>` handle** — The trait approach is
-   more Rusty but adds generic parameters. The handle approach is simpler
-   but requires dynamic dispatch. Need to prototype both and see which
-   composes better in practice.
+1. **`DeriveSource` tuple arity limit** — Macro-generated impls up to 6
+   sources should cover all realistic cases. If someone needs more, they
+   can nest tuples or combine intermediate derived actors.
 
-2. **Multi-source derived actor ergonomics** — `Derived2Actor<S1, S2, T>`
-   works for two sources. Beyond that, a tuple-based or macro approach may
-   be needed. How many sources do we realistically combine? (Currently the
-   web UI only derives from a single `SharedState`.)
+2. **`StateRef` overhead** — The type-erased `StateRef<S>` handle uses
+   dynamic dispatch for subscribe/select. This is one vtable call per
+   notification round — negligible in practice, but worth benchmarking
+   if derived chains get deep.
 
 3. **Pool routing strategy** — Start with round-robin. Add least-loaded
    routing later if needed (requires workers to report queue depth).
