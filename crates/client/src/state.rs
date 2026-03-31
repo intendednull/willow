@@ -159,7 +159,7 @@ impl Default for ChatState {
 /// A message prepared for display. Computed on-the-fly from
 /// event_state, never stored. Display names are resolved at
 /// construction time so they're never stale.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DisplayMessage {
     pub id: String,
     pub channel_id: String,

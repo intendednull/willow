@@ -23,7 +23,8 @@ pub fn AddServerPanel(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Int
     let (join_profile_name, set_join_profile_name) = signal(String::new());
     let (validated_code, set_validated_code) = signal(String::new());
 
-    set_join_profile_name.set(handle.display_name());
+    let app_state = use_context::<crate::state::AppState>().unwrap();
+    set_join_profile_name.set(app_state.server.display_name.get_untracked());
 
     // Create handler.
     let handle_create = handle.clone();

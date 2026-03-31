@@ -9,9 +9,9 @@ use std::sync::Arc;
 
 use leptos::prelude::*;
 use send_wrapper::SendWrapper;
-use willow_actor::{Actor, Addr, Context, Handler, Message, Recipient};
+use willow_actor::{Actor, Addr, Context, Handler, Recipient};
 use willow_client::client_actor::{
-    ClientStateActor, NotifyMutation, ReadState, StateChanged, Subscribe,
+    ClientStateActor, StateChanged, Subscribe,
 };
 use willow_client::SharedState;
 
@@ -64,7 +64,7 @@ impl<T: PartialEq + Clone + Send + 'static> Handler<StateChanged> for DerivedSta
             };
 
             if changed {
-                write.set(result);
+                (*write).set(result);
             }
         }
     }
@@ -79,7 +79,7 @@ unsafe impl<T: PartialEq + Clone + Send + 'static> Send for DerivedStateActor<T>
 /// Returns a `ReadSignal<T>` that updates only when the selected value changes.
 /// The `DerivedStateActor` is spawned on the actor system and subscribes to
 /// state change notifications automatically.
-pub fn derived_signal<T: PartialEq + Clone + Default + Send + 'static>(
+pub fn derived_signal<T: PartialEq + Clone + Default + Send + Sync + 'static>(
     state_addr: &Addr<ClientStateActor>,
     system: &willow_actor::SystemHandle,
     selector: impl Fn(&SharedState) -> T + Send + Sync + 'static,

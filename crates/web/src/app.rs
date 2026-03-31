@@ -9,7 +9,7 @@ use crate::components::{
     AddServerPanel, CallPage, ChannelHeader, ChatInput, CommandPalette, FileShareButton, JoinPage,
     MemberList, MessageList, PinnedPanel, ServerList, SettingsPanel, Sidebar, WelcomeScreen,
 };
-use crate::event_processing::{extract_roles, process_event_batch, refresh_all_signals};
+use crate::event_processing::process_event_batch;
 use crate::handlers;
 use crate::icons;
 use crate::state::{self, ChannelViewState, SettingsTab};
@@ -138,8 +138,8 @@ pub fn App() -> impl IntoView {
         closure.forget();
     }
 
-    // Populate initial state from the client.
-    refresh_all_signals(&handle, &write);
+    // Wire derived signals that auto-update from state actor changes.
+    crate::state::wire_derived_signals(handle.state_addr(), handle.actor_system(), &write);
 
     // Detect join link from URL fragment.
     {
@@ -221,17 +221,6 @@ pub fn App() -> impl IntoView {
                 }
             };
 
-            // Initialize the actor system (requires async runtime).
-            handle_for_connect.init_actor_system();
-
-            // Wire derived signals that auto-update from state changes.
-            if let (Some(state_addr), Some(system)) = (
-                handle_for_connect.state_addr(),
-                handle_for_connect.actor_system(),
-            ) {
-                crate::state::wire_derived_signals(state_addr, system, &write_for_events);
-            }
-
             // Connect to the P2P network. This subscribes to topics, spawns
             // listeners, and returns the event receiver.
             let mut client_event_rx = handle_for_connect.connect(network).await;
@@ -277,7 +266,7 @@ pub fn App() -> impl IntoView {
             loop {
                 gloo_timers::future::TimeoutFuture::new(2_000).await;
                 let ch = state_typing.chat.current_channel.get_untracked();
-                let typers = handle_typing.typing_in(&ch);
+                let typers = handle_typing.typing_in(&ch).await;
                 // Read the current channel_views, extract typing for this channel.
                 let current_views = state_typing.chat.channel_views.get_untracked();
                 let current_typing = current_views
@@ -355,16 +344,16 @@ pub fn App() -> impl IntoView {
             .set(crate::state::CallLayout::default());
     };
 
-    // Welcome screen callback that refreshes all signals.
+    // Welcome screen callback — notify actor so derived signals refresh.
     let handle_welcome = handle.clone();
     let on_welcome_done = move |_: ()| {
-        refresh_all_signals(&handle_welcome, &write);
+        handle_welcome.notify_mutation();
     };
 
     // Store refresh function for reactive closures.
     let handle_for_refresh = handle.clone();
     let refresh_stored = StoredValue::new(SendWrapper::new(Rc::new(move || {
-        refresh_all_signals(&handle_for_refresh, &write);
+        handle_for_refresh.notify_mutation();
     }) as Rc<dyn Fn()>));
 
     // Aliases for view closures.
@@ -581,8 +570,7 @@ pub fn App() -> impl IntoView {
                             on_channel_created={
                                 let ch_handle = handle_cc.clone();
                                 move |_| {
-                                    write.chat.set_channels.set(ch_handle.channels());
-                                    write.server.set_roles.set(extract_roles(&ch_handle));
+                                    ch_handle.notify_mutation();
                                 }
                             }
                         />

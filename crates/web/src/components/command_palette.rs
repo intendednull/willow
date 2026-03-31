@@ -1,7 +1,8 @@
 use leptos::prelude::*;
+use willow_identity::EndpointId;
 
-use crate::app::WebClientHandle;
 use crate::icons;
+use crate::state::AppState;
 
 /// Result item category for display grouping.
 #[derive(Clone, PartialEq)]
@@ -22,16 +23,20 @@ struct PaletteItem {
     is_voice: bool,
 }
 
-/// Build the filtered result list from the current query and client state.
-fn build_results(handle: &WebClientHandle, query: &str) -> Vec<PaletteItem> {
+/// Build the filtered result list from the current query and pre-fetched data.
+fn build_results(
+    channels: &[String],
+    channel_kinds: &[(String, String)],
+    servers: &[(String, String)],
+    members: &[(String, String, bool)],
+    query: &str,
+) -> Vec<PaletteItem> {
     let q = query.to_lowercase();
     let mut items: Vec<PaletteItem> = Vec::new();
 
     // Channels.
-    let channels = handle.channels();
-    let kinds = handle.channel_kinds();
-    for ch in &channels {
-        let is_voice = kinds.iter().any(|(n, k)| n == ch && k == "voice");
+    for ch in channels {
+        let is_voice = channel_kinds.iter().any(|(n, k)| n == ch && k == "voice");
         if q.is_empty() || ch.to_lowercase().contains(&q) {
             items.push(PaletteItem {
                 label: ch.clone(),
@@ -43,8 +48,7 @@ fn build_results(handle: &WebClientHandle, query: &str) -> Vec<PaletteItem> {
     }
 
     // Servers.
-    let servers = handle.server_list();
-    for (id, name) in &servers {
+    for (id, name) in servers {
         if q.is_empty() || name.to_lowercase().contains(&q) {
             items.push(PaletteItem {
                 label: name.clone(),
@@ -56,13 +60,11 @@ fn build_results(handle: &WebClientHandle, query: &str) -> Vec<PaletteItem> {
     }
 
     // Members.
-    let members = handle.server_members();
-    for (pid, name, _online) in &members {
-        let pid_str = pid.to_string();
-        if q.is_empty() || name.to_lowercase().contains(&q) || pid_str.to_lowercase().contains(&q) {
+    for (pid, name, _online) in members {
+        if q.is_empty() || name.to_lowercase().contains(&q) || pid.to_lowercase().contains(&q) {
             items.push(PaletteItem {
                 label: name.clone(),
-                id: pid_str,
+                id: pid.clone(),
                 category: PaletteCategory::Member,
                 is_voice: false,
             });

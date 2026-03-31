@@ -22,7 +22,7 @@ pub fn JoinPage() -> impl IntoView {
     let status = state.ui.join_status;
 
     // Pre-fill name from saved profile.
-    let (name, set_name) = signal(handle.display_name());
+    let (name, set_name) = signal(state.server.display_name.get_untracked());
 
     // Retry timer: exponential backoff while status == "connecting".
     {

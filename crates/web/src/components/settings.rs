@@ -29,10 +29,17 @@ pub fn SettingsPanel(
     let (status_msg, set_status_msg) = signal(String::new());
 
     // Determine if the local user is the server owner.
-    let handle_owner = handle.clone();
+    let (owner_id, set_owner_id) = signal(String::new());
+    {
+        let h = handle.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let oid = h.server_owner().await;
+            set_owner_id.set(oid.to_string());
+        });
+    }
     let is_owner = move || {
         let pid = peer_id.get();
-        handle_owner.server_owner().to_string() == pid
+        owner_id.get() == pid
     };
 
     // Tab display name.
@@ -43,8 +50,8 @@ pub fn SettingsPanel(
     };
 
     // ── Profile tab handlers ─────────────────────────────────────────
-    let (display_name, set_display_name) = signal(handle.server_display_name());
-    let server_name = handle.active_server_name();
+    let (display_name, set_display_name) = signal(app_state.server.display_name.get_untracked());
+    let server_name = app_state.server.active_server_name.get_untracked();
 
     let handle_save = handle.clone();
     let on_save = move |_| {

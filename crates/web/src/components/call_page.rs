@@ -300,7 +300,7 @@ pub fn CallPage(
                 let ch = app_state.voice.voice_channel.get().unwrap_or_default();
                 let participants_map = app_state.voice.voice_participants_map.get();
                 let local_peer_id = handle.peer_id();
-                let local_name = handle.display_name();
+                let local_name = app_state.server.display_name.get();
                 let remote_participants: Vec<String> = participants_map
                     .get(&ch)
                     .cloned()
