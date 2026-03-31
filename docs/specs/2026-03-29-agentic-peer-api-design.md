@@ -601,21 +601,26 @@ rand = "0.8"
 - [ ] Bearer token generation for non-stdio transports
 - [ ] Basic integration test: spawn agent, call `tools/list`
 
-### Phase 2: Tools + Notifications
+### Phase 2: Tools + Notifications + E2E Harness
 - [ ] Define MCP tools for all mutating `ClientHandle` methods
 - [ ] Wire `ClientEvent`s to MCP notifications
 - [ ] Resource subscription support (`resources/subscribe`)
 - [ ] Token scoping (Full, ReadOnly, Messaging)
+- [ ] Build `AgentTestHarness` — spawn relay + N agents for tests
+- [ ] First MCP E2E test: multi-peer message delivery
 - [ ] Integration test: call `send_message` tool, verify delivery
 
-### Phase 3: SSE Transport + SDK
+### Phase 3: SSE Transport + SDK + E2E Suite
 - [ ] Add SSE transport alongside stdio
 - [ ] Add Streamable HTTP transport
 - [ ] Create `crates/agent-sdk/` with typed Rust client
 - [ ] `--invite` and `--server` auto-join on startup
 - [ ] Graceful shutdown (drain connections, save state)
 - [ ] `just build-agent` / `just agent` commands in justfile
+- [ ] `just test-agent-e2e` command for MCP E2E tests
 - [ ] Add to `just dev` stack as optional participant
+- [ ] Port key Playwright scenarios to MCP E2E tests (permissions,
+      multi-peer sync, kick/rejoin, invite flows)
 - [ ] Documentation with examples in Python, TypeScript, Rust
 
 ### Phase 4: Advanced Features (future)
@@ -655,6 +660,8 @@ rand = "0.8"
 
 ## Testing Strategy
 
+### Unit & Integration Tests
+
 | What | Type | Command |
 |---|---|---|
 | Tool definitions + schemas | Unit tests | `cargo test -p willow-agent` |
@@ -663,6 +670,201 @@ rand = "0.8"
 | Agent ↔ network (stdio) | Integration | `cargo test -p willow-agent --test integration` |
 | SDK client methods | Unit tests | `cargo test -p willow-agent-sdk` |
 | End-to-end agent | Integration | Start agent + relay, script calls tools |
+
+### E2E Testing via MCP (UI-Free)
+
+One of the biggest wins of the agent API is that it enables full
+end-to-end testing of multi-peer behavior without a browser, DOM, or
+UI framework. Today's Playwright E2E tests must navigate the Leptos web
+UI to perform every action — clicking buttons, filling inputs, waiting
+for DOM updates. This makes tests slow, brittle (selector changes break
+them), and unable to test scenarios that aren't exposed in the UI.
+
+The MCP API gives us a typed, deterministic interface to drive real
+peers over the actual network. Tests become:
+
+- **Faster** — no browser startup, no WASM compilation, no DOM rendering
+- **More reliable** — no CSS selectors to break, no timing hacks
+- **More expressive** — test permission edge cases, concurrent mutations,
+  state divergence, and recovery scenarios that are hard to trigger via UI
+- **Parallel** — spin up N agent processes cheaply vs. N browser contexts
+
+#### Test Harness: `AgentTestHarness`
+
+A Rust test helper that manages agent processes for multi-peer tests:
+
+```rust
+/// Spawns `willow-agent` processes and provides typed MCP clients.
+struct AgentTestHarness {
+    relay: RelayHandle,
+    agents: Vec<AgentHandle>,
+}
+
+struct AgentHandle {
+    /// Typed MCP client (from willow-agent-sdk) connected over stdio.
+    client: AgentClient,
+    /// The agent's EndpointId for use in trust/permission calls.
+    endpoint_id: EndpointId,
+    /// Handle to the child process.
+    process: Child,
+}
+
+impl AgentTestHarness {
+    /// Start a relay and N agent peers. First agent creates the server
+    /// and invites the others.
+    async fn start(n: usize) -> Self { ... }
+
+    /// Shut down all agents and relay.
+    async fn teardown(self) { ... }
+}
+```
+
+#### Example: Multi-Peer Message Delivery
+
+```rust
+#[tokio::test]
+async fn messages_delivered_to_all_peers() {
+    let harness = AgentTestHarness::start(3).await;
+    let [alice, bob, carol] = &harness.agents[..] else { panic!() };
+
+    // Alice sends a message.
+    alice.client.call_tool("send_message", json!({
+        "channel": "general",
+        "body": "hello everyone",
+    })).await.unwrap();
+
+    // Bob and Carol receive it.
+    bob.client.wait_for_notification(|n| {
+        n.event_type == "MessageReceived" && !n.is_local
+    }).await;
+    carol.client.wait_for_notification(|n| {
+        n.event_type == "MessageReceived" && !n.is_local
+    }).await;
+
+    // Verify via resource reads.
+    let bob_msgs = bob.client.read_resource(
+        "willow://channel/general/messages"
+    ).await.unwrap();
+    assert_eq!(bob_msgs.last().unwrap().body, "hello everyone");
+
+    harness.teardown().await;
+}
+```
+
+#### Example: Permission Enforcement
+
+```rust
+#[tokio::test]
+async fn unprivileged_peer_cannot_create_channel() {
+    let harness = AgentTestHarness::start(2).await;
+    let [owner, guest] = &harness.agents[..] else { panic!() };
+
+    // Guest (not trusted) tries to create a channel.
+    let result = guest.client.call_tool("create_channel", json!({
+        "name": "secret",
+    })).await;
+
+    // Should fail — guest lacks ManageChannels permission.
+    assert!(result.is_err());
+
+    // Verify channel was not created.
+    let channels = owner.client.read_resource(
+        "willow://server/channels"
+    ).await.unwrap();
+    assert!(!channels.iter().any(|c| c.name == "secret"));
+
+    harness.teardown().await;
+}
+```
+
+#### Example: State Convergence After Partition
+
+```rust
+#[tokio::test]
+async fn state_converges_after_reconnect() {
+    let harness = AgentTestHarness::start(2).await;
+    let [alice, bob] = &harness.agents[..] else { panic!() };
+
+    // Both peers send messages concurrently.
+    let (a, b) = tokio::join!(
+        alice.client.call_tool("send_message", json!({
+            "channel": "general", "body": "from alice",
+        })),
+        bob.client.call_tool("send_message", json!({
+            "channel": "general", "body": "from bob",
+        })),
+    );
+    a.unwrap();
+    b.unwrap();
+
+    // Wait for sync to settle.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Both peers should see both messages.
+    let alice_msgs = alice.client.read_resource(
+        "willow://channel/general/messages"
+    ).await.unwrap();
+    let bob_msgs = bob.client.read_resource(
+        "willow://channel/general/messages"
+    ).await.unwrap();
+
+    assert_eq!(alice_msgs.len(), bob_msgs.len());
+    assert!(alice_msgs.iter().any(|m| m.body == "from bob"));
+    assert!(bob_msgs.iter().any(|m| m.body == "from alice"));
+
+    // Verify state hashes agree.
+    alice.client.call_tool("verify_state", json!({})).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let (agreeing, total) = alice.client.call_tool(
+        "state_hash_agreement", json!({})
+    ).await.unwrap();
+    assert_eq!(agreeing, total);
+
+    harness.teardown().await;
+}
+```
+
+#### Scenarios Enabled by MCP E2E Tests
+
+These are hard or impossible to test via UI but straightforward with
+the agent API:
+
+| Scenario | Why it's hard via UI |
+|---|---|
+| 3-way merge convergence | Need 3 browsers, precise timing |
+| Permission escalation/de-escalation | Many UI clicks, hard to verify state |
+| Kick + key rotation + rejoin | Multi-step flow across peers |
+| Concurrent channel creation | Race conditions masked by UI debounce |
+| 10+ peer message flood | 10 browser contexts is expensive |
+| Offline peer recovery via relay | Can't simulate disconnect in browser |
+| State hash mismatch detection | No UI surface for this at all |
+| Role/permission matrix exhaustive | Combinatorial explosion of UI paths |
+| Invite flow edge cases (expired, max uses) | Timing-sensitive, multi-peer |
+| Worker authorization + sync | Workers have no UI |
+
+#### Integration with Existing Test Tiers
+
+MCP E2E tests sit between the existing client integration tests and
+Playwright E2E tests:
+
+| Tier | What it tests | Speed | Needs Network | Needs UI |
+|---|---|---|---|---|
+| State tests | Pure event logic | ~1ms/test | No | No |
+| Client tests | Client API methods | ~5ms/test | No | No |
+| **MCP E2E tests** | **Multi-peer over real network** | **~1-2s/test** | **Yes (localhost)** | **No** |
+| Playwright E2E | Full UI + network | ~10-30s/test | Yes | Yes (browser) |
+
+MCP E2E tests should eventually cover most scenarios currently in
+Playwright, letting Playwright tests focus purely on UI rendering and
+interaction (click targets, responsive layout, visual state).
+
+#### Justfile Commands
+
+```
+just test-agent       # unit + integration tests for crates/agent
+just test-agent-e2e   # MCP-based multi-peer E2E tests
+just test-all         # includes test-agent and test-agent-e2e
+```
 
 ## Open Questions
 
