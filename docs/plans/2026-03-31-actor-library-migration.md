@@ -20,7 +20,9 @@ independent `StateActor`s per domain, extract persistence into its own actor
 
 ### Layer 1 — Source StateActors (pure data, Send + Sync + Clone)
 
-Each domain owns its own `StateActor<S>`, independently mutated and subscribed to:
+Each domain owns its own `StateActor<S>`, independently mutated and subscribed to.
+New domains are added by defining a type, spawning a `StateActor`, and registering
+its `StateRef` in the `SourceState` bundle (see below).
 
 ```
 StateActor<EventState>       — willow_state::ServerState (messages, channels, roles, members, permissions)
@@ -33,11 +35,16 @@ StateActor<VoiceState>       — voice_participants, active_voice_channel, muted
 
 All of these are `Send + Sync + Clone` — no rusqlite, no unsafe.
 
+**Extensibility**: To add a new domain (e.g. `NotificationState`), define the
+type with `Clone + Send + Sync + PartialEq`, add a `StateRef` field to
+`SourceState`, spawn the actor in `ClientHandle::new()`, and wire any derived
+views that consume it. No changes needed to the actor library.
+
 ### Layer 2 — Derived Views (auto-recompute on source change)
 
 Commonly-accessed view computations become `DerivedActor`s. Each subscribes to
 its sources and only notifies downstream when the derived value actually changes
-(via `PartialEq`):
+(via `PartialEq`). New views are added by defining a type and calling `derived()`.
 
 ```
 MessagesView   ← (EventState, ServerRegistry, ChatMeta, ProfileState)
@@ -48,17 +55,57 @@ RolesView      ← (EventState,)
 ConnectionView ← (NetworkMeta, ChatMeta)
 ```
 
-### Layer 3 — Terminal ClientView
+**Extensibility**: Adding a new view (e.g. `SearchResultsView`) requires only
+a new type + a `derived()` call wired to the relevant sources. Register its
+`StateRef` in the appropriate view group (see Layer 3).
 
-A single `DerivedActor` composing all Layer 2 views into one UI-facing snapshot:
+### Layer 3 — Terminal ClientView (grouped sources, Bevy-style nesting)
+
+`DeriveSource` supports tuples up to arity 6. To stay under the limit while
+remaining extensible, Layer 2 views are grouped into intermediate derived
+actors (like Bevy's nested `Query` tuples), then composed into the terminal:
 
 ```
-ClientView ← (MessagesView, MembersView, ChannelsView, UnreadView, RolesView, ConnectionView)
+ChatViews   ← (MessagesView, ChannelsView, UnreadView)     — 3 sources
+SocialViews ← (MembersView, RolesView, ConnectionView)     — 3 sources
+ClientView  ← (ChatViews, SocialViews, VoiceState)         — 3 sources, room for 3 more groups
 ```
 
-The UI subscribes to `StateRef<ClientView>`. One subscription, one notification
-when anything changes. Individual `StateRef<MessagesView>` etc. are also
-available for fine-grained subscriptions.
+Each group is itself a `DerivedActor` returning a struct, so adding a new Layer 2
+view only requires adding it to the appropriate group (or creating a new group if
+all are full). The terminal never needs more than ~6 group sources.
+
+### ClientViewHandle — StateRef access for user code
+
+The user-facing handle exposes both the terminal snapshot and individual
+`StateRef`s, so consumers can pick the granularity they need:
+
+```rust
+/// All reactive state, accessible at any granularity.
+pub struct ClientViewHandle {
+    // Terminal — subscribe once, get everything
+    pub view: StateRef<ClientView>,
+
+    // Layer 2 — subscribe to specific views
+    pub messages: StateRef<MessagesView>,
+    pub members: StateRef<MembersView>,
+    pub channels: StateRef<ChannelsView>,
+    pub unread: StateRef<UnreadView>,
+    pub roles: StateRef<RolesView>,
+    pub connection: StateRef<ConnectionView>,
+
+    // Layer 1 — subscribe to raw source state
+    pub event_state: StateRef<EventState>,
+    pub server_registry: StateRef<ServerRegistry>,
+    pub chat_meta: StateRef<ChatMeta>,
+    pub profiles: StateRef<ProfileState>,
+    pub network: StateRef<NetworkMeta>,
+    pub voice: StateRef<VoiceState>,
+}
+```
+
+Users access fine-grained subscriptions through `client.views().messages` etc.
+The terminal `client.views().view` provides a single subscription for everything.
 
 ### Persistence Actor (owns all rusqlite, runs on dedicated thread)
 
@@ -216,15 +263,28 @@ pub struct ConnectionView {
     pub typing_peers: Vec<(EndpointId, String)>, // (id, channel)
 }
 
-/// Terminal composite — everything the UI needs in one snapshot.
+/// Grouped views — Bevy-style nesting keeps terminal under 6-source limit.
 #[derive(Clone, PartialEq)]
-pub struct ClientView {
+pub struct ChatViews {
     pub messages: MessagesView,
-    pub members: MembersView,
     pub channels: ChannelsView,
     pub unread: UnreadView,
+}
+
+#[derive(Clone, PartialEq)]
+pub struct SocialViews {
+    pub members: MembersView,
     pub roles: RolesView,
     pub connection: ConnectionView,
+}
+
+/// Terminal composite — everything the UI needs in one snapshot.
+/// Composed from grouped views so the terminal DerivedActor only
+/// needs 3 sources (room for 3 more groups as features grow).
+#[derive(Clone, PartialEq)]
+pub struct ClientView {
+    pub chat: ChatViews,
+    pub social: SocialViews,
     pub voice: VoiceState,
     pub server_name: Option<String>,
     pub server_owner: Option<EndpointId>,
@@ -423,14 +483,40 @@ that cache results and only recompute when sources change.
 
    // ... more derived views ...
 
-   let client_view: StateRef<ClientView> = derived(
+   // Group Layer 2 views into intermediate derived actors (Bevy-style nesting)
+   let chat_views: StateRef<ChatViews> = derived(
        &system,
-       (messages_view.clone(), members_view.clone(), channels_view.clone(),
-        unread_view.clone(), roles_view.clone(), connection_view.clone()),
-       |(msgs, members, channels, unread, roles, conn)| {
-           ClientView { messages: (**msgs).clone(), members: (**members).clone(), ... }
+       (messages_view.clone(), channels_view.clone(), unread_view.clone()),
+       |(msgs, channels, unread)| ChatViews {
+           messages: (**msgs).clone(), channels: (**channels).clone(), unread: (**unread).clone(),
        },
    );
+   let social_views: StateRef<SocialViews> = derived(
+       &system,
+       (members_view.clone(), roles_view.clone(), connection_view.clone()),
+       |(members, roles, conn)| SocialViews {
+           members: (**members).clone(), roles: (**roles).clone(), connection: (**conn).clone(),
+       },
+   );
+
+   // Terminal: only 3 sources, room for 3 more groups as features grow
+   let voice_ref = StateRef::from(&voice_state);
+   let client_view: StateRef<ClientView> = derived(
+       &system,
+       (chat_views.clone(), social_views.clone(), voice_ref.clone()),
+       |(chat, social, voice)| ClientView {
+           chat: (**chat).clone(), social: (**social).clone(), voice: (**voice).clone(), ...
+       },
+   );
+
+   // Bundle all StateRefs for user-code access at any granularity
+   let view_handle = ClientViewHandle {
+       view: client_view,
+       messages: messages_view, members: members_view, channels: channels_view,
+       unread: unread_view, roles: roles_view, connection: connection_view,
+       event_state: event_ref, server_registry: registry_ref, chat_meta: chat_ref,
+       profiles: profile_ref, network: network_ref, voice: voice_ref,
+   };
    ```
 
 2. **Move computation logic** from `accessors.rs` closures into pure functions:
@@ -458,13 +544,17 @@ that cache results and only recompute when sources change.
    }
    ```
 
-4. **Expose the terminal** `StateRef<ClientView>` on `ClientHandle`:
+4. **Expose `ClientViewHandle`** on `ClientHandle`:
    ```rust
-   /// Subscribe to all client state changes via a single reactive handle.
-   pub fn view(&self) -> &StateRef<ClientView> {
-       &self.client_view
+   /// All reactive state at any granularity — terminal, views, or raw sources.
+   pub fn views(&self) -> &ClientViewHandle {
+       &self.view_handle
    }
    ```
+   Users pick their subscription level:
+   - `client.views().view` — single terminal, everything
+   - `client.views().messages` — just messages view
+   - `client.views().event_state` — raw event-sourced state
 
 ### Performance characteristics
 - `messages()` currently recomputes on every call (O(n) messages × O(m) profile lookups)
@@ -479,7 +569,96 @@ that cache results and only recompute when sources change.
 
 ---
 
-## Phase 4: Broker<ClientEvent> for Event Broadcasting
+## Phase 4: Leptos Derived State Migration
+
+**Goal**: Replace the custom `DerivedStateActor<T>` in `crates/web/src/derived.rs`
+with the library's `StateRef<T>` subscription, and replace the 20+ manual
+`derived_signal()` + `Effect` wiring calls in `crates/web/src/state.rs` with
+direct subscriptions to the `ClientViewHandle` from Phase 3.
+
+### Current state (what gets replaced)
+
+The Leptos web UI currently has:
+- **`crates/web/src/derived.rs`**: Custom `DerivedStateActor<T>` (72 lines) that
+  subscribes to `ClientStateActor`, runs a selector on `&SharedState`, compares
+  with cached value, and updates a Leptos `WriteSignal<T>`. Has its own
+  `unsafe impl Send`. This is a bespoke reimplementation of exactly what
+  `DerivedActor` + `StateRef` provides.
+- **`crates/web/src/state.rs`** `wire_derived_signals()` (260 lines): 20+
+  `derived_signal()` calls, each spawning a separate `DerivedStateActor` with
+  a selector closure over monolithic `SharedState`, wired to a `WriteSignal`
+  via a Leptos `Effect`.
+- **`crates/web/src/state.rs`** `create_signals()` (170 lines): Creates 40+
+  `signal()` pairs for read/write halves. Many of these duplicate view state
+  that will now live in `ClientViewHandle`.
+
+### What changes
+
+1. **Delete `crates/web/src/derived.rs`** entirely — the custom
+   `DerivedStateActor<T>` and `derived_signal()` are replaced by the library's
+   `StateRef<T>` + `Notify` subscription.
+
+2. **Create a thin Leptos bridge** (`crates/web/src/state_bridge.rs`):
+   ```rust
+   /// Bridge a StateRef<T> into a Leptos ReadSignal<T>.
+   /// Subscribes to Notify, fetches snapshot, updates signal on change.
+   pub fn use_state_ref<T: Clone + Send + Sync + 'static>(
+       state_ref: &StateRef<T>,
+       system: &SystemHandle,
+   ) -> ReadSignal<T> { ... }
+   ```
+   This is a generic, ~30-line function replacing the entire 72-line custom actor.
+
+3. **Simplify `wire_derived_signals()`** — instead of 20+ selector closures
+   operating on monolithic `SharedState`, wire directly from `ClientViewHandle`:
+   ```rust
+   pub fn wire_signals(views: &ClientViewHandle, system: &SystemHandle) {
+       // Each signal is a direct subscription to an already-computed view
+       let messages = use_state_ref(&views.messages, system);
+       let channels = use_state_ref(&views.channels, system);
+       let members = use_state_ref(&views.members, system);
+       let unread = use_state_ref(&views.unread, system);
+       // ... etc
+   }
+   ```
+   The expensive computation (message formatting, member resolution, etc.)
+   already happened in the `DerivedActor`s from Phase 3. The Leptos layer
+   just subscribes to pre-computed snapshots.
+
+4. **Reduce signal count**: Signals that were derived from `SharedState` (messages,
+   channels, peers, roles, unread, connection_status, etc.) are now just
+   `ReadSignal<T>` views of the corresponding `StateRef<T>`. Only purely-local
+   UI state (show_settings, show_sidebar, editing, replying_to, etc.) remains
+   as Leptos-managed signals.
+
+5. **Simplify `event_processing.rs`**: Side-effect events (VoiceJoined/Left,
+   VoiceSignal, JoinLinkResponse) remain. But `PeerConnected → set_loading(false)`
+   and `Listening → set_connection_status` are now handled reactively via
+   `ConnectionView`, eliminating those event handlers.
+
+6. **Remove typing indicator polling loop** (`app.rs` lines 259-286): The
+   2-second `gloo_timers` polling loop that calls `handle.typing_in()` is
+   replaced by subscribing to `StateRef<NetworkMeta>` which includes
+   `typing_peers` — updates arrive via `Notify` push instead of polling.
+
+### Files to modify
+- `crates/web/src/derived.rs` — **delete entirely**
+- `crates/web/src/state.rs` — simplify `wire_derived_signals()`, reduce `create_signals()`
+- `crates/web/src/app.rs` — use `ClientViewHandle` instead of raw state_addr; remove typing poll loop
+- `crates/web/src/event_processing.rs` — remove reactively-handled event arms
+
+### Files to create
+- `crates/web/src/state_bridge.rs` — generic `use_state_ref()` bridge function
+
+### Verification
+- `just test-browser` — all 39 Leptos browser tests pass
+- `just check-wasm` — compiles clean
+- Grep for `DerivedStateActor` — should be zero (only library's `DerivedActor` remains)
+- Manual: verify messages, channels, members, unread badges update reactively
+
+---
+
+## Phase 5: Broker<ClientEvent> for Event Broadcasting
 
 **Priority**: HIGH — self-contained, no dependencies on other phases. Can be done
 in parallel with Phases 1-3.
@@ -518,7 +697,7 @@ in parallel with Phases 1-3.
 
 ---
 
-## Phase 5: StreamHandler for Topic Listeners
+## Phase 6: StreamHandler for Topic Listeners
 
 **Priority**: MEDIUM — depends on Phases 2+4 (uses decomposed state addrs + broker).
 
@@ -560,7 +739,7 @@ in parallel with Phases 1-3.
 
 ---
 
-## Phase 6: Typing Indicator Throttle
+## Phase 7: Typing Indicator Throttle
 
 **Priority**: MEDIUM — independent of other phases.
 
@@ -586,17 +765,19 @@ in parallel with Phases 1-3.
 ```
 Phase 1 (PersistenceActor) ──→ Phase 2 (Decompose State) ──→ Phase 3 (Derived Views)
                                                                      │
-Phase 4 (Broker) ─── independent, can run in parallel ───────────────┤
+                                                               Phase 4 (Leptos Migration)
                                                                      │
-                                                               Phase 5 (StreamHandler)
+Phase 5 (Broker) ─── independent, can run in parallel ───────────────┤
                                                                      │
-Phase 6 (Throttle) ─── independent ─────────────────────────────────┘
+                                                               Phase 6 (StreamHandler)
+                                                                     │
+Phase 7 (Throttle) ─── independent ─────────────────────────────────┘
 ```
 
-- **Phases 1→2→3** are sequential: each builds on the prior decomposition
-- **Phase 4** (Broker) is fully independent — do it anytime
-- **Phase 5** (StreamHandler) depends on Phase 2 (needs decomposed addrs) and Phase 4 (uses broker)
-- **Phase 6** (Throttle) is independent
+- **Phases 1→2→3→4** are sequential: each builds on the prior
+- **Phase 5** (Broker) is fully independent — do it anytime
+- **Phase 6** (StreamHandler) depends on Phase 2 (decomposed addrs) and Phase 5 (broker)
+- **Phase 7** (Throttle) is independent
 
 ---
 
@@ -606,9 +787,10 @@ Each phase produces a compilable, testable codebase:
 - Phase 1: same behavior, persistence is async (slightly better perf)
 - Phase 2: same behavior, state split into actors (same access patterns, just routed differently)
 - Phase 3: same behavior, accessors read from cached derived state (faster reads)
-- Phase 4: same behavior, event delivery via Broker instead of channel
-- Phase 5: same behavior, listeners are proper actors
-- Phase 6: same behavior, typing throttle is explicit
+- Phase 4: same behavior, Leptos signals driven by library StateRef instead of custom actors
+- Phase 5: same behavior, event delivery via Broker instead of channel
+- Phase 6: same behavior, listeners are proper actors
+- Phase 7: same behavior, typing throttle is explicit
 
 ### End-to-end verification after all phases
 ```bash
