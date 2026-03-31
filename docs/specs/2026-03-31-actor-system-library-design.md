@@ -53,23 +53,22 @@ pub struct StateActor<S: Send + 'static> {
 ### Messages
 
 ```rust
-/// Get the current state (clones it out).
-pub struct Get;
-impl Message for Get { type Result = S; }
-// Requires S: Clone
+/// Get the current state (clones it out). Requires S: Clone.
+pub struct Get<S>(PhantomData<S>);
+impl<S: Clone + Send + 'static> Message for Get<S> { type Result = S; }
 
 /// Set the state to a new value. Marks dirty.
-pub struct Set<S>(pub S);
-impl Message for Set<S> { type Result = (); }
+pub struct Set<S: Send + 'static>(pub S);
+impl<S: Send + 'static> Message for Set<S> { type Result = (); }
 
 /// Mutate state via a type-erased closure. Returns a type-erased result.
 /// Use the `mutate()` helper for type-safe access.
-pub struct Mutate(pub Box<dyn FnOnce(&mut S) -> Box<dyn Any + Send> + Send>);
+pub struct Mutate(pub Box<dyn FnOnce(&mut dyn Any) -> Box<dyn Any + Send> + Send>);
 impl Message for Mutate { type Result = Box<dyn Any + Send>; }
 
 /// Read state via a type-erased selector. Returns a type-erased result.
 /// Use the `select()` helper for type-safe access.
-pub struct Select(pub Box<dyn FnOnce(&S) -> Box<dyn Any + Send> + Send>);
+pub struct Select(pub Box<dyn FnOnce(&dyn Any) -> Box<dyn Any + Send> + Send>);
 impl Message for Select { type Result = Box<dyn Any + Send>; }
 
 /// Subscribe to state change notifications.
@@ -81,6 +80,11 @@ impl Message for Subscribe { type Result = (); }
 pub struct Notify;
 impl Message for Notify { type Result = (); }
 ```
+
+The `Mutate` and `Select` closures use `&dyn Any`/`&mut dyn Any` so the
+message types are not generic over `S` — this keeps them usable with
+`Recipient` and avoids monomorphization. The `StateActor<S>` handler
+downcasts internally. The typed `select()`/`mutate()` helpers hide this.
 
 ### Typed helpers
 
@@ -150,14 +154,16 @@ is implemented for single sources and tuples of sources (up to arity 6),
 similar to how Bevy implements `WorldQuery` for tuples.
 
 ```rust
-/// A type-erased handle to any observable actor.
+/// A type-erased, cloneable handle to any observable actor.
 /// Supports subscribing to notifications and reading state via selector.
 ///
 /// This is the key to composition — both StateActor and DerivedActor
 /// produce StateRef handles, so they're interchangeable as sources.
+/// Clone is cheap (Arc bumps).
+#[derive(Clone)]
 pub struct StateRef<S: Send + 'static> {
     /// Subscribe to change notifications.
-    subscribe: Box<dyn Fn(Recipient<Notify>) + Send + Sync>,
+    subscribe: Arc<dyn Fn(Recipient<Notify>) + Send + Sync>,
     /// Read current state via type-erased selector.
     select: Arc<dyn Fn(StateSelector<S>) -> Pin<Box<dyn Future<Output = Box<dyn Any + Send>> + Send>> + Send + Sync>,
 }
@@ -433,24 +439,31 @@ pub struct Broker<T: Message<Result = ()> + Clone + Send + 'static> {
 ### Messages
 
 ```rust
+/// Opaque subscription ID returned by BrokerSubscribe.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SubscriptionId(u64);
+
 /// Publish a value to all subscribers.
 pub struct Publish<T>(pub T);
 impl<T: Message<Result = ()> + Clone> Message for Publish<T> {
     type Result = ();
 }
 
-/// Subscribe to receive published values.
+/// Subscribe to receive published values. Returns an ID for unsubscribing.
 pub struct BrokerSubscribe<T: Message<Result = ()>>(pub Recipient<T>);
 impl<T: Message<Result = ()>> Message for BrokerSubscribe<T> {
-    type Result = ();
+    type Result = SubscriptionId;
 }
 
-/// Unsubscribe from the broker.
-pub struct BrokerUnsubscribe<T: Message<Result = ()>>(pub Recipient<T>);
-impl<T: Message<Result = ()>> Message for BrokerUnsubscribe<T> {
+/// Unsubscribe from the broker by ID.
+pub struct BrokerUnsubscribe(pub SubscriptionId);
+impl Message for BrokerUnsubscribe {
     type Result = ();
 }
 ```
+
+Dead subscribers (closed channels) are also pruned automatically on each
+`Publish`, so explicit unsubscribe is optional.
 
 ### Why separate from StateActor
 
@@ -643,11 +656,12 @@ pub struct Debounce<M: Message<Result = ()> + Send + 'static> {
 }
 
 /// Throttle: forwards at most one message per interval.
+/// Uses `run_after` internally instead of `Instant` (not available on WASM).
 pub struct Throttle<M: Message<Result = ()> + Send + 'static> {
     target: Recipient<M>,
     interval: Duration,
-    last_sent: Option<Instant>,
     pending: Option<M>,
+    cooling_down: bool,
 }
 ```
 
@@ -659,9 +673,11 @@ pub struct Throttle<M: Message<Result = ()> + Send + 'static> {
 
 ### Throttle behavior
 
-1. Receive message -> if enough time since `last_sent`, forward immediately
-2. Otherwise store as `pending`
-3. Timer fires -> forward `pending` if present
+1. Receive message -> if not `cooling_down`, forward immediately, set
+   `cooling_down = true`, start `run_after` timer for cooldown period
+2. If `cooling_down`, store as `pending` (replacing any previous pending)
+3. Timer fires -> set `cooling_down = false`, forward `pending` if present
+   (and start a new cooldown if so)
 
 ### Example
 
