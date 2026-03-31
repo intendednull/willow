@@ -231,11 +231,7 @@ where
         self.1.subscribe(recipient);
     }
     async fn snapshot(&self) -> (S1, S2) {
-        // Sequential — avoids adding `futures` crate dependency.
-        // In-process message passing is sub-microsecond, so no
-        // meaningful benefit from parallelizing.
-        let a = self.0.get().await;
-        let b = self.1.get().await;
+        let (a, b) = futures::join!(self.0.get(), self.1.get());
         (a, b)
     }
 }
