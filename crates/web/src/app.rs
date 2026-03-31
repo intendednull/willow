@@ -331,7 +331,10 @@ pub fn App() -> impl IntoView {
     let vm_disconnect = voice_manager.clone();
     let handle_voice_leave = handle.clone();
     let on_voice_disconnect = move |_: ()| {
-        handle_voice_leave.leave_voice();
+        let handle_voice_leave = handle_voice_leave.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            handle_voice_leave.leave_voice().await;
+        });
         vm_disconnect.borrow_mut().close_all();
         write.voice.set_voice_channel.set(None);
         write.voice.set_voice_channel_name.set(String::new());
@@ -479,7 +482,10 @@ pub fn App() -> impl IntoView {
                                     // If in a different voice channel, disconnect from the old one first.
                                     let current_vc = app_state.voice.voice_channel.get_untracked();
                                     if current_vc.is_some() && current_vc.as_deref() != Some(&channel_name) {
-                                        vc_handle.leave_voice();
+                                        let vc_leave = vc_handle.clone();
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            vc_leave.leave_voice().await;
+                                        });
                                         vm.borrow_mut().close_all();
                                         write.voice.set_voice_channel.set(None);
                                         write.voice.set_voice_channel_name.set(String::new());
@@ -531,25 +537,27 @@ pub fn App() -> impl IntoView {
                                         use wasm_bindgen::JsCast;
                                         let stream: web_sys::MediaStream = stream.unchecked_into();
                                         vm2.borrow_mut().set_local_stream(stream);
-                                        vc.join_voice(&ch_name);
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            vc.join_voice(&ch_name).await;
 
-                                        // Seed participants from client state after joining.
-                                        // This ensures that on reconnect we pick up peers
-                                        // who are already in the channel (their VoiceJoined
-                                        // event was received before we joined).
-                                        let parts: Vec<String> = vc.voice_participants(&ch_name).iter().map(|p| p.to_string()).collect();
-                                        write.voice.set_voice_participants_map.update(|m| {
-                                            let list = m.entry(ch_name.clone()).or_default();
-                                            for p in parts {
-                                                if !list.contains(&p) {
-                                                    list.push(p);
+                                            // Seed participants from client state after joining.
+                                            // This ensures that on reconnect we pick up peers
+                                            // who are already in the channel (their VoiceJoined
+                                            // event was received before we joined).
+                                            let parts: Vec<String> = vc.voice_participants(&ch_name).await.iter().map(|p| p.to_string()).collect();
+                                            write.voice.set_voice_participants_map.update(|m| {
+                                                let list = m.entry(ch_name.clone()).or_default();
+                                                for p in parts {
+                                                    if !list.contains(&p) {
+                                                        list.push(p);
+                                                    }
                                                 }
-                                            }
-                                            // Also add the local user.
-                                            let my_id = vc.peer_id();
-                                            if !list.contains(&my_id) {
-                                                list.push(my_id);
-                                            }
+                                                // Also add the local user.
+                                                let my_id = vc.peer_id();
+                                                if !list.contains(&my_id) {
+                                                    list.push(my_id);
+                                                }
+                                            });
                                         });
                                     });
                                     let on_error = wasm_bindgen::closure::Closure::once(move |_err: wasm_bindgen::JsValue| {
