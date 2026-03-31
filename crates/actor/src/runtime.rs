@@ -168,6 +168,85 @@ impl<T: Send + 'static> OneshotRx<T> {
     }
 }
 
+// ───── Bounded MPSC channel ───────────────────────────────────────────────
+
+/// Sender half of a bounded MPSC channel.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct BoundedSender<T>(tokio::sync::mpsc::Sender<T>);
+
+#[cfg(target_arch = "wasm32")]
+pub struct BoundedSender<T>(futures_channel::mpsc::Sender<T>);
+
+impl<T> Clone for BoundedSender<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T: Send + 'static> BoundedSender<T> {
+    /// Try to send a value. Returns `Err(val)` if the channel is full or closed.
+    pub fn try_send(&self, val: T) -> Result<(), T> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.0.try_send(val).map_err(|e| e.into_inner())
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            let mut sender = self.0.clone();
+            sender.try_send(val).map_err(|e| e.into_inner())
+        }
+    }
+
+    /// Check if the channel is closed.
+    pub fn is_closed(&self) -> bool {
+        self.0.is_closed()
+    }
+}
+
+/// Receiver half of a bounded MPSC channel. Implements `futures::Stream`.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct BoundedReceiver<T>(tokio::sync::mpsc::Receiver<T>);
+
+#[cfg(target_arch = "wasm32")]
+pub struct BoundedReceiver<T>(futures_channel::mpsc::Receiver<T>);
+
+impl<T: Send + 'static> futures_core::Stream for BoundedReceiver<T> {
+    type Item = T;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.0.poll_recv(cx)
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            std::pin::Pin::new(&mut self.0).poll_next(cx)
+        }
+    }
+}
+
+/// Create a bounded MPSC channel with the given capacity.
+pub fn bounded_channel<T: Send + 'static>(
+    capacity: usize,
+) -> (BoundedSender<T>, BoundedReceiver<T>) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let (tx, rx) = tokio::sync::mpsc::channel(capacity);
+        (BoundedSender(tx), BoundedReceiver(rx))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        let (tx, rx) = futures_channel::mpsc::channel(capacity);
+        (BoundedSender(tx), BoundedReceiver(rx))
+    }
+}
+
 /// Create a oneshot channel.
 pub fn oneshot<T: Send + 'static>() -> (OneshotTx<T>, OneshotRx<T>) {
     #[cfg(not(target_arch = "wasm32"))]
