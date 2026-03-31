@@ -61,11 +61,15 @@ pub fn Sidebar(
         let name = name.trim().to_string();
         let is_voice = create_voice.get_untracked();
         if !name.is_empty() {
-            if is_voice {
-                let _ = handle_create.create_voice_channel(&name);
-            } else {
-                let _ = handle_create.create_channel(&name);
-            }
+            let h = handle_create.clone();
+            let name = name.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if is_voice {
+                    let _ = h.create_voice_channel(&name).await;
+                } else {
+                    let _ = h.create_channel(&name).await;
+                }
+            });
             on_channel_created(());
         }
         set_new_name.set(String::new());
@@ -328,7 +332,10 @@ pub fn Sidebar(
                 danger=true
                 on_confirm=Callback::new(move |_| {
                     if let Some(name) = pending_del_channel.get_untracked() {
-                        let _ = handle_del_confirm.delete_channel(&name);
+                        let h = handle_del_confirm.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            let _ = h.delete_channel(&name).await;
+                        });
                     }
                     set_pending_del_channel.set(None);
                     set_show_del_confirm.set(false);

@@ -131,7 +131,7 @@ pub fn SettingsPanel(
                     on:click=move |_| set_active_tab.set(SettingsTab::Server)
                 >"Server"</button>
                 {
-                    let owner_check = is_owner.clone();
+                    let owner_check = is_owner;
                     move || {
                         if owner_check() {
                             Some(view! {

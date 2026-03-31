@@ -81,7 +81,7 @@ pub fn RoleManager(
             <div class="role-manager-header">
                 <span class="role-manager-title">"ROLES"</span>
                 {
-                    let owner_check = is_owner.clone();
+                    let owner_check = is_owner;
                     move || {
                         if owner_check() {
                             Some(view! {
@@ -141,13 +141,13 @@ pub fn RoleManager(
                     let role_id_assign = role_id.clone();
                     let handle_perm = handle.clone();
                     let handle_assign = handle.clone();
-                    let owner_check = is_owner.clone();
+                    let owner_check = is_owner;
                     view! {
                         <div class="role-item">
                             <div class="role-item-header">
                                 <span class="role-name">{role_name}</span>
                                 {
-                                    let oc = owner_check.clone();
+                                    let oc = owner_check;
                                     let rid = role_id_delete.clone();
                                     let rname = role_name_delete.clone();
                                     move || {
@@ -176,7 +176,7 @@ pub fn RoleManager(
                             // Permission toggles.
                             <div class="permission-toggles">
                                 {
-                                    let oc = owner_check.clone();
+                                    let oc = owner_check;
                                     let hp = handle_perm.clone();
                                     let rid = role_id_perms.clone();
                                     let perms = permissions.clone();
@@ -187,7 +187,7 @@ pub fn RoleManager(
                                         let perm_toggle = perm.clone();
                                         let rid_t = rid.clone();
                                         let hp_t = hp.clone();
-                                        let oc_t = oc.clone();
+                                        let oc_t = oc;
                                         let checked = perms.contains(&perm_check);
                                         view! {
                                             <label class="permission-toggle">
@@ -214,7 +214,7 @@ pub fn RoleManager(
 
                             // Assign role to peer (owner only).
                             {
-                                let oc = owner_check.clone();
+                                let oc = owner_check;
                                 let ha = handle_assign.clone();
                                 let rid = role_id_assign.clone();
                                 move || {
