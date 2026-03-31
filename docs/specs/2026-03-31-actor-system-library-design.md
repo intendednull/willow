@@ -92,6 +92,16 @@ where S: Send + 'static, T: Send + 'static { ... }
 /// Type-safe mutation with return value.
 pub async fn mutate<S, T>(addr: &Addr<StateActor<S>>, f: impl FnOnce(&mut S) -> T) -> T
 where S: Send + 'static, T: Send + 'static { ... }
+
+/// Subscribe any actor that handles Notify to state changes.
+pub fn subscribe<S, A>(state: &Addr<StateActor<S>>, subscriber: &Addr<A>)
+where
+    S: Send + 'static,
+    A: Handler<Notify>,
+{
+    let recipient: Recipient<Notify> = subscriber.clone().into();
+    let _ = state.do_send(Subscribe(recipient));
+}
 ```
 
 ### Lifecycle
@@ -113,8 +123,7 @@ let count = select(&state, |s| s.message_count).await;
 mutate(&state, |s| s.message_count += 1).await;
 
 // Subscribe
-let my_recipient: Recipient<Notify> = my_addr.into();
-state.do_send(Subscribe(my_recipient)).unwrap();
+subscribe(&state, &my_addr);
 ```
 
 ### Why generic over `S`
