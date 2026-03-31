@@ -43,7 +43,64 @@ mod voice;
 
 // Re-export key types at crate root for convenience.
 pub use events::ClientEvent;
+pub use event_receiver::EventReceiver;
 pub use ops::{pack_wire, unpack_wire, VoiceSignalPayload, WireMessage};
+
+/// Helper to bridge `Broker<ClientEvent>` into an async stream receiver.
+pub mod event_receiver {
+    use willow_actor::{Actor, Addr, BrokerSubscribe, Context, Handler, Broker};
+    use crate::events::ClientEvent;
+
+    /// Async receiver for [`ClientEvent`]s from a [`Broker`].
+    ///
+    /// Implements a stream-like API: call `recv()` to await the next event,
+    /// or `try_recv()` for a non-blocking check.
+    pub struct EventReceiver {
+        rx: willow_actor::runtime::Receiver<ClientEvent>,
+    }
+
+    impl EventReceiver {
+        /// Subscribe to a broker and return a receiver for its events.
+        pub async fn subscribe(
+            broker: &Addr<Broker<ClientEvent>>,
+            system: &willow_actor::SystemHandle,
+        ) -> Self {
+            let (tx, rx) = willow_actor::runtime::unbounded_channel();
+            let addr = system.spawn(ForwarderActor { tx });
+            let recipient = addr.into();
+            let _ = broker.ask(BrokerSubscribe(recipient)).await;
+            Self { rx }
+        }
+
+        /// Await the next event. Returns `None` if the broker is closed.
+        pub async fn recv(&mut self) -> Option<ClientEvent> {
+            self.rx.recv().await
+        }
+
+        /// Non-blocking try to receive an event.
+        pub fn try_recv(&mut self) -> Option<ClientEvent> {
+            self.rx.try_recv()
+        }
+    }
+
+    /// Internal actor that forwards broker events to a channel.
+    struct ForwarderActor {
+        tx: willow_actor::runtime::Sender<ClientEvent>,
+    }
+
+    impl Actor for ForwarderActor {}
+
+    impl Handler<ClientEvent> for ForwarderActor {
+        fn handle(
+            &mut self,
+            msg: ClientEvent,
+            _ctx: &mut Context<Self>,
+        ) -> impl std::future::Future<Output = ()> + Send {
+            let _ = self.tx.send(msg);
+            async {}
+        }
+    }
+}
 pub use state::{
     ChatState, ClientState, DisplayMessage, PersistentEventStore, ProfileStore, ServerContext,
 };
@@ -53,8 +110,6 @@ pub use willow_state;
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-
-use futures::channel::mpsc as futures_mpsc;
 
 use willow_identity::Identity;
 use willow_messaging::Content;
@@ -112,8 +167,8 @@ pub struct ClientHandle<N: willow_network::Network> {
     pub(crate) network: Option<Arc<N>>,
     /// Maps topic string names to their `N::Topic` handles for broadcasting.
     pub(crate) topics: Arc<RwLock<HashMap<String, N::Topic>>>,
-    /// Sender for emitting [`ClientEvent`]s from listener tasks and methods.
-    pub(crate) event_tx: futures_mpsc::UnboundedSender<ClientEvent>,
+    /// Broker for pub/sub [`ClientEvent`] distribution to subscribers.
+    pub(crate) event_broker: willow_actor::Addr<willow_actor::Broker<ClientEvent>>,
     /// The local identity, needed for signing broadcasts.
     pub(crate) identity: Identity,
 
@@ -143,7 +198,7 @@ impl<N: willow_network::Network> Clone for ClientHandle<N> {
             system: self.system.clone(),
             network: self.network.clone(),
             topics: Arc::clone(&self.topics),
-            event_tx: self.event_tx.clone(),
+            event_broker: self.event_broker.clone(),
             identity: self.identity.clone(),
             event_state_addr: self.event_state_addr.clone(),
             server_registry_addr: self.server_registry_addr.clone(),
@@ -293,7 +348,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
     pub fn new(config: ClientConfig) -> (Self, ClientEventLoop) {
         let identity = load_identity();
 
-        let (event_tx, _discard_rx) = futures_mpsc::unbounded::<ClientEvent>();
+        // event_broker is spawned later after the system is created.
 
         let mut state = ClientState::new(identity.endpoint_id());
 
@@ -493,6 +548,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let persistence_addr = system.spawn(
             persistence_actor::PersistenceActor::new(persistence_enabled),
         );
+        let event_broker = system.spawn(willow_actor::Broker::<ClientEvent>::new());
         // Open event store on the persistence actor if we have an active server.
         if let Some(sid) = &state.active_server {
             let _ = persistence_addr.do_send(persistence_actor::OpenEventStore {
@@ -531,7 +587,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             system: system.handle(),
             network: None,
             topics: Arc::new(RwLock::new(HashMap::new())),
-            event_tx,
+            event_broker,
             identity: identity_clone,
             event_state_addr,
             server_registry_addr,
@@ -924,7 +980,8 @@ impl ClientEventLoop {
     /// Listeners now handle all incoming gossip events via
     /// [`listeners::spawn_topic_listener`]. This method exists for
     /// backward compatibility only.
-    pub async fn run(self, _tx: futures_mpsc::UnboundedSender<ClientEvent>) {
+    /// Run the event processing loop (legacy no-op).
+    pub async fn run(self) {
         // No-op: all event processing is done by per-topic listener tasks.
         futures::future::pending::<()>().await;
     }
@@ -1016,14 +1073,12 @@ fn parse_permission(s: &str) -> anyhow::Result<willow_channel::Permission> {
 }
 
 /// Create a test-only ClientHandle without connecting to the network.
-/// The returned client has an event_tx wired up for inspection.
 #[cfg(test)]
 pub(crate) fn test_client() -> (
     ClientHandle<willow_network::mem::MemNetwork>,
-    futures_mpsc::UnboundedReceiver<ClientEvent>,
+    willow_actor::Addr<willow_actor::Broker<ClientEvent>>,
 ) {
     let identity = Identity::generate();
-    let (event_tx, event_rx) = futures_mpsc::unbounded::<ClientEvent>();
 
     let mut state = ClientState::new(identity.endpoint_id());
 
@@ -1111,6 +1166,7 @@ pub(crate) fn test_client() -> (
         state_actors::VoiceState::default(),
     ));
     let persistence_addr = sys.spawn(persistence_actor::PersistenceActor::new(false));
+    let event_broker = sys.spawn(willow_actor::Broker::<ClientEvent>::new());
     let hlc = Arc::new(std::sync::Mutex::new(willow_messaging::hlc::HLC::new()));
 
     let shared_state = SharedState {
@@ -1146,7 +1202,7 @@ pub(crate) fn test_client() -> (
         system: sh,
         network: None,
         topics: Arc::new(RwLock::new(HashMap::new())),
-        event_tx,
+        event_broker: event_broker.clone(),
         identity: identity_clone,
         event_state_addr,
         server_registry_addr,
@@ -1158,7 +1214,7 @@ pub(crate) fn test_client() -> (
         hlc,
     };
 
-    (client, event_rx)
+    (client, event_broker)
 }
 
 #[cfg(test)]

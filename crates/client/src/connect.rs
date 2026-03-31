@@ -3,12 +3,11 @@ use crate::client_actor::{mutate_state, read_state};
 
 impl<N: willow_network::Network> ClientHandle<N> {
     /// Connect to the P2P network.
-    pub async fn connect(&mut self, network: N) -> futures_mpsc::UnboundedReceiver<ClientEvent> {
+    ///
+    /// Returns the broker address for subscribing to [`ClientEvent`]s.
+    pub async fn connect(&mut self, network: N) -> willow_actor::Addr<willow_actor::Broker<ClientEvent>> {
         let network = Arc::new(network);
         self.network = Some(Arc::clone(&network));
-
-        let (event_tx, event_rx) = futures_mpsc::unbounded();
-        self.event_tx = event_tx.clone();
 
         let (persistence, relay_addr) = read_state(&self.state_addr, |s| {
             (s.config.persistence, s.config.relay_addr.clone())
@@ -32,7 +31,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 events,
                 sender,
                 self.state_addr.clone(),
-                event_tx.clone(),
+                self.event_broker.clone(),
             );
         }
 
@@ -50,7 +49,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 events,
                 sender,
                 self.state_addr.clone(),
-                event_tx.clone(),
+                self.event_broker.clone(),
             );
         }
 
@@ -77,7 +76,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                     events,
                     sender,
                     self.state_addr.clone(),
-                    event_tx.clone(),
+                    self.event_broker.clone(),
                 );
             }
         }
@@ -86,7 +85,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         self.request_sync_via_network().await;
 
         mutate_state(&self.state_addr, |s| s.connected = true).await;
-        event_rx
+        self.event_broker.clone()
     }
 
     /// Broadcast our profile to peers via the profile topic.

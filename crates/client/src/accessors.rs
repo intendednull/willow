@@ -18,6 +18,17 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let _ = self.state_addr.do_send(client_actor::NotifyMutation);
     }
 
+    /// Subscribe to client events. Returns an [`EventReceiver`](crate::EventReceiver)
+    /// that can be polled for events.
+    pub async fn subscribe_events(&self) -> crate::EventReceiver {
+        crate::EventReceiver::subscribe(&self.event_broker, &self.system).await
+    }
+
+    /// Get the event broker address (for direct subscription).
+    pub fn event_broker(&self) -> &willow_actor::Addr<willow_actor::Broker<ClientEvent>> {
+        &self.event_broker
+    }
+
     pub fn peer_id(&self) -> String {
         self.identity.endpoint_id().to_string()
     }

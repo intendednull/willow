@@ -4,7 +4,6 @@
 //! The listener calls [`TopicEvents::next()`] in a loop and routes incoming
 //! wire messages to the state actor via [`MutateState`] messages.
 
-use futures::channel::mpsc as futures_mpsc;
 use willow_actor::Addr;
 use willow_identity::EndpointId;
 use willow_network::traits::{GossipEvent, TopicEvents};
@@ -25,13 +24,13 @@ pub fn spawn_topic_listener<T: TopicHandle + 'static, E: TopicEvents + 'static>(
     events: E,
     topic: T,
     state_addr: Addr<ClientStateActor>,
-    event_tx: futures_mpsc::UnboundedSender<ClientEvent>,
+    event_broker: Addr<willow_actor::Broker<ClientEvent>>,
 ) {
     #[cfg(not(target_arch = "wasm32"))]
-    tokio::task::spawn_local(topic_listener_loop(events, topic, state_addr, event_tx));
+    tokio::task::spawn_local(topic_listener_loop(events, topic, state_addr, event_broker));
 
     #[cfg(target_arch = "wasm32")]
-    wasm_bindgen_futures::spawn_local(topic_listener_loop(events, topic, state_addr, event_tx));
+    wasm_bindgen_futures::spawn_local(topic_listener_loop(events, topic, state_addr, event_broker));
 }
 
 /// The core async loop that drains a [`TopicEvents`] stream.
@@ -39,12 +38,12 @@ async fn topic_listener_loop<T: TopicHandle, E: TopicEvents>(
     mut events: E,
     topic: T,
     state_addr: Addr<ClientStateActor>,
-    event_tx: futures_mpsc::UnboundedSender<ClientEvent>,
+    event_broker: Addr<willow_actor::Broker<ClientEvent>>,
 ) {
     while let Some(Ok(gossip_event)) = events.next().await {
         match gossip_event {
             GossipEvent::Received(msg) => {
-                process_received_message(&msg.content, msg.sender, &state_addr, &event_tx, &topic)
+                process_received_message(&msg.content, msg.sender, &state_addr, &event_broker, &topic)
                     .await;
             }
             GossipEvent::NeighborUp(id) => {
@@ -55,7 +54,7 @@ async fn topic_listener_loop<T: TopicHandle, E: TopicEvents>(
                     }
                 })
                 .await;
-                let _ = event_tx.unbounded_send(ClientEvent::PeerConnected(id));
+                let _ = event_broker.do_send(willow_actor::Publish(ClientEvent::PeerConnected(id)));
             }
             GossipEvent::NeighborDown(id) => {
                 let id2 = id;
@@ -63,7 +62,7 @@ async fn topic_listener_loop<T: TopicHandle, E: TopicEvents>(
                     s.state.chat.peers.retain(|p| p != &id2);
                 })
                 .await;
-                let _ = event_tx.unbounded_send(ClientEvent::PeerDisconnected(id));
+                let _ = event_broker.do_send(willow_actor::Publish(ClientEvent::PeerDisconnected(id)));
             }
         }
     }
@@ -77,7 +76,7 @@ async fn process_received_message<T: TopicHandle>(
     data: &[u8],
     _sender: EndpointId,
     state_addr: &Addr<ClientStateActor>,
-    event_tx: &futures_mpsc::UnboundedSender<ClientEvent>,
+    event_broker: &Addr<willow_actor::Broker<ClientEvent>>,
     topic: &T,
 ) {
     // Try profile broadcast first (unsigned envelope, Identity message type).
@@ -90,10 +89,10 @@ async fn process_received_message<T: TopicHandle>(
             s.state.profiles.names.insert(peer_id, display_name.clone());
         })
         .await;
-        let _ = event_tx.unbounded_send(ClientEvent::ProfileUpdated {
+        let _ = event_broker.do_send(willow_actor::Publish(ClientEvent::ProfileUpdated {
             peer_id: profile.peer_id,
             display_name: profile.display_name,
-        });
+        }));
         return;
     }
 
@@ -110,7 +109,6 @@ async fn process_received_message<T: TopicHandle>(
             }
 
             let event_clone = event.clone();
-            let _event_tx = event_tx.clone();
             let client_events = crate::client_actor::mutate_state(state_addr, move |s| {
                 // Track sender as an online peer.
                 if !s.state.chat.peers.contains(&signer) {
@@ -135,15 +133,11 @@ async fn process_received_message<T: TopicHandle>(
                 }
             })
             .await;
-            // Emit peer connected if new.
-            if !client_events.is_empty() {
-                for e in client_events {
-                    let _ = event_tx.unbounded_send(e);
-                }
+            for e in client_events {
+                let _ = event_broker.do_send(willow_actor::Publish(e));
             }
         }
         crate::ops::WireMessage::SyncBatch { events: batch } => {
-            let _event_tx = event_tx.clone();
             let client_events = crate::client_actor::mutate_state(state_addr, move |s| {
                 if !s.state.chat.peers.contains(&signer) {
                     s.state.chat.peers.push(signer);
@@ -174,7 +168,7 @@ async fn process_received_message<T: TopicHandle>(
             })
             .await;
             for e in client_events {
-                let _ = event_tx.unbounded_send(e);
+                let _ = event_broker.do_send(willow_actor::Publish(e));
             }
         }
         crate::ops::WireMessage::SyncRequest { state_hash, .. } => {
@@ -210,10 +204,10 @@ async fn process_received_message<T: TopicHandle>(
                 s.voice_participants.entry(ch).or_default().insert(peer_id);
             })
             .await;
-            let _ = event_tx.unbounded_send(ClientEvent::VoiceJoined {
+            let _ = event_broker.do_send(willow_actor::Publish(ClientEvent::VoiceJoined {
                 channel_id,
                 peer_id,
-            });
+            }));
         }
         crate::ops::WireMessage::VoiceLeave {
             channel_id,
@@ -226,10 +220,10 @@ async fn process_received_message<T: TopicHandle>(
                 }
             })
             .await;
-            let _ = event_tx.unbounded_send(ClientEvent::VoiceLeft {
+            let _ = event_broker.do_send(willow_actor::Publish(ClientEvent::VoiceLeft {
                 channel_id,
                 peer_id,
-            });
+            }));
         }
         crate::ops::WireMessage::VoiceSignal {
             channel_id,
@@ -239,11 +233,11 @@ async fn process_received_message<T: TopicHandle>(
             let our_id =
                 crate::client_actor::read_state(state_addr, |s| s.identity.endpoint_id()).await;
             if target_peer == our_id {
-                let _ = event_tx.unbounded_send(ClientEvent::VoiceSignal {
+                let _ = event_broker.do_send(willow_actor::Publish(ClientEvent::VoiceSignal {
                     channel_id,
                     from_peer: signer,
                     signal,
-                });
+                }));
             }
         }
         crate::ops::WireMessage::JoinRequest { link_id, peer_id } => {
@@ -288,7 +282,7 @@ async fn process_received_message<T: TopicHandle>(
             let our_id =
                 crate::client_actor::read_state(state_addr, |s| s.identity.endpoint_id()).await;
             if target_peer == our_id {
-                let _ = event_tx.unbounded_send(ClientEvent::JoinLinkResponse { invite_data });
+                let _ = event_broker.do_send(willow_actor::Publish(ClientEvent::JoinLinkResponse { invite_data }));
             }
         }
         crate::ops::WireMessage::JoinDenied {
@@ -298,7 +292,7 @@ async fn process_received_message<T: TopicHandle>(
             let our_id =
                 crate::client_actor::read_state(state_addr, |s| s.identity.endpoint_id()).await;
             if target_peer == our_id {
-                let _ = event_tx.unbounded_send(ClientEvent::JoinLinkDenied { reason });
+                let _ = event_broker.do_send(willow_actor::Publish(ClientEvent::JoinLinkDenied { reason }));
             }
         }
     }

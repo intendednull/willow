@@ -222,14 +222,16 @@ pub fn App() -> impl IntoView {
             };
 
             // Connect to the P2P network. This subscribes to topics, spawns
-            // listeners, and returns the event receiver.
-            let mut client_event_rx = handle_for_connect.connect(network).await;
+            // listeners, and returns the event broker.
+            let _broker = handle_for_connect.connect(network).await;
 
-            use futures::StreamExt;
-            while let Some(event) = client_event_rx.next().await {
+            // Subscribe to client events via the broker.
+            let mut event_rx = handle_for_connect.subscribe_events().await;
+
+            while let Some(event) = event_rx.recv().await {
                 // Collect all pending events into a batch.
                 let mut batch = vec![event];
-                while let Ok(ev) = client_event_rx.try_recv() {
+                while let Some(ev) = event_rx.try_recv() {
                     batch.push(ev);
                 }
                 process_event_batch(
