@@ -9,10 +9,10 @@
 | Phase 1: PersistenceActor | **DONE** | `persistence_actor.rs` — 312 lines, 12 message types |
 | Phase 2a: Domain state types | **DONE** | `state_actors.rs` — 6 pure-data types, `SourceState` bundle |
 | Phase 2a: Wire actors into ClientHandle | **DONE** | Domain actors spawned alongside legacy actor |
-| Phase 2b: Big-bang cutover | PENDING | Migrate all read_state/mutate_state calls atomically |
-| Phase 2c: Delete legacy code | PENDING | Remove ClientStateActor, SharedState |
-| Phase 3: Derived views | PENDING | DerivedActor chain + ClientViewHandle |
-| Phase 4: Leptos migration | PENDING | Replace custom DerivedStateActor with library StateRef |
+| Phase 2b: Auto-sync + incremental migration | **DONE** | idle() hook syncs legacy→domain; accessors.rs + voice.rs migrated |
+| Phase 2c: Delete legacy code | FUTURE | Remove ClientStateActor once all writes are migrated |
+| Phase 3: Derived views | FUTURE | DerivedActor chain + ClientViewHandle (depends on Phase 2c) |
+| Phase 4: Leptos migration | FUTURE | Replace custom DerivedStateActor with library StateRef (depends on Phase 3) |
 | Phase 5: Broker<ClientEvent> | **DONE** | EventReceiver bridge, web crate updated |
 | Phase 6: StreamHandler | DEFERRED | TopicEvents trait doesn't impl Stream; needs network crate change |
 | Phase 7: Typing Throttle | DEFERRED | Manual impl is 6 lines; Throttle actor adds complexity |
@@ -31,6 +31,12 @@
 3. **Throttle vs manual**: The `Throttle<M>` actor is valuable for new features
    but overkill for replacing a 6-line timestamp check. The typing throttle
    works fine as-is.
+
+4. **Auto-sync via idle() beats big-bang**: Instead of rewriting all 60+ call
+   sites at once, the `ClientStateActor.idle()` hook automatically syncs
+   domain actors after every mutation batch. This enables safe incremental
+   migration: files can be migrated one at a time. Reads moved first
+   (accessors.rs, voice.rs), writes follow gradually.
 
 ## Overview
 
