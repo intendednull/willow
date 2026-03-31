@@ -39,6 +39,10 @@ test-app:
 test-actor:
     cargo test -p willow-actor
 
+# Run actor framework performance tests (not in CI — for optimization dev)
+test-actor-perf:
+    cargo test -p willow-actor --test performance -- --ignored --nocapture
+
 # Run the relay tests
 test-relay:
     cargo test -p willow-relay

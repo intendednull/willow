@@ -51,7 +51,10 @@ pub enum TransitionResult<S> {
 
 // ───── FsmActor ───────────────────────────────────────────────────────────
 
-/// Message to send an input to the FSM.
+/// Wrapper message to send an input to an [`FsmActor`].
+///
+/// Wraps the user-defined `StateMachine::Input` type to avoid conflicting
+/// handler impls with internal message types (`Subscribe`, `Select`, `Get`).
 pub struct Input<M: StateMachine>(pub M::Input);
 
 impl<M: StateMachine> Message for Input<M> {
@@ -212,6 +215,7 @@ mod tests {
     struct StrictDoor;
 
     #[derive(Debug, Clone, PartialEq)]
+    #[allow(dead_code)]
     enum DoorState {
         Open,
         Closed,
