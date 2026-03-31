@@ -102,7 +102,6 @@ pub struct SharedState {
 /// that production code can use a real iroh network while tests can use
 /// an in-memory backend.
 pub struct ClientHandle<N: willow_network::Network> {
-    pub(crate) shared: Arc<RwLock<SharedState>>,
     pub(crate) state_addr: willow_actor::Addr<client_actor::ClientStateActor>,
     pub(crate) system: willow_actor::SystemHandle,
     /// The network backend, set after [`connect()`](ClientHandle::connect).
@@ -118,7 +117,6 @@ pub struct ClientHandle<N: willow_network::Network> {
 impl<N: willow_network::Network> Clone for ClientHandle<N> {
     fn clone(&self) -> Self {
         Self {
-            shared: Arc::clone(&self.shared),
             state_addr: self.state_addr.clone(),
             system: self.system.clone(),
             network: self.network.clone(),
@@ -137,7 +135,7 @@ impl<N: willow_network::Network> Clone for ClientHandle<N> {
 /// that simply drains the internal channel.
 pub struct ClientEventLoop {
     #[allow(dead_code)]
-    pub(crate) shared: Arc<RwLock<SharedState>>,
+    pub(crate) _system: willow_actor::System,
 }
 
 /// Helper: apply an event to the event-sourced state and store it.
@@ -426,7 +424,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         }
 
         let identity_clone = identity.clone();
-        let shared_state = SharedState {
+        let mut shared_state = SharedState {
             state,
             identity,
             config,
@@ -445,18 +443,16 @@ impl<N: willow_network::Network> ClientHandle<N> {
         // SharedState is Send but not Sync (due to rusqlite::Connection).
         // Arc<RwLock<_>> is the target for full multi-task safety; making
         // SharedState Sync is tracked as a follow-up task.
-        #[allow(clippy::arc_with_non_send_sync)]
-        let shared = Arc::new(RwLock::new(shared_state));
+        reconcile_topic_map(&mut shared_state.state);
 
         let system = willow_actor::System::new();
         let state_addr = system.spawn(client_actor::ClientStateActor {
-            shared: Arc::clone(&shared),
+            shared: shared_state,
             dirty: false,
             subscribers: Vec::new(),
         });
 
         let handle = ClientHandle {
-            shared: Arc::clone(&shared),
             state_addr,
             system: system.handle(),
             network: None,
@@ -465,9 +461,9 @@ impl<N: willow_network::Network> ClientHandle<N> {
             identity: identity_clone,
         };
 
-        reconcile_topic_map(&mut handle.shared.write().unwrap().state);
+        // reconcile_topic_map called above before spawning actor
 
-        let event_loop = ClientEventLoop { shared };
+        let event_loop = ClientEventLoop { _system: system };
 
         (handle, event_loop)
     }
@@ -536,7 +532,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
     // ---- Internal helpers ----
 
     /// Send chat content (text, reply) on a channel.
-    pub(crate) fn send_content(
+    pub(crate) async fn send_content(
         &self,
         channel: &str,
         _content: Content,
@@ -544,51 +540,46 @@ impl<N: willow_network::Network> ClientHandle<N> {
         _reply_preview: Option<String>,
         reply_to: Option<String>,
     ) -> anyhow::Result<()> {
-        let mut shared = self.shared.write().unwrap();
-        let ctx = shared
-            .state
-            .active()
-            .ok_or_else(|| anyhow::anyhow!("no active server"))?;
-        let topic = ctx
-            .topic_for_name(channel)
-            .unwrap_or_else(|| channel.to_string());
-
-        let peer_id_str = shared.identity.endpoint_id();
-
-        // Resolve channel_id from topic.
-        let channel_id = shared
-            .state
-            .active()
-            .and_then(|ctx| {
-                ctx.topic_map
-                    .get(&topic)
-                    .map(|(_, ch_id)| ch_id.to_string())
-            })
-            .unwrap_or_else(|| channel.to_string());
-
-        let ts = util::current_time_ms();
-        let event_id = uuid::Uuid::new_v4().to_string();
-        let msg_event = willow_state::Event {
-            id: event_id.clone(),
-            parent_hash: shared.state.event_state.hash(),
-            author: peer_id_str,
-            timestamp_ms: ts,
-            kind: willow_state::EventKind::Message {
-                channel_id,
-                body: body.to_string(),
-                reply_to,
+        let ch = channel.to_string();
+        let b = body.to_string();
+        let event = crate::client_actor::mutate_state(
+            &self.state_addr,
+            move |s| -> anyhow::Result<willow_state::Event> {
+                let ctx = s
+                    .state
+                    .active()
+                    .ok_or_else(|| anyhow::anyhow!("no active server"))?;
+                let topic = ctx.topic_for_name(&ch).unwrap_or_else(|| ch.clone());
+                let peer_id_str = s.identity.endpoint_id();
+                let channel_id = s
+                    .state
+                    .active()
+                    .and_then(|ctx| {
+                        ctx.topic_map
+                            .get(&topic)
+                            .map(|(_, ch_id)| ch_id.to_string())
+                    })
+                    .unwrap_or_else(|| ch.clone());
+                let ts = util::current_time_ms();
+                let event_id = uuid::Uuid::new_v4().to_string();
+                let msg_event = willow_state::Event {
+                    id: event_id.clone(),
+                    parent_hash: s.state.event_state.hash(),
+                    author: peer_id_str,
+                    timestamp_ms: ts,
+                    kind: willow_state::EventKind::Message {
+                        channel_id,
+                        body: b,
+                        reply_to,
+                    },
+                };
+                apply_event_on_shared(s, &msg_event);
+                s.state.chat.seen_message_ids.insert(event_id);
+                Ok(msg_event)
             },
-        };
-        apply_event_on_shared(&mut shared, &msg_event);
-
-        // Broadcast the event on the server ops topic.
-        drop(shared);
-        self.broadcast_event(&msg_event);
-        let mut shared = self.shared.write().unwrap();
-
-        // Dedup
-        shared.state.chat.seen_message_ids.insert(event_id);
-
+        )
+        .await?;
+        self.broadcast_event(&event);
         Ok(())
     }
 }
@@ -1027,15 +1018,11 @@ pub(crate) fn test_client() -> (
         join_links: Vec::new(),
     };
 
-    #[allow(clippy::arc_with_non_send_sync)]
-    let shared = Arc::new(RwLock::new(shared_state));
-
-    // Create a tokio runtime for the actor system (tests run synchronously).
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let _guard = rt.enter();
     let sys = willow_actor::System::new();
     let sa = sys.spawn(client_actor::ClientStateActor {
-        shared: Arc::clone(&shared),
+        shared: shared_state,
         dirty: false,
         subscribers: Vec::new(),
     });
@@ -1045,7 +1032,6 @@ pub(crate) fn test_client() -> (
     std::mem::forget(sys);
 
     let client = ClientHandle {
-        shared,
         state_addr: sa,
         system: sh,
         network: None,

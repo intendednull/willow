@@ -1,12 +1,8 @@
 use super::*;
+use crate::client_actor::{mutate_state, read_state};
 
 impl<N: willow_network::Network> ClientHandle<N> {
     /// Connect to the P2P network.
-    ///
-    /// Subscribes to system and channel topics, spawns per-topic listener
-    /// tasks, broadcasts our profile, and requests sync.
-    ///
-    /// Returns a receiver for [`ClientEvent`]s emitted by listener tasks.
     pub async fn connect(&mut self, network: N) -> futures_mpsc::UnboundedReceiver<ClientEvent> {
         let network = Arc::new(network);
         self.network = Some(Arc::clone(&network));
@@ -14,13 +10,12 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let (event_tx, event_rx) = futures_mpsc::unbounded();
         self.event_tx = event_tx.clone();
 
-        {
-            let shared = self.shared.read().unwrap();
-            if shared.config.persistence {
-                storage::save_settings(&storage::NetworkSettings {
-                    relay_addr: shared.config.relay_addr.clone(),
-                });
-            }
+        let (persistence, relay_addr) = read_state(&self.state_addr, |s| {
+            (s.config.persistence, s.config.relay_addr.clone())
+        })
+        .await;
+        if persistence {
+            storage::save_settings(&storage::NetworkSettings { relay_addr });
         }
 
         // Subscribe to the server ops topic.
@@ -60,15 +55,14 @@ impl<N: willow_network::Network> ClientHandle<N> {
         }
 
         // Subscribe to channel topics from all servers.
-        let channel_topics: Vec<String> = {
-            let shared = self.shared.read().unwrap();
-            shared
-                .state
+        let channel_topics: Vec<String> = read_state(&self.state_addr, |s| {
+            s.state
                 .servers
                 .values()
                 .flat_map(|ctx| ctx.topic_map.keys().cloned())
                 .collect()
-        };
+        })
+        .await;
 
         for topic_str in channel_topics {
             if let Ok((sender, events)) = network
@@ -88,13 +82,10 @@ impl<N: willow_network::Network> ClientHandle<N> {
             }
         }
 
-        // Broadcast our profile.
         self.broadcast_profile_via_network();
+        self.request_sync_via_network().await;
 
-        // Request sync.
-        self.request_sync_via_network();
-
-        self.shared.write().unwrap().connected = true;
+        mutate_state(&self.state_addr, |s| s.connected = true).await;
         event_rx
     }
 
@@ -114,8 +105,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
     }
 
     /// Request sync from peers on the server ops topic.
-    pub(crate) fn request_sync_via_network(&self) {
-        let state_hash = self.shared.read().unwrap().state.event_store.latest_hash();
+    pub(crate) async fn request_sync_via_network(&self) {
+        let state_hash = read_state(&self.state_addr, |s| s.state.event_store.latest_hash()).await;
         let msg = ops::WireMessage::SyncRequest {
             state_hash: state_hash.clone(),
             topic: None,
@@ -124,16 +115,14 @@ impl<N: willow_network::Network> ClientHandle<N> {
             self.broadcast_on_topic(ops::SERVER_OPS_TOPIC, data);
         }
 
-        // Also request sync per channel topic.
-        let channel_topics: Vec<String> = {
-            let shared = self.shared.read().unwrap();
-            shared
-                .state
+        let channel_topics: Vec<String> = read_state(&self.state_addr, |s| {
+            s.state
                 .servers
                 .values()
                 .flat_map(|ctx| ctx.topic_map.keys().cloned())
                 .collect()
-        };
+        })
+        .await;
         for topic_str in channel_topics {
             let msg = ops::WireMessage::SyncRequest {
                 state_hash: state_hash.clone(),

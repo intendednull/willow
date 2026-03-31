@@ -1,12 +1,11 @@
 //! # Client State Actor
 //!
-//! Notification-based derived state for UI frameworks. The actor wraps
-//! `Arc<RwLock<SharedState>>` and provides subscriber notifications when
+//! Notification-based derived state for UI frameworks. The actor owns
+//! `SharedState` directly and provides subscriber notifications when
 //! state is mutated. Derived state actors subscribe and run selectors
 //! to efficiently update UI signals.
 
 use std::any::Any;
-use std::sync::{Arc, RwLock};
 
 use willow_actor::{Actor, Context, Handler, Message, Recipient};
 
@@ -14,13 +13,13 @@ use crate::SharedState;
 
 /// Client state actor — notification hub for state changes.
 pub struct ClientStateActor {
-    pub(crate) shared: Arc<RwLock<SharedState>>,
+    pub(crate) shared: SharedState,
     pub(crate) dirty: bool,
     pub(crate) subscribers: Vec<Recipient<StateChanged>>,
 }
 
-// Safety: Arc<RwLock> provides synchronized access. SharedState is !Send
-// due to rusqlite but is safe behind the lock. On WASM, trivially safe.
+// Safety: SharedState is !Send due to rusqlite but the actor runs on a
+// single dedicated thread. On WASM, trivially safe.
 unsafe impl Send for ClientStateActor {}
 
 impl Actor for ClientStateActor {
@@ -75,8 +74,7 @@ impl Handler<ReadState> for ClientStateActor {
         msg: ReadState,
         _ctx: &mut Context<Self>,
     ) -> impl std::future::Future<Output = Box<dyn Any + Send>> + Send {
-        let s = self.shared.read().unwrap();
-        let r = (msg.0)(&s);
+        let r = (msg.0)(&self.shared);
         async move { r }
     }
 }
@@ -128,9 +126,7 @@ impl Handler<MutateState> for ClientStateActor {
         msg: MutateState,
         _ctx: &mut Context<Self>,
     ) -> impl std::future::Future<Output = Box<dyn Any + Send>> + Send {
-        let mut s = self.shared.write().unwrap();
-        let r = (msg.0)(&mut s);
-        drop(s);
+        let r = (msg.0)(&mut self.shared);
         self.dirty = true;
         async move { r }
     }
