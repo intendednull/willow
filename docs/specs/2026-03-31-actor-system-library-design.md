@@ -281,7 +281,7 @@ impl_derive_source_tuple!(0: S1, 1: S2, 2: S3, 3: S4);
 ```rust
 /// Derives a value of type `T` from one or more source actors.
 /// The cached value is stored as `Arc<T>` — downstream reads are pointer bumps.
-pub struct DerivedActor<Src: DeriveSource, T: PartialEq + Send + 'static> {
+pub struct DerivedActor<Src: DeriveSource, T: PartialEq + Send + Sync + 'static> {
     sources: Src,
     selector: Arc<dyn Fn(&Src::Snapshot) -> T + Send + Sync>,
     cached: Option<Arc<T>>,
@@ -339,7 +339,7 @@ pub fn derived<Src, T>(
 ) -> StateRef<T>
 where
     Src: DeriveSource,
-    T: PartialEq + Send + 'static,
+    T: PartialEq + Send + Sync + 'static,
 ```
 
 ### Usage
@@ -558,7 +558,7 @@ possible and at runtime otherwise.
 /// A state machine actor with explicit transitions.
 pub trait StateMachine: Send + 'static {
     /// The state type (usually an enum).
-    type State: Send + Clone + 'static;
+    type State: Send + Sync + Clone + 'static;
 
     /// The input type (usually an enum of events/commands).
     type Input: Message<Result = TransitionResult<Self::State>> + Send + 'static;
@@ -978,7 +978,7 @@ async fn perf_state_actor_throughput() {
 
     let start = Instant::now();
     let n = 10_000;
-    for i in 0..n {
+    for _ in 0..n {
         mutate(&state, move |s| *s += 1).await;
     }
     let elapsed = start.elapsed();
