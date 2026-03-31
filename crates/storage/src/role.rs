@@ -65,7 +65,10 @@ impl WorkerRole for StorageRole {
                 channel,
                 before_timestamp,
                 limit,
-            } => match self.store.history(&server_id, &channel, before_timestamp, limit) {
+            } => match self
+                .store
+                .history(&server_id, &channel, before_timestamp, limit)
+            {
                 Ok((events, has_more)) => WorkerResponse::HistoryPage { events, has_more },
                 Err(e) => WorkerResponse::Denied {
                     reason: format!("query failed: {e}"),
@@ -88,7 +91,7 @@ mod tests {
         Event {
             id: id.to_string(),
             parent_hash: StateHash::ZERO,
-            author: "peer-1".to_string(),
+            author: willow_identity::Identity::generate().endpoint_id(),
             timestamp_ms: ts,
             kind: EventKind::Message {
                 channel_id: channel.to_string(),
@@ -173,7 +176,8 @@ mod tests {
 
         match role.role_info() {
             WorkerRoleInfo::Storage {
-                total_events_stored, ..
+                total_events_stored,
+                ..
             } => assert_eq!(total_events_stored, 1),
             _ => panic!("expected Storage"),
         }

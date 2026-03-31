@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust, libp2p (gossipsub, kademlia), tokio (multi-threaded runtime, mpsc/oneshot channels), SQLite (storage node), Docker
 
-**Spec:** `docs/superpowers/specs/2026-03-27-worker-nodes-design.md`
+**Spec:** `docs/specs/2026-03-27-worker-nodes-design.md`
 
 ---
 
@@ -3296,7 +3296,7 @@ Add to `crates/web/src/state.rs` (or a new `crates/web/src/constants.rs`):
 /// `willow-replay --print-peer-id` and `willow-storage --print-peer-id`.
 pub const PLATFORM_WORKERS: &[(&str, &str)] = &[
     // ("peer_id", "role_name")
-    // Populated after deployment — see docs/superpowers/specs/2026-03-27-worker-nodes-design.md
+    // Populated after deployment — see docs/specs/2026-03-27-worker-nodes-design.md
 ];
 ```
 

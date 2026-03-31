@@ -17,12 +17,15 @@
 //!
 //! ```
 //! use willow_state::{Event, EventKind, ServerState, StateHash, apply};
+//! use willow_identity::Identity;
 //!
-//! let mut state = ServerState::new("server-1", "My Server", "owner-peer");
+//! let owner = Identity::generate();
+//! let owner_id = owner.endpoint_id();
+//! let mut state = ServerState::new("server-1", "My Server", owner_id);
 //! let event = Event {
 //!     id: "evt-1".to_string(),
 //!     parent_hash: state.hash(),
-//!     author: "owner-peer".to_string(),
+//!     author: owner_id,
 //!     timestamp_ms: 1000,
 //!     kind: EventKind::CreateChannel {
 //!         name: "general".to_string(),
@@ -53,6 +56,7 @@ pub use store::{EventStore, InMemoryStore};
 pub use types::{Channel, ChatMessage, Member, Permission, Profile, Role};
 
 use serde::{Deserialize, Serialize};
+use willow_identity::EndpointId;
 
 /// Default channel kind for deserialization backward compatibility.
 fn default_create_channel_kind() -> String {
@@ -69,8 +73,8 @@ pub struct Event {
     pub id: String,
     /// Hash of the state this event was applied against.
     pub parent_hash: StateHash,
-    /// Author's peer ID.
-    pub author: String,
+    /// Author's endpoint ID.
+    pub author: EndpointId,
     /// Wall-clock timestamp in milliseconds (display hint, not used for ordering).
     pub timestamp_ms: u64,
     /// The mutation to apply.
@@ -129,7 +133,7 @@ pub enum EventKind {
     /// Assign a role to a member.
     AssignRole {
         /// The member's peer ID.
-        peer_id: String,
+        peer_id: EndpointId,
         /// The role ID to assign.
         role_id: String,
     },
@@ -138,21 +142,21 @@ pub enum EventKind {
     /// Grant a permission to a peer.
     GrantPermission {
         /// The peer ID to grant the permission to.
-        peer_id: String,
+        peer_id: EndpointId,
         /// The permission to grant.
         permission: types::Permission,
     },
     /// Revoke a permission from a peer.
     RevokePermission {
         /// The peer ID to revoke the permission from.
-        peer_id: String,
+        peer_id: EndpointId,
         /// The permission to revoke.
         permission: types::Permission,
     },
     /// Remove a member from the server.
     KickMember {
         /// The peer ID to kick.
-        peer_id: String,
+        peer_id: EndpointId,
     },
 
     // -- Chat --
@@ -198,7 +202,7 @@ pub enum EventKind {
         /// The channel ID.
         channel_id: String,
         /// Encrypted key material for each recipient: (peer_id, encrypted_key_bytes).
-        encrypted_keys: Vec<(String, Vec<u8>)>,
+        encrypted_keys: Vec<(EndpointId, Vec<u8>)>,
     },
 
     // -- Pinning --
@@ -419,18 +423,15 @@ fn apply_inner(state: &mut ServerState, event: &Event) -> ApplyResult {
         } => {
             state
                 .peer_permissions
-                .entry(peer_id.clone())
+                .entry(*peer_id)
                 .or_default()
                 .insert(permission.clone());
             // Also ensure they are a member.
-            state
-                .members
-                .entry(peer_id.clone())
-                .or_insert_with(|| Member {
-                    peer_id: peer_id.clone(),
-                    roles: std::collections::HashSet::new(),
-                    display_name: None,
-                });
+            state.members.entry(*peer_id).or_insert_with(|| Member {
+                peer_id: *peer_id,
+                roles: std::collections::HashSet::new(),
+                display_name: None,
+            });
         }
 
         EventKind::RevokePermission {
@@ -461,7 +462,7 @@ fn apply_inner(state: &mut ServerState, event: &Event) -> ApplyResult {
             state.messages.push(ChatMessage {
                 id: event.id.clone(),
                 channel_id: channel_id.clone(),
-                author: event.author.clone(),
+                author: event.author,
                 body: body.clone(),
                 timestamp_ms: event.timestamp_ms,
                 edited: false,
@@ -494,15 +495,15 @@ fn apply_inner(state: &mut ServerState, event: &Event) -> ApplyResult {
                 msg.reactions
                     .entry(emoji.clone())
                     .or_default()
-                    .push(event.author.clone());
+                    .push(event.author);
             }
         }
 
         EventKind::SetProfile { display_name } => {
             state.profiles.insert(
-                event.author.clone(),
+                event.author,
                 Profile {
-                    peer_id: event.author.clone(),
+                    peer_id: event.author,
                     display_name: display_name.clone(),
                 },
             );

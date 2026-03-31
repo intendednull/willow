@@ -9,7 +9,7 @@ use crate::components::{
     AddServerPanel, CallPage, ChannelHeader, ChatInput, CommandPalette, FileShareButton, JoinPage,
     MemberList, MessageList, PinnedPanel, ServerList, SettingsPanel, Sidebar, WelcomeScreen,
 };
-use crate::event_processing::{extract_roles, process_event_batch, refresh_all_signals};
+use crate::event_processing::process_event_batch;
 use crate::handlers;
 use crate::icons;
 use crate::state::{self, ChannelViewState, SettingsTab};
@@ -34,7 +34,7 @@ pub fn toggle_theme() {
 const LOADING_TIMEOUT_MS: u32 = 5_000;
 
 /// Wrapper around `willow_client::ClientHandle` that is `Send` for single-threaded WASM.
-pub type WebClientHandle = SendWrapper<ClientHandle>;
+pub type WebClientHandle = SendWrapper<ClientHandle<willow_network::iroh::IrohNetwork>>;
 
 /// Wrapper around `Rc<RefCell<VoiceManager>>` that is `Send` for single-threaded WASM.
 pub type VoiceManagerHandle = SendWrapper<Rc<RefCell<VoiceManager>>>;
@@ -43,13 +43,13 @@ pub type VoiceManagerHandle = SendWrapper<Rc<RefCell<VoiceManager>>>;
 pub const DEFAULT_RELAY: &str =
     "/dns4/willow.intendednull.com/tcp/9443/wss/p2p/12D3KooWMBmUF1rHYG5CneKi8JZfKdMAciJd4oCgknTJkbwCUurd";
 
-fn new_client() -> (WebClientHandle, willow_client::ClientEventLoop) {
+fn new_client() -> WebClientHandle {
     let config = ClientConfig {
         relay_addr: Some(DEFAULT_RELAY.to_string()),
         ..ClientConfig::default()
     };
-    let (handle, event_loop) = ClientHandle::new(config);
-    (SendWrapper::new(handle), event_loop)
+    let (handle, _event_loop) = ClientHandle::<willow_network::iroh::IrohNetwork>::new(config);
+    SendWrapper::new(handle)
 }
 
 /// Root application component. Creates the `ClientHandle`, connects to the P2P
@@ -59,9 +59,8 @@ fn new_client() -> (WebClientHandle, willow_client::ClientEventLoop) {
 pub fn App() -> impl IntoView {
     init_theme();
 
-    // Create and connect the client.
-    let (handle, event_loop) = new_client();
-    handle.connect();
+    // Create the client (connection happens async below).
+    let handle = new_client();
 
     // Create all signals.
     let (app_state, write) = state::create_signals();
@@ -88,7 +87,9 @@ pub fn App() -> impl IntoView {
                     "ice" => VoiceSignalPayload::IceCandidate(payload.to_string()),
                     _ => return,
                 };
-                voice_signal_handle.send_voice_signal(&ch_id, target_peer, signal);
+                if let Ok(target) = target_peer.parse::<willow_identity::EndpointId>() {
+                    voice_signal_handle.send_voice_signal(&ch_id, target, signal);
+                }
             },
             move |peer_id: &str, stream: Option<web_sys::MediaStream>| {
                 let pid = peer_id.to_string();
@@ -137,8 +138,8 @@ pub fn App() -> impl IntoView {
         closure.forget();
     }
 
-    // Populate initial state from the client.
-    refresh_all_signals(&handle, &write);
+    // Wire derived signals that auto-update from state actor changes.
+    crate::state::wire_derived_signals(handle.state_addr(), handle.actor_system(), &write);
 
     // Detect join link from URL fragment.
     {
@@ -159,21 +160,71 @@ pub fn App() -> impl IntoView {
         }
     }
 
+    // Listen for hash changes so navigation to #join=... works after initial load.
+    {
+        use wasm_bindgen::JsCast;
+        let write_for_hash = write;
+        let closure = wasm_bindgen::closure::Closure::<dyn Fn(web_sys::Event)>::new(
+            move |_ev: web_sys::Event| {
+                let join_token_value = web_sys::window()
+                    .and_then(|w| w.location().hash().ok())
+                    .and_then(|hash| hash.strip_prefix("#join=").map(|s| s.to_string()));
+
+                if let Some(ref token_str) = join_token_value {
+                    if let Some(token) = willow_client::ops::JoinToken::decode(token_str) {
+                        write_for_hash
+                            .ui
+                            .set_join_token
+                            .set(Some(state::ParsedJoinToken {
+                                raw: token_str.clone(),
+                                link_id: token.link_id,
+                                server_name: token.server_name,
+                                inviter_name: token.inviter_name,
+                            }));
+                        write_for_hash.ui.set_join_status.set(String::new());
+                    }
+                }
+            },
+        );
+        if let Some(window) = web_sys::window() {
+            let _ = window
+                .add_event_listener_with_callback("hashchange", closure.as_ref().unchecked_ref());
+        }
+        closure.forget();
+    }
+
     // Spawn the event loop and signal updater.
     {
+        let mut handle_for_connect = (*handle).clone();
         let handle_for_events = handle.clone();
         let write_for_events = write;
         let state_for_events = app_state;
         let vm_for_events = voice_manager.clone();
 
-        let (client_event_tx, mut client_event_rx) =
-            futures::channel::mpsc::unbounded::<ClientEvent>();
-
-        // Spawn the event loop — processes network events and sends ClientEvents.
-        wasm_bindgen_futures::spawn_local(event_loop.run(client_event_tx));
-
-        // Spawn the signal updater — receives ClientEvents and updates signals.
+        // Spawn a single async task that creates the network, connects,
+        // and then processes the resulting ClientEvent stream.
         wasm_bindgen_futures::spawn_local(async move {
+            // Build the iroh network configuration from our identity.
+            let iroh_config = willow_network::iroh::Config {
+                secret_key: handle_for_connect.identity().secret_key().clone(),
+                relay_url: None,
+                bootstrap_peers: vec![],
+                mdns: false,
+            };
+
+            // Create the iroh network node.
+            let network = match willow_network::iroh::IrohNetwork::new(iroh_config).await {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::error!(%e, "failed to create IrohNetwork");
+                    return;
+                }
+            };
+
+            // Connect to the P2P network. This subscribes to topics, spawns
+            // listeners, and returns the event receiver.
+            let mut client_event_rx = handle_for_connect.connect(network).await;
+
             use futures::StreamExt;
             while let Some(event) = client_event_rx.next().await {
                 // Collect all pending events into a batch.
@@ -215,7 +266,7 @@ pub fn App() -> impl IntoView {
             loop {
                 gloo_timers::future::TimeoutFuture::new(2_000).await;
                 let ch = state_typing.chat.current_channel.get_untracked();
-                let typers = handle_typing.typing_in(&ch);
+                let typers = handle_typing.typing_in(&ch).await;
                 // Read the current channel_views, extract typing for this channel.
                 let current_views = state_typing.chat.channel_views.get_untracked();
                 let current_typing = current_views
@@ -269,7 +320,10 @@ pub fn App() -> impl IntoView {
     let vm_disconnect = voice_manager.clone();
     let handle_voice_leave = handle.clone();
     let on_voice_disconnect = move |_: ()| {
-        handle_voice_leave.leave_voice();
+        let handle_voice_leave = handle_voice_leave.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            handle_voice_leave.leave_voice().await;
+        });
         vm_disconnect.borrow_mut().close_all();
         write.voice.set_voice_channel.set(None);
         write.voice.set_voice_channel_name.set(String::new());
@@ -290,16 +344,16 @@ pub fn App() -> impl IntoView {
             .set(crate::state::CallLayout::default());
     };
 
-    // Welcome screen callback that refreshes all signals.
+    // Welcome screen callback — notify actor so derived signals refresh.
     let handle_welcome = handle.clone();
     let on_welcome_done = move |_: ()| {
-        refresh_all_signals(&handle_welcome, &write);
+        handle_welcome.notify_mutation();
     };
 
     // Store refresh function for reactive closures.
     let handle_for_refresh = handle.clone();
     let refresh_stored = StoredValue::new(SendWrapper::new(Rc::new(move || {
-        refresh_all_signals(&handle_for_refresh, &write);
+        handle_for_refresh.notify_mutation();
     }) as Rc<dyn Fn()>));
 
     // Aliases for view closures.
@@ -417,7 +471,10 @@ pub fn App() -> impl IntoView {
                                     // If in a different voice channel, disconnect from the old one first.
                                     let current_vc = app_state.voice.voice_channel.get_untracked();
                                     if current_vc.is_some() && current_vc.as_deref() != Some(&channel_name) {
-                                        vc_handle.leave_voice();
+                                        let vc_leave = vc_handle.clone();
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            vc_leave.leave_voice().await;
+                                        });
                                         vm.borrow_mut().close_all();
                                         write.voice.set_voice_channel.set(None);
                                         write.voice.set_voice_channel_name.set(String::new());
@@ -469,25 +526,27 @@ pub fn App() -> impl IntoView {
                                         use wasm_bindgen::JsCast;
                                         let stream: web_sys::MediaStream = stream.unchecked_into();
                                         vm2.borrow_mut().set_local_stream(stream);
-                                        vc.join_voice(&ch_name);
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            vc.join_voice(&ch_name).await;
 
-                                        // Seed participants from client state after joining.
-                                        // This ensures that on reconnect we pick up peers
-                                        // who are already in the channel (their VoiceJoined
-                                        // event was received before we joined).
-                                        let parts = vc.voice_participants(&ch_name);
-                                        write.voice.set_voice_participants_map.update(|m| {
-                                            let list = m.entry(ch_name.clone()).or_default();
-                                            for p in parts {
-                                                if !list.contains(&p) {
-                                                    list.push(p);
+                                            // Seed participants from client state after joining.
+                                            // This ensures that on reconnect we pick up peers
+                                            // who are already in the channel (their VoiceJoined
+                                            // event was received before we joined).
+                                            let parts: Vec<String> = vc.voice_participants(&ch_name).await.iter().map(|p| p.to_string()).collect();
+                                            write.voice.set_voice_participants_map.update(|m| {
+                                                let list = m.entry(ch_name.clone()).or_default();
+                                                for p in parts {
+                                                    if !list.contains(&p) {
+                                                        list.push(p);
+                                                    }
                                                 }
-                                            }
-                                            // Also add the local user.
-                                            let my_id = vc.peer_id();
-                                            if !list.contains(&my_id) {
-                                                list.push(my_id);
-                                            }
+                                                // Also add the local user.
+                                                let my_id = vc.peer_id();
+                                                if !list.contains(&my_id) {
+                                                    list.push(my_id);
+                                                }
+                                            });
                                         });
                                     });
                                     let on_error = wasm_bindgen::closure::Closure::once(move |_err: wasm_bindgen::JsValue| {
@@ -511,8 +570,7 @@ pub fn App() -> impl IntoView {
                             on_channel_created={
                                 let ch_handle = handle_cc.clone();
                                 move |_| {
-                                    write.chat.set_channels.set(ch_handle.channels());
-                                    write.server.set_roles.set(extract_roles(&ch_handle));
+                                    ch_handle.notify_mutation();
                                 }
                             }
                         />
@@ -562,7 +620,10 @@ pub fn App() -> impl IntoView {
                                     let on_typing_cb = {
                                         let h = handle_ty.clone();
                                         Callback::new(move |_: ()| {
-                                            h.send_typing();
+                                            let h = h.clone();
+                                            wasm_bindgen_futures::spawn_local(async move {
+                                                h.send_typing().await;
+                                            });
                                         })
                                     };
                                     let on_pin_cb = {

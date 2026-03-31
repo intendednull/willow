@@ -54,7 +54,7 @@ impl ReplayRole {
             .servers
             .entry(server_id.to_string())
             .or_insert_with(|| ServerData {
-                state: ServerState::new(server_id, server_id, event.author.clone()),
+                state: ServerState::new(server_id, server_id, event.author),
                 events: VecDeque::new(),
                 max_events: self.config.max_events_per_server,
             });
@@ -98,11 +98,7 @@ impl ReplayRole {
 
 impl WorkerRole for ReplayRole {
     fn role_info(&self) -> WorkerRoleInfo {
-        let total_events: u32 = self
-            .servers
-            .values()
-            .map(|s| s.events.len() as u32)
-            .sum();
+        let total_events: u32 = self.servers.values().map(|s| s.events.len() as u32).sum();
         WorkerRoleInfo::Replay {
             servers_loaded: self.servers.len() as u32,
             events_buffered: total_events,
@@ -128,7 +124,7 @@ impl WorkerRole for ReplayRole {
                     // Client is too far behind — send full snapshot.
                     match self.servers.get(&server_id) {
                         Some(data) => WorkerResponse::Snapshot {
-                            state: data.state.clone(),
+                            state: Box::new(data.state.clone()),
                         },
                         None => WorkerResponse::Denied {
                             reason: format!("unknown server: {server_id}"),
@@ -152,7 +148,7 @@ mod tests {
         Event {
             id: id.to_string(),
             parent_hash: StateHash::ZERO,
-            author: "peer-1".to_string(),
+            author: willow_identity::Identity::generate().endpoint_id(),
             timestamp_ms: ts,
             kind: EventKind::Message {
                 channel_id: "general".to_string(),

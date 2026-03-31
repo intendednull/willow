@@ -67,7 +67,7 @@ fn make_msg(author: &str, body: &str, timestamp_ms: u64) -> willow_client::Displ
     willow_client::DisplayMessage {
         id: format!("test-msg-{id}"),
         channel_id: "test-channel".into(),
-        author_peer_id: author.into(),
+        author_peer_id: willow_identity::Identity::generate().endpoint_id(),
         author_display_name: author.into(),
         body: body.into(),
         is_local: false,

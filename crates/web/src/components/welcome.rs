@@ -13,6 +13,7 @@ use crate::util::copy_to_clipboard;
 pub fn WelcomeScreen(on_done: impl Fn(()) + Send + Clone + 'static) -> impl IntoView {
     let handle = use_context::<WebClientHandle>().unwrap();
     let peer_id = handle.peer_id();
+    let peer_id_short = peer_id.get(..10).unwrap_or(&peer_id).to_string();
     let (copy_label, set_copy_label) = signal("Copy");
 
     view! {
@@ -28,7 +29,7 @@ pub fn WelcomeScreen(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Into
                         "Share this with a server owner so they can invite you."
                     </p>
                     <div class="welcome-peer-id">
-                        <code class="peer-id-text">{peer_id.clone()}</code>
+                        <code class="peer-id-text">{peer_id_short}</code>
                         <button
                             class="btn btn-sm"
                             on:click={

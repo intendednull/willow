@@ -35,8 +35,7 @@ test.describe('Multi-peer mobile', () => {
     }
   });
 
-  test.fixme('new channels visible via hamburger menu', async ({ browser }) => {
-    // Channel sync via gossipsub can exceed test timeframes on mobile.
+  test('new channels visible via hamburger menu', async ({ browser }) => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Mobile Chan', 'Alice', 'Bob');
     try {
       // Alice creates a new channel.
@@ -67,8 +66,7 @@ test.describe('Multi-peer mobile', () => {
     }
   });
 
-  test.fixme('channel switch during active sync — messages in new channel', async ({ browser }) => {
-    // Channel sync + message sync can exceed test timeframes on mobile.
+  test('channel switch during active sync — messages in new channel', async ({ browser }) => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Mobile Switch', 'Alice', 'Bob');
     try {
       // Alice creates a channel.

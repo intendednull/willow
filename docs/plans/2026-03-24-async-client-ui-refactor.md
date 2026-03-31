@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust, Leptos 0.7 (CSR), futures 0.3, wasm-bindgen-futures, gloo-timers, futures::channel::mpsc
 
-**Spec:** `docs/superpowers/specs/2026-03-24-async-client-ui-refactor-design.md`
+**Spec:** `docs/specs/2026-03-24-async-client-ui-refactor-design.md`
 
 ---
 

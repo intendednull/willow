@@ -8,12 +8,13 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use willow_common::{WorkerAnnouncement, WorkerRoleInfo};
+use willow_identity::EndpointId;
 
 /// Information about a known worker.
 #[derive(Debug, Clone)]
 pub struct WorkerInfo {
     /// The worker's peer ID.
-    pub peer_id: String,
+    pub peer_id: EndpointId,
     /// Role identity and capacity info.
     pub role: WorkerRoleInfo,
     /// Server IDs this worker serves.
@@ -24,7 +25,7 @@ pub struct WorkerInfo {
 
 /// Cache of discovered workers with TTL-based eviction.
 pub struct WorkerCache {
-    workers: HashMap<String, WorkerInfo>,
+    workers: HashMap<EndpointId, WorkerInfo>,
     ttl: Duration,
 }
 
@@ -40,9 +41,9 @@ impl WorkerCache {
     /// Update the cache from a heartbeat announcement.
     pub fn update(&mut self, announcement: &WorkerAnnouncement) {
         self.workers.insert(
-            announcement.peer_id.clone(),
+            announcement.peer_id,
             WorkerInfo {
-                peer_id: announcement.peer_id.clone(),
+                peer_id: announcement.peer_id,
                 role: announcement.role.clone(),
                 servers: announcement.servers.clone(),
                 last_seen: Instant::now(),
@@ -51,7 +52,7 @@ impl WorkerCache {
     }
 
     /// Remove a worker (e.g., on departure message).
-    pub fn remove(&mut self, peer_id: &str) {
+    pub fn remove(&mut self, peer_id: &EndpointId) {
         self.workers.remove(peer_id);
     }
 
@@ -109,10 +110,15 @@ impl WorkerCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use willow_identity::Identity;
 
-    fn make_replay_announcement(peer_id: &str, servers: Vec<&str>) -> WorkerAnnouncement {
+    fn gen_id() -> EndpointId {
+        Identity::generate().endpoint_id()
+    }
+
+    fn make_replay_announcement(peer_id: EndpointId, servers: Vec<&str>) -> WorkerAnnouncement {
         WorkerAnnouncement {
-            peer_id: peer_id.to_string(),
+            peer_id,
             role: WorkerRoleInfo::Replay {
                 servers_loaded: servers.len() as u32,
                 events_buffered: 100,
@@ -123,9 +129,9 @@ mod tests {
         }
     }
 
-    fn make_storage_announcement(peer_id: &str, servers: Vec<&str>) -> WorkerAnnouncement {
+    fn make_storage_announcement(peer_id: EndpointId, servers: Vec<&str>) -> WorkerAnnouncement {
         WorkerAnnouncement {
-            peer_id: peer_id.to_string(),
+            peer_id,
             role: WorkerRoleInfo::Storage {
                 servers_tracked: servers.len() as u32,
                 total_events_stored: 5000,
@@ -139,15 +145,16 @@ mod tests {
     #[test]
     fn update_adds_worker() {
         let mut cache = WorkerCache::new(Duration::from_secs(30));
-        cache.update(&make_replay_announcement("w1", vec!["srv-1"]));
+        cache.update(&make_replay_announcement(gen_id(), vec!["srv-1"]));
         assert_eq!(cache.len(), 1);
     }
 
     #[test]
     fn update_replaces_existing() {
         let mut cache = WorkerCache::new(Duration::from_secs(30));
-        cache.update(&make_replay_announcement("w1", vec!["srv-1"]));
-        cache.update(&make_replay_announcement("w1", vec!["srv-1", "srv-2"]));
+        let w1 = gen_id();
+        cache.update(&make_replay_announcement(w1, vec!["srv-1"]));
+        cache.update(&make_replay_announcement(w1, vec!["srv-1", "srv-2"]));
         assert_eq!(cache.len(), 1);
         assert_eq!(cache.replay_workers_for_server("srv-2").len(), 1);
     }
@@ -155,15 +162,16 @@ mod tests {
     #[test]
     fn remove_evicts_worker() {
         let mut cache = WorkerCache::new(Duration::from_secs(30));
-        cache.update(&make_replay_announcement("w1", vec!["srv-1"]));
-        cache.remove("w1");
+        let w1 = gen_id();
+        cache.update(&make_replay_announcement(w1, vec!["srv-1"]));
+        cache.remove(&w1);
         assert!(cache.is_empty());
     }
 
     #[test]
     fn evict_stale_removes_expired() {
         let mut cache = WorkerCache::new(Duration::from_millis(1));
-        cache.update(&make_replay_announcement("w1", vec!["srv-1"]));
+        cache.update(&make_replay_announcement(gen_id(), vec!["srv-1"]));
         std::thread::sleep(Duration::from_millis(10));
         cache.evict_stale();
         assert!(cache.is_empty());
@@ -172,7 +180,7 @@ mod tests {
     #[test]
     fn evict_stale_keeps_fresh() {
         let mut cache = WorkerCache::new(Duration::from_secs(30));
-        cache.update(&make_replay_announcement("w1", vec!["srv-1"]));
+        cache.update(&make_replay_announcement(gen_id(), vec!["srv-1"]));
         cache.evict_stale();
         assert_eq!(cache.len(), 1);
     }
@@ -180,21 +188,22 @@ mod tests {
     #[test]
     fn replay_workers_for_server_filters_by_role_and_server() {
         let mut cache = WorkerCache::new(Duration::from_secs(30));
-        cache.update(&make_replay_announcement("r1", vec!["srv-1"]));
-        cache.update(&make_replay_announcement("r2", vec!["srv-2"]));
-        cache.update(&make_storage_announcement("s1", vec!["srv-1"]));
+        let r1 = gen_id();
+        cache.update(&make_replay_announcement(r1, vec!["srv-1"]));
+        cache.update(&make_replay_announcement(gen_id(), vec!["srv-2"]));
+        cache.update(&make_storage_announcement(gen_id(), vec!["srv-1"]));
 
         let workers = cache.replay_workers_for_server("srv-1");
         assert_eq!(workers.len(), 1);
-        assert_eq!(workers[0].peer_id, "r1");
+        assert_eq!(workers[0].peer_id, r1);
     }
 
     #[test]
     fn storage_workers_for_server_filters() {
         let mut cache = WorkerCache::new(Duration::from_secs(30));
-        cache.update(&make_replay_announcement("r1", vec!["srv-1"]));
-        cache.update(&make_storage_announcement("s1", vec!["srv-1"]));
-        cache.update(&make_storage_announcement("s2", vec!["srv-1"]));
+        cache.update(&make_replay_announcement(gen_id(), vec!["srv-1"]));
+        cache.update(&make_storage_announcement(gen_id(), vec!["srv-1"]));
+        cache.update(&make_storage_announcement(gen_id(), vec!["srv-1"]));
 
         assert_eq!(cache.storage_workers_for_server("srv-1").len(), 2);
     }
@@ -208,22 +217,25 @@ mod tests {
     #[test]
     fn pick_replay_returns_worker() {
         let mut cache = WorkerCache::new(Duration::from_secs(30));
-        cache.update(&make_replay_announcement("r1", vec!["srv-1"]));
+        cache.update(&make_replay_announcement(gen_id(), vec!["srv-1"]));
         assert!(cache.pick_replay("srv-1").is_some());
     }
 
     #[test]
     fn multiple_replay_workers_for_same_server() {
         let mut cache = WorkerCache::new(Duration::from_secs(30));
-        cache.update(&make_replay_announcement("r1", vec!["srv-1"]));
-        cache.update(&make_replay_announcement("r2", vec!["srv-1"]));
+        cache.update(&make_replay_announcement(gen_id(), vec!["srv-1"]));
+        cache.update(&make_replay_announcement(gen_id(), vec!["srv-1"]));
         assert_eq!(cache.replay_workers_for_server("srv-1").len(), 2);
     }
 
     #[test]
     fn worker_serving_multiple_servers() {
         let mut cache = WorkerCache::new(Duration::from_secs(30));
-        cache.update(&make_replay_announcement("r1", vec!["srv-1", "srv-2", "srv-3"]));
+        cache.update(&make_replay_announcement(
+            gen_id(),
+            vec!["srv-1", "srv-2", "srv-3"],
+        ));
 
         assert_eq!(cache.replay_workers_for_server("srv-1").len(), 1);
         assert_eq!(cache.replay_workers_for_server("srv-2").len(), 1);

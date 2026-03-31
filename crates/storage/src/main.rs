@@ -14,9 +14,9 @@ struct Cli {
     #[arg(long, default_value = "/etc/willow/storage.key")]
     identity_path: String,
 
-    /// Relay multiaddr to connect through.
+    /// Iroh relay URL to connect through.
     #[arg(long)]
-    relay: Option<String>,
+    relay_url: Option<String>,
 
     /// Path to SQLite database.
     #[arg(long, default_value = "/var/lib/willow/storage.db")]
@@ -39,8 +39,7 @@ struct Cli {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -56,27 +55,37 @@ async fn main() -> anyhow::Result<()> {
         return willow_worker::identity::print_peer_id(&cli.identity_path);
     }
 
-    let relay = cli
-        .relay
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("--relay is required"))?;
+    let identity = willow_worker::identity::load_or_generate(&cli.identity_path)?;
+
+    let relay_url = cli.relay_url.as_deref().map(|url| {
+        url.parse::<willow_network::iroh::RelayUrl>()
+            .expect("invalid relay URL")
+    });
 
     tracing::info!(
         db_path = %cli.db_path,
         sync_interval = cli.sync_interval,
-        %relay,
+        relay_url = ?relay_url,
         "starting storage node"
     );
+
+    let iroh_config = willow_network::iroh::Config {
+        secret_key: identity.secret_key().clone(),
+        relay_url,
+        bootstrap_peers: vec![],
+        mdns: false,
+    };
+    let network = willow_network::iroh::IrohNetwork::new(iroh_config).await?;
 
     let store = StorageEventStore::open(&cli.db_path)?;
     let role = StorageRole::new(store);
 
     let config = willow_worker::WorkerConfig {
         identity_path: cli.identity_path,
-        relay_addr: relay.to_string(),
+        relay_url: cli.relay_url,
         sync_interval_secs: cli.sync_interval,
         allocation: willow_worker::AllocationStrategy::Global,
     };
 
-    willow_worker::runtime::run(Box::new(role), config).await
+    willow_worker::runtime::run(Box::new(role), config, network).await
 }

@@ -2,8 +2,8 @@ import { Page, Browser, BrowserContext, expect } from '@playwright/test';
 
 /** Wait for the WASM app to load (loading spinner disappears). */
 export async function waitForApp(page: Page) {
-  // Wait for the app to render (either welcome screen or chat).
-  await page.waitForSelector('.welcome-screen, .app, .sidebar', {
+  // Wait for the app to render (welcome screen, chat, or join page).
+  await page.waitForSelector('.welcome-screen, .app, .sidebar, .join-card', {
     timeout: 30_000,
   });
   // Give WASM a moment to stabilize.
@@ -171,31 +171,28 @@ export async function closeSidebar(page: Page) {
   }
 }
 
-/** Opens the member list panel. The toggle button exists on both desktop and mobile. */
+/** Opens the member list panel. On desktop (>900px) it's always visible — no-op. */
 export async function openMemberList(page: Page) {
-  // The member panel starts hidden; the toggle button (.mobile-members-toggle)
-  // exists on both viewports despite the class name.
+  // On desktop the member list is always visible (display: contents); no toggle needed.
+  if ((page.viewportSize()?.width ?? 1024) > 900) return;
+
   const panel = page.locator('.member-list-wrapper.open');
   if (await panel.isVisible().catch(() => false)) return; // Already open
   await page.locator('.mobile-members-toggle').click();
   await page.waitForTimeout(500);
 }
 
-/** Closes the member list panel. */
+/** Closes the member list panel. On desktop (>900px) it's always visible — no-op. */
 export async function closeMemberList(page: Page) {
-  if (isMobile(page)) {
-    const overlay = page.locator('.members-overlay.open');
-    if (await overlay.isVisible()) {
-      await overlay.click();
-      await page.waitForTimeout(300);
-    }
-  } else {
-    // On desktop, re-click the toggle to close.
-    const panel = page.locator('.member-list-wrapper.open');
-    if (await panel.isVisible().catch(() => false)) {
-      await page.locator('.mobile-members-toggle').click();
-      await page.waitForTimeout(300);
-    }
+  // On desktop the member list is always visible; nothing to close.
+  if ((page.viewportSize()?.width ?? 1024) > 900) return;
+
+  // Re-click the toggle to close (works on both mobile and tablet).
+  // Use force:true because the open panel may cover the toggle button.
+  const panel = page.locator('.member-list-wrapper.open');
+  if (await panel.isVisible().catch(() => false)) {
+    await page.locator('.mobile-members-toggle').click({ force: true });
+    await page.waitForTimeout(300);
   }
 }
 
@@ -227,8 +224,10 @@ export async function joinViaInvite(page: Page, inviteCode: string, displayName?
   // Wait for the join confirmation form to appear.
   await page.locator('button', { hasText: 'Join Server' }).waitFor({ timeout: 5_000 });
   if (displayName) {
-    // The display name input has placeholder "Your name...".
-    const dnInput = page.locator('input[placeholder*="name" i]').first();
+    // Target the JOIN form's display name input specifically —
+    // the create-server section has an identical placeholder, so we
+    // scope to the join form using its unique "welcome-hint" class.
+    const dnInput = page.locator('.welcome-hint ~ input[placeholder*="name" i]').first();
     if (await dnInput.isVisible()) {
       await dnInput.fill(displayName);
       await page.waitForTimeout(200);
@@ -267,12 +266,14 @@ export async function setupTwoPeers(
 
   // Wait for display name sync: peer2's name should appear in peer1's member list.
   if (peer2Name) {
+    await openMemberList(page1);
     try {
       await page1.locator('.member-item', { hasText: peer2Name })
         .waitFor({ timeout: 15_000 });
     } catch {
       // Display name sync may be slow; proceed anyway.
     }
+    await closeMemberList(page1);
   }
 
   return { ctx1, ctx2, page1, page2 };
@@ -366,10 +367,10 @@ export async function reactToMessage(page: Page, messageText: string, emojiIndex
 /** Trusts a peer by name from the member list. */
 export async function trustPeer(page: Page, peerName: string) {
   await openMemberList(page);
-  // Wait for the member to appear (display name may take time to sync).
   const member = page.locator('.member-item', { hasText: peerName });
   await member.waitFor({ timeout: 30_000 });
-  await member.locator('button', { hasText: 'Trust' }).click();
+  // Use a regex to avoid matching "Untrust" when looking for "Trust".
+  await member.locator('button').filter({ hasText: /^Trust$/ }).click();
   await page.waitForTimeout(500);
   await closeMemberList(page);
 }

@@ -11,11 +11,12 @@ path = "src/main.rs"
 willow-worker = { path = "../worker" }
 willow-state = { path = "../state" }
 willow-identity = { path = "../identity" }
+willow-network = { path = "../network" }
 clap = { version = "4", features = ["derive"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 
 [dev-dependencies]
 uuid = { workspace = true }

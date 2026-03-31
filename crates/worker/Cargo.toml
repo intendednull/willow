@@ -4,18 +4,22 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+willow-actor = { path = "../actor" }
 willow-common = { path = "../common" }
 willow-state = { path = "../state" }
 willow-identity = { path = "../identity" }
 willow-transport = { path = "../transport" }
 willow-network = { path = "../network" }
+futures-core = "0.3"
 serde = { workspace = true }
+bytes = { workspace = true }
 bincode = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 anyhow = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+willow-network = { path = "../network", features = ["test-utils"] }
 tempfile = "3"

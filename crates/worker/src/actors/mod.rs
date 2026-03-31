@@ -1,54 +1,49 @@
 //! Actor-based concurrency system for worker nodes.
 //!
-//! Four actors communicate via tokio channels:
-//! - Network actor: owns libp2p swarm
+//! Four actors communicate via `willow-actor` typed messages:
+//! - Network actor: streams from gossip topic events
 //! - State actor: owns WorkerRole + mutable state
-//! - Heartbeat actor: periodic announcements
-//! - Sync actor: periodic state sync
+//! - Heartbeat actor: periodic announcements via TopicHandle
+//! - Sync actor: periodic state sync via TopicHandle
 
 pub mod heartbeat;
 pub mod network;
 pub mod state;
 pub mod sync;
 
-use tokio::sync::oneshot;
-
-use crate::types::{WorkerRequest, WorkerResponse, WorkerRoleInfo};
+use willow_actor::Message;
 use willow_state::{Event, StateHash};
 
-/// Messages sent to the state actor.
-pub enum StateMsg {
-    /// A new event arrived from gossipsub.
-    Event(Event),
+use crate::types::{WorkerRequest, WorkerResponse, WorkerRoleInfo};
 
-    /// A client request that needs a response.
-    Request {
-        req: WorkerRequest,
-        reply: oneshot::Sender<WorkerResponse>,
-    },
-
-    /// Heartbeat actor asking for current role info.
-    GetRoleInfo {
-        reply: oneshot::Sender<WorkerRoleInfo>,
-    },
-
-    /// Sync actor asking for current state hashes per server.
-    GetStateHashes {
-        reply: oneshot::Sender<Vec<(String, StateHash)>>,
-    },
-
-    /// A server was discovered — add it to the set of tracked servers.
-    ServerDiscovered { server_id: String },
-
-    /// Shutdown signal.
-    Shutdown,
+/// A new event arrived from gossipsub.
+pub struct EventMsg(pub Event);
+impl Message for EventMsg {
+    type Result = ();
 }
 
-/// Messages sent to the network actor for outbound publishing.
-pub enum NetworkOutMsg {
-    /// Publish raw bytes on a gossipsub topic.
-    Publish { topic: String, data: Vec<u8> },
+/// A client request that needs a response.
+pub struct WorkerRequestMsg(pub WorkerRequest);
+impl Message for WorkerRequestMsg {
+    type Result = WorkerResponse;
+}
 
-    /// Subscribe to a gossipsub topic.
-    Subscribe(String),
+/// Heartbeat actor asking for current role info.
+pub struct GetRoleInfoMsg;
+impl Message for GetRoleInfoMsg {
+    type Result = WorkerRoleInfo;
+}
+
+/// Sync actor asking for current state hashes per server.
+pub struct GetStateHashesMsg;
+impl Message for GetStateHashesMsg {
+    type Result = Vec<(String, StateHash)>;
+}
+
+/// A server was discovered — add it to the set of tracked servers.
+pub struct ServerDiscoveredMsg {
+    pub server_id: String,
+}
+impl Message for ServerDiscoveredMsg {
+    type Result = ();
 }

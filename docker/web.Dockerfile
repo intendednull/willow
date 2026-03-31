@@ -7,4 +7,5 @@ RUN cd crates/web && trunk build --release
 
 FROM nginx:alpine
 COPY --from=builder /build/crates/web/dist/ /usr/share/nginx/html/
+RUN chmod 644 /usr/share/nginx/html/*
 EXPOSE 80

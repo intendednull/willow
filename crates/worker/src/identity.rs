@@ -27,7 +27,7 @@ pub fn load_or_generate(path: &str) -> Result<Identity> {
 /// identify workers when granting permissions.
 pub fn print_peer_id(path: &str) -> Result<()> {
     let identity = load_or_generate(path)?;
-    println!("{}", identity.peer_id());
+    println!("{}", identity.endpoint_id());
     Ok(())
 }
 
@@ -44,7 +44,7 @@ mod tests {
 
         let id = generate_identity(path_str).unwrap();
         assert!(path.exists());
-        assert!(!id.peer_id().to_string().is_empty());
+        assert!(!id.endpoint_id().to_string().is_empty());
     }
 
     #[test]
@@ -66,7 +66,7 @@ mod tests {
 
         let id = load_or_generate(path_str).unwrap();
         assert!(path.exists());
-        assert!(!id.peer_id().to_string().is_empty());
+        assert!(!id.endpoint_id().to_string().is_empty());
     }
 
     #[test]
@@ -77,6 +77,6 @@ mod tests {
 
         let id1 = load_or_generate(path_str).unwrap();
         let id2 = load_or_generate(path_str).unwrap();
-        assert_eq!(id1.peer_id().to_string(), id2.peer_id().to_string());
+        assert_eq!(id1.endpoint_id(), id2.endpoint_id());
     }
 }

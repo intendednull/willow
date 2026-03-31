@@ -17,10 +17,7 @@ test.describe('Mobile action sheet', () => {
     await expect(page.locator('.mobile-action-sheet.open')).toBeVisible({ timeout: 3000 });
   });
 
-  test.fixme('action sheet stays open over time', async ({ page }) => {
-    // Known issue: sync events from relay cause message list re-render
-    // which destroys the action sheet signal. Works in manual testing
-    // when no other peers are connected.
+  test('action sheet stays open over time', async ({ page }) => {
     await freshStart(page);
     await createServer(page, 'StayOpen');
     await sendMessage(page, 'stay open');
@@ -50,8 +47,7 @@ test.describe('Mobile action sheet', () => {
     await expect(page.locator('.mobile-action-sheet.open')).toBeHidden();
   });
 
-  test.fixme('overlay tap closes action sheet', async ({ page }) => {
-    // Same re-render issue as above.
+  test('overlay tap closes action sheet', async ({ page }) => {
     await freshStart(page);
     await createServer(page, 'OverlayClose');
     await sendMessage(page, 'overlay close');

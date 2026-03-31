@@ -1,75 +1,69 @@
-//! Worker runtime — orchestrates all four actors.
+//! Worker runtime — orchestrates all four actors using `willow-actor`.
 
 use std::time::Duration;
 
-use tokio::sync::{mpsc, watch};
 use tracing::info;
-use willow_network::{NetworkConfig, NetworkNode};
+use willow_actor::System;
+use willow_network::Network;
 
-use crate::actors::{heartbeat, network, state, sync, NetworkOutMsg, StateMsg};
+use crate::actors::{
+    heartbeat::HeartbeatActor, network::NetworkActor, state::StateActor, sync::SyncActor,
+};
 use crate::config::WorkerConfig;
 use crate::WorkerRole;
 
-/// Run a worker node with the given role and configuration.
+/// Run a worker node with the given role, configuration, and network.
 ///
 /// This is the main entry point called by each binary's `main()`.
-/// It starts all four actors and blocks until shutdown (Ctrl+C).
-pub async fn run(role: Box<dyn WorkerRole>, config: WorkerConfig) -> anyhow::Result<()> {
-    // Load identity.
+/// It subscribes to system gossip topics, spawns all four actors
+/// via the actor system, and blocks until Ctrl+C.
+pub async fn run<N: Network>(
+    role: Box<dyn WorkerRole>,
+    config: WorkerConfig,
+    network: N,
+) -> anyhow::Result<()> {
     let identity = crate::identity::load_or_generate(&config.identity_path)?;
-    let peer_id = identity.peer_id().to_string();
+    let peer_id = identity.endpoint_id();
     info!(%peer_id, "worker identity loaded");
 
-    // Build network config.
-    let net_config = NetworkConfig::default().with_relay(&config.relay_addr)?;
+    // Subscribe to system topics.
+    let workers_topic_id = willow_network::topic_id(crate::types::WORKERS_TOPIC);
+    let (workers_sender, workers_events) = network.subscribe(workers_topic_id, vec![]).await?;
 
-    // Start the network node.
-    let (node, events) = NetworkNode::start(identity, net_config).await?;
-    info!("network node started");
+    let _ops_topic_id = willow_network::topic_id(crate::types::SERVER_OPS_TOPIC);
+    let (_ops_sender, _ops_events) = network.subscribe(_ops_topic_id, vec![]).await?;
 
-    // Create channels.
-    let (state_tx, state_rx) = mpsc::channel::<StateMsg>(256);
-    let (network_tx, network_rx) = mpsc::channel::<NetworkOutMsg>(256);
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    // Create actor system and spawn actors.
+    let system = System::new();
 
-    // Spawn actors.
-    let state_handle = tokio::spawn(state::run(role, state_rx));
+    let state_addr = system.spawn(StateActor { role });
 
-    let network_handle = tokio::spawn(network::run(
-        node,
-        events,
-        state_tx.clone(),
-        network_rx,
-        peer_id.clone(),
+    let _network = system.spawn(NetworkActor::new(
+        workers_events,
+        state_addr.clone(),
+        peer_id,
     ));
 
-    let heartbeat_handle = tokio::spawn(heartbeat::run(
-        peer_id.clone(),
+    let _heartbeat = system.spawn(HeartbeatActor::new(
+        peer_id,
         Duration::from_secs(10),
-        state_tx.clone(),
-        network_tx.clone(),
-        shutdown_rx.clone(),
+        state_addr.clone(),
+        workers_sender.clone(),
     ));
 
-    let sync_handle = tokio::spawn(sync::run(
+    let _sync = system.spawn(SyncActor::new(
         peer_id,
         Duration::from_secs(config.sync_interval_secs),
-        state_tx.clone(),
-        network_tx,
-        shutdown_rx,
+        state_addr,
+        workers_sender,
     ));
 
-    // Wait for shutdown signal (Ctrl+C).
+    // Wait for shutdown.
     tokio::signal::ctrl_c().await?;
     info!("shutdown signal received");
+    system.shutdown().await;
 
-    // Signal all actors to stop.
-    let _ = shutdown_tx.send(true);
-    let _ = state_tx.send(StateMsg::Shutdown).await;
-
-    // Wait for actors to finish.
-    let _ = tokio::join!(state_handle, network_handle, heartbeat_handle, sync_handle);
-
+    network.shutdown().await?;
     info!("worker shut down cleanly");
     Ok(())
 }

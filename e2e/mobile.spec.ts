@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { freshStart, createServer, sendMessage, waitForApp } from './helpers';
+import { freshStart, createServer, sendMessage, waitForApp, reactToMessage } from './helpers';
 
 // Mobile tests only run with mobile viewport.
 test.describe('Mobile UX', () => {
@@ -122,16 +122,8 @@ test.describe('Mobile UX', () => {
     await sendMessage(page, 'react to me');
     await page.waitForTimeout(500);
 
-    // Add a reaction via desktop dropdown first (to have a reaction to tap).
-    const msg = page.locator('.message').first();
-    await msg.hover();
-    await page.waitForTimeout(200);
-    await page.locator('.action-trigger').first().click();
-    await page.waitForTimeout(200);
-    await page.locator('.dropdown-item', { hasText: 'React' }).click();
-    await page.waitForTimeout(200);
-    await page.locator('.dropdown-emoji-row button').first().click();
-    await page.waitForTimeout(500);
+    // Add a reaction (handles both desktop and mobile).
+    await reactToMessage(page, 'react to me');
 
     // Reaction should be visible.
     const reaction = page.locator('.reaction').first();

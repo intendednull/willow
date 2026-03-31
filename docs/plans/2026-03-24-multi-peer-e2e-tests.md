@@ -8,7 +8,7 @@
 
 **Tech Stack:** Playwright, TypeScript, tests run against deployed site at `https://willow.intendednull.com`
 
-**Spec:** `docs/superpowers/specs/2026-03-24-multi-peer-e2e-tests-design.md`
+**Spec:** `docs/specs/2026-03-24-multi-peer-e2e-tests-design.md`
 
 ---
 
