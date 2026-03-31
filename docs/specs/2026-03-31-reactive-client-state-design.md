@@ -63,12 +63,14 @@ All reads and writes go through `ClientStateActor` via `read_state`/`mutate_stat
 Replace the monolithic `SharedState` + `ClientStateActor` with:
 
 1. **Domain-specific `StateActor<S>`** for each independent state domain
-2. **`PersistenceActor`** that owns all `!Send` database resources
+2. **`PersistenceActor`** that auto-persists via `Notify` subscriptions
 3. **`DerivedActor` views** that reactively cache computed state
 4. **`Broker<ClientEvent>`** for event distribution
-5. A **`ClientViewHandle`** that exposes `StateRef<T>` at every granularity
+5. **`ClientViewHandle`** that exposes `StateRef<T>` at every granularity
+6. **`ClientMutations`** — typed mutation interface routing to domain actors
 
 No legacy code. No `SharedState`. No `ClientStateActor`. No `unsafe impl Send`.
+User code interacts via `client.views()` (reads) and `client.mutations()` (writes).
 The new architecture uses only library primitives from `willow-actor`.
 
 ## Constraints
@@ -609,12 +611,14 @@ state::subscribe(msgs_ref, my_notification_recipient);
 ### In scope
 - Delete `SharedState`, `ClientState`, `ClientStateActor`, `client_actor.rs`
 - Delete `ServerContext` (replaced by `ServerEntry` in `ServerRegistry`)
+- Create `ClientMutations` handle routing all operations to domain actors
+- Create `ClientViewHandle` exposing `StateRef<T>` at every granularity
 - Rewrite all `read_state`/`mutate_state` calls across:
   accessors.rs, actions.rs, connect.rs, joining.rs, listeners.rs,
   servers.rs, voice.rs
-- Create `PersistenceActor` with all persistence messages
+- Create `PersistenceActor` that auto-persists via `Notify` subscriptions
 - Create domain state types in `state_actors.rs`
-- Create derived view types and `ClientViewHandle`
+- Create derived view types and compute functions in `views.rs`
 - Replace `event_tx` channel with `Broker<ClientEvent>`
 - Delete `crates/web/src/derived.rs`, create `use_state_ref` bridge
 - Simplify `wire_derived_signals()`
