@@ -80,6 +80,12 @@ pub struct ServerState {
     pub unread: ReadSignal<HashMap<String, usize>>,
     pub roles: ReadSignal<Vec<(String, String, Vec<String>)>>,
     pub display_name: ReadSignal<String>,
+    pub server_owner: ReadSignal<String>,
+    pub channel_kinds: ReadSignal<Vec<(String, String)>>,
+    /// Peer IDs that have the SyncProvider permission.
+    pub sync_provider_ids: ReadSignal<HashSet<String>>,
+    /// Peer IDs that have the Administrator permission.
+    pub admin_ids: ReadSignal<HashSet<String>>,
 }
 
 #[derive(Clone, Copy)]
@@ -155,6 +161,10 @@ pub struct ServerWriteSignals {
     pub set_unread: WriteSignal<HashMap<String, usize>>,
     pub set_roles: WriteSignal<Vec<(String, String, Vec<String>)>>,
     pub set_display_name: WriteSignal<String>,
+    pub set_server_owner: WriteSignal<String>,
+    pub set_channel_kinds: WriteSignal<Vec<(String, String)>>,
+    pub set_sync_provider_ids: WriteSignal<HashSet<String>>,
+    pub set_admin_ids: WriteSignal<HashSet<String>>,
 }
 
 #[derive(Clone, Copy)]
@@ -217,6 +227,8 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
     let (unread, set_unread) = signal(HashMap::<String, usize>::new());
     let (roles, set_roles) = signal(Vec::<(String, String, Vec<String>)>::new());
     let (display_name, set_display_name) = signal(String::new());
+    let (server_owner, set_server_owner) = signal(String::new());
+    let (channel_kinds, set_channel_kinds) = signal(Vec::<(String, String)>::new());
 
     // UI panel signals (purely local — never derived)
     let (show_settings, set_show_settings) = signal(false);
@@ -272,6 +284,8 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
             unread,
             roles,
             display_name,
+            server_owner,
+            channel_kinds,
         },
         ui: UiState {
             show_settings,
@@ -324,6 +338,8 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
             set_unread,
             set_roles,
             set_display_name,
+            set_server_owner,
+            set_channel_kinds,
         },
         ui: UiWriteSignals {
             set_show_settings,
@@ -433,6 +449,28 @@ pub fn wire_derived_signals(
             .collect::<Vec<_>>()
     });
     leptos::prelude::Effect::new(move || write.server.set_roles.set(roles.get()));
+
+    // ── Server owner ───────────────────────────────────────────────
+    let owner = derived_signal(state_addr, system, |s| {
+        s.state.event_state.owner.to_string()
+    });
+    leptos::prelude::Effect::new(move || write.server.set_server_owner.set(owner.get()));
+
+    // ── Channel kinds ──────────────────────────────────────────────
+    let channel_kinds = derived_signal(state_addr, system, |s| {
+        s.state
+            .event_state
+            .channels
+            .values()
+            .map(|ch| (ch.name.clone(), ch.kind.clone()))
+            .collect::<Vec<_>>()
+    });
+    leptos::prelude::Effect::new(move || {
+        write
+            .server
+            .set_channel_kinds
+            .set(channel_kinds.get())
+    });
 
     // ── Peer list (with display names and online status) ────────────
     let peers = derived_signal(state_addr, system, |s| {

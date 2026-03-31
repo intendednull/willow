@@ -44,6 +44,7 @@ pub fn Sidebar(
     on_voice_disconnect: Option<Callback<()>>,
 ) -> impl IntoView {
     let handle = use_context::<WebClientHandle>().unwrap();
+    let app_state = use_context::<crate::state::AppState>().unwrap();
 
     let (creating, set_creating) = signal(false);
     let (new_name, set_new_name) = signal(String::new());
@@ -84,8 +85,6 @@ pub fn Sidebar(
             }
         }
     };
-
-    let handle_user = handle.clone();
 
     // Peer ID copy state.
     let (show_copied, set_show_copied) = signal(false);
@@ -166,10 +165,10 @@ pub fn Sidebar(
 
                         // Reactively check if this is a voice channel.
                         let is_voice = {
-                            let hk = handle_kind.clone();
                             let name = ch_kind.clone();
+                            let _hk = handle_kind.clone();
                             move || {
-                                hk.channel_kinds().iter().any(|(n, k)| n == &name && k == "voice")
+                                app_state.server.channel_kinds.get().iter().any(|(n, k)| n == &name && k == "voice")
                             }
                         };
 
@@ -282,9 +281,8 @@ pub fn Sidebar(
                 <div class="status-dot"></div>
                 <span style="font-size: 12px; color: var(--text-muted);">
                     {
-                        let hu = handle_user.clone();
                         move || {
-                            let name = hu.display_name();
+                            let name = app_state.server.display_name.get();
                             if name.len() > 20 { format!("{}...", &name[..20]) } else { name }
                         }
                     }

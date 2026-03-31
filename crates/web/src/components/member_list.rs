@@ -3,6 +3,7 @@ use leptos::prelude::*;
 use crate::app::WebClientHandle;
 use crate::components::ConfirmDialog;
 use crate::icons;
+use crate::state::AppState;
 
 /// Parse a string peer ID into an [`willow_identity::EndpointId`], returning
 /// `None` if parsing fails.
@@ -21,6 +22,7 @@ pub fn MemberList(
     peer_id: ReadSignal<String>,
 ) -> impl IntoView {
     let handle = use_context::<WebClientHandle>().unwrap();
+    let app_state = use_context::<AppState>().unwrap();
 
     // Kick confirmation state.
     let (show_kick_confirm, set_show_kick_confirm) = signal(false);

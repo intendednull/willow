@@ -1,5 +1,4 @@
 use leptos::prelude::*;
-use willow_identity::EndpointId;
 
 use crate::icons;
 use crate::state::AppState;
@@ -85,15 +84,17 @@ pub fn CommandPalette(
     on_switch_server: Callback<String>,
     on_open_members: Callback<()>,
 ) -> impl IntoView {
-    let handle = use_context::<WebClientHandle>().unwrap();
+    let app_state = use_context::<AppState>().unwrap();
 
     let (query, set_query) = signal(String::new());
     let (selected_index, set_selected_index) = signal(0usize);
 
-    let handle_for_keydown = handle.clone();
-
     let on_keydown = move |ev: web_sys::KeyboardEvent| {
-        let items = build_results(&handle_for_keydown, &query.get_untracked());
+        let channels = app_state.chat.channels.get_untracked();
+        let channel_kinds = app_state.server.channel_kinds.get_untracked();
+        let servers = app_state.server.servers.get_untracked();
+        let members = app_state.network.peers.get_untracked();
+        let items = build_results(&channels, &channel_kinds, &servers, &members, &query.get_untracked());
         let len = items.len();
         match ev.key().as_str() {
             "Escape" => {
@@ -148,7 +149,11 @@ pub fn CommandPalette(
                 />
                 <div class="palette-results">
                     {move || {
-                        let items = build_results(&handle, &query.get());
+                        let channels = app_state.chat.channels.get();
+                        let channel_kinds = app_state.server.channel_kinds.get();
+                        let servers = app_state.server.servers.get();
+                        let members = app_state.network.peers.get();
+                        let items = build_results(&channels, &channel_kinds, &servers, &members, &query.get());
                         if items.is_empty() {
                             return view! {
                                 <div class="palette-empty">"No results found"</div>
