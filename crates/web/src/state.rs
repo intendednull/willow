@@ -139,7 +139,9 @@ pub struct ChatWriteSignals {
     pub set_channels: WriteSignal<Vec<String>>,
     pub set_replying_to: WriteSignal<Option<DisplayMessage>>,
     pub set_editing: WriteSignal<Option<DisplayMessage>>,
+    #[allow(dead_code)]
     pub set_pinned_messages: WriteSignal<Vec<DisplayMessage>>,
+    #[allow(dead_code)]
     pub set_pin_labels: WriteSignal<HashMap<String, String>>,
     pub set_channel_views: WriteSignal<HashMap<String, ChannelViewState>>,
 }
