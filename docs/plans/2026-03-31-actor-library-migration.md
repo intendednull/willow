@@ -2,6 +2,36 @@
 
 **Date**: 2026-03-31
 
+## Implementation Status
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| Phase 1: PersistenceActor | **DONE** | `persistence_actor.rs` — 312 lines, 12 message types |
+| Phase 2a: Domain state types | **DONE** | `state_actors.rs` — 6 pure-data types, `SourceState` bundle |
+| Phase 2a: Wire actors into ClientHandle | **DONE** | Domain actors spawned alongside legacy actor |
+| Phase 2b: Big-bang cutover | PENDING | Migrate all read_state/mutate_state calls atomically |
+| Phase 2c: Delete legacy code | PENDING | Remove ClientStateActor, SharedState |
+| Phase 3: Derived views | PENDING | DerivedActor chain + ClientViewHandle |
+| Phase 4: Leptos migration | PENDING | Replace custom DerivedStateActor with library StateRef |
+| Phase 5: Broker<ClientEvent> | **DONE** | EventReceiver bridge, web crate updated |
+| Phase 6: StreamHandler | DEFERRED | TopicEvents trait doesn't impl Stream; needs network crate change |
+| Phase 7: Typing Throttle | DEFERRED | Manual impl is 6 lines; Throttle actor adds complexity |
+
+### Key Lessons Learned
+
+1. **Reads and writes must migrate atomically**: Moving accessors to domain
+   actors while writes still go to the legacy actor breaks consistency.
+   The state decomposition (Phase 2b) must be a single atomic change.
+
+2. **StreamHandler requires `futures::Stream`**: The `TopicEvents` trait uses
+   `async fn next()` instead of `Stream`. Migrating to StreamHandler requires
+   either adding a Stream impl to `TopicEvents` or creating an adapter. Deferred
+   until the network trait evolves.
+
+3. **Throttle vs manual**: The `Throttle<M>` actor is valuable for new features
+   but overkill for replacing a 6-line timestamp check. The typing throttle
+   works fine as-is.
+
 ## Overview
 
 The `willow-actor` crate now provides `StateActor<S>`, `DerivedActor`, `Broker<T>`,
