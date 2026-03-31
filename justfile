@@ -39,10 +39,6 @@ test-app:
 test-actor:
     cargo test -p willow-actor
 
-# Run actor framework performance tests
-test-actor-perf:
-    cargo test -p willow-actor --test performance -- --nocapture
-
 # Run the relay tests
 test-relay:
     cargo test -p willow-relay
