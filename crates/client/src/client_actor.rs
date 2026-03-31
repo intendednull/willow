@@ -26,10 +26,7 @@ pub struct ClientStateActor {
 unsafe impl Send for ClientStateActor {}
 
 impl Actor for ClientStateActor {
-    fn idle(
-        &mut self,
-        _ctx: &mut Context<Self>,
-    ) -> impl std::future::Future<Output = ()> + Send {
+    fn idle(&mut self, _ctx: &mut Context<Self>) -> impl std::future::Future<Output = ()> + Send {
         if self.dirty {
             self.dirty = false;
             for sub in &self.subscribers {
@@ -64,8 +61,14 @@ impl Handler<Subscribe> for ClientStateActor {
     }
 }
 
+/// Type-erased selector closure: `&SharedState -> Box<dyn Any + Send>`.
+pub type StateSelector = Box<dyn FnOnce(&SharedState) -> Box<dyn Any + Send> + Send>;
+
+/// Type-erased mutator closure: `&mut SharedState -> Box<dyn Any + Send>`.
+pub type StateMutator = Box<dyn FnOnce(&mut SharedState) -> Box<dyn Any + Send> + Send>;
+
 /// Read state via a type-erased selector.
-pub struct ReadState(pub Box<dyn FnOnce(&SharedState) -> Box<dyn Any + Send> + Send>);
+pub struct ReadState(pub StateSelector);
 impl Message for ReadState {
     type Result = Box<dyn Any + Send>;
 }
@@ -83,9 +86,7 @@ impl Handler<ReadState> for ClientStateActor {
 }
 
 /// Mutate state via a closure. Sets dirty flag for subscriber notification.
-pub struct MutateState(
-    pub Box<dyn FnOnce(&mut SharedState) -> Box<dyn Any + Send> + Send>,
-);
+pub struct MutateState(pub StateMutator);
 impl Message for MutateState {
     type Result = Box<dyn Any + Send>;
 }
@@ -148,5 +149,7 @@ pub async fn mutate_state<T: Send + 'static>(
         })))
         .await
         .expect("state actor is alive");
-    *result.downcast::<T>().expect("type mismatch in mutate_state")
+    *result
+        .downcast::<T>()
+        .expect("type mismatch in mutate_state")
 }

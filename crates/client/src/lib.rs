@@ -465,6 +465,9 @@ impl<N: willow_network::Network> ClientHandle<N> {
     ///
     /// Returns a receiver for [`ClientEvent`]s emitted by listener tasks.
     pub async fn connect(&mut self, network: N) -> futures_mpsc::UnboundedReceiver<ClientEvent> {
+        // Initialize the actor system if not already done (requires async runtime).
+        self.init_actor_system();
+
         let network = Arc::new(network);
         self.network = Some(Arc::clone(&network));
 
@@ -2021,6 +2024,38 @@ impl<N: willow_network::Network> ClientHandle<N> {
         self.identity.clone()
     }
 
+    /// Get the state actor address for derived state subscriptions.
+    pub fn state_addr(&self) -> Option<&willow_actor::Addr<client_actor::ClientStateActor>> {
+        self.state_addr.as_ref()
+    }
+
+    /// Get the actor system handle.
+    pub fn actor_system(&self) -> Option<&willow_actor::SystemHandle> {
+        self.system.as_ref()
+    }
+
+    /// Initialize the actor system. Call from an async context (e.g. after connecting).
+    pub fn init_actor_system(&mut self) {
+        if self.state_addr.is_some() {
+            return;
+        }
+        let system = willow_actor::System::new();
+        let addr = system.spawn(client_actor::ClientStateActor {
+            shared: std::sync::Arc::clone(&self.shared),
+            dirty: false,
+            subscribers: Vec::new(),
+        });
+        self.state_addr = Some(addr);
+        self.system = Some(system.handle());
+    }
+
+    /// Notify the state actor that shared state has been mutated.
+    /// Triggers subscriber notifications on the next idle cycle.
+    pub fn notify_mutation(&self) {
+        if let Some(addr) = &self.state_addr {
+            let _ = addr.do_send(client_actor::NotifyMutation);
+        }
+    }
 
     /// Get the local PeerId as a string.
     pub fn peer_id(&self) -> String {

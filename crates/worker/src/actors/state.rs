@@ -63,13 +63,13 @@ impl Handler<GetRoleInfoMsg> for StateActor {
 }
 
 impl Handler<GetStateHashesMsg> for StateActor {
-    fn handle(
+    async fn handle(
         &mut self,
         _msg: GetStateHashesMsg,
         _ctx: &mut Context<Self>,
-    ) -> impl std::future::Future<Output = Vec<(String, willow_state::StateHash)>> + Send {
+    ) -> Vec<(String, willow_state::StateHash)> {
         // Default: no state hashes. Replay nodes override via WorkerRole.
-        async { vec![] }
+        vec![]
     }
 }
 

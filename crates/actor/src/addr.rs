@@ -142,6 +142,9 @@ where
     M: Message,
 {
     fn do_send(&self, msg: M) -> Result<(), ()> {
+        // Use ask envelope with a dropped receiver. The handler result
+        // is computed but the oneshot send silently fails. This is slightly
+        // wasteful (one oneshot alloc) but correct for any M::Result type.
         let (reply_tx, _reply_rx) = runtime::oneshot::<M::Result>();
         let envelope = envelope::envelope_ask(msg, reply_tx);
         self.addr.tx.send(envelope).map_err(|_| ())
