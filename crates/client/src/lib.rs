@@ -623,72 +623,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         (handle, event_loop)
     }
 
-    /// Mutate legacy state and sync to domain actors.
-    ///
-    /// Transitional wrapper: runs the mutation on the legacy ClientStateActor,
-    /// then syncs all domain actors. Once all writes use domain actors directly,
-    /// this method and `sync_domain_actors` will be removed.
-    pub(crate) async fn mutate_and_sync<T: Send + 'static>(
-        &self,
-        f: impl FnOnce(&mut SharedState) -> T + Send + 'static,
-    ) -> T {
-        let result = crate::client_actor::mutate_state(&self.state_addr, f).await;
-        self.sync_domain_actors().await;
-        result
-    }
-
-    /// Sync legacy SharedState into domain actors.
-    ///
-    /// Call this after any `mutate_state` on the legacy actor to keep domain
-    /// actors up-to-date. Messages are sent via `do_send` (fire-and-forget)
-    /// but because actor mailboxes are ordered, a subsequent `select`/`get`
-    /// on the same domain actor is guaranteed to see the synced state.
-    ///
-    /// This is a transitional method — removed once all writes use domain actors directly.
-    pub(crate) async fn sync_domain_actors(&self) {
-        use willow_actor::state::Set;
-
-        let (es, chat, profiles, connected, typing, registry_data) =
-            crate::client_actor::read_state(&self.state_addr, |s| {
-                let reg = {
-                    let mut r = state_actors::ServerRegistry::default();
-                    for (id, ctx) in &s.state.servers {
-                        r.servers.insert(id.clone(), state_actors::ServerEntry {
-                            server: ctx.server.clone(),
-                            name: ctx.server.name.clone(),
-                            topic_map: ctx.topic_map.clone(),
-                            keys: ctx.keys.clone(),
-                            unread: ctx.unread.clone(),
-                        });
-                    }
-                    r.active_server = s.state.active_server.clone();
-                    r
-                };
-                (
-                    s.state.event_state.clone(),
-                    state_actors::ChatMeta {
-                        current_channel: s.state.chat.current_channel.clone(),
-                        peers: s.state.chat.peers.clone(),
-                        seen_message_ids: s.state.chat.seen_message_ids.clone(),
-                    },
-                    state_actors::ProfileState { names: s.state.profiles.names.clone() },
-                    s.connected,
-                    s.typing_peers.clone(),
-                    reg,
-                )
-            })
-            .await;
-
-        let _ = self.event_state_addr.do_send(Set(es));
-        let _ = self.chat_meta_addr.do_send(Set(chat));
-        let _ = self.profile_state_addr.do_send(Set(profiles));
-        let _ = self.network_meta_addr.do_send(Set(state_actors::NetworkMeta {
-            connected,
-            typing_peers: typing,
-            ..state_actors::NetworkMeta::default()
-        }));
-        let _ = self.server_registry_addr.do_send(Set(registry_data));
-    }
+    // Domain actor sync happens automatically in ClientStateActor::idle().
 
     /// Fire-and-forget broadcast of raw data on a named topic.
     ///
