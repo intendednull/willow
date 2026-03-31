@@ -50,9 +50,11 @@ impl ServerRegistry {
     }
 }
 
-/// Metadata for a single server (pure data, no I/O handles).
-#[derive(Clone, Debug, PartialEq)]
+/// Metadata for a single server.
+#[derive(Clone, Debug)]
 pub struct ServerEntry {
+    /// The channel server instance (stateful — has create_channel/delete_channel methods).
+    pub server: willow_channel::Server,
     /// Server display name.
     pub name: String,
     /// Maps gossipsub topic → (channel_name, channel_id).
@@ -61,6 +63,15 @@ pub struct ServerEntry {
     pub keys: HashMap<String, ChannelKey>,
     /// Unread message counts per channel topic.
     pub unread: HashMap<String, usize>,
+}
+
+impl PartialEq for ServerEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.topic_map == other.topic_map
+            && self.keys == other.keys
+            && self.unread == other.unread
+    }
 }
 
 impl ServerEntry {

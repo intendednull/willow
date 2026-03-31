@@ -16,6 +16,17 @@ pub struct ClientStateActor {
     pub(crate) shared: SharedState,
     pub(crate) dirty: bool,
     pub(crate) subscribers: Vec<Recipient<StateChanged>>,
+    /// Domain actor addresses for automatic sync (transitional).
+    pub(crate) domain_sync: Option<DomainSync>,
+}
+
+/// Addresses of domain actors for automatic sync from legacy state.
+pub(crate) struct DomainSync {
+    pub event_state: willow_actor::Addr<willow_actor::StateActor<willow_state::ServerState>>,
+    pub server_registry: willow_actor::Addr<willow_actor::StateActor<crate::state_actors::ServerRegistry>>,
+    pub chat_meta: willow_actor::Addr<willow_actor::StateActor<crate::state_actors::ChatMeta>>,
+    pub profile_state: willow_actor::Addr<willow_actor::StateActor<crate::state_actors::ProfileState>>,
+    pub network_meta: willow_actor::Addr<willow_actor::StateActor<crate::state_actors::NetworkMeta>>,
 }
 
 // Safety: SharedState is !Send due to rusqlite but the actor runs on a
@@ -28,6 +39,37 @@ impl Actor for ClientStateActor {
             self.dirty = false;
             for sub in &self.subscribers {
                 let _ = sub.do_send(StateChanged);
+            }
+            // Sync domain actors with current state.
+            if let Some(sync) = &self.domain_sync {
+                use willow_actor::state::Set;
+                let _ = sync.event_state.do_send(Set(self.shared.state.event_state.clone()));
+                let _ = sync.chat_meta.do_send(Set(crate::state_actors::ChatMeta {
+                    current_channel: self.shared.state.chat.current_channel.clone(),
+                    peers: self.shared.state.chat.peers.clone(),
+                    seen_message_ids: self.shared.state.chat.seen_message_ids.clone(),
+                }));
+                let _ = sync.profile_state.do_send(Set(crate::state_actors::ProfileState {
+                    names: self.shared.state.profiles.names.clone(),
+                }));
+                let _ = sync.network_meta.do_send(Set(crate::state_actors::NetworkMeta {
+                    connected: self.shared.connected,
+                    typing_peers: self.shared.typing_peers.clone(),
+                    last_typing_sent_ms: self.shared.last_typing_sent_ms,
+                    state_verification_results: self.shared.state_verification_results.clone(),
+                }));
+                let mut reg = crate::state_actors::ServerRegistry::default();
+                for (id, ctx) in &self.shared.state.servers {
+                    reg.servers.insert(id.clone(), crate::state_actors::ServerEntry {
+                        server: ctx.server.clone(),
+                        name: ctx.server.name.clone(),
+                        topic_map: ctx.topic_map.clone(),
+                        keys: ctx.keys.clone(),
+                        unread: ctx.unread.clone(),
+                    });
+                }
+                reg.active_server = self.shared.state.active_server.clone();
+                let _ = sync.server_registry.do_send(Set(reg));
             }
         }
         async {}
