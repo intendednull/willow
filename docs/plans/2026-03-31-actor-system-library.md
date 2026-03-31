@@ -90,7 +90,7 @@ The foundational state container that all other stateful actor types build on.
   - `pub async fn mutate<S, T>(addr, f) -> T` — same pattern with `Mutate` and `&mut dyn Any`.
   - `pub fn subscribe<S, A>(state, subscriber)` — converts subscriber addr to `Recipient<Notify>`, sends `Subscribe`.
 
-- [ ] **Step 4: Implement `StateRef<S>`.** Fields: `subscribe: Arc<dyn Fn(Recipient<Notify>) + Send + Sync>`, `select: Arc<dyn Fn(...) -> Pin<Box<...>> + Send + Sync>`. Methods: `subscribe()`, `get()` (requires `S: Clone`), `select()`. `From<&Addr<StateActor<S>>>` impl constructs the closures by capturing a cloned `Addr` and forwarding to `do_send(Subscribe(...))` / `ask(Select(...))`. Derive `Clone`.
+- [ ] **Step 4: Implement `StateRef<S>`.** Fields: `subscribe: Arc<dyn Fn(Recipient<Notify>) + Send + Sync>`, `select: Arc<dyn Fn(...) -> Pin<Box<...>> + Send + Sync>`, `_phantom: PhantomData<S>`. Methods: `subscribe()`, `get()` (requires `S: Clone`), `select()`. `from_addr<A>(addr)` — generic constructor for any `A: Handler<Subscribe> + Handler<Select>`. `From<&Addr<StateActor<S>>>` impl constructs the closures by capturing a cloned `Addr` and forwarding to `do_send(Subscribe(...))` / `ask(Select(...))`. Derive `Clone`.
 
 - [ ] **Step 5: Write unit tests.** All 10 StateActor tests from the test plan: `state_get_returns_current`, `state_set_updates`, `state_select_slice`, `state_mutate_modifies`, `state_mutate_returns_value`, `state_subscribe_notifies`, `state_no_notify_without_mutation`, `state_batch_notifications`, `state_dead_subscribers_pruned`, `state_multiple_subscribers`. Plus 5 StateRef tests: `state_ref_from_state_actor`, `state_ref_clone`, `state_ref_get`, `state_ref_select`.
 

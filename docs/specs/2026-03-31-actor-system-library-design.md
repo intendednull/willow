@@ -166,6 +166,7 @@ pub struct StateRef<S: Send + 'static> {
     subscribe: Arc<dyn Fn(Recipient<Notify>) + Send + Sync>,
     /// Read current state via type-erased selector closure.
     select: Arc<dyn Fn(Box<dyn FnOnce(&dyn Any) -> Box<dyn Any + Send> + Send>) -> Pin<Box<dyn Future<Output = Box<dyn Any + Send>> + Send>> + Send + Sync>,
+    _phantom: PhantomData<S>,
 }
 
 impl<S: Send + 'static> StateRef<S> {
@@ -187,15 +188,10 @@ impl<S: Send + 'static> StateRef<S> {
 impl<S: Clone + Send + 'static> From<&Addr<StateActor<S>>> for StateRef<S> { ... }
 ```
 
-#### Prerequisite: make `Recipient<M>` cloneable
-
-The existing `Recipient<M>` wraps `Box<dyn RecipientSender<M> + Send>`.
-Multi-source derived actors need to subscribe the same recipient to
-multiple sources. This requires changing the internals from `Box` to
-`Arc` so `Recipient` implements `Clone`. This is a backwards-compatible
-change — `Arc<dyn Trait>` supports all the same operations.
-
 #### DeriveSource trait
+
+Note: `Recipient<M>` already implements `Clone` (via `clone_box()`), so
+multi-source `subscribe_all` works without changes to the existing code.
 
 ```rust
 /// Trait for single sources and tuples of sources.
@@ -226,7 +222,6 @@ where
 {
     type Snapshot = (S1, S2);
     fn subscribe_all(&self, recipient: Recipient<Notify>) {
-        // Recipient must be Clone — requires changing internals from Box to Arc.
         self.0.subscribe(recipient.clone());
         self.1.subscribe(recipient);
     }
@@ -347,7 +342,8 @@ inverse of `StreamHandler` (which consumes streams). A stream actor
 /// Call `emit()` from message handlers to push values to all active
 /// stream consumers. Call `subscribe()` to create new consumers.
 pub struct StreamOutput<T: Send + Clone + 'static> {
-    subscribers: Vec<runtime::Sender<T>>,
+    subscribers: Vec<runtime::BoundedSender<T>>,
+    default_capacity: usize,  // default: 64
 }
 ```
 
@@ -369,7 +365,7 @@ impl<T: Send + Clone + 'static> StreamOutput<T> {
 /// A stream of values produced by an actor.
 /// Implements `futures::Stream<Item = T>`.
 pub struct OutputStream<T> {
-    rx: runtime::Receiver<T>,
+    rx: runtime::BoundedReceiver<T>,
 }
 ```
 
@@ -737,9 +733,7 @@ debounced.do_send(SearchQuery("hello".into()));
 
 ## Crate Organization
 
-All new types go into the existing `willow-actor` crate under feature-gated
-modules. The core actor primitives (`Actor`, `Handler`, `Addr`, etc.) remain
-ungated — they're always available.
+All new types go into the existing `willow-actor` crate as new modules.
 
 ```
 crates/actor/src/
@@ -775,12 +769,11 @@ WASM: `futures::channel::mpsc::channel`).
 
 ### Phase 1: Core extension + StateActor + DerivedActor
 
-1. Make `Recipient<M>` cloneable (change `Box` to `Arc` internally)
-2. Add `Context::run_after()` and `TimerHandle` to existing context module
-3. Implement `StateActor<S>` in `crates/actor/src/state.rs`
-4. Implement `DeriveSource` trait + tuple macro in `crates/actor/src/derived.rs`
-5. Implement `DerivedActor<Src, T>` with `StateRef<S>` handles
-6. Tests: subscribe, notify batching, caching, multi-source, chaining
+1. Add `futures` dependency, `runtime::bounded_channel`, `Context::run_after()` + `TimerHandle`
+2. Implement `StateActor<S>` and `StateRef<S>` in `crates/actor/src/state.rs`
+3. Implement `DeriveSource` trait + tuple macro in `crates/actor/src/derived.rs`
+4. Implement `DerivedActor<Src, T>` with `StateRef<S>` handles
+5. Tests: subscribe, notify batching, caching, multi-source, chaining
 
 ### Phase 2: StreamOutput + Broker
 
@@ -907,13 +900,6 @@ a new `just test-actor-perf` command.
 | `run_after_fires` | Message delivered after the specified delay |
 | `run_after_cancel` | Cancelled timer does not deliver the message |
 | `run_after_cancel_and_restart` | Cancel then create new timer works |
-
-### Recipient Clone tests
-
-| Test | What it verifies |
-|------|-----------------|
-| `recipient_clone_both_deliver` | Cloned recipient sends to same actor |
-| `recipient_clone_independence` | Dropping one clone doesn't affect the other |
 
 ### Performance tests (`crates/actor/tests/performance.rs`)
 
