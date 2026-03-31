@@ -200,7 +200,7 @@ change — `Arc<dyn Trait>` supports all the same operations.
 ```rust
 /// Trait for single sources and tuples of sources.
 /// Implemented for StateRef<S> and tuples (StateRef<S1>, StateRef<S2>), etc.
-pub trait DeriveSource: Send + 'static {
+pub trait DeriveSource: Clone + Send + 'static {
     /// The combined snapshot type passed to the selector.
     type Snapshot: Send + 'static;
 
@@ -394,16 +394,15 @@ impl Handler<ReadSensor> for SensorActor {
     }
 }
 
-// Consumer side — the stream can be consumed by another actor or by
-// any async code:
+// Consumer side:
 let sensor = system.spawn(SensorActor { output: StreamOutput::new() });
 
 // Option A: attach to another actor via StreamHandler
-let stream = select(&sensor_state, ...).await; // get a subscription
-ctx.add_stream(stream);
+let stream = sensor.ask(SubscribeStream::default()).await?;
+ctx.add_stream(stream); // items delivered via StreamHandler<f64>
 
 // Option B: consume in plain async code
-let mut stream = sensor.ask(SubscribeStream).await?;
+let mut stream = sensor.ask(SubscribeStream::default()).await?;
 while let Some(value) = stream.next().await {
     println!("sensor: {value}");
 }
@@ -498,12 +497,15 @@ just a stream of occurrences.
 ```rust
 let broker: Addr<Broker<ChatMessage>> = system.spawn(Broker::new());
 
-// Publisher
+// Subscribe (ask returns SubscriptionId for later unsubscribe)
+let recipient: Recipient<ChatMessage> = my_actor.into();
+let sub_id = broker.ask(BrokerSubscribe(recipient)).await?;
+
+// Publish
 broker.do_send(Publish(ChatMessage { body: "hello".into(), .. }));
 
-// Subscriber
-let recipient: Recipient<ChatMessage> = my_actor.into();
-broker.do_send(BrokerSubscribe(recipient));
+// Unsubscribe (optional — dead subscribers are auto-pruned)
+broker.do_send(BrokerUnsubscribe(sub_id));
 ```
 
 ---
@@ -760,8 +762,12 @@ crates/actor/src/
 └── debounce.rs     NEW — Debounce<M>, Throttle<M>
 ```
 
-No new dependencies required. All types use the existing `runtime` module
-for platform abstraction.
+New dependency: `futures` (for `join!` in multi-source snapshots). The
+existing `futures-core` dep is insufficient.
+
+The `runtime` module needs a new `bounded_channel<T>(capacity)` function
+for `StreamOutput` backpressure (native: `tokio::sync::mpsc::channel`,
+WASM: `futures::channel::mpsc::channel`).
 
 ---
 
