@@ -131,6 +131,10 @@ pub struct NetworkMeta {
     pub connected: bool,
     /// Peers currently typing: EndpointId → (channel_name, timestamp_ms).
     pub typing_peers: HashMap<EndpointId, (String, u64)>,
+    /// Last time we sent a typing indicator (for debouncing).
+    pub last_typing_sent_ms: u64,
+    /// State hash verification results from peers.
+    pub state_verification_results: HashMap<EndpointId, willow_state::StateHash>,
 }
 
 /// Voice call state.

@@ -189,6 +189,10 @@ pub struct ClientHandle<N: willow_network::Network> {
     pub(crate) persistence_addr: willow_actor::Addr<persistence_actor::PersistenceActor>,
     /// HLC clock (mutation-time concern, not reactive state).
     pub(crate) hlc: Arc<std::sync::Mutex<willow_messaging::hlc::HLC>>,
+    /// Whether persistence to disk is enabled.
+    pub(crate) persistence_enabled: bool,
+    /// Active join links (rarely modified, shared across tasks).
+    pub(crate) join_links: Arc<std::sync::Mutex<Vec<ops::JoinLink>>>,
 }
 
 impl<N: willow_network::Network> Clone for ClientHandle<N> {
@@ -208,6 +212,8 @@ impl<N: willow_network::Network> Clone for ClientHandle<N> {
             voice_state_addr: self.voice_state_addr.clone(),
             persistence_addr: self.persistence_addr.clone(),
             hlc: Arc::clone(&self.hlc),
+            persistence_enabled: self.persistence_enabled,
+            join_links: Arc::clone(&self.join_links),
         }
     }
 }
@@ -597,6 +603,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
             voice_state_addr,
             persistence_addr,
             hlc,
+            persistence_enabled,
+            join_links: Arc::new(std::sync::Mutex::new(Vec::new())),
         };
 
         // reconcile_topic_map called above before spawning actor
@@ -1212,6 +1220,8 @@ pub(crate) fn test_client() -> (
         voice_state_addr,
         persistence_addr,
         hlc,
+        persistence_enabled: false,
+        join_links: Arc::new(std::sync::Mutex::new(Vec::new())),
     };
 
     (client, event_broker)
