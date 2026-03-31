@@ -714,41 +714,31 @@ for platform abstraction.
 
 ---
 
-## Migration Plan
+## Implementation Plan
 
-### Phase 1: StateActor + DerivedActor in willow-actor
+### Phase 1: StateActor + DerivedActor
 
 1. Implement `StateActor<S>` in `crates/actor/src/state.rs`
-2. Implement `DerivedActor<S,T>` in `crates/actor/src/derived.rs`
-3. Add tests for both (subscribe, notify, caching, chaining)
+2. Implement `DeriveSource` trait + tuple macro in `crates/actor/src/derived.rs`
+3. Implement `DerivedActor<Src, T>` with `StateRef<S>` handles
+4. Tests: subscribe, notify batching, caching, multi-source, chaining
 
-### Phase 2: Migrate willow-client
+### Phase 2: StreamOutput + Broker
 
-1. Replace `ClientStateActor` with `StateActor<SharedState>`
-2. Keep the typed `read_state`/`mutate_state` helpers as thin wrappers
-   around the generic `select()`/`mutate()`
+1. Implement `StreamOutput<T>` and `OutputStream<T>`
+2. Implement `Broker<T>` with `Publish`/`BrokerSubscribe`
+3. Tests: stream consumption, backpressure, pub/sub fanout
 
-### Phase 3: Migrate willow-web
+### Phase 3: FSM, Pool, Debounce/Throttle
 
-1. Replace the Leptos-specific `DerivedStateActor<T>` with a thin wrapper
-   that bridges generic `DerivedActor` notifications to Leptos signals
-2. The `derived_signal()` function becomes:
-   ```rust
-   fn derived_signal<T>(...) -> ReadSignal<T> {
-       let derived_addr = derived(system, state_addr, selector);
-       // Subscribe a tiny bridge actor that updates the WriteSignal
-   }
-   ```
+1. Implement `FsmActor<M>` with `StateMachine` trait
+2. Implement `Pool<A>` with round-robin routing
+3. Implement `Debounce<M>` and `Throttle<M>`
+4. Tests for each
 
-### Phase 4: StreamOutput, Broker, remaining types
+### Phase 4: Publish
 
-1. Implement `StreamOutput<T>` and `Broker<T>`
-2. Implement `FsmActor`, `Pool`, `Debounce`/`Throttle`
-3. Migrate remaining hand-rolled patterns across the codebase
-
-### Phase 5: Publish
-
-1. Ensure `willow-actor` has zero willow-specific dependencies
+1. Ensure zero willow-specific dependencies
 2. Add `README.md`, examples, docs
 3. Publish to crates.io
 
