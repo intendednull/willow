@@ -795,12 +795,6 @@ WASM: `futures::channel::mpsc::channel`).
 3. Implement `Debounce<M>` and `Throttle<M>`
 4. Tests for each
 
-### Phase 4: Publish
-
-1. Ensure zero willow-specific dependencies
-2. Add `README.md`, examples, docs
-3. Publish to crates.io
-
 ---
 
 ## Open Questions
@@ -822,6 +816,3 @@ WASM: `futures::channel::mpsc::channel`).
    slow consumers entirely. Some use cases may want guaranteed delivery
    (unbounded), which is opt-in via `subscribe_unbounded()`.
 
-5. **Naming for the published crate** — `willow-actor` is coupled to the
-   Willow project name. Consider renaming to something generic (e.g.,
-   `microactor`, `tinyact`) before publishing.
