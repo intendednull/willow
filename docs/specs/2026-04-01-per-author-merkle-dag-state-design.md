@@ -1,7 +1,7 @@
 # Per-Author Merkle-DAG State Machine
 
 **Date**: 2026-04-01
-**Status**: Draft
+**Status**: Ready for implementation
 
 ## Problem
 
@@ -163,7 +163,7 @@ pub struct Event {
     /// The state mutation to apply.
     pub kind: EventKind,
 
-    /// Ed25519 signature over (author, seq, prev, deps, kind).
+    /// Ed25519 signature over (author, seq, prev, deps, kind, timestamp_hint_ms).
     /// Proves authorship — cannot be forged without the private key.
     pub sig: Signature,
 
@@ -226,7 +226,7 @@ Properties:
 - **Efficient sync**: request "author A, events after seq 2" to get
   exactly {A3, A4}.
 - **Author-revisable**: the author can republish their chain (see
-  Section 5: Author History Revision).
+  Section 4: Author History Revision).
 
 ### Cross-Author Dependencies (the DAG)
 
@@ -353,7 +353,7 @@ causal information in `deps` is best-effort, not a hard constraint.
 
 The `EventKind` enum remains the same — it defines *what* mutations are
 possible. The change is in *how* events are structured and ordered, not
-what they do. All 24 current variants carry over as-is:
+what they do. The remaining variants carry over as-is:
 
 ```rust
 pub enum EventKind {
@@ -439,37 +439,46 @@ Hash-based tiebreaking is:
 ```rust
 impl EventDag {
     pub fn topological_sort(&self) -> Vec<&Event> {
-        // Kahn's algorithm with a BinaryHeap keyed by EventHash
-        // for deterministic selection among ready nodes.
-        let mut in_degree: HashMap<EventHash, usize> = HashMap::new();
-        let mut ready: BTreeSet<&EventHash> = BTreeSet::new();
-        let mut result: Vec<&Event> = Vec::new();
+        // Kahn's algorithm with BTreeSet for deterministic tie-breaking.
+        let mut in_degree: HashMap<&EventHash, usize> = HashMap::new();
+        let mut dependents: HashMap<&EventHash, Vec<&EventHash>> = HashMap::new();
+
+        // Initialize all nodes with in-degree 0.
+        for hash in self.events.keys() {
+            in_degree.insert(hash, 0);
+        }
 
         // Compute in-degrees from prev + deps edges.
+        // Only count edges to events that exist in this DAG
+        // (soft-accept means deps may reference absent events).
         for event in self.events.values() {
-            let deps = self.causal_parents(event);
-            *in_degree.entry(event.hash.clone()).or_default() += 0;
-            for dep in deps {
-                *in_degree.entry(event.hash.clone()).or_default() += 1;
+            for parent in self.causal_parents(event) {
+                if self.events.contains_key(parent) {
+                    *in_degree.get_mut(&event.hash).unwrap() += 1;
+                    dependents.entry(parent).or_default().push(&event.hash);
+                }
             }
         }
 
         // Seed with zero-indegree events.
+        let mut ready: BTreeSet<&EventHash> = BTreeSet::new();
         for (hash, &degree) in &in_degree {
             if degree == 0 {
                 ready.insert(hash);
             }
         }
 
-        // Process in deterministic order (BTreeSet sorts by hash).
+        // Process in deterministic order (BTreeSet sorts by hash bytes).
+        let mut result: Vec<&Event> = Vec::new();
         while let Some(hash) = ready.pop_first() {
-            let event = &self.events[hash];
-            result.push(event);
-            for dependent in self.dependents(hash) {
-                let d = in_degree.get_mut(dependent).unwrap();
-                *d -= 1;
-                if *d == 0 {
-                    ready.insert(dependent);
+            result.push(&self.events[hash]);
+            if let Some(deps) = dependents.get(hash) {
+                for dep in deps {
+                    let d = in_degree.get_mut(dep).unwrap();
+                    *d -= 1;
+                    if *d == 0 {
+                        ready.insert(dep);
+                    }
                 }
             }
         }
@@ -496,22 +505,20 @@ Full replay from genesis is only needed on first bootstrap. During
 normal operation, state is maintained incrementally:
 
 ```rust
-impl EventDag {
-    /// Apply a single new event to an existing materialized state.
-    ///
-    /// Preconditions:
-    /// - All causal parents of `event` are already reflected in `state`
-    ///   (i.e., all events in the current DAG that causally precede
-    ///   this one have been applied).
-    /// - The event has been inserted into the DAG already.
-    ///
-    /// This is O(1) per event — no re-sort, no full replay.
-    pub fn apply_incremental(
-        state: &mut ServerState,
-        event: &Event,
-    ) -> ApplyResult {
-        apply_unchecked(state, event)
-    }
+/// Apply a single new event to an existing materialized state.
+///
+/// Preconditions:
+/// - All causal parents of `event` are already reflected in `state`
+///   (i.e., all events in the current DAG that causally precede
+///   this one have been applied).
+/// - The event has been inserted into the DAG already.
+///
+/// This is O(1) per event — no re-sort, no full replay.
+pub fn apply_incremental(
+    state: &mut ServerState,
+    event: &Event,
+) -> ApplyResult {
+    apply_unchecked(state, event)
 }
 ```
 
@@ -570,7 +577,7 @@ pub struct ServerState {
     //
     // REMOVED: hash() method that serializes entire state
     //   → State hashing is optional and computed differently
-    //     (see Section 6: Compaction & Snapshots)
+    //     (see Section 5: Compaction & Snapshots)
 }
 ```
 
@@ -672,7 +679,7 @@ Peer A                              Peer B
    - If `my_seq > their_seq`: they need events from me (I'll wait for
      their request, or proactively send).
    - If `their_hash != my_hash` at the same seq: the author revised
-     their chain (see Section 5).
+     their chain (see Section 4).
 
 3. **Request missing events.** Send `Request` listing which authors
    and after which seq number.
