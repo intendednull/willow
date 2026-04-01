@@ -67,6 +67,11 @@ rand = "0.8"
 [dev-dependencies]
 willow-network = { path = "../network", features = ["test-utils"] }
 tempfile = "3"
+
+# Note: willow-client test-utils feature is enabled for tests via:
+# [features]
+# test-harness = ["willow-client/test-utils"]
+# (added in Phase 3 when the multi-peer harness is built)
 ```
 
 ### 1b. CLI parsing (`main.rs`)
@@ -126,8 +131,9 @@ identity load/generate, tracing init, tokio runtime.
 
 Use `rmcp` crate to create an MCP server. Register:
 - Server info (name: "willow-agent", version)
-- Empty tool list (populated in Phase 2)
-- Resource list stubs (populated later in this phase)
+- Tool schemas from 1e (schema-only stubs, handlers return
+  `NotImplemented` until Phase 2)
+- Resource schemas from 1f (placeholder JSON until Phase 2)
 
 For stdio transport: `rmcp::transport::stdio::serve(server)`.
 
@@ -203,8 +209,8 @@ test-agent:
     cargo test -p willow-agent
 ```
 
-Update `check-wasm` to exclude `willow-agent` (native-only binary,
-same as `willow-app`).
+No changes needed to `check-wasm` — it explicitly lists
+WASM-compatible crates, so `willow-agent` is already excluded.
 
 ### 1i. Unit tests
 
@@ -240,7 +246,7 @@ Define a `WillowMcpServer` struct:
 ```rust
 pub struct WillowMcpServer<N: Network> {
     client: Arc<ClientHandle<N>>,
-    // token_scope added in Phase 3
+    // token_scope added in Phase 4
 }
 ```
 
@@ -296,7 +302,7 @@ Parse `peer_id` from 64-char hex string to `EndpointId`:
 | `leave_server` | `client.leave_server()` |
 | `rename_server` | `client.rename_server(name)` |
 | `set_server_description` | `client.set_server_description(desc)` |
-| `authorize_workers` | `client.authorize_workers(peer_ids)` |
+| `authorize_workers` | `client.authorize_workers(&parse_endpoint_ids(worker_peer_ids))` |
 
 ### 2f. Implement identity, invite, voice, state tools
 
@@ -306,7 +312,7 @@ Parse `peer_id` from 64-char hex string to `EndpointId`:
 - `send_typing` → `client.send_typing()`
 
 **Invites:**
-- `generate_invite` → `client.generate_invite(peer_id)`
+- `generate_invite` → `client.generate_invite(&parse_endpoint_id(recipient_peer_id))`
 - `accept_invite` → `client.accept_invite(code)`
 - `create_join_link` → `client.create_join_link(max_uses, expires_at)`
 - `delete_join_link` → `client.delete_join_link(link_id)`
@@ -349,10 +355,16 @@ snapshots:
 
 ### 2h. Unit tests for tool dispatch
 
+Create a local `test_mcp_client()` helper in the agent crate that
+constructs a `WillowMcpServer<MemNetwork>` with a single-peer
+`ClientHandle` (replicate the `test_client()` setup from
+`crates/client/src/lib.rs`). This is Phase 2-only — Phase 3d
+introduces a proper `test-utils` feature for multi-peer harnesses.
+
 For each tool category:
 1. Construct valid JSON params
-2. Call the tool handler with a `test_client()` (MemNetwork)
-3. Verify the state change via accessors
+2. Call the tool handler via the MCP server
+3. Verify the state change via the underlying `ClientHandle` accessors
 
 Example: call `send_message` tool, then `client.messages("general")`
 should contain the message.
@@ -391,7 +403,7 @@ Create `crates/agent/src/notifications.rs`:
    ```
 4. Forward to the MCP server's notification channel
 
-Implement `ClientEvent` → JSON serialization for all 25 variants:
+Implement `ClientEvent` → JSON serialization for all 27 variants:
 - `MessageReceived`, `MessageEdited`, `MessageDeleted`, `ReactionAdded`
 - `PeerConnected`, `PeerDisconnected`
 - `ChannelCreated`, `ChannelDeleted`
@@ -804,7 +816,6 @@ crates/agent/tests/e2e.rs          — Multi-peer E2E test suite
 ### Modified
 
 ```
-Cargo.toml                         — add crates/agent to workspace
 crates/client/Cargo.toml           — add test-utils feature
 crates/client/src/lib.rs           — add pub test_utils module
 justfile                           — add agent targets, update test-all
