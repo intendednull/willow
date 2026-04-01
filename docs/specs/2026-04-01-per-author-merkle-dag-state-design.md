@@ -283,10 +283,16 @@ creation moment. Properties:
 ### Governance Model
 
 There is no permanent "owner." The genesis author starts as the sole
-`Administrator`, but has no special permanent status beyond that. All
-privileged operations (granting/revoking admin, kicking members,
-changing the vote threshold) go through a **propose → vote → resolve**
-process.
+admin, but has no special permanent status beyond that. All privileged
+operations (granting/revoking admin, kicking members, changing the vote
+threshold) go through a **propose → vote → auto-apply** process.
+
+Admin status is structurally separate from permissions. The `Permission`
+enum does not contain `Administrator` — admin status is tracked in a
+dedicated `admins: HashSet<EndpointId>` field on `ServerState`. This
+makes it impossible for any peer (malicious or otherwise) to grant
+admin via a direct `GrantPermission` event. The type system enforces
+the governance path.
 
 #### No single point of failure
 
@@ -313,59 +319,40 @@ pub enum VoteThreshold {
 }
 ```
 
+#### Auto-apply on threshold
+
+There is no `Resolve` event. When a `Vote` event brings the yes-count
+to the vote threshold during materialization, the proposed action is
+applied immediately. No single admin "declares" the result — it is a
+deterministic consequence of the DAG state.
+
+```
+Admin A:  Propose(GrantAdmin{bob})     ← proposer = implicit yes (1/3)
+                    ↑
+Admin B:  Vote(yes) │                  ← 2/3 votes
+                    ↑
+Admin C:  Vote(yes) │                  ← 3/3, threshold met → applied
+```
+
+This eliminates:
+- Conflicting resolution events (no resolution event exists)
+- Race conditions between admins claiming different outcomes
+- Action substitution attacks (action comes only from the Propose)
+- Need for resolver ≠ proposer rules
+
+The "proof" that a vote passed is the Vote events themselves, signed
+and positioned in each voter's chain. Any peer can verify by replaying
+the DAG.
+
 #### Bootstrap sequence
 
 1. Genesis `CreateServer` event. Genesis author is sole admin.
 2. Sole admin proposes `GrantAdmin{alice}`. Quorum = 1 (unanimous of 1).
-   Proposer is implicit "yes." Resolves immediately.
+   Proposer is implicit "yes." Auto-applies immediately during
+   materialization when the Propose event is processed.
 3. Now 2 admins. Propose `GrantAdmin{bob}`. Both must vote (unanimous).
 4. Now 3 admins. They can propose `SetVoteThreshold(Majority)`. All 3
-   must agree. Once resolved, future proposals need only 2 of 3.
-
-#### Frozen chain proof
-
-When a vote reaches quorum, the resolver publishes a `Resolve` event
-that captures the chain heads of all voters at that moment. This
-"freezes" the state of each voter's chain as proof:
-
-```
-Admin A:  Propose(GrantAdmin{bob})
-                    ↑
-Admin B:  Vote(yes) │
-                    ↑
-Admin C:  Vote(yes) │
-                    ↑
-Admin A:  Resolve {
-              proposal: hash(Propose),
-              votes: [hash(B_vote), hash(C_vote)],
-              frozen_heads: {
-                  A: (seq=5, hash=..),
-                  B: (seq=3, hash=..),
-                  C: (seq=7, hash=..),
-              },
-              action: GrantAdmin{bob},
-          }
-```
-
-If a voter later revises their chain to remove their vote, the
-`Resolve` event still exists in the resolver's chain. The frozen heads
-prove the votes were valid at resolution time. The action stands
-because the resolver's chain — not the voter's — is what applies it.
-
-The action can only be undone if the resolver revises their own chain
-to remove the Resolve event. Even then, other admins can re-propose.
-
-#### Resolver must not be proposer
-
-The peer who publishes a `Resolve` event must be a different admin
-than the peer who published the `Propose` event. This prevents a
-single admin from proposing and immediately resolving before others
-can respond. At minimum, two distinct admins must cooperate to push
-an action through (one proposes, another resolves after votes).
-
-With a sole admin (genesis bootstrap), the single admin is both
-proposer and resolver — this is the one exception, since there's
-no other admin to resolve.
+   must agree. Once applied, future proposals need only 2 of 3.
 
 #### Edge cases
 
@@ -388,14 +375,15 @@ changing the threshold. The server is frozen for admin changes.
 Servers that want resilience should proactively lower the threshold
 while all admins are active. This is an accepted tradeoff: unanimous
 is safe but brittle, majority is flexible but can be exploited by
-colluding admins. There is no free lunch.
+colluding admins. There is no free lunch. See intendednull/willow#22
+for future hardening work including community-based fallback voting.
 
-**Vote retraction.** A voter can revise their chain to remove a vote
-after resolution. On re-materialization, the action is undone. This
-is author sovereignty working as designed — the community sees the
-retraction (frozen_heads in the Resolve show the vote existed) and
-can re-propose. If a peer repeatedly retracts, other admins can vote
-to revoke their admin status.
+**Vote retraction.** A voter can revise their chain to remove a vote.
+On re-materialization, the yes-count drops below threshold and the
+action is undone. This is author sovereignty working as designed — the
+retraction is visible (the Vote event used to exist at a known seq in
+the voter's chain) and other admins can re-propose. If a peer
+repeatedly retracts, other admins can vote to revoke their admin.
 
 **Majority collusion.** With majority threshold, a majority of admins
 can collude to kick the minority and seize control. This is inherent
@@ -404,14 +392,18 @@ against this at the cost of the deadlock risk above.
 
 #### What requires a vote
 
+The `ProposedAction` enum defines exactly which actions require a vote.
+These actions can ONLY be applied through the vote path — the data
+model makes any other path structurally impossible.
+
 | Action | Mechanism |
 |---|---|
-| Grant `Administrator` | Propose → Vote → Resolve |
-| Revoke `Administrator` | Propose → Vote → Resolve |
-| Kick a member | Propose → Vote → Resolve |
-| Change vote threshold | Propose → Vote → Resolve |
-| Grant non-admin permissions (`ManageChannels`, etc.) | Direct event by any admin |
-| Revoke non-admin permissions | Direct event by any admin |
+| Grant admin status | `ProposedAction::GrantAdmin` via Propose → Vote |
+| Revoke admin status | `ProposedAction::RevokeAdmin` via Propose → Vote |
+| Kick a member | `ProposedAction::KickMember` via Propose → Vote |
+| Change vote threshold | `ProposedAction::SetVoteThreshold` via Propose → Vote |
+| Grant non-admin permissions (`ManageChannels`, etc.) | Direct `GrantPermission` event by any admin |
+| Revoke non-admin permissions | Direct `RevokePermission` event by any admin |
 | Create/delete/rename channels | Direct event by authorized peer |
 | Send messages, reactions, profiles | Direct event by any member |
 | Rename server, set description | Direct event by any admin |
@@ -546,17 +538,13 @@ pub enum EventKind {
     // -- Server lifecycle --
     CreateServer { name: String },
 
-    // -- Governance (vote-based) --
+    // -- Governance (vote-based, auto-apply on threshold) --
     Propose { action: ProposedAction },
     Vote { proposal: EventHash, accept: bool },
-    Resolve {
-        proposal: EventHash,
-        votes: Vec<EventHash>,
-        frozen_heads: HeadsSummary,
-        action: ProposedAction,
-    },
 
     // -- Permissions (direct, by any admin) --
+    /// Grants non-admin permissions only. Admin status is managed
+    /// exclusively via ProposedAction::GrantAdmin.
     GrantPermission { peer_id: EndpointId, permission: Permission },
     RevokePermission { peer_id: EndpointId, permission: Permission },
 
@@ -590,7 +578,10 @@ pub enum EventKind {
     SetServerDescription { description: String },
 }
 
-/// Actions that require admin vote to take effect.
+/// Actions that require admin vote to take effect. This enum
+/// defines EXACTLY which actions must go through the vote path.
+/// These actions cannot be triggered any other way — the data
+/// model makes direct execution structurally impossible.
 pub enum ProposedAction {
     GrantAdmin { peer_id: EndpointId },
     RevokeAdmin { peer_id: EndpointId },
@@ -598,27 +589,33 @@ pub enum ProposedAction {
     SetVoteThreshold { threshold: VoteThreshold },
 }
 
-pub enum VoteThreshold {
-    Unanimous,
-    Majority,
-    Count(u32),
+/// Permission types that can be granted directly by any admin.
+/// Does NOT include admin status — that is managed exclusively
+/// through ProposedAction and the vote path.
+pub enum Permission {
+    SyncProvider,
+    ManageChannels,
+    ManageRoles,
+    SendMessages,
+    CreateInvite,
+    // Administrator is NOT here — admin status is in ServerState.admins
 }
 ```
 
 **Changes from current EventKind:**
 
 - **Removed**: `StateVerification` (legacy), `KickMember` (now a
-  `ProposedAction`)
-- **Added**: `CreateServer`, `Propose`, `Vote`, `Resolve`
+  `ProposedAction`), `Resolve` (replaced by auto-apply on threshold)
+- **Added**: `CreateServer`, `Propose`, `Vote`
 - **Kept as direct**: `GrantPermission` / `RevokePermission` — these
-  grant non-admin permissions (ManageChannels, SendMessages, etc.)
-  and can be done by any admin without a vote. Granting/revoking
-  `Administrator` specifically goes through the vote process via
-  `ProposedAction::GrantAdmin` / `RevokeAdmin`.
+  grant non-admin permissions only. The `Permission` enum does not
+  contain `Administrator`, making it structurally impossible to grant
+  admin status via direct event. Admin changes go through
+  `ProposedAction::GrantAdmin` / `RevokeAdmin` exclusively.
 
 Note: `message_id` fields change from `String` to `EventHash`.
-Total variant count: 22 (21 original - `StateVerification` -
-`KickMember` + `CreateServer` + `Propose` + `Vote` + `Resolve` = 22).
+Total variant count: 21 (21 original - `StateVerification` -
+`KickMember` + `CreateServer` + `Propose` + `Vote` = 21).
 
 ## Section 2: State Materialization
 
@@ -786,7 +783,7 @@ fn apply_unchecked(state: &mut ServerState, event: &Event) -> ApplyResult {
         }
         EventKind::Propose { action } => {
             // Only admins can propose.
-            if !state.has_permission(&event.author, &Permission::Administrator) {
+            if !state.is_admin(&event.author) {
                 return ApplyResult::Rejected("not an admin".into());
             }
             state.pending_proposals.insert(event.hash.clone(), PendingProposal {
@@ -794,26 +791,19 @@ fn apply_unchecked(state: &mut ServerState, event: &Event) -> ApplyResult {
                 proposer: event.author,
                 votes: HashMap::from([(event.author, true)]),  // proposer is implicit yes
             });
+            // Check if threshold is already met (sole admin case).
+            check_and_apply_proposal(state, &event.hash.clone());
             return ApplyResult::Applied;
         }
         EventKind::Vote { proposal, accept } => {
-            if !state.has_permission(&event.author, &Permission::Administrator) {
+            if !state.is_admin(&event.author) {
                 return ApplyResult::Rejected("not an admin".into());
             }
             if let Some(prop) = state.pending_proposals.get_mut(proposal) {
                 prop.votes.insert(event.author, *accept);
             }
-            return ApplyResult::Applied;
-        }
-        EventKind::Resolve { proposal, action, frozen_heads, votes } => {
-            // Validate: proposer must be admin, all referenced votes
-            // must exist in pending_proposals, quorum must be met.
-            if let Some(prop) = state.pending_proposals.remove(proposal) {
-                let yes_count = prop.votes.values().filter(|v| **v).count();
-                if state.meets_threshold(yes_count) {
-                    apply_proposed_action(state, action);
-                }
-            }
+            // Check if threshold is now met.
+            check_and_apply_proposal(state, proposal);
             return ApplyResult::Applied;
         }
         _ => {}
@@ -832,14 +822,27 @@ fn apply_unchecked(state: &mut ServerState, event: &Event) -> ApplyResult {
     apply_mutation(state, event)
 }
 
+/// Check if a pending proposal has met the vote threshold.
+/// If so, remove from pending and apply the action.
+fn check_and_apply_proposal(state: &mut ServerState, proposal: &EventHash) {
+    let should_apply = state.pending_proposals.get(proposal)
+        .map(|prop| {
+            let yes_count = prop.votes.values().filter(|v| **v).count();
+            state.meets_threshold(yes_count)
+        })
+        .unwrap_or(false);
+
+    if should_apply {
+        let prop = state.pending_proposals.remove(proposal).unwrap();
+        apply_proposed_action(state, &prop.action);
+    }
+}
+
 /// Apply a voted-on action to state.
 fn apply_proposed_action(state: &mut ServerState, action: &ProposedAction) {
     match action {
         ProposedAction::GrantAdmin { peer_id } => {
-            state.peer_permissions
-                .entry(*peer_id)
-                .or_default()
-                .insert(Permission::Administrator);
+            state.admins.insert(*peer_id);
             state.members.entry(*peer_id).or_insert_with(|| Member {
                 peer_id: *peer_id,
                 roles: HashSet::new(),
@@ -847,13 +850,12 @@ fn apply_proposed_action(state: &mut ServerState, action: &ProposedAction) {
             });
         }
         ProposedAction::RevokeAdmin { peer_id } => {
-            if let Some(perms) = state.peer_permissions.get_mut(peer_id) {
-                perms.remove(&Permission::Administrator);
-            }
+            state.admins.remove(peer_id);
         }
         ProposedAction::KickMember { peer_id } => {
             state.members.remove(peer_id);
             state.peer_permissions.remove(peer_id);
+            state.admins.remove(peer_id);
         }
         ProposedAction::SetVoteThreshold { threshold } => {
             state.vote_threshold = threshold.clone();
@@ -877,10 +879,10 @@ provided UUIDs, not content hashes).
 
 ### ServerState Changes
 
-`ServerState` gains voting state and loses the single-owner concept.
+`ServerState` gains governance state and loses the single-owner concept.
 `new()` takes `(server_id, name, genesis_author)` — the genesis author
-is granted `Administrator` in the initial state, but is not stored as a
-special "owner." From there, the admin set evolves through votes.
+is added to the `admins` set. From there, the admin set evolves through
+votes.
 
 ```rust
 pub struct ServerState {
@@ -889,6 +891,8 @@ pub struct ServerState {
     pub channels: HashMap<String, Channel>,
     pub roles: HashMap<String, Role>,
     pub members: HashMap<EndpointId, Member>,
+    /// Non-admin permissions (ManageChannels, SendMessages, etc.).
+    /// Does not control admin status — that's in `admins`.
     pub peer_permissions: HashMap<EndpointId, HashSet<Permission>>,
     pub messages: Vec<ChatMessage>,
     pub profiles: HashMap<EndpointId, Profile>,
@@ -896,13 +900,16 @@ pub struct ServerState {
     pub channel_keys: HashMap<String, Vec<u8>>,
 
     // -- Governance state --
+    /// The set of peers with admin status. Separate from Permission
+    /// enum to make the governance boundary structurally enforced.
+    pub admins: HashSet<EndpointId>,
     /// Current vote threshold for admin actions.
     pub vote_threshold: VoteThreshold,
-    /// Pending proposals not yet resolved.
+    /// Pending proposals awaiting votes.
     pub pending_proposals: HashMap<EventHash, PendingProposal>,
 
     // REMOVED: owner: EndpointId
-    //   → No single owner. Admins are peers with Administrator permission.
+    //   → No single owner. Admin set managed by votes.
     //
     // REMOVED: seen_event_ids: HashSet<String>
     //   → Dedup is structural (DAG rejects duplicate hashes)
@@ -920,6 +927,40 @@ pub struct PendingProposal {
 }
 ```
 
+Key methods:
+
+```rust
+impl ServerState {
+    /// Check if a peer is an admin.
+    pub fn is_admin(&self, peer_id: &EndpointId) -> bool {
+        self.admins.contains(peer_id)
+    }
+
+    /// Check if a peer has a specific non-admin permission.
+    /// Admins implicitly have all permissions.
+    pub fn has_permission(&self, peer_id: &EndpointId, perm: &Permission) -> bool {
+        if self.admins.contains(peer_id) {
+            return true;
+        }
+        self.peer_permissions
+            .get(peer_id)
+            .map(|perms| perms.contains(perm))
+            .unwrap_or(false)
+    }
+
+    /// Check if a yes-vote count meets the current threshold.
+    pub fn meets_threshold(&self, yes_count: usize) -> bool {
+        let admin_count = self.admins.len();
+        if admin_count == 0 { return false; }
+        match self.vote_threshold {
+            VoteThreshold::Unanimous => yes_count >= admin_count,
+            VoteThreshold::Majority => yes_count > admin_count / 2,
+            VoteThreshold::Count(n) => yes_count >= (n as usize).min(admin_count),
+        }
+    }
+}
+```
+
 ### Concurrency Semantics
 
 Because events from different authors can be concurrent (no causal
@@ -932,8 +973,8 @@ idempotently and commutatively where possible:
 | `DeleteChannel` + `Message` to same channel | If delete sorts first, message targets a missing channel — silently ignored. If message sorts first, it's created then channel + messages deleted. Both are valid eventual states. |
 | `EditMessage` + `DeleteMessage` on same message | Last-writer-wins by sort order. Both are acceptable. |
 | `Reaction` by two peers | Both reactions are added (additive, no conflict). |
-| Two concurrent `Propose` events | Both recorded as pending. Each resolved independently. |
-| `Vote` on a proposal that's already `Resolve`d | Vote is ignored (proposal no longer pending). |
+| Two concurrent `Propose` events | Both recorded as pending. Each passes independently when threshold is met. |
+| `Vote` on a proposal that already passed | Vote is ignored (proposal no longer pending). |
 
 The key property: **all peers with the same DAG contents produce the
 same materialized state.** The specific outcome of concurrent events
@@ -1504,7 +1545,8 @@ code path between "single linear chain with parent state hash" and
 | `merge()` | DAG union + topological sort replaces timestamp-sorted merge |
 | `find_common_ancestor()` | Per-author seq comparison replaces state-hash walking |
 | `StateHash` | No per-event state hash; snapshots use `SnapshotHash` |
-| `ServerState.owner` | No single owner. Admins are peers with `Administrator` |
+| `ServerState.owner` | No single owner. Admin set managed by votes via `admins: HashSet` |
+| `Permission::Administrator` | Admin status separated from Permission enum into `ServerState.admins` |
 | `ServerState.seen_event_ids` | Dedup is structural (DAG rejects duplicate hashes) |
 | `ServerState.hash()` | Full-state hashing removed from hot path |
 | `InMemoryStore` | Replaced by `EventDag` (which subsumes store + ordering) |
@@ -1515,10 +1557,10 @@ code path between "single linear chain with parent state hash" and
 
 | Symbol | Status |
 |---|---|
-| `EventKind` (22 variants) | 18 carried over + `CreateServer` + `Propose` + `Vote` + `Resolve` |
-| `ServerState` (struct) | Kept, minus `owner`/`seen_event_ids`/`hash()`, plus governance state |
-| `Permission` enum | Unchanged |
-| `has_permission()` | Simplified — no owner short-circuit, checks admin set |
+| `EventKind` (21 variants) | 18 carried over + `CreateServer` + `Propose` + `Vote` |
+| `ServerState` (struct) | Kept, minus `owner`/`seen_event_ids`/`hash()`, plus `admins`/`vote_threshold`/`pending_proposals` |
+| `Permission` enum | `Administrator` removed — admin status tracked separately in `ServerState.admins` |
+| `has_permission()` | Admins have all permissions; no owner concept |
 | `Channel`, `Role`, `Member`, `Profile` | Unchanged |
 | `ChatMessage` | `id` and `reply_to` change from `String` to `EventHash` |
 | Permission enforcement in apply | Moved to `apply_unchecked()`, governance events handled specially |
@@ -1529,7 +1571,7 @@ code path between "single linear chain with parent state hash" and
 | Module | Contents |
 |---|---|
 | `hash.rs` | `EventHash` (32-byte SHA-256 wrapper, `Ord`, `Display`) |
-| `event.rs` | `Event`, `EventKind` (uses `Signature` from `willow-identity`) |
+| `event.rs` | `Event`, `EventKind`, `ProposedAction`, `VoteThreshold` |
 | `dag.rs` | `EventDag`, `InsertError`, `ChainStatus`, `RevisionError`, topological sort |
 | `materialize.rs` | `materialize()`, `apply_unchecked()`, `apply_incremental()` |
 | `sync.rs` | `HeadsSummary`, `AuthorHead`, `SyncMessage`, `AuthorRequest`, `PendingBuffer` |
@@ -1542,12 +1584,12 @@ code path between "single linear chain with parent state hash" and
 
 ```rust
 // Core types
-pub use event::{Event, EventKind};
+pub use event::{Event, EventKind, ProposedAction, VoteThreshold};
 pub use hash::EventHash;
 pub use dag::{EventDag, InsertError, ChainStatus, RevisionError};
 pub use materialize::{materialize, apply_incremental, ApplyResult};
 pub use sync::{HeadsSummary, AuthorHead, SyncMessage, AuthorRequest, PendingBuffer};
-pub use server::ServerState;
+pub use server::{ServerState, PendingProposal};
 pub use types::{Channel, ChatMessage, Member, Permission, Profile, Role};
 // Deferred: pub use snapshot::{Snapshot, SnapshotHash};
 ```
@@ -2047,7 +2089,7 @@ and what is deferred.
 
 | Section | What ships |
 |---|---|
-| Section 1 | `Event`, `EventHash`, `EventKind` (22 variants), `ProposedAction`, `VoteThreshold`, `EventDag`, `InsertError`, `PendingBuffer` |
+| Section 1 | `Event`, `EventHash`, `EventKind` (21 variants), `ProposedAction`, `VoteThreshold`, `EventDag`, `InsertError`, `PendingBuffer` |
 | Section 2 | `materialize()`, `apply_unchecked()`, `apply_incremental()`, topological sort, `ServerState` (simplified) |
 | Section 3 | `HeadsSummary`, `SyncMessage`, `AuthorRequest`, sync flow |
 | Section 4 | `replace_chain()`, chain verification, revision detection (`ChainStatus`) |
@@ -2226,13 +2268,14 @@ test materialize_owner_has_all_permissions
     Owner can do anything without explicit grants.
 
 test materialize_admin_has_all_permissions
-    Peer with Administrator permission can do anything.
+    Admin peer (in admins set) can do anything without explicit
+    permission grants.
 
-test materialize_kick_removes_member_and_permissions
-    KickMember event removes the member and their permissions.
+test materialize_kick_via_vote
+    KickMember via Propose + Vote removes the member and permissions.
 
-test materialize_cannot_kick_owner
-    KickMember targeting the owner is a no-op.
+test materialize_kick_admin_via_vote
+    An admin can be kicked via the vote process like any member.
 
 test materialize_message_in_channel
     Message event → ChatMessage appears in state.messages.
@@ -2249,11 +2292,11 @@ test materialize_reaction
 test materialize_set_profile
     SetProfile → profile and member display_name updated.
 
-test materialize_rename_server_owner_only
-    Owner can rename. Non-owner is rejected.
+test materialize_rename_server_admin_only
+    Admin can rename. Non-admin is rejected.
 
-test materialize_server_description_owner_only
-    Owner can set description. Non-owner is rejected.
+test materialize_server_description_admin_only
+    Admin can set description. Non-admin is rejected.
 
 test materialize_delete_channel_cascades_messages
     DeleteChannel removes the channel and all its messages.
