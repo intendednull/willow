@@ -56,7 +56,12 @@ or any event structure. The serialization of event fields into bytes
 
 ### EventKind
 
-Move from `lib.rs`. 20 variants (drop `StateVerification` from original 21).
+Move from `lib.rs`. Drop `StateVerification`. Add `CreateServer`.
+21 variants total (20 carried over + 1 new).
+
+New variant:
+- `CreateServer { name: String }` — genesis event, establishes
+  server identity and ownership. Must be the first event in the DAG.
 
 Field type changes:
 - `message_id: String` → `message_id: EventHash` in `EditMessage`,
@@ -122,6 +127,7 @@ pub struct EventDag {
     events: HashMap<EventHash, Event>,
     chains: HashMap<EndpointId, Vec<EventHash>>,
     heads: HashMap<EndpointId, EventHash>,
+    genesis_hash: Option<EventHash>,
 }
 ```
 
@@ -130,6 +136,7 @@ pub struct EventDag {
 ```rust
 pub enum InsertError {
     InvalidSignature,
+    NotGenesis,
     SeqGap { author: EndpointId, expected: u64, got: u64 },
     PrevMismatch { author: EndpointId, expected: EventHash, got: EventHash },
     Duplicate,
@@ -140,19 +147,26 @@ pub enum InsertError {
 
 1. `event.verify()` → `InvalidSignature`
 2. `events.contains_key(&event.hash)` → `Duplicate`
-3. Check seq: must be `latest_seq(author) + 1` → `SeqGap`
-4. Check prev: must match `head(author)` or `ZERO` for seq=1 → `PrevMismatch`
-5. Insert into `events`, push hash to `chains[author]`, set `heads[author]`
-6. Return `Ok(())`. Unknown deps in `event.deps` are silently accepted.
+3. If DAG is empty (`genesis_hash.is_none()`): event must be
+   `EventKind::CreateServer` with seq=1 and prev=ZERO. Set
+   `genesis_hash`. Otherwise: reject non-CreateServer as first event.
+4. Check seq: must be `latest_seq(author) + 1` → `SeqGap`
+5. Check prev: must match `head(author)` or `ZERO` for seq=1 → `PrevMismatch`
+6. Insert into `events`, push hash to `chains[author]`, set `heads[author]`
+7. Return `Ok(())`. Unknown deps in `event.deps` are silently accepted.
 
 ### Accessors
 
 - `new() -> Self`
+- `genesis(&self) -> Option<&Event>`
+- `server_id(&self) -> Option<String>` (hex of genesis hash)
+- `owner(&self) -> Option<EndpointId>` (genesis author)
 - `latest_seq(&self, author) -> u64` (0 if unknown)
 - `head(&self, author) -> Option<&EventHash>`
 - `author_events(&self, author) -> &[EventHash]` (empty slice if unknown)
 - `get(&self, hash) -> Option<&Event>`
 - `len(&self) -> usize` (total events)
+- `is_empty(&self) -> bool`
 - `authors(&self) -> impl Iterator<Item = &EndpointId>`
 
 ### create_event() convenience
@@ -171,7 +185,8 @@ Reads current head/seq for `identity.endpoint_id()`, builds Event
 with `seq + 1`, `prev = current_head` (or ZERO). Does NOT insert.
 
 **Tests**:
-- `insert_first_event`
+- `insert_genesis_event` — CreateServer as first event succeeds
+- `insert_rejects_non_genesis_first` — non-CreateServer as first event fails
 - `insert_sequential_events`
 - `insert_rejects_duplicate`
 - `insert_rejects_invalid_signature`
@@ -180,6 +195,7 @@ with `seq + 1`, `prev = current_head` (or ZERO). Does NOT insert.
 - `insert_accepts_unknown_deps`
 - `insert_multiple_authors`
 - `insert_with_cross_author_deps`
+- `genesis_accessors` — genesis(), server_id(), owner() return correct values
 
 ## Step 4: Topological sort
 
@@ -221,8 +237,9 @@ visited set.
 - Remove `hash()` method
 - Remove `is_trusted()` (legacy backward-compat bridge)
 - Keep `has_permission()`, `is_sync_provider()`
-- `new(server_id, owner)` — takes 2 params, not 3. `server_name`
-  starts empty (set later by `RenameServer` event from owner).
+- `new(server_id, name, owner)` — takes 3 params. `server_id` and
+  `name` come from the genesis `CreateServer` event. `RenameServer`
+  events can change the name later.
 
 ### types.rs changes
 
@@ -234,10 +251,14 @@ visited set.
 ### ServerState.new() signature
 
 ```rust
-pub fn new(id: impl Into<String>, owner: EndpointId) -> Self
+pub fn new(
+    id: impl Into<String>,
+    name: impl Into<String>,
+    owner: EndpointId,
+) -> Self
 ```
 
-`server_name` defaults to empty string. Owner is added as member.
+Owner is added as member. Name and ID come from genesis event.
 
 **Tests**:
 - `new_server_has_owner_as_member`
@@ -251,7 +272,8 @@ pub fn new(id: impl Into<String>, owner: EndpointId) -> Self
 
 ### Public API
 
-- `materialize(dag, server_id, owner) -> ServerState` — full replay
+- `materialize(dag) -> ServerState` — full replay (owner + server_id
+  derived from genesis event)
 - `apply_incremental(state, event) -> ApplyResult` — single event
 - `ApplyResult { Applied, Rejected(String) }`
 
@@ -265,12 +287,16 @@ pub fn new(id: impl Into<String>, owner: EndpointId) -> Self
 
 Ported from current `apply_inner` in `lib.rs:341-571`. Changes:
 - Remove `StateVerification` arm
+- Add `CreateServer` arm — no-op during materialization (server_id
+  and name are handled by `materialize()` before the replay loop;
+  the CreateServer event in the topo sort is skipped or treated as
+  a no-op since its data is already extracted)
 - `message_id` fields are `EventHash` not `String`
 - `event.id` references become `event.hash`
 - No `seen_event_ids` insertion (removed from state)
 - `ChatMessage.id` is `event.hash.clone()` not `event.id.clone()`
 
-All 20 remaining match arms carry over with these substitutions.
+All 21 match arms: 1 new no-op (CreateServer) + 20 carried over.
 
 **Tests**:
 - `materialize_empty_dag`

@@ -253,21 +253,75 @@ list the *heads* (latest known events) of other authors at the time of
 creation. Transitivity fills in the rest — if A2 depends on B3, and B3
 depends on C1, then A2 transitively depends on C1.
 
-### Server Identity
+### Server Identity and Genesis Event
 
-A server is identified by a unique `server_id: String` (UUID generated
-at creation time). This is distinct from the owner's public key — the
-same owner can create multiple servers, and server identity persists
-even if ownership is transferred in the future.
+A server begins with a **genesis event** — the first event in the
+DAG, published by the server's creator (the owner). The genesis event
+is a `CreateServer` event:
 
-The `server_id` is:
-- Generated once at server creation
-- Stored in `ServerState.server_id`
-- Used as the gossip topic namespace (events for server X go to topic X)
-- Used as the key in multi-server maps (`ReplayRole.servers`, etc.)
-- Not derived from any key or hash — it is an opaque unique identifier
+```rust
+EventKind::CreateServer { name: String }
+```
 
-Each `EventDag` instance corresponds to exactly one server.
+The `server_id` is derived from the genesis event:
+
+```
+server_id = hex(genesis_event.hash)
+```
+
+This cryptographically binds the server's identity to its creator and
+creation moment. Properties:
+
+- **Content-addressed**: the same owner creating the same server name
+  at different times produces different IDs (different timestamps,
+  different hashes).
+- **Unforgeable**: the genesis event is signed by the owner's key.
+  No one else can produce an event that hashes to this server_id.
+- **Permanent**: the owner is whoever signed the genesis event. This
+  cannot change — the genesis event's hash IS the server_id, and
+  changing the genesis event would change the server_id, making it a
+  different server.
+
+### Ownership Model
+
+The genesis author is the owner **forever**. Ownership is not
+transferable at the protocol level.
+
+Rationale: the genesis private key is the root of trust. Any
+"transfer" mechanism can be undone by the genesis key holder revising
+their chain (author sovereignty). Rather than building a transfer
+mechanism that creates false security expectations, we make the
+cryptographic reality explicit:
+
+- The owner has implicit all-permissions and cannot be kicked.
+- The owner can grant `Administrator` to other peers, giving them
+  nearly equivalent power.
+- If the owner wants to hand off a community, the clean path is:
+  create a new server under the new owner's key, migrate members.
+- If the owner's key is compromised, the server is compromised.
+  Same as any key-based system.
+
+`materialize()` derives the owner from the genesis event — it is not
+passed as a parameter:
+
+```rust
+pub fn materialize(dag: &EventDag) -> ServerState {
+    let genesis = dag.genesis().expect("DAG must have a genesis event");
+    let server_id = genesis.hash.to_string();
+    let owner = genesis.author;
+    let name = match &genesis.kind {
+        EventKind::CreateServer { name } => name.clone(),
+        _ => panic!("genesis event must be CreateServer"),
+    };
+
+    let sorted = dag.topological_sort();
+    let mut state = ServerState::new(&server_id, &name, owner);
+    for event in sorted {
+        apply_unchecked(&mut state, event);
+    }
+    state
+}
+```
 
 ### EventDag
 
@@ -286,6 +340,10 @@ pub struct EventDag {
 
     /// Current head (latest event hash) per author.
     heads: HashMap<EndpointId, EventHash>,
+
+    /// Hash of the genesis event (CreateServer). Set on first insert.
+    /// Also serves as the server_id.
+    genesis_hash: Option<EventHash>,
 }
 ```
 
@@ -294,13 +352,21 @@ Core operations:
 ```rust
 impl EventDag {
     /// Insert a verified event into the DAG.
+    ///
+    /// The first event inserted must be `EventKind::CreateServer`.
+    /// It becomes the genesis event and its hash is the server_id.
+    ///
     /// Returns error if:
     /// - Signature verification fails
     /// - seq is not exactly prev_seq + 1 for this author
     /// - prev hash doesn't match the author's current head
+    /// - First event is not CreateServer
     /// Unknown deps are accepted (soft-accept) and recorded for
     /// background resolution.
     pub fn insert(&mut self, event: Event) -> Result<(), InsertError>;
+
+    /// The genesis event. None if the DAG is empty.
+    pub fn genesis(&self) -> Option<&Event>;
 
     /// Get all events an author has produced, in seq order.
     pub fn author_events(&self, author: &EndpointId) -> &[EventHash];
@@ -333,6 +399,8 @@ impl EventDag {
 pub enum InsertError {
     /// Ed25519 signature does not verify.
     InvalidSignature,
+    /// First event in DAG must be EventKind::CreateServer.
+    NotGenesis,
     /// seq is not prev_seq + 1 for this author.
     SeqGap { author: EndpointId, expected: u64, got: u64 },
     /// prev hash doesn't match author's current head.
@@ -358,6 +426,10 @@ what they do. The remaining variants carry over as-is:
 
 ```rust
 pub enum EventKind {
+    // -- Server lifecycle --
+    CreateServer { name: String },
+
+    // -- Server structure --
     CreateChannel { name: String, channel_id: String, kind: String },
     DeleteChannel { channel_id: String },
     RenameChannel { channel_id: String, new_name: String },
@@ -388,7 +460,8 @@ Peers verify state agreement by comparing `HeadsSummary` directly.
 
 Note: `message_id` fields change from `String` (UUID) to `EventHash`
 since message IDs are now the content hash of the `Message` event that
-created them. The variant count drops from 21 to 20.
+created them. `CreateServer` is new. `StateVerification` is removed.
+The variant count stays at 21 (20 carried over + 1 new - 1 removed + 1 = 21).
 
 ## Section 2: State Materialization
 
@@ -403,13 +476,21 @@ view** — a projection computed deterministically from the DAG.
 /// This is the ONLY way to derive state. The function is pure,
 /// deterministic, and produces identical output on all peers
 /// given the same DAG contents.
-pub fn materialize(dag: &EventDag, server_id: &str, owner: EndpointId) -> ServerState {
+///
+/// The owner and server_id are derived from the genesis event —
+/// no external parameters needed.
+pub fn materialize(dag: &EventDag) -> ServerState {
+    let genesis = dag.genesis().expect("DAG must have a genesis event");
+    let server_id = genesis.hash.to_string();
+    let owner = genesis.author;
+    let name = match &genesis.kind {
+        EventKind::CreateServer { name } => name.clone(),
+        _ => panic!("genesis event must be CreateServer"),
+    };
+
     let sorted = dag.topological_sort();
-    let mut state = ServerState::new(server_id, owner);
+    let mut state = ServerState::new(&server_id, &name, owner);
     for event in sorted {
-        // apply_unchecked: no parent hash check, no dedup check.
-        // The DAG structure guarantees no duplicates and the
-        // topological sort guarantees causal ordering.
         apply_unchecked(&mut state, event);
     }
     state
@@ -570,14 +651,15 @@ provided UUIDs, not content hashes).
 ### ServerState Changes
 
 `ServerState` loses the fields that were artifacts of the linear chain.
-`new()` takes `(server_id, owner)` — no name parameter. `server_name`
-starts empty and is set by a `RenameServer` event from the owner.
+`new()` takes `(server_id, name, owner)` — the name comes from the
+genesis `CreateServer` event. Subsequent `RenameServer` events can
+change it.
 
 ```rust
 pub struct ServerState {
     // Unchanged fields:
     pub server_id: String,
-    pub server_name: String,       // starts empty, set by RenameServer
+    pub server_name: String,       // from genesis CreateServer, mutable via RenameServer
     pub owner: EndpointId,
     pub channels: HashMap<String, Channel>,
     pub roles: HashMap<String, Role>,
@@ -1189,7 +1271,7 @@ code path between "single linear chain with parent state hash" and
 
 | Symbol | Status |
 |---|---|
-| `EventKind` (20 variants) | Carried over minus `StateVerification` |
+| `EventKind` (21 variants) | 20 carried over + `CreateServer` - `StateVerification` |
 | `ServerState` (struct) | Kept, minus `seen_event_ids` and `hash()` |
 | `Permission` enum | Unchanged |
 | `has_permission()` | Unchanged |
@@ -1352,7 +1434,7 @@ test structure maps directly:
 | `let event = Event { id, parent_hash, ... }` | `let event = dag.create_event(&identity, kind)` |
 | `apply(&mut state, &event)` | `dag.insert(event)?; apply_incremental(&mut state, &event)` |
 | `merge(our, their, common)` | DAG union via `dag.insert()` for each event + `materialize()` |
-| `state.hash() == other.hash()` | `materialize(&dag_a, owner) == materialize(&dag_b, owner)` |
+| `state.hash() == other.hash()` | `materialize(&dag_a) == materialize(&dag_b)` |
 
 The determinism, idempotency, permission, and stress tests all carry
 over — same properties, different API.
@@ -1750,10 +1832,17 @@ concept they verify, not by module.
 ### Test Helpers
 
 ```rust
-/// Create an EventDag with a server owner.
+/// Create an EventDag with a genesis event and server owner.
 fn test_dag() -> (EventDag, Identity) {
     let owner = Identity::generate();
-    let dag = EventDag::new();
+    let mut dag = EventDag::new();
+    let genesis = dag.create_event(
+        &owner,
+        EventKind::CreateServer { name: "Test Server".into() },
+        vec![],
+        0,
+    );
+    dag.insert(genesis).unwrap();
     (dag, owner)
 }
 
@@ -1773,9 +1862,9 @@ fn identities(n: usize) -> Vec<Identity> {
     (0..n).map(|_| Identity::generate()).collect()
 }
 
-/// Materialize state from a DAG with the given owner.
-fn state(dag: &EventDag, owner: &Identity) -> ServerState {
-    materialize(dag, "test-server", owner.endpoint_id())
+/// Materialize state from a DAG.
+fn state(dag: &EventDag) -> ServerState {
+    materialize(dag)
 }
 ```
 
@@ -1801,9 +1890,14 @@ test event_signature_rejects_wrong_key
 ### EventDag Insert Tests
 
 ```
-test insert_first_event
-    Insert an event with seq=1, prev=ZERO. Succeeds.
-    DAG has one event. Head is set.
+test insert_genesis_event
+    Insert a CreateServer event as first event. Succeeds.
+    DAG has one event. genesis() returns it. server_id() and
+    owner() return correct values.
+
+test insert_rejects_non_genesis_first
+    Insert a non-CreateServer event into empty DAG.
+    Returns NotGenesis.
 
 test insert_sequential_events
     Insert seq=1, then seq=2 with prev=hash(seq=1). Both succeed.
