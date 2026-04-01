@@ -13,6 +13,8 @@ have compile errors — that's expected and handled in follow-up work.
 All work happens in `crates/state/src/`. Every step ends with
 `cargo test -p willow-state` passing.
 
+**Delete old files first** (Step 1). Build up from clean slate.
+
 ## Dependency Changes
 
 The `Cargo.toml` for willow-state needs:
@@ -23,25 +25,25 @@ The `Cargo.toml` for willow-state needs:
   `Identity::sign(&[u8]) -> Signature` and
   `verify(&PublicKey, &[u8], &Signature) -> bool`.
 
-## Step 1: EventHash type
+## Step 1: Delete old code, EventHash type
 
-**Files**: `crates/state/src/hash.rs` (rewrite)
+**Files**:
+- Delete: `crates/state/src/merge.rs`, `crates/state/src/store.rs`
+- Gut: `crates/state/src/lib.rs` (empty except module decls added as
+  each step progresses)
+- Rewrite: `crates/state/src/hash.rs`
 
-Replace `StateHash` with `EventHash`. Same 32-byte SHA-256 wrapper,
-different semantics (content hash of an event, not hash of full state).
+Replace `StateHash` with `EventHash`. Pure hash wrapper — no
+dependency on event types.
 
 - `EventHash(pub [u8; 32])`
 - `EventHash::ZERO` — used as `prev` for an author's first event
 - `EventHash::from_bytes(data: &[u8]) -> Self` — SHA-256 of raw bytes
 - `Ord` / `PartialOrd` — lexicographic byte comparison, needed for
   `BTreeSet` in topological sort tiebreaking
-- `Display` — hex format (same as current `StateHash`)
+- `Display` — hex format
 - `Serialize` / `Deserialize`
 - `Default` → `ZERO`
-
-`hash.rs` is a pure hash wrapper. It does not depend on `EventKind`
-or any event structure. The serialization of event fields into bytes
-(which are then hashed) happens in `Event::new()` in `event.rs`.
 
 **Tests** (in `hash.rs`):
 - `zero_hash_is_all_zeros`
@@ -50,18 +52,18 @@ or any event structure. The serialization of event fields into bytes
 - `display_is_hex`
 - `ord_is_lexicographic`
 
-## Step 2: EventKind and Event
+## Step 2: EventKind, ProposedAction, VoteThreshold, Event
 
 **Files**: `crates/state/src/event.rs` (new)
 
 ### EventKind
 
-Move from `lib.rs`. Drop `StateVerification`. Add `CreateServer`.
-21 variants total (20 carried over + 1 new).
-
-New variant:
-- `CreateServer { name: String }` — genesis event, establishes
-  server identity and ownership. Must be the first event in the DAG.
+22 variants total. Changes from current:
+- **Removed**: `StateVerification` (legacy), `KickMember` (now a
+  `ProposedAction`)
+- **Added**: `CreateServer`, `Propose`, `Vote`, `Resolve`
+- **Kept as direct**: `GrantPermission` / `RevokePermission` for
+  non-admin permissions (ManageChannels, SendMessages, etc.)
 
 Field type changes:
 - `message_id: String` → `message_id: EventHash` in `EditMessage`,
@@ -71,7 +73,24 @@ Field type changes:
 
 Keep `default_create_channel_kind()` serde helper for `CreateChannel`.
 
-`Channel.id`, `Role.id` remain `String` (user-provided UUIDs).
+### ProposedAction and VoteThreshold
+
+```rust
+pub enum ProposedAction {
+    GrantAdmin { peer_id: EndpointId },
+    RevokeAdmin { peer_id: EndpointId },
+    KickMember { peer_id: EndpointId },
+    SetVoteThreshold { threshold: VoteThreshold },
+}
+
+pub enum VoteThreshold {
+    Unanimous,
+    Majority,
+    Count(u32),
+}
+```
+
+Both derive `Clone, Debug, PartialEq, Eq, Serialize, Deserialize`.
 
 ### Event struct
 
@@ -99,22 +118,17 @@ pub struct Event {
 1. Re-serialize `(author, seq, prev, deps, kind, timestamp_hint_ms)`
 2. `willow_identity::verify(&self.author.into(), &serialized, &self.sig)`
 
-Note: `author` is `EndpointId` which is `PublicKey`. The `verify()`
-function in `willow-identity` takes `&PublicKey`.
-
 ### ChatMessage.id type change
 
-`ChatMessage.id` in `types.rs` changes from `String` to `EventHash` —
-message identity is the event hash of the `Message` event that created
-it. `ChatMessage.reply_to` changes from `Option<String>` to
-`Option<EventHash>`.
+`ChatMessage.id` in `types.rs`: `String` → `EventHash`.
+`ChatMessage.reply_to`: `Option<String>` → `Option<EventHash>`.
 
 **Tests**:
-- `event_hash_is_deterministic` — same fields → same hash
-- `event_hash_changes_with_any_field` — change each field, hash differs
-- `event_signature_verifies` — round-trip sign + verify
-- `event_signature_rejects_tampered` — modify field, verify fails
-- `event_signature_rejects_wrong_key` — sign with A, verify with B
+- `event_hash_is_deterministic`
+- `event_hash_changes_with_any_field`
+- `event_signature_verifies`
+- `event_signature_rejects_tampered`
+- `event_signature_rejects_wrong_key`
 
 ## Step 3: EventDag — core structure and insertion
 
@@ -149,7 +163,8 @@ pub enum InsertError {
 2. `events.contains_key(&event.hash)` → `Duplicate`
 3. If DAG is empty (`genesis_hash.is_none()`): event must be
    `EventKind::CreateServer` with seq=1 and prev=ZERO. Set
-   `genesis_hash`. Otherwise: reject non-CreateServer as first event.
+   `genesis_hash`. Otherwise: reject non-CreateServer as first event
+   → `NotGenesis`.
 4. Check seq: must be `latest_seq(author) + 1` → `SeqGap`
 5. Check prev: must match `head(author)` or `ZERO` for seq=1 → `PrevMismatch`
 6. Insert into `events`, push hash to `chains[author]`, set `heads[author]`
@@ -160,7 +175,7 @@ pub enum InsertError {
 - `new() -> Self`
 - `genesis(&self) -> Option<&Event>`
 - `server_id(&self) -> Option<String>` (hex of genesis hash)
-- `owner(&self) -> Option<EndpointId>` (genesis author)
+- `genesis_author(&self) -> Option<EndpointId>`
 - `latest_seq(&self, author) -> u64` (0 if unknown)
 - `head(&self, author) -> Option<&EventHash>`
 - `author_events(&self, author) -> &[EventHash]` (empty slice if unknown)
@@ -185,8 +200,8 @@ Reads current head/seq for `identity.endpoint_id()`, builds Event
 with `seq + 1`, `prev = current_head` (or ZERO). Does NOT insert.
 
 **Tests**:
-- `insert_genesis_event` — CreateServer as first event succeeds
-- `insert_rejects_non_genesis_first` — non-CreateServer as first event fails
+- `insert_genesis_event`
+- `insert_rejects_non_genesis_first`
 - `insert_sequential_events`
 - `insert_rejects_duplicate`
 - `insert_rejects_invalid_signature`
@@ -195,7 +210,7 @@ with `seq + 1`, `prev = current_head` (or ZERO). Does NOT insert.
 - `insert_accepts_unknown_deps`
 - `insert_multiple_authors`
 - `insert_with_cross_author_deps`
-- `genesis_accessors` — genesis(), server_id(), owner() return correct values
+- `genesis_accessors`
 
 ## Step 4: Topological sort
 
@@ -233,13 +248,53 @@ visited set.
 
 ### ServerState changes
 
+- Remove `owner: EndpointId` — no single owner, admins are peers
+  with `Administrator` permission
 - Remove `seen_event_ids: HashSet<String>`
 - Remove `hash()` method
 - Remove `is_trusted()` (legacy backward-compat bridge)
-- Keep `has_permission()`, `is_sync_provider()`
-- `new(server_id, name, owner)` — takes 3 params. `server_id` and
-  `name` come from the genesis `CreateServer` event. `RenameServer`
-  events can change the name later.
+- Add `vote_threshold: VoteThreshold` (default: `Unanimous`)
+- Add `pending_proposals: HashMap<EventHash, PendingProposal>`
+- Keep `has_permission()` — simplified, no owner short-circuit
+- Keep `is_sync_provider()`
+- Add `meets_threshold(&self, yes_count: usize) -> bool`
+- Add `admin_count(&self) -> usize`
+
+### PendingProposal
+
+```rust
+pub struct PendingProposal {
+    pub action: ProposedAction,
+    pub proposer: EndpointId,
+    pub votes: HashMap<EndpointId, bool>,
+}
+```
+
+### ServerState.new() signature
+
+```rust
+pub fn new(
+    id: impl Into<String>,
+    name: impl Into<String>,
+    genesis_author: EndpointId,
+) -> Self
+```
+
+Genesis author is added as member and granted `Administrator`. No
+special "owner" field — they're just the first admin.
+
+### has_permission() — simplified
+
+```rust
+pub fn has_permission(&self, peer_id: &EndpointId, perm: &Permission) -> bool {
+    self.peer_permissions
+        .get(peer_id)
+        .map(|perms| perms.contains(&Permission::Administrator) || perms.contains(perm))
+        .unwrap_or(false)
+}
+```
+
+No owner short-circuit. `Administrator` implies all permissions.
 
 ### types.rs changes
 
@@ -248,23 +303,13 @@ visited set.
 - All other types unchanged: `Channel`, `Role`, `Member`, `Profile`,
   `Permission`
 
-### ServerState.new() signature
-
-```rust
-pub fn new(
-    id: impl Into<String>,
-    name: impl Into<String>,
-    owner: EndpointId,
-) -> Self
-```
-
-Owner is added as member. Name and ID come from genesis event.
-
 **Tests**:
-- `new_server_has_owner_as_member`
-- `owner_has_all_permissions`
-- `peer_without_permissions`
+- `new_server_has_genesis_author_as_admin`
 - `admin_has_all_permissions`
+- `peer_without_permissions`
+- `meets_threshold_unanimous`
+- `meets_threshold_majority`
+- `meets_threshold_count`
 
 ## Step 6: Materialization and apply
 
@@ -272,59 +317,89 @@ Owner is added as member. Name and ID come from genesis event.
 
 ### Public API
 
-- `materialize(dag) -> ServerState` — full replay (owner + server_id
-  derived from genesis event)
+- `materialize(dag) -> ServerState` — full replay (genesis author +
+  server_id derived from genesis event)
 - `apply_incremental(state, event) -> ApplyResult` — single event
 - `ApplyResult { Applied, Rejected(String) }`
 
 ### Internal
 
-- `apply_unchecked(state, event) -> ApplyResult` — permission check + mutation
-- `apply_mutation(state, event) -> ApplyResult` — the big match block
+- `apply_unchecked(state, event) -> ApplyResult` — governance +
+  permission check + mutation
+- `apply_mutation(state, event) -> ApplyResult` — the match block
+  for non-governance events
+- `apply_proposed_action(state, action)` — applies a voted-on action
 - `required_permission(kind) -> Option<Permission>`
 
-### The match block
+### Governance handling in apply_unchecked
 
-Ported from current `apply_inner` in `lib.rs:341-571`. Changes:
+```
+CreateServer → no-op (genesis data extracted by materialize)
+Propose      → check admin, record in pending_proposals (proposer = implicit yes)
+Vote         → check admin, record vote in pending_proposals
+Resolve      → check admin, check resolver ≠ proposer (except sole admin),
+               check quorum met via meets_threshold, apply action
+```
+
+### The mutation match block
+
+Ported from current `apply_inner`. Changes:
 - Remove `StateVerification` arm
-- Add `CreateServer` arm — no-op during materialization (server_id
-  and name are handled by `materialize()` before the replay loop;
-  the CreateServer event in the topo sort is skipped or treated as
-  a no-op since its data is already extracted)
+- Remove `KickMember` arm (now in `apply_proposed_action`)
+- Add `CreateServer` no-op arm
+- Add `Propose` / `Vote` / `Resolve` governance arms
 - `message_id` fields are `EventHash` not `String`
 - `event.id` references become `event.hash`
-- No `seen_event_ids` insertion (removed from state)
-- `ChatMessage.id` is `event.hash.clone()` not `event.id.clone()`
+- No `seen_event_ids` insertion
+- `ChatMessage.id` is `event.hash.clone()`
+- `RenameServer` / `SetServerDescription` require `Administrator`
+  (not owner-only, since there's no owner)
 
-All 21 match arms: 1 new no-op (CreateServer) + 20 carried over.
+Total: 22 match arms in apply_unchecked (4 governance + 18 standard).
 
 **Tests**:
-- `materialize_empty_dag`
+- `materialize_empty_dag` — just genesis → fresh state with genesis
+  author as sole admin
 - `materialize_create_channel`
 - `materialize_is_deterministic`
 - `materialize_two_dags_same_events_same_state`
 - `materialize_concurrent_channel_creates`
 - `materialize_permission_enforcement`
-- `materialize_owner_has_all_permissions`
 - `materialize_admin_has_all_permissions`
-- `materialize_kick_removes_member_and_permissions`
-- `materialize_cannot_kick_owner`
 - `materialize_message_in_channel`
 - `materialize_edit_message`
 - `materialize_delete_message`
 - `materialize_reaction`
 - `materialize_set_profile`
-- `materialize_rename_server_owner_only`
-- `materialize_server_description_owner_only`
+- `materialize_rename_server_any_admin`
+- `materialize_server_description_any_admin`
 - `materialize_delete_channel_cascades_messages`
 - `materialize_delete_role_cascades_members`
 - `materialize_grant_permission_adds_member`
 - `incremental_matches_full_materialize`
 - `incremental_concurrent_events`
+- **Governance tests**:
+- `propose_requires_admin`
+- `vote_requires_admin`
+- `resolve_applies_action_on_quorum`
+- `resolve_rejects_without_quorum`
+- `resolve_rejects_resolver_is_proposer`
+- `resolve_allows_sole_admin_self_resolve`
+- `propose_grant_admin_full_flow`
+- `propose_revoke_admin_full_flow`
+- `propose_kick_member_full_flow`
+- `propose_set_vote_threshold`
+- `threshold_change_requires_current_threshold`
+- `vote_on_resolved_proposal_ignored`
+- `concurrent_proposals_resolved_independently`
 
 ## Step 7: Sync types and PendingBuffer
 
 **Files**: `crates/state/src/sync.rs` (new)
+
+Note: `HeadsSummary` is used by `Resolve` events in `event.rs`.
+To avoid circular deps, `HeadsSummary` and `AuthorHead` are defined
+in `sync.rs` and imported by `event.rs`.
 
 ### Types
 
@@ -350,9 +425,9 @@ pub struct AuthorRequest {
 }
 ```
 
-All derive `Serialize, Deserialize` for wire transport.
+All derive `Clone, Debug, PartialEq, Eq, Serialize, Deserialize`.
 
-### EventDag methods (in dag.rs, not sync.rs)
+### EventDag methods (in dag.rs)
 
 - `heads_summary(&self) -> HeadsSummary`
 - `events_since(&self, their_heads: &HashMap<EndpointId, u64>) -> Vec<&Event>`
@@ -413,10 +488,13 @@ pub fn replace_chain(
 ) -> Result<(), RevisionError>
 ```
 
-1. `verify_chain(author, &new_chain)?` — check all sigs, seq monotonicity, prev consistency, all events have matching author
-2. Remove old events for this author from `events` map
-3. Insert new events
-4. Update `chains[author]` and `heads[author]`
+1. `verify_chain(author, &new_chain)?` — check all sigs, seq
+   monotonicity, prev consistency, all events have matching author
+2. Cannot replace the genesis author's chain if it removes the
+   `CreateServer` event (genesis event is immutable)
+3. Remove old events for this author from `events` map
+4. Insert new events
+5. Update `chains[author]` and `heads[author]`
 
 ### RevisionError
 
@@ -427,6 +505,7 @@ pub enum RevisionError {
     WrongAuthor { seq: u64, expected: EndpointId, got: EndpointId },
     EmptyChain,
     SeqDoesNotStartAtOne,
+    GenesisEventMissing,
 }
 ```
 
@@ -436,13 +515,14 @@ pub enum RevisionError {
 - `replace_chain_rejects_invalid_signature`
 - `replace_chain_rejects_broken_prev`
 - `replace_chain_broken_dep_is_tolerated`
+- `replace_chain_preserves_genesis`
 - `revision_detection`
 
 ## Step 9: lib.rs and cleanup
 
 **Files**: `crates/state/src/lib.rs` (rewrite)
 
-Delete all old code from lib.rs. New contents:
+New contents:
 
 ```rust
 pub mod dag;
@@ -457,20 +537,17 @@ pub mod types;
 mod tests;
 
 pub use dag::{ChainStatus, EventDag, InsertError, RevisionError};
-pub use event::{Event, EventKind};
+pub use event::{Event, EventKind, ProposedAction, VoteThreshold};
 pub use hash::EventHash;
 pub use materialize::{apply_incremental, materialize, ApplyResult};
-pub use server::ServerState;
+pub use server::{PendingProposal, ServerState};
 pub use sync::{AuthorHead, AuthorRequest, HeadsSummary, PendingBuffer, SyncMessage};
 pub use types::{Channel, ChatMessage, Member, Permission, Profile, Role};
 ```
 
-Delete old files:
-- `merge.rs` — replaced by DAG union + topological sort
-- `store.rs` — replaced by `EventDag` (and `DagStore` trait in follow-up)
-
-Note: `EventHash` is defined in `hash.rs` and re-exported from lib.rs.
-`event.rs` imports it via `use crate::hash::EventHash`.
+Note: `HeadsSummary` is defined in `sync.rs` and re-exported.
+`event.rs` imports it for the `Resolve` variant's `frozen_heads`
+field via `use crate::sync::HeadsSummary`.
 
 **Validation**: `cargo test -p willow-state` — all tests pass.
 
@@ -482,6 +559,7 @@ Note: `EventHash` is defined in `hash.rs` and re-exported from lib.rs.
 - `stress_100_authors_10_events_each`
 - `stress_sort_performance`
 - `stress_concurrent_channel_creates`
+- `stress_governance_many_proposals`
 
 ## Step 11: WASM check and clippy
 
@@ -494,45 +572,38 @@ Fix any issues. Should be clean — no platform-specific code added.
 ## Order of Operations
 
 ```
-Step 1  → EventHash                    (hash primitive)
-Step 2  → EventKind + Event            (core types, signing)
+Step 1  → Delete old, EventHash        (clean slate, hash primitive)
+Step 2  → EventKind + Event            (core types, governance types, signing)
 Step 3  → EventDag insert             (DAG structure, validation)
 Step 4  → Topological sort            (ordering algorithm)
-Step 5  → ServerState + types         (materialized view structure)
-Step 6  → Materialization + apply     (projection from DAG to state)
-Step 7  → Sync types + PendingBuffer  (protocol types)
+Step 5  → ServerState + types         (governance state, threshold, pending proposals)
+Step 6  → Materialization + apply     (projection, governance handling)
+Step 7  → Sync types + PendingBuffer  (protocol types, HeadsSummary)
 Step 8  → Author revision             (chain replacement)
-Step 9  → lib.rs + cleanup            (public API, delete old files)
+Step 9  → lib.rs + cleanup            (public API)
 Step 10 → Stress tests                (scale validation)
 Step 11 → WASM + clippy               (platform compat, lint)
 ```
 
-Steps 1-2 are foundation types. Steps 3-4 are the DAG engine. Steps
-5-6 are materialization. Steps 7-8 are sync/revision. Steps 9-11 are
-polish.
-
-During Steps 1-8, old code in `lib.rs` may coexist temporarily
-(it won't compile but the new modules are tested independently via
-`#[cfg(test)]` in each file). Step 9 does the final cleanup.
-
-Alternatively, Step 9 (delete old code) can happen first, making the
-crate empty before building up. This is cleaner — no dead code
-confusion — but means `cargo test` only passes after enough new code
-exists.
-
-**Recommended**: delete old files in Step 1 (they're being fully
-replaced anyway), then build up from there. Each step's tests validate
-independently.
+**Module dependency note**: `HeadsSummary` is needed by `Resolve`
+in `event.rs` and by `EventDag` methods in `dag.rs`. Define it in
+`sync.rs` early. In the implementation order, `event.rs` (Step 2)
+can initially define `Resolve.frozen_heads` as a placeholder type
+or use the `HeadsSummary` from `sync.rs` if we create that file
+early with just the type definitions (no methods). The cleanest
+approach: create `sync.rs` with just `HeadsSummary` and `AuthorHead`
+structs during Step 2, then add `SyncMessage`, `PendingBuffer`, etc.
+in Step 7.
 
 ## What Breaks Downstream
 
 | Crate | What breaks | Fix (follow-up) |
 |---|---|---|
-| `willow-client` | `apply_lenient()`, old `Event` struct, `EventStore`, `StateHash`, `ChatMessage.id` is now `EventHash` | Adapt mutations.rs, listeners.rs, views.rs per spec Section 7 |
+| `willow-client` | `apply_lenient()`, old `Event`, `EventStore`, `StateHash`, `ServerState.owner`, `ChatMessage.id` type | Adapt mutations.rs, listeners.rs, views.rs per spec Section 7 |
 | `willow-common` | `WorkerRequest::Sync { state_hash }`, `WorkerResponse`, `Event` type | Update wire types per spec Section 8 |
 | `willow-worker` | `WorkerRole::on_event(&Event)`, state hash methods | Update to new Event type |
 | `willow-replay` | `apply_lenient()`, `StateHash`, VecDeque buffer | Rewrite per spec Section 8 |
-| `willow-app` | Old `Event` in test helpers, `StateHash`, `merge()` | Update test helpers and e2e tests |
+| `willow-app` | Old `Event` in test helpers, `StateHash`, `merge()`, `ServerState.owner` | Update test helpers and e2e tests |
 | `willow-web` | Indirect via client | Follows client fixes |
 
 These are expected and intentional. The state crate is the foundation;

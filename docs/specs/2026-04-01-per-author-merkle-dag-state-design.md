@@ -634,19 +634,19 @@ view** — a projection computed deterministically from the DAG.
 /// deterministic, and produces identical output on all peers
 /// given the same DAG contents.
 ///
-/// The owner and server_id are derived from the genesis event —
-/// no external parameters needed.
+/// The genesis author and server_id are derived from the genesis
+/// event — no external parameters needed.
 pub fn materialize(dag: &EventDag) -> ServerState {
     let genesis = dag.genesis().expect("DAG must have a genesis event");
     let server_id = genesis.hash.to_string();
-    let owner = genesis.author;
+    let genesis_author = genesis.author;
     let name = match &genesis.kind {
         EventKind::CreateServer { name } => name.clone(),
         _ => panic!("genesis event must be CreateServer"),
     };
 
     let sorted = dag.topological_sort();
-    let mut state = ServerState::new(&server_id, &name, owner);
+    let mut state = ServerState::new(&server_id, &name, genesis_author);
     for event in sorted {
         apply_unchecked(&mut state, event);
     }
