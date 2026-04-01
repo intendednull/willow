@@ -119,6 +119,48 @@ impl<A: Actor> Context<A> {
 
         IntervalHandle { cancelled }
     }
+
+    /// Schedule a one-shot delayed message. Returns a handle that can cancel delivery.
+    pub fn run_after<M>(&self, delay: Duration, msg: M) -> TimerHandle
+    where
+        A: Handler<M>,
+        M: Message<Result = ()>,
+    {
+        let tx = self.tx.clone();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled_clone = cancelled.clone();
+
+        runtime::spawn(async move {
+            runtime::sleep(delay).await;
+
+            if cancelled_clone.load(Ordering::Relaxed) || tx.is_closed() {
+                return;
+            }
+
+            let envelope = envelope::envelope_send::<A, M>(msg);
+            let _ = tx.send(envelope);
+        });
+
+        TimerHandle { cancelled }
+    }
+}
+
+/// Handle to a one-shot timer. Drop or call `cancel()` to prevent delivery.
+pub struct TimerHandle {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl TimerHandle {
+    /// Cancel the timer, preventing the message from being delivered.
+    pub fn cancel(self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+}
+
+impl Drop for TimerHandle {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
 }
 
 /// Handle to a running interval. Drop or call `cancel()` to stop it.

@@ -139,7 +139,7 @@ pub fn App() -> impl IntoView {
     }
 
     // Wire derived signals that auto-update from state actor changes.
-    crate::state::wire_derived_signals(handle.state_addr(), handle.actor_system(), &write);
+    crate::state::wire_derived_signals(&handle, handle.actor_system(), &write);
 
     // Detect join link from URL fragment.
     {
@@ -222,14 +222,16 @@ pub fn App() -> impl IntoView {
             };
 
             // Connect to the P2P network. This subscribes to topics, spawns
-            // listeners, and returns the event receiver.
-            let mut client_event_rx = handle_for_connect.connect(network).await;
+            // listeners, and returns the event broker.
+            let _broker = handle_for_connect.connect(network).await;
 
-            use futures::StreamExt;
-            while let Some(event) = client_event_rx.next().await {
+            // Subscribe to client events via the broker.
+            let mut event_rx = handle_for_connect.subscribe_events().await;
+
+            while let Some(event) = event_rx.recv().await {
                 // Collect all pending events into a batch.
                 let mut batch = vec![event];
-                while let Ok(ev) = client_event_rx.try_recv() {
+                while let Some(ev) = event_rx.try_recv() {
                     batch.push(ev);
                 }
                 process_event_batch(
@@ -344,17 +346,11 @@ pub fn App() -> impl IntoView {
             .set(crate::state::CallLayout::default());
     };
 
-    // Welcome screen callback — notify actor so derived signals refresh.
-    let handle_welcome = handle.clone();
-    let on_welcome_done = move |_: ()| {
-        handle_welcome.notify_mutation();
-    };
+    // Welcome screen callback (no-op — domain actors auto-notify).
+    let on_welcome_done = move |_: ()| {};
 
-    // Store refresh function for reactive closures.
-    let handle_for_refresh = handle.clone();
-    let refresh_stored = StoredValue::new(SendWrapper::new(Rc::new(move || {
-        handle_for_refresh.notify_mutation();
-    }) as Rc<dyn Fn()>));
+    // Refresh is now automatic via domain actor Notify subscriptions.
+    let refresh_stored = StoredValue::new(SendWrapper::new(Rc::new(move || {}) as Rc<dyn Fn()>));
 
     // Aliases for view closures.
     let servers = app_state.server.servers;
@@ -381,7 +377,7 @@ pub fn App() -> impl IntoView {
     // Pre-clone handle for use inside the view closure.
     let handle_for_voice_join = handle.clone();
     let handle_for_typing = handle.clone();
-    let handle_for_ch_created = handle.clone();
+
     let vm_for_view = voice_manager.clone();
 
     let join_token_signal = app_state.ui.join_token;
@@ -395,7 +391,7 @@ pub fn App() -> impl IntoView {
 
             let srv = servers.get();
             if srv.is_empty() {
-                let on_done = on_welcome_done.clone();
+                let on_done = on_welcome_done;
                 view! {
                     <WelcomeScreen
                         on_done=on_done
@@ -415,7 +411,6 @@ pub fn App() -> impl IntoView {
                 let on_disconnect = on_voice_disconnect.clone();
                 let handle_vj = handle_for_voice_join.clone();
                 let handle_ty = handle_for_typing.clone();
-                let handle_cc = handle_for_ch_created.clone();
                 let vm_v = vm_for_view.clone();
                 let pin = on_pin.clone();
                 view! {
@@ -567,12 +562,7 @@ pub fn App() -> impl IntoView {
                             on_voice_mute=Callback::new(on_mute.clone())
                             on_voice_deafen=Callback::new(on_deafen.clone())
                             on_voice_disconnect=Callback::new(on_disconnect.clone())
-                            on_channel_created={
-                                let ch_handle = handle_cc.clone();
-                                move |_| {
-                                    ch_handle.notify_mutation();
-                                }
-                            }
+                            on_channel_created=move |_| {}
                         />
                         <div class="main-content">
                             {move || {

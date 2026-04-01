@@ -100,3 +100,7 @@ pub enum ClientEvent {
         reason: String,
     },
 }
+
+impl willow_actor::Message for ClientEvent {
+    type Result = ();
+}

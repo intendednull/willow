@@ -6,6 +6,7 @@ license.workspace = true
 description = "Lightweight actor framework for Willow — dual-target (native + WASM)"
 
 [dependencies]
+futures = "0.3"
 futures-core = "0.3"
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -20,4 +21,3 @@ gloo-timers = { version = "0.3", features = ["futures"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
-futures = "0.3"

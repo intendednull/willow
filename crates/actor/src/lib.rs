@@ -2,24 +2,58 @@
 //!
 //! Lightweight actor framework for Willow — dual-target (native + WASM).
 //!
-//! Provides [`Actor`], [`Handler`], [`StreamHandler`], typed [`Addr`] handles,
+//! ## Core primitives
+//!
+//! [`Actor`], [`Handler`], [`StreamHandler`], typed [`Addr`] handles,
 //! request-reply via [`ask()`](Addr::ask), supervision, intervals, and stream
 //! attachment. Uses tokio on native, futures-channel + gloo-timers on WASM.
+//!
+//! ## State management
+//!
+//! - [`StateActor<S>`] — generic state container with `Arc`-based cheap reads
+//!   and copy-on-write mutations
+//! - [`StateRef<S>`] — type-erased, cloneable handle for composing observable actors
+//! - [`DerivedActor`] — reactive derived values from one or more source actors
+//!
+//! ## Patterns
+//!
+//! - [`Broker<T>`] — topic-based pub/sub with auto-pruning of dead subscribers
+//! - [`FsmActor<M>`] — typed finite state machine with transition validation
+//! - [`Pool<A>`] — round-robin work distribution across actor clones
+//! - [`StreamOutput<T>`] — actor-produced async streams via bounded channels
+//! - [`Debounce<M>`] / [`Throttle<M>`] — rate-limiting actors
 
 pub mod actor;
 pub mod addr;
+pub mod broker;
 pub mod context;
+pub mod debounce;
+pub mod derived;
 pub mod envelope;
 pub mod error;
+pub mod fsm;
 pub mod mailbox;
+pub mod pool;
 pub mod runtime;
+pub mod state;
+pub mod stream;
 pub mod supervisor;
 pub mod system;
 
 pub use actor::{Actor, Handler, Message, StreamHandler};
 pub use addr::{Addr, AnyAddr, Recipient};
-pub use context::{Context, IntervalHandle};
+pub use broker::{Broker, BrokerSubscribe, BrokerUnsubscribe, Publish, SubscriptionId};
+pub use context::{Context, IntervalHandle, TimerHandle};
+pub use debounce::{Debounce, Enqueue, Throttle};
+pub use derived::{derived, DeriveSource, DerivedActor};
 pub use error::{AskError, SendError};
+pub use fsm::{FsmActor, Input, StateMachine, TransitionResult};
+pub use pool::Pool;
+pub use state::{
+    get, mutate, select, subscribe, Get, Mutate, Notify, Select, Set, StateActor, StateRef,
+    Subscribe,
+};
+pub use stream::{OutputStream, StreamOutput, SubscribeStream};
 pub use supervisor::RestartPolicy;
 pub use system::{System, SystemHandle};
 
@@ -441,6 +475,129 @@ mod tests {
         assert!(!addr.is_alive());
 
         system.shutdown().await;
+    }
+
+    // ───── run_after / TimerHandle ───────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_after_fires() {
+        struct TimerActor {
+            fired: bool,
+            _handle: Option<TimerHandle>,
+        }
+        impl Actor for TimerActor {
+            fn started(
+                &mut self,
+                ctx: &mut Context<Self>,
+            ) -> impl std::future::Future<Output = ()> + Send {
+                self._handle = Some(ctx.run_after(Duration::from_millis(20), Fire));
+                async {}
+            }
+        }
+        struct Fire;
+        impl Message for Fire {
+            type Result = ();
+        }
+        impl Handler<Fire> for TimerActor {
+            fn handle(
+                &mut self,
+                _msg: Fire,
+                _ctx: &mut Context<Self>,
+            ) -> impl std::future::Future<Output = ()> + Send {
+                self.fired = true;
+                async {}
+            }
+        }
+        struct DidFire;
+        impl Message for DidFire {
+            type Result = bool;
+        }
+        impl Handler<DidFire> for TimerActor {
+            fn handle(
+                &mut self,
+                _msg: DidFire,
+                _ctx: &mut Context<Self>,
+            ) -> impl std::future::Future<Output = bool> + Send {
+                let f = self.fired;
+                async move { f }
+            }
+        }
+
+        let system = System::new();
+        let addr = system.spawn(TimerActor {
+            fired: false,
+            _handle: None,
+        });
+        runtime::sleep(Duration::from_millis(50)).await;
+        assert!(addr.ask(DidFire).await.unwrap());
+        system.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_after_cancel_prevents_delivery() {
+        struct TimerActor {
+            fired: bool,
+            handle: Option<TimerHandle>,
+        }
+        impl Actor for TimerActor {
+            fn started(
+                &mut self,
+                ctx: &mut Context<Self>,
+            ) -> impl std::future::Future<Output = ()> + Send {
+                self.handle = Some(ctx.run_after(Duration::from_millis(20), Fire));
+                // Cancel immediately
+                self.handle.take();
+                async {}
+            }
+        }
+        struct Fire;
+        impl Message for Fire {
+            type Result = ();
+        }
+        impl Handler<Fire> for TimerActor {
+            fn handle(
+                &mut self,
+                _msg: Fire,
+                _ctx: &mut Context<Self>,
+            ) -> impl std::future::Future<Output = ()> + Send {
+                self.fired = true;
+                async {}
+            }
+        }
+        struct DidFire;
+        impl Message for DidFire {
+            type Result = bool;
+        }
+        impl Handler<DidFire> for TimerActor {
+            fn handle(
+                &mut self,
+                _msg: DidFire,
+                _ctx: &mut Context<Self>,
+            ) -> impl std::future::Future<Output = bool> + Send {
+                let f = self.fired;
+                async move { f }
+            }
+        }
+
+        let system = System::new();
+        let addr = system.spawn(TimerActor {
+            fired: false,
+            handle: None,
+        });
+        runtime::sleep(Duration::from_millis(50)).await;
+        assert!(!addr.ask(DidFire).await.unwrap());
+        system.shutdown().await;
+    }
+
+    // ───── bounded_channel ────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bounded_channel_respects_capacity() {
+        let (tx, _rx) = runtime::bounded_channel::<u32>(2);
+        assert!(tx.try_send(1).is_ok());
+        assert!(tx.try_send(2).is_ok());
+        // Channel full — should fail
+        assert!(tx.try_send(3).is_err());
     }
 
     // ───── Supervision ─────────────────────────────────────────────────────

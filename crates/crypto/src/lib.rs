@@ -51,7 +51,7 @@ pub enum CryptoError {
 // ───── Types ────────────────────────────────────────────────────────────────
 
 /// A 256-bit symmetric key for encrypting a channel's messages.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct ChannelKey(pub(crate) [u8; 32]);
 
 impl std::fmt::Debug for ChannelKey {

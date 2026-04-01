@@ -383,60 +383,59 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
 /// Call this after the actor system is initialized. These derived signals
 /// replace the manual `refresh_all_signals()` / `process_event_batch()` flow.
 /// Each signal only re-renders when its selected value actually changes.
-pub fn wire_derived_signals(
-    state_addr: &willow_actor::Addr<willow_client::client_actor::ClientStateActor>,
+pub fn wire_derived_signals<N: willow_network::Network>(
+    handle: &willow_client::ClientHandle<N>,
     system: &willow_actor::SystemHandle,
     write: &AppWriteSignals,
 ) {
     let write = *write;
-    use crate::derived::derived_signal;
+    use crate::state_bridge::derived_signal;
+    let views = handle.views();
 
     // ── Server-derived signals ──────────────────────────────────────
-    let servers = derived_signal(state_addr, system, |s| s.state.server_list());
+    let servers = derived_signal(&views.server_registry, system, |reg| reg.server_list());
     leptos::prelude::Effect::new(move || write.server.set_servers.set(servers.get()));
 
-    let active_id = derived_signal(state_addr, system, |s| {
-        s.state.active_server.clone().unwrap_or_default()
+    let active_id = derived_signal(&views.server_registry, system, |reg| {
+        reg.active_server.clone().unwrap_or_default()
     });
     leptos::prelude::Effect::new(move || write.server.set_active_server_id.set(active_id.get()));
 
-    let active_name = derived_signal(state_addr, system, |s| {
-        s.state
-            .active()
-            .map(|ctx| ctx.server.name.clone())
+    let active_name = derived_signal(&views.server_registry, system, |reg| {
+        reg.active()
+            .map(|e| e.name.clone())
             .unwrap_or_else(|| "No Server".to_string())
     });
     leptos::prelude::Effect::new(move || {
         write.server.set_active_server_name.set(active_name.get())
     });
 
-    let display_name = derived_signal(state_addr, system, |s| {
-        let eid = s.identity.endpoint_id();
-        s.state.profiles.display_name(&eid)
-    });
+    let local_pid = handle.identity().endpoint_id();
+    let display_name = derived_signal(&views.profiles, system, move |p| p.display_name(&local_pid));
     leptos::prelude::Effect::new(move || write.server.set_display_name.set(display_name.get()));
 
-    // ── Channel-derived signals ─────────────────────────────────────
-    let channels = derived_signal(state_addr, system, |s| s.state.channel_names());
-    leptos::prelude::Effect::new(move || write.chat.set_channels.set(channels.get()));
+    let channels_sig = derived_signal(&views.channels, system, |cv| {
+        cv.channels
+            .iter()
+            .map(|c| c.name.clone())
+            .collect::<Vec<_>>()
+    });
+    leptos::prelude::Effect::new(move || write.chat.set_channels.set(channels_sig.get()));
 
-    let unread = derived_signal(state_addr, system, |s| {
-        s.state
-            .active()
-            .map(|ctx| ctx.unread.clone())
-            .unwrap_or_default()
+    let unread = derived_signal(&views.server_registry, system, |reg| {
+        reg.active().map(|e| e.unread.clone()).unwrap_or_default()
     });
     leptos::prelude::Effect::new(move || write.server.set_unread.set(unread.get()));
 
-    // ── Network-derived signals ─────────────────────────────────────
-    let peer_id = derived_signal(state_addr, system, |s| s.identity.endpoint_id().to_string());
+    let pid_str = handle.peer_id();
+    let peer_id = derived_signal(&views.network, system, move |_| pid_str.clone());
     leptos::prelude::Effect::new(move || write.network.set_peer_id.set(peer_id.get()));
 
-    let peer_count = derived_signal(state_addr, system, |s| s.state.chat.peers.len());
+    let peer_count = derived_signal(&views.chat_meta, system, |c| c.peers.len());
     leptos::prelude::Effect::new(move || write.network.set_peer_count.set(peer_count.get()));
 
-    let connection = derived_signal(state_addr, system, |s| {
-        if s.connected {
+    let connection = derived_signal(&views.network, system, |n| {
+        if n.connected {
             "connected".to_string()
         } else {
             "connecting".to_string()
@@ -444,11 +443,8 @@ pub fn wire_derived_signals(
     });
     leptos::prelude::Effect::new(move || write.network.set_connection_status.set(connection.get()));
 
-    // ── Roles ───────────────────────────────────────────────────────
-    let roles = derived_signal(state_addr, system, |s| {
-        s.state
-            .event_state
-            .roles
+    let roles_sig = derived_signal(&views.event_state, system, |es| {
+        es.roles
             .iter()
             .map(|(id, role)| {
                 let perms: Vec<String> =
@@ -457,19 +453,13 @@ pub fn wire_derived_signals(
             })
             .collect::<Vec<_>>()
     });
-    leptos::prelude::Effect::new(move || write.server.set_roles.set(roles.get()));
+    leptos::prelude::Effect::new(move || write.server.set_roles.set(roles_sig.get()));
 
-    // ── Server owner ───────────────────────────────────────────────
-    let owner = derived_signal(state_addr, system, |s| {
-        s.state.event_state.owner.to_string()
-    });
+    let owner = derived_signal(&views.event_state, system, |es| es.owner.to_string());
     leptos::prelude::Effect::new(move || write.server.set_server_owner.set(owner.get()));
 
-    // ── Sync provider IDs ───────────────────────────────────────────
-    let sync_provider_ids = derived_signal(state_addr, system, |s| {
-        s.state
-            .event_state
-            .peer_permissions
+    let sync_provider_ids = derived_signal(&views.event_state, system, |es| {
+        es.peer_permissions
             .iter()
             .filter(|(_, perms)| {
                 perms.contains(&willow_client::willow_state::Permission::SyncProvider)
@@ -484,11 +474,8 @@ pub fn wire_derived_signals(
             .set(sync_provider_ids.get())
     });
 
-    // ── Admin IDs ─────────────────────────────────────────────────
-    let admin_ids = derived_signal(state_addr, system, |s| {
-        s.state
-            .event_state
-            .peer_permissions
+    let admin_ids = derived_signal(&views.event_state, system, |es| {
+        es.peer_permissions
             .iter()
             .filter(|(_, perms)| {
                 perms.contains(&willow_client::willow_state::Permission::Administrator)
@@ -498,150 +485,25 @@ pub fn wire_derived_signals(
     });
     leptos::prelude::Effect::new(move || write.server.set_admin_ids.set(admin_ids.get()));
 
-    // ── Channel kinds ──────────────────────────────────────────────
-    let channel_kinds = derived_signal(state_addr, system, |s| {
-        s.state
-            .event_state
-            .channels
+    let channel_kinds = derived_signal(&views.event_state, system, |es| {
+        es.channels
             .values()
             .map(|ch| (ch.name.clone(), ch.kind.clone()))
             .collect::<Vec<_>>()
     });
     leptos::prelude::Effect::new(move || write.server.set_channel_kinds.set(channel_kinds.get()));
 
-    // ── Peer list (with display names and online status) ────────────
-    let peers = derived_signal(state_addr, system, |s| {
-        let local_id = s.identity.endpoint_id();
-        let online: std::collections::HashSet<willow_identity::EndpointId> =
-            s.state.chat.peers.iter().copied().collect();
-        let mut result = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        // Members from event-sourced state.
-        for (pid, member) in &s.state.event_state.members {
-            let name = member
-                .display_name
-                .clone()
-                .or_else(|| {
-                    s.state
-                        .event_state
-                        .profiles
-                        .get(pid)
-                        .map(|p| p.display_name.clone())
-                })
-                .unwrap_or_else(|| s.state.profiles.display_name(pid));
-            let is_online = *pid == local_id || online.contains(pid);
-            result.push((pid.to_string(), name, is_online));
-            seen.insert(*pid);
-        }
-        // Connected peers not yet in the member list.
-        for pid in &s.state.chat.peers {
-            if !seen.contains(pid) {
-                let name = s.state.profiles.display_name(pid);
-                result.push((pid.to_string(), name, true));
-            }
-        }
-        result
+    let peers_sig = derived_signal(&views.members, system, |mv| {
+        mv.members
+            .iter()
+            .map(|m| (m.peer_id.to_string(), m.display_name.clone(), m.is_online))
+            .collect::<Vec<_>>()
     });
-    leptos::prelude::Effect::new(move || write.network.set_peers.set(peers.get()));
+    leptos::prelude::Effect::new(move || write.network.set_peers.set(peers_sig.get()));
 
-    // ── Current channel ─────────────────────────────────────────────
-    let current_ch = derived_signal(state_addr, system, |s| s.state.chat.current_channel.clone());
+    let current_ch = derived_signal(&views.chat_meta, system, |c| c.current_channel.clone());
     leptos::prelude::Effect::new(move || write.chat.set_current_channel.set(current_ch.get()));
 
-    // ── Messages for current channel ────────────────────────────────
-    // This is a computed derived signal — it recomputes display messages
-    // with emoji expansion and name resolution from event-sourced state.
-    let messages = derived_signal(state_addr, system, |s| {
-        let ch = &s.state.chat.current_channel;
-        let mut channel_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-        if let Some(ctx) = s.state.active() {
-            for (name, cid) in ctx.topic_map.values() {
-                if name == ch {
-                    channel_ids.insert(cid.to_string());
-                }
-            }
-        }
-        for (id, c) in &s.state.event_state.channels {
-            if c.name == *ch {
-                channel_ids.insert(id.clone());
-            }
-        }
-        if channel_ids.is_empty() {
-            return vec![];
-        }
-        let local_peer_id = s.identity.endpoint_id();
-        let mut msgs: Vec<willow_client::DisplayMessage> = s
-            .state
-            .event_state
-            .messages
-            .iter()
-            .filter(|m| channel_ids.contains(&m.channel_id))
-            .map(|m| {
-                let author_name = s
-                    .state
-                    .event_state
-                    .profiles
-                    .get(&m.author)
-                    .map(|p| p.display_name.clone())
-                    .unwrap_or_else(|| s.state.profiles.display_name(&m.author));
-                let reply_preview = m.reply_to.as_ref().and_then(|parent_id| {
-                    s.state
-                        .event_state
-                        .messages
-                        .iter()
-                        .find(|pm| pm.id == *parent_id)
-                        .map(|pm| {
-                            let pn = s
-                                .state
-                                .event_state
-                                .profiles
-                                .get(&pm.author)
-                                .map(|p| p.display_name.clone())
-                                .unwrap_or_else(|| s.state.profiles.display_name(&pm.author));
-                            let text = if pm.body.len() > 50 {
-                                format!("{}...", &pm.body[..50])
-                            } else {
-                                pm.body.clone()
-                            };
-                            format!("{pn}: {text}")
-                        })
-                });
-                let reactions = m
-                    .reactions
-                    .iter()
-                    .map(|(emoji, pids)| {
-                        let names: Vec<String> = pids
-                            .iter()
-                            .map(|pid| {
-                                s.state
-                                    .event_state
-                                    .profiles
-                                    .get(pid)
-                                    .map(|p| p.display_name.clone())
-                                    .unwrap_or_else(|| s.state.profiles.display_name(pid))
-                            })
-                            .collect();
-                        (emoji.clone(), names)
-                    })
-                    .collect();
-                willow_client::DisplayMessage {
-                    id: m.id.clone(),
-                    channel_id: m.channel_id.clone(),
-                    author_peer_id: m.author,
-                    author_display_name: author_name,
-                    body: m.body.clone(),
-                    is_local: m.author == local_peer_id,
-                    timestamp_ms: m.timestamp_ms,
-                    reactions,
-                    edited: m.edited,
-                    deleted: m.deleted,
-                    reply_to: m.reply_to.clone(),
-                    reply_preview,
-                }
-            })
-            .collect();
-        msgs.sort_by_key(|m| m.timestamp_ms);
-        msgs
-    });
-    leptos::prelude::Effect::new(move || write.chat.set_messages.set(messages.get()));
+    let messages_sig = derived_signal(&views.messages, system, |mv| mv.messages.clone());
+    leptos::prelude::Effect::new(move || write.chat.set_messages.set(messages_sig.get()));
 }
