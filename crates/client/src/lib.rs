@@ -701,8 +701,8 @@ fn parse_permission(s: &str) -> anyhow::Result<willow_channel::Permission> {
 }
 
 /// Create a test-only ClientHandle without connecting to the network.
-#[cfg(test)]
-pub(crate) fn test_client() -> (
+#[cfg(any(test, feature = "test-utils"))]
+pub fn test_client() -> (
     ClientHandle<willow_network::mem::MemNetwork>,
     willow_actor::Addr<willow_actor::Broker<ClientEvent>>,
 ) {

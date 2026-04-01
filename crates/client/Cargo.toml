@@ -5,6 +5,9 @@ version.workspace = true
 license.workspace = true
 description = "UI-agnostic client library for the Willow P2P chat network"
 
+[features]
+test-utils = ["willow-network/test-utils"]
+
 [dependencies]
 willow-actor = { path = "../actor" }
 willow-identity = { path = "../identity" }
