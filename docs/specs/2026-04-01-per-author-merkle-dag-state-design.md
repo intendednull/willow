@@ -367,7 +367,7 @@ pub enum EventKind {
     GrantPermission { peer_id: EndpointId, permission: Permission },
     RevokePermission { peer_id: EndpointId, permission: Permission },
     KickMember { peer_id: EndpointId },
-    Message { channel_id: String, body: String, reply_to: Option<String> },
+    Message { channel_id: String, body: String, reply_to: Option<EventHash> },
     EditMessage { message_id: EventHash, new_body: String },
     DeleteMessage { message_id: EventHash },
     Reaction { message_id: EventHash, emoji: String },
@@ -387,7 +387,7 @@ Peers verify state agreement by comparing `HeadsSummary` directly.
 
 Note: `message_id` fields change from `String` (UUID) to `EventHash`
 since message IDs are now the content hash of the `Message` event that
-created them. The variant count drops from 24 to 23.
+created them. The variant count drops from 21 to 20.
 
 ## Section 2: State Materialization
 
@@ -1188,7 +1188,7 @@ code path between "single linear chain with parent state hash" and
 
 | Symbol | Status |
 |---|---|
-| `EventKind` (23 variants) | Carried over minus `StateVerification` |
+| `EventKind` (20 variants) | Carried over minus `StateVerification` |
 | `ServerState` (struct) | Kept, minus `seen_event_ids` and `hash()` |
 | `Permission` enum | Unchanged |
 | `has_permission()` | Unchanged |
@@ -1201,10 +1201,11 @@ code path between "single linear chain with parent state hash" and
 
 | Module | Contents |
 |---|---|
-| `event.rs` | `Event`, `EventHash`, `EventKind`, `Signature` |
-| `dag.rs` | `EventDag`, `InsertError`, `HeadsSummary`, topological sort |
+| `hash.rs` | `EventHash` (32-byte SHA-256 wrapper, `Ord`, `Display`) |
+| `event.rs` | `Event`, `EventKind` (uses `Signature` from `willow-identity`) |
+| `dag.rs` | `EventDag`, `InsertError`, `ChainStatus`, `RevisionError`, topological sort |
 | `materialize.rs` | `materialize()`, `apply_unchecked()`, `apply_incremental()` |
-| `sync.rs` | `SyncMessage`, `AuthorRequest`, `PendingBuffer` |
+| `sync.rs` | `HeadsSummary`, `AuthorHead`, `SyncMessage`, `AuthorRequest`, `PendingBuffer` |
 | `snapshot.rs` | `Snapshot`, `SnapshotHash`, compaction |
 | `types.rs` | Unchanged — `Channel`, `Role`, `Member`, etc. |
 | `server.rs` | `ServerState` (simplified — no `hash()`, no `seen_event_ids`) |
@@ -1214,13 +1215,14 @@ code path between "single linear chain with parent state hash" and
 
 ```rust
 // Core types
-pub use event::{Event, EventHash, EventKind, Signature};
-pub use dag::{EventDag, InsertError, HeadsSummary, AuthorHead};
-pub use materialize::{materialize, apply_unchecked, apply_incremental, ApplyResult};
-pub use sync::{SyncMessage, AuthorRequest, PendingBuffer};
-pub use snapshot::{Snapshot, SnapshotHash};
+pub use event::{Event, EventKind};
+pub use hash::EventHash;
+pub use dag::{EventDag, InsertError, ChainStatus, RevisionError};
+pub use materialize::{materialize, apply_incremental, ApplyResult};
+pub use sync::{HeadsSummary, AuthorHead, SyncMessage, AuthorRequest, PendingBuffer};
 pub use server::ServerState;
 pub use types::{Channel, ChatMessage, Member, Permission, Profile, Role};
+// Deferred: pub use snapshot::{Snapshot, SnapshotHash};
 ```
 
 ### Client-Side Changes
@@ -1718,7 +1720,7 @@ and what is deferred.
 
 | Section | What ships |
 |---|---|
-| Section 1 | `Event`, `EventHash`, `EventKind` (23 variants), `EventDag`, `InsertError`, `PendingBuffer` |
+| Section 1 | `Event`, `EventHash`, `EventKind` (20 variants), `EventDag`, `InsertError`, `PendingBuffer` |
 | Section 2 | `materialize()`, `apply_unchecked()`, `apply_incremental()`, topological sort, `ServerState` (simplified) |
 | Section 3 | `HeadsSummary`, `SyncMessage`, `AuthorRequest`, sync flow |
 | Section 4 | `replace_chain()`, chain verification, revision detection (`ChainStatus`) |

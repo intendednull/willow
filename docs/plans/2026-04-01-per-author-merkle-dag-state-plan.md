@@ -64,7 +64,7 @@ that knows about event fields lives on `Event` in `event.rs`.
 
 ### EventKind
 
-Move from `lib.rs`. 23 variants (drop `StateVerification`).
+Move from `lib.rs`. 20 variants (drop `StateVerification` from original 21).
 
 Field type changes:
 - `message_id: String` → `message_id: EventHash` in `EditMessage`,
@@ -278,7 +278,7 @@ Ported from current `apply_inner` in `lib.rs:341-571`. Changes:
 - No `seen_event_ids` insertion (removed from state)
 - `ChatMessage.id` is `event.hash.clone()` not `event.id.clone()`
 
-All 22 remaining match arms carry over with these substitutions.
+All 20 remaining match arms carry over with these substitutions.
 
 **Tests**:
 - `materialize_empty_dag`
@@ -438,8 +438,8 @@ pub mod types;
 mod tests;
 
 pub use dag::{ChainStatus, EventDag, InsertError, RevisionError};
-pub use event::{Event, EventHash, EventKind};
-pub use hash::EventHash;  // also re-export from hash for discoverability
+pub use event::{Event, EventKind};
+pub use hash::EventHash;
 pub use materialize::{apply_incremental, materialize, ApplyResult};
 pub use server::ServerState;
 pub use sync::{AuthorHead, AuthorRequest, HeadsSummary, PendingBuffer, SyncMessage};
@@ -450,9 +450,8 @@ Delete old files:
 - `merge.rs` — replaced by DAG union + topological sort
 - `store.rs` — replaced by `EventDag` (and `DagStore` trait in follow-up)
 
-Note: `EventHash` is defined in `hash.rs` but also used pervasively in
-`event.rs`. Re-export from both `hash` and `event` modules. The
-canonical location is `hash.rs`.
+Note: `EventHash` is defined in `hash.rs` and re-exported from lib.rs.
+`event.rs` imports it via `use crate::hash::EventHash`.
 
 **Validation**: `cargo test -p willow-state` — all tests pass.
 
