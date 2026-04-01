@@ -58,12 +58,26 @@ dependency on event types.
 
 ### EventKind
 
-22 variants total. Changes from current:
+21 variants total. Changes from current:
 - **Removed**: `StateVerification` (legacy), `KickMember` (now a
-  `ProposedAction`)
-- **Added**: `CreateServer`, `Propose`, `Vote`, `Resolve`
+  `ProposedAction`), `Resolve` (votes auto-apply on threshold)
+- **Added**: `CreateServer`, `Propose`, `Vote`
 - **Kept as direct**: `GrantPermission` / `RevokePermission` for
-  non-admin permissions (ManageChannels, SendMessages, etc.)
+  non-admin permissions only (ManageChannels, SendMessages, etc.)
+
+`Permission` enum loses `Administrator` — admin status is tracked
+separately in `ServerState.admins: HashSet<EndpointId>`. This makes
+it structurally impossible to grant admin via `GrantPermission`.
+
+```rust
+pub enum Permission {
+    SyncProvider,
+    ManageChannels,
+    ManageRoles,
+    SendMessages,
+    CreateInvite,
+}
+```
 
 Field type changes:
 - `message_id: String` → `message_id: EventHash` in `EditMessage`,
@@ -248,17 +262,18 @@ visited set.
 
 ### ServerState changes
 
-- Remove `owner: EndpointId` — no single owner, admins are peers
-  with `Administrator` permission
+- Remove `owner: EndpointId` — no single owner
 - Remove `seen_event_ids: HashSet<String>`
 - Remove `hash()` method
 - Remove `is_trusted()` (legacy backward-compat bridge)
+- Remove `Administrator` from `Permission` enum
+- Add `admins: HashSet<EndpointId>` — admin set, separate from permissions
 - Add `vote_threshold: VoteThreshold` (default: `Unanimous`)
 - Add `pending_proposals: HashMap<EventHash, PendingProposal>`
-- Keep `has_permission()` — simplified, no owner short-circuit
+- Add `is_admin(&self, peer_id) -> bool`
+- Keep `has_permission()` — admins have all permissions implicitly
 - Keep `is_sync_provider()`
 - Add `meets_threshold(&self, yes_count: usize) -> bool`
-- Add `admin_count(&self) -> usize`
 
 ### PendingProposal
 
@@ -280,21 +295,36 @@ pub fn new(
 ) -> Self
 ```
 
-Genesis author is added as member and granted `Administrator`. No
+Genesis author is added as member and added to `admins` set. No
 special "owner" field — they're just the first admin.
 
-### has_permission() — simplified
+### Key methods
 
 ```rust
+pub fn is_admin(&self, peer_id: &EndpointId) -> bool {
+    self.admins.contains(peer_id)
+}
+
 pub fn has_permission(&self, peer_id: &EndpointId, perm: &Permission) -> bool {
+    if self.admins.contains(peer_id) {
+        return true;  // admins have all permissions implicitly
+    }
     self.peer_permissions
         .get(peer_id)
-        .map(|perms| perms.contains(&Permission::Administrator) || perms.contains(perm))
+        .map(|perms| perms.contains(perm))
         .unwrap_or(false)
 }
-```
 
-No owner short-circuit. `Administrator` implies all permissions.
+pub fn meets_threshold(&self, yes_count: usize) -> bool {
+    let admin_count = self.admins.len();
+    if admin_count == 0 { return false; }
+    match self.vote_threshold {
+        VoteThreshold::Unanimous => yes_count >= admin_count,
+        VoteThreshold::Majority => yes_count > admin_count / 2,
+        VoteThreshold::Count(n) => yes_count >= (n as usize).min(admin_count),
+    }
+}
+```
 
 ### types.rs changes
 
@@ -335,11 +365,20 @@ No owner short-circuit. `Administrator` implies all permissions.
 
 ```
 CreateServer → no-op (genesis data extracted by materialize)
-Propose      → check admin, record in pending_proposals (proposer = implicit yes)
-Vote         → check admin, record vote in pending_proposals
-Resolve      → check admin, check resolver ≠ proposer (except sole admin),
-               check quorum met via meets_threshold, apply action
+Propose      → check is_admin, record in pending_proposals
+               (proposer = implicit yes), check_and_apply_proposal
+               (handles sole admin auto-apply)
+Vote         → check is_admin, record vote, check_and_apply_proposal
+               (auto-applies when threshold met)
 ```
+
+No Resolve event — votes auto-apply during materialization.
+
+### check_and_apply_proposal helper
+
+After recording a Propose or Vote, check if the pending proposal's
+yes-count meets `state.meets_threshold()`. If so, remove from pending
+and call `apply_proposed_action(state, &prop.action)`.
 
 ### The mutation match block
 
@@ -347,15 +386,16 @@ Ported from current `apply_inner`. Changes:
 - Remove `StateVerification` arm
 - Remove `KickMember` arm (now in `apply_proposed_action`)
 - Add `CreateServer` no-op arm
-- Add `Propose` / `Vote` / `Resolve` governance arms
+- Add `Propose` / `Vote` governance arms (no Resolve)
 - `message_id` fields are `EventHash` not `String`
 - `event.id` references become `event.hash`
 - No `seen_event_ids` insertion
 - `ChatMessage.id` is `event.hash.clone()`
-- `RenameServer` / `SetServerDescription` require `Administrator`
-  (not owner-only, since there's no owner)
+- `RenameServer` / `SetServerDescription` require admin (via `is_admin`)
+- Permission checks use `has_permission` (admins pass implicitly)
+- `apply_proposed_action` modifies `state.admins` not `peer_permissions`
 
-Total: 22 match arms in apply_unchecked (4 governance + 18 standard).
+Total: 21 match arms in apply_unchecked (3 governance + 18 standard).
 
 **Tests**:
 - `materialize_empty_dag` — just genesis → fresh state with genesis
@@ -371,8 +411,8 @@ Total: 22 match arms in apply_unchecked (4 governance + 18 standard).
 - `materialize_delete_message`
 - `materialize_reaction`
 - `materialize_set_profile`
-- `materialize_rename_server_any_admin`
-- `materialize_server_description_any_admin`
+- `materialize_rename_server_admin_only`
+- `materialize_server_description_admin_only`
 - `materialize_delete_channel_cascades_messages`
 - `materialize_delete_role_cascades_members`
 - `materialize_grant_permission_adds_member`
@@ -382,24 +422,25 @@ Total: 22 match arms in apply_unchecked (4 governance + 18 standard).
 - `propose_requires_admin`
 - `vote_requires_admin`
 - `resolve_applies_action_on_quorum`
-- `resolve_rejects_without_quorum`
-- `resolve_rejects_resolver_is_proposer`
-- `resolve_allows_sole_admin_self_resolve`
+- `vote_auto_applies_on_threshold`
+- `vote_does_not_apply_below_threshold`
+- `sole_admin_propose_auto_applies`
 - `propose_grant_admin_full_flow`
 - `propose_revoke_admin_full_flow`
 - `propose_kick_member_full_flow`
 - `propose_set_vote_threshold`
 - `threshold_change_requires_current_threshold`
-- `vote_on_resolved_proposal_ignored`
-- `concurrent_proposals_resolved_independently`
+- `vote_on_passed_proposal_ignored`
+- `concurrent_proposals_apply_independently`
+- `grant_permission_cannot_grant_admin` (structurally impossible via type system)
 
 ## Step 7: Sync types and PendingBuffer
 
 **Files**: `crates/state/src/sync.rs` (new)
 
-Note: `HeadsSummary` is used by `Resolve` events in `event.rs`.
-To avoid circular deps, `HeadsSummary` and `AuthorHead` are defined
-in `sync.rs` and imported by `event.rs`.
+`HeadsSummary` is used by `EventDag::heads_summary()` and the sync
+protocol. No circular dependency — `sync.rs` depends on `hash.rs`
+for `EventHash`, and `dag.rs` depends on `sync.rs` for `HeadsSummary`.
 
 ### Types
 
@@ -536,9 +577,9 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
-pub use dag::{ChainStatus, EventDag, InsertError, RevisionError};
 pub use event::{Event, EventKind, ProposedAction, VoteThreshold};
 pub use hash::EventHash;
+pub use dag::{ChainStatus, EventDag, InsertError, RevisionError};
 pub use materialize::{apply_incremental, materialize, ApplyResult};
 pub use server::{PendingProposal, ServerState};
 pub use sync::{AuthorHead, AuthorRequest, HeadsSummary, PendingBuffer, SyncMessage};
@@ -585,15 +626,12 @@ Step 10 → Stress tests                (scale validation)
 Step 11 → WASM + clippy               (platform compat, lint)
 ```
 
-**Module dependency note**: `HeadsSummary` is needed by `Resolve`
-in `event.rs` and by `EventDag` methods in `dag.rs`. Define it in
-`sync.rs` early. In the implementation order, `event.rs` (Step 2)
-can initially define `Resolve.frozen_heads` as a placeholder type
-or use the `HeadsSummary` from `sync.rs` if we create that file
-early with just the type definitions (no methods). The cleanest
-approach: create `sync.rs` with just `HeadsSummary` and `AuthorHead`
-structs during Step 2, then add `SyncMessage`, `PendingBuffer`, etc.
-in Step 7.
+**Module dependencies**: `hash.rs` has no deps. `event.rs` depends
+on `hash.rs`. `dag.rs` depends on `event.rs` and `sync.rs` (for
+`HeadsSummary`). `materialize.rs` depends on `event.rs`, `dag.rs`,
+`server.rs`. `sync.rs` depends on `hash.rs` and `event.rs`. No
+circular deps. `sync.rs` structs (`HeadsSummary`, `AuthorHead`) can
+be created early (Step 7 types, but file exists from then on).
 
 ## What Breaks Downstream
 
