@@ -141,4 +141,22 @@ impl<N: willow_network::Network> ClientHandle<N> {
     pub async fn current_channel(&self) -> String {
         willow_actor::state::select(&self.chat_meta_addr, |c| c.current_channel.clone()).await
     }
+
+    pub async fn server_description(&self) -> String {
+        willow_actor::state::select(&self.event_state_addr, |es| es.description.clone()).await
+    }
+
+    pub async fn typing_peers(&self) -> Vec<(String, String)> {
+        let my_id = self.identity.endpoint_id();
+        willow_actor::state::mutate(&self.network_meta_addr, move |n| {
+            let now = crate::util::current_time_ms();
+            n.typing_peers.retain(|_, (_, ts)| now - *ts < 5000);
+            n.typing_peers
+                .iter()
+                .filter(|(pid, _)| *pid != &my_id)
+                .map(|(pid, (channel, _))| (pid.to_string(), channel.clone()))
+                .collect()
+        })
+        .await
+    }
 }

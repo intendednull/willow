@@ -662,23 +662,19 @@ Wire into `WillowMcpServer`:
 - `tools/call` checks scope before dispatch, returns MCP error if denied
 - `resources/list` filters by scope
 
-### 4b. SSE transport (`server.rs`)
+### 4b. Streamable HTTP transport (`server.rs`)
 
-Add `rmcp` feature `transport-sse`:
+Add `rmcp` feature `transport-streamable-http-server`:
 ```toml
-rmcp = { version = "0.1", features = ["server", "transport-io", "transport-sse"] }
+rmcp = { version = "1.3", features = ["server", "transport-io", "transport-streamable-http-server"] }
 ```
 
-When `--transport sse`:
-1. Generate bearer token (or use `--token`)
-2. Start HTTP server on `--bind` address
-3. SSE endpoint at `/sse` for long-lived connections
-4. Validate `Authorization: Bearer <token>` header
-5. Print token to stderr and optionally to `--token-file`
-
 When `--transport http`:
-1. Same as SSE but use Streamable HTTP at `/mcp`
-2. Supports stateless request/response and optional session upgrade
+1. Generate bearer token (or use `--token`)
+2. Start axum HTTP server on `--bind` address
+3. Streamable HTTP endpoint at `/mcp` (supports both SSE streaming
+   and stateless request/response via rmcp's `StreamableHttpService`)
+4. Print token to stderr and optionally to `--token-file`
 
 ### 4c. Justfile updates
 
@@ -803,53 +799,57 @@ passes `just check`.
 ```
 crates/agent/Cargo.toml
 crates/agent/src/main.rs           — CLI, startup, shutdown
-crates/agent/src/server.rs         — MCP server setup, transports
-crates/agent/src/tools.rs          — MCP tool definitions + handlers
-crates/agent/src/resources.rs      — MCP resource definitions + handlers
-crates/agent/src/notifications.rs  — ClientEvent → MCP notifications
+crates/agent/src/lib.rs            — Public module re-exports for tests
+crates/agent/src/server.rs         — MCP server setup, stdio + HTTP transports
+crates/agent/src/tools.rs          — 37 MCP tool definitions + handlers
+crates/agent/src/resources.rs      — 15 MCP resource definitions + handlers
+crates/agent/src/notifications.rs  — 27 ClientEvent → MCP notifications
 crates/agent/src/auth.rs           — Bearer token generation + validation
 crates/agent/src/scopes.rs         — TokenScope definitions + enforcement
-crates/agent/src/test_harness.rs   — AgentTestHarness (cfg(test))
-crates/agent/tests/e2e.rs          — Multi-peer E2E test suite
+crates/agent/tests/e2e.rs          — 24 E2E integration tests
 ```
 
 ### Modified
 
 ```
 crates/client/Cargo.toml           — add test-utils feature
-crates/client/src/lib.rs           — add pub test_utils module
+crates/client/src/lib.rs           — make test_client() pub with test-utils feature
+crates/client/src/accessors.rs     — add server_description(), typing_peers() accessors
 justfile                           — add agent targets, update test-all
-scripts/dev.sh                     — optional --agent flag
 ```
 
-### E2E Test Inventory
+### E2E Test Inventory (Actual)
 
-| # | Test | Phase | Harness |
-|---|---|---|---|
-| 1 | messages_delivered_to_all_peers | 3 | in-process |
-| 2 | edit_message_propagates | 3 | in-process |
-| 3 | delete_message_propagates | 3 | in-process |
-| 4 | reactions_propagate | 3 | in-process |
-| 5 | create_channel_visible_to_all | 3 | in-process |
-| 6 | pin_unpin_propagates | 3 | in-process |
-| 7 | concurrent_messages_converge | 3 | in-process |
-| 8 | events_emitted_on_message_received | 3 | in-process |
-| 9 | untrusted_peer_cannot_create_channel | 3 | in-process |
-| 10 | kick_member_removes_from_server | 3 | in-process |
-| 11 | trust_then_untrust_flow | 3 | in-process |
-| 12 | role_permission_enforcement | 3 | in-process |
-| 13 | state_hash_agreement | 3 | in-process |
-| 14 | concurrent_channel_creation | 3 | in-process |
-| 15 | 10_peer_message_flood | 3 | in-process |
-| 16 | kick_and_rejoin_flow | 4 | in-process |
-| 17 | invite_max_uses_enforcement | 4 | in-process |
-| 18 | server_rename_propagates | 4 | in-process |
-| 19 | display_name_propagates | 4 | in-process |
-| 20 | voice_join_leave_tracking | 4 | in-process |
-| 21 | offline_peer_catches_up | 4 | in-process |
-| 22 | readonly_token_hides_tools | 4 | unit |
-| 23 | messaging_scope_restricts_tools | 4 | unit |
-| 24 | custom_scope_allowlist | 4 | unit |
+Tests use `test_client()` from `willow-client` (single-peer, in-process)
+since `MemNetwork` multi-peer support requires additional hub wiring.
+Multi-peer propagation tests are deferred to the `McpTestHarness` (future).
+
+| # | Test | Type |
+|---|---|---|
+| 1 | send_message_and_read_back | tool + resource |
+| 2 | edit_message | tool |
+| 3 | delete_message | tool |
+| 4 | react_to_message | tool |
+| 5 | pin_and_unpin_message | tool |
+| 6 | create_channel | tool |
+| 7 | switch_channel | tool |
+| 8 | create_server_returns_id | tool |
+| 9 | rename_server | tool |
+| 10 | set_display_name | tool + accessor |
+| 11 | toggle_mute_returns_state | tool |
+| 12 | toggle_deafen_returns_state | tool |
+| 13 | read_identity_resource | resource |
+| 14 | read_channels_resource | resource |
+| 15 | read_unknown_resource_returns_error | resource |
+| 16 | kick_member_removes_from_server | tool |
+| 17 | server_rename_via_tool | tool + accessor |
+| 18 | display_name_updates | tool + accessor |
+| 19 | voice_join_and_leave | tool |
+| 20 | send_reply_to_message | tool + accessor |
+| 21 | create_and_delete_channel | tool + accessor |
+| 22 | readonly_token_hides_tools | scope |
+| 23 | messaging_scope_restricts_tools | scope |
+| 24 | custom_scope_allowlist | scope |
 
 ---
 

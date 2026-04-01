@@ -121,9 +121,15 @@ pub async fn read_resource<N: Network>(
         "willow://connection" => {
             let connected = client.is_connected().await;
             let peers = client.peers().await;
+            let typing = client.typing_peers().await;
+            let typing_entries: Vec<TypingPeerEntry> = typing
+                .into_iter()
+                .map(|(peer_id, channel)| TypingPeerEntry { peer_id, channel })
+                .collect();
             to_json(&ConnectionResource {
                 connected,
                 peer_count: peers.len(),
+                typing_peers: typing_entries,
             })
         }
 
@@ -140,10 +146,14 @@ pub async fn read_resource<N: Network>(
             let id = client.active_server_id().await;
             let name = client.active_server_name().await;
             let owner = client.server_owner().await;
+            let description = client.server_description().await;
+            let display_name = client.display_name().await;
             to_json(&CurrentServerResource {
                 id,
                 name,
                 owner: owner.to_string(),
+                description,
+                display_name,
             })
         }
 
@@ -192,9 +202,9 @@ pub async fn read_resource<N: Network>(
             let entries: Vec<JoinLinkEntry> = links
                 .into_iter()
                 .map(|l| JoinLinkEntry {
-                    link_id: l.link_id,
+                    id: l.link_id,
                     max_uses: l.max_uses,
-                    used: l.used,
+                    uses: l.used,
                     active: l.active,
                     expires_at: l.expires_at,
                 })
@@ -285,6 +295,13 @@ struct IdentityResource {
 struct ConnectionResource {
     connected: bool,
     peer_count: usize,
+    typing_peers: Vec<TypingPeerEntry>,
+}
+
+#[derive(Serialize)]
+struct TypingPeerEntry {
+    peer_id: String,
+    channel: String,
 }
 
 #[derive(Serialize)]
@@ -298,6 +315,8 @@ struct CurrentServerResource {
     id: Option<String>,
     name: String,
     owner: String,
+    description: String,
+    display_name: String,
 }
 
 #[derive(Serialize)]
@@ -322,9 +341,9 @@ struct RoleEntry {
 
 #[derive(Serialize)]
 struct JoinLinkEntry {
-    link_id: String,
+    id: String,
     max_uses: u32,
-    used: u32,
+    uses: u32,
     active: bool,
     expires_at: Option<u64>,
 }
@@ -351,6 +370,7 @@ struct MessageEntry {
     timestamp_ms: u64,
     edited: bool,
     reply_to: Option<String>,
+    reactions: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl From<willow_client::DisplayMessage> for MessageEntry {
@@ -363,6 +383,7 @@ impl From<willow_client::DisplayMessage> for MessageEntry {
             timestamp_ms: m.timestamp_ms,
             edited: m.edited,
             reply_to: m.reply_to,
+            reactions: m.reactions,
         }
     }
 }

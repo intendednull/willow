@@ -110,9 +110,9 @@ pub fn event_to_json(event: &ClientEvent) -> serde_json::Value {
                 "from": from,
             }),
         }),
-        ClientEvent::Listening(topic) => to_value(&NotificationPayload {
+        ClientEvent::Listening(address) => to_value(&NotificationPayload {
             r#type: "Listening",
-            data: serde_json::json!({ "topic": topic }),
+            data: serde_json::json!({ "address": address }),
         }),
         ClientEvent::SyncCompleted { ops_applied } => to_value(&NotificationPayload {
             r#type: "SyncCompleted",

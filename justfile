@@ -108,7 +108,7 @@ agent *args:
     cargo run -p willow-agent -- {{args}}
 
 # Run ALL tests including browser and E2E
-test-all: test test-browser test-e2e-ui
+test-all: test test-browser test-agent-e2e test-e2e-ui
 
 # Check native compilation
 check-native:

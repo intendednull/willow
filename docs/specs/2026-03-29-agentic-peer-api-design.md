@@ -148,11 +148,11 @@ resource fields that reference peers use this hex format.
 
 **1. `willow-agent` binary** (`crates/agent/`)
 - Owns a `ClientHandle<IrohNetwork>` with its actor system
-- Runs an MCP server supporting all three transports:
+- Runs an MCP server supporting two transports:
   - **stdio** (default) — AI clients spawn the binary directly
-  - **SSE** — `http://127.0.0.1:9100/sse` for network clients
-  - **Streamable HTTP** — `http://127.0.0.1:9100/mcp` for stateless
-    HTTP clients with optional session upgrade
+  - **Streamable HTTP** — `http://127.0.0.1:9100/mcp` for network
+    clients (supports both SSE streaming and stateless HTTP via rmcp's
+    `transport-streamable-http-server` feature)
 - Exposes `ClientHandle` methods as MCP tools
 - Exposes state accessors as MCP resources
 - Streams `ClientEvent`s as MCP notifications
@@ -171,8 +171,7 @@ resource fields that reference peers use this hex format.
 | Transport | Use Case | Auth |
 |---|---|---|
 | **stdio** | AI client spawns `willow-agent` as subprocess | Implicit (process isolation) |
-| **SSE** | Long-lived connections from scripts/bots | Bearer token header |
-| **Streamable HTTP** | Stateless calls, language-agnostic | Bearer token header |
+| **Streamable HTTP** | Scripts/bots, stateless or long-lived SSE | Bearer token header |
 
 ### Tools
 
@@ -378,7 +377,7 @@ All `ClientEvent` variants are forwarded:
 | `MessageUnpinned` | `channel`, `message_id` |
 | `ServerDescriptionChanged` | `description` |
 | `FileAnnounced` | `channel`, `filename`, `size`, `from` |
-| `Listening` | `address` |
+| `Listening` | `address` (iroh node address string) |
 | `VoiceJoined` | `channel_id`, `peer_id` |
 | `VoiceLeft` | `channel_id`, `peer_id` |
 | `VoiceSignal` | `channel_id`, `from_peer`, `signal` |
@@ -397,8 +396,8 @@ Options:
   --name <NAME>             Display name [default: "Agent"]
   --server <ID>             Auto-join server by ID
   --invite <CODE>           Accept invite on startup
-  --transport <MODE>        MCP transport: stdio | sse | http [default: stdio]
-  --bind <ADDR>             SSE/HTTP bind address [default: 127.0.0.1:9100]
+  --transport <MODE>        MCP transport: stdio | http [default: stdio]
+  --bind <ADDR>             HTTP bind address [default: 127.0.0.1:9100]
   --token <TOKEN>           Fixed bearer token (generated if omitted)
   --token-file <PATH>       Write token to file for other processes
   --identity <PATH>         Identity key path [default: ~/.willow/agent-identity]
@@ -421,9 +420,9 @@ Options:
    change detection
 8. Start MCP server on the selected transport:
    - **stdio**: read JSON-RPC from stdin, write to stdout (default)
-   - **sse**: generate bearer token, start HTTP server with SSE endpoint
    - **http**: generate bearer token, start Streamable HTTP endpoint
-9. Block until stdin closes (stdio) or SIGTERM/SIGINT (sse/http)
+     at `/mcp` (supports SSE streaming and stateless request/response)
+9. Block until stdin closes (stdio) or SIGTERM/SIGINT (http)
 
 ### AI Client Configuration
 
@@ -460,10 +459,10 @@ AI agents configure `willow-agent` as an MCP server in their config:
 The AI client spawns the process, communicates over stdio, and
 discovers all tools/resources automatically via `initialize`.
 
-### SSE Mode for Scripts/Bots
+### HTTP Mode for Scripts/Bots
 
 ```
-$ willow-agent --relay /ip4/1.2.3.4/tcp/9091/ws --name "BuildBot" --transport sse
+$ willow-agent --relay /ip4/1.2.3.4/tcp/9091/ws --name "BuildBot" --transport http
 Agent endpoint ID: a1b2c3d4e5f6...  (64-char hex)
 MCP server listening on: http://127.0.0.1:9100
 Bearer token: wlw_a1b2c3d4e5f6...
@@ -636,12 +635,16 @@ bot that provides search capabilities), but this is not required.
 ```
 crates/agent/
 ├── Cargo.toml
+├── tests/
+│   └── e2e.rs         — 24 E2E integration tests
 └── src/
     ├── main.rs        — CLI parsing, startup, shutdown
-    ├── tools.rs       — MCP tool definitions (ClientHandle methods)
-    ├── resources.rs   — MCP resource definitions (state accessors)
+    ├── lib.rs         — Public module re-exports for tests
+    ├── server.rs      — MCP server setup, stdio + HTTP transports
+    ├── tools.rs       — 37 MCP tool definitions (ClientHandle methods)
+    ├── resources.rs   — 15 MCP resource definitions (state accessors)
     ├── auth.rs        — Bearer token generation and validation
-    ├── notifications.rs — ClientEvent → MCP notification bridge
+    ├── notifications.rs — 27 ClientEvent → MCP notification bridge
     └── scopes.rs      — Token scope definitions and enforcement
 
 crates/agent-sdk/
@@ -662,15 +665,19 @@ willow-client = { path = "../client" }
 willow-identity = { path = "../identity" }
 willow-network = { path = "../network" }
 willow-actor = { path = "../actor" }
-rmcp = { version = "0.1", features = ["server", "transport-sse", "transport-io"] }
+rmcp = { version = "1.3", features = ["server", "transport-io", "transport-streamable-http-server"] }
+schemars = "1.0"
+axum = "0.8"
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 anyhow = "1"
-rand = "0.8"
+rand = "0.9"
+dirs = "6"
 ```
 
 ## Implementation Plan

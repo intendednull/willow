@@ -29,7 +29,7 @@ struct Cli {
     #[arg(long)]
     invite: Option<String>,
 
-    /// Transport: "stdio" (default).
+    /// MCP transport: stdio | http [default: stdio].
     #[arg(long, default_value = "stdio")]
     transport: String,
 
