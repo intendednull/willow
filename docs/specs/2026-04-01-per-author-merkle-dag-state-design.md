@@ -553,15 +553,30 @@ fn apply_unchecked(state: &mut ServerState, event: &Event) -> ApplyResult {
 }
 ```
 
+### ChatMessage Type Changes
+
+`ChatMessage` in `types.rs` changes two fields to reflect
+content-addressed message identity:
+
+- `id: String` → `id: EventHash` (message ID is the hash of the
+  `Message` event that created it)
+- `reply_to: Option<String>` → `reply_to: Option<EventHash>`
+
+All other types (`Channel`, `Role`, `Member`, `Profile`, `Permission`)
+are unchanged. `Channel.id` and `Role.id` remain `String` (user-
+provided UUIDs, not content hashes).
+
 ### ServerState Changes
 
-`ServerState` loses the fields that were artifacts of the linear chain:
+`ServerState` loses the fields that were artifacts of the linear chain.
+`new()` takes `(server_id, owner)` — no name parameter. `server_name`
+starts empty and is set by a `RenameServer` event from the owner.
 
 ```rust
 pub struct ServerState {
     // Unchanged fields:
     pub server_id: String,
-    pub server_name: String,
+    pub server_name: String,       // starts empty, set by RenameServer
     pub owner: EndpointId,
     pub channels: HashMap<String, Channel>,
     pub roles: HashMap<String, Role>,
@@ -1177,7 +1192,8 @@ code path between "single linear chain with parent state hash" and
 | `ServerState` (struct) | Kept, minus `seen_event_ids` and `hash()` |
 | `Permission` enum | Unchanged |
 | `has_permission()` | Unchanged |
-| `Channel`, `Role`, `Member`, `ChatMessage`, `Profile` | Unchanged |
+| `Channel`, `Role`, `Member`, `Profile` | Unchanged |
+| `ChatMessage` | `id` and `reply_to` change from `String` to `EventHash` |
 | Permission enforcement in apply | Moved to `apply_unchecked()`, same logic |
 | Zero-I/O crate boundary | Preserved — state crate remains pure |
 
