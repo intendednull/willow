@@ -3658,10 +3658,6 @@ fn has_permission_ignores_role_based_permissions() {
 
 #[test]
 fn seen_event_ids_do_not_affect_hash() {
-    let (mut state_a, _owner) = test_state();
-    let (state_b, _) = test_state();
-    // Both states are freshly created with same params from test_state,
-    // but test_state generates different owners each time. Create manually.
     let owner = Identity::generate().endpoint_id();
     let mut a = ServerState::new("server-1", "Test", owner);
     let b = ServerState::new("server-1", "Test", owner);
