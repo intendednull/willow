@@ -20,16 +20,19 @@
 //! ```
 
 pub mod base64;
-pub mod client_actor;
 pub mod emoji;
 pub mod events;
 pub mod files;
 pub mod invite;
 pub mod listeners;
+pub mod mutations;
 pub mod ops;
+pub mod persistence_actor;
 pub mod state;
+pub mod state_actors;
 pub mod storage;
 pub mod util;
+pub mod views;
 pub mod worker_cache;
 
 mod accessors;
@@ -40,11 +43,72 @@ mod servers;
 mod voice;
 
 // Re-export key types at crate root for convenience.
+pub use event_receiver::EventReceiver;
 pub use events::ClientEvent;
 pub use ops::{pack_wire, unpack_wire, VoiceSignalPayload, WireMessage};
-pub use state::{
-    ChatState, ClientState, DisplayMessage, PersistentEventStore, ProfileStore, ServerContext,
-};
+
+/// Helper to bridge `Broker<ClientEvent>` into an async stream receiver.
+pub mod event_receiver {
+    use crate::events::ClientEvent;
+    use willow_actor::{Actor, Addr, Broker, BrokerSubscribe, Context, Handler};
+
+    /// Async receiver for [`ClientEvent`]s from a [`Broker`].
+    ///
+    /// Implements a stream-like API: call `recv()` to await the next event,
+    /// or `try_recv()` for a non-blocking check.
+    pub struct EventReceiver {
+        rx: willow_actor::runtime::Receiver<ClientEvent>,
+    }
+
+    impl EventReceiver {
+        /// Subscribe to a broker and return a receiver for its events.
+        pub async fn subscribe(
+            broker: &Addr<Broker<ClientEvent>>,
+            system: &willow_actor::SystemHandle,
+        ) -> Self {
+            let (tx, rx) = willow_actor::runtime::unbounded_channel();
+            let addr = system.spawn(ForwarderActor { tx });
+            let recipient = addr.into();
+            let _ = broker.ask(BrokerSubscribe(recipient)).await;
+            Self { rx }
+        }
+
+        /// Await the next event. Returns `None` if the broker is closed.
+        pub async fn recv(&mut self) -> Option<ClientEvent> {
+            self.rx.recv().await
+        }
+
+        /// Non-blocking try to receive an event.
+        pub fn try_recv(&mut self) -> Option<ClientEvent> {
+            self.rx.try_recv()
+        }
+    }
+
+    /// Internal actor that forwards broker events to a channel.
+    struct ForwarderActor {
+        tx: willow_actor::runtime::Sender<ClientEvent>,
+    }
+
+    impl Actor for ForwarderActor {}
+
+    impl Handler<ClientEvent> for ForwarderActor {
+        fn handle(
+            &mut self,
+            msg: ClientEvent,
+            _ctx: &mut Context<Self>,
+        ) -> impl std::future::Future<Output = ()> + Send {
+            let _ = self.tx.send(msg);
+            async {}
+        }
+    }
+}
+pub use state::DisplayMessage;
+
+// ClientState, ServerContext, ChatState, ProfileStore are used internally
+// during initialization only (loading from storage → populating domain actors).
+// They are not part of the public API — use ClientViewHandle for reads
+// and ClientMutations for writes.
+use state::{ClientState, ServerContext};
 
 /// Re-export the event-sourced state crate for use by downstream consumers.
 pub use willow_state;
@@ -52,11 +116,7 @@ pub use willow_state;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use futures::channel::mpsc as futures_mpsc;
-
 use willow_identity::Identity;
-use willow_messaging::Content;
-use willow_network::TopicHandle as _;
 use willow_state::EventStore as _;
 
 /// Configuration for creating a [`ClientHandle`].
@@ -79,51 +139,89 @@ impl Default for ClientConfig {
     }
 }
 
-/// All mutable state shared between ClientHandle and ClientEventLoop.
-pub struct SharedState {
-    pub state: ClientState,
-    pub identity: Identity,
-    pub config: ClientConfig,
-    pub connected: bool,
-    pub connected_subscribed: bool,
-    pub typing_peers: HashMap<willow_identity::EndpointId, (String, u64)>,
-    pub voice_participants: HashMap<String, std::collections::HashSet<willow_identity::EndpointId>>,
-    pub active_voice_channel: Option<String>,
-    pub voice_muted: bool,
-    pub voice_deafened: bool,
-    pub state_verification_results: HashMap<willow_identity::EndpointId, willow_state::StateHash>,
-    pub last_typing_sent_ms: u64,
-    pub join_links: Vec<ops::JoinLink>,
-}
-
 /// Cloneable command interface for UI components.
 ///
 /// Generic over the [`Network`](willow_network::Network) implementation so
 /// that production code can use a real iroh network while tests can use
 /// an in-memory backend.
 pub struct ClientHandle<N: willow_network::Network> {
-    pub(crate) state_addr: willow_actor::Addr<client_actor::ClientStateActor>,
     pub(crate) system: willow_actor::SystemHandle,
     /// The network backend, set after [`connect()`](ClientHandle::connect).
     pub(crate) network: Option<Arc<N>>,
     /// Maps topic string names to their `N::Topic` handles for broadcasting.
     pub(crate) topics: Arc<RwLock<HashMap<String, N::Topic>>>,
-    /// Sender for emitting [`ClientEvent`]s from listener tasks and methods.
-    pub(crate) event_tx: futures_mpsc::UnboundedSender<ClientEvent>,
+    /// Broker for pub/sub [`ClientEvent`] distribution to subscribers.
+    pub(crate) event_broker: willow_actor::Addr<willow_actor::Broker<ClientEvent>>,
     /// The local identity, needed for signing broadcasts.
     pub(crate) identity: Identity,
+
+    // ── Domain-specific state actors (Phase 2) ─────────────────────────
+    /// Event-sourced server state.
+    pub(crate) event_state_addr:
+        willow_actor::Addr<willow_actor::StateActor<willow_state::ServerState>>,
+    /// Server registry (servers map, active server, topic maps, keys).
+    pub(crate) server_registry_addr:
+        willow_actor::Addr<willow_actor::StateActor<state_actors::ServerRegistry>>,
+    /// Chat session metadata (current channel, peers, dedup).
+    pub(crate) chat_meta_addr: willow_actor::Addr<willow_actor::StateActor<state_actors::ChatMeta>>,
+    /// Global profile display names.
+    pub(crate) profile_state_addr:
+        willow_actor::Addr<willow_actor::StateActor<state_actors::ProfileState>>,
+    /// Network connection state.
+    pub(crate) network_meta_addr:
+        willow_actor::Addr<willow_actor::StateActor<state_actors::NetworkMeta>>,
+    /// Voice call state.
+    pub(crate) voice_state_addr:
+        willow_actor::Addr<willow_actor::StateActor<state_actors::VoiceState>>,
+    /// Persistence actor (owns rusqlite).
+    pub(crate) persistence_addr: willow_actor::Addr<persistence_actor::PersistenceActor>,
+    /// HLC clock (mutation-time concern, not reactive state).
+    pub(crate) hlc: Arc<std::sync::Mutex<willow_messaging::hlc::HLC>>,
+    /// Whether persistence to disk is enabled.
+    pub(crate) persistence_enabled: bool,
+    /// Active join links (rarely modified, shared across tasks).
+    pub(crate) join_links: Arc<std::sync::Mutex<Vec<ops::JoinLink>>>,
+
+    // ── New reactive API (spec target) ──────────────────────────────────
+    /// Reactive view handle — read state at any granularity.
+    pub(crate) view_handle: views::ClientViewHandle,
+    /// Typed mutation interface — write state via domain actors.
+    pub(crate) mutation_handle: mutations::ClientMutations<N>,
 }
 
 impl<N: willow_network::Network> Clone for ClientHandle<N> {
     fn clone(&self) -> Self {
         Self {
-            state_addr: self.state_addr.clone(),
             system: self.system.clone(),
             network: self.network.clone(),
             topics: Arc::clone(&self.topics),
-            event_tx: self.event_tx.clone(),
+            event_broker: self.event_broker.clone(),
             identity: self.identity.clone(),
+            event_state_addr: self.event_state_addr.clone(),
+            server_registry_addr: self.server_registry_addr.clone(),
+            chat_meta_addr: self.chat_meta_addr.clone(),
+            profile_state_addr: self.profile_state_addr.clone(),
+            network_meta_addr: self.network_meta_addr.clone(),
+            voice_state_addr: self.voice_state_addr.clone(),
+            persistence_addr: self.persistence_addr.clone(),
+            hlc: Arc::clone(&self.hlc),
+            persistence_enabled: self.persistence_enabled,
+            join_links: Arc::clone(&self.join_links),
+            view_handle: self.view_handle.clone(),
+            mutation_handle: self.mutation_handle.clone(),
         }
+    }
+}
+
+impl<N: willow_network::Network> ClientHandle<N> {
+    /// Access reactive state views at any granularity.
+    pub fn views(&self) -> &views::ClientViewHandle {
+        &self.view_handle
+    }
+
+    /// Access the typed mutation interface.
+    pub fn mutations(&self) -> &mutations::ClientMutations<N> {
+        &self.mutation_handle
     }
 }
 
@@ -136,28 +234,6 @@ impl<N: willow_network::Network> Clone for ClientHandle<N> {
 pub struct ClientEventLoop {
     #[allow(dead_code)]
     pub(crate) _system: willow_actor::System,
-}
-
-/// Helper: apply an event to the event-sourced state and store it.
-/// Callable with explicit parameters to avoid borrow conflicts.
-/// `persistence` is passed separately to avoid double-borrowing SharedState.
-fn apply_event_shared(state: &mut ClientState, persistence: bool, event: &willow_state::Event) {
-    willow_state::apply_lenient(&mut state.event_state, event);
-    state.event_store.append(event.clone());
-    let hash = state.event_state.hash();
-    state.event_store.set_latest_hash(hash);
-
-    // Persist full state after every mutation.
-    if persistence {
-        if let Some(sid) = &state.active_server {
-            storage::save_server_state(sid, &state.event_state);
-        }
-    }
-}
-
-/// Wrapper that takes `&mut SharedState` so callers don't need split borrows.
-fn apply_event_on_shared(shared: &mut SharedState, event: &willow_state::Event) {
-    apply_event_shared(&mut shared.state, shared.config.persistence, event);
 }
 
 /// Persist all servers to storage.
@@ -202,57 +278,6 @@ pub(crate) fn reconcile_topic_map(state: &mut ClientState) {
     }
 }
 
-/// Initialize (or re-initialize) the event-sourced state for a specific server.
-/// Tries loading saved state first, then falls back to replaying events.
-/// `persistence` is passed separately to avoid double-borrowing SharedState.
-fn init_event_state_for_server(state: &mut ClientState, persistence: bool, server_id: &str) {
-    let Some(ctx) = state.servers.get(server_id) else {
-        return;
-    };
-
-    // Try loading saved state first.
-    if let Some(saved_state) = storage::load_server_state(server_id) {
-        state.event_state = saved_state;
-    } else {
-        state.event_state =
-            willow_state::ServerState::new(server_id, ctx.server.name.clone(), ctx.server.owner);
-    }
-
-    // Open persistent event store for this server.
-    if persistence {
-        if let Some(store) = storage::open_event_store(server_id) {
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                state.event_store = state::PersistentEventStore::Sqlite(store);
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
-                state.event_store = state::PersistentEventStore::LocalStorage(store);
-            }
-        }
-    }
-
-    // If we didn't load a saved state, replay persisted events.
-    if storage::load_server_state(server_id).is_none() {
-        let stored_events = state.event_store.all_events();
-        if !stored_events.is_empty() {
-            for event in &stored_events {
-                willow_state::apply_lenient(&mut state.event_state, event);
-            }
-        } else {
-            // Don't seed channels from topic_map -- the IDs won't match
-            // the owner's IDs. Let sync deliver the correct CreateChannel
-            // events which will populate event_state.channels with the
-            // right IDs.
-        }
-    }
-}
-
-/// Wrapper that takes `&mut SharedState` so callers don't need split borrows.
-fn init_event_state_on_shared(shared: &mut SharedState, server_id: &str) {
-    init_event_state_for_server(&mut shared.state, shared.config.persistence, server_id);
-}
-
 impl<N: willow_network::Network> ClientHandle<N> {
     /// Create a new client. Loads or generates identity, loads or creates
     /// the server with default channels, loads persisted messages.
@@ -263,7 +288,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
     pub fn new(config: ClientConfig) -> (Self, ClientEventLoop) {
         let identity = load_identity();
 
-        let (event_tx, _discard_rx) = futures_mpsc::unbounded::<ClientEvent>();
+        // event_broker is spawned later after the system is created.
 
         let mut state = ClientState::new(identity.endpoint_id());
 
@@ -424,41 +449,200 @@ impl<N: willow_network::Network> ClientHandle<N> {
         }
 
         let identity_clone = identity.clone();
-        let mut shared_state = SharedState {
-            state,
-            identity,
-            config,
-            connected: false,
-            connected_subscribed: false,
-            state_verification_results: HashMap::new(),
-            last_typing_sent_ms: 0,
-            typing_peers: HashMap::new(),
-            voice_participants: HashMap::new(),
-            active_voice_channel: None,
-            voice_muted: false,
-            voice_deafened: false,
-            join_links: Vec::new(),
+
+        // Spawn domain-specific state actors (Phase 2).
+        // Spawn domain actors from initial state before it's consumed.
+        let system = willow_actor::System::new();
+        let event_state_addr =
+            system.spawn(willow_actor::StateActor::new(state.event_state.clone()));
+        let server_registry_addr = {
+            let mut registry = state_actors::ServerRegistry::default();
+            for (id, ctx) in &state.servers {
+                registry.servers.insert(
+                    id.clone(),
+                    state_actors::ServerEntry {
+                        server: ctx.server.clone(),
+                        name: ctx.server.name.clone(),
+                        topic_map: ctx.topic_map.clone(),
+                        keys: ctx.keys.clone(),
+                        unread: ctx.unread.clone(),
+                    },
+                );
+            }
+            registry.active_server = state.active_server.clone();
+            system.spawn(willow_actor::StateActor::new(registry))
+        };
+        let chat_meta_addr = {
+            let meta = state_actors::ChatMeta {
+                current_channel: state.chat.current_channel.clone(),
+                peers: state.chat.peers.clone(),
+                seen_message_ids: state.chat.seen_message_ids.clone(),
+            };
+            system.spawn(willow_actor::StateActor::new(meta))
+        };
+        let profile_state_addr =
+            system.spawn(willow_actor::StateActor::new(state_actors::ProfileState {
+                names: state.profiles.names.clone(),
+            }));
+        let network_meta_addr = system.spawn(willow_actor::StateActor::new(
+            state_actors::NetworkMeta::default(),
+        ));
+        let voice_state_addr = system.spawn(willow_actor::StateActor::new(
+            state_actors::VoiceState::default(),
+        ));
+        let persistence_enabled = config.persistence;
+        let persistence_addr = system.spawn(persistence_actor::PersistenceActor::new(
+            persistence_enabled,
+        ));
+        let event_broker = system.spawn(willow_actor::Broker::<ClientEvent>::new());
+        // Open event store on the persistence actor if we have an active server.
+        if let Some(sid) = &state.active_server {
+            let _ = persistence_addr.do_send(persistence_actor::OpenEventStore {
+                server_id: sid.clone(),
+            });
+        }
+        let hlc = Arc::new(std::sync::Mutex::new(willow_messaging::hlc::HLC::new()));
+        let topics: Arc<RwLock<HashMap<String, N::Topic>>> = Arc::new(RwLock::new(HashMap::new()));
+        let join_links = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        // Build StateRefs for derived actor sources.
+        let event_ref = willow_actor::state::StateRef::from(&event_state_addr);
+        let registry_ref = willow_actor::state::StateRef::from(&server_registry_addr);
+        let chat_ref = willow_actor::state::StateRef::from(&chat_meta_addr);
+        let profile_ref = willow_actor::state::StateRef::from(&profile_state_addr);
+        let network_ref = willow_actor::state::StateRef::from(&network_meta_addr);
+        let voice_ref = willow_actor::state::StateRef::from(&voice_state_addr);
+
+        // Spawn Layer 2 derived view actors.
+        let local_pid = identity_clone.endpoint_id();
+        let messages_view = willow_actor::derived(
+            &system.handle(),
+            (
+                event_ref.clone(),
+                registry_ref.clone(),
+                chat_ref.clone(),
+                profile_ref.clone(),
+            ),
+            move |(es, reg, chat, prof)| {
+                views::compute_messages_view(es, reg, chat, prof, local_pid)
+            },
+        );
+        let local_pid2 = identity_clone.endpoint_id();
+        let members_view = willow_actor::derived(
+            &system.handle(),
+            (event_ref.clone(), chat_ref.clone(), profile_ref.clone()),
+            move |(es, chat, prof)| views::compute_members_view(es, chat, prof, local_pid2),
+        );
+        let channels_view = willow_actor::derived(
+            &system.handle(),
+            (event_ref.clone(), registry_ref.clone()),
+            |(es, reg)| views::compute_channels_view(es, reg),
+        );
+        let unread_view = willow_actor::derived(&system.handle(), registry_ref.clone(), |reg| {
+            views::compute_unread_view(reg)
+        });
+        let roles_view = willow_actor::derived(&system.handle(), event_ref.clone(), |es| {
+            views::compute_roles_view(es)
+        });
+        let connection_view = willow_actor::derived(
+            &system.handle(),
+            (network_ref.clone(), chat_ref.clone()),
+            |(net, chat)| views::compute_connection_view(net, chat),
+        );
+
+        // Spawn Layer 3 grouped view actors.
+        let chat_views = willow_actor::derived(
+            &system.handle(),
+            (
+                messages_view.clone(),
+                channels_view.clone(),
+                unread_view.clone(),
+            ),
+            |(msgs, channels, unread)| views::ChatViews {
+                messages: (**msgs).clone(),
+                channels: (**channels).clone(),
+                unread: (**unread).clone(),
+            },
+        );
+        let social_views = willow_actor::derived(
+            &system.handle(),
+            (
+                members_view.clone(),
+                roles_view.clone(),
+                connection_view.clone(),
+            ),
+            |(members, roles, conn)| views::SocialViews {
+                members: (**members).clone(),
+                roles: (**roles).clone(),
+                connection: (**conn).clone(),
+            },
+        );
+        // Terminal ClientView.
+        let client_view = willow_actor::derived(
+            &system.handle(),
+            (chat_views, social_views, voice_ref.clone()),
+            |(chat, social, voice)| views::ClientView {
+                chat: (**chat).clone(),
+                social: (**social).clone(),
+                voice: (**voice).clone(),
+                server_name: None,
+                server_owner: None,
+                current_channel: String::new(),
+            },
+        );
+
+        // Bundle into handles.
+        let view_handle = views::ClientViewHandle {
+            view: client_view,
+            messages: messages_view,
+            members: members_view,
+            channels: channels_view,
+            unread: unread_view,
+            roles: roles_view,
+            connection: connection_view,
+            event_state: event_ref,
+            server_registry: registry_ref,
+            chat_meta: chat_ref,
+            profiles: profile_ref,
+            network: network_ref,
+            voice: voice_ref,
         };
 
-        // SharedState is Send but not Sync (due to rusqlite::Connection).
-        // Arc<RwLock<_>> is the target for full multi-task safety; making
-        // SharedState Sync is tracked as a follow-up task.
-        reconcile_topic_map(&mut shared_state.state);
+        let mutation_handle = mutations::ClientMutations {
+            event_state: event_state_addr.clone(),
+            server_registry: server_registry_addr.clone(),
+            chat_meta: chat_meta_addr.clone(),
+            profiles: profile_state_addr.clone(),
+            network: network_meta_addr.clone(),
+            voice: voice_state_addr.clone(),
+            event_broker: event_broker.clone(),
+            persistence: persistence_addr.clone(),
+            identity: identity_clone.clone(),
+            hlc: Arc::clone(&hlc),
+            join_links: Arc::clone(&join_links),
+            topics: Arc::clone(&topics),
+        };
 
-        let system = willow_actor::System::new();
-        let state_addr = system.spawn(client_actor::ClientStateActor {
-            shared: shared_state,
-            dirty: false,
-            subscribers: Vec::new(),
-        });
+        reconcile_topic_map(&mut state);
 
         let handle = ClientHandle {
-            state_addr,
             system: system.handle(),
             network: None,
-            topics: Arc::new(RwLock::new(HashMap::new())),
-            event_tx,
+            topics,
+            event_broker,
             identity: identity_clone,
+            event_state_addr,
+            server_registry_addr,
+            chat_meta_addr,
+            profile_state_addr,
+            network_meta_addr,
+            voice_state_addr,
+            persistence_addr,
+            hlc,
+            persistence_enabled,
+            join_links,
+            view_handle,
+            mutation_handle,
         };
 
         // reconcile_topic_map called above before spawning actor
@@ -468,368 +652,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         (handle, event_loop)
     }
 
-    /// Fire-and-forget broadcast of raw data on a named topic.
-    ///
-    /// Spawns an async task to perform the actual broadcast so that
-    /// synchronous methods can call this without blocking. Does nothing
-    /// if not connected (no network set) or the topic isn't subscribed.
-    pub(crate) fn broadcast_on_topic(&self, topic: &str, data: Vec<u8>) {
-        // If not connected, nothing to broadcast.
-        if self.network.is_none() {
-            return;
-        }
-
-        // Quick check: if we don't have a sender for this topic, skip.
-        {
-            let topics = self.topics.read().unwrap();
-            if !topics.contains_key(topic) {
-                return;
-            }
-        }
-
-        let topics = Arc::clone(&self.topics);
-        let topic_key = topic.to_string();
-        let bytes = bytes::Bytes::from(data);
-
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            // Use try_handle() to avoid panicking if no runtime is active
-            // (e.g. in sync tests).
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.spawn(async move {
-                    let sender = {
-                        let topics = topics.read().unwrap();
-                        topics.get(&topic_key).cloned()
-                    };
-                    if let Some(sender) = sender {
-                        let _ = sender.broadcast(bytes).await;
-                    }
-                });
-            }
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        wasm_bindgen_futures::spawn_local(async move {
-            let sender = {
-                let topics = topics.read().unwrap();
-                topics.get(&topic_key).cloned()
-            };
-            if let Some(sender) = sender {
-                let _ = sender.broadcast(bytes).await;
-            }
-        });
-    }
-
-    /// Broadcast a signed wire event on the server ops topic.
-    pub(crate) fn broadcast_event(&self, event: &willow_state::Event) {
-        if let Some(data) = ops::pack_wire(&ops::WireMessage::Event(event.clone()), &self.identity)
-        {
-            self.broadcast_on_topic(ops::SERVER_OPS_TOPIC, data);
-        }
-    }
-
     // Methods extracted to: voice.rs, servers.rs, actions.rs, accessors.rs, joining.rs
-    // ---- Internal helpers ----
-
-    /// Send chat content (text, reply) on a channel.
-    pub(crate) async fn send_content(
-        &self,
-        channel: &str,
-        _content: Content,
-        body: &str,
-        _reply_preview: Option<String>,
-        reply_to: Option<String>,
-    ) -> anyhow::Result<()> {
-        let ch = channel.to_string();
-        let b = body.to_string();
-        let event = crate::client_actor::mutate_state(
-            &self.state_addr,
-            move |s| -> anyhow::Result<willow_state::Event> {
-                let ctx = s
-                    .state
-                    .active()
-                    .ok_or_else(|| anyhow::anyhow!("no active server"))?;
-                let topic = ctx.topic_for_name(&ch).unwrap_or_else(|| ch.clone());
-                let peer_id_str = s.identity.endpoint_id();
-                let channel_id = s
-                    .state
-                    .active()
-                    .and_then(|ctx| {
-                        ctx.topic_map
-                            .get(&topic)
-                            .map(|(_, ch_id)| ch_id.to_string())
-                    })
-                    .unwrap_or_else(|| ch.clone());
-                let ts = util::current_time_ms();
-                let event_id = uuid::Uuid::new_v4().to_string();
-                let msg_event = willow_state::Event {
-                    id: event_id.clone(),
-                    parent_hash: s.state.event_state.hash(),
-                    author: peer_id_str,
-                    timestamp_ms: ts,
-                    kind: willow_state::EventKind::Message {
-                        channel_id,
-                        body: b,
-                        reply_to,
-                    },
-                };
-                apply_event_on_shared(s, &msg_event);
-                s.state.chat.seen_message_ids.insert(event_id);
-                Ok(msg_event)
-            },
-        )
-        .await?;
-        self.broadcast_event(&event);
-        Ok(())
-    }
-}
-
-/// Convert a [`willow_state::Event`] into [`ClientEvent`]s for the caller.
-///
-/// This is a free function so it can be called with an already-borrowed
-/// `SharedState` from `ClientEventLoop::process_batch()`.
-pub(crate) fn emit_client_events_for(
-    shared: &mut SharedState,
-    event: &willow_state::Event,
-    events: &mut Vec<ClientEvent>,
-) {
-    match &event.kind {
-        willow_state::EventKind::Message { ref channel_id, .. } => {
-            let is_local = event.author == shared.identity.endpoint_id();
-
-            // Track seen IDs for dedup.
-            shared.state.chat.seen_message_ids.insert(event.id.clone());
-
-            // Update unread counts.
-            let topic = shared
-                .state
-                .active()
-                .and_then(|ctx| {
-                    ctx.topic_map
-                        .iter()
-                        .find(|(_, (_, cid))| cid.to_string() == *channel_id)
-                        .map(|(t, _)| t.clone())
-                })
-                .unwrap_or_default();
-            let current_topic = shared
-                .state
-                .active()
-                .and_then(|ctx| ctx.topic_for_name(&shared.state.chat.current_channel))
-                .unwrap_or_default();
-            if !is_local && topic != current_topic {
-                let sid = shared.state.active_server.clone().unwrap_or_default();
-                if let Some(ctx) = shared.state.servers.get_mut(&sid) {
-                    *ctx.unread.entry(topic).or_insert(0) += 1;
-                }
-            }
-
-            let channel_name = shared
-                .state
-                .event_state
-                .channels
-                .get(channel_id)
-                .map(|ch| ch.name.clone())
-                .unwrap_or_else(|| channel_id.clone());
-
-            events.push(ClientEvent::MessageReceived {
-                channel: channel_name,
-                message_id: event.id.clone(),
-                is_local,
-            });
-        }
-        willow_state::EventKind::CreateChannel {
-            name, channel_id, ..
-        } => {
-            // Subscribe to the new channel's gossipsub topic and
-            // update the topic_map. Use the ORIGINAL channel_id from
-            // the event (not ChannelId::new()) so IDs match across peers.
-            // Subscription to the new topic is deferred to the caller.
-            if let Some(ctx) = shared.state.active_mut() {
-                let topic = util::make_topic(&ctx.server, name);
-                if !ctx.topic_map.contains_key(&topic) {
-                    let cid = willow_channel::ChannelId(
-                        uuid::Uuid::parse_str(channel_id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
-                    );
-                    ctx.topic_map.insert(topic.clone(), (name.clone(), cid));
-                    // The caller will handle subscribing to the new topic if needed.
-                }
-            }
-            events.push(ClientEvent::ChannelCreated(name.clone()));
-        }
-        willow_state::EventKind::DeleteChannel { channel_id } => {
-            // Look up channel name from state before deletion.
-            let name = shared
-                .state
-                .event_state
-                .channels
-                .get(channel_id)
-                .map(|ch| ch.name.clone())
-                .unwrap_or_else(|| channel_id.clone());
-            events.push(ClientEvent::ChannelDeleted(name));
-        }
-        willow_state::EventKind::CreateRole { name, role_id } => {
-            events.push(ClientEvent::RoleCreated {
-                name: name.clone(),
-                role_id: role_id.clone(),
-            });
-        }
-        willow_state::EventKind::DeleteRole { role_id } => {
-            events.push(ClientEvent::RoleDeleted {
-                role_id: role_id.clone(),
-            });
-        }
-        willow_state::EventKind::KickMember { peer_id } => {
-            events.push(ClientEvent::MemberKicked(*peer_id));
-        }
-        willow_state::EventKind::GrantPermission { peer_id, .. } => {
-            events.push(ClientEvent::PeerTrusted(*peer_id));
-        }
-        willow_state::EventKind::RevokePermission { peer_id, .. } => {
-            events.push(ClientEvent::PeerUntrusted(*peer_id));
-        }
-        willow_state::EventKind::RenameServer { new_name } => {
-            events.push(ClientEvent::ServerRenamed {
-                new_name: new_name.clone(),
-            });
-        }
-        willow_state::EventKind::SetServerDescription { description } => {
-            events.push(ClientEvent::ServerDescriptionChanged {
-                description: description.clone(),
-            });
-        }
-        willow_state::EventKind::PinMessage {
-            channel_id,
-            message_id,
-        } => {
-            let channel = shared
-                .state
-                .event_state
-                .channels
-                .get(channel_id)
-                .map(|ch| ch.name.clone())
-                .unwrap_or_else(|| channel_id.clone());
-            events.push(ClientEvent::MessagePinned {
-                channel,
-                message_id: message_id.clone(),
-            });
-        }
-        willow_state::EventKind::UnpinMessage {
-            channel_id,
-            message_id,
-        } => {
-            let channel = shared
-                .state
-                .event_state
-                .channels
-                .get(channel_id)
-                .map(|ch| ch.name.clone())
-                .unwrap_or_else(|| channel_id.clone());
-            events.push(ClientEvent::MessageUnpinned {
-                channel,
-                message_id: message_id.clone(),
-            });
-        }
-        willow_state::EventKind::EditMessage {
-            message_id,
-            new_body,
-        } => {
-            let channel = shared
-                .state
-                .event_state
-                .messages
-                .iter()
-                .find(|m| m.id == *message_id)
-                .and_then(|m| {
-                    shared
-                        .state
-                        .event_state
-                        .channels
-                        .get(&m.channel_id)
-                        .map(|ch| ch.name.clone())
-                })
-                .unwrap_or_default();
-            events.push(ClientEvent::MessageEdited {
-                channel,
-                message_id: message_id.clone(),
-                new_body: new_body.clone(),
-            });
-        }
-        willow_state::EventKind::DeleteMessage { message_id } => {
-            let channel = shared
-                .state
-                .event_state
-                .messages
-                .iter()
-                .find(|m| m.id == *message_id)
-                .and_then(|m| {
-                    shared
-                        .state
-                        .event_state
-                        .channels
-                        .get(&m.channel_id)
-                        .map(|ch| ch.name.clone())
-                })
-                .unwrap_or_default();
-            events.push(ClientEvent::MessageDeleted {
-                channel,
-                message_id: message_id.clone(),
-            });
-        }
-        willow_state::EventKind::Reaction {
-            message_id, emoji, ..
-        } => {
-            // Find the channel name from the message's channel_id.
-            let channel = shared
-                .state
-                .event_state
-                .messages
-                .iter()
-                .find(|m| m.id == *message_id)
-                .and_then(|m| {
-                    shared
-                        .state
-                        .event_state
-                        .channels
-                        .get(&m.channel_id)
-                        .map(|ch| ch.name.clone())
-                })
-                .unwrap_or_default();
-            events.push(ClientEvent::ReactionAdded {
-                channel,
-                message_id: message_id.clone(),
-                emoji: emoji.clone(),
-                author: event.author,
-            });
-        }
-        willow_state::EventKind::SetProfile { display_name } => {
-            // Also update the gossipsub ProfileStore so both systems stay
-            // in sync, and emit a ProfileUpdated so the UI refreshes the
-            // member list with the new display name.
-            shared
-                .state
-                .profiles
-                .names
-                .insert(event.author, display_name.clone());
-            events.push(ClientEvent::ProfileUpdated {
-                peer_id: event.author,
-                display_name: display_name.clone(),
-            });
-        }
-        willow_state::EventKind::StateVerification { state_hash } => {
-            let our_hash = shared.state.event_state.hash();
-            shared
-                .state_verification_results
-                .insert(event.author, state_hash.clone());
-            if *state_hash != our_hash {
-                events.push(ClientEvent::StateHashMismatch {
-                    peer_id: event.author,
-                    our_hash: our_hash.to_string(),
-                    their_hash: state_hash.to_string(),
-                });
-            }
-        }
-        _ => {}
-    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -842,67 +665,11 @@ impl ClientEventLoop {
     /// Listeners now handle all incoming gossip events via
     /// [`listeners::spawn_topic_listener`]. This method exists for
     /// backward compatibility only.
-    pub async fn run(self, _tx: futures_mpsc::UnboundedSender<ClientEvent>) {
+    /// Run the event processing loop (legacy no-op).
+    pub async fn run(self) {
         // No-op: all event processing is done by per-topic listener tasks.
         futures::future::pending::<()>().await;
     }
-}
-
-/// Resolve a channel name to its channel ID via the active server context.
-fn resolve_channel_id_shared(state: &ClientState, channel: &str) -> anyhow::Result<String> {
-    let ctx = state
-        .active()
-        .ok_or_else(|| anyhow::anyhow!("no active server"))?;
-    ctx.topic_map
-        .values()
-        .find(|(n, _)| n == channel)
-        .map(|(_, cid)| cid.to_string())
-        .ok_or_else(|| anyhow::anyhow!("channel not found: {}", channel))
-}
-
-/// Generate an invite for a peer, borrowing SharedState via Arc<RwLock>.
-///
-/// Used by listeners and other non-generic code to generate invites
-/// without constructing a `ClientHandle<N>`.
-#[allow(dead_code)]
-fn generate_invite_shared(
-    shared: &Arc<RwLock<SharedState>>,
-    recipient_peer_id: &willow_identity::EndpointId,
-) -> anyhow::Result<String> {
-    let pub_key = invite::endpoint_id_to_ed25519_public(recipient_peer_id);
-    let shared = shared.read().unwrap();
-    let ctx = shared
-        .state
-        .active()
-        .ok_or_else(|| anyhow::anyhow!("no active server"))?;
-    invite::generate_invite(&ctx.server, &ctx.keys, &ctx.topic_map, &pub_key)
-        .ok_or_else(|| anyhow::anyhow!("invite generation failed"))
-}
-
-/// Generate an invite via the actor system (used by listeners).
-pub(crate) async fn generate_invite_via_actor(
-    state_addr: &willow_actor::Addr<client_actor::ClientStateActor>,
-    recipient_peer_id: &willow_identity::EndpointId,
-) -> anyhow::Result<String> {
-    let peer_id = *recipient_peer_id;
-    client_actor::read_state(state_addr, move |s| {
-        let pub_key = invite::endpoint_id_to_ed25519_public(&peer_id);
-        let ctx = s
-            .state
-            .active()
-            .ok_or_else(|| anyhow::anyhow!("no active server"))?;
-        invite::generate_invite(&ctx.server, &ctx.keys, &ctx.topic_map, &pub_key)
-            .ok_or_else(|| anyhow::anyhow!("invite generation failed"))
-    })
-    .await
-}
-
-/// Get a peer's display name from a borrowed SharedState.
-fn peer_display_name_shared(shared: &SharedState, peer_id: &willow_identity::EndpointId) -> String {
-    if let Some(profile) = shared.state.event_state.profiles.get(peer_id) {
-        return profile.display_name.clone();
-    }
-    shared.state.profiles.display_name(peer_id)
 }
 
 // ---- Identity persistence ----
@@ -934,14 +701,12 @@ fn parse_permission(s: &str) -> anyhow::Result<willow_channel::Permission> {
 }
 
 /// Create a test-only ClientHandle without connecting to the network.
-/// The returned client has an event_tx wired up for inspection.
 #[cfg(test)]
 pub(crate) fn test_client() -> (
     ClientHandle<willow_network::mem::MemNetwork>,
-    futures_mpsc::UnboundedReceiver<ClientEvent>,
+    willow_actor::Addr<willow_actor::Broker<ClientEvent>>,
 ) {
     let identity = Identity::generate();
-    let (event_tx, event_rx) = futures_mpsc::unbounded::<ClientEvent>();
 
     let mut state = ClientState::new(identity.endpoint_id());
 
@@ -999,45 +764,183 @@ pub(crate) fn test_client() -> (
     );
 
     let identity_clone = identity.clone();
-    let shared_state = SharedState {
-        state,
-        identity,
-        config: ClientConfig {
-            persistence: false,
-            ..ClientConfig::default()
+    let sys = willow_actor::System::new();
+
+    // Spawn domain actors from initial state before it's consumed.
+    let event_state_addr = sys.spawn(willow_actor::StateActor::new(state.event_state.clone()));
+    let mut registry = state_actors::ServerRegistry::default();
+    for (id, ctx) in &state.servers {
+        registry.servers.insert(
+            id.clone(),
+            state_actors::ServerEntry {
+                server: ctx.server.clone(),
+                name: ctx.server.name.clone(),
+                topic_map: ctx.topic_map.clone(),
+                keys: ctx.keys.clone(),
+                unread: ctx.unread.clone(),
+            },
+        );
+    }
+    registry.active_server = state.active_server.clone();
+    let server_registry_addr = sys.spawn(willow_actor::StateActor::new(registry));
+    let chat_meta_addr = sys.spawn(willow_actor::StateActor::new(state_actors::ChatMeta {
+        current_channel: state.chat.current_channel.clone(),
+        peers: state.chat.peers.clone(),
+        seen_message_ids: state.chat.seen_message_ids.clone(),
+    }));
+    let profile_state_addr = sys.spawn(willow_actor::StateActor::new(state_actors::ProfileState {
+        names: state.profiles.names.clone(),
+    }));
+    let network_meta_addr = sys.spawn(willow_actor::StateActor::new(
+        state_actors::NetworkMeta::default(),
+    ));
+    let voice_state_addr = sys.spawn(willow_actor::StateActor::new(
+        state_actors::VoiceState::default(),
+    ));
+    let persistence_addr = sys.spawn(persistence_actor::PersistenceActor::new(false));
+    let event_broker = sys.spawn(willow_actor::Broker::<ClientEvent>::new());
+    let hlc = Arc::new(std::sync::Mutex::new(willow_messaging::hlc::HLC::new()));
+    let topics: Arc<
+        RwLock<
+            HashMap<String, <willow_network::mem::MemNetwork as willow_network::Network>::Topic>,
+        >,
+    > = Arc::new(RwLock::new(HashMap::new()));
+    let join_links = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    // Build StateRefs and derived views.
+    let event_ref = willow_actor::state::StateRef::from(&event_state_addr);
+    let registry_ref = willow_actor::state::StateRef::from(&server_registry_addr);
+    let chat_ref = willow_actor::state::StateRef::from(&chat_meta_addr);
+    let profile_ref = willow_actor::state::StateRef::from(&profile_state_addr);
+    let network_ref = willow_actor::state::StateRef::from(&network_meta_addr);
+    let voice_ref = willow_actor::state::StateRef::from(&voice_state_addr);
+    let sh = sys.handle();
+
+    let local_pid = identity_clone.endpoint_id();
+    let messages_view = willow_actor::derived(
+        &sh,
+        (
+            event_ref.clone(),
+            registry_ref.clone(),
+            chat_ref.clone(),
+            profile_ref.clone(),
+        ),
+        move |(es, reg, chat, prof)| views::compute_messages_view(es, reg, chat, prof, local_pid),
+    );
+    let local_pid2 = identity_clone.endpoint_id();
+    let members_view = willow_actor::derived(
+        &sh,
+        (event_ref.clone(), chat_ref.clone(), profile_ref.clone()),
+        move |(es, chat, prof)| views::compute_members_view(es, chat, prof, local_pid2),
+    );
+    let channels_view = willow_actor::derived(
+        &sh,
+        (event_ref.clone(), registry_ref.clone()),
+        |(es, reg)| views::compute_channels_view(es, reg),
+    );
+    let unread_view = willow_actor::derived(&sh, registry_ref.clone(), |reg| {
+        views::compute_unread_view(reg)
+    });
+    let roles_view =
+        willow_actor::derived(&sh, event_ref.clone(), |es| views::compute_roles_view(es));
+    let connection_view = willow_actor::derived(
+        &sh,
+        (network_ref.clone(), chat_ref.clone()),
+        |(net, chat)| views::compute_connection_view(net, chat),
+    );
+    let chat_views = willow_actor::derived(
+        &sh,
+        (
+            messages_view.clone(),
+            channels_view.clone(),
+            unread_view.clone(),
+        ),
+        |(m, c, u)| views::ChatViews {
+            messages: (**m).clone(),
+            channels: (**c).clone(),
+            unread: (**u).clone(),
         },
-        connected: false,
-        connected_subscribed: false,
-        state_verification_results: HashMap::new(),
-        last_typing_sent_ms: 0,
-        typing_peers: HashMap::new(),
-        voice_participants: HashMap::new(),
-        active_voice_channel: None,
-        voice_muted: false,
-        voice_deafened: false,
-        join_links: Vec::new(),
+    );
+    let social_views = willow_actor::derived(
+        &sh,
+        (
+            members_view.clone(),
+            roles_view.clone(),
+            connection_view.clone(),
+        ),
+        |(m, r, c)| views::SocialViews {
+            members: (**m).clone(),
+            roles: (**r).clone(),
+            connection: (**c).clone(),
+        },
+    );
+    let client_view = willow_actor::derived(
+        &sh,
+        (chat_views, social_views, voice_ref.clone()),
+        |(c, s, v)| views::ClientView {
+            chat: (**c).clone(),
+            social: (**s).clone(),
+            voice: (**v).clone(),
+            server_name: None,
+            server_owner: None,
+            current_channel: String::new(),
+        },
+    );
+
+    let view_handle = views::ClientViewHandle {
+        view: client_view,
+        messages: messages_view,
+        members: members_view,
+        channels: channels_view,
+        unread: unread_view,
+        roles: roles_view,
+        connection: connection_view,
+        event_state: event_ref,
+        server_registry: registry_ref,
+        chat_meta: chat_ref,
+        profiles: profile_ref,
+        network: network_ref,
+        voice: voice_ref,
+    };
+    let mutation_handle = mutations::ClientMutations {
+        event_state: event_state_addr.clone(),
+        server_registry: server_registry_addr.clone(),
+        chat_meta: chat_meta_addr.clone(),
+        profiles: profile_state_addr.clone(),
+        network: network_meta_addr.clone(),
+        voice: voice_state_addr.clone(),
+        event_broker: event_broker.clone(),
+        persistence: persistence_addr.clone(),
+        identity: identity_clone.clone(),
+        hlc: Arc::clone(&hlc),
+        join_links: Arc::clone(&join_links),
+        topics: Arc::clone(&topics),
     };
 
-    let sys = willow_actor::System::new();
-    let sa = sys.spawn(client_actor::ClientStateActor {
-        shared: shared_state,
-        dirty: false,
-        subscribers: Vec::new(),
-    });
-    let sh = sys.handle();
     // Leak the system so actors stay alive for the test duration.
     std::mem::forget(sys);
 
     let client = ClientHandle {
-        state_addr: sa,
         system: sh,
         network: None,
-        topics: Arc::new(RwLock::new(HashMap::new())),
-        event_tx,
+        topics,
+        event_broker: event_broker.clone(),
         identity: identity_clone,
+        event_state_addr,
+        server_registry_addr,
+        chat_meta_addr,
+        profile_state_addr,
+        network_meta_addr,
+        voice_state_addr,
+        persistence_addr,
+        hlc,
+        persistence_enabled: false,
+        join_links,
+        view_handle,
+        mutation_handle,
     };
 
-    (client, event_rx)
+    (client, event_broker)
 }
 
 #[cfg(test)]
