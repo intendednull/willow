@@ -87,8 +87,28 @@ test-e2e-sync:
 test-e2e-perms:
     npx playwright test e2e/permissions.spec.ts --project=desktop-chrome
 
+# Run agent unit + integration tests
+test-agent:
+    cargo test -p willow-agent
+
+# Run E2E multi-peer tests via agent harness
+test-agent-e2e:
+    cargo test -p willow-agent --test e2e -- --nocapture
+
+# Build the agent binary
+build-agent:
+    cargo build -p willow-agent
+
+# Build agent (release)
+build-agent-release:
+    cargo build --release -p willow-agent
+
+# Run the agent
+agent *args:
+    cargo run -p willow-agent -- {{args}}
+
 # Run ALL tests including browser and E2E
-test-all: test test-browser test-e2e-ui
+test-all: test test-browser test-agent-e2e test-e2e-ui
 
 # Check native compilation
 check-native:

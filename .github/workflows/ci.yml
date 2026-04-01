@@ -72,4 +72,4 @@ jobs:
             target
           key: wasm-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: wasm-
-      - run: cargo check --target wasm32-unknown-unknown --workspace --exclude willow-relay --exclude willow-worker --exclude willow-replay --exclude willow-storage
+      - run: cargo check --target wasm32-unknown-unknown --workspace --exclude willow-relay --exclude willow-worker --exclude willow-replay --exclude willow-storage --exclude willow-agent
