@@ -1000,67 +1000,300 @@ is invalidated for that author. The resolution:
 This is an intentional tradeoff: author sovereignty over their data
 takes priority over snapshot stability.
 
-## Section 6: Migration Path
+## Section 6: Materialized View — Client Consumption Map
 
-The new model is a significant change to willow-state's internals but
-preserves the same `EventKind` variants and `ServerState` fields. The
-migration can be done incrementally.
+The `ServerState` materialized view is consumed by multiple layers.
+Understanding these access patterns is critical — the DAG redesign
+must produce a `ServerState` that satisfies all of them unchanged.
 
-### Phase 1: EventDag + New Event Type
+### View Architecture (Current)
 
-Add the new data structures alongside the existing ones:
+```
+EventDag (new source of truth)
+     │
+     │  materialize() / apply_incremental()
+     ▼
+ServerState  ◄── held in StateActor<ServerState>
+     │
+     │  DerivedActor subscriptions (reactive)
+     ├──────────► MessagesView    (messages + profiles + channels)
+     ├──────────► ChannelsView    (channels)
+     ├──────────► MembersView     (members + profiles + online peers)
+     ├──────────► RolesView       (roles)
+     ├──────────► UnreadView      (server registry)
+     └──────────► ConnectionView  (network meta)
+                       │
+                       ▼
+                  ClientView  (terminal composite)
+                       │
+              ┌────────┼────────┐
+              ▼        ▼        ▼
+           Bevy UI   Leptos   Accessors
+```
 
-1. Add `EventHash`, `EventDag`, `PendingBuffer` to willow-state.
-2. Add new `Event` struct (with `prev`, `deps`, `seq`, `sig`) as
-   `DagEvent` to avoid name collision.
-3. Add `topological_sort()` and `materialize()`.
-4. Add comprehensive tests for the new path.
-5. The old `Event`, `apply()`, `merge()` remain untouched.
+### Field-by-Field Consumption
 
-### Phase 2: Dual-Mode Apply
+Every `ServerState` field and where it is read:
 
-The client layer can operate in either mode:
+| Field | Consumers | Access Pattern |
+|---|---|---|
+| `server_name` | `ClientView.server_name`, join page, app title | Read on server join, display |
+| `owner` | `ClientView.server_owner`, permission checks, "owner" badge in member list | Frequent read |
+| `channels` | `compute_channels_view()`, channel name→ID resolution for message sending, message filtering | Hot path — every message send resolves channel |
+| `roles` | `compute_roles_view()`, role management UI | Infrequent read |
+| `members` | `compute_members_view()`, member list, online status merge | Read on membership change |
+| `peer_permissions` | `has_permission()` checks before privileged ops (kick, role grant, channel create) | Read before every privileged mutation |
+| `messages` | `compute_messages_view()` — filter by channel, sort by timestamp, resolve author names, compute reactions, reply previews | **Hottest path** — read on every new message |
+| `profiles` | `resolve_display_name()` — called per-message per-member | Hot path — N times per messages view compute |
+| `description` | Settings panel, `server_description()` accessor | Infrequent read |
+| `channel_keys` | Join flow — extract encrypted keys for channel decryption | Read on server join |
 
-- **Legacy mode**: use old `Event` + `apply()` for existing servers.
-- **DAG mode**: use `DagEvent` + `EventDag` + `materialize()` for
-  new servers or migrated servers.
+### Mutation Entry Points
 
-A server's mode is determined at creation time and stored in metadata.
+All writes to `ServerState` flow through exactly two paths:
 
-### Phase 3: Sync Protocol Migration
+1. **Local mutations** (`crates/client/src/mutations.rs`):
+   - User action → build `EventKind` → build `Event` → `apply_lenient()` on `StateActor<ServerState>`
+   - Covers: send message, create channel, grant permission, kick, etc.
+   - All 16 active EventKind variants are constructed here.
 
-Update the sync layer to use `HeadsSummary` + per-author requests
-instead of `SyncRequest { latest_hlc }`. The new sync protocol can
-coexist with the old one (different gossip topic or message type).
+2. **Remote events** (`crates/client/src/listeners.rs`):
+   - Gossip received → verify → `apply_lenient()` on `StateActor<ServerState>`
+   - Same apply path, different origin.
 
-### Phase 4: Deprecate Legacy Path
+Both paths will change from `apply_lenient(state, event)` to
+`dag.insert(event)` + `apply_incremental(state, event)`.
 
-Once all servers have migrated, remove the old `Event`, `apply()`,
-`apply_lenient()`, `merge()`, `StateHash`, and `seen_event_ids`.
+### Persistence
 
-### What Stays the Same
+- **Full state snapshots**: `storage::save_server_state()` serializes
+  entire `ServerState` via serde. Called after events are applied.
+- **Event store**: `PersistentEventStore` (SQLite/LocalStorage) stores
+  events + tracks `latest_hash`. This becomes the `EventDag` store.
+- **Replay node** (`crates/replay/src/role.rs`): holds `ServerState`
+  in memory, applies events via `apply_lenient()`, serves state hashes
+  and event diffs to syncing peers.
 
-- `EventKind` enum (all 24 variants)
-- `ServerState` struct (minus `seen_event_ids`)
-- `Permission` enum and `has_permission()` logic
-- All pure data types (`Channel`, `Role`, `Member`, `ChatMessage`,
-  `Profile`)
-- Permission enforcement in apply
-- Zero-I/O crate boundary
+### What This Means for the Redesign
 
-### What Changes
+The materialized `ServerState` struct itself is almost untouched — the
+same fields serve the same views. The changes are all upstream of it:
+
+- **Source of truth** shifts from "linear event chain + state" to
+  "DAG + materialized state"
+- **Mutation path** shifts from `apply(state, event)` to
+  `dag.insert(event)` + `apply_incremental(state, event)`
+- **Sync path** shifts from HLC-based SyncRequest to per-author heads
+- **Persistence** shifts from event store + state snapshots to
+  DAG store + state snapshots
+- **Dedup** moves from `seen_event_ids` in state to structural
+  uniqueness in the DAG
+
+## Section 7: Complete Replacement
+
+This is a clean break, not an incremental migration. The old linear
+chain model (`Event`, `apply()`, `apply_lenient()`, `merge()`,
+`StateHash`, `seen_event_ids`) is removed entirely and replaced with
+the per-author Merkle-DAG.
+
+### Rationale
+
+An incremental migration would require maintaining two code paths,
+dual-mode servers, and compatibility shims — more total work than a
+clean replacement, with worse architecture. The old and new models are
+fundamentally different data structures. There is no meaningful shared
+code path between "single linear chain with parent state hash" and
+"per-author DAG with content-addressed events."
+
+### What Is Deleted
+
+| Module / Symbol | Reason |
+|---|---|
+| `Event` (old struct) | Replaced by new `Event` with `prev`, `deps`, `seq`, `sig` |
+| `apply()` | Parent-hash check is structurally unnecessary in DAG model |
+| `apply_lenient()` | Replaced by `apply_unchecked()` (DAG guarantees ordering) |
+| `merge()` | DAG union + topological sort replaces timestamp-sorted merge |
+| `find_common_ancestor()` | Per-author seq comparison replaces state-hash walking |
+| `StateHash` | No per-event state hash; snapshots use `SnapshotHash` |
+| `ServerState.seen_event_ids` | Dedup is structural (DAG rejects duplicate hashes) |
+| `ServerState.hash()` | Full-state hashing removed from hot path |
+| `InMemoryStore` | Replaced by `EventDag` (which subsumes store + ordering) |
+| `EventStore` trait | Replaced by `DagStore` trait for persistent DAG backends |
+
+### What Is Preserved
+
+| Symbol | Status |
+|---|---|
+| `EventKind` (all 24 variants) | Unchanged — carried over as-is |
+| `ServerState` (struct) | Kept, minus `seen_event_ids` and `hash()` |
+| `Permission` enum | Unchanged |
+| `has_permission()` | Unchanged |
+| `Channel`, `Role`, `Member`, `ChatMessage`, `Profile` | Unchanged |
+| Permission enforcement in apply | Moved to `apply_unchecked()`, same logic |
+| Zero-I/O crate boundary | Preserved — state crate remains pure |
+
+### New Modules
+
+| Module | Contents |
+|---|---|
+| `event.rs` | `Event`, `EventHash`, `EventKind`, `Signature` |
+| `dag.rs` | `EventDag`, `InsertError`, `HeadsSummary`, topological sort |
+| `materialize.rs` | `materialize()`, `apply_unchecked()`, `apply_incremental()` |
+| `sync.rs` | `SyncMessage`, `AuthorRequest`, `PendingBuffer` |
+| `snapshot.rs` | `Snapshot`, `SnapshotHash`, compaction |
+| `types.rs` | Unchanged — `Channel`, `Role`, `Member`, etc. |
+| `server.rs` | `ServerState` (simplified — no `hash()`, no `seen_event_ids`) |
+| `tests.rs` | Rewritten from scratch for DAG model |
+
+### New Public API Surface
+
+```rust
+// Core types
+pub use event::{Event, EventHash, EventKind, Signature};
+pub use dag::{EventDag, InsertError, HeadsSummary, AuthorHead};
+pub use materialize::{materialize, apply_unchecked, apply_incremental, ApplyResult};
+pub use sync::{SyncMessage, AuthorRequest, PendingBuffer};
+pub use snapshot::{Snapshot, SnapshotHash};
+pub use server::ServerState;
+pub use types::{Channel, ChatMessage, Member, Permission, Profile, Role};
+```
+
+### Client-Side Changes
+
+The client crate (`willow-client`) changes at the mutation and
+listener boundaries. View computation is unaffected.
+
+**mutations.rs** — before:
+```rust
+let event = willow_state::Event {
+    id: uuid(),
+    parent_hash: state.hash(),
+    author: my_id,
+    timestamp_ms: now(),
+    kind: EventKind::Message { ... },
+};
+willow_state::apply_lenient(&mut state, &event);
+broadcast(event);
+```
+
+**mutations.rs** — after:
+```rust
+let event = dag.create_event(
+    &my_identity,   // signs automatically
+    EventKind::Message { ... },
+);
+dag.insert(event.clone())?;
+apply_incremental(&mut state, &event);
+broadcast(event);
+```
+
+**listeners.rs** — before:
+```rust
+let event = receive_from_gossip();
+willow_state::apply_lenient(&mut state, &event);
+```
+
+**listeners.rs** — after:
+```rust
+let event = receive_from_gossip();
+match dag.insert(event.clone()) {
+    Ok(()) => apply_incremental(&mut state, &event),
+    Err(InsertError::MissingDep(hash)) => {
+        pending.buffer(hash, event);
+        request_missing(hash);
+    }
+    Err(InsertError::Duplicate) => { /* already have it */ }
+    Err(e) => log::warn!("rejected event: {e:?}"),
+}
+```
+
+**storage** — the `EventStore` trait is replaced by a `DagStore`
+trait that persists the per-author chains:
+
+```rust
+pub trait DagStore {
+    /// Append an event to an author's chain.
+    fn append(&mut self, event: &Event);
+
+    /// Get an author's events after a given seq number.
+    fn author_events_since(&self, author: &EndpointId, after_seq: u64) -> Vec<Event>;
+
+    /// Get the latest seq for an author.
+    fn latest_seq(&self, author: &EndpointId) -> u64;
+
+    /// Get all known author heads.
+    fn heads(&self) -> HeadsSummary;
+
+    /// Replace an author's chain (for revisions).
+    fn replace_chain(&mut self, author: &EndpointId, chain: &[Event]);
+
+    /// Load the full DAG into memory.
+    fn load_dag(&self) -> EventDag;
+
+    /// Save/load snapshots.
+    fn save_snapshot(&mut self, snapshot: &Snapshot);
+    fn load_latest_snapshot(&self) -> Option<Snapshot>;
+}
+```
+
+### Sync-Layer Changes
+
+The wire protocol changes from:
+
+```rust
+// Old
+enum SyncMessage {
+    Op(StampedOp),
+    SyncRequest { latest_hlc: u64 },
+    SyncBatch { ops: Vec<StampedOp> },
+}
+```
+
+To the new per-author protocol defined in Section 3:
+
+```rust
+// New
+enum SyncMessage {
+    Advertise(HeadsSummary),
+    Request(Vec<AuthorRequest>),
+    Response(Vec<Event>),
+}
+```
+
+The gossip topic for real-time event broadcast remains the same —
+only the event format changes. The sync protocol uses a separate
+topic or direct connection for catch-up.
+
+### Test Rewrite
+
+All 85 existing state tests are rewritten against the new API. The
+test structure maps directly:
+
+| Old test pattern | New test pattern |
+|---|---|
+| `let mut state = ServerState::new(...)` | `let mut dag = EventDag::new(); let mut state = ServerState::new(...)` |
+| `let event = Event { id, parent_hash, ... }` | `let event = dag.create_event(&identity, kind)` |
+| `apply(&mut state, &event)` | `dag.insert(event)?; apply_incremental(&mut state, &event)` |
+| `merge(our, their, common)` | DAG union via `dag.insert()` for each event + `materialize()` |
+| `state.hash() == other.hash()` | `materialize(&dag_a, owner) == materialize(&dag_b, owner)` |
+
+The determinism, idempotency, permission, and stress tests all carry
+over — same properties, different API.
+
+### Summary of Changes
 
 | Component | Before | After |
 |---|---|---|
 | `Event.id` | UUID string | Content hash (`EventHash`) |
-| `Event.parent_hash` | `StateHash` (hash of entire state) | `prev: EventHash` (author's previous event) |
-| Causal links | Implicit (linear chain) | Explicit (`deps: Vec<EventHash>`) |
-| Author validation | Checked at apply time | Structural (Ed25519 signature in event) |
+| `Event.parent_hash` | `StateHash` (hash of entire state) | `prev: EventHash` + `deps: Vec<EventHash>` |
+| Author validation | Checked at apply time | Structural (Ed25519 `sig` in event) |
 | Deduplication | `seen_event_ids: HashSet` | DAG rejects duplicate hashes |
-| Merge | Sort by timestamp, replay | Topological sort of DAG, hash tiebreak |
-| Sync | HLC-based, coarse-grained | Per-author seq-based, incremental |
-| State hashing | Full serialization + SHA-256 | Optional snapshots, no per-event hash |
-| History revision | Not possible | Author can republish their chain |
+| Merge | Sort by timestamp, replay | DAG union + topological sort, hash tiebreak |
+| Sync | HLC-based `SyncRequest` | Per-author `HeadsSummary` + seq-based requests |
+| State hashing | Full serialization + SHA-256 on every `apply()` | None on hot path; optional via snapshots |
+| History revision | Not possible | Author republishes their chain |
+| Event store | Flat append-only log | Per-author chains in `DagStore` |
+| Materialized view | `ServerState` mutated directly | `ServerState` projected from DAG |
 
 ## Appendix: References
 
