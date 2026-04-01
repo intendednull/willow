@@ -583,18 +583,10 @@ impl<N: willow_network::Network> ClientHandle<N> {
         // SharedState is Send but not Sync (due to rusqlite::Connection).
         reconcile_topic_map(&mut shared_state.state);
 
-        let domain_sync = client_actor::DomainSync {
-            event_state: event_state_addr.clone(),
-            server_registry: server_registry_addr.clone(),
-            chat_meta: chat_meta_addr.clone(),
-            profile_state: profile_state_addr.clone(),
-            network_meta: network_meta_addr.clone(),
-        };
         let state_addr = system.spawn(client_actor::ClientStateActor {
             shared: shared_state,
             dirty: false,
             subscribers: Vec::new(),
-            domain_sync: Some(domain_sync),
         });
 
         let handle = ClientHandle {
@@ -1208,18 +1200,10 @@ pub(crate) fn test_client() -> (
         join_links: Vec::new(),
     };
 
-    let domain_sync = client_actor::DomainSync {
-        event_state: event_state_addr.clone(),
-        server_registry: server_registry_addr.clone(),
-        chat_meta: chat_meta_addr.clone(),
-        profile_state: profile_state_addr.clone(),
-        network_meta: network_meta_addr.clone(),
-    };
     let sa = sys.spawn(client_actor::ClientStateActor {
         shared: shared_state,
         dirty: false,
         subscribers: Vec::new(),
-        domain_sync: Some(domain_sync),
     });
     let sh = sys.handle();
     // Leak the system so actors stay alive for the test duration.

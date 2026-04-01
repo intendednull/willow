@@ -16,8 +16,8 @@ No legacy code preserved. Full paradigm shift.
 
 ## Phase 1: Foundation — Types, PersistenceActor, Broker
 
-**Goal**: Create all new types and actors without changing existing code.
-Everything compiles, existing tests still pass via legacy path.
+**Goal**: Create all new types and actors without wiring them in.
+Compiles alongside existing code; existing tests unchanged.
 
 ### 1a. Domain state types (`state_actors.rs`)
 
@@ -74,12 +74,14 @@ pub struct ClientMutations {
     profiles: Addr<StateActor<ProfileState>>,
     network: Addr<StateActor<NetworkMeta>>,
     voice: Addr<StateActor<VoiceState>>,
-    persistence: Addr<PersistenceActor>,
     event_broker: Addr<Broker<ClientEvent>>,
     identity: Identity,
     hlc: Arc<Mutex<HLC>>,
     join_links: Arc<Mutex<Vec<JoinLink>>>,
-    // ... topics for broadcasting
+    persistence: Addr<PersistenceActor>,  // only for event store appends
+    topics: Arc<RwLock<HashMap<String, TopicHandle>>>,
+    // Snapshot persistence is reactive (PersistenceActor subscribes to StateRefs).
+    // Only event store appends (PersistEvent) are sent explicitly from apply_event().
 }
 ```
 
@@ -144,9 +146,9 @@ Each method routes to the correct domain `StateActor` via
 4. **Delete legacy code**:
    - Delete `client_actor.rs` entirely
    - Delete `SharedState` from `lib.rs`
-   - Delete `ClientState`, `ServerContext` from `state.rs`
-     (keep `DisplayMessage`, `PersistentEventStore`, `ProfileStore`)
-   - Remove `unsafe impl Send`
+   - Delete `ClientState`, `ServerContext`, `ProfileStore` from `state.rs`
+     (keep `DisplayMessage`, `PersistentEventStore`; `ProfileStore` replaced by `ProfileState` in `state_actors.rs`)
+   - `unsafe impl Send` confined to `PersistenceActor` only (sound: single-threaded mailbox)
 
 5. **Update `test_client()`**: Spawns the full actor tree, returns
    `(ClientHandle, Addr<Broker<ClientEvent>>)`
@@ -207,11 +209,12 @@ All phases are sequential. Each produces a compilable codebase.
 
 ### Created
 - `crates/client/src/state_actors.rs` — domain state types
-- `crates/client/src/views.rs` — derived view types, `ClientViewHandle`
+- `crates/client/src/views.rs` — derived view types, compute functions, `ClientViewHandle`
 - `crates/client/src/mutations.rs` — `ClientMutations` handle
-- `crates/client/src/persistence_actor.rs` — auto-persisting actor
-- `crates/client/src/event_receiver.rs` — `Broker` → channel bridge
+- `crates/client/src/persistence_actor.rs` — auto-persisting actor (subscribes to StateRefs)
 - `crates/web/src/state_bridge.rs` — `StateRef` → Leptos signal bridge
+
+Note: `EventReceiver` is defined as a module within `lib.rs`, not a separate file.
 
 ### Deleted
 - `crates/client/src/client_actor.rs` — replaced by library `StateActor`

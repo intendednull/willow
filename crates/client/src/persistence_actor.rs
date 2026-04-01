@@ -1,11 +1,16 @@
 //! # Persistence Actor
 //!
-//! Owns all `!Send` database resources (rusqlite connections) and processes
-//! persistence operations on a single-threaded mailbox. No `unsafe impl Send`
-//! needed — the actor system guarantees sequential, single-thread execution.
+//! Owns all `!Send` database resources (rusqlite connections) on a
+//! single-threaded mailbox.
 //!
-//! Fire-and-forget messages (`do_send`) are used for writes that don't block
-//! the caller. Ask-based messages are used for reads needed at startup/sync.
+//! ## Current (Phase 1)
+//! Uses fire-and-forget write messages from callers.
+//!
+//! ## Target (Phase 3)
+//! Will subscribe to `Notify` on `StateRef<EventState>`,
+//! `StateRef<ServerRegistry>`, `StateRef<ProfileState>` and auto-persist
+//! snapshots on change. Only `PersistEvent` (event store appends) will
+//! remain as an explicit message — snapshot persistence becomes reactive.
 
 use willow_actor::{Actor, Context, Handler, Message};
 

@@ -138,38 +138,23 @@ struct VoiceState {
 
 Each is spawned as `system.spawn(StateActor::new(initial_value))`.
 
-Mutation example (actions that currently use `mutate_state`):
-```rust
-// Before (monolithic):
-mutate_state(&self.state_addr, |s| {
-    s.state.chat.peers.push(peer_id);
-    s.connected = true;
-}).await;
+All reads and writes go through `ClientMutations` (writes) or
+`ClientViewHandle` (reads). User code never calls `state::mutate()`
+or `state::select()` directly on actor addresses.
 
-// After (domain-specific):
-willow_actor::state::mutate(&self.chat_meta_addr, |c| c.peers.push(peer_id)).await;
-willow_actor::state::mutate(&self.network_meta_addr, |n| n.connected = true).await;
-```
-
-Read example:
-```rust
-// Before:
-read_state(&self.state_addr, |s| s.state.chat.current_channel.clone()).await
-
-// After:
-willow_actor::state::select(&self.chat_meta_addr, |c| c.current_channel.clone()).await
-```
-
-Fields that don't belong to any domain actor live directly on `ClientHandle`:
-- `identity: Identity` (already there)
-- `persistence_enabled: bool` (from config, immutable after construction)
-- `join_links: Arc<Mutex<Vec<JoinLink>>>` (rarely modified)
-- `hlc: Arc<Mutex<HLC>>` (mutation-time clock, not reactive state)
+Fields that don't belong to any domain actor live directly on
+`ClientMutations` or `ClientHandle`:
+- `identity: Identity` (on both `ClientHandle` and `ClientMutations`)
+- `hlc: Arc<Mutex<HLC>>` (on `ClientMutations`, mutation-time clock)
+- `join_links: Arc<Mutex<Vec<JoinLink>>>` (on `ClientMutations`, rarely modified)
 
 ### 2. PersistenceActor
 
-Owns all `!Send` resources. Runs on a single-threaded mailbox — no
-`unsafe impl Send` needed.
+Owns all `!Send` resources (rusqlite connections). The actor itself
+requires `unsafe impl Send` because it holds `!Send` types, but this
+is sound: the actor mailbox guarantees single-threaded execution, and
+the `unsafe` is confined to this one actor (not spread across
+`SharedState` as before).
 
 **Subscribes to state changes and auto-persists.** Callers never send
 explicit persist messages — the actor watches relevant `StateRef`s via
@@ -180,31 +165,43 @@ struct PersistenceActor {
     event_store: PersistentEventStore,   // SqliteEventStore or LocalStorageEventStore
     server_id: Option<String>,
     persistence_enabled: bool,
-    // StateRef handles for subscription
+    // StateRef handles — .get() returns Arc<T> (Send), safe to call from this actor
     event_state: StateRef<EventState>,
     server_registry: StateRef<ServerRegistry>,
     profiles: StateRef<ProfileState>,
+    // Dirty flags for idle() debouncing
+    dirty_event_state: bool,
+    dirty_registry: bool,
+    dirty_profiles: bool,
 }
 ```
 
-On startup, the actor subscribes to `Notify` on each source `StateRef`.
-When notified, it fetches the current snapshot via `state_ref.get()` and
-persists it. This means:
+On `started()`, the actor subscribes to `Notify` on each `StateRef`.
+When notified, it sets the corresponding dirty flag. In `idle()`, it
+fetches snapshots for dirty sources and persists them. This batches
+rapid mutations into a single write.
 
-- **Event state changes** → auto-saves `ServerState` + appends to event store
+- **Event state changes** → auto-saves `ServerState` snapshot
 - **Server registry changes** → auto-saves server config, keys, server list
 - **Profile changes** → auto-saves local profile
 
-Debouncing via the actor's `idle()` hook batches rapid mutations into a
-single persist operation.
+**Event store appends**: The event store needs individual events (not just
+snapshots) for sync protocol support (`events_since(hash)`). The
+`ClientMutations.apply_event()` method sends a `PersistEvent` message
+to append the event to the store. This is the one exception to the
+"no write messages" rule — snapshot persistence is reactive, but
+event-level appends require the actual event data.
+
+**Write messages** (only for event store):
+- `PersistEvent { event, new_hash }` — append event + update latest hash
 
 **Read messages** (ask-based, used at startup/sync):
 - `LoadAllEvents` → `Vec<Event>`
 - `GetLatestHash` → `StateHash`
 - `LoadEventsSince { hash }` → `Vec<Event>`
-- `OpenEventStore { server_id }` — open/switch event store
 
-No write messages needed — persistence is fully reactive.
+**Commands**:
+- `OpenEventStore { server_id }` — open/switch the active event store
 
 ### 3. Layer 2 — Derived Views
 
@@ -339,19 +336,33 @@ subscription to a pre-computed view.
 ## Architecture Diagram
 
 ```
+Layer 1 — Source StateActors
+
 ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
 │  EventState  │  │ServerRegistry│  │   ChatMeta   │  │ ProfileState │
 │  StateActor  │  │  StateActor  │  │  StateActor  │  │  StateActor  │
 └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
        │                 │                 │                 │
-  ┌────┴─────────────────┼─────────────────┼─────────────────┘
-  │                      │                 │
-  ▼                      ▼                 ▼
-┌─────────────┐  ┌───────────┐  ┌──────────────┐
-│MessagesView │  │ChannelsV. │  │ MembersView  │
-│ DerivedActor│  │DerivedAct.│  │ DerivedActor │
-└──────┬──────┘  └─────┬─────┘  └──────┬───────┘
-       │               │               │
+       │  ┌──────────────┐  ┌──────────────┐                │
+       │  │ NetworkMeta  │  │  VoiceState  │                │
+       │  │  StateActor  │  │  StateActor  │                │
+       │  └──────┬───────┘  └──────┬───────┘                │
+       │         │                 │                         │
+
+Layer 2 — Derived Views
+
+  ┌────┴─────────┼─────────────────┼─────────────────────────┘
+  │              │                 │
+  ▼              ▼                 ▼
+┌─────────────┐  ┌────────────┐  ┌──────────────┐
+│MessagesView │  │ChannelsView│  │ MembersView  │   UnreadView  RolesView
+│ DerivedActor│  │DerivedActor│  │ DerivedActor │   DerivedAct.  Derived
+└──────┬──────┘  └─────┬──────┘  └──────┬───────┘
+       │               │               │        ConnectionView
+       │               │               │        ← (NetworkMeta, ChatMeta)
+
+Layer 3 — Terminal (Bevy-style grouping)
+
        ▼               ▼               ▼
   ┌──────────┐    ┌──────────┐
   │ChatViews │    │SocialV.  │
@@ -365,15 +376,16 @@ subscription to a pre-computed view.
         │ DerivedActor│
         └─────────────┘
 
-┌──────────────────┐  ┌────────────────────┐  ┌──────────────┐  ┌──────────────┐
-│ PersistenceActor │  │ Broker<ClientEvent>│  │ NetworkMeta  │  │  VoiceState  │
-│ (owns rusqlite)  │  │ (event fan-out)    │  │  StateActor  │  │  StateActor  │
-│ subscribes to:   │  └────────────────────┘  └──────────────┘  └──────────────┘
+Infrastructure
+
+┌──────────────────┐  ┌────────────────────┐  ┌───────────────────┐
+│ PersistenceActor │  │ Broker<ClientEvent>│  │  ClientMutations  │
+│ (owns rusqlite)  │  │ (event fan-out)    │  │ (typed write API) │
+│ subscribes to:   │  └────────────────────┘  └───────────────────┘
 │  EventState      │
-│  ServerRegistry  │              ┌───────────────────┐
-│  ProfileState    │              │  ClientMutations   │ ← user code calls this
-└──────────────────┘              │  (typed interface)  │
-                                  └───────────────────┘
+│  ServerRegistry  │
+│  ProfileState    │
+└──────────────────┘
 ```
 
 ## Mutation Handle
@@ -394,13 +406,15 @@ pub struct ClientMutations {
     profiles: Addr<StateActor<ProfileState>>,
     network: Addr<StateActor<NetworkMeta>>,
     voice: Addr<StateActor<VoiceState>>,
-    persistence: Addr<PersistenceActor>,
     event_broker: Addr<Broker<ClientEvent>>,
+    persistence: Addr<PersistenceActor>,  // only for event store appends
     identity: Identity,
     hlc: Arc<Mutex<HLC>>,
     join_links: Arc<Mutex<Vec<JoinLink>>>,
     topics: Arc<RwLock<HashMap<String, TopicHandle>>>,
-    persistence_enabled: bool,
+    // Note: persistence_enabled lives on PersistenceActor.
+    // Snapshot persistence is reactive via Notify. Only event store
+    // appends (PersistEvent) are sent explicitly from apply_event().
 }
 ```
 
@@ -505,11 +519,22 @@ impl ClientMutations {
 ```rust
 impl ClientMutations {
     /// Apply an incoming event from a peer.
+    ///
+    /// Applies to event-sourced state, appends to event store, and emits
+    /// relevant `ClientEvent`s (MessageReceived, ChannelCreated, etc.)
+    /// via the broker. Snapshot persistence is reactive (auto-triggered
+    /// by the PersistenceActor's Notify subscription on EventState).
     pub async fn apply_event(&self, event: &Event) {
         state::mutate(&self.event_state, |es| {
             willow_state::apply_lenient(es, event);
         }).await;
-        // PersistenceActor auto-persists via subscription — no manual call.
+        // Append to event store (snapshot auto-persists via Notify).
+        let hash = state::select(&self.event_state, |es| es.hash()).await;
+        self.persistence.do_send(PersistEvent { event: event.clone(), new_hash: hash });
+        let client_events = derive_client_events(event);
+        for e in client_events {
+            self.event_broker.do_send(Publish(e));
+        }
     }
 
     /// Track a peer as online.
@@ -569,7 +594,9 @@ pub struct ClientHandle<N: Network> {
     views: ClientViewHandle,
     /// Typed mutation interface.
     mutations: ClientMutations,
-    /// The network backend.
+    /// Actor system handle for spawning child actors.
+    system: SystemHandle,
+    /// The network backend, set after connect().
     network: Option<Arc<N>>,
     /// Local identity.
     identity: Identity,
