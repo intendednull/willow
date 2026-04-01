@@ -26,15 +26,12 @@ impl<N: willow_network::Network> ClientHandle<N> {
     }
 
     pub async fn active_server_id(&self) -> Option<String> {
-        willow_actor::state::select(&self.server_registry_addr, |reg| {
-            reg.active_server.clone()
-        })
-        .await
+        willow_actor::state::select(&self.server_registry_addr, |reg| reg.active_server.clone())
+            .await
     }
 
     pub async fn has_servers(&self) -> bool {
-        willow_actor::state::select(&self.server_registry_addr, |reg| !reg.servers.is_empty())
-            .await
+        willow_actor::state::select(&self.server_registry_addr, |reg| !reg.servers.is_empty()).await
     }
 
     pub async fn leave_server(&self, server_id: &str) {

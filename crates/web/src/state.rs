@@ -402,16 +402,23 @@ pub fn wire_derived_signals<N: willow_network::Network>(
     leptos::prelude::Effect::new(move || write.server.set_active_server_id.set(active_id.get()));
 
     let active_name = derived_signal(&views.server_registry, system, |reg| {
-        reg.active().map(|e| e.name.clone()).unwrap_or_else(|| "No Server".to_string())
+        reg.active()
+            .map(|e| e.name.clone())
+            .unwrap_or_else(|| "No Server".to_string())
     });
-    leptos::prelude::Effect::new(move || write.server.set_active_server_name.set(active_name.get()));
+    leptos::prelude::Effect::new(move || {
+        write.server.set_active_server_name.set(active_name.get())
+    });
 
     let local_pid = handle.identity().endpoint_id();
     let display_name = derived_signal(&views.profiles, system, move |p| p.display_name(&local_pid));
     leptos::prelude::Effect::new(move || write.server.set_display_name.set(display_name.get()));
 
     let channels_sig = derived_signal(&views.channels, system, |cv| {
-        cv.channels.iter().map(|c| c.name.clone()).collect::<Vec<_>>()
+        cv.channels
+            .iter()
+            .map(|c| c.name.clone())
+            .collect::<Vec<_>>()
     });
     leptos::prelude::Effect::new(move || write.chat.set_channels.set(channels_sig.get()));
 
@@ -428,15 +435,23 @@ pub fn wire_derived_signals<N: willow_network::Network>(
     leptos::prelude::Effect::new(move || write.network.set_peer_count.set(peer_count.get()));
 
     let connection = derived_signal(&views.network, system, |n| {
-        if n.connected { "connected".to_string() } else { "connecting".to_string() }
+        if n.connected {
+            "connected".to_string()
+        } else {
+            "connecting".to_string()
+        }
     });
     leptos::prelude::Effect::new(move || write.network.set_connection_status.set(connection.get()));
 
     let roles_sig = derived_signal(&views.event_state, system, |es| {
-        es.roles.iter().map(|(id, role)| {
-            let perms: Vec<String> = role.permissions.iter().map(|p| format!("{p:?}")).collect();
-            (id.clone(), role.name.clone(), perms)
-        }).collect::<Vec<_>>()
+        es.roles
+            .iter()
+            .map(|(id, role)| {
+                let perms: Vec<String> =
+                    role.permissions.iter().map(|p| format!("{p:?}")).collect();
+                (id.clone(), role.name.clone(), perms)
+            })
+            .collect::<Vec<_>>()
     });
     leptos::prelude::Effect::new(move || write.server.set_roles.set(roles_sig.get()));
 
@@ -444,28 +459,45 @@ pub fn wire_derived_signals<N: willow_network::Network>(
     leptos::prelude::Effect::new(move || write.server.set_server_owner.set(owner.get()));
 
     let sync_provider_ids = derived_signal(&views.event_state, system, |es| {
-        es.peer_permissions.iter()
-            .filter(|(_, perms)| perms.contains(&willow_client::willow_state::Permission::SyncProvider))
+        es.peer_permissions
+            .iter()
+            .filter(|(_, perms)| {
+                perms.contains(&willow_client::willow_state::Permission::SyncProvider)
+            })
             .map(|(pid, _)| pid.to_string())
             .collect::<std::collections::HashSet<String>>()
     });
-    leptos::prelude::Effect::new(move || write.server.set_sync_provider_ids.set(sync_provider_ids.get()));
+    leptos::prelude::Effect::new(move || {
+        write
+            .server
+            .set_sync_provider_ids
+            .set(sync_provider_ids.get())
+    });
 
     let admin_ids = derived_signal(&views.event_state, system, |es| {
-        es.peer_permissions.iter()
-            .filter(|(_, perms)| perms.contains(&willow_client::willow_state::Permission::Administrator))
+        es.peer_permissions
+            .iter()
+            .filter(|(_, perms)| {
+                perms.contains(&willow_client::willow_state::Permission::Administrator)
+            })
             .map(|(pid, _)| pid.to_string())
             .collect::<std::collections::HashSet<String>>()
     });
     leptos::prelude::Effect::new(move || write.server.set_admin_ids.set(admin_ids.get()));
 
     let channel_kinds = derived_signal(&views.event_state, system, |es| {
-        es.channels.values().map(|ch| (ch.name.clone(), ch.kind.clone())).collect::<Vec<_>>()
+        es.channels
+            .values()
+            .map(|ch| (ch.name.clone(), ch.kind.clone()))
+            .collect::<Vec<_>>()
     });
     leptos::prelude::Effect::new(move || write.server.set_channel_kinds.set(channel_kinds.get()));
 
     let peers_sig = derived_signal(&views.members, system, |mv| {
-        mv.members.iter().map(|m| (m.peer_id.to_string(), m.display_name.clone(), m.is_online)).collect::<Vec<_>>()
+        mv.members
+            .iter()
+            .map(|m| (m.peer_id.to_string(), m.display_name.clone(), m.is_online))
+            .collect::<Vec<_>>()
     });
     leptos::prelude::Effect::new(move || write.network.set_peers.set(peers_sig.get()));
 

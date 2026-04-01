@@ -2,8 +2,8 @@
 
 use willow_actor::Addr;
 use willow_identity::EndpointId;
-use willow_network::traits::{GossipEvent, TopicEvents};
 use willow_network::traits::TopicHandle;
+use willow_network::traits::{GossipEvent, TopicEvents};
 
 use crate::events::ClientEvent;
 use crate::mutations;
@@ -70,7 +70,9 @@ async fn topic_listener_loop<T: TopicHandle, E: TopicEvents>(
                     }
                 })
                 .await;
-                let _ = ctx.event_broker.do_send(willow_actor::Publish(ClientEvent::PeerConnected(id)));
+                let _ = ctx
+                    .event_broker
+                    .do_send(willow_actor::Publish(ClientEvent::PeerConnected(id)));
             }
             GossipEvent::NeighborDown(id) => {
                 let id2 = id;
@@ -78,7 +80,9 @@ async fn topic_listener_loop<T: TopicHandle, E: TopicEvents>(
                     c.peers.retain(|p| p != &id2);
                 })
                 .await;
-                let _ = ctx.event_broker.do_send(willow_actor::Publish(ClientEvent::PeerDisconnected(id)));
+                let _ = ctx
+                    .event_broker
+                    .do_send(willow_actor::Publish(ClientEvent::PeerDisconnected(id)));
             }
         }
     }
@@ -100,10 +104,12 @@ async fn process_received_message<T: TopicHandle>(
             p.names.insert(peer_id, display_name);
         })
         .await;
-        let _ = ctx.event_broker.do_send(willow_actor::Publish(ClientEvent::ProfileUpdated {
-            peer_id: profile.peer_id,
-            display_name: profile.display_name,
-        }));
+        let _ = ctx
+            .event_broker
+            .do_send(willow_actor::Publish(ClientEvent::ProfileUpdated {
+                peer_id: profile.peer_id,
+                display_name: profile.display_name,
+            }));
         return;
     }
 
@@ -207,15 +213,26 @@ async fn process_received_message<T: TopicHandle>(
             })
             .await;
         }
-        crate::ops::WireMessage::VoiceJoin { channel_id, peer_id } => {
+        crate::ops::WireMessage::VoiceJoin {
+            channel_id,
+            peer_id,
+        } => {
             let ch = channel_id.clone();
             willow_actor::state::mutate(&ctx.voice, move |v| {
                 v.participants.entry(ch).or_default().insert(peer_id);
             })
             .await;
-            let _ = ctx.event_broker.do_send(willow_actor::Publish(ClientEvent::VoiceJoined { channel_id, peer_id }));
+            let _ = ctx
+                .event_broker
+                .do_send(willow_actor::Publish(ClientEvent::VoiceJoined {
+                    channel_id,
+                    peer_id,
+                }));
         }
-        crate::ops::WireMessage::VoiceLeave { channel_id, peer_id } => {
+        crate::ops::WireMessage::VoiceLeave {
+            channel_id,
+            peer_id,
+        } => {
             let ch = channel_id.clone();
             willow_actor::state::mutate(&ctx.voice, move |v| {
                 if let Some(p) = v.participants.get_mut(&ch) {
@@ -223,21 +240,34 @@ async fn process_received_message<T: TopicHandle>(
                 }
             })
             .await;
-            let _ = ctx.event_broker.do_send(willow_actor::Publish(ClientEvent::VoiceLeft { channel_id, peer_id }));
-        }
-        crate::ops::WireMessage::VoiceSignal { channel_id, target_peer, signal } => {
-            if target_peer == ctx.identity.endpoint_id() {
-                let _ = ctx.event_broker.do_send(willow_actor::Publish(ClientEvent::VoiceSignal {
+            let _ = ctx
+                .event_broker
+                .do_send(willow_actor::Publish(ClientEvent::VoiceLeft {
                     channel_id,
-                    from_peer: signer,
-                    signal,
+                    peer_id,
                 }));
+        }
+        crate::ops::WireMessage::VoiceSignal {
+            channel_id,
+            target_peer,
+            signal,
+        } => {
+            if target_peer == ctx.identity.endpoint_id() {
+                let _ = ctx
+                    .event_broker
+                    .do_send(willow_actor::Publish(ClientEvent::VoiceSignal {
+                        channel_id,
+                        from_peer: signer,
+                        signal,
+                    }));
             }
         }
         crate::ops::WireMessage::JoinRequest { link_id, peer_id } => {
             let should_respond = {
                 let mut links = ctx.join_links.lock().unwrap();
-                let valid = links.iter_mut().find(|l| l.link_id == link_id && l.is_valid());
+                let valid = links
+                    .iter_mut()
+                    .find(|l| l.link_id == link_id && l.is_valid());
                 if let Some(link) = valid {
                     link.used += 1;
                     true
@@ -264,14 +294,26 @@ async fn process_received_message<T: TopicHandle>(
                 }
             }
         }
-        crate::ops::WireMessage::JoinResponse { target_peer, invite_data } => {
+        crate::ops::WireMessage::JoinResponse {
+            target_peer,
+            invite_data,
+        } => {
             if target_peer == ctx.identity.endpoint_id() {
-                let _ = ctx.event_broker.do_send(willow_actor::Publish(ClientEvent::JoinLinkResponse { invite_data }));
+                let _ = ctx.event_broker.do_send(willow_actor::Publish(
+                    ClientEvent::JoinLinkResponse { invite_data },
+                ));
             }
         }
-        crate::ops::WireMessage::JoinDenied { target_peer, reason } => {
+        crate::ops::WireMessage::JoinDenied {
+            target_peer,
+            reason,
+        } => {
             if target_peer == ctx.identity.endpoint_id() {
-                let _ = ctx.event_broker.do_send(willow_actor::Publish(ClientEvent::JoinLinkDenied { reason }));
+                let _ =
+                    ctx.event_broker
+                        .do_send(willow_actor::Publish(ClientEvent::JoinLinkDenied {
+                            reason,
+                        }));
             }
         }
     }

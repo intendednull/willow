@@ -50,7 +50,11 @@ impl<N: willow_network::Network> ClientHandle<N> {
         // If caller asks for a specific channel, compute for that channel.
         // Otherwise use current channel from ChatMeta.
         let view = views::compute_messages_view_for_channel(
-            &es, &registry, &profiles, channel, local_peer_id,
+            &es,
+            &registry,
+            &profiles,
+            channel,
+            local_peer_id,
         );
         view.messages
     }

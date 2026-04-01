@@ -48,8 +48,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                     let mut server =
                         willow_channel::Server::new(&accepted.server_name, accepted.owner);
                     server.id = willow_channel::ServerId(
-                        uuid::Uuid::parse_str(&server_id)
-                            .unwrap_or_else(|_| uuid::Uuid::new_v4()),
+                        uuid::Uuid::parse_str(&server_id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
                     );
                     let mut topic_map = HashMap::new();
                     let mut keys = HashMap::new();
@@ -173,11 +172,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         .await;
 
         let profiles = willow_actor::state::get(&self.profile_state_addr).await;
-        let inviter_name = profiles
-            .names
-            .get(&pid)
-            .cloned()
-            .unwrap_or_default();
+        let inviter_name = profiles.names.get(&pid).cloned().unwrap_or_default();
 
         let link = ops::JoinLink {
             link_id: uuid::Uuid::new_v4().to_string(),
@@ -235,8 +230,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             return;
         }
         let channel =
-            willow_actor::state::select(&self.chat_meta_addr, |c| c.current_channel.clone())
-                .await;
+            willow_actor::state::select(&self.chat_meta_addr, |c| c.current_channel.clone()).await;
         if channel.is_empty() {
             return;
         }

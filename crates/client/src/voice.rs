@@ -52,7 +52,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
             signal,
         };
         if let Some(data) = ops::pack_wire(&msg, &self.identity) {
-            self.mutation_handle.broadcast_on_topic(ops::SERVER_OPS_TOPIC, data);
+            self.mutation_handle
+                .broadcast_on_topic(ops::SERVER_OPS_TOPIC, data);
         }
     }
 }

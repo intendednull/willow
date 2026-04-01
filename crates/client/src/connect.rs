@@ -11,9 +11,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
 
         if self.persistence_enabled {
             // Save settings (relay addr is from config, already stored).
-            storage::save_settings(&storage::NetworkSettings {
-                relay_addr: None,
-            });
+            storage::save_settings(&storage::NetworkSettings { relay_addr: None });
         }
 
         let listener_ctx = listeners::ListenerCtx {

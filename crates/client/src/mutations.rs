@@ -66,8 +66,7 @@ impl<N: willow_network::Network> Clone for ClientMutations<N> {
 impl<N: willow_network::Network> ClientMutations<N> {
     /// Build an event with the next HLC timestamp and current state hash.
     pub(crate) async fn build_event(&self, kind: willow_state::EventKind) -> willow_state::Event {
-        let parent_hash =
-            willow_actor::state::select(&self.event_state, |es| es.hash()).await;
+        let parent_hash = willow_actor::state::select(&self.event_state, |es| es.hash()).await;
         let ts = util::current_time_ms();
         willow_state::Event {
             id: uuid::Uuid::new_v4().to_string(),
@@ -93,17 +92,16 @@ impl<N: willow_network::Network> ClientMutations<N> {
         }
         // Fall back to server registry topic_map.
         let ch2 = channel.to_string();
-        let from_registry =
-            willow_actor::state::select(&self.server_registry, move |reg| {
-                reg.active().and_then(|entry| {
-                    entry
-                        .topic_map
-                        .values()
-                        .find(|(n, _)| n == &ch2)
-                        .map(|(_, cid)| cid.to_string())
-                })
+        let from_registry = willow_actor::state::select(&self.server_registry, move |reg| {
+            reg.active().and_then(|entry| {
+                entry
+                    .topic_map
+                    .values()
+                    .find(|(n, _)| n == &ch2)
+                    .map(|(_, cid)| cid.to_string())
             })
-            .await;
+        })
+        .await;
         from_registry.ok_or_else(|| anyhow::anyhow!("channel not found: {channel}"))
     }
 
@@ -130,8 +128,7 @@ impl<N: willow_network::Network> ClientMutations<N> {
 
     /// Broadcast a signed event to peers via the server ops topic.
     pub(crate) fn broadcast_event(&self, event: &willow_state::Event) {
-        if let Some(data) =
-            ops::pack_wire(&ops::WireMessage::Event(event.clone()), &self.identity)
+        if let Some(data) = ops::pack_wire(&ops::WireMessage::Event(event.clone()), &self.identity)
         {
             self.broadcast_on_topic(ops::SERVER_OPS_TOPIC, data);
         }
@@ -212,11 +209,7 @@ impl<N: willow_network::Network> ClientMutations<N> {
     }
 
     /// Edit an existing message.
-    pub async fn edit_message(
-        &self,
-        message_id: &str,
-        new_body: &str,
-    ) -> anyhow::Result<()> {
+    pub async fn edit_message(&self, message_id: &str, new_body: &str) -> anyhow::Result<()> {
         let event = self
             .build_event(willow_state::EventKind::EditMessage {
                 message_id: message_id.to_string(),
@@ -301,8 +294,9 @@ impl<N: willow_network::Network> ClientMutations<N> {
         let name_for_switch = name.clone();
 
         // Create channel in Server object and update topic_map.
-        let ch_id_str =
-            willow_actor::state::mutate(&self.server_registry, move |reg| -> anyhow::Result<String> {
+        let ch_id_str = willow_actor::state::mutate(
+            &self.server_registry,
+            move |reg| -> anyhow::Result<String> {
                 let entry = reg
                     .active_mut()
                     .ok_or_else(|| anyhow::anyhow!("no active server"))?;
@@ -316,8 +310,9 @@ impl<N: willow_network::Network> ClientMutations<N> {
                 let ch_id_str = ch_id.to_string();
                 entry.topic_map.insert(topic, (name.clone(), ch_id));
                 Ok(ch_id_str)
-            })
-            .await?;
+            },
+        )
+        .await?;
 
         let event = self
             .build_event(willow_state::EventKind::CreateChannel {
@@ -368,10 +363,8 @@ impl<N: willow_network::Network> ClientMutations<N> {
         self.apply_event(&event).await;
 
         // Switch to first remaining channel if we deleted the current one.
-        let current = willow_actor::state::select(&self.chat_meta, |c| {
-            c.current_channel.clone()
-        })
-        .await;
+        let current =
+            willow_actor::state::select(&self.chat_meta, |c| c.current_channel.clone()).await;
         if current == name_for_check {
             let first = willow_actor::state::select(&self.server_registry, |reg| {
                 reg.active()
@@ -438,8 +431,9 @@ impl<N: willow_network::Network> ClientMutations<N> {
     /// Delete a role.
     pub async fn delete_role(&self, role_id: &str) -> anyhow::Result<()> {
         let role_id = role_id.to_string();
-        let rid =
-            willow_channel::RoleId(uuid::Uuid::parse_str(&role_id).unwrap_or_else(|_| uuid::Uuid::new_v4()));
+        let rid = willow_channel::RoleId(
+            uuid::Uuid::parse_str(&role_id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+        );
         willow_actor::state::mutate(&self.server_registry, move |reg| -> anyhow::Result<()> {
             let entry = reg
                 .active_mut()
@@ -462,10 +456,8 @@ impl<N: willow_network::Network> ClientMutations<N> {
 impl<N: willow_network::Network> ClientMutations<N> {
     /// Join a voice channel.
     pub async fn join_voice(&self, channel_id: &str) {
-        let in_voice = willow_actor::state::select(&self.voice, |v| {
-            v.active_channel.is_some()
-        })
-        .await;
+        let in_voice =
+            willow_actor::state::select(&self.voice, |v| v.active_channel.is_some()).await;
         if in_voice {
             self.leave_voice().await;
         }
@@ -602,12 +594,10 @@ impl<N: willow_network::Network> ClientMutations<N> {
             v.participants.entry(ch).or_default().insert(peer_id);
         })
         .await;
-        let _ = self
-            .event_broker
-            .do_send(Publish(ClientEvent::VoiceJoined {
-                channel_id,
-                peer_id,
-            }));
+        let _ = self.event_broker.do_send(Publish(ClientEvent::VoiceJoined {
+            channel_id,
+            peer_id,
+        }));
     }
 
     /// Handle a voice leave event from a peer.
@@ -619,12 +609,10 @@ impl<N: willow_network::Network> ClientMutations<N> {
             }
         })
         .await;
-        let _ = self
-            .event_broker
-            .do_send(Publish(ClientEvent::VoiceLeft {
-                channel_id,
-                peer_id,
-            }));
+        let _ = self.event_broker.do_send(Publish(ClientEvent::VoiceLeft {
+            channel_id,
+            peer_id,
+        }));
     }
 }
 

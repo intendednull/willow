@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use leptos::prelude::*;
 use send_wrapper::SendWrapper;
-use willow_actor::{Actor, Context, Handler, Recipient};
 use willow_actor::state::{Notify, StateRef};
+use willow_actor::{Actor, Context, Handler, Recipient};
 
 /// A derived state actor that watches a `StateRef<T>` and updates a Leptos signal.
 pub struct DerivedStateActor<T: Send + Sync + 'static, U: PartialEq + Clone + Send + Sync + 'static>

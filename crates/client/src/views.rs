@@ -352,10 +352,7 @@ pub fn compute_roles_view(events: &Arc<willow_state::ServerState>) -> RolesView 
 }
 
 /// Compute connection view.
-pub fn compute_connection_view(
-    network: &Arc<NetworkMeta>,
-    chat: &Arc<ChatMeta>,
-) -> ConnectionView {
+pub fn compute_connection_view(network: &Arc<NetworkMeta>, chat: &Arc<ChatMeta>) -> ConnectionView {
     let typing = network
         .typing_peers
         .iter()

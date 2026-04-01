@@ -1,11 +1,11 @@
 mod app;
 mod components;
-pub mod state_bridge;
 mod event_processing;
 mod handlers;
 #[allow(dead_code)]
 pub(crate) mod icons;
 mod state;
+pub mod state_bridge;
 pub(crate) mod util;
 pub mod voice;
 

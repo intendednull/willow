@@ -348,13 +348,11 @@ pub fn App() -> impl IntoView {
 
     // Welcome screen callback — notify actor so derived signals refresh.
     let handle_welcome = handle.clone();
-    let on_welcome_done = move |_: ()| {
-    };
+    let on_welcome_done = move |_: ()| {};
 
     // Store refresh function for reactive closures.
     let handle_for_refresh = handle.clone();
-    let refresh_stored = StoredValue::new(SendWrapper::new(Rc::new(move || {
-    }) as Rc<dyn Fn()>));
+    let refresh_stored = StoredValue::new(SendWrapper::new(Rc::new(move || {}) as Rc<dyn Fn()>));
 
     // Aliases for view closures.
     let servers = app_state.server.servers;

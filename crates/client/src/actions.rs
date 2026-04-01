@@ -11,7 +11,9 @@ impl<N: willow_network::Network> ClientHandle<N> {
         parent_id: &str,
         body: &str,
     ) -> anyhow::Result<()> {
-        self.mutation_handle.send_reply(channel, parent_id, body).await
+        self.mutation_handle
+            .send_reply(channel, parent_id, body)
+            .await
     }
 
     pub async fn share_file_inline(
@@ -35,7 +37,9 @@ impl<N: willow_network::Network> ClientHandle<N> {
         message_id: &str,
         new_body: &str,
     ) -> anyhow::Result<()> {
-        self.mutation_handle.edit_message(message_id, new_body).await
+        self.mutation_handle
+            .edit_message(message_id, new_body)
+            .await
     }
 
     pub async fn delete_message(&self, _channel: &str, message_id: &str) -> anyhow::Result<()> {
@@ -51,7 +55,9 @@ impl<N: willow_network::Network> ClientHandle<N> {
     }
 
     pub async fn unpin_message(&self, channel: &str, message_id: &str) -> anyhow::Result<()> {
-        self.mutation_handle.unpin_message(channel, message_id).await
+        self.mutation_handle
+            .unpin_message(channel, message_id)
+            .await
     }
 
     pub async fn pinned_message_ids(&self, channel: &str) -> Vec<String> {
@@ -212,13 +218,16 @@ impl<N: willow_network::Network> ClientHandle<N> {
             uuid::Uuid::parse_str(&role_id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
         );
         let perm = parse_permission(&permission)?;
-        willow_actor::state::mutate(&self.server_registry_addr, move |reg| -> anyhow::Result<()> {
-            let entry = reg
-                .active_mut()
-                .ok_or_else(|| anyhow::anyhow!("no active server"))?;
-            entry.server.set_permission(&rid, perm, granted)?;
-            Ok(())
-        })
+        willow_actor::state::mutate(
+            &self.server_registry_addr,
+            move |reg| -> anyhow::Result<()> {
+                let entry = reg
+                    .active_mut()
+                    .ok_or_else(|| anyhow::anyhow!("no active server"))?;
+                entry.server.set_permission(&rid, perm, granted)?;
+                Ok(())
+            },
+        )
         .await?;
         let event = self
             .mutation_handle
@@ -242,22 +251,25 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let rid = willow_channel::RoleId(
             uuid::Uuid::parse_str(&role_id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
         );
-        willow_actor::state::mutate(&self.server_registry_addr, move |reg| -> anyhow::Result<()> {
-            let entry = reg
-                .active_mut()
-                .ok_or_else(|| anyhow::anyhow!("no active server"))?;
-            let member_peer = entry
-                .server
-                .members()
-                .iter()
-                .find(|m| m.peer_id == peer_id)
-                .map(|m| m.peer_id);
-            let Some(peer) = member_peer else {
-                anyhow::bail!("peer not found");
-            };
-            entry.server.assign_role(&peer, &rid)?;
-            Ok(())
-        })
+        willow_actor::state::mutate(
+            &self.server_registry_addr,
+            move |reg| -> anyhow::Result<()> {
+                let entry = reg
+                    .active_mut()
+                    .ok_or_else(|| anyhow::anyhow!("no active server"))?;
+                let member_peer = entry
+                    .server
+                    .members()
+                    .iter()
+                    .find(|m| m.peer_id == peer_id)
+                    .map(|m| m.peer_id);
+                let Some(peer) = member_peer else {
+                    anyhow::bail!("peer not found");
+                };
+                entry.server.assign_role(&peer, &rid)?;
+                Ok(())
+            },
+        )
         .await?;
         let event = self
             .mutation_handle
@@ -269,8 +281,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
     }
 
     pub async fn verify_state(&self) -> anyhow::Result<()> {
-        let state_hash =
-            willow_actor::state::select(&self.event_state_addr, |es| es.hash()).await;
+        let state_hash = willow_actor::state::select(&self.event_state_addr, |es| es.hash()).await;
         let event = self
             .mutation_handle
             .build_event(willow_state::EventKind::StateVerification { state_hash })
@@ -281,8 +292,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
     }
 
     pub async fn state_hash_agreement(&self) -> (usize, usize) {
-        let our_hash =
-            willow_actor::state::select(&self.event_state_addr, |es| es.hash()).await;
+        let our_hash = willow_actor::state::select(&self.event_state_addr, |es| es.hash()).await;
         willow_actor::state::select(&self.network_meta_addr, move |n| {
             let total = n.state_verification_results.len();
             let agreeing = n
