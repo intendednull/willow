@@ -368,4 +368,88 @@ mod tests {
 
         system.shutdown().await;
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fsm_multiple_sequential_transitions() {
+        let system = System::new();
+        let on_enter = Arc::new(AtomicBool::new(false));
+        let addr = system.spawn(FsmActor::new(
+            TrafficLight {
+                on_enter_called: on_enter,
+            },
+            Light::Red,
+        ));
+
+        // Red -> Green
+        let r1 = addr.ask(Input::<TrafficLight>(())).await.unwrap();
+        assert!(matches!(r1, TransitionResult::Ok(Light::Green)));
+
+        // Green -> Yellow
+        let r2 = addr.ask(Input::<TrafficLight>(())).await.unwrap();
+        assert!(matches!(r2, TransitionResult::Ok(Light::Yellow)));
+
+        // Yellow -> Red
+        let r3 = addr.ask(Input::<TrafficLight>(())).await.unwrap();
+        assert!(matches!(r3, TransitionResult::Ok(Light::Red)));
+
+        // Full cycle: Red -> Green again
+        let r4 = addr.ask(Input::<TrafficLight>(())).await.unwrap();
+        assert!(matches!(r4, TransitionResult::Ok(Light::Green)));
+
+        // Verify final state via Get
+        let state = addr.ask(Get::<Light>(PhantomData)).await.unwrap();
+        assert_eq!(*state, Light::Green);
+
+        system.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fsm_on_enter_receives_correct_states() {
+        use std::sync::Mutex;
+
+        // FSM that records old/new states in on_enter
+        struct RecordingLight {
+            transitions: Arc<Mutex<Vec<(Light, Light)>>>,
+        }
+
+        impl StateMachine for RecordingLight {
+            type State = Light;
+            type Input = ();
+
+            fn transition(&self, state: &Light, _input: &()) -> Result<Light, String> {
+                match state {
+                    Light::Red => Ok(Light::Green),
+                    Light::Green => Ok(Light::Yellow),
+                    Light::Yellow => Ok(Light::Red),
+                }
+            }
+
+            fn on_enter(&mut self, old: &Light, new: &Light, _ctx: &mut Context<FsmActor<Self>>) {
+                self.transitions
+                    .lock()
+                    .unwrap()
+                    .push((old.clone(), new.clone()));
+            }
+        }
+
+        let system = System::new();
+        let transitions = Arc::new(Mutex::new(Vec::new()));
+        let addr = system.spawn(FsmActor::new(
+            RecordingLight {
+                transitions: transitions.clone(),
+            },
+            Light::Red,
+        ));
+
+        // Red -> Green -> Yellow
+        addr.ask(Input::<RecordingLight>(())).await.unwrap();
+        addr.ask(Input::<RecordingLight>(())).await.unwrap();
+
+        let recorded = transitions.lock().unwrap();
+        assert_eq!(recorded.len(), 2);
+        assert_eq!(recorded[0], (Light::Red, Light::Green));
+        assert_eq!(recorded[1], (Light::Green, Light::Yellow));
+
+        system.shutdown().await;
+    }
 }

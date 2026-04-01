@@ -3574,3 +3574,375 @@ fn revoke_permission_from_peer_without_permissions() {
     // No crash, no entry created.
     assert!(!state.peer_permissions.contains_key(&alice));
 }
+
+// ── ServerState::new defaults ───────────────────────────────────────────
+
+#[test]
+fn server_state_new_defaults() {
+    let (state, owner) = test_state();
+    assert!(state.channels.is_empty());
+    assert!(state.roles.is_empty());
+    assert!(state.messages.is_empty());
+    assert!(state.profiles.is_empty());
+    assert!(state.description.is_empty());
+    assert!(state.channel_keys.is_empty());
+    assert!(state.peer_permissions.is_empty());
+    assert!(state.seen_event_ids.is_empty());
+    assert_eq!(state.members.len(), 1);
+    assert!(state.members.contains_key(&owner));
+}
+
+// ── has_permission does not check roles ─────────────────────────────────
+
+#[test]
+fn has_permission_ignores_role_based_permissions() {
+    let (mut state, owner) = test_state();
+    let alice = Identity::generate().endpoint_id();
+
+    // Add alice as a member.
+    let grant = event(
+        &state,
+        "e0",
+        owner,
+        EventKind::GrantPermission {
+            peer_id: alice,
+            permission: Permission::ManageRoles,
+        },
+    );
+    assert_eq!(apply(&mut state, &grant), ApplyResult::Applied);
+
+    // Create a role with ManageChannels permission string.
+    let create_role = event(
+        &state,
+        "e1",
+        owner,
+        EventKind::CreateRole {
+            name: "ChannelAdmin".into(),
+            role_id: "role1".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &create_role), ApplyResult::Applied);
+
+    let set_perm = event(
+        &state,
+        "e2",
+        owner,
+        EventKind::SetPermission {
+            role_id: "role1".into(),
+            permission: "ManageChannels".into(),
+            granted: true,
+        },
+    );
+    assert_eq!(apply(&mut state, &set_perm), ApplyResult::Applied);
+
+    // Assign the role to alice.
+    let assign = event(
+        &state,
+        "e3",
+        owner,
+        EventKind::AssignRole {
+            peer_id: alice,
+            role_id: "role1".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &assign), ApplyResult::Applied);
+    assert!(state.members[&alice].roles.contains("role1"));
+
+    // has_permission only checks peer_permissions, not role permissions.
+    // alice has ManageRoles (from grant) but NOT ManageChannels (only via role).
+    assert!(state.has_permission(&alice, &Permission::ManageRoles));
+    assert!(!state.has_permission(&alice, &Permission::ManageChannels));
+}
+
+// ── seen_event_ids excluded from hash ───────────────────────────────────
+
+#[test]
+fn seen_event_ids_do_not_affect_hash() {
+    let (mut state_a, _owner) = test_state();
+    let (state_b, _) = test_state();
+    // Both states are freshly created with same params from test_state,
+    // but test_state generates different owners each time. Create manually.
+    let owner = Identity::generate().endpoint_id();
+    let mut a = ServerState::new("server-1", "Test", owner);
+    let b = ServerState::new("server-1", "Test", owner);
+
+    a.seen_event_ids.insert("evt-1".into());
+    a.seen_event_ids.insert("evt-2".into());
+    a.seen_event_ids.insert("evt-3".into());
+
+    assert_eq!(a.hash(), b.hash());
+}
+
+// ── Merge edge cases ────────────────────────────────────────────────────
+
+#[test]
+fn merge_empty_our_events() {
+    let owner = Identity::generate().endpoint_id();
+    let common = ServerState::new("s1", "Test", owner);
+    let common_hash = common.hash();
+
+    let their = vec![Event {
+        id: "e1".into(),
+        parent_hash: common_hash,
+        author: owner,
+        timestamp_ms: 100,
+        kind: EventKind::CreateChannel {
+            name: "alpha".into(),
+            channel_id: "ch-a".into(),
+            kind: "text".to_string(),
+        },
+    }];
+
+    let (merged, events) = merge(&[], &their, &common);
+    assert_eq!(events.len(), 1);
+    assert!(merged.channels.contains_key("ch-a"));
+}
+
+#[test]
+fn merge_both_empty_events() {
+    let owner = Identity::generate().endpoint_id();
+    let common = ServerState::new("s1", "Test", owner);
+
+    let (merged, events) = merge(&[], &[], &common);
+    assert!(events.is_empty());
+    assert_eq!(merged.hash(), common.hash());
+}
+
+#[test]
+fn merge_duplicate_event_ids_across_logs() {
+    let owner = Identity::generate().endpoint_id();
+    let common = ServerState::new("s1", "Test", owner);
+    let common_hash = common.hash();
+
+    // Same event ID in both logs but with different content.
+    let our_evt = Event {
+        id: "shared-id".into(),
+        parent_hash: common_hash.clone(),
+        author: owner,
+        timestamp_ms: 100,
+        kind: EventKind::CreateChannel {
+            name: "from-our".into(),
+            channel_id: "ch-our".into(),
+            kind: "text".to_string(),
+        },
+    };
+    let their_evt = Event {
+        id: "shared-id".into(),
+        parent_hash: common_hash,
+        author: owner,
+        timestamp_ms: 200,
+        kind: EventKind::CreateChannel {
+            name: "from-their".into(),
+            channel_id: "ch-their".into(),
+            kind: "text".to_string(),
+        },
+    };
+
+    let (merged, events) = merge(&[our_evt], &[their_evt], &common);
+    // Deduplicated: only one event with this ID.
+    assert_eq!(events.len(), 1);
+    // Our event wins (first seen in chain).
+    assert_eq!(events[0].id, "shared-id");
+    assert!(merged.channels.contains_key("ch-our"));
+    assert!(!merged.channels.contains_key("ch-their"));
+}
+
+#[test]
+fn find_common_ancestor_empty_our_events() {
+    use crate::merge::find_common_ancestor;
+
+    let owner = Identity::generate().endpoint_id();
+    let their = vec![Event {
+        id: "e1".into(),
+        parent_hash: StateHash::ZERO,
+        author: owner,
+        timestamp_ms: 100,
+        kind: EventKind::CreateChannel {
+            name: "a".into(),
+            channel_id: "ch1".into(),
+            kind: "text".to_string(),
+        },
+    }];
+
+    // Empty our events — no common ancestor found.
+    let ancestor = find_common_ancestor(&[], &their);
+    assert_eq!(ancestor, None);
+}
+
+#[test]
+fn find_common_ancestor_both_empty() {
+    use crate::merge::find_common_ancestor;
+    let ancestor = find_common_ancestor(&[], &[]);
+    assert_eq!(ancestor, None);
+}
+
+// ── events_since with nonexistent hash ──────────────────────────────────
+
+#[test]
+fn event_store_events_since_nonexistent_hash() {
+    let mut store = InMemoryStore::new();
+    let owner = Identity::generate().endpoint_id();
+
+    store.append(Event {
+        id: "e1".into(),
+        parent_hash: StateHash::ZERO,
+        author: owner,
+        timestamp_ms: 1000,
+        kind: EventKind::CreateChannel {
+            name: "a".into(),
+            channel_id: "ch1".into(),
+            kind: "text".to_string(),
+        },
+    });
+
+    // Hash that doesn't match any event's parent_hash.
+    let nonexistent = StateHash::from_bytes(b"does-not-exist");
+    let result = store.events_since(&nonexistent);
+    assert!(result.is_empty());
+}
+
+// ── Event store ordering ────────────────────────────────────────────────
+
+#[test]
+fn event_store_preserves_insertion_order() {
+    let mut store = InMemoryStore::new();
+    let owner = Identity::generate().endpoint_id();
+
+    for i in 0..5 {
+        store.append(Event {
+            id: format!("e{i}"),
+            parent_hash: StateHash::from_bytes(format!("hash-{i}").as_bytes()),
+            author: owner,
+            timestamp_ms: i * 1000,
+            kind: EventKind::CreateChannel {
+                name: format!("ch-{i}"),
+                channel_id: format!("chid-{i}"),
+                kind: "text".to_string(),
+            },
+        });
+    }
+
+    let all = store.all_events();
+    assert_eq!(all.len(), 5);
+    for (i, event) in all.iter().enumerate() {
+        assert_eq!(event.id, format!("e{i}"));
+    }
+}
+
+// ── apply_lenient skips parent hash check ───────────────────────────────
+
+#[test]
+fn apply_lenient_accepts_wrong_parent_hash() {
+    let (mut state, owner) = test_state();
+
+    // Wrong parent hash — strict apply would reject.
+    let evt = Event {
+        id: "e1".into(),
+        parent_hash: StateHash::from_bytes(b"wrong"),
+        author: owner,
+        timestamp_ms: 1000,
+        kind: EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: "ch1".into(),
+            kind: "text".to_string(),
+        },
+    };
+
+    // Strict apply rejects.
+    assert_eq!(apply(&mut state, &evt), ApplyResult::ParentHashMismatch);
+
+    // Lenient apply accepts.
+    assert_eq!(apply_lenient(&mut state, &evt), ApplyResult::Applied);
+    assert!(state.channels.contains_key("ch1"));
+}
+
+// ── Non-owner rename/description rejection details ──────────────────────
+
+#[test]
+fn non_owner_set_profile_is_accepted() {
+    let (mut state, _owner) = test_state();
+    let stranger = Identity::generate().endpoint_id();
+
+    // Any peer can set their own profile.
+    let evt = event(
+        &state,
+        "e1",
+        stranger,
+        EventKind::SetProfile {
+            display_name: "Stranger".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &evt), ApplyResult::Applied);
+    assert_eq!(state.profiles[&stranger].display_name, "Stranger");
+}
+
+// ── Delete channel also removes channel_keys ────────────────────────────
+
+#[test]
+fn delete_channel_messages_not_from_other_channels() {
+    let (mut state, owner) = test_state();
+
+    // Create two channels.
+    let ch1 = event(
+        &state,
+        "e0",
+        owner,
+        EventKind::CreateChannel {
+            name: "ch1".into(),
+            channel_id: "ch1".into(),
+            kind: "text".to_string(),
+        },
+    );
+    assert_eq!(apply(&mut state, &ch1), ApplyResult::Applied);
+
+    let ch2 = event(
+        &state,
+        "e1",
+        owner,
+        EventKind::CreateChannel {
+            name: "ch2".into(),
+            channel_id: "ch2".into(),
+            kind: "text".to_string(),
+        },
+    );
+    assert_eq!(apply(&mut state, &ch2), ApplyResult::Applied);
+
+    // Send messages in both.
+    let msg1 = event(
+        &state,
+        "msg1",
+        owner,
+        EventKind::Message {
+            channel_id: "ch1".into(),
+            body: "in ch1".into(),
+            reply_to: None,
+        },
+    );
+    assert_eq!(apply(&mut state, &msg1), ApplyResult::Applied);
+
+    let msg2 = event(
+        &state,
+        "msg2",
+        owner,
+        EventKind::Message {
+            channel_id: "ch2".into(),
+            body: "in ch2".into(),
+            reply_to: None,
+        },
+    );
+    assert_eq!(apply(&mut state, &msg2), ApplyResult::Applied);
+    assert_eq!(state.messages.len(), 2);
+
+    // Delete ch1 — only ch1 messages removed.
+    let del = event(
+        &state,
+        "e2",
+        owner,
+        EventKind::DeleteChannel {
+            channel_id: "ch1".into(),
+        },
+    );
+    assert_eq!(apply(&mut state, &del), ApplyResult::Applied);
+    assert_eq!(state.messages.len(), 1);
+    assert_eq!(state.messages[0].channel_id, "ch2");
+}

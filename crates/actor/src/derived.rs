@@ -370,6 +370,52 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_multi_source_tuple4() {
+        let system = System::new();
+        let s1 = system.spawn(StateActor::new(1u32));
+        let s2 = system.spawn(StateActor::new(2u32));
+        let s3 = system.spawn(StateActor::new(3u32));
+        let s4 = system.spawn(StateActor::new(4u32));
+        let d = derived(
+            &system.handle(),
+            (
+                StateRef::from(&s1),
+                StateRef::from(&s2),
+                StateRef::from(&s3),
+                StateRef::from(&s4),
+            ),
+            |(a, b, c, d): &(Arc<u32>, Arc<u32>, Arc<u32>, Arc<u32>)| **a + **b + **c + **d,
+        );
+        runtime::sleep(Duration::from_millis(50)).await;
+        assert_eq!(*d.get().await, 10);
+        system.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_notifies_on_value_change() {
+        let system = System::new();
+        let state = system.spawn(StateActor::new(5u32));
+        let state_ref = StateRef::from(&state);
+        let count = Arc::new(AtomicU32::new(0));
+        let d = derived(&system.handle(), state_ref, |snap: &Arc<u32>| **snap * 2);
+        runtime::sleep(Duration::from_millis(50)).await;
+
+        let counter = system.spawn(NotifyCounter {
+            count: count.clone(),
+        });
+        d.subscribe(counter.into());
+
+        // Change value so derived changes: 5*2=10 -> 10*2=20
+        state.ask(crate::state::Set(10u32)).await.unwrap();
+        runtime::sleep(Duration::from_millis(100)).await;
+        assert!(
+            count.load(Ordering::SeqCst) >= 1,
+            "subscriber should be notified when derived value changes"
+        );
+        system.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn derived_chain() {
         let system = System::new();
         let state = system.spawn(StateActor::new(5u32));

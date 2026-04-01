@@ -177,6 +177,39 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn pool_ask_dead_worker_returns_error() {
+        let system = System::new();
+        let calls = Arc::new(AtomicU32::new(0));
+        let mut pool = Pool::new(
+            &system.handle(),
+            Worker {
+                id: 0,
+                calls: calls.clone(),
+            },
+            2,
+        );
+
+        system.shutdown().await;
+        let result = pool.ask(GetId).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[should_panic(expected = "pool size must be at least 1")]
+    async fn pool_zero_size_panics() {
+        let system = System::new();
+        let calls = Arc::new(AtomicU32::new(0));
+        let _pool = Pool::new(
+            &system.handle(),
+            Worker {
+                id: 0,
+                calls: calls.clone(),
+            },
+            0,
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn pool_size_one() {
         let system = System::new();
