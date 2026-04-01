@@ -195,6 +195,12 @@ pub struct ClientHandle<N: willow_network::Network> {
     pub(crate) persistence_enabled: bool,
     /// Active join links (rarely modified, shared across tasks).
     pub(crate) join_links: Arc<std::sync::Mutex<Vec<ops::JoinLink>>>,
+
+    // ── New reactive API (spec target) ──────────────────────────────────
+    /// Reactive view handle — read state at any granularity.
+    pub(crate) view_handle: views::ClientViewHandle,
+    /// Typed mutation interface — write state via domain actors.
+    pub(crate) mutation_handle: mutations::ClientMutations<N>,
 }
 
 impl<N: willow_network::Network> Clone for ClientHandle<N> {
@@ -216,7 +222,21 @@ impl<N: willow_network::Network> Clone for ClientHandle<N> {
             hlc: Arc::clone(&self.hlc),
             persistence_enabled: self.persistence_enabled,
             join_links: Arc::clone(&self.join_links),
+            view_handle: self.view_handle.clone(),
+            mutation_handle: self.mutation_handle.clone(),
         }
+    }
+}
+
+impl<N: willow_network::Network> ClientHandle<N> {
+    /// Access reactive state views at any granularity.
+    pub fn views(&self) -> &views::ClientViewHandle {
+        &self.view_handle
+    }
+
+    /// Access the typed mutation interface.
+    pub fn mutations(&self) -> &mutations::ClientMutations<N> {
+        &self.mutation_handle
     }
 }
 
@@ -565,6 +585,121 @@ impl<N: willow_network::Network> ClientHandle<N> {
             });
         }
         let hlc = Arc::new(std::sync::Mutex::new(willow_messaging::hlc::HLC::new()));
+        let topics: Arc<RwLock<HashMap<String, N::Topic>>> = Arc::new(RwLock::new(HashMap::new()));
+        let join_links = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        // Build StateRefs for derived actor sources.
+        let event_ref = willow_actor::state::StateRef::from(&event_state_addr);
+        let registry_ref = willow_actor::state::StateRef::from(&server_registry_addr);
+        let chat_ref = willow_actor::state::StateRef::from(&chat_meta_addr);
+        let profile_ref = willow_actor::state::StateRef::from(&profile_state_addr);
+        let network_ref = willow_actor::state::StateRef::from(&network_meta_addr);
+        let voice_ref = willow_actor::state::StateRef::from(&voice_state_addr);
+
+        // Spawn Layer 2 derived view actors.
+        let local_pid = identity_clone.endpoint_id();
+        let messages_view = willow_actor::derived(
+            &system.handle(),
+            (event_ref.clone(), registry_ref.clone(), chat_ref.clone(), profile_ref.clone()),
+            move |(es, reg, chat, prof)| {
+                views::compute_messages_view(es, reg, chat, prof, local_pid)
+            },
+        );
+        let local_pid2 = identity_clone.endpoint_id();
+        let members_view = willow_actor::derived(
+            &system.handle(),
+            (event_ref.clone(), chat_ref.clone(), profile_ref.clone()),
+            move |(es, chat, prof)| {
+                views::compute_members_view(es, chat, prof, local_pid2)
+            },
+        );
+        let channels_view = willow_actor::derived(
+            &system.handle(),
+            (event_ref.clone(), registry_ref.clone()),
+            |(es, reg)| views::compute_channels_view(es, reg),
+        );
+        let unread_view = willow_actor::derived(
+            &system.handle(),
+            registry_ref.clone(),
+            |reg| views::compute_unread_view(reg),
+        );
+        let roles_view = willow_actor::derived(
+            &system.handle(),
+            event_ref.clone(),
+            |es| views::compute_roles_view(es),
+        );
+        let connection_view = willow_actor::derived(
+            &system.handle(),
+            (network_ref.clone(), chat_ref.clone()),
+            |(net, chat)| views::compute_connection_view(net, chat),
+        );
+
+        // Spawn Layer 3 grouped view actors.
+        let chat_views = willow_actor::derived(
+            &system.handle(),
+            (messages_view.clone(), channels_view.clone(), unread_view.clone()),
+            |(msgs, channels, unread)| views::ChatViews {
+                messages: (**msgs).clone(),
+                channels: (**channels).clone(),
+                unread: (**unread).clone(),
+            },
+        );
+        let social_views = willow_actor::derived(
+            &system.handle(),
+            (members_view.clone(), roles_view.clone(), connection_view.clone()),
+            |(members, roles, conn)| views::SocialViews {
+                members: (**members).clone(),
+                roles: (**roles).clone(),
+                connection: (**conn).clone(),
+            },
+        );
+        // Terminal ClientView.
+        let client_view = willow_actor::derived(
+            &system.handle(),
+            (chat_views, social_views, voice_ref.clone()),
+            |(chat, social, voice)| {
+                views::ClientView {
+                    chat: (**chat).clone(),
+                    social: (**social).clone(),
+                    voice: (**voice).clone(),
+                    server_name: None,
+                    server_owner: None,
+                    current_channel: String::new(),
+                }
+            },
+        );
+
+        // Bundle into handles.
+        let view_handle = views::ClientViewHandle {
+            view: client_view,
+            messages: messages_view,
+            members: members_view,
+            channels: channels_view,
+            unread: unread_view,
+            roles: roles_view,
+            connection: connection_view,
+            event_state: event_ref,
+            server_registry: registry_ref,
+            chat_meta: chat_ref,
+            profiles: profile_ref,
+            network: network_ref,
+            voice: voice_ref,
+        };
+
+        let mutation_handle = mutations::ClientMutations {
+            event_state: event_state_addr.clone(),
+            server_registry: server_registry_addr.clone(),
+            chat_meta: chat_meta_addr.clone(),
+            profiles: profile_state_addr.clone(),
+            network: network_meta_addr.clone(),
+            voice: voice_state_addr.clone(),
+            event_broker: event_broker.clone(),
+            persistence: persistence_addr.clone(),
+            identity: identity_clone.clone(),
+            hlc: Arc::clone(&hlc),
+            join_links: Arc::clone(&join_links),
+            topics: Arc::clone(&topics),
+        };
 
         let mut shared_state = SharedState {
             state,
@@ -595,7 +730,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             state_addr,
             system: system.handle(),
             network: None,
-            topics: Arc::new(RwLock::new(HashMap::new())),
+            topics,
             event_broker,
             identity: identity_clone,
             event_state_addr,
@@ -607,7 +742,9 @@ impl<N: willow_network::Network> ClientHandle<N> {
             persistence_addr,
             hlc,
             persistence_enabled,
-            join_links: Arc::new(std::sync::Mutex::new(Vec::new())),
+            join_links,
+            view_handle,
+            mutation_handle,
         };
 
         // reconcile_topic_map called above before spawning actor
@@ -1182,6 +1319,69 @@ pub(crate) fn test_client() -> (
     let persistence_addr = sys.spawn(persistence_actor::PersistenceActor::new(false));
     let event_broker = sys.spawn(willow_actor::Broker::<ClientEvent>::new());
     let hlc = Arc::new(std::sync::Mutex::new(willow_messaging::hlc::HLC::new()));
+    let topics: Arc<RwLock<HashMap<String, <willow_network::mem::MemNetwork as willow_network::Network>::Topic>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+    let join_links = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    // Build StateRefs and derived views.
+    let event_ref = willow_actor::state::StateRef::from(&event_state_addr);
+    let registry_ref = willow_actor::state::StateRef::from(&server_registry_addr);
+    let chat_ref = willow_actor::state::StateRef::from(&chat_meta_addr);
+    let profile_ref = willow_actor::state::StateRef::from(&profile_state_addr);
+    let network_ref = willow_actor::state::StateRef::from(&network_meta_addr);
+    let voice_ref = willow_actor::state::StateRef::from(&voice_state_addr);
+    let sh = sys.handle();
+
+    let local_pid = identity_clone.endpoint_id();
+    let messages_view = willow_actor::derived(
+        &sh, (event_ref.clone(), registry_ref.clone(), chat_ref.clone(), profile_ref.clone()),
+        move |(es, reg, chat, prof)| views::compute_messages_view(es, reg, chat, prof, local_pid),
+    );
+    let local_pid2 = identity_clone.endpoint_id();
+    let members_view = willow_actor::derived(
+        &sh, (event_ref.clone(), chat_ref.clone(), profile_ref.clone()),
+        move |(es, chat, prof)| views::compute_members_view(es, chat, prof, local_pid2),
+    );
+    let channels_view = willow_actor::derived(
+        &sh, (event_ref.clone(), registry_ref.clone()),
+        |(es, reg)| views::compute_channels_view(es, reg),
+    );
+    let unread_view = willow_actor::derived(&sh, registry_ref.clone(), |reg| views::compute_unread_view(reg));
+    let roles_view = willow_actor::derived(&sh, event_ref.clone(), |es| views::compute_roles_view(es));
+    let connection_view = willow_actor::derived(
+        &sh, (network_ref.clone(), chat_ref.clone()),
+        |(net, chat)| views::compute_connection_view(net, chat),
+    );
+    let chat_views = willow_actor::derived(
+        &sh, (messages_view.clone(), channels_view.clone(), unread_view.clone()),
+        |(m, c, u)| views::ChatViews { messages: (**m).clone(), channels: (**c).clone(), unread: (**u).clone() },
+    );
+    let social_views = willow_actor::derived(
+        &sh, (members_view.clone(), roles_view.clone(), connection_view.clone()),
+        |(m, r, c)| views::SocialViews { members: (**m).clone(), roles: (**r).clone(), connection: (**c).clone() },
+    );
+    let client_view = willow_actor::derived(
+        &sh, (chat_views, social_views, voice_ref.clone()),
+        |(c, s, v)| views::ClientView {
+            chat: (**c).clone(), social: (**s).clone(), voice: (**v).clone(),
+            server_name: None, server_owner: None, current_channel: String::new(),
+        },
+    );
+
+    let view_handle = views::ClientViewHandle {
+        view: client_view, messages: messages_view, members: members_view,
+        channels: channels_view, unread: unread_view, roles: roles_view,
+        connection: connection_view, event_state: event_ref, server_registry: registry_ref,
+        chat_meta: chat_ref, profiles: profile_ref, network: network_ref, voice: voice_ref,
+    };
+    let mutation_handle = mutations::ClientMutations {
+        event_state: event_state_addr.clone(), server_registry: server_registry_addr.clone(),
+        chat_meta: chat_meta_addr.clone(), profiles: profile_state_addr.clone(),
+        network: network_meta_addr.clone(), voice: voice_state_addr.clone(),
+        event_broker: event_broker.clone(), persistence: persistence_addr.clone(),
+        identity: identity_clone.clone(), hlc: Arc::clone(&hlc),
+        join_links: Arc::clone(&join_links), topics: Arc::clone(&topics),
+    };
 
     let shared_state = SharedState {
         state,
@@ -1207,7 +1407,6 @@ pub(crate) fn test_client() -> (
         dirty: false,
         subscribers: Vec::new(),
     });
-    let sh = sys.handle();
     // Leak the system so actors stay alive for the test duration.
     std::mem::forget(sys);
 
@@ -1215,7 +1414,7 @@ pub(crate) fn test_client() -> (
         state_addr: sa,
         system: sh,
         network: None,
-        topics: Arc::new(RwLock::new(HashMap::new())),
+        topics,
         event_broker: event_broker.clone(),
         identity: identity_clone,
         event_state_addr,
@@ -1227,7 +1426,9 @@ pub(crate) fn test_client() -> (
         persistence_addr,
         hlc,
         persistence_enabled: false,
-        join_links: Arc::new(std::sync::Mutex::new(Vec::new())),
+        join_links,
+        view_handle,
+        mutation_handle,
     };
 
     (client, event_broker)
