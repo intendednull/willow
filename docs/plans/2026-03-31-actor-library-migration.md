@@ -212,7 +212,7 @@ All phases are sequential. Each produces a compilable codebase.
 - `crates/client/src/views.rs` — derived view types, compute functions, `ClientViewHandle`
 - `crates/client/src/mutations.rs` — `ClientMutations` handle
 - `crates/client/src/persistence_actor.rs` — auto-persisting actor (subscribes to StateRefs)
-- `crates/web/src/state_bridge.rs` — `StateRef` → Leptos signal bridge
+- `crates/web/src/state_bridge.rs` — `StateRef` → Leptos signal bridge (renamed from `derived.rs`)
 
 Note: `EventReceiver` is defined as a module within `lib.rs`, not a separate file.
 
@@ -230,7 +230,7 @@ Note: `EventReceiver` is defined as a module within `lib.rs`, not a separate fil
 - `crates/client/src/listeners.rs` — receives `ClientMutations`, calls typed methods
 - `crates/client/src/state.rs` — remove `SharedState`, `ClientState`, `ServerContext`
 - `crates/client/src/events.rs` — `impl Message for ClientEvent`
-- `crates/web/src/derived.rs` — deleted
+- `crates/web/src/derived.rs` — renamed to `state_bridge.rs`, rewritten to use `StateRef`
 - `crates/web/src/state.rs` — simplified `wire_derived_signals()`
 - `crates/web/src/app.rs` — uses `views()` + `mutations()`
 

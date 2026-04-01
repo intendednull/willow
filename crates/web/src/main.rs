@@ -1,6 +1,6 @@
 mod app;
 mod components;
-pub mod derived;
+pub mod state_bridge;
 mod event_processing;
 mod handlers;
 #[allow(dead_code)]

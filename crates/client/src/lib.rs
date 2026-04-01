@@ -442,7 +442,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let identity_clone = identity.clone();
 
         // Spawn domain-specific state actors (Phase 2).
-        // Must happen BEFORE state is moved into SharedState.
+        // Spawn domain actors from initial state before it's consumed.
         let system = willow_actor::System::new();
         let event_state_addr = system.spawn(willow_actor::StateActor::new(state.event_state.clone()));
         let server_registry_addr = {
@@ -747,7 +747,7 @@ pub(crate) fn test_client() -> (
     let identity_clone = identity.clone();
     let sys = willow_actor::System::new();
 
-    // Spawn domain actors BEFORE state is moved into SharedState.
+    // Spawn domain actors from initial state before it's consumed.
     let event_state_addr = sys.spawn(willow_actor::StateActor::new(state.event_state.clone()));
     let mut registry = state_actors::ServerRegistry::default();
     for (id, ctx) in &state.servers {

@@ -457,6 +457,11 @@ impl ClientMutations {
 
 ### Server mutations
 
+Methods that need cross-domain coordination (e.g. `create_server` which
+touches ServerRegistry + EventState + PersistenceActor) may live on
+`ClientHandle` and delegate to `ClientMutations` for the event-building
+and broadcasting parts. The interface below shows the logical grouping.
+
 ```rust
 impl ClientMutations {
     /// Create a new channel.

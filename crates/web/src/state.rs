@@ -389,7 +389,7 @@ pub fn wire_derived_signals<N: willow_network::Network>(
     write: &AppWriteSignals,
 ) {
     let write = *write;
-    use crate::derived::derived_signal;
+    use crate::state_bridge::derived_signal;
     let views = handle.views();
 
     // ── Server-derived signals ──────────────────────────────────────

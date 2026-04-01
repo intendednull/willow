@@ -3,14 +3,11 @@
 //! Owns all `!Send` database resources (rusqlite connections) on a
 //! single-threaded mailbox.
 //!
-//! ## Current (Phase 1)
-//! Uses fire-and-forget write messages from callers.
-//!
-//! ## Target (Phase 3)
-//! Will subscribe to `Notify` on `StateRef<EventState>`,
-//! `StateRef<ServerRegistry>`, `StateRef<ProfileState>` and auto-persist
-//! snapshots on change. Only `PersistEvent` (event store appends) will
-//! remain as an explicit message — snapshot persistence becomes reactive.
+//! Currently uses fire-and-forget write messages for all persistence.
+//! The spec targets auto-persist via `Notify` subscriptions on
+//! `StateRef<EventState>`, `StateRef<ServerRegistry>`, `StateRef<ProfileState>`
+//! for snapshot persistence, with only `PersistEvent` (event store appends)
+//! remaining as an explicit message.
 
 use willow_actor::{Actor, Context, Handler, Message};
 
