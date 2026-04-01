@@ -788,7 +788,7 @@ Phase 2 (Tool + resource implementations)
     ↓
 Phase 3 (Notifications, E2E harness, first 15 E2E tests)
     ↓
-Phase 4 (Scopes, SSE/HTTP, justfile, 10+ more E2E tests)
+Phase 4 (Scopes, SSE/HTTP, justfile, 6 E2E + 3 scope tests)
 ```
 
 All phases are sequential. Each produces a compilable codebase that
