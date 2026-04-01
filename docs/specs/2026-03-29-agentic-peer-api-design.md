@@ -88,34 +88,50 @@ architecture** with three layers:
 
 **Layer 1 — Domain State Actors** (6 `StateActor<S>` instances):
 
-| Actor | State Type | Owns |
+| Actor | State Type | Fields |
 |---|---|---|
 | Event State | `ServerState` | Event-sourced channels, roles, members, messages, permissions |
-| Server Registry | `ServerRegistry` | Server list, active server, topic maps, channel keys, unread counts |
-| Chat Meta | `ChatMeta` | Current channel, online peers, message dedup IDs |
-| Profiles | `ProfileState` | EndpointId → display name mapping |
-| Network Meta | `NetworkMeta` | Connection status, typing indicators, state hash verification |
-| Voice State | `VoiceState` | Voice participants per channel, local mute/deafen |
+| Server Registry | `ServerRegistry` | `servers: HashMap<String, ServerEntry>`, `active_server: Option<String>` — each entry holds server, topic map, channel keys, unread counts |
+| Chat Meta | `ChatMeta` | `current_channel: String`, `peers: Vec<EndpointId>`, `seen_message_ids: HashSet<String>` |
+| Profiles | `ProfileState` | `names: HashMap<EndpointId, String>` |
+| Network Meta | `NetworkMeta` | `connected: bool`, `typing_peers: HashMap<EndpointId, (String, u64)>`, `last_typing_sent_ms`, `state_verification_results` |
+| Voice State | `VoiceState` | `participants: HashMap<String, HashSet<EndpointId>>`, `active_channel`, `muted`, `deafened` |
 
 Each actor holds its state as `Arc<S>` with copy-on-write mutations.
 Subscribers are notified only when state actually changes (`PartialEq`).
 
 **Layer 2 — Derived Views** (`DerivedActor` instances):
 Reactive computed views that subscribe to layer 1 actors and recompute
-automatically: `MessagesView`, `ChannelsView`, `MembersView`,
-`UnreadView`, `RolesView`, `ConnectionView`. These only recompute
-when their sources change, and only notify downstream if the computed
-value differs.
+automatically. Each is a pure function of its sources:
+
+| View | Sources | Produces |
+|---|---|---|
+| `MessagesView` | EventState, ServerRegistry, ChatMeta, ProfileState | `Vec<DisplayMessage>` for current channel |
+| `ChannelsView` | EventState, ServerRegistry | `Vec<ChannelInfo>` with name + kind |
+| `MembersView` | EventState, ChatMeta, ProfileState | `Vec<MemberInfo>` with online status |
+| `UnreadView` | ServerRegistry | `HashMap<String, usize>` per channel |
+| `RolesView` | EventState | `Vec<RoleEntry>` with permissions |
+| `ConnectionView` | NetworkMeta, ChatMeta | `connected`, `peer_count`, `typing_peers` |
+
+These only recompute when their sources change, and only notify
+downstream if the computed value differs (`PartialEq`).
 
 **Layer 3 — Composite Views**:
 `ChatViews`, `SocialViews`, and a terminal `ClientView` that groups
 everything into a single snapshot.
 
 **Access Surfaces**:
-- **`client.views()`** → `ClientViewHandle` with `StateRef<T>` handles
-  at every granularity (terminal view, individual views, raw state)
+- **`client.views()`** → `ClientViewHandle` with `StateRef<T>` handles:
+  - Terminal: `view` (`ClientView` — everything in one snapshot)
+  - Layer 2: `messages`, `members`, `channels`, `unread`, `roles`,
+    `connection` (individual derived views)
+  - Layer 1: `event_state`, `server_registry`, `chat_meta`, `profiles`,
+    `network`, `voice` (raw source state)
 - **`client.mutations()`** → `ClientMutations<N>` typed mutation
-  interface for all write operations
+  interface for event-sourced operations
+- **`ClientHandle` methods** → higher-level actions that coordinate
+  multiple actors (e.g., `kick_member`, `create_voice_channel`,
+  `set_permission`, `assign_role`, `share_file_inline`)
 - **`Broker<ClientEvent>`** → pub/sub event distribution
 - **`PersistenceActor`** → fire-and-forget database writes (owns
   non-Send rusqlite handles, single-threaded by actor guarantee)
@@ -160,8 +176,11 @@ resource fields that reference peers use this hex format.
 
 ### Tools
 
-Every method on `ClientMutations<N>` (accessed via
-`client.mutations()`) maps to an MCP tool. Tools are discoverable via
+Every mutating method on `ClientHandle<N>` maps to an MCP tool.
+Internally, `ClientHandle` delegates to `ClientMutations<N>` for
+event-sourced operations and directly to domain actors for operations
+that span multiple actors (e.g., `kick_member`, `create_voice_channel`,
+`set_permission`, `assign_role`). Tools are discoverable via
 `tools/list` and include full JSON Schema for params.
 
 #### Server Management
@@ -271,27 +290,28 @@ public keys.
 
 #### Static Resources (always available)
 
-| URI | Description | Returns |
+| URI | Backed By | Returns |
 |---|---|---|
-| `willow://identity` | Agent's endpoint ID and display name | `{ peer_id, display_name }` |
-| `willow://connection` | Network connection status | `{ connected, peer_count, peers }` |
-| `willow://servers` | List of joined servers | `[{ id, name }]` |
+| `willow://identity` | `Identity` + `ProfileState` | `{ peer_id, display_name }` |
+| `willow://connection` | `StateRef<ConnectionView>` | `{ connected, peer_count, typing_peers: [{ peer_id, channel }] }` |
+| `willow://servers` | `StateRef<ServerRegistry>` | `[{ id, name }]` |
 
 #### Dynamic Resources (per active server)
 
-| URI Template | Description | Returns |
+| URI Template | Backed By | Returns |
 |---|---|---|
-| `willow://server/current` | Active server info | `{ id, name, owner, description }` |
-| `willow://server/channels` | All channels with type | `[{ name, kind }]` |
-| `willow://server/members` | All members with status | `[{ peer_id, display_name, is_online }]` |
-| `willow://server/roles` | Roles with permissions | `[{ role_id, name, permissions }]` |
-| `willow://channel/{name}/messages` | Messages in channel | `[{ id, author, body, timestamp, edited, reply_to, reactions }]` |
-| `willow://channel/{name}/pins` | Pinned messages | `[{ id, author, body }]` |
-| `willow://server/unread` | Unread counts per channel | `{ channel: count }` |
-| `willow://server/join-links` | Active join links | `[{ id, max_uses, uses }]` |
-| `willow://server/state-agreement` | State hash consensus | `{ agreeing, total }` |
-| `willow://voice/status` | Voice channel state | `{ active_channel, muted, deafened }` |
-| `willow://voice/{channel}/participants` | Voice participants | `[{ peer_id }]` |
+| `willow://server/current` | `StateRef<ServerRegistry>` | `{ id, name, owner, description, display_name }` |
+| `willow://server/channels` | `StateRef<ChannelsView>` | `[{ name, kind }]` |
+| `willow://server/members` | `StateRef<MembersView>` | `[{ peer_id, display_name, is_online }]` |
+| `willow://server/roles` | `StateRef<RolesView>` | `[{ id, name, permissions }]` |
+| `willow://server/unread` | `StateRef<UnreadView>` | `{ channel: count }` |
+| `willow://server/join-links` | `join_links` accessor | `[{ id, max_uses, uses }]` |
+| `willow://server/state-agreement` | `NetworkMeta` | `{ agreeing, total }` |
+| `willow://channel/{name}/messages` | `StateRef<MessagesView>` (filtered) | `[{ id, author, body, timestamp, edited, reply_to, reactions }]` |
+| `willow://channel/{name}/pins` | `event_state` accessor | `[{ id, author, body }]` |
+| `willow://channel/{name}/typing` | `NetworkMeta` + accessor | `[{ peer_id, display_name }]` |
+| `willow://voice/status` | `StateRef<VoiceState>` | `{ active_channel, muted, deafened }` |
+| `willow://voice/{channel}/participants` | `StateRef<VoiceState>` | `[{ peer_id }]` |
 
 Resources support MCP's `resources/subscribe` for change notifications.
 Under the hood, the MCP server calls `StateRef<T>::subscribe()` on the
@@ -307,18 +327,11 @@ agent. This means:
 - **Granular subscriptions** — agents can subscribe to individual
   resources (just messages, just members) rather than getting firehosed
 
-Resource-to-view mapping:
-
-| Resource URI | Backed By |
-|---|---|
-| `willow://server/channels` | `StateRef<ChannelsView>` |
-| `willow://channel/{name}/messages` | `StateRef<MessagesView>` (filtered) |
-| `willow://server/members` | `StateRef<MembersView>` |
-| `willow://server/roles` | `StateRef<RolesView>` |
-| `willow://server/unread` | `StateRef<UnreadView>` |
-| `willow://connection` | `StateRef<ConnectionView>` |
-| `willow://voice/*` | `StateRef<VoiceState>` (layer 1 direct) |
-| `willow://identity`, `willow://servers` | `StateRef<ServerRegistry>` + `Identity` |
+The `Backed By` column in the resource tables above shows the exact
+`StateRef<T>` or accessor that powers each resource. Resources backed
+by a `StateRef` (derived views or layer 1 actors) support reactive
+subscriptions. Resources backed by plain accessors (e.g., join links,
+pinned messages) are polled on read.
 
 ### Notifications (Server → Client)
 
