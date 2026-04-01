@@ -83,11 +83,46 @@ processes enables:
 ### Internal Architecture
 
 The `willow-agent` binary owns a `ClientHandle<IrohNetwork>` backed by
-the `willow-actor` system. `ClientHandle<N>` is generic over the
-`Network` trait and communicates with a `ClientStateActor` for all state
-reads and mutations. All `ClientHandle` methods are async — they send
-messages to the actor and await responses. This maps naturally to the
-MCP request/response model.
+the `willow-actor` system. The client uses a **multi-actor reactive
+architecture** with three layers:
+
+**Layer 1 — Domain State Actors** (6 `StateActor<S>` instances):
+
+| Actor | State Type | Owns |
+|---|---|---|
+| Event State | `ServerState` | Event-sourced channels, roles, members, messages, permissions |
+| Server Registry | `ServerRegistry` | Server list, active server, topic maps, channel keys, unread counts |
+| Chat Meta | `ChatMeta` | Current channel, online peers, message dedup IDs |
+| Profiles | `ProfileState` | EndpointId → display name mapping |
+| Network Meta | `NetworkMeta` | Connection status, typing indicators, state hash verification |
+| Voice State | `VoiceState` | Voice participants per channel, local mute/deafen |
+
+Each actor holds its state as `Arc<S>` with copy-on-write mutations.
+Subscribers are notified only when state actually changes (`PartialEq`).
+
+**Layer 2 — Derived Views** (`DerivedActor` instances):
+Reactive computed views that subscribe to layer 1 actors and recompute
+automatically: `MessagesView`, `ChannelsView`, `MembersView`,
+`UnreadView`, `RolesView`, `ConnectionView`. These only recompute
+when their sources change, and only notify downstream if the computed
+value differs.
+
+**Layer 3 — Composite Views**:
+`ChatViews`, `SocialViews`, and a terminal `ClientView` that groups
+everything into a single snapshot.
+
+**Access Surfaces**:
+- **`client.views()`** → `ClientViewHandle` with `StateRef<T>` handles
+  at every granularity (terminal view, individual views, raw state)
+- **`client.mutations()`** → `ClientMutations<N>` typed mutation
+  interface for all write operations
+- **`Broker<ClientEvent>`** → pub/sub event distribution
+- **`PersistenceActor`** → fire-and-forget database writes (owns
+  non-Send rusqlite handles, single-threaded by actor guarantee)
+
+This maps naturally to MCP: `StateRef` subscriptions power resource
+change notifications, `ClientMutations` methods become tools, and
+`Broker<ClientEvent>` feeds MCP notifications.
 
 Peer identities use `EndpointId` (an Ed25519 public key from iroh),
 which displays as a 64-character hex string. All tool parameters and
@@ -96,7 +131,7 @@ resource fields that reference peers use this hex format.
 ### Components
 
 **1. `willow-agent` binary** (`crates/agent/`)
-- Owns a `ClientHandle<IrohNetwork>` connected to the actor system
+- Owns a `ClientHandle<IrohNetwork>` with its actor system
 - Runs an MCP server supporting all three transports:
   - **stdio** (default) — AI clients spawn the binary directly
   - **SSE** — `http://127.0.0.1:9100/sse` for network clients
@@ -125,8 +160,9 @@ resource fields that reference peers use this hex format.
 
 ### Tools
 
-Every mutating `ClientHandle` method maps to an MCP tool. Tools are
-discoverable via `tools/list` and include full JSON Schema for params.
+Every method on `ClientMutations<N>` (accessed via
+`client.mutations()`) maps to an MCP tool. Tools are discoverable via
+`tools/list` and include full JSON Schema for params.
 
 #### Server Management
 
@@ -223,8 +259,11 @@ Valid `permission` values: `SyncProvider`, `ManageChannels`,
 
 ### Resources
 
-Read-only state accessors are exposed as MCP resources. AI agents can
-read these via `resources/read` without needing to call tools.
+Read-only state is exposed as MCP resources via `client.views()`.
+Each resource maps to a `StateRef<T>` from the reactive view system.
+AI agents read resources via `resources/read`; the MCP server reads
+the underlying `StateRef` snapshot (cheap `Arc` clone, no computation
+on read).
 
 All `peer_id` and `author` fields in resource responses are
 `EndpointId` values — 64-character hex strings representing Ed25519
@@ -255,14 +294,38 @@ public keys.
 | `willow://voice/{channel}/participants` | Voice participants | `[{ peer_id }]` |
 
 Resources support MCP's `resources/subscribe` for change notifications.
-When underlying state changes (new message, member joins, channel
-created), the server emits `notifications/resources/updated` so agents
-can re-read the resource.
+Under the hood, the MCP server calls `StateRef<T>::subscribe()` on the
+backing view actor. When the `DerivedActor` recomputes and the value
+actually changes (`PartialEq` check), it sends a `Notify` message to
+the MCP server, which emits `notifications/resources/updated` to the
+agent. This means:
+
+- **No polling** — changes push from state actors through derived views
+  to the MCP transport automatically
+- **No spurious updates** — `PartialEq` at every layer ensures agents
+  only see real changes
+- **Granular subscriptions** — agents can subscribe to individual
+  resources (just messages, just members) rather than getting firehosed
+
+Resource-to-view mapping:
+
+| Resource URI | Backed By |
+|---|---|
+| `willow://server/channels` | `StateRef<ChannelsView>` |
+| `willow://channel/{name}/messages` | `StateRef<MessagesView>` (filtered) |
+| `willow://server/members` | `StateRef<MembersView>` |
+| `willow://server/roles` | `StateRef<RolesView>` |
+| `willow://server/unread` | `StateRef<UnreadView>` |
+| `willow://connection` | `StateRef<ConnectionView>` |
+| `willow://voice/*` | `StateRef<VoiceState>` (layer 1 direct) |
+| `willow://identity`, `willow://servers` | `StateRef<ServerRegistry>` + `Identity` |
 
 ### Notifications (Server → Client)
 
-`ClientEvent`s are forwarded as MCP notifications. Agents receive these
-automatically on stdio/SSE transports.
+`ClientEvent`s are distributed via `Broker<ClientEvent>`. The MCP
+server subscribes to the broker and forwards each event as an MCP
+notification. Agents receive these automatically on stdio/SSE
+transports. Dead subscriptions are auto-pruned by the broker.
 
 ```json
 {
@@ -301,8 +364,11 @@ All `ClientEvent` variants are forwarded:
 | `MessagePinned` | `channel`, `message_id` |
 | `MessageUnpinned` | `channel`, `message_id` |
 | `ServerDescriptionChanged` | `description` |
+| `FileAnnounced` | `channel`, `filename`, `size`, `from` |
+| `Listening` | `address` |
 | `VoiceJoined` | `channel_id`, `peer_id` |
 | `VoiceLeft` | `channel_id`, `peer_id` |
+| `VoiceSignal` | `channel_id`, `from_peer`, `signal` |
 | `JoinLinkResponse` | `invite_data` |
 | `JoinLinkDenied` | `reason` |
 
@@ -331,17 +397,20 @@ Options:
 
 1. Load or generate Ed25519 identity
 2. Start `willow-actor` system
-3. Create `ClientHandle<IrohNetwork>` with config (spawns
-   `ClientStateActor`)
+3. Create `ClientHandle<IrohNetwork>` with config — spawns all 6
+   domain state actors, derived view actors, persistence actor, and
+   event broker
 4. Call `client.connect(network)` — starts iroh node, subscribes to
    gossipsub topics, spawns topic listener tasks
 5. If `--invite`, accept it; if `--server`, switch to it
-6. Start MCP server on the selected transport:
+6. Subscribe MCP server to `Broker<ClientEvent>` for notifications
+7. Subscribe MCP server to relevant `StateRef<T>` views for resource
+   change detection
+8. Start MCP server on the selected transport:
    - **stdio**: read JSON-RPC from stdin, write to stdout (default)
    - **sse**: generate bearer token, start HTTP server with SSE endpoint
    - **http**: generate bearer token, start Streamable HTTP endpoint
-7. Forward `ClientEvent`s from the event channel as MCP notifications
-8. Block until stdin closes (stdio) or SIGTERM/SIGINT (sse/http)
+9. Block until stdin closes (stdio) or SIGTERM/SIGINT (sse/http)
 
 ### AI Client Configuration
 
@@ -543,7 +612,7 @@ Workers and agents serve different purposes:
 | **Identity** | Dedicated worker identity | Dedicated agent identity |
 | **Consumers** | Other peers (automatic) | External processes (AI, scripts) |
 | **Discovery** | `_willow_workers` heartbeats | MCP `tools/list` + `resources/list` |
-| **API** | `WorkerRequest`/`WorkerResponse` | Full `ClientHandle` via MCP |
+| **API** | `WorkerRequest`/`WorkerResponse` | `ClientMutations` + `ClientViewHandle` via MCP |
 | **Scaling** | Multiple per role | One agent process per identity |
 
 An agent process could optionally also register as a worker (e.g., a
@@ -691,134 +760,172 @@ peers over the actual network. Tests become:
 
 #### Test Harness: `AgentTestHarness`
 
-A Rust test helper that manages agent processes for multi-peer tests:
+Two complementary approaches:
+
+**1. In-process harness (fastest, for most tests)**
+
+Uses `ClientHandle<MemNetwork>` directly — no child processes, no
+real networking. The `MemNetwork` test double (already in
+`willow-network`) simulates gossipsub in memory. Tests exercise the
+full client stack (actors, views, mutations, persistence) without
+process or network overhead.
 
 ```rust
-/// Spawns `willow-agent` processes and provides typed MCP clients.
+/// In-process test peers using MemNetwork.
 struct AgentTestHarness {
-    relay: RelayHandle,
-    agents: Vec<AgentHandle>,
+    peers: Vec<TestPeer>,
+    system: SystemHandle,
 }
 
-struct AgentHandle {
-    /// Typed MCP client (from willow-agent-sdk) connected over stdio.
-    client: AgentClient,
-    /// The agent's EndpointId for use in trust/permission calls.
+struct TestPeer {
+    client: ClientHandle<MemNetwork>,
     endpoint_id: EndpointId,
-    /// Handle to the child process.
-    process: Child,
+    /// Subscribe to the view system for assertions.
+    views: ClientViewHandle,
+    /// Drive mutations.
+    mutations: ClientMutations<MemNetwork>,
 }
 
 impl AgentTestHarness {
-    /// Start a relay and N agent peers. First agent creates the server
-    /// and invites the others.
+    /// Create N in-process peers on a shared MemNetwork.
+    /// First peer creates the server and invites the rest.
     async fn start(n: usize) -> Self { ... }
 
-    /// Shut down all agents and relay.
     async fn teardown(self) { ... }
 }
 ```
 
-#### Example: Multi-Peer Message Delivery
+**2. Process-spawning harness (for MCP protocol + real network tests)**
+
+Spawns actual `willow-agent` binaries connected over iroh, and drives
+them via MCP over stdio. Tests the full MCP serialization path and
+real networking.
+
+```rust
+/// Spawns `willow-agent` processes and provides typed MCP clients.
+struct McpTestHarness {
+    relay: RelayHandle,
+    agents: Vec<McpAgentHandle>,
+}
+
+struct McpAgentHandle {
+    /// Typed MCP client (from willow-agent-sdk) connected over stdio.
+    client: AgentClient,
+    endpoint_id: EndpointId,
+    process: Child,
+}
+```
+
+Most tests should use the in-process harness (runs in ~5ms vs ~1-2s).
+The MCP process harness is for integration tests that specifically
+validate the MCP transport layer and real iroh networking.
+
+#### Example: Multi-Peer Message Delivery (in-process)
 
 ```rust
 #[tokio::test]
 async fn messages_delivered_to_all_peers() {
     let harness = AgentTestHarness::start(3).await;
-    let [alice, bob, carol] = &harness.agents[..] else { panic!() };
+    let [alice, bob, carol] = &harness.peers[..] else { panic!() };
 
-    // Alice sends a message.
-    alice.client.call_tool("send_message", json!({
-        "channel": "general",
-        "body": "hello everyone",
-    })).await.unwrap();
+    // Alice sends a message via the mutations interface.
+    alice.mutations.send_message("general", "hello everyone").await.unwrap();
 
-    // Bob and Carol receive it.
-    bob.client.wait_for_notification(|n| {
-        n.event_type == "MessageReceived" && !n.is_local
-    }).await;
-    carol.client.wait_for_notification(|n| {
-        n.event_type == "MessageReceived" && !n.is_local
-    }).await;
+    // Wait for gossipsub delivery via MemNetwork.
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Verify via resource reads.
-    let bob_msgs = bob.client.read_resource(
-        "willow://channel/general/messages"
-    ).await.unwrap();
-    assert_eq!(bob_msgs.last().unwrap().body, "hello everyone");
+    // Verify via reactive views — no polling needed.
+    let bob_msgs = bob.views.messages.get().await;
+    assert!(bob_msgs.messages.iter().any(|m| m.body == "hello everyone"));
+
+    let carol_msgs = carol.views.messages.get().await;
+    assert!(carol_msgs.messages.iter().any(|m| m.body == "hello everyone"));
 
     harness.teardown().await;
 }
 ```
 
-#### Example: Permission Enforcement
+#### Example: Permission Enforcement (in-process)
 
 ```rust
 #[tokio::test]
 async fn unprivileged_peer_cannot_create_channel() {
     let harness = AgentTestHarness::start(2).await;
-    let [owner, guest] = &harness.agents[..] else { panic!() };
+    let [owner, guest] = &harness.peers[..] else { panic!() };
 
     // Guest (not trusted) tries to create a channel.
-    let result = guest.client.call_tool("create_channel", json!({
-        "name": "secret",
-    })).await;
+    let result = guest.mutations.create_channel("secret").await;
 
     // Should fail — guest lacks ManageChannels permission.
     assert!(result.is_err());
 
-    // Verify channel was not created.
-    let channels = owner.client.read_resource(
-        "willow://server/channels"
-    ).await.unwrap();
-    assert!(!channels.iter().any(|c| c.name == "secret"));
+    // Verify channel was not created via owner's view.
+    let channels = owner.views.channels.get().await;
+    assert!(!channels.channels.iter().any(|c| c.name == "secret"));
 
     harness.teardown().await;
 }
 ```
 
-#### Example: State Convergence After Partition
+#### Example: State Convergence (in-process)
 
 ```rust
 #[tokio::test]
-async fn state_converges_after_reconnect() {
+async fn state_converges_after_concurrent_writes() {
     let harness = AgentTestHarness::start(2).await;
-    let [alice, bob] = &harness.agents[..] else { panic!() };
+    let [alice, bob] = &harness.peers[..] else { panic!() };
 
     // Both peers send messages concurrently.
     let (a, b) = tokio::join!(
-        alice.client.call_tool("send_message", json!({
-            "channel": "general", "body": "from alice",
-        })),
-        bob.client.call_tool("send_message", json!({
-            "channel": "general", "body": "from bob",
-        })),
+        alice.mutations.send_message("general", "from alice"),
+        bob.mutations.send_message("general", "from bob"),
     );
     a.unwrap();
     b.unwrap();
 
     // Wait for sync to settle.
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // Both peers should see both messages.
-    let alice_msgs = alice.client.read_resource(
-        "willow://channel/general/messages"
-    ).await.unwrap();
+    // Both peers should see both messages via their views.
+    let alice_msgs = alice.views.messages.get().await;
+    let bob_msgs = bob.views.messages.get().await;
+
+    assert_eq!(alice_msgs.messages.len(), bob_msgs.messages.len());
+    assert!(alice_msgs.messages.iter().any(|m| m.body == "from bob"));
+    assert!(bob_msgs.messages.iter().any(|m| m.body == "from alice"));
+
+    // Verify state hashes agree.
+    alice.mutations.verify_state().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (agreeing, total) = alice.client.state_hash_agreement().await;
+    assert_eq!(agreeing, total);
+
+    harness.teardown().await;
+}
+```
+
+#### Example: MCP Protocol Test (process-spawning)
+
+```rust
+#[tokio::test]
+async fn mcp_send_message_round_trip() {
+    let harness = McpTestHarness::start(2).await;
+    let [alice, bob] = &harness.agents[..] else { panic!() };
+
+    // Drive via MCP tool calls — validates full serialization path.
+    alice.client.call_tool("send_message", json!({
+        "channel": "general",
+        "body": "hello via MCP",
+    })).await.unwrap();
+
+    bob.client.wait_for_notification(|n| {
+        n.event_type == "MessageReceived" && !n.is_local
+    }).await;
+
     let bob_msgs = bob.client.read_resource(
         "willow://channel/general/messages"
     ).await.unwrap();
-
-    assert_eq!(alice_msgs.len(), bob_msgs.len());
-    assert!(alice_msgs.iter().any(|m| m.body == "from bob"));
-    assert!(bob_msgs.iter().any(|m| m.body == "from alice"));
-
-    // Verify state hashes agree.
-    alice.client.call_tool("verify_state", json!({})).await.unwrap();
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    let (agreeing, total) = alice.client.call_tool(
-        "state_hash_agreement", json!({})
-    ).await.unwrap();
-    assert_eq!(agreeing, total);
+    assert_eq!(bob_msgs.last().unwrap().body, "hello via MCP");
 
     harness.teardown().await;
 }
@@ -851,11 +958,15 @@ Playwright E2E tests:
 |---|---|---|---|---|
 | State tests | Pure event logic | ~1ms/test | No | No |
 | Client tests | Client API methods | ~5ms/test | No | No |
-| **MCP E2E tests** | **Multi-peer over real network** | **~1-2s/test** | **Yes (localhost)** | **No** |
+| **In-process E2E** | **Multi-peer via MemNetwork** | **~5-50ms/test** | **No (MemNetwork)** | **No** |
+| **MCP E2E tests** | **MCP protocol + real iroh** | **~1-2s/test** | **Yes (localhost)** | **No** |
 | Playwright E2E | Full UI + network | ~10-30s/test | Yes | Yes (browser) |
 
-MCP E2E tests should eventually cover most scenarios currently in
-Playwright, letting Playwright tests focus purely on UI rendering and
+The in-process harness should be the default for most multi-peer tests.
+It exercises the full actor stack (all 6 domain actors, derived views,
+mutations, persistence, event broker) without process spawning or real
+networking. MCP E2E tests validate the MCP serialization layer and
+real iroh transport. Playwright tests focus purely on UI rendering and
 interaction (click targets, responsive layout, visual state).
 
 #### Justfile Commands
