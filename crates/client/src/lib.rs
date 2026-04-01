@@ -27,6 +27,7 @@ pub mod files;
 pub mod invite;
 pub mod listeners;
 pub mod ops;
+pub mod mutations;
 pub mod persistence_actor;
 pub mod state;
 pub mod state_actors;
