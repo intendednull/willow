@@ -5,7 +5,11 @@
 
 use std::sync::Arc;
 
-use rmcp::{model::*, service::RequestContext, ErrorData, RoleServer, ServerHandler};
+use rmcp::{
+    model::*,
+    service::{Peer, RequestContext},
+    ErrorData, RoleServer, ServerHandler,
+};
 
 use crate::resources;
 use crate::scopes::TokenScope;
@@ -19,6 +23,8 @@ pub struct WillowMcpServer<N: Network> {
     pub(crate) client: Arc<ClientHandle<N>>,
     pub tool_router: tools::WillowToolRouter<N>,
     pub scope: TokenScope,
+    /// Ensures the notification bridge is started at most once per server instance.
+    notification_started: Arc<tokio::sync::OnceCell<()>>,
 }
 
 impl<N: Network> WillowMcpServer<N> {
@@ -30,6 +36,7 @@ impl<N: Network> WillowMcpServer<N> {
             client,
             tool_router,
             scope: TokenScope::default(),
+            notification_started: Arc::new(tokio::sync::OnceCell::new()),
         }
     }
 
@@ -41,7 +48,35 @@ impl<N: Network> WillowMcpServer<N> {
             client,
             tool_router,
             scope,
+            notification_started: Arc::new(tokio::sync::OnceCell::new()),
         }
+    }
+
+    /// Start the notification bridge if not already running. Subscribes to
+    /// `Broker<ClientEvent>` and forwards each event as a custom MCP notification.
+    pub(crate) fn ensure_notification_bridge(&self, peer: Peer<RoleServer>) {
+        let client = Arc::clone(&self.client);
+        let started = Arc::clone(&self.notification_started);
+        tokio::spawn(async move {
+            // Only start once per server instance.
+            let already = started
+                .get_or_init(|| async {
+                    let mut events = client.subscribe_events().await;
+                    let p = peer;
+                    tokio::spawn(async move {
+                        while let Some(event) = events.recv().await {
+                            let json = crate::notifications::event_to_json(&event);
+                            let notif = CustomNotification::new("willow/event", Some(json));
+                            if p.send_notification(notif.into()).await.is_err() {
+                                // Transport closed — stop forwarding.
+                                break;
+                            }
+                        }
+                    });
+                })
+                .await;
+            let _ = already;
+        });
     }
 }
 
@@ -67,8 +102,11 @@ impl<N: Network> ServerHandler for WillowMcpServer<N> {
     fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + Send + '_ {
+        // Start the notification bridge on the first request (list_tools is
+        // always the first method called by the client during initialization).
+        self.ensure_notification_bridge(context.peer);
         async {
             let tools = self
                 .tool_router
@@ -136,15 +174,21 @@ pub async fn serve_stdio<N: Network>(client: ClientHandle<N>) -> anyhow::Result<
     let server = WillowMcpServer::new(client);
     let transport = rmcp::transport::io::stdio();
     let service = rmcp::serve_server(server, transport).await?;
+    // The notification bridge is also started in list_tools (first handler
+    // called during init), but we start it here too as a safety net.
+    service
+        .service()
+        .ensure_notification_bridge(service.peer().clone());
     service.waiting().await?;
     Ok(())
 }
 
-/// Serve the MCP server over Streamable HTTP (SSE/JSON).
+/// Serve the MCP server over Streamable HTTP (SSE/JSON) with bearer token auth.
 pub async fn serve_http<N: Network + 'static>(
     client: ClientHandle<N>,
     bind: &str,
     scope: TokenScope,
+    token: String,
 ) -> anyhow::Result<()> {
     use rmcp::transport::streamable_http_server::{
         session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
@@ -159,13 +203,46 @@ pub async fn serve_http<N: Network + 'static>(
         config,
     );
 
-    let app = axum::Router::new().route_service("/mcp", service);
+    let app = axum::Router::new()
+        .route_service("/mcp", service)
+        .layer(axum::middleware::from_fn(move |req, next| {
+            let expected = token.clone();
+            bearer_auth_middleware(req, next, expected)
+        }));
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("MCP HTTP server listening on {bind}");
     axum::serve(listener, app).await?;
     Ok(())
 }
+
+/// Axum middleware that validates `Authorization: Bearer <token>` on every request.
+async fn bearer_auth_middleware(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+    expected_token: String,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+
+    let auth_header = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+
+    match auth_header {
+        Some(value) if value.starts_with("Bearer ") => {
+            let provided = &value["Bearer ".len()..];
+            if provided == expected_token {
+                next.run(req).await
+            } else {
+                (StatusCode::FORBIDDEN, "invalid bearer token").into_response()
+            }
+        }
+        _ => (StatusCode::UNAUTHORIZED, "missing bearer token").into_response(),
+    }
+}
+
+use axum::response::IntoResponse;
 
 #[cfg(test)]
 mod tests {

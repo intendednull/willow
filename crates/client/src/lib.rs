@@ -943,6 +943,23 @@ pub fn test_client() -> (
     (client, event_broker)
 }
 
+/// Create a test `ClientHandle` connected to a shared `MemHub`.
+///
+/// Unlike `test_client()`, multiple clients created with the same `hub`
+/// can exchange messages through the in-memory gossip mesh.
+#[cfg(any(test, feature = "test-utils"))]
+pub async fn test_client_on_hub(
+    hub: &std::sync::Arc<willow_network::mem::MemHub>,
+) -> (
+    ClientHandle<willow_network::mem::MemNetwork>,
+    willow_actor::Addr<willow_actor::Broker<ClientEvent>>,
+) {
+    let (mut client, broker) = test_client();
+    let network = willow_network::mem::MemNetwork::new(hub);
+    client.connect(network).await;
+    (client, broker)
+}
+
 #[cfg(test)]
 mod tests {
     // 5 tests temporarily disabled during Arc<RwLock> → actor migration.

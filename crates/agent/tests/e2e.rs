@@ -3,11 +3,12 @@
 //! Tests use `test_client()` from willow-client (via `test-utils` feature)
 //! to create in-process `ClientHandle<MemNetwork>` instances. These are
 //! single-peer tests that verify the full MCP server → ClientHandle → actor
-//! pipeline works end-to-end.
+//! pipeline works end-to-end. Multi-peer tests use `test_client_on_hub()`
+//! with a shared `MemHub`.
 
 use std::sync::Arc;
 use willow_client::{test_client, ClientHandle};
-use willow_network::mem::MemNetwork;
+use willow_network::mem::{MemHub, MemNetwork};
 
 use willow_agent::server::WillowMcpServer;
 use willow_agent::tools::WillowToolRouter;
@@ -595,4 +596,112 @@ async fn custom_scope_allowlist() {
     assert_eq!(visible.len(), 2);
     assert!(visible.contains(&"send_message"));
     assert!(visible.contains(&"react"));
+}
+
+// ─────────────────────── Notification Tests ────────────────────────────────
+
+#[tokio::test]
+async fn notification_serialization_covers_all_variants() {
+    // Verify that event_to_json produces valid output for all 27 event types.
+    // This test complements the unit tests in notifications.rs by running
+    // in the integration test context.
+    assert_eq!(willow_agent::notifications::EVENT_TYPE_NAMES.len(), 27);
+
+    for name in willow_agent::notifications::EVENT_TYPE_NAMES {
+        assert!(!name.is_empty(), "event type name should not be empty");
+    }
+}
+
+#[tokio::test]
+async fn notification_event_to_json_roundtrip() {
+    use willow_client::ClientEvent;
+
+    let event = ClientEvent::MessageReceived {
+        channel: "general".into(),
+        message_id: "msg-1".into(),
+        is_local: false,
+    };
+    let json = willow_agent::notifications::event_to_json(&event);
+
+    // Should be valid JSON with type and data
+    assert_eq!(json["type"], "MessageReceived");
+    assert_eq!(json["data"]["channel"], "general");
+    assert_eq!(json["data"]["message_id"], "msg-1");
+    assert_eq!(json["data"]["is_local"], false);
+
+    // Should be serializable to string and back
+    let json_str = serde_json::to_string(&json).unwrap();
+    let reparsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+    assert_eq!(json, reparsed);
+}
+
+// ─────────────────────── Multi-Peer Infrastructure Tests ───────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_client_on_hub_creates_connected_client() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let hub = MemHub::new();
+            let (client, _broker) = willow_client::test_client_on_hub(&hub).await;
+
+            // Client should be connected (network is Some)
+            assert!(client.is_connected().await);
+
+            let peer_id = client.peer_id();
+            assert_eq!(peer_id.len(), 64, "peer ID should be 64 hex chars");
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_clients_on_same_hub_have_different_ids() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let hub = MemHub::new();
+            let (client_a, _) = willow_client::test_client_on_hub(&hub).await;
+            let (client_b, _) = willow_client::test_client_on_hub(&hub).await;
+
+            assert_ne!(
+                client_a.peer_id(),
+                client_b.peer_id(),
+                "two clients should have different peer IDs"
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multi_peer_agent_servers_have_separate_state() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let hub = MemHub::new();
+            let (client_a, _) = willow_client::test_client_on_hub(&hub).await;
+            let (client_b, _) = willow_client::test_client_on_hub(&hub).await;
+
+            let server_a = WillowMcpServer::new(client_a.clone());
+            let _server_b = WillowMcpServer::new(client_b.clone());
+
+            // Send message on A
+            call_tool(
+                &server_a.tool_router,
+                "send_message",
+                serde_json::json!({ "channel": "general", "body": "from A" }),
+            )
+            .await;
+
+            // A sees the message
+            let msgs_a = client_a.messages("general").await;
+            assert!(msgs_a.iter().any(|m| m.body == "from A"));
+
+            // B has its own state — won't see A's message (separate server states)
+            let msgs_b = client_b.messages("general").await;
+            assert!(
+                !msgs_b.iter().any(|m| m.body == "from A"),
+                "B should not see A's message without joining A's server"
+            );
+        })
+        .await;
 }

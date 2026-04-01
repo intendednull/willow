@@ -150,7 +150,7 @@ async fn main() -> anyhow::Result<()> {
         "http" => {
             eprintln!("Bearer token: {token}");
             tracing::info!("starting MCP HTTP server on {}", cli.bind);
-            server::serve_http(client, &cli.bind, Default::default()).await?;
+            server::serve_http(client, &cli.bind, Default::default(), token).await?;
         }
         other => {
             anyhow::bail!("unsupported transport: {other} (supported: 'stdio', 'http')");

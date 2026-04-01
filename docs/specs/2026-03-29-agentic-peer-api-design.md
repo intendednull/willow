@@ -312,12 +312,17 @@ public keys.
 | `willow://voice/status` | `StateRef<VoiceState>` | `{ active_channel, muted, deafened }` |
 | `willow://voice/{channel}/participants` | `StateRef<VoiceState>` | `[{ peer_id }]` |
 
-Resources support MCP's `resources/subscribe` for change notifications.
-Under the hood, the MCP server calls `StateRef<T>::subscribe()` on the
-backing view actor. When the `DerivedActor` recomputes and the value
-actually changes (`PartialEq` check), it sends a `Notify` message to
-the MCP server, which emits `notifications/resources/updated` to the
-agent. This means:
+Resources will support MCP's `resources/subscribe` for change notifications
+in a future release. The current implementation uses `CustomNotification`
+events via `willow/event` for real-time state change delivery (see
+Notifications below). Full resource subscription support is deferred
+because rmcp's `ServerHandler` trait does not yet expose a
+`subscribe_resource` callback — resource subscriptions require framework
+support that is not available in rmcp 1.3. When rmcp adds this, the MCP
+server will call `StateRef<T>::subscribe()` on the backing view actor.
+When the `DerivedActor` recomputes and the value actually changes
+(`PartialEq` check), it will send a `Notify` message to the MCP server,
+which emits `notifications/resources/updated` to the agent. This means:
 
 - **No polling** — changes push from state actors through derived views
   to the MCP transport automatically
@@ -693,7 +698,7 @@ dirs = "6"
 ### Phase 2: Tools + Notifications + E2E Harness
 - [ ] Define MCP tools for all mutating `ClientHandle` methods
 - [ ] Wire `ClientEvent`s to MCP notifications
-- [ ] Resource subscription support (`resources/subscribe`)
+- [ ] Resource subscription support (`resources/subscribe`) — deferred, requires rmcp framework support
 - [ ] Token scoping (Full, ReadOnly, Messaging)
 - [ ] Build `AgentTestHarness` — spawn relay + N agents for tests
 - [ ] First MCP E2E test: multi-peer message delivery

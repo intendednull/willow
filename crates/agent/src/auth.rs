@@ -82,4 +82,15 @@ mod tests {
         assert!(result.starts_with("wlw_"));
         assert_eq!(result.len(), 68);
     }
+
+    #[test]
+    fn token_file_written_and_readable() {
+        let dir = std::env::temp_dir().join("willow-auth-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("test-token");
+        let token = resolve_token(&None, Some(path.to_str().unwrap())).unwrap();
+        let read_back = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(token, read_back);
+        let _ = std::fs::remove_file(&path);
+    }
 }

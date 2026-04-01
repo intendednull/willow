@@ -192,12 +192,13 @@ pub fn event_to_json(event: &ClientEvent) -> serde_json::Value {
         ClientEvent::VoiceSignal {
             channel_id,
             from_peer,
-            ..
+            signal,
         } => to_value(&NotificationPayload {
             r#type: "VoiceSignal",
             data: serde_json::json!({
                 "channel_id": channel_id,
                 "from_peer": from_peer.to_string(),
+                "signal": signal,
             }),
         }),
         ClientEvent::JoinLinkResponse { invite_data } => to_value(&NotificationPayload {
@@ -370,6 +371,11 @@ mod tests {
                 channel_id: "vc".into(),
                 peer_id: id,
             },
+            ClientEvent::VoiceSignal {
+                channel_id: "vc".into(),
+                from_peer: id,
+                signal: willow_client::VoiceSignalPayload::Offer("sdp-offer".into()),
+            },
             ClientEvent::JoinLinkResponse {
                 invite_data: "data".into(),
             },
@@ -377,11 +383,40 @@ mod tests {
                 reason: "no".into(),
             },
         ];
-        // 26 events (VoiceSignal excluded — requires VoiceSignalPayload construction)
+        // All 27 events
+        assert_eq!(events.len(), 27, "should test all 27 event variants");
         for event in &events {
             let json = event_to_json(event);
             assert!(json.is_object(), "expected object for {event:?}");
             assert!(json["type"].is_string(), "missing type for {event:?}");
         }
+    }
+
+    #[test]
+    fn voice_signal_includes_payload() {
+        let id = Identity::generate().endpoint_id();
+
+        // Test Offer variant
+        let event = ClientEvent::VoiceSignal {
+            channel_id: "vc".into(),
+            from_peer: id,
+            signal: willow_client::VoiceSignalPayload::Offer("sdp-data".into()),
+        };
+        let json = event_to_json(&event);
+        assert_eq!(json["type"], "VoiceSignal");
+        assert!(
+            json["data"]["signal"].is_object(),
+            "signal should be present"
+        );
+        assert_eq!(json["data"]["signal"]["Offer"], "sdp-data");
+
+        // Test IceCandidate variant
+        let event = ClientEvent::VoiceSignal {
+            channel_id: "vc".into(),
+            from_peer: id,
+            signal: willow_client::VoiceSignalPayload::IceCandidate("candidate-data".into()),
+        };
+        let json = event_to_json(&event);
+        assert_eq!(json["data"]["signal"]["IceCandidate"], "candidate-data");
     }
 }
