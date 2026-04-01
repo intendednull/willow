@@ -43,7 +43,6 @@ impl<N: willow_network::Network> ClientHandle<N> {
     pub async fn messages(&self, channel: &str) -> Vec<state::DisplayMessage> {
         let es = willow_actor::state::get(&self.event_state_addr).await;
         let registry = willow_actor::state::get(&self.server_registry_addr).await;
-        let chat = willow_actor::state::get(&self.chat_meta_addr).await;
         let profiles = willow_actor::state::get(&self.profile_state_addr).await;
         let local_peer_id = self.identity.endpoint_id();
 

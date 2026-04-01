@@ -346,12 +346,10 @@ pub fn App() -> impl IntoView {
             .set(crate::state::CallLayout::default());
     };
 
-    // Welcome screen callback — notify actor so derived signals refresh.
-    let handle_welcome = handle.clone();
+    // Welcome screen callback (no-op — domain actors auto-notify).
     let on_welcome_done = move |_: ()| {};
 
-    // Store refresh function for reactive closures.
-    let handle_for_refresh = handle.clone();
+    // Refresh is now automatic via domain actor Notify subscriptions.
     let refresh_stored = StoredValue::new(SendWrapper::new(Rc::new(move || {}) as Rc<dyn Fn()>));
 
     // Aliases for view closures.
@@ -379,7 +377,7 @@ pub fn App() -> impl IntoView {
     // Pre-clone handle for use inside the view closure.
     let handle_for_voice_join = handle.clone();
     let handle_for_typing = handle.clone();
-    let handle_for_ch_created = handle.clone();
+
     let vm_for_view = voice_manager.clone();
 
     let join_token_signal = app_state.ui.join_token;
@@ -393,7 +391,7 @@ pub fn App() -> impl IntoView {
 
             let srv = servers.get();
             if srv.is_empty() {
-                let on_done = on_welcome_done.clone();
+                let on_done = on_welcome_done;
                 view! {
                     <WelcomeScreen
                         on_done=on_done
@@ -413,7 +411,6 @@ pub fn App() -> impl IntoView {
                 let on_disconnect = on_voice_disconnect.clone();
                 let handle_vj = handle_for_voice_join.clone();
                 let handle_ty = handle_for_typing.clone();
-                let handle_cc = handle_for_ch_created.clone();
                 let vm_v = vm_for_view.clone();
                 let pin = on_pin.clone();
                 view! {
@@ -565,11 +562,7 @@ pub fn App() -> impl IntoView {
                             on_voice_mute=Callback::new(on_mute.clone())
                             on_voice_deafen=Callback::new(on_deafen.clone())
                             on_voice_disconnect=Callback::new(on_disconnect.clone())
-                            on_channel_created={
-                                let ch_handle = handle_cc.clone();
-                                move |_| {
-                                }
-                            }
+                            on_channel_created=move |_| {}
                         />
                         <div class="main-content">
                             {move || {

@@ -217,13 +217,13 @@ impl<N: willow_network::Network> ClientHandle<N> {
     }
 
     pub async fn send_typing(&self) {
-        let (should_send, channel) = willow_actor::state::mutate(&self.network_meta_addr, |n| {
+        let should_send = willow_actor::state::mutate(&self.network_meta_addr, |n| {
             let now = util::current_time_ms();
             if now - n.last_typing_sent_ms < 3000 {
-                return (false, String::new());
+                return false;
             }
             n.last_typing_sent_ms = now;
-            (true, String::new())
+            true
         })
         .await;
         if !should_send {
