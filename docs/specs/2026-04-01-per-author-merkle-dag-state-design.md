@@ -1295,6 +1295,341 @@ over — same properties, different API.
 | Event store | Flat append-only log | Per-author chains in `DagStore` |
 | Materialized view | `ServerState` mutated directly | `ServerState` projected from DAG |
 
+## Section 8: Replay Workers
+
+The replay node (`crates/replay/src/role.rs`) is the always-online
+peer that buffers recent events and serves catch-up data to peers that
+reconnect after being offline. Its role changes substantially.
+
+### Current Design
+
+```
+ReplayRole {
+    servers: HashMap<String, ServerData>,
+}
+
+ServerData {
+    state: ServerState,              // full materialized state
+    events: VecDeque<Event>,         // bounded FIFO (max 1000)
+}
+```
+
+The replay node:
+1. Receives events via `on_event()` → `apply_lenient()` to state
+2. Buffers events in a bounded VecDeque (oldest evicted first)
+3. On `WorkerRequest::Sync { state_hash }`:
+   - Walks the buffer looking for an event whose `parent_hash` matches
+   - If found, returns events from that point (delta sync)
+   - If not found (peer too far behind), returns full `ServerState` snapshot
+
+**Problems with current replay design:**
+- Sync is keyed on `StateHash` — finding the divergence point requires
+  linear scan of the buffer matching `parent_hash` fields
+- Evicting oldest events from a linear buffer destroys the ability to
+  serve those events to any peer that needs them
+- Full state snapshot is O(entire state) when a delta would suffice
+- No per-author granularity — can't serve "just Alice's events"
+
+### New Design
+
+```rust
+struct ServerData {
+    /// Per-author DAG (same EventDag from willow-state).
+    dag: EventDag,
+
+    /// Materialized state (cached, recomputed on revision).
+    state: ServerState,
+
+    /// Per-author bounded event retention.
+    /// Each author's chain is capped independently.
+    max_events_per_author: usize,
+}
+```
+
+The replay node becomes a DAG-aware sync peer:
+
+1. **Receives events** via `on_event()` → `dag.insert()` +
+   `apply_incremental()` to cached state.
+
+2. **Per-author buffering.** Instead of a single FIFO, each author's
+   chain is bounded independently. This prevents a chatty peer from
+   evicting a quiet peer's entire history.
+
+3. **Sync via heads comparison.** On receiving a `SyncMessage::Advertise`:
+   - Compare the requester's heads against local heads
+   - Compute per-author deltas (events with seq > their_seq)
+   - Respond with exactly the missing events
+
+4. **Snapshot fallback.** If a peer is so far behind that the replay
+   node has compacted away their events (per-author chain was capped),
+   fall back to sending a snapshot + post-snapshot events.
+
+5. **Author revision handling.** When the replay node receives a
+   revised chain from an author, it replaces that author's chain in
+   the DAG and re-materializes state.
+
+```rust
+impl WorkerRole for ReplayRole {
+    fn on_event(&mut self, event: &Event) {
+        let data = self.servers.entry(server_id).or_insert_with(..);
+
+        match data.dag.insert(event.clone()) {
+            Ok(()) => {
+                apply_incremental(&mut data.state, event);
+                // Per-author compaction if chain exceeds limit.
+                data.compact_author(&event.author);
+            }
+            Err(InsertError::MissingDep(hash)) => {
+                data.pending.buffer(hash, event.clone());
+            }
+            Err(InsertError::Duplicate) => { /* already have it */ }
+            Err(e) => tracing::warn!("replay rejected event: {e:?}"),
+        }
+    }
+
+    fn handle_request(&mut self, req: WorkerRequest) -> WorkerResponse {
+        match req {
+            WorkerRequest::Sync(SyncMessage::Advertise(their_heads)) => {
+                let data = self.servers.get(&server_id);
+                let missing = data.dag.events_since(&their_heads);
+                if missing.is_empty() {
+                    WorkerResponse::SyncBatch { events: vec![] }
+                } else {
+                    WorkerResponse::SyncBatch {
+                        events: missing.into_iter().cloned().collect(),
+                    }
+                }
+            }
+            // ... snapshot fallback, history, etc.
+        }
+    }
+}
+```
+
+### WorkerRequest / WorkerResponse Changes
+
+The wire protocol (`crates/common/src/worker_types.rs`) changes:
+
+```rust
+// Old
+pub enum WorkerRequest {
+    Sync { server_id: String, state_hash: StateHash },
+    History { server_id: String, channel: String, before_timestamp: Option<u64>, limit: u32 },
+}
+
+// New
+pub enum WorkerRequest {
+    Sync {
+        server_id: String,
+        heads: HeadsSummary,
+    },
+    History {
+        server_id: String,
+        channel: String,
+        before_seq: Option<AuthorSeq>,  // cursor is now author+seq, not timestamp
+        limit: u32,
+    },
+}
+
+/// Cursor for paginated history.
+pub struct AuthorSeq {
+    pub author: EndpointId,
+    pub seq: u64,
+}
+```
+
+```rust
+// Old
+pub enum WorkerResponse {
+    SyncBatch { events: Vec<Event> },
+    Snapshot { state: Box<ServerState> },
+    HistoryPage { events: Vec<Event>, has_more: bool },
+    Denied { reason: String },
+}
+
+// New
+pub enum WorkerResponse {
+    /// Per-author delta events for sync catch-up.
+    SyncBatch { events: Vec<Event> },
+    /// Full DAG snapshot for far-behind peers.
+    Snapshot {
+        snapshot: Box<Snapshot>,         // state + heads
+        post_snapshot_events: Vec<Event>, // events after snapshot
+    },
+    /// Paginated history.
+    HistoryPage { events: Vec<Event>, has_more: bool },
+    Denied { reason: String },
+}
+```
+
+### SyncActor Changes
+
+The sync actor (`crates/worker/src/actors/sync.rs`) currently
+broadcasts `WorkerRequest::Sync { state_hash }` periodically. This
+changes to broadcasting `SyncMessage::Advertise(heads)`:
+
+```rust
+// Old: state_hashes() → Vec<(String, StateHash)>
+// Broadcasts one Sync request per server with full state hash
+
+// New: heads_summary() → Vec<(String, HeadsSummary)>
+// Broadcasts one Advertise per server with per-author heads
+```
+
+The per-author heads are much more informative than a single state
+hash — they tell the receiver exactly what's needed per-author without
+requiring the receiver to guess or send everything.
+
+## Section 9: History & Archival
+
+History (paginated access to old events) and archival (long-term
+storage) change significantly with the DAG model.
+
+### Current History Model
+
+The current `WorkerRequest::History` uses timestamp-based pagination:
+
+```rust
+History {
+    server_id: String,
+    channel: String,
+    before_timestamp: Option<u64>,  // cursor
+    limit: u32,
+}
+```
+
+This has problems:
+- Timestamps are unreliable in a P2P system (clock skew)
+- Pagination cursor is fragile — if events are reordered, the cursor
+  breaks
+- No way to request "events by author X" or "events since I last
+  synced"
+- History and sync are separate protocols with different wire types
+
+### New History Model
+
+History uses the same DAG-based addressing as sync. The cursor is
+an author+seq pair (or a set of them), and channels are filtered
+at the application layer:
+
+```rust
+/// Request historical events from a storage node.
+pub struct HistoryRequest {
+    pub server_id: String,
+    /// Filter: only return events in this channel.
+    /// None = all channels.
+    pub channel: Option<String>,
+    /// Cursor: return events whose topological position is
+    /// before this point. None = start from latest.
+    pub before: Option<HeadsSummary>,
+    /// Maximum events to return.
+    pub limit: u32,
+}
+```
+
+**Key changes:**
+- Cursor is a `HeadsSummary` (set of author+seq heads) instead of a
+  timestamp. This is stable across re-orderings.
+- Channel filtering is an application-level concern — the storage node
+  stores DAG events and filters by `EventKind::Message { channel_id }`
+  when serving.
+- The same `HeadsSummary` structure is used for both sync and history
+  pagination — unified addressing model.
+
+### Storage Node Role
+
+Storage nodes are the archival tier. Unlike replay nodes (bounded
+in-memory buffer), storage nodes persist the full DAG to disk:
+
+```rust
+struct StorageData {
+    /// Persistent DAG store (SQLite-backed).
+    store: Box<dyn DagStore>,
+
+    /// Cached materialized state (optional — can recompute).
+    state: Option<ServerState>,
+}
+```
+
+Storage nodes:
+1. Ingest all events into persistent `DagStore`
+2. Never evict events (archival)
+3. Serve `HistoryRequest` with paginated results
+4. Serve `SyncMessage::Advertise` with full DAG coverage
+5. Can provide full-replay verification for new peers that don't
+   trust snapshots
+
+### Archival and Author Revision
+
+When an author revises their chain, the storage node faces a choice:
+
+1. **Replace only** (default): store the latest chain version per
+   author. Old events are deleted. This matches the design goal
+   that "current state may diverge from historical snapshots."
+
+2. **Retain history** (opt-in): store both old and new chain versions,
+   tagged by revision number. This enables audit trails but is
+   outside the scope of the state crate. The `DagStore` trait can
+   support this:
+
+```rust
+pub trait DagStore {
+    // ... existing methods ...
+
+    /// Store a superseded chain version for archival.
+    /// revision_id is a monotonic counter per author.
+    fn archive_chain(
+        &mut self,
+        author: &EndpointId,
+        revision_id: u64,
+        chain: &[Event],
+    );
+
+    /// Retrieve archived chain versions for an author.
+    fn archived_chains(
+        &self,
+        author: &EndpointId,
+    ) -> Vec<(u64, Vec<Event>)>;
+}
+```
+
+### History and Current State Divergence
+
+A critical consequence of author revision: history served by a storage
+node may not match the current materialized state. Example:
+
+1. Alice sends message "hello" (event A3, seq=3)
+2. Storage node archives A3
+3. Alice revises her chain, removing A3 (her new head is seq=2)
+4. Current materialized state has no "hello" message
+5. Storage node's archive still has A3
+
+This is explicitly acceptable per the design goals. The application
+layer must decide how to present this — possible approaches:
+
+- Show archived messages with a "revised" indicator
+- Only show messages from current chains (drop archived)
+- Let users toggle "show history including revisions"
+
+The state crate does not prescribe a policy. It provides the data
+structures; the UI layer decides presentation.
+
+### Unified Sync and History
+
+With the DAG model, sync and history are the same operation at
+different scales:
+
+| Operation | Scope | Served by |
+|---|---|---|
+| Real-time sync | Latest events (gossip push) | All peers |
+| Catch-up sync | Events since last seen heads | Replay nodes |
+| Recent history | Last N events in a channel | Replay nodes |
+| Deep history | Full event archive | Storage nodes |
+| Full verification | Complete DAG from genesis | Storage nodes |
+
+All use the same `HeadsSummary` → `Vec<Event>` pattern. The
+difference is just the depth of the query and which node serves it.
+
 ## Appendix: References
 
 1. Sanjuán, Pöyhtäri, Teixeira. "Merkle-CRDTs: Merkle-DAGs meet CRDTs." arXiv:2004.00107, 2020.
