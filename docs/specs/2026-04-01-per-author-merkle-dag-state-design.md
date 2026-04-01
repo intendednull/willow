@@ -252,6 +252,22 @@ list the *heads* (latest known events) of other authors at the time of
 creation. Transitivity fills in the rest — if A2 depends on B3, and B3
 depends on C1, then A2 transitively depends on C1.
 
+### Server Identity
+
+A server is identified by a unique `server_id: String` (UUID generated
+at creation time). This is distinct from the owner's public key — the
+same owner can create multiple servers, and server identity persists
+even if ownership is transferred in the future.
+
+The `server_id` is:
+- Generated once at server creation
+- Stored in `ServerState.server_id`
+- Used as the gossip topic namespace (events for server X go to topic X)
+- Used as the key in multi-server maps (`ReplayRole.servers`, etc.)
+- Not derived from any key or hash — it is an opaque unique identifier
+
+Each `EventDag` instance corresponds to exactly one server.
+
 ### EventDag
 
 The DAG is the central data structure — the source of truth from which
@@ -281,7 +297,8 @@ impl EventDag {
     /// - Signature verification fails
     /// - seq is not exactly prev_seq + 1 for this author
     /// - prev hash doesn't match the author's current head
-    /// - Any dep references an unknown event (gap detected)
+    /// Unknown deps are accepted (soft-accept) and recorded for
+    /// background resolution.
     pub fn insert(&mut self, event: Event) -> Result<(), InsertError>;
 
     /// Get all events an author has produced, in seq order.
@@ -319,16 +336,18 @@ pub enum InsertError {
     SeqGap { author: EndpointId, expected: u64, got: u64 },
     /// prev hash doesn't match author's current head.
     PrevMismatch { author: EndpointId, expected: EventHash, got: EventHash },
-    /// A dep references an event we don't have yet.
-    MissingDep(EventHash),
     /// Event with this hash already exists.
     Duplicate,
 }
 ```
 
-`MissingDep` is not a permanent failure — it means the event arrived
-out of order. The caller should buffer it and retry after fetching the
-missing dependency. This is standard in Merkle-CRDT systems.
+Note: there is no `MissingDep` error. The `deps` field is advisory —
+if a dep references an event we don't have, the event is still
+accepted and inserted. The missing dep is recorded for background
+resolution (the caller can fetch it lazily). This is a deliberate
+choice: soft-accept makes the system robust to partitions, author
+revisions that remove dep targets, and out-of-order delivery. The
+causal information in `deps` is best-effort, not a hard constraint.
 
 ### EventKind (unchanged in structure)
 
@@ -358,13 +377,17 @@ pub enum EventKind {
     UnpinMessage { channel_id: String, message_id: EventHash },
     RenameServer { new_name: String },
     SetServerDescription { description: String },
-    StateVerification { state_hash: StateHash },
 }
 ```
 
+**Removed variant:** `StateVerification { state_hash: StateHash }` is
+dropped entirely. It was a no-op event that carried a `StateHash` for
+comparison — both concepts (`StateHash` and no-op events) are legacy.
+Peers verify state agreement by comparing `HeadsSummary` directly.
+
 Note: `message_id` fields change from `String` (UUID) to `EventHash`
 since message IDs are now the content hash of the `Message` event that
-created them.
+created them. The variant count drops from 24 to 23.
 
 ## Section 2: State Materialization
 
@@ -379,9 +402,9 @@ view** — a projection computed deterministically from the DAG.
 /// This is the ONLY way to derive state. The function is pure,
 /// deterministic, and produces identical output on all peers
 /// given the same DAG contents.
-pub fn materialize(dag: &EventDag, owner: EndpointId) -> ServerState {
+pub fn materialize(dag: &EventDag, server_id: &str, owner: EndpointId) -> ServerState {
     let sorted = dag.topological_sort();
-    let mut state = ServerState::new(owner);
+    let mut state = ServerState::new(server_id, owner);
     for event in sorted {
         // apply_unchecked: no parent hash check, no dedup check.
         // The DAG structure guarantees no duplicates and the
@@ -678,29 +701,41 @@ for real-time, pull-based reconciliation for consistency.
 
 ### Gap Handling
 
-When an event arrives referencing a `prev` or `dep` that the receiver
-doesn't have:
+There are two kinds of gaps, handled differently:
 
-1. Buffer the event in a pending queue.
-2. Send a `Request` for the missing author's events.
-3. When the missing events arrive, insert them first, then retry the
-   buffered event.
-4. If the gap persists after N retries, log a warning but don't block
-   other authors' events. The peer may be offline or the chain may
-   have been revised.
+**Per-author chain gap** (`prev` references an unknown event): This is
+a hard gap — the event cannot be inserted because the author's chain
+must be contiguous. The event is buffered until the missing predecessor
+arrives.
+
+**Cross-author dep gap** (`deps` references an unknown event): This is
+a soft gap — the event is accepted and inserted immediately. The
+missing dep is recorded for background fetching. This keeps the system
+responsive: a missing dep from a peer who is offline or has revised
+their chain does not block events from other authors.
 
 ```rust
 pub struct PendingBuffer {
-    /// Events waiting for missing dependencies.
+    /// Events waiting for missing prev (per-author chain gap).
     /// Key: the missing EventHash they're waiting on.
-    waiting_on: HashMap<EventHash, Vec<Event>>,
+    waiting_on_prev: HashMap<EventHash, Vec<Event>>,
+
+    /// Deps we've seen referenced but don't have yet.
+    /// Background task fetches these lazily.
+    missing_deps: HashSet<EventHash>,
 }
 
 impl PendingBuffer {
     /// Call when a new event is inserted into the DAG.
-    /// Returns any buffered events that are now ready.
+    /// Returns any buffered events whose prev is now satisfied.
     pub fn resolve(&mut self, inserted: &EventHash) -> Vec<Event> {
-        self.waiting_on.remove(inserted).unwrap_or_default()
+        self.missing_deps.remove(inserted);
+        self.waiting_on_prev.remove(inserted).unwrap_or_default()
+    }
+
+    /// Record a dep that we don't have yet.
+    pub fn record_missing_dep(&mut self, hash: EventHash) {
+        self.missing_deps.insert(hash);
     }
 }
 ```
@@ -861,17 +896,24 @@ impl EventDag {
 
 ### Conflict Resolution for Revisions
 
+The author is sovereign over their chain. There is no arbitration
+rule — whichever version of the chain was signed by the author is
+accepted as truth from that author.
+
 If two peers have different versions of an author's chain (e.g., the
-author sent revision V2 to some peers but not others), the rule is:
+author sent revision V2 to some peers but not others during a
+partition), convergence happens naturally: the author is the only
+entity that can produce a validly-signed chain, so they will
+eventually publish one definitive version and it will propagate. In
+the interim, peers may have different views of that author's
+contributions — this is acceptable per the archival tolerance goal.
 
-**Longest chain wins.** If equal length, the chain with the
-lexicographically greater head hash wins. This is deterministic and
-converges — eventually all peers will see all versions and pick the
-same winner.
-
-In the common case, the author publishes one revision and it propagates
-to all peers. The conflict case is rare (partitioned network during
-revision) and resolves automatically.
+There is no need for tie-breaking rules. The author's key is the
+authority. If you receive a new chain signed by the author, you
+accept it. If you receive two conflicting chains both signed by the
+author, you accept whichever you received most recently and it will
+converge as the author continues publishing events (which will
+extend one chain and not the other).
 
 ### Archival Implications
 
@@ -1124,7 +1166,7 @@ code path between "single linear chain with parent state hash" and
 
 | Symbol | Status |
 |---|---|
-| `EventKind` (all 24 variants) | Unchanged — carried over as-is |
+| `EventKind` (23 variants) | Carried over minus `StateVerification` |
 | `ServerState` (struct) | Kept, minus `seen_event_ids` and `hash()` |
 | `Permission` enum | Unchanged |
 | `has_permission()` | Unchanged |
@@ -1197,10 +1239,19 @@ willow_state::apply_lenient(&mut state, &event);
 ```rust
 let event = receive_from_gossip();
 match dag.insert(event.clone()) {
-    Ok(()) => apply_incremental(&mut state, &event),
-    Err(InsertError::MissingDep(hash)) => {
-        pending.buffer(hash, event);
-        request_missing(hash);
+    Ok(()) => {
+        apply_incremental(&mut state, &event);
+        // Resolve any events that were waiting on this one's prev.
+        for ready in pending.resolve(&event.hash) {
+            if let Ok(()) = dag.insert(ready.clone()) {
+                apply_incremental(&mut state, &ready);
+            }
+        }
+    }
+    Err(InsertError::SeqGap { .. }) | Err(InsertError::PrevMismatch { .. }) => {
+        // Per-author chain gap — buffer until predecessor arrives.
+        pending.waiting_on_prev.entry(event.prev.clone())
+            .or_default().push(event);
     }
     Err(InsertError::Duplicate) => { /* already have it */ }
     Err(e) => log::warn!("rejected event: {e:?}"),
@@ -1378,9 +1429,14 @@ impl WorkerRole for ReplayRole {
                 apply_incremental(&mut data.state, event);
                 // Per-author compaction if chain exceeds limit.
                 data.compact_author(&event.author);
+                // Resolve any buffered events waiting on this prev.
+                for ready in data.pending.resolve(&event.hash) {
+                    let _ = data.dag.insert(ready);
+                }
             }
-            Err(InsertError::MissingDep(hash)) => {
-                data.pending.buffer(hash, event.clone());
+            Err(InsertError::SeqGap { .. }) | Err(InsertError::PrevMismatch { .. }) => {
+                data.pending.waiting_on_prev.entry(event.prev.clone())
+                    .or_default().push(event.clone());
             }
             Err(InsertError::Duplicate) => { /* already have it */ }
             Err(e) => tracing::warn!("replay rejected event: {e:?}"),
@@ -1629,6 +1685,339 @@ different scales:
 
 All use the same `HeadsSummary` → `Vec<Event>` pattern. The
 difference is just the depth of the query and which node serves it.
+
+## Section 10: Implementation Scope
+
+This section defines what is in scope for the initial implementation
+and what is deferred.
+
+### In Scope (Core Foundation)
+
+| Section | What ships |
+|---|---|
+| Section 1 | `Event`, `EventHash`, `EventKind` (23 variants), `EventDag`, `InsertError`, `PendingBuffer` |
+| Section 2 | `materialize()`, `apply_unchecked()`, `apply_incremental()`, topological sort, `ServerState` (simplified) |
+| Section 3 | `HeadsSummary`, `SyncMessage`, `AuthorRequest`, sync flow |
+| Section 4 | `replace_chain()`, chain verification, revision detection (`ChainStatus`) |
+| Section 7 | Full deletion of legacy types, new module layout, new public API |
+| Section 10 | Test suite (below) |
+
+### Deferred
+
+| Section | What is deferred | Why |
+|---|---|---|
+| Section 5 | Snapshots, compaction, `SnapshotHash` | Optimization — system works without it, just grows |
+| Section 8 | Replay worker changes | Depends on core; separate PR |
+| Section 9 | History/archival, storage node, `DagStore` archival methods | Depends on core + replay |
+| Section 6 | Client-side wiring (mutations.rs, listeners.rs, persistence) | Depends on core; separate PR |
+
+The first implementation delivers a fully tested `willow-state` crate
+with the new DAG model. Downstream crates (client, worker, relay)
+adapt in follow-up work.
+
+## Section 11: Test Specification
+
+Tests are the primary deliverable alongside the implementation. Every
+property of the system must be covered. Tests are organized by the
+concept they verify, not by module.
+
+### Test Helpers
+
+```rust
+/// Create an EventDag with a server owner.
+fn test_dag() -> (EventDag, Identity) {
+    let owner = Identity::generate();
+    let dag = EventDag::new();
+    (dag, owner)
+}
+
+/// Create and insert a signed event into the DAG.
+fn emit(
+    dag: &mut EventDag,
+    identity: &Identity,
+    kind: EventKind,
+) -> Event {
+    let event = dag.create_event(identity, kind);
+    dag.insert(event.clone()).unwrap();
+    event
+}
+
+/// Create N identities.
+fn identities(n: usize) -> Vec<Identity> {
+    (0..n).map(|_| Identity::generate()).collect()
+}
+
+/// Materialize state from a DAG with the given owner.
+fn state(dag: &EventDag, owner: &Identity) -> ServerState {
+    materialize(dag, "test-server", owner.endpoint_id())
+}
+```
+
+### Event & EventHash Tests
+
+```
+test event_hash_is_deterministic
+    Same (author, seq, prev, deps, kind, timestamp) → same hash.
+
+test event_hash_changes_with_any_field
+    Changing any single field produces a different hash.
+
+test event_signature_verifies
+    A signed event passes signature verification.
+
+test event_signature_rejects_tampered
+    Modifying any field after signing fails verification.
+
+test event_signature_rejects_wrong_key
+    Signing with key A, verifying with key B fails.
+```
+
+### EventDag Insert Tests
+
+```
+test insert_first_event
+    Insert an event with seq=1, prev=ZERO. Succeeds.
+    DAG has one event. Head is set.
+
+test insert_sequential_events
+    Insert seq=1, then seq=2 with prev=hash(seq=1). Both succeed.
+    Chain is [e1, e2]. Head is e2.
+
+test insert_rejects_duplicate
+    Insert same event twice. Second returns Duplicate.
+
+test insert_rejects_invalid_signature
+    Tamper with event after signing. Returns InvalidSignature.
+
+test insert_rejects_seq_gap
+    Insert seq=1, then seq=3. Returns SeqGap { expected: 2, got: 3 }.
+
+test insert_rejects_prev_mismatch
+    Insert seq=1, then seq=2 with wrong prev hash.
+    Returns PrevMismatch.
+
+test insert_accepts_unknown_deps
+    Insert event with deps=[nonexistent_hash]. Succeeds.
+    The unknown dep is recorded but does not block insertion.
+
+test insert_multiple_authors
+    Two authors each insert their own chains. Both succeed.
+    DAG has two independent chains.
+
+test insert_with_cross_author_deps
+    Author A inserts A1. Author B inserts B1 with deps=[A1.hash].
+    Both succeed. B1's dep is resolved.
+```
+
+### Topological Sort Tests
+
+```
+test sort_single_author_is_seq_order
+    Author A: [A1, A2, A3]. Sort order is [A1, A2, A3].
+
+test sort_independent_authors_by_hash
+    A1 and B1 have no deps on each other.
+    Sort order is determined by EventHash comparison.
+    Deterministic across runs (same hashes → same order).
+
+test sort_respects_cross_author_deps
+    A1, B1(deps=[A1]). A1 always comes before B1.
+
+test sort_complex_dag
+    A1, A2(deps=[B1]), B1, B2(deps=[A1]), C1(deps=[B1]).
+    Verify all causal constraints are respected.
+    Verify concurrent events are tiebroken by hash.
+
+test sort_is_deterministic
+    Same DAG contents → same sort order, every time.
+
+test sort_is_stable_under_insertion_order
+    Insert events in different orders. Same DAG → same sort.
+```
+
+### Materialization Tests
+
+```
+test materialize_empty_dag
+    Empty DAG → fresh ServerState with just the owner as member.
+
+test materialize_create_channel
+    One CreateChannel event → state has one channel.
+
+test materialize_is_deterministic
+    Same DAG → same ServerState, every time.
+
+test materialize_two_dags_same_events_same_state
+    Build two DAGs with the same events (different insertion order).
+    materialize() produces identical states.
+
+test materialize_concurrent_channel_creates
+    Two authors concurrently create channels. Both appear in state.
+
+test materialize_permission_enforcement
+    Unpermitted author tries CreateChannel. Event is rejected
+    (ApplyResult::Rejected). Channel does not appear in state.
+
+test materialize_owner_has_all_permissions
+    Owner can do anything without explicit grants.
+
+test materialize_admin_has_all_permissions
+    Peer with Administrator permission can do anything.
+
+test materialize_kick_removes_member_and_permissions
+    KickMember event removes the member and their permissions.
+
+test materialize_cannot_kick_owner
+    KickMember targeting the owner is a no-op.
+
+test materialize_message_in_channel
+    Message event → ChatMessage appears in state.messages.
+
+test materialize_edit_message
+    Message then EditMessage → message body updated, edited=true.
+
+test materialize_delete_message
+    Message then DeleteMessage → message marked deleted.
+
+test materialize_reaction
+    Message then Reaction → reaction appears on message.
+
+test materialize_set_profile
+    SetProfile → profile and member display_name updated.
+
+test materialize_rename_server_owner_only
+    Owner can rename. Non-owner is rejected.
+
+test materialize_server_description_owner_only
+    Owner can set description. Non-owner is rejected.
+
+test materialize_delete_channel_cascades_messages
+    DeleteChannel removes the channel and all its messages.
+
+test materialize_delete_role_cascades_members
+    DeleteRole removes the role from all members.
+
+test materialize_grant_permission_adds_member
+    GrantPermission to unknown peer also adds them as a member.
+```
+
+### Incremental Apply Tests
+
+```
+test incremental_matches_full_materialize
+    Apply events incrementally one by one. Compare result to
+    full materialize(). States are identical.
+
+test incremental_concurrent_events
+    Two authors produce concurrent events. Apply in topo order.
+    Result matches full materialize().
+```
+
+### Author Revision Tests
+
+```
+test replace_chain_basic
+    Author A has [A1, A2, A3]. Replace with [A1, A2'].
+    DAG now has A1 and A2'. A3 is gone.
+
+test replace_chain_re_materializes_correctly
+    After revision, materialize() reflects the new chain.
+
+test replace_chain_rejects_invalid_signature
+    Attempt to replace with a chain signed by a different key.
+    Returns error.
+
+test replace_chain_rejects_broken_prev
+    Chain with inconsistent prev hashes is rejected.
+
+test replace_chain_broken_dep_is_tolerated
+    After revision, another author's event has deps pointing to
+    a now-removed event. The dep is broken but the event still
+    applies. Materialization succeeds.
+
+test revision_detection
+    Build DAG with author A at seq=3. Receive HeadsSummary with
+    author A at seq=3 but different hash. Detected as Revised.
+```
+
+### Sync Protocol Tests
+
+```
+test heads_summary_reflects_dag
+    Insert events for 3 authors. HeadsSummary has 3 entries
+    with correct seq and hash for each.
+
+test events_since_returns_delta
+    DAG has authors A(seq=5), B(seq=3). Request with
+    their_heads={A:3, B:3}. Returns A's events 4 and 5.
+
+test events_since_unknown_author
+    Request includes an author not in the DAG. That author
+    is simply skipped (no error).
+
+test events_since_new_author
+    DAG has author C that the requester doesn't know about.
+    Returns all of C's events.
+
+test sync_round_trip
+    Two DAGs with overlapping events. Exchange heads, compute
+    deltas, apply. Both DAGs converge to the same state.
+```
+
+### PendingBuffer Tests
+
+```
+test buffer_and_resolve
+    Buffer an event waiting on prev hash X. Insert an event
+    with hash X. resolve() returns the buffered event.
+
+test missing_deps_recorded
+    Insert event with unknown dep. Missing dep is recorded
+    in the buffer. Does not block the event.
+
+test resolve_cascading
+    Event C waits on B which waits on A. Insert A → resolves B.
+    Insert B → resolves C. All three end up in the DAG.
+```
+
+### Stress Tests
+
+```
+test stress_1000_events_single_author
+    One author inserts 1000 sequential events.
+    Materialize produces correct state.
+
+test stress_100_authors_10_events_each
+    100 authors, each with 10 events with cross-author deps.
+    Topological sort completes. Materialization is deterministic.
+
+test stress_sort_performance
+    10000 events across 50 authors. Topological sort completes
+    in reasonable time (benchmark, not hard assertion).
+
+test stress_concurrent_channel_creates
+    50 authors all create a channel concurrently.
+    Materialized state has 50 channels. Deterministic.
+```
+
+### Tests Removed from Current Suite
+
+The following current test patterns do not apply to the new design
+and are not carried over:
+
+| Old test | Why removed |
+|---|---|
+| `parent_hash_mismatch` | No per-event state hash in new model |
+| `apply_is_idempotent` (via `seen_event_ids`) | Dedup is structural in DAG (Duplicate error) |
+| `full_replay_from_genesis` (via state hash comparison) | Replaced by `materialize_is_deterministic` |
+| `merge_*` tests (timestamp-based merge) | No merge function — DAG union + topo sort replaces it |
+| `state_hash_*` tests | `StateHash` removed |
+| `state_verification_*` tests | `StateVerification` event kind removed |
+| `event_store_*` tests (`InMemoryStore`) | `EventStore` replaced by `EventDag` |
+
+The properties these tests covered (determinism, idempotency,
+convergence, replay correctness) are all still tested — just
+through the new API.
 
 ## Appendix: References
 
