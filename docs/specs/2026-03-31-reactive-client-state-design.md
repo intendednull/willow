@@ -641,8 +641,11 @@ state::subscribe(msgs_ref, my_notification_recipient);
 ## Scope
 
 ### In scope
-- Delete `SharedState`, `ClientState`, `ClientStateActor`, `client_actor.rs`
-- Delete `ServerContext` (replaced by `ServerEntry` in `ServerRegistry`)
+- Delete `SharedState`, `ClientStateActor`, `client_actor.rs`
+- De-export `ClientState`, `ServerContext`, `ChatState`, `ProfileStore` from
+  public API (kept as private initialization helpers for loading persisted
+  state into domain actors; replaced by `ServerEntry`, `ChatMeta`,
+  `ProfileState` in `state_actors.rs` for all runtime use)
 - Create `ClientMutations` handle routing all operations to domain actors
 - Create `ClientViewHandle` exposing `StateRef<T>` at every granularity
 - Rewrite all `read_state`/`mutate_state` calls across:

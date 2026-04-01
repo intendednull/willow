@@ -102,9 +102,13 @@ pub mod event_receiver {
         }
     }
 }
-pub use state::{
-    ChatState, ClientState, DisplayMessage, PersistentEventStore, ProfileStore, ServerContext,
-};
+pub use state::DisplayMessage;
+
+// ClientState, ServerContext, ChatState, ProfileStore are used internally
+// during initialization only (loading from storage → populating domain actors).
+// They are not part of the public API — use ClientViewHandle for reads
+// and ClientMutations for writes.
+use state::{ClientState, PersistentEventStore, ServerContext};
 
 /// Re-export the event-sourced state crate for use by downstream consumers.
 pub use willow_state;

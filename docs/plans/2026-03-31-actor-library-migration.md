@@ -146,8 +146,10 @@ Each method routes to the correct domain `StateActor` via
 4. **Delete legacy code**:
    - Delete `client_actor.rs` entirely
    - Delete `SharedState` from `lib.rs`
-   - Delete `ClientState`, `ServerContext`, `ProfileStore` from `state.rs`
-     (keep `DisplayMessage`, `PersistentEventStore`; `ProfileStore` replaced by `ProfileState` in `state_actors.rs`)
+   - De-export `ClientState`, `ServerContext`, `ChatState`, `ProfileStore`
+     from public API (kept private in `state.rs` as initialization helpers;
+     replaced by domain types in `state_actors.rs` for all runtime use)
+   - Keep `DisplayMessage` as public export
    - `unsafe impl Send` confined to `PersistenceActor` only (sound: single-threaded mailbox)
 
 5. **Update `test_client()`**: Spawns the full actor tree, returns
