@@ -1,25 +1,16 @@
 //! Per-topic listener tasks that stream GossipEvents and mutate state via the actor.
-//!
-//! Each server subscription spawns one listener via [`spawn_topic_listener`].
-//! The listener calls [`TopicEvents::next()`] in a loop and routes incoming
-//! wire messages to the state actor via [`MutateState`] messages.
 
 use willow_actor::Addr;
 use willow_identity::EndpointId;
 use willow_network::traits::{GossipEvent, TopicEvents};
-use willow_state::EventStore as _;
 
 use willow_network::traits::TopicHandle;
 
 use crate::client_actor::ClientStateActor;
 use crate::events::ClientEvent;
+use crate::mutations;
 
-/// Spawn an async task that listens for gossip events on a topic,
-/// processes incoming wire messages, and mutates state via the actor.
-///
-/// The task runs until the [`TopicEvents`] stream ends. The `topic`
-/// handle is used to broadcast responses (sync batches, join responses)
-/// back to peers.
+/// Spawn an async task that listens for gossip events on a topic.
 pub fn spawn_topic_listener<T: TopicHandle + 'static, E: TopicEvents + 'static>(
     events: E,
     topic: T,
@@ -33,7 +24,6 @@ pub fn spawn_topic_listener<T: TopicHandle + 'static, E: TopicEvents + 'static>(
     wasm_bindgen_futures::spawn_local(topic_listener_loop(events, topic, state_addr, event_broker));
 }
 
-/// The core async loop that drains a [`TopicEvents`] stream.
 async fn topic_listener_loop<T: TopicHandle, E: TopicEvents>(
     mut events: E,
     topic: T,
@@ -68,10 +58,6 @@ async fn topic_listener_loop<T: TopicHandle, E: TopicEvents>(
     }
 }
 
-/// Process a single received gossip message.
-///
-/// Tries profile broadcast first, then falls back to the signed
-/// [`WireMessage`](crate::ops::WireMessage) envelope format.
 async fn process_received_message<T: TopicHandle>(
     data: &[u8],
     _sender: EndpointId,
@@ -79,7 +65,7 @@ async fn process_received_message<T: TopicHandle>(
     event_broker: &Addr<willow_actor::Broker<ClientEvent>>,
     topic: &T,
 ) {
-    // Try profile broadcast first (unsigned envelope, Identity message type).
+    // Try profile broadcast first.
     if let Ok((profile, willow_transport::MessageType::Identity)) =
         willow_transport::unpack_envelope::<willow_identity::UserProfile>(data)
     {
@@ -96,27 +82,23 @@ async fn process_received_message<T: TopicHandle>(
         return;
     }
 
-    // Try signed wire message format.
     let Some((wire_msg, signer)) = crate::ops::unpack_wire(data) else {
         return;
     };
 
     match wire_msg {
         crate::ops::WireMessage::Event(event) => {
-            // Verify the event author matches the envelope signer.
             if event.author != signer {
                 return;
             }
-
             let event_clone = event.clone();
             let client_events = crate::client_actor::mutate_state(state_addr, move |s| {
-                // Track sender as an online peer.
                 if !s.state.chat.peers.contains(&signer) {
                     s.state.chat.peers.push(signer);
                 }
-                // Apply to event-sourced state.
                 let result = willow_state::apply_lenient(&mut s.state.event_state, &event_clone);
                 if matches!(result, willow_state::ApplyResult::Applied) {
+                    use willow_state::EventStore as _;
                     s.state.event_store.append(event_clone.clone());
                     let hash = s.state.event_state.hash();
                     s.state.event_store.set_latest_hash(hash);
@@ -125,9 +107,7 @@ async fn process_received_message<T: TopicHandle>(
                             crate::storage::save_server_state(sid, &s.state.event_state);
                         }
                     }
-                    let mut events = Vec::new();
-                    crate::emit_client_events_for(s, &event_clone, &mut events);
-                    events
+                    mutations::derive_client_events(&event_clone)
                 } else {
                     vec![]
                 }
@@ -149,10 +129,11 @@ async fn process_received_message<T: TopicHandle>(
                 for event in &sorted {
                     let result = willow_state::apply_lenient(&mut s.state.event_state, event);
                     if matches!(result, willow_state::ApplyResult::Applied) {
+                        use willow_state::EventStore as _;
                         s.state.event_store.append(event.clone());
                         let hash = s.state.event_state.hash();
                         s.state.event_store.set_latest_hash(hash);
-                        crate::emit_client_events_for(s, event, &mut client_events);
+                        client_events.extend(mutations::derive_client_events(event));
                     }
                 }
                 if count > 0 {
@@ -172,6 +153,7 @@ async fn process_received_message<T: TopicHandle>(
             }
         }
         crate::ops::WireMessage::SyncRequest { state_hash, .. } => {
+            use willow_state::EventStore as _;
             let (missing, identity) = crate::client_actor::read_state(state_addr, move |s| {
                 let m = s.state.event_store.events_since(&state_hash);
                 let id = s.identity.clone();

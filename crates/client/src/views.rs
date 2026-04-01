@@ -370,7 +370,23 @@ pub fn compute_connection_view(
 
 // ───── Helper ───────────────────────────────────────────────────────────
 
-fn resolve_display_name(
+/// Compute messages for a specific channel (not necessarily the current one).
+pub fn compute_messages_view_for_channel(
+    events: &Arc<willow_state::ServerState>,
+    registry: &Arc<ServerRegistry>,
+    profiles: &Arc<ProfileState>,
+    channel: &str,
+    local_peer_id: EndpointId,
+) -> MessagesView {
+    let chat = Arc::new(ChatMeta {
+        current_channel: channel.to_string(),
+        peers: Vec::new(),
+        seen_message_ids: std::collections::HashSet::new(),
+    });
+    compute_messages_view(events, registry, &chat, profiles, local_peer_id)
+}
+
+pub fn resolve_display_name(
     event_state: &willow_state::ServerState,
     profiles: &ProfileState,
     peer_id: &EndpointId,

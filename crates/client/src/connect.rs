@@ -1,20 +1,19 @@
 use super::*;
-use crate::client_actor::{mutate_state, read_state};
 
 impl<N: willow_network::Network> ClientHandle<N> {
     /// Connect to the P2P network.
-    ///
-    /// Returns the broker address for subscribing to [`ClientEvent`]s.
-    pub async fn connect(&mut self, network: N) -> willow_actor::Addr<willow_actor::Broker<ClientEvent>> {
+    pub async fn connect(
+        &mut self,
+        network: N,
+    ) -> willow_actor::Addr<willow_actor::Broker<ClientEvent>> {
         let network = Arc::new(network);
         self.network = Some(Arc::clone(&network));
 
-        let (persistence, relay_addr) = read_state(&self.state_addr, |s| {
-            (s.config.persistence, s.config.relay_addr.clone())
-        })
-        .await;
-        if persistence {
-            storage::save_settings(&storage::NetworkSettings { relay_addr });
+        if self.persistence_enabled {
+            // Save settings (relay addr is from config, already stored).
+            storage::save_settings(&storage::NetworkSettings {
+                relay_addr: None,
+            });
         }
 
         // Subscribe to the server ops topic.
@@ -54,14 +53,14 @@ impl<N: willow_network::Network> ClientHandle<N> {
         }
 
         // Subscribe to channel topics from all servers.
-        let channel_topics: Vec<String> = read_state(&self.state_addr, |s| {
-            s.state
-                .servers
-                .values()
-                .flat_map(|ctx| ctx.topic_map.keys().cloned())
-                .collect()
-        })
-        .await;
+        let channel_topics: Vec<String> =
+            willow_actor::state::select(&self.server_registry_addr, |reg| {
+                reg.servers
+                    .values()
+                    .flat_map(|entry| entry.topic_map.keys().cloned())
+                    .collect()
+            })
+            .await;
 
         for topic_str in channel_topics {
             if let Ok((sender, events)) = network
@@ -84,11 +83,10 @@ impl<N: willow_network::Network> ClientHandle<N> {
         self.broadcast_profile_via_network();
         self.request_sync_via_network().await;
 
-        mutate_state(&self.state_addr, |s| s.connected = true).await;
+        self.mutation_handle.set_connected(true).await;
         self.event_broker.clone()
     }
 
-    /// Broadcast our profile to peers via the profile topic.
     pub(crate) fn broadcast_profile_via_network(&self) {
         let saved = storage::load_profile().unwrap_or_default();
         if saved.display_name.is_empty() {
@@ -99,36 +97,41 @@ impl<N: willow_network::Network> ClientHandle<N> {
         if let Ok(data) =
             willow_transport::pack_envelope(willow_transport::MessageType::Identity, &profile)
         {
-            self.broadcast_on_topic(ops::PROFILE_TOPIC, data);
+            self.mutation_handle
+                .broadcast_on_topic(ops::PROFILE_TOPIC, data);
         }
     }
 
-    /// Request sync from peers on the server ops topic.
     pub(crate) async fn request_sync_via_network(&self) {
-        let state_hash = read_state(&self.state_addr, |s| s.state.event_store.latest_hash()).await;
+        let state_hash = self
+            .persistence_addr
+            .ask(persistence_actor::GetLatestHash)
+            .await
+            .unwrap_or(willow_state::StateHash::ZERO);
         let msg = ops::WireMessage::SyncRequest {
             state_hash: state_hash.clone(),
             topic: None,
         };
         if let Some(data) = ops::pack_wire(&msg, &self.identity) {
-            self.broadcast_on_topic(ops::SERVER_OPS_TOPIC, data);
+            self.mutation_handle
+                .broadcast_on_topic(ops::SERVER_OPS_TOPIC, data);
         }
 
-        let channel_topics: Vec<String> = read_state(&self.state_addr, |s| {
-            s.state
-                .servers
-                .values()
-                .flat_map(|ctx| ctx.topic_map.keys().cloned())
-                .collect()
-        })
-        .await;
+        let channel_topics: Vec<String> =
+            willow_actor::state::select(&self.server_registry_addr, |reg| {
+                reg.servers
+                    .values()
+                    .flat_map(|entry| entry.topic_map.keys().cloned())
+                    .collect()
+            })
+            .await;
         for topic_str in channel_topics {
             let msg = ops::WireMessage::SyncRequest {
                 state_hash: state_hash.clone(),
                 topic: Some(topic_str.clone()),
             };
             if let Some(data) = ops::pack_wire(&msg, &self.identity) {
-                self.broadcast_on_topic(&topic_str, data);
+                self.mutation_handle.broadcast_on_topic(&topic_str, data);
             }
         }
     }
