@@ -355,6 +355,18 @@ because the resolver's chain — not the voter's — is what applies it.
 The action can only be undone if the resolver revises their own chain
 to remove the Resolve event. Even then, other admins can re-propose.
 
+#### Resolver must not be proposer
+
+The peer who publishes a `Resolve` event must be a different admin
+than the peer who published the `Propose` event. This prevents a
+single admin from proposing and immediately resolving before others
+can respond. At minimum, two distinct admins must cooperate to push
+an action through (one proposes, another resolves after votes).
+
+With a sole admin (genesis bootstrap), the single admin is both
+proposer and resolver — this is the one exception, since there's
+no other admin to resolve.
+
 #### Edge cases
 
 - **Last admin revokes themselves**: passes with quorum of 1. Server
@@ -366,6 +378,29 @@ to remove the Resolve event. Even then, other admins can re-propose.
   peers.
 - **`Count(n)` where n > admin count**: effectively unanimous — capped
   at the actual admin count.
+
+#### Known tradeoffs
+
+**Unanimous deadlock.** With the default unanimous threshold and 3
+admins, if one admin loses their key, goes offline permanently, or
+refuses to vote, no governance action can ever pass — including
+changing the threshold. The server is frozen for admin changes.
+Servers that want resilience should proactively lower the threshold
+while all admins are active. This is an accepted tradeoff: unanimous
+is safe but brittle, majority is flexible but can be exploited by
+colluding admins. There is no free lunch.
+
+**Vote retraction.** A voter can revise their chain to remove a vote
+after resolution. On re-materialization, the action is undone. This
+is author sovereignty working as designed — the community sees the
+retraction (frozen_heads in the Resolve show the vote existed) and
+can re-propose. If a peer repeatedly retracts, other admins can vote
+to revoke their admin status.
+
+**Majority collusion.** With majority threshold, a majority of admins
+can collude to kick the minority and seize control. This is inherent
+in any majority-rule system. The default unanimous threshold protects
+against this at the cost of the deadlock risk above.
 
 #### What requires a vote
 
