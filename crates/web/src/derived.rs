@@ -1,45 +1,49 @@
 //! Selector-based derived state actors for Leptos signals.
+//!
+//! Bridges `StateRef<T>` into Leptos `ReadSignal<U>` via `Notify`.
 
 use std::sync::Arc;
 
 use leptos::prelude::*;
 use send_wrapper::SendWrapper;
-use willow_actor::{Actor, Addr, Context, Handler, Recipient};
-use willow_client::client_actor::{ClientStateActor, StateChanged, Subscribe};
-use willow_client::SharedState;
+use willow_actor::{Actor, Context, Handler, Recipient};
+use willow_actor::state::{Notify, StateRef};
 
-/// A derived state actor that watches a specific slice of state.
-pub struct DerivedStateActor<T: PartialEq + Clone + Send + Sync + 'static> {
-    state_addr: Addr<ClientStateActor>,
-    selector: Arc<dyn Fn(&SharedState) -> T + Send + Sync>,
-    cached: Option<T>,
-    write: SendWrapper<WriteSignal<T>>,
+/// A derived state actor that watches a `StateRef<T>` and updates a Leptos signal.
+pub struct DerivedStateActor<T: Send + Sync + 'static, U: PartialEq + Clone + Send + Sync + 'static>
+{
+    source: StateRef<T>,
+    selector: Arc<dyn Fn(&T) -> U + Send + Sync>,
+    cached: Option<U>,
+    write: SendWrapper<WriteSignal<U>>,
 }
 
-impl<T: PartialEq + Clone + Send + Sync + 'static> Actor for DerivedStateActor<T> {
+impl<T: Send + Sync + 'static, U: PartialEq + Clone + Send + Sync + 'static> Actor
+    for DerivedStateActor<T, U>
+{
     fn started(&mut self, ctx: &mut Context<Self>) -> impl std::future::Future<Output = ()> + Send {
-        let recipient: Recipient<StateChanged> = ctx.address().into();
-        let state_addr = self.state_addr.clone();
-        async move {
-            let _ = state_addr.do_send(Subscribe(recipient));
-        }
+        let recipient: Recipient<Notify> = ctx.address().into();
+        self.source.subscribe(recipient);
+        async {}
     }
 }
 
-impl<T: PartialEq + Clone + Send + Sync + 'static> Handler<StateChanged> for DerivedStateActor<T> {
+impl<T: Send + Sync + 'static, U: PartialEq + Clone + Send + Sync + 'static> Handler<Notify>
+    for DerivedStateActor<T, U>
+{
     fn handle(
         &mut self,
-        _msg: StateChanged,
+        _msg: Notify,
         _ctx: &mut Context<Self>,
     ) -> impl std::future::Future<Output = ()> + Send {
         let selector = self.selector.clone();
-        let state_addr = self.state_addr.clone();
+        let source = self.source.clone();
         let cached = self.cached.clone();
         let write = self.write.clone();
 
         async move {
-            let result =
-                willow_client::client_actor::read_state(&state_addr, move |s| selector(s)).await;
+            let snapshot = source.get().await;
+            let result = selector(&snapshot);
             let changed = match &cached {
                 Some(old) => old != &result,
                 None => true,
@@ -51,18 +55,24 @@ impl<T: PartialEq + Clone + Send + Sync + 'static> Handler<StateChanged> for Der
     }
 }
 
-unsafe impl<T: PartialEq + Clone + Send + Sync + 'static> Send for DerivedStateActor<T> {}
+unsafe impl<T: Send + Sync + 'static, U: PartialEq + Clone + Send + Sync + 'static> Send
+    for DerivedStateActor<T, U>
+{
+}
 
-/// Create a derived Leptos signal backed by a state actor selector.
-pub fn derived_signal<T: PartialEq + Clone + Default + Send + Sync + 'static>(
-    state_addr: &Addr<ClientStateActor>,
+/// Create a derived Leptos signal from a `StateRef<T>`.
+pub fn derived_signal<
+    T: Send + Sync + 'static,
+    U: PartialEq + Clone + Default + Send + Sync + 'static,
+>(
+    source: &StateRef<T>,
     system: &willow_actor::SystemHandle,
-    selector: impl Fn(&SharedState) -> T + Send + Sync + 'static,
-) -> ReadSignal<T> {
-    let (read, write) = signal(T::default());
+    selector: impl Fn(&T) -> U + Send + Sync + 'static,
+) -> ReadSignal<U> {
+    let (read, write) = signal(U::default());
 
     system.spawn(DerivedStateActor {
-        state_addr: state_addr.clone(),
+        source: source.clone(),
         selector: Arc::new(selector),
         cached: None,
         write: SendWrapper::new(write),
