@@ -8,6 +8,7 @@ use std::sync::Arc;
 use rmcp::{model::*, service::RequestContext, ErrorData, RoleServer, ServerHandler};
 
 use crate::resources;
+use crate::scopes::TokenScope;
 use crate::tools;
 use willow_client::ClientHandle;
 use willow_network::Network;
@@ -17,6 +18,7 @@ use willow_network::Network;
 pub struct WillowMcpServer<N: Network> {
     pub(crate) client: Arc<ClientHandle<N>>,
     pub tool_router: tools::WillowToolRouter<N>,
+    pub scope: TokenScope,
 }
 
 impl<N: Network> WillowMcpServer<N> {
@@ -27,6 +29,18 @@ impl<N: Network> WillowMcpServer<N> {
         Self {
             client,
             tool_router,
+            scope: TokenScope::default(),
+        }
+    }
+
+    /// Create a new MCP server with a specific token scope.
+    pub fn with_scope(client: ClientHandle<N>, scope: TokenScope) -> Self {
+        let client = Arc::new(client);
+        let tool_router = tools::WillowToolRouter::new(Arc::clone(&client));
+        Self {
+            client,
+            tool_router,
+            scope,
         }
     }
 }
@@ -56,8 +70,14 @@ impl<N: Network> ServerHandler for WillowMcpServer<N> {
         _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + Send + '_ {
         async {
+            let tools = self
+                .tool_router
+                .tool_list()
+                .into_iter()
+                .filter(|t| self.scope.allows_tool(t.name.as_ref()))
+                .collect();
             Ok(ListToolsResult {
-                tools: self.tool_router.tool_list(),
+                tools,
                 next_cursor: None,
                 meta: None,
             })
@@ -69,7 +89,17 @@ impl<N: Network> ServerHandler for WillowMcpServer<N> {
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<CallToolResult, ErrorData>> + Send + '_ {
-        async move { self.tool_router.call(&request).await }
+        async move {
+            let name = request.name.as_ref();
+            if !self.scope.allows_tool(name) {
+                return Err(ErrorData::new(
+                    ErrorCode::INVALID_REQUEST,
+                    format!("tool '{name}' not allowed by token scope"),
+                    None,
+                ));
+            }
+            self.tool_router.call(&request).await
+        }
     }
 
     fn list_resources(
@@ -78,8 +108,12 @@ impl<N: Network> ServerHandler for WillowMcpServer<N> {
         _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListResourcesResult, ErrorData>> + Send + '_ {
         async {
+            let resources = resources::list_resources()
+                .into_iter()
+                .filter(|r| self.scope.allows_resource(&r.raw.uri))
+                .collect();
             Ok(ListResourcesResult {
-                resources: resources::list_resources(),
+                resources,
                 next_cursor: None,
                 meta: None,
             })
@@ -103,6 +137,33 @@ pub async fn serve_stdio<N: Network>(client: ClientHandle<N>) -> anyhow::Result<
     let transport = rmcp::transport::io::stdio();
     let service = rmcp::serve_server(server, transport).await?;
     service.waiting().await?;
+    Ok(())
+}
+
+/// Serve the MCP server over Streamable HTTP (SSE/JSON).
+pub async fn serve_http<N: Network + 'static>(
+    client: ClientHandle<N>,
+    bind: &str,
+    scope: TokenScope,
+) -> anyhow::Result<()> {
+    use rmcp::transport::streamable_http_server::{
+        session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
+    };
+
+    let config = StreamableHttpServerConfig::default();
+    let session_manager = Arc::new(LocalSessionManager::default());
+
+    let service = StreamableHttpService::new(
+        move || Ok(WillowMcpServer::with_scope(client.clone(), scope.clone())),
+        session_manager,
+        config,
+    );
+
+    let app = axum::Router::new().route_service("/mcp", service);
+
+    let listener = tokio::net::TcpListener::bind(bind).await?;
+    tracing::info!("MCP HTTP server listening on {bind}");
+    axum::serve(listener, app).await?;
     Ok(())
 }
 

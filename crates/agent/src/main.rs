@@ -147,13 +147,15 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!("starting MCP server on stdio");
             server::serve_stdio(client).await?;
         }
+        "http" => {
+            eprintln!("Bearer token: {token}");
+            tracing::info!("starting MCP HTTP server on {}", cli.bind);
+            server::serve_http(client, &cli.bind, Default::default()).await?;
+        }
         other => {
-            anyhow::bail!("unsupported transport: {other} (only 'stdio' supported currently)");
+            anyhow::bail!("unsupported transport: {other} (supported: 'stdio', 'http')");
         }
     }
-
-    // Token is printed to stderr for non-stdio transports.
-    let _ = token;
 
     Ok(())
 }

@@ -5,5 +5,6 @@
 pub mod auth;
 pub mod notifications;
 pub mod resources;
+pub mod scopes;
 pub mod server;
 pub mod tools;
