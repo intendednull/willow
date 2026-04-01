@@ -5,17 +5,9 @@ impl<N: willow_network::Network> ClientHandle<N> {
         self.identity.clone()
     }
 
-    pub fn state_addr(&self) -> &willow_actor::Addr<client_actor::ClientStateActor> {
-        &self.state_addr
-    }
-
     pub fn actor_system(&self) -> &willow_actor::SystemHandle {
         &self.system
     }
-
-    /// No-op — domain actors auto-notify subscribers via `Notify`.
-    /// Kept for backward compatibility with web crate callers.
-    pub fn notify_mutation(&self) {}
 
     /// Subscribe to client events.
     pub async fn subscribe_events(&self) -> crate::EventReceiver {

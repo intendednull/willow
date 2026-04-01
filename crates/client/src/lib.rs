@@ -20,7 +20,6 @@
 //! ```
 
 pub mod base64;
-pub mod client_actor;
 pub mod emoji;
 pub mod events;
 pub mod files;
@@ -136,32 +135,12 @@ impl Default for ClientConfig {
     }
 }
 
-/// All mutable state shared between ClientHandle and ClientEventLoop.
-pub struct SharedState {
-    pub state: ClientState,
-    pub identity: Identity,
-    pub config: ClientConfig,
-    pub connected: bool,
-    pub connected_subscribed: bool,
-    pub typing_peers: HashMap<willow_identity::EndpointId, (String, u64)>,
-    pub voice_participants: HashMap<String, std::collections::HashSet<willow_identity::EndpointId>>,
-    pub active_voice_channel: Option<String>,
-    pub voice_muted: bool,
-    pub voice_deafened: bool,
-    pub state_verification_results: HashMap<willow_identity::EndpointId, willow_state::StateHash>,
-    pub last_typing_sent_ms: u64,
-    pub join_links: Vec<ops::JoinLink>,
-}
-
 /// Cloneable command interface for UI components.
 ///
 /// Generic over the [`Network`](willow_network::Network) implementation so
 /// that production code can use a real iroh network while tests can use
 /// an in-memory backend.
 pub struct ClientHandle<N: willow_network::Network> {
-    // Legacy monolithic state actor — used during incremental migration.
-    // Will be removed once all callers use domain-specific actors.
-    pub(crate) state_addr: willow_actor::Addr<client_actor::ClientStateActor>,
     pub(crate) system: willow_actor::SystemHandle,
     /// The network backend, set after [`connect()`](ClientHandle::connect).
     pub(crate) network: Option<Arc<N>>,
@@ -204,7 +183,6 @@ pub struct ClientHandle<N: willow_network::Network> {
 impl<N: willow_network::Network> Clone for ClientHandle<N> {
     fn clone(&self) -> Self {
         Self {
-            state_addr: self.state_addr.clone(),
             system: self.system.clone(),
             network: self.network.clone(),
             topics: Arc::clone(&self.topics),
@@ -626,33 +604,9 @@ impl<N: willow_network::Network> ClientHandle<N> {
             topics: Arc::clone(&topics),
         };
 
-        let mut shared_state = SharedState {
-            state,
-            identity,
-            config,
-            connected: false,
-            connected_subscribed: false,
-            state_verification_results: HashMap::new(),
-            last_typing_sent_ms: 0,
-            typing_peers: HashMap::new(),
-            voice_participants: HashMap::new(),
-            active_voice_channel: None,
-            voice_muted: false,
-            voice_deafened: false,
-            join_links: Vec::new(),
-        };
-
-        // SharedState is Send but not Sync (due to rusqlite::Connection).
-        reconcile_topic_map(&mut shared_state.state);
-
-        let state_addr = system.spawn(client_actor::ClientStateActor {
-            shared: shared_state,
-            dirty: false,
-            subscribers: Vec::new(),
-        });
+        reconcile_topic_map(&mut state);
 
         let handle = ClientHandle {
-            state_addr,
             system: system.handle(),
             network: None,
             topics,
@@ -888,35 +842,10 @@ pub(crate) fn test_client() -> (
         join_links: Arc::clone(&join_links), topics: Arc::clone(&topics),
     };
 
-    let shared_state = SharedState {
-        state,
-        identity,
-        config: ClientConfig {
-            persistence: false,
-            ..ClientConfig::default()
-        },
-        connected: false,
-        connected_subscribed: false,
-        state_verification_results: HashMap::new(),
-        last_typing_sent_ms: 0,
-        typing_peers: HashMap::new(),
-        voice_participants: HashMap::new(),
-        active_voice_channel: None,
-        voice_muted: false,
-        voice_deafened: false,
-        join_links: Vec::new(),
-    };
-
-    let sa = sys.spawn(client_actor::ClientStateActor {
-        shared: shared_state,
-        dirty: false,
-        subscribers: Vec::new(),
-    });
     // Leak the system so actors stay alive for the test duration.
     std::mem::forget(sys);
 
     let client = ClientHandle {
-        state_addr: sa,
         system: sh,
         network: None,
         topics,
