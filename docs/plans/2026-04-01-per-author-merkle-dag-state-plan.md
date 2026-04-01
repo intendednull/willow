@@ -58,7 +58,7 @@ dependency on event types.
 
 ### EventKind
 
-21 variants total. Changes from current:
+22 variants total. Changes from current:
 - **Removed**: `StateVerification` (legacy), `KickMember` (now a
   `ProposedAction`), `Resolve` (votes auto-apply on threshold)
 - **Added**: `CreateServer`, `Propose`, `Vote`
@@ -395,7 +395,7 @@ Ported from current `apply_inner`. Changes:
 - Permission checks use `has_permission` (admins pass implicitly)
 - `apply_proposed_action` modifies `state.admins` not `peer_permissions`
 
-Total: 21 match arms in apply_unchecked (3 governance + 18 standard).
+Total: 22 match arms in apply_unchecked (3 governance + 19 standard).
 
 **Tests**:
 - `materialize_empty_dag` — just genesis → fresh state with genesis
@@ -587,8 +587,7 @@ pub use types::{Channel, ChatMessage, Member, Permission, Profile, Role};
 ```
 
 Note: `HeadsSummary` is defined in `sync.rs` and re-exported.
-`event.rs` imports it for the `Resolve` variant's `frozen_heads`
-field via `use crate::sync::HeadsSummary`.
+`dag.rs` imports it for `heads_summary()` method.
 
 **Validation**: `cargo test -p willow-state` — all tests pass.
 

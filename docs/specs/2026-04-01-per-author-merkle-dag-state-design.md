@@ -256,7 +256,7 @@ depends on C1, then A2 transitively depends on C1.
 ### Server Identity and Genesis Event
 
 A server begins with a **genesis event** — the first event in the
-DAG, published by the server's creator (the owner). The genesis event
+DAG, published by the server's creator. The genesis event
 is a `CreateServer` event:
 
 ```rust
@@ -429,8 +429,8 @@ pub fn materialize(dag: &EventDag) -> ServerState {
 ```
 
 The genesis author is passed to `ServerState::new()` which grants them
-`Administrator` in the initial state. From that point, all admin
-changes go through the voting process.
+admin status in the initial state. From that point, all admin changes
+go through the voting process.
 
 ### EventDag
 
@@ -614,8 +614,8 @@ pub enum Permission {
   `ProposedAction::GrantAdmin` / `RevokeAdmin` exclusively.
 
 Note: `message_id` fields change from `String` to `EventHash`.
-Total variant count: 21 (21 original - `StateVerification` -
-`KickMember` + `CreateServer` + `Propose` + `Vote` = 21).
+Total variant count: 22 (21 original - `StateVerification` -
+`KickMember` + `CreateServer` + `Propose` + `Vote` = 22).
 
 ## Section 2: State Materialization
 
@@ -1393,8 +1393,8 @@ impl EventDag {
 When a new peer bootstraps from a snapshot, they must decide whether
 to trust it. The trust model:
 
-1. **Owner-signed snapshots**: the server owner can sign snapshots,
-   providing a root-of-trust endorsement.
+1. **Admin-signed snapshots**: an admin can sign snapshots,
+   providing a trust endorsement.
 2. **Multi-peer agreement**: request the snapshot hash from multiple
    peers. If a majority agree, the snapshot is likely correct.
 3. **Full verification**: replay from genesis to verify. Expensive
@@ -1468,7 +1468,7 @@ Every `ServerState` field and where it is read:
 | Field | Consumers | Access Pattern |
 |---|---|---|
 | `server_name` | `ClientView.server_name`, join page, app title | Read on server join, display |
-| `owner` | `ClientView.server_owner`, permission checks, "owner" badge in member list | Frequent read |
+| `admins` | Admin badge in member list, permission checks, governance UI | Frequent read |
 | `channels` | `compute_channels_view()`, channel name→ID resolution for message sending, message filtering | Hot path — every message send resolves channel |
 | `roles` | `compute_roles_view()`, role management UI | Infrequent read |
 | `members` | `compute_members_view()`, member list, online status merge | Read on membership change |
@@ -1557,7 +1557,7 @@ code path between "single linear chain with parent state hash" and
 
 | Symbol | Status |
 |---|---|
-| `EventKind` (21 variants) | 18 carried over + `CreateServer` + `Propose` + `Vote` |
+| `EventKind` (22 variants) | 19 carried over + `CreateServer` + `Propose` + `Vote` |
 | `ServerState` (struct) | Kept, minus `owner`/`seen_event_ids`/`hash()`, plus `admins`/`vote_threshold`/`pending_proposals` |
 | `Permission` enum | `Administrator` removed — admin status tracked separately in `ServerState.admins` |
 | `has_permission()` | Admins have all permissions; no owner concept |
@@ -2089,7 +2089,7 @@ and what is deferred.
 
 | Section | What ships |
 |---|---|
-| Section 1 | `Event`, `EventHash`, `EventKind` (21 variants), `ProposedAction`, `VoteThreshold`, `EventDag`, `InsertError`, `PendingBuffer` |
+| Section 1 | `Event`, `EventHash`, `EventKind` (22 variants), `ProposedAction`, `VoteThreshold`, `EventDag`, `InsertError`, `PendingBuffer` |
 | Section 2 | `materialize()`, `apply_unchecked()`, `apply_incremental()`, topological sort, `ServerState` (simplified) |
 | Section 3 | `HeadsSummary`, `SyncMessage`, `AuthorRequest`, sync flow |
 | Section 4 | `replace_chain()`, chain verification, revision detection (`ChainStatus`) |
@@ -2118,18 +2118,18 @@ concept they verify, not by module.
 ### Test Helpers
 
 ```rust
-/// Create an EventDag with a genesis event and server owner.
+/// Create an EventDag with a genesis event and initial admin.
 fn test_dag() -> (EventDag, Identity) {
-    let owner = Identity::generate();
+    let admin = Identity::generate();
     let mut dag = EventDag::new();
     let genesis = dag.create_event(
-        &owner,
+        &admin,
         EventKind::CreateServer { name: "Test Server".into() },
         vec![],
         0,
     );
     dag.insert(genesis).unwrap();
-    (dag, owner)
+    (dag, admin)
 }
 
 /// Create and insert a signed event into the DAG.
@@ -2179,7 +2179,7 @@ test event_signature_rejects_wrong_key
 test insert_genesis_event
     Insert a CreateServer event as first event. Succeeds.
     DAG has one event. genesis() returns it. server_id() and
-    owner() return correct values.
+    genesis_author() return correct values.
 
 test insert_rejects_non_genesis_first
     Insert a non-CreateServer event into empty DAG.
@@ -2245,7 +2245,7 @@ test sort_is_stable_under_insertion_order
 
 ```
 test materialize_empty_dag
-    Empty DAG → fresh ServerState with just the owner as member.
+    Just genesis → fresh ServerState with genesis author as sole admin.
 
 test materialize_create_channel
     One CreateChannel event → state has one channel.
@@ -2264,8 +2264,8 @@ test materialize_permission_enforcement
     Unpermitted author tries CreateChannel. Event is rejected
     (ApplyResult::Rejected). Channel does not appear in state.
 
-test materialize_owner_has_all_permissions
-    Owner can do anything without explicit grants.
+test materialize_genesis_author_is_admin
+    Genesis author is in admins set and can do anything.
 
 test materialize_admin_has_all_permissions
     Admin peer (in admins set) can do anything without explicit
