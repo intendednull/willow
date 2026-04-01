@@ -13,9 +13,9 @@ impl<N: willow_network::Network> ClientHandle<N> {
         &self.system
     }
 
-    pub fn notify_mutation(&self) {
-        let _ = self.state_addr.do_send(client_actor::NotifyMutation);
-    }
+    /// No-op — domain actors auto-notify subscribers via `Notify`.
+    /// Kept for backward compatibility with web crate callers.
+    pub fn notify_mutation(&self) {}
 
     /// Subscribe to client events.
     pub async fn subscribe_events(&self) -> crate::EventReceiver {

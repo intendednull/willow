@@ -139,7 +139,7 @@ pub fn App() -> impl IntoView {
     }
 
     // Wire derived signals that auto-update from state actor changes.
-    crate::state::wire_derived_signals(handle.state_addr(), handle.actor_system(), &write);
+    crate::state::wire_derived_signals(&handle, handle.actor_system(), &write);
 
     // Detect join link from URL fragment.
     {
