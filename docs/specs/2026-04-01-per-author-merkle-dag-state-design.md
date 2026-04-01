@@ -272,56 +272,138 @@ server_id = hex(genesis_event.hash)
 This cryptographically binds the server's identity to its creator and
 creation moment. Properties:
 
-- **Content-addressed**: the same owner creating the same server name
-  at different times produces different IDs (different timestamps,
+- **Content-addressed**: the same creator making a server with the same
+  name at different times produces different IDs (different timestamps,
   different hashes).
-- **Unforgeable**: the genesis event is signed by the owner's key.
+- **Unforgeable**: the genesis event is signed by the creator's key.
   No one else can produce an event that hashes to this server_id.
-- **Permanent**: the owner is whoever signed the genesis event. This
-  cannot change — the genesis event's hash IS the server_id, and
-  changing the genesis event would change the server_id, making it a
-  different server.
+- **Permanent**: changing the genesis event would change the server_id,
+  making it a different server.
 
-### Ownership Model
+### Governance Model
 
-The genesis author is the owner **forever**. Ownership is not
-transferable at the protocol level.
+There is no permanent "owner." The genesis author starts as the sole
+`Administrator`, but has no special permanent status beyond that. All
+privileged operations (granting/revoking admin, kicking members,
+changing the vote threshold) go through a **propose → vote → resolve**
+process.
 
-Rationale: the genesis private key is the root of trust. Any
-"transfer" mechanism can be undone by the genesis key holder revising
-their chain (author sovereignty). Rather than building a transfer
-mechanism that creates false security expectations, we make the
-cryptographic reality explicit:
+#### No single point of failure
 
-- The owner has implicit all-permissions and cannot be kicked.
-- The owner can grant `Administrator` to other peers, giving them
-  nearly equivalent power.
-- If the owner wants to hand off a community, the clean path is:
-  create a new server under the new owner's key, migrate members.
-- If the owner's key is compromised, the server is compromised.
-  Same as any key-based system.
+- The genesis author can be outvoted by other admins.
+- If the genesis author leaves, the server continues with remaining admins.
+- A community's governance is emergent from the admin set, not tied to
+  a single key.
 
-`materialize()` derives the owner from the genesis event — it is not
-passed as a parameter:
+#### Vote threshold
+
+The default threshold is **unanimous** — all admins must approve. The
+threshold itself can be changed via a `SetVoteThreshold` proposal,
+which must pass under the *current* threshold. This means moving from
+unanimous to majority requires unanimous agreement first.
+
+```rust
+pub enum VoteThreshold {
+    /// All admins must approve (default).
+    Unanimous,
+    /// More than half of admins must approve.
+    Majority,
+    /// A specific count of admins must approve (capped at admin count).
+    Count(u32),
+}
+```
+
+#### Bootstrap sequence
+
+1. Genesis `CreateServer` event. Genesis author is sole admin.
+2. Sole admin proposes `GrantAdmin{alice}`. Quorum = 1 (unanimous of 1).
+   Proposer is implicit "yes." Resolves immediately.
+3. Now 2 admins. Propose `GrantAdmin{bob}`. Both must vote (unanimous).
+4. Now 3 admins. They can propose `SetVoteThreshold(Majority)`. All 3
+   must agree. Once resolved, future proposals need only 2 of 3.
+
+#### Frozen chain proof
+
+When a vote reaches quorum, the resolver publishes a `Resolve` event
+that captures the chain heads of all voters at that moment. This
+"freezes" the state of each voter's chain as proof:
+
+```
+Admin A:  Propose(GrantAdmin{bob})
+                    ↑
+Admin B:  Vote(yes) │
+                    ↑
+Admin C:  Vote(yes) │
+                    ↑
+Admin A:  Resolve {
+              proposal: hash(Propose),
+              votes: [hash(B_vote), hash(C_vote)],
+              frozen_heads: {
+                  A: (seq=5, hash=..),
+                  B: (seq=3, hash=..),
+                  C: (seq=7, hash=..),
+              },
+              action: GrantAdmin{bob},
+          }
+```
+
+If a voter later revises their chain to remove their vote, the
+`Resolve` event still exists in the resolver's chain. The frozen heads
+prove the votes were valid at resolution time. The action stands
+because the resolver's chain — not the voter's — is what applies it.
+
+The action can only be undone if the resolver revises their own chain
+to remove the Resolve event. Even then, other admins can re-propose.
+
+#### Edge cases
+
+- **Last admin revokes themselves**: passes with quorum of 1. Server
+  has 0 admins. No more privileged ops. Members can still chat. The
+  server is effectively locked.
+- **Two admins revoke each other concurrently**: topological sort
+  determines which lands first. The first revocation removes the second
+  admin's power before their revocation applies. Deterministic on all
+  peers.
+- **`Count(n)` where n > admin count**: effectively unanimous — capped
+  at the actual admin count.
+
+#### What requires a vote
+
+| Action | Mechanism |
+|---|---|
+| Grant `Administrator` | Propose → Vote → Resolve |
+| Revoke `Administrator` | Propose → Vote → Resolve |
+| Kick a member | Propose → Vote → Resolve |
+| Change vote threshold | Propose → Vote → Resolve |
+| Grant non-admin permissions (`ManageChannels`, etc.) | Direct event by any admin |
+| Revoke non-admin permissions | Direct event by any admin |
+| Create/delete/rename channels | Direct event by authorized peer |
+| Send messages, reactions, profiles | Direct event by any member |
+| Rename server, set description | Direct event by any admin |
+
+`materialize()` derives the initial admin from the genesis event:
 
 ```rust
 pub fn materialize(dag: &EventDag) -> ServerState {
     let genesis = dag.genesis().expect("DAG must have a genesis event");
     let server_id = genesis.hash.to_string();
-    let owner = genesis.author;
     let name = match &genesis.kind {
         EventKind::CreateServer { name } => name.clone(),
         _ => panic!("genesis event must be CreateServer"),
     };
 
     let sorted = dag.topological_sort();
-    let mut state = ServerState::new(&server_id, &name, owner);
+    let mut state = ServerState::new(&server_id, &name, genesis.author);
     for event in sorted {
         apply_unchecked(&mut state, event);
     }
     state
 }
 ```
+
+The genesis author is passed to `ServerState::new()` which grants them
+`Administrator` in the initial state. From that point, all admin
+changes go through the voting process.
 
 ### EventDag
 
@@ -429,6 +511,20 @@ pub enum EventKind {
     // -- Server lifecycle --
     CreateServer { name: String },
 
+    // -- Governance (vote-based) --
+    Propose { action: ProposedAction },
+    Vote { proposal: EventHash, accept: bool },
+    Resolve {
+        proposal: EventHash,
+        votes: Vec<EventHash>,
+        frozen_heads: HeadsSummary,
+        action: ProposedAction,
+    },
+
+    // -- Permissions (direct, by any admin) --
+    GrantPermission { peer_id: EndpointId, permission: Permission },
+    RevokePermission { peer_id: EndpointId, permission: Permission },
+
     // -- Server structure --
     CreateChannel { name: String, channel_id: String, kind: String },
     DeleteChannel { channel_id: String },
@@ -437,31 +533,57 @@ pub enum EventKind {
     DeleteRole { role_id: String },
     SetPermission { role_id: String, permission: String, granted: bool },
     AssignRole { peer_id: EndpointId, role_id: String },
-    GrantPermission { peer_id: EndpointId, permission: Permission },
-    RevokePermission { peer_id: EndpointId, permission: Permission },
-    KickMember { peer_id: EndpointId },
+
+    // -- Chat --
     Message { channel_id: String, body: String, reply_to: Option<EventHash> },
     EditMessage { message_id: EventHash, new_body: String },
     DeleteMessage { message_id: EventHash },
     Reaction { message_id: EventHash, emoji: String },
+
+    // -- Identity --
     SetProfile { display_name: String },
+
+    // -- Encryption --
     RotateChannelKey { channel_id: String, encrypted_keys: Vec<(EndpointId, Vec<u8>)> },
+
+    // -- Pinning --
     PinMessage { channel_id: String, message_id: EventHash },
     UnpinMessage { channel_id: String, message_id: EventHash },
+
+    // -- Server metadata (any admin) --
     RenameServer { new_name: String },
     SetServerDescription { description: String },
 }
+
+/// Actions that require admin vote to take effect.
+pub enum ProposedAction {
+    GrantAdmin { peer_id: EndpointId },
+    RevokeAdmin { peer_id: EndpointId },
+    KickMember { peer_id: EndpointId },
+    SetVoteThreshold { threshold: VoteThreshold },
+}
+
+pub enum VoteThreshold {
+    Unanimous,
+    Majority,
+    Count(u32),
+}
 ```
 
-**Removed variant:** `StateVerification { state_hash: StateHash }` is
-dropped entirely. It was a no-op event that carried a `StateHash` for
-comparison — both concepts (`StateHash` and no-op events) are legacy.
-Peers verify state agreement by comparing `HeadsSummary` directly.
+**Changes from current EventKind:**
 
-Note: `message_id` fields change from `String` (UUID) to `EventHash`
-since message IDs are now the content hash of the `Message` event that
-created them. `CreateServer` is new. `StateVerification` is removed.
-The variant count stays at 21 (20 carried over + 1 new - 1 removed + 1 = 21).
+- **Removed**: `StateVerification` (legacy), `KickMember` (now a
+  `ProposedAction`)
+- **Added**: `CreateServer`, `Propose`, `Vote`, `Resolve`
+- **Kept as direct**: `GrantPermission` / `RevokePermission` — these
+  grant non-admin permissions (ManageChannels, SendMessages, etc.)
+  and can be done by any admin without a vote. Granting/revoking
+  `Administrator` specifically goes through the vote process via
+  `ProposedAction::GrantAdmin` / `RevokeAdmin`.
+
+Note: `message_id` fields change from `String` to `EventHash`.
+Total variant count: 22 (21 original - `StateVerification` -
+`KickMember` + `CreateServer` + `Propose` + `Vote` + `Resolve` = 22).
 
 ## Section 2: State Materialization
 
@@ -617,10 +739,52 @@ hashes or dedup (the DAG handles both structurally):
 
 ```rust
 /// Apply an event's mutation to state. No structural validation —
-/// the DAG guarantees ordering and dedup. Only permission checks
-/// remain.
+/// the DAG guarantees ordering and dedup. Permission checks and
+/// governance logic are enforced here.
 fn apply_unchecked(state: &mut ServerState, event: &Event) -> ApplyResult {
-    // Permission enforcement (same as current apply_inner).
+    match &event.kind {
+        // Governance events — handled specially.
+        EventKind::CreateServer { .. } => {
+            // No-op during replay — genesis data already extracted
+            // by materialize() before the replay loop.
+            return ApplyResult::Applied;
+        }
+        EventKind::Propose { action } => {
+            // Only admins can propose.
+            if !state.has_permission(&event.author, &Permission::Administrator) {
+                return ApplyResult::Rejected("not an admin".into());
+            }
+            state.pending_proposals.insert(event.hash.clone(), PendingProposal {
+                action: action.clone(),
+                proposer: event.author,
+                votes: HashMap::from([(event.author, true)]),  // proposer is implicit yes
+            });
+            return ApplyResult::Applied;
+        }
+        EventKind::Vote { proposal, accept } => {
+            if !state.has_permission(&event.author, &Permission::Administrator) {
+                return ApplyResult::Rejected("not an admin".into());
+            }
+            if let Some(prop) = state.pending_proposals.get_mut(proposal) {
+                prop.votes.insert(event.author, *accept);
+            }
+            return ApplyResult::Applied;
+        }
+        EventKind::Resolve { proposal, action, frozen_heads, votes } => {
+            // Validate: proposer must be admin, all referenced votes
+            // must exist in pending_proposals, quorum must be met.
+            if let Some(prop) = state.pending_proposals.remove(proposal) {
+                let yes_count = prop.votes.values().filter(|v| **v).count();
+                if state.meets_threshold(yes_count) {
+                    apply_proposed_action(state, action);
+                }
+            }
+            return ApplyResult::Applied;
+        }
+        _ => {}
+    }
+
+    // Non-governance events — standard permission check.
     let required = required_permission(&event.kind);
     if let Some(ref perm) = required {
         if !state.has_permission(&event.author, perm) {
@@ -630,8 +794,36 @@ fn apply_unchecked(state: &mut ServerState, event: &Event) -> ApplyResult {
         }
     }
 
-    // Apply the mutation (same match block as current apply_inner).
     apply_mutation(state, event)
+}
+
+/// Apply a voted-on action to state.
+fn apply_proposed_action(state: &mut ServerState, action: &ProposedAction) {
+    match action {
+        ProposedAction::GrantAdmin { peer_id } => {
+            state.peer_permissions
+                .entry(*peer_id)
+                .or_default()
+                .insert(Permission::Administrator);
+            state.members.entry(*peer_id).or_insert_with(|| Member {
+                peer_id: *peer_id,
+                roles: HashSet::new(),
+                display_name: None,
+            });
+        }
+        ProposedAction::RevokeAdmin { peer_id } => {
+            if let Some(perms) = state.peer_permissions.get_mut(peer_id) {
+                perms.remove(&Permission::Administrator);
+            }
+        }
+        ProposedAction::KickMember { peer_id } => {
+            state.members.remove(peer_id);
+            state.peer_permissions.remove(peer_id);
+        }
+        ProposedAction::SetVoteThreshold { threshold } => {
+            state.vote_threshold = threshold.clone();
+        }
+    }
 }
 ```
 
@@ -650,17 +842,15 @@ provided UUIDs, not content hashes).
 
 ### ServerState Changes
 
-`ServerState` loses the fields that were artifacts of the linear chain.
-`new()` takes `(server_id, name, owner)` — the name comes from the
-genesis `CreateServer` event. Subsequent `RenameServer` events can
-change it.
+`ServerState` gains voting state and loses the single-owner concept.
+`new()` takes `(server_id, name, genesis_author)` — the genesis author
+is granted `Administrator` in the initial state, but is not stored as a
+special "owner." From there, the admin set evolves through votes.
 
 ```rust
 pub struct ServerState {
-    // Unchanged fields:
     pub server_id: String,
-    pub server_name: String,       // from genesis CreateServer, mutable via RenameServer
-    pub owner: EndpointId,
+    pub server_name: String,
     pub channels: HashMap<String, Channel>,
     pub roles: HashMap<String, Role>,
     pub members: HashMap<EndpointId, Member>,
@@ -670,12 +860,28 @@ pub struct ServerState {
     pub description: String,
     pub channel_keys: HashMap<String, Vec<u8>>,
 
+    // -- Governance state --
+    /// Current vote threshold for admin actions.
+    pub vote_threshold: VoteThreshold,
+    /// Pending proposals not yet resolved.
+    pub pending_proposals: HashMap<EventHash, PendingProposal>,
+
+    // REMOVED: owner: EndpointId
+    //   → No single owner. Admins are peers with Administrator permission.
+    //
     // REMOVED: seen_event_ids: HashSet<String>
     //   → Dedup is structural (DAG rejects duplicate hashes)
     //
     // REMOVED: hash() method that serializes entire state
     //   → State hashing is optional and computed differently
     //     (see Section 5: Compaction & Snapshots)
+}
+
+/// A proposal awaiting votes.
+pub struct PendingProposal {
+    pub action: ProposedAction,
+    pub proposer: EndpointId,
+    pub votes: HashMap<EndpointId, bool>,  // voter -> accept/reject
 }
 ```
 
@@ -690,8 +896,9 @@ idempotently and commutatively where possible:
 | `CreateChannel` | Two peers creating the same `channel_id` concurrently: first wins (skip if exists). Deterministic because topological sort is deterministic. |
 | `DeleteChannel` + `Message` to same channel | If delete sorts first, message targets a missing channel — silently ignored. If message sorts first, it's created then channel + messages deleted. Both are valid eventual states. |
 | `EditMessage` + `DeleteMessage` on same message | Last-writer-wins by sort order. Both are acceptable. |
-| `GrantPermission` + `KickMember` on same peer | Sort-order determines whether the grant applies before the kick removes it, or the kick happens first and the grant re-adds the member. Both converge. |
 | `Reaction` by two peers | Both reactions are added (additive, no conflict). |
+| Two concurrent `Propose` events | Both recorded as pending. Each resolved independently. |
+| `Vote` on a proposal that's already `Resolve`d | Vote is ignored (proposal no longer pending). |
 
 The key property: **all peers with the same DAG contents produce the
 same materialized state.** The specific outcome of concurrent events
@@ -1262,22 +1469,24 @@ code path between "single linear chain with parent state hash" and
 | `merge()` | DAG union + topological sort replaces timestamp-sorted merge |
 | `find_common_ancestor()` | Per-author seq comparison replaces state-hash walking |
 | `StateHash` | No per-event state hash; snapshots use `SnapshotHash` |
+| `ServerState.owner` | No single owner. Admins are peers with `Administrator` |
 | `ServerState.seen_event_ids` | Dedup is structural (DAG rejects duplicate hashes) |
 | `ServerState.hash()` | Full-state hashing removed from hot path |
 | `InMemoryStore` | Replaced by `EventDag` (which subsumes store + ordering) |
 | `EventStore` trait | Replaced by `DagStore` trait for persistent DAG backends |
+| `KickMember` EventKind | Now a `ProposedAction`, applied via vote |
 
 ### What Is Preserved
 
 | Symbol | Status |
 |---|---|
-| `EventKind` (21 variants) | 20 carried over + `CreateServer` - `StateVerification` |
-| `ServerState` (struct) | Kept, minus `seen_event_ids` and `hash()` |
+| `EventKind` (22 variants) | 18 carried over + `CreateServer` + `Propose` + `Vote` + `Resolve` |
+| `ServerState` (struct) | Kept, minus `owner`/`seen_event_ids`/`hash()`, plus governance state |
 | `Permission` enum | Unchanged |
-| `has_permission()` | Unchanged |
+| `has_permission()` | Simplified — no owner short-circuit, checks admin set |
 | `Channel`, `Role`, `Member`, `Profile` | Unchanged |
 | `ChatMessage` | `id` and `reply_to` change from `String` to `EventHash` |
-| Permission enforcement in apply | Moved to `apply_unchecked()`, same logic |
+| Permission enforcement in apply | Moved to `apply_unchecked()`, governance events handled specially |
 | Zero-I/O crate boundary | Preserved — state crate remains pure |
 
 ### New Modules
@@ -1803,7 +2012,7 @@ and what is deferred.
 
 | Section | What ships |
 |---|---|
-| Section 1 | `Event`, `EventHash`, `EventKind` (20 variants), `EventDag`, `InsertError`, `PendingBuffer` |
+| Section 1 | `Event`, `EventHash`, `EventKind` (22 variants), `ProposedAction`, `VoteThreshold`, `EventDag`, `InsertError`, `PendingBuffer` |
 | Section 2 | `materialize()`, `apply_unchecked()`, `apply_incremental()`, topological sort, `ServerState` (simplified) |
 | Section 3 | `HeadsSummary`, `SyncMessage`, `AuthorRequest`, sync flow |
 | Section 4 | `replace_chain()`, chain verification, revision detection (`ChainStatus`) |
