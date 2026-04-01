@@ -262,4 +262,24 @@ mod tests {
 
         system.shutdown().await;
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stream_output_late_subscriber_misses_previous() {
+        let mut output = StreamOutput::new();
+
+        // Emit before subscribing.
+        output.emit(1);
+        output.emit(2);
+
+        // Late subscriber should NOT see previously emitted values.
+        let mut stream = output.subscribe();
+
+        // Emit after subscribing.
+        output.emit(3);
+
+        assert_eq!(stream.next().await.unwrap(), 3);
+
+        let system = System::new();
+        system.shutdown().await;
+    }
 }

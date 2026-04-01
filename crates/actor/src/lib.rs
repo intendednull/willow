@@ -654,4 +654,378 @@ mod tests {
 
         system.shutdown().await;
     }
+
+    // ───── Supervision: backoff policy ────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn supervised_actor_backoff_restarts() {
+        #[derive(Clone)]
+        struct BackoffActor {
+            started_count: Arc<AtomicU32>,
+        }
+        impl Actor for BackoffActor {
+            fn started(
+                &mut self,
+                _ctx: &mut Context<Self>,
+            ) -> impl std::future::Future<Output = ()> + Send {
+                self.started_count.fetch_add(1, Ordering::SeqCst);
+                async {}
+            }
+        }
+        struct StopMe;
+        impl Message for StopMe {
+            type Result = ();
+        }
+        impl Handler<StopMe> for BackoffActor {
+            fn handle(
+                &mut self,
+                _msg: StopMe,
+                ctx: &mut Context<Self>,
+            ) -> impl std::future::Future<Output = ()> + Send {
+                ctx.stop();
+                async {}
+            }
+        }
+
+        let system = System::new();
+        let started = Arc::new(AtomicU32::new(0));
+        let actor = BackoffActor {
+            started_count: started.clone(),
+        };
+
+        let addr = system.handle().spawn_supervised(
+            actor,
+            RestartPolicy::Backoff {
+                initial: Duration::from_millis(10),
+                max_delay: Duration::from_millis(50),
+                max_retries: 3,
+            },
+        );
+
+        // Stop the actor — should restart with backoff.
+        addr.do_send(StopMe).unwrap();
+        runtime::sleep(Duration::from_millis(200)).await;
+
+        let count = started.load(Ordering::SeqCst);
+        assert!(count >= 2, "expected >= 2 starts with backoff, got {count}");
+
+        system.shutdown().await;
+    }
+
+    // ───── Supervision: Never policy does not restart ─────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn supervised_never_policy_no_restart() {
+        #[derive(Clone)]
+        struct NeverRestartActor {
+            started_count: Arc<AtomicU32>,
+        }
+        impl Actor for NeverRestartActor {
+            fn started(
+                &mut self,
+                _ctx: &mut Context<Self>,
+            ) -> impl std::future::Future<Output = ()> + Send {
+                self.started_count.fetch_add(1, Ordering::SeqCst);
+                async {}
+            }
+        }
+        struct StopMe;
+        impl Message for StopMe {
+            type Result = ();
+        }
+        impl Handler<StopMe> for NeverRestartActor {
+            fn handle(
+                &mut self,
+                _msg: StopMe,
+                ctx: &mut Context<Self>,
+            ) -> impl std::future::Future<Output = ()> + Send {
+                ctx.stop();
+                async {}
+            }
+        }
+
+        let system = System::new();
+        let started = Arc::new(AtomicU32::new(0));
+        let actor = NeverRestartActor {
+            started_count: started.clone(),
+        };
+
+        let addr = system
+            .handle()
+            .spawn_supervised(actor, RestartPolicy::Never);
+
+        addr.do_send(StopMe).unwrap();
+        runtime::sleep(Duration::from_millis(100)).await;
+
+        // Started exactly once, then stopped permanently.
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        assert!(!addr.is_alive());
+
+        system.shutdown().await;
+    }
+
+    // ───── Supervision: max restarts enforced ─────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn supervised_max_restarts_enforced() {
+        #[derive(Clone)]
+        struct MaxRestartActor {
+            started_count: Arc<AtomicU32>,
+        }
+        impl Actor for MaxRestartActor {
+            fn started(
+                &mut self,
+                _ctx: &mut Context<Self>,
+            ) -> impl std::future::Future<Output = ()> + Send {
+                self.started_count.fetch_add(1, Ordering::SeqCst);
+                async {}
+            }
+        }
+        struct StopMe;
+        impl Message for StopMe {
+            type Result = ();
+        }
+        impl Handler<StopMe> for MaxRestartActor {
+            fn handle(
+                &mut self,
+                _msg: StopMe,
+                ctx: &mut Context<Self>,
+            ) -> impl std::future::Future<Output = ()> + Send {
+                ctx.stop();
+                async {}
+            }
+        }
+
+        let system = System::new();
+        let started = Arc::new(AtomicU32::new(0));
+        let actor = MaxRestartActor {
+            started_count: started.clone(),
+        };
+
+        let addr = system
+            .handle()
+            .spawn_supervised(actor, RestartPolicy::OnFailure { max: 2 });
+
+        // Stop 3 times to exhaust max restarts.
+        for _ in 0..3 {
+            let _ = addr.do_send(StopMe);
+            runtime::sleep(Duration::from_millis(50)).await;
+        }
+
+        runtime::sleep(Duration::from_millis(100)).await;
+
+        // 1 initial + 2 restarts = 3 total.
+        let count = started.load(Ordering::SeqCst);
+        assert_eq!(
+            count, 3,
+            "expected 3 starts (1 initial + 2 restarts), got {count}"
+        );
+
+        system.shutdown().await;
+    }
+
+    // ───── stopped() hook is called ───────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stopped_hook_called() {
+        struct StoppableActor {
+            stopped_flag: Arc<AtomicU32>,
+        }
+        impl Actor for StoppableActor {
+            fn stopped(&mut self) -> impl std::future::Future<Output = ()> + Send {
+                self.stopped_flag.fetch_add(1, Ordering::SeqCst);
+                async {}
+            }
+        }
+        struct StopMe;
+        impl Message for StopMe {
+            type Result = ();
+        }
+        impl Handler<StopMe> for StoppableActor {
+            fn handle(
+                &mut self,
+                _msg: StopMe,
+                ctx: &mut Context<Self>,
+            ) -> impl std::future::Future<Output = ()> + Send {
+                ctx.stop();
+                async {}
+            }
+        }
+
+        let system = System::new();
+        let stopped_flag = Arc::new(AtomicU32::new(0));
+        let addr = system.spawn(StoppableActor {
+            stopped_flag: stopped_flag.clone(),
+        });
+
+        addr.do_send(StopMe).unwrap();
+        runtime::sleep(Duration::from_millis(50)).await;
+
+        assert_eq!(stopped_flag.load(Ordering::SeqCst), 1);
+        assert!(!addr.is_alive());
+
+        system.shutdown().await;
+    }
+
+    // ───── AskError::Closed when actor is dead ────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ask_dead_actor_returns_closed() {
+        let system = System::new();
+        let addr = system.spawn(CounterActor::new());
+
+        // Stop the actor.
+        system.shutdown().await;
+
+        // Trying to ask a dead actor should fail with Closed.
+        let result = addr.ask(GetCount).await;
+        assert!(matches!(result, Err(AskError::Closed)));
+    }
+
+    // ───── SendError returns the message ──────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_dead_actor_returns_send_error() {
+        let system = System::new();
+        let addr = system.spawn(CounterActor::new());
+
+        system.shutdown().await;
+
+        // send() on a dead actor should return the message.
+        let result = addr.send(Increment);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        // SendError wraps the original message.
+        let _recovered: Increment = err.0;
+    }
+
+    // ───── do_send on dead actor returns Err ──────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn do_send_dead_actor_returns_err() {
+        let system = System::new();
+        let addr = system.spawn(CounterActor::new());
+
+        system.shutdown().await;
+
+        let result = addr.do_send(Increment);
+        assert!(result.is_err());
+    }
+
+    // ───── AnyAddr liveness ───────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn any_addr_tracks_liveness() {
+        let system = System::new();
+        let addr = system.spawn(CounterActor::new());
+        let any: AnyAddr = addr.clone().into();
+
+        assert!(any.is_alive());
+        system.shutdown().await;
+        assert!(!any.is_alive());
+    }
+
+    // ───── Recipient on dead actor ────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recipient_dead_actor() {
+        let system = System::new();
+        let addr = system.spawn(CounterActor::new());
+        let recipient: Recipient<Increment> = addr.clone().into();
+
+        assert!(recipient.is_alive());
+
+        system.shutdown().await;
+
+        assert!(!recipient.is_alive());
+        assert!(recipient.do_send(Increment).is_err());
+    }
+
+    // ───── Context::address returns self-sendable addr ────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn context_address_self_send() {
+        struct SelfSender {
+            count: u32,
+        }
+        impl Actor for SelfSender {}
+        struct Ping;
+        impl Message for Ping {
+            type Result = ();
+        }
+        struct GetSelfCount;
+        impl Message for GetSelfCount {
+            type Result = u32;
+        }
+        impl Handler<Ping> for SelfSender {
+            fn handle(
+                &mut self,
+                _msg: Ping,
+                ctx: &mut Context<Self>,
+            ) -> impl std::future::Future<Output = ()> + Send {
+                self.count += 1;
+                if self.count < 3 {
+                    let addr = ctx.address();
+                    let _ = addr.do_send(Ping);
+                }
+                async {}
+            }
+        }
+        impl Handler<GetSelfCount> for SelfSender {
+            fn handle(
+                &mut self,
+                _msg: GetSelfCount,
+                _ctx: &mut Context<Self>,
+            ) -> impl std::future::Future<Output = u32> + Send {
+                let c = self.count;
+                async move { c }
+            }
+        }
+
+        let system = System::new();
+        let addr = system.spawn(SelfSender { count: 0 });
+
+        addr.do_send(Ping).unwrap();
+        runtime::sleep(Duration::from_millis(50)).await;
+
+        let count = addr.ask(GetSelfCount).await.unwrap();
+        assert_eq!(count, 3, "actor should have sent to itself until count=3");
+
+        system.shutdown().await;
+    }
+
+    // ───── Context::spawn creates child actor ─────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn context_spawn_child() {
+        struct ParentActor;
+        impl Actor for ParentActor {}
+
+        struct SpawnChild;
+        impl Message for SpawnChild {
+            type Result = Addr<CounterActor>;
+        }
+        impl Handler<SpawnChild> for ParentActor {
+            fn handle(
+                &mut self,
+                _msg: SpawnChild,
+                ctx: &mut Context<Self>,
+            ) -> impl std::future::Future<Output = Addr<CounterActor>> + Send {
+                let child_addr = ctx.spawn(CounterActor::new());
+                async move { child_addr }
+            }
+        }
+
+        let system = System::new();
+        let parent = system.spawn(ParentActor);
+
+        let child_addr = parent.ask(SpawnChild).await.unwrap();
+        assert!(child_addr.is_alive());
+
+        child_addr.do_send(Increment).unwrap();
+        let count = child_addr.ask(GetCount).await.unwrap();
+        assert_eq!(count, 1);
+
+        system.shutdown().await;
+    }
 }
