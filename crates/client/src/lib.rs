@@ -1137,63 +1137,6 @@ impl ClientEventLoop {
     }
 }
 
-/// Resolve a channel name to its channel ID via the active server context.
-fn resolve_channel_id_shared(state: &ClientState, channel: &str) -> anyhow::Result<String> {
-    let ctx = state
-        .active()
-        .ok_or_else(|| anyhow::anyhow!("no active server"))?;
-    ctx.topic_map
-        .values()
-        .find(|(n, _)| n == channel)
-        .map(|(_, cid)| cid.to_string())
-        .ok_or_else(|| anyhow::anyhow!("channel not found: {}", channel))
-}
-
-/// Generate an invite for a peer, borrowing SharedState via Arc<RwLock>.
-///
-/// Used by listeners and other non-generic code to generate invites
-/// without constructing a `ClientHandle<N>`.
-#[allow(dead_code)]
-fn generate_invite_shared(
-    shared: &Arc<RwLock<SharedState>>,
-    recipient_peer_id: &willow_identity::EndpointId,
-) -> anyhow::Result<String> {
-    let pub_key = invite::endpoint_id_to_ed25519_public(recipient_peer_id);
-    let shared = shared.read().unwrap();
-    let ctx = shared
-        .state
-        .active()
-        .ok_or_else(|| anyhow::anyhow!("no active server"))?;
-    invite::generate_invite(&ctx.server, &ctx.keys, &ctx.topic_map, &pub_key)
-        .ok_or_else(|| anyhow::anyhow!("invite generation failed"))
-}
-
-/// Generate an invite via the actor system (used by listeners).
-pub(crate) async fn generate_invite_via_actor(
-    state_addr: &willow_actor::Addr<client_actor::ClientStateActor>,
-    recipient_peer_id: &willow_identity::EndpointId,
-) -> anyhow::Result<String> {
-    let peer_id = *recipient_peer_id;
-    client_actor::read_state(state_addr, move |s| {
-        let pub_key = invite::endpoint_id_to_ed25519_public(&peer_id);
-        let ctx = s
-            .state
-            .active()
-            .ok_or_else(|| anyhow::anyhow!("no active server"))?;
-        invite::generate_invite(&ctx.server, &ctx.keys, &ctx.topic_map, &pub_key)
-            .ok_or_else(|| anyhow::anyhow!("invite generation failed"))
-    })
-    .await
-}
-
-/// Get a peer's display name from a borrowed SharedState.
-fn peer_display_name_shared(shared: &SharedState, peer_id: &willow_identity::EndpointId) -> String {
-    if let Some(profile) = shared.state.event_state.profiles.get(peer_id) {
-        return profile.display_name.clone();
-    }
-    shared.state.profiles.display_name(peer_id)
-}
-
 // ---- Identity persistence ----
 
 fn load_identity() -> Identity {

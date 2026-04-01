@@ -16,6 +16,18 @@ impl<N: willow_network::Network> ClientHandle<N> {
             });
         }
 
+        let listener_ctx = listeners::ListenerCtx {
+            event_state: self.event_state_addr.clone(),
+            chat_meta: self.chat_meta_addr.clone(),
+            profiles: self.profile_state_addr.clone(),
+            network: self.network_meta_addr.clone(),
+            voice: self.voice_state_addr.clone(),
+            persistence: self.persistence_addr.clone(),
+            event_broker: self.event_broker.clone(),
+            identity: self.identity.clone(),
+            join_links: Arc::clone(&self.join_links),
+        };
+
         // Subscribe to the server ops topic.
         let ops_topic_str = ops::SERVER_OPS_TOPIC;
         if let Ok((sender, events)) = network
@@ -26,12 +38,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 .write()
                 .unwrap()
                 .insert(ops_topic_str.to_string(), sender.clone());
-            listeners::spawn_topic_listener(
-                events,
-                sender,
-                self.state_addr.clone(),
-                self.event_broker.clone(),
-            );
+            listeners::spawn_topic_listener(events, sender, listener_ctx.clone());
         }
 
         // Subscribe to the global profile broadcast topic.
@@ -44,12 +51,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 .write()
                 .unwrap()
                 .insert(profile_topic_str.to_string(), sender.clone());
-            listeners::spawn_topic_listener(
-                events,
-                sender,
-                self.state_addr.clone(),
-                self.event_broker.clone(),
-            );
+            listeners::spawn_topic_listener(events, sender, listener_ctx.clone());
         }
 
         // Subscribe to channel topics from all servers.
@@ -71,12 +73,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                     .write()
                     .unwrap()
                     .insert(topic_str, sender.clone());
-                listeners::spawn_topic_listener(
-                    events,
-                    sender,
-                    self.state_addr.clone(),
-                    self.event_broker.clone(),
-                );
+                listeners::spawn_topic_listener(events, sender, listener_ctx.clone());
             }
         }
 
