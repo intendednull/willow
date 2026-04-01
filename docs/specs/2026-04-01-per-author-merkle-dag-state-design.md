@@ -138,8 +138,9 @@ self-describing — its identity is its content hash.
 ```rust
 /// A single state mutation, content-addressed and author-signed.
 pub struct Event {
-    /// Content hash of this event (SHA-256 of all other fields).
-    /// This IS the event's identity — no separate UUID needed.
+    /// Content hash of this event — SHA-256 of the signable fields
+    /// (author, seq, prev, deps, kind, timestamp_hint_ms).
+    /// Excludes `hash` itself and `sig`. This IS the event's identity.
     pub hash: EventHash,
 
     /// Author's public key (Ed25519). Structurally identifies who
@@ -189,24 +190,24 @@ pub struct Event {
 ```rust
 /// SHA-256 hash of an event's content (excluding the hash itself).
 /// Used as the event's identity and for all DAG links.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// Defined in `hash.rs`. Does not depend on `EventKind` — it is a
+/// pure hash wrapper. The computation that serializes event fields
+/// and produces the hash lives in `Event::new()` in `event.rs`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct EventHash(pub [u8; 32]);
 
 impl EventHash {
     /// The zero hash — used as `prev` for an author's first event.
     pub const ZERO: EventHash = EventHash([0u8; 32]);
 
-    /// Compute the hash of an event's signable content.
-    pub fn compute(
-        author: &EndpointId,
-        seq: u64,
-        prev: &EventHash,
-        deps: &[EventHash],
-        kind: &EventKind,
-        timestamp_hint_ms: u64,
-    ) -> Self { /* SHA-256 of canonical serialization */ }
+    /// Hash arbitrary bytes with SHA-256.
+    pub fn from_bytes(data: &[u8]) -> Self { /* SHA-256 */ }
 }
 ```
+
+`Ord` is derived from lexicographic byte comparison — used by
+`BTreeSet` in topological sort for deterministic tiebreaking.
 
 ### Per-Author Chain
 

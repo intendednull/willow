@@ -32,24 +32,16 @@ different semantics (content hash of an event, not hash of full state).
 
 - `EventHash(pub [u8; 32])`
 - `EventHash::ZERO` — used as `prev` for an author's first event
-- `EventHash::compute(author, seq, prev, deps, kind, timestamp_hint_ms)`
-  — SHA-256 of canonical bincode serialization of these fields
+- `EventHash::from_bytes(data: &[u8]) -> Self` — SHA-256 of raw bytes
 - `Ord` / `PartialOrd` — lexicographic byte comparison, needed for
   `BTreeSet` in topological sort tiebreaking
 - `Display` — hex format (same as current `StateHash`)
 - `Serialize` / `Deserialize`
 - `Default` → `ZERO`
 
-Note: `EventHash::compute` needs `EventKind` to serialize. This
-creates a circular dependency with Step 2. Resolution: define
-`EventKind` in the same file initially, or define `compute()` to
-take `&[u8]` (pre-serialized kind) and let `Event::new()` handle
-the serialization. Cleaner option: put both `EventHash` and
-`EventKind` in `event.rs` and make `hash.rs` just the hash primitive.
-
-**Revised file plan**: `hash.rs` contains only the `EventHash` struct
-with `from_bytes()`, `ZERO`, `Ord`, `Display`. The `compute()` method
-that knows about event fields lives on `Event` in `event.rs`.
+`hash.rs` is a pure hash wrapper. It does not depend on `EventKind`
+or any event structure. The serialization of event fields into bytes
+(which are then hashed) happens in `Event::new()` in `event.rs`.
 
 **Tests** (in `hash.rs`):
 - `zero_hash_is_all_zeros`
@@ -381,6 +373,7 @@ pub enum ChainStatus {
 pub fn compare_chains(
     our_head: &AuthorHead,
     their_head: &AuthorHead,
+    our_chain: &[EventHash],
 ) -> ChainStatus
 ```
 
