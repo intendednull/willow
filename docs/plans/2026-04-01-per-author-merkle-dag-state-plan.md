@@ -500,66 +500,34 @@ pub struct PendingBuffer {
 - `missing_deps_recorded`
 - `resolve_cascading`
 
-## Step 8: Author revision
+## Step 8: ChainStatus and compare_chains
 
 **Files**: `crates/state/src/dag.rs` (extend)
 
-### ChainStatus and compare_chains
+Chains are append-only — no revision support.
 
 ```rust
 pub enum ChainStatus {
     Ahead { new_events: u64 },
     Behind { missing_events: u64 },
     Synced,
-    Revised,
 }
 
 pub fn compare_chains(
     our_head: &AuthorHead,
     their_head: &AuthorHead,
-    our_chain: &[EventHash],
 ) -> ChainStatus
 ```
 
-### replace_chain
-
-```rust
-pub fn replace_chain(
-    &mut self,
-    author: &EndpointId,
-    new_chain: Vec<Event>,
-) -> Result<(), RevisionError>
-```
-
-1. `verify_chain(author, &new_chain)?` — check all sigs, seq
-   monotonicity, prev consistency, all events have matching author
-2. Cannot replace the genesis author's chain if it removes the
-   `CreateServer` event (genesis event is immutable)
-3. Remove old events for this author from `events` map
-4. Insert new events
-5. Update `chains[author]` and `heads[author]`
-
-### RevisionError
-
-```rust
-pub enum RevisionError {
-    InvalidSignature { seq: u64 },
-    BrokenPrevChain { seq: u64 },
-    WrongAuthor { seq: u64, expected: EndpointId, got: EndpointId },
-    EmptyChain,
-    SeqDoesNotStartAtOne,
-    GenesisEventMissing,
-}
-```
+Simple comparison: same hash = Synced, their seq > ours = Ahead,
+ours > theirs = Behind. No `Revised` variant needed.
 
 **Tests**:
-- `replace_chain_basic`
-- `replace_chain_re_materializes_correctly`
-- `replace_chain_rejects_invalid_signature`
-- `replace_chain_rejects_broken_prev`
-- `replace_chain_broken_dep_is_tolerated`
-- `replace_chain_preserves_genesis`
-- `revision_detection`
+- `compare_chains_synced`
+- `compare_chains_ahead`
+- `compare_chains_behind`
+- `corrective_events` — author sends message, then DeleteMessage;
+  materialized state shows deleted; original event still in DAG
 
 ## Step 9: lib.rs and cleanup
 
@@ -581,7 +549,7 @@ mod tests;
 
 pub use event::{Event, EventKind, ProposedAction, VoteThreshold};
 pub use hash::EventHash;
-pub use dag::{ChainStatus, EventDag, InsertError, RevisionError};
+pub use dag::{ChainStatus, EventDag, InsertError};
 pub use materialize::{apply_incremental, materialize, ApplyResult};
 pub use server::{PendingProposal, ServerState};
 pub use sync::{AuthorHead, AuthorRequest, HeadsSummary, PendingBuffer, SyncMessage};
@@ -621,7 +589,7 @@ Step 4  → Topological sort            (ordering algorithm)
 Step 5  → ServerState + types         (governance state, threshold, pending proposals)
 Step 6  → Materialization + apply     (projection, governance handling)
 Step 7  → Sync types + PendingBuffer  (protocol types, HeadsSummary)
-Step 8  → Author revision             (chain replacement)
+Step 8  → ChainStatus                 (sync comparison helper)
 Step 9  → lib.rs + cleanup            (public API)
 Step 10 → Stress tests                (scale validation)
 Step 11 → WASM + clippy               (platform compat, lint)

@@ -68,8 +68,9 @@ no per-author granularity, no gap detection, and no incremental sync.
    never participate in ordering or merge logic.
 
 3. **Author sovereignty** — each peer's contributions form a
-   self-contained, independently verifiable chain. A peer can revise
-   their own chain. Other peers accept validly-signed revisions.
+   self-contained, independently verifiable append-only chain. Authors
+   can "undo" actions by appending corrective events (EditMessage,
+   DeleteMessage, Vote{accept: false}), not by rewriting history.
 
 4. **Author validation** — structurally enforced via Ed25519 signatures
    on per-author chains. A peer cannot produce events posing as another
@@ -126,7 +127,7 @@ Concurrent events (no causal relationship) are tie-broken by content
 hash — deterministic across all peers.
 
 The following sections define the data model, materialization,
-sync protocol, author revision, and compaction in detail.
+sync protocol, and compaction in detail.
 
 ## Section 1: Core Data Model
 
@@ -226,8 +227,9 @@ Properties:
   don't have A3, you know you're missing data.
 - **Efficient sync**: request "author A, events after seq 2" to get
   exactly {A3, A4}.
-- **Author-revisable**: the author can republish their chain (see
-  Section 4: Author History Revision).
+- **Append-only**: events are permanent once published. Authors can
+  append corrective events (edit, delete, retract) but cannot rewrite
+  their chain. This guarantees convergence and simplifies sync.
 
 ### Cross-Author Dependencies (the DAG)
 
@@ -378,12 +380,12 @@ is safe but brittle, majority is flexible but can be exploited by
 colluding admins. There is no free lunch. See intendednull/willow#22
 for future hardening work including community-based fallback voting.
 
-**Vote retraction.** A voter can revise their chain to remove a vote.
-On re-materialization, the yes-count drops below threshold and the
-action is undone. This is author sovereignty working as designed — the
-retraction is visible (the Vote event used to exist at a known seq in
-the voter's chain) and other admins can re-propose. If a peer
-repeatedly retracts, other admins can vote to revoke their admin.
+**Votes are permanent.** Once a Vote event is published, it cannot
+be retracted (chains are append-only). An admin who changes their
+mind can publish `Vote { proposal, accept: false }` to overwrite
+their previous vote, but only if the proposal hasn't already passed.
+Once a proposal reaches threshold and the action is applied, it is
+final for that DAG state.
 
 **Majority collusion.** With majority threshold, a majority of admins
 can collude to kick the minority and seize control. This is inherent
@@ -523,9 +525,9 @@ Note: there is no `MissingDep` error. The `deps` field is advisory —
 if a dep references an event we don't have, the event is still
 accepted and inserted. The missing dep is recorded for background
 resolution (the caller can fetch it lazily). This is a deliberate
-choice: soft-accept makes the system robust to partitions, author
-revisions that remove dep targets, and out-of-order delivery. The
-causal information in `deps` is best-effort, not a hard constraint.
+choice: soft-accept makes the system robust to partitions and
+out-of-order delivery. The causal information in `deps` is
+best-effort, not a hard constraint.
 
 ### EventKind (unchanged in structure)
 
@@ -1059,8 +1061,9 @@ Peer A                              Peer B
    - If `their_seq > my_seq`: I need events from that author.
    - If `my_seq > their_seq`: they need events from me (I'll wait for
      their request, or proactively send).
-   - If `their_hash != my_hash` at the same seq: the author revised
-     their chain (see Section 4).
+   - If `their_hash != my_hash` at the same seq: should not happen
+     (chains are append-only — same author, same seq = same event).
+     If it does, one peer has corrupt data.
 
 3. **Request missing events.** Send `Request` listing which authors
    and after which seq number.
@@ -1099,8 +1102,8 @@ arrives.
 **Cross-author dep gap** (`deps` references an unknown event): This is
 a soft gap — the event is accepted and inserted immediately. The
 missing dep is recorded for background fetching. This keeps the system
-responsive: a missing dep from a peer who is offline or has revised
-their chain does not block events from other authors.
+responsive: a missing dep from a peer who is offline does not block
+events from other authors.
 
 ```rust
 pub struct PendingBuffer {
@@ -1135,181 +1138,78 @@ impl PendingBuffer {
 | Real-time message | 1 event (~200-500 bytes) via gossip |
 | New peer joins (1000 authors, 100 events each) | Heads summary (~40KB) + 100k events (~20-50MB) |
 | Reconnect after 10 minutes offline | Heads summary + delta (~few KB to few MB) |
-| Author revises their chain | Full chain for that author only |
 
 For large catch-up scenarios, events can be batched and compressed.
 The per-author structure enables parallel fetching — request events
 from different authors concurrently.
 
-## Section 4: Author History Revision
+## Section 4: Append-Only Chains
 
-A core design goal: peers can modify the history of their own work.
-The per-author chain structure makes this possible without breaking
-other peers' contributions.
+Per-author chains are **append-only**. Once an event is published and
+inserted into the DAG, it is permanent. Authors cannot revise, remove,
+or rewrite their chain history.
 
-### How Revision Works
+### Rationale
 
-An author "revises" their chain by publishing a new chain signed with
-the same key. The new chain may have different events, different
-ordering, or fewer events than the original.
+Chain revision was considered and rejected. While it aligns with the
+concept of "author sovereignty," it creates more problems than it
+solves:
 
-```
-Original chain:  A1 ← A2 ← A3 ← A4  (head seq=4)
-Revised chain:   A1 ← A2' ← A3'      (head seq=3)
-```
+- **Governance undermining**: an admin could revise away a Vote event,
+  undoing a resolved governance action.
+- **Broken deps**: other authors' events reference hashes that would
+  no longer exist after revision.
+- **Convergence violation**: two peers with different versions of an
+  author's chain (during propagation) would have different materialized
+  state for non-deterministic reasons (arrival order).
+- **Snapshot invalidation**: revisions can invalidate compacted
+  snapshots, requiring full re-materialization from genesis.
 
-Author A has:
-- Kept A1 as-is
-- Replaced A2 with A2' (perhaps editing a message)
-- Replaced A3 with A3' (perhaps removing an event)
-- Dropped A4 entirely
+### Corrective Events Instead
 
-### Detection
+Authors "undo" actions by appending new events:
 
-During sync, a peer receives a `HeadsSummary` where author A has
-`seq=3, hash=X` but the local DAG has author A at `seq=4, hash=Y`.
-Even if the seq is the same, if the hash differs, the chain has been
-revised.
+| Want to undo | Append this |
+|---|---|
+| Sent a message | `DeleteMessage { message_id }` |
+| Typo in a message | `EditMessage { message_id, new_body }` |
+| Voted yes, changed mind | `Vote { proposal, accept: false }` (overwrites in pending) |
+| Created a channel | `DeleteChannel { channel_id }` (if authorized) |
 
-The general rule:
+This preserves the append-only property while giving authors full
+control over the *effect* of their actions on materialized state.
+
+### Sync Simplification
+
+Without revision, sync becomes simpler:
 
 ```rust
-enum ChainStatus {
+pub enum ChainStatus {
     /// Their chain extends ours (normal: they have newer events).
     Ahead { new_events: u64 },
     /// Our chain extends theirs (we have events they haven't seen).
     Behind { missing_events: u64 },
     /// Same head.
     Synced,
-    /// Chains diverge — author has revised their history.
-    Revised,
 }
 
-fn compare_chains(
+pub fn compare_chains(
     our_head: &AuthorHead,
     their_head: &AuthorHead,
-    our_chain: &[EventHash],
 ) -> ChainStatus {
     if our_head.hash == their_head.hash {
         return ChainStatus::Synced;
     }
     if their_head.seq > our_head.seq {
-        // Could be Ahead or Revised — need to verify the chain
-        // prefix matches.
         return ChainStatus::Ahead { new_events: their_head.seq - our_head.seq };
     }
-    if their_head.seq < our_head.seq {
-        return ChainStatus::Behind { missing_events: our_head.seq - their_head.seq };
-    }
-    // Same seq, different hash — definitely revised.
-    ChainStatus::Revised
+    ChainStatus::Behind { missing_events: our_head.seq - their_head.seq }
 }
 ```
 
-### Accepting Revisions
-
-When a revision is detected:
-
-1. **Fetch the full revised chain** from the author (or a peer that
-   has it). Since chains are typically small (an author's personal
-   events), this is not expensive.
-
-2. **Verify the entire chain**: every event signed by the author's
-   key, seq numbers monotonic, prev hashes consistent.
-
-3. **Replace** the author's chain in the local DAG.
-
-4. **Re-materialize state** — remove the old chain's contributions,
-   replay with the new chain. In practice this means a full
-   re-materialization from the DAG (which is fast for reasonable
-   event counts).
-
-5. **Update deps**: other authors' events may have `deps` pointing to
-   events that no longer exist in the revised chain. This is handled
-   gracefully — a dep pointing to a removed event is treated as
-   unresolvable but not fatal. The dependent event still exists and
-   is still applied; it just has a broken causal link to the revised
-   author. This is the "archival tolerance" design goal in action.
-
-```rust
-impl EventDag {
-    /// Replace an author's chain with a revised version.
-    /// The new chain must be fully signed and internally consistent.
-    pub fn replace_chain(
-        &mut self,
-        author: &EndpointId,
-        new_chain: Vec<Event>,
-    ) -> Result<(), RevisionError> {
-        // Verify all signatures and internal consistency.
-        self.verify_chain(author, &new_chain)?;
-
-        // Remove old events for this author.
-        if let Some(old_hashes) = self.chains.get(author) {
-            for hash in old_hashes {
-                self.events.remove(hash);
-            }
-        }
-
-        // Insert new events.
-        let new_hashes: Vec<EventHash> = new_chain.iter()
-            .map(|e| e.hash.clone())
-            .collect();
-        for event in new_chain {
-            self.events.insert(event.hash.clone(), event);
-        }
-        self.chains.insert(*author, new_hashes);
-
-        // Update head.
-        if let Some(last) = self.chains[author].last() {
-            self.heads.insert(*author, last.clone());
-        } else {
-            self.heads.remove(author);
-        }
-
-        Ok(())
-    }
-}
-```
-
-### What Revision Cannot Do
-
-- **Cannot forge another author's events.** Revision only works for
-  chains signed by your own key.
-- **Cannot rewrite deps in other authors' events.** If Bob's event B3
-  has `deps: [A2]` and Alice revises away A2, Bob's B3 still says
-  `deps: [A2]`. The broken dep is a fact of history — Bob really did
-  see A2 at the time.
-- **Cannot violate seq monotonicity.** A revised chain must still have
-  contiguous seq numbers starting from 1.
-
-### Conflict Resolution for Revisions
-
-The author is sovereign over their chain. There is no arbitration
-rule — whichever version of the chain was signed by the author is
-accepted as truth from that author.
-
-If two peers have different versions of an author's chain (e.g., the
-author sent revision V2 to some peers but not others during a
-partition), convergence happens naturally: the author is the only
-entity that can produce a validly-signed chain, so they will
-eventually publish one definitive version and it will propagate. In
-the interim, peers may have different views of that author's
-contributions — this is acceptable per the archival tolerance goal.
-
-There is no need for tie-breaking rules. The author's key is the
-authority. If you receive a new chain signed by the author, you
-accept it. If you receive two conflicting chains both signed by the
-author, you accept whichever you received most recently and it will
-converge as the author continues publishing events (which will
-extend one chain and not the other).
-
-### Archival Implications
-
-Archival nodes may choose to retain old chain versions alongside the
-current one. This is outside the scope of the state crate — the state
-crate only deals with the current DAG. But the data model supports it:
-old events are just events with valid signatures that are no longer in
-the active DAG.
+No `Revised` variant. No `replace_chain()`. No `RevisionError`. If
+two peers have the same author at the same seq, the hashes must match
+(append-only guarantee). If they don't, one peer has corrupt data.
 
 ## Section 5: Compaction & Snapshots
 
@@ -1415,20 +1315,12 @@ which is inherently imprecise in a P2P system. This is deferred to a
 future iteration. For now, snapshot-based compaction provides
 sufficient memory management.
 
-### Compaction and Author Revision Interaction
+### Compaction Safety
 
-If a snapshot includes events from author A at seq 5, and author A
-later revises their chain (changing events at seq 3-5), the snapshot
-is invalidated for that author. The resolution:
-
-- Re-materialize from the most recent valid snapshot that predates
-  the revision, plus all events after it.
-- In the worst case (author revises events from before any snapshot),
-  re-materialize from genesis.
-- Archival nodes that retain full history can always provide this.
-
-This is an intentional tradeoff: author sovereignty over their data
-takes priority over snapshot stability.
+Because chains are append-only, snapshots are never invalidated by
+later events. A snapshot taken at heads H is always a valid checkpoint
+— all events after H build on top of the snapshot state, never
+contradict it. This makes compaction safe and straightforward.
 
 ## Section 6: Materialized View — Client Consumption Map
 
@@ -1572,7 +1464,7 @@ code path between "single linear chain with parent state hash" and
 |---|---|
 | `hash.rs` | `EventHash` (32-byte SHA-256 wrapper, `Ord`, `Display`) |
 | `event.rs` | `Event`, `EventKind`, `ProposedAction`, `VoteThreshold` |
-| `dag.rs` | `EventDag`, `InsertError`, `ChainStatus`, `RevisionError`, topological sort |
+| `dag.rs` | `EventDag`, `InsertError`, `ChainStatus`, topological sort |
 | `materialize.rs` | `materialize()`, `apply_unchecked()`, `apply_incremental()` |
 | `sync.rs` | `HeadsSummary`, `AuthorHead`, `SyncMessage`, `AuthorRequest`, `PendingBuffer` |
 | `snapshot.rs` | `Snapshot`, `SnapshotHash`, compaction |
@@ -1586,7 +1478,7 @@ code path between "single linear chain with parent state hash" and
 // Core types
 pub use event::{Event, EventKind, ProposedAction, VoteThreshold};
 pub use hash::EventHash;
-pub use dag::{EventDag, InsertError, ChainStatus, RevisionError};
+pub use dag::{EventDag, InsertError, ChainStatus};
 pub use materialize::{materialize, apply_incremental, ApplyResult};
 pub use sync::{HeadsSummary, AuthorHead, SyncMessage, AuthorRequest, PendingBuffer};
 pub use server::{ServerState, PendingProposal};
@@ -1669,9 +1561,6 @@ pub trait DagStore {
     /// Get all known author heads.
     fn heads(&self) -> HeadsSummary;
 
-    /// Replace an author's chain (for revisions).
-    fn replace_chain(&mut self, author: &EndpointId, chain: &[Event]);
-
     /// Load the full DAG into memory.
     fn load_dag(&self) -> EventDag;
 
@@ -1736,7 +1625,7 @@ over — same properties, different API.
 | Merge | Sort by timestamp, replay | DAG union + topological sort, hash tiebreak |
 | Sync | HLC-based `SyncRequest` | Per-author `HeadsSummary` + seq-based requests |
 | State hashing | Full serialization + SHA-256 on every `apply()` | None on hot path; optional via snapshots |
-| History revision | Not possible | Author republishes their chain |
+| History revision | Not possible | Not possible (append-only). Corrective events instead. |
 | Event store | Flat append-only log | Per-author chains in `DagStore` |
 | Materialized view | `ServerState` mutated directly | `ServerState` projected from DAG |
 
@@ -1782,7 +1671,7 @@ struct ServerData {
     /// Per-author DAG (same EventDag from willow-state).
     dag: EventDag,
 
-    /// Materialized state (cached, recomputed on revision).
+    /// Materialized state (cached, maintained incrementally).
     state: ServerState,
 
     /// Per-author bounded event retention.
@@ -1808,10 +1697,6 @@ The replay node becomes a DAG-aware sync peer:
 4. **Snapshot fallback.** If a peer is so far behind that the replay
    node has compacted away their events (per-author chain was capped),
    fall back to sending a snapshot + post-snapshot events.
-
-5. **Author revision handling.** When the replay node receives a
-   revised chain from an author, it replaces that author's chain in
-   the DAG and re-materializes state.
 
 ```rust
 impl WorkerRole for ReplayRole {
@@ -2009,61 +1894,6 @@ Storage nodes:
 5. Can provide full-replay verification for new peers that don't
    trust snapshots
 
-### Archival and Author Revision
-
-When an author revises their chain, the storage node faces a choice:
-
-1. **Replace only** (default): store the latest chain version per
-   author. Old events are deleted. This matches the design goal
-   that "current state may diverge from historical snapshots."
-
-2. **Retain history** (opt-in): store both old and new chain versions,
-   tagged by revision number. This enables audit trails but is
-   outside the scope of the state crate. The `DagStore` trait can
-   support this:
-
-```rust
-pub trait DagStore {
-    // ... existing methods ...
-
-    /// Store a superseded chain version for archival.
-    /// revision_id is a monotonic counter per author.
-    fn archive_chain(
-        &mut self,
-        author: &EndpointId,
-        revision_id: u64,
-        chain: &[Event],
-    );
-
-    /// Retrieve archived chain versions for an author.
-    fn archived_chains(
-        &self,
-        author: &EndpointId,
-    ) -> Vec<(u64, Vec<Event>)>;
-}
-```
-
-### History and Current State Divergence
-
-A critical consequence of author revision: history served by a storage
-node may not match the current materialized state. Example:
-
-1. Alice sends message "hello" (event A3, seq=3)
-2. Storage node archives A3
-3. Alice revises her chain, removing A3 (her new head is seq=2)
-4. Current materialized state has no "hello" message
-5. Storage node's archive still has A3
-
-This is explicitly acceptable per the design goals. The application
-layer must decide how to present this — possible approaches:
-
-- Show archived messages with a "revised" indicator
-- Only show messages from current chains (drop archived)
-- Let users toggle "show history including revisions"
-
-The state crate does not prescribe a policy. It provides the data
-structures; the UI layer decides presentation.
-
 ### Unified Sync and History
 
 With the DAG model, sync and history are the same operation at
@@ -2092,7 +1922,7 @@ and what is deferred.
 | Section 1 | `Event`, `EventHash`, `EventKind` (22 variants), `ProposedAction`, `VoteThreshold`, `EventDag`, `InsertError`, `PendingBuffer` |
 | Section 2 | `materialize()`, `apply_unchecked()`, `apply_incremental()`, topological sort, `ServerState` (simplified) |
 | Section 3 | `HeadsSummary`, `SyncMessage`, `AuthorRequest`, sync flow |
-| Section 4 | `replace_chain()`, chain verification, revision detection (`ChainStatus`) |
+| Section 4 | `ChainStatus`, `compare_chains()` (simplified, no revision) |
 | Section 7 | Full deletion of legacy types, new module layout, new public API |
 | Section 10 | Test suite (below) |
 
@@ -2375,31 +2205,21 @@ test incremental_concurrent_events
     Result matches full materialize().
 ```
 
-### Author Revision Tests
+### Chain Status Tests
 
 ```
-test replace_chain_basic
-    Author A has [A1, A2, A3]. Replace with [A1, A2'].
-    DAG now has A1 and A2'. A3 is gone.
+test compare_chains_synced
+    Same head hash → Synced.
 
-test replace_chain_re_materializes_correctly
-    After revision, materialize() reflects the new chain.
+test compare_chains_ahead
+    Their seq > our seq → Ahead.
 
-test replace_chain_rejects_invalid_signature
-    Attempt to replace with a chain signed by a different key.
-    Returns error.
+test compare_chains_behind
+    Our seq > their seq → Behind.
 
-test replace_chain_rejects_broken_prev
-    Chain with inconsistent prev hashes is rejected.
-
-test replace_chain_broken_dep_is_tolerated
-    After revision, another author's event has deps pointing to
-    a now-removed event. The dep is broken but the event still
-    applies. Materialization succeeds.
-
-test revision_detection
-    Build DAG with author A at seq=3. Receive HeadsSummary with
-    author A at seq=3 but different hash. Detected as Revised.
+test corrective_events
+    Author sends message, then DeleteMessage. Materialized state
+    shows the message as deleted. Original event still in DAG.
 ```
 
 ### Sync Protocol Tests
