@@ -405,7 +405,10 @@ Total: 22 match arms in apply_unchecked (3 governance + 19 standard).
 - `materialize_two_dags_same_events_same_state`
 - `materialize_concurrent_channel_creates`
 - `materialize_permission_enforcement`
+- `materialize_genesis_author_is_admin`
 - `materialize_admin_has_all_permissions`
+- `materialize_kick_via_vote`
+- `materialize_kick_admin_via_vote`
 - `materialize_message_in_channel`
 - `materialize_edit_message`
 - `materialize_delete_message`
@@ -421,7 +424,6 @@ Total: 22 match arms in apply_unchecked (3 governance + 19 standard).
 - **Governance tests**:
 - `propose_requires_admin`
 - `vote_requires_admin`
-- `resolve_applies_action_on_quorum`
 - `vote_auto_applies_on_threshold`
 - `vote_does_not_apply_below_threshold`
 - `sole_admin_propose_auto_applies`

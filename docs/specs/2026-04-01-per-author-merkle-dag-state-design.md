@@ -2308,6 +2308,61 @@ test materialize_grant_permission_adds_member
     GrantPermission to unknown peer also adds them as a member.
 ```
 
+### Governance Tests
+
+```
+test propose_requires_admin
+    Non-admin tries to Propose. Rejected.
+
+test vote_requires_admin
+    Non-admin tries to Vote. Rejected.
+
+test vote_auto_applies_on_threshold
+    With 3 admins and unanimous threshold, 3rd vote auto-applies
+    the action during materialization.
+
+test vote_does_not_apply_below_threshold
+    With 3 admins and unanimous, 2 yes votes → action not applied.
+    Proposal remains pending.
+
+test sole_admin_propose_auto_applies
+    Sole admin proposes GrantAdmin. Proposer is implicit yes.
+    Quorum = 1. Action auto-applies immediately on Propose.
+
+test propose_grant_admin_full_flow
+    Propose GrantAdmin, all admins vote yes, peer is added to
+    admins set and members.
+
+test propose_revoke_admin_full_flow
+    Propose RevokeAdmin, all admins vote yes, peer is removed
+    from admins set.
+
+test propose_kick_member_full_flow
+    Propose KickMember, all admins vote yes, peer is removed
+    from members, peer_permissions, and admins.
+
+test propose_set_vote_threshold
+    Propose SetVoteThreshold(Majority), all admins vote yes,
+    vote_threshold changes. Subsequent proposals need only majority.
+
+test threshold_change_requires_current_threshold
+    With unanimous threshold, changing to Majority requires
+    unanimous vote. With Majority, changing back requires majority.
+
+test vote_on_passed_proposal_ignored
+    Proposal passes (action applied, removed from pending).
+    Late vote on that proposal is a no-op.
+
+test concurrent_proposals_apply_independently
+    Two proposals pending at the same time. Each accumulates
+    votes independently. Both can pass.
+
+test grant_permission_cannot_grant_admin
+    GrantPermission event can only carry Permission variants
+    (SyncProvider, ManageChannels, etc.). Admin status is
+    structurally separate — enforced by the type system.
+```
+
 ### Incremental Apply Tests
 
 ```
