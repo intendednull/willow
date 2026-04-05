@@ -108,7 +108,10 @@ pub enum EventKind {
     /// Delete a channel by ID.
     DeleteChannel { channel_id: String },
     /// Rename a channel.
-    RenameChannel { channel_id: String, new_name: String },
+    RenameChannel {
+        channel_id: String,
+        new_name: String,
+    },
     /// Create a new role.
     CreateRole { name: String, role_id: String },
     /// Delete a role by ID.
@@ -140,7 +143,10 @@ pub enum EventKind {
     /// Soft-delete a message (preserves history).
     DeleteMessage { message_id: EventHash },
     /// Add a reaction to a message.
-    Reaction { message_id: EventHash, emoji: String },
+    Reaction {
+        message_id: EventHash,
+        emoji: String,
+    },
 
     // -- Identity --
     /// Set or update the author's display name.
@@ -234,8 +240,7 @@ impl Event {
             kind: &kind,
             timestamp_hint_ms,
         };
-        let bytes =
-            bincode::serialize(&signable).expect("event serialization should not fail");
+        let bytes = bincode::serialize(&signable).expect("event serialization should not fail");
         let hash = EventHash::from_bytes(&bytes);
         let sig = identity.sign(&bytes);
 
@@ -261,8 +266,7 @@ impl Event {
             kind: &self.kind,
             timestamp_hint_ms: self.timestamp_hint_ms,
         };
-        let bytes =
-            bincode::serialize(&signable).expect("event serialization should not fail");
+        let bytes = bincode::serialize(&signable).expect("event serialization should not fail");
 
         // Verify hash matches content.
         if self.hash != EventHash::from_bytes(&bytes) {
@@ -319,8 +323,7 @@ mod tests {
         assert_ne!(base.hash, different_kind.hash);
 
         // Different timestamp.
-        let different_ts =
-            Event::new(&id, 1, EventHash::ZERO, vec![], test_kind(), 9999);
+        let different_ts = Event::new(&id, 1, EventHash::ZERO, vec![], test_kind(), 9999);
         assert_ne!(base.hash, different_ts.hash);
 
         // Different author.

@@ -8,6 +8,7 @@
 #[cfg(test)]
 mod tests;
 
+pub mod compat;
 pub mod dag;
 pub mod event;
 pub mod hash;
@@ -22,7 +23,10 @@ pub use event::{Event, EventKind, Permission, ProposedAction, VoteThreshold};
 pub use hash::EventHash;
 pub use materialize::{apply_incremental, materialize, ApplyResult};
 pub use server::{PendingProposal, ServerState};
-pub use sync::{
-    AuthorHead, AuthorRequest, ChainStatus, HeadsSummary, PendingBuffer, SyncMessage,
-};
+pub use sync::{AuthorHead, AuthorRequest, ChainStatus, HeadsSummary, PendingBuffer, SyncMessage};
 pub use types::{Channel, ChatMessage, Member, Profile, Role};
+
+// Backward-compatible re-exports for downstream crates during migration.
+// Remove these as each downstream crate is updated to the new API.
+// Tracked by: https://github.com/intendednull/willow/issues/24
+pub use compat::{apply, apply_lenient, EventStore, InMemoryStore, StateHash};

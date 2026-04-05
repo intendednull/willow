@@ -67,11 +67,7 @@ impl ServerState {
     /// Create a new server state.
     ///
     /// The genesis author is added as both a member and the sole admin.
-    pub fn new(
-        id: impl Into<String>,
-        name: impl Into<String>,
-        genesis_author: EndpointId,
-    ) -> Self {
+    pub fn new(id: impl Into<String>, name: impl Into<String>, genesis_author: EndpointId) -> Self {
         let mut members = HashMap::new();
         members.insert(
             genesis_author,

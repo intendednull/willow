@@ -158,9 +158,7 @@ impl EventDag {
 
     /// The genesis event. `None` if the DAG is empty.
     pub fn genesis(&self) -> Option<&Event> {
-        self.genesis_hash
-            .as_ref()
-            .and_then(|h| self.events.get(h))
+        self.genesis_hash.as_ref().and_then(|h| self.events.get(h))
     }
 
     /// The server ID (hex of genesis event hash). `None` if empty.
@@ -175,10 +173,7 @@ impl EventDag {
 
     /// Latest sequence number for an author (0 if unknown).
     pub fn latest_seq(&self, author: &EndpointId) -> u64 {
-        self.chains
-            .get(author)
-            .map(|c| c.len() as u64)
-            .unwrap_or(0)
+        self.chains.get(author).map(|c| c.len() as u64).unwrap_or(0)
     }
 
     /// Current head hash for an author.
@@ -237,13 +232,7 @@ impl EventDag {
         let mut heads = std::collections::HashMap::new();
         for (author, hash) in &self.heads {
             let seq = self.latest_seq(author);
-            heads.insert(
-                *author,
-                AuthorHead {
-                    seq,
-                    hash: *hash,
-                },
-            );
+            heads.insert(*author, AuthorHead { seq, hash: *hash });
         }
         HeadsSummary { heads }
     }
@@ -490,9 +479,7 @@ mod tests {
         );
         let err = dag.insert(event).unwrap_err();
         match err {
-            InsertError::SeqGap {
-                expected, got, ..
-            } => {
+            InsertError::SeqGap { expected, got, .. } => {
                 assert_eq!(expected, 2);
                 assert_eq!(got, 3);
             }

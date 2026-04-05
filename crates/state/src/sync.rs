@@ -296,22 +296,16 @@ mod tests {
         let heads2 = dag2.heads_summary();
 
         // DAG 1 gets events from DAG 2.
-        let their_heads_map: HashMap<_, _> = heads1
-            .heads
-            .iter()
-            .map(|(k, v)| (*k, v.seq))
-            .collect();
+        let their_heads_map: HashMap<_, _> =
+            heads1.heads.iter().map(|(k, v)| (*k, v.seq)).collect();
         let for_dag1 = dag2.events_since(&their_heads_map);
         for event in for_dag1 {
             let _ = dag1.insert(event.clone());
         }
 
         // DAG 2 gets events from DAG 1.
-        let their_heads_map: HashMap<_, _> = heads2
-            .heads
-            .iter()
-            .map(|(k, v)| (*k, v.seq))
-            .collect();
+        let their_heads_map: HashMap<_, _> =
+            heads2.heads.iter().map(|(k, v)| (*k, v.seq)).collect();
         let for_dag2 = dag1.events_since(&their_heads_map);
         for event in for_dag2 {
             let _ = dag2.insert(event.clone());
@@ -343,10 +337,7 @@ mod tests {
             seq: 5,
             hash: EventHash::from_bytes(b"b"),
         };
-        assert_eq!(
-            compare_chains(&a, &b),
-            ChainStatus::Ahead { new_events: 2 }
-        );
+        assert_eq!(compare_chains(&a, &b), ChainStatus::Ahead { new_events: 2 });
     }
 
     #[test]
@@ -429,9 +420,7 @@ mod tests {
             1,
             EventHash::ZERO,
             vec![],
-            EventKind::CreateServer {
-                name: "b".into(),
-            },
+            EventKind::CreateServer { name: "b".into() },
             0,
         );
         let event_c = Event::new(

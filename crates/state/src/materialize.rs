@@ -100,10 +100,7 @@ fn apply_unchecked(state: &mut ServerState, event: &Event) -> ApplyResult {
         | EventKind::RenameServer { .. }
         | EventKind::SetServerDescription { .. } => {
             if !state.is_admin(&event.author) {
-                return ApplyResult::Rejected(format!(
-                    "author '{}' is not an admin",
-                    event.author
-                ));
+                return ApplyResult::Rejected(format!("author '{}' is not an admin", event.author));
             }
         }
         _ => {}
@@ -424,9 +421,7 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
         }
 
         // Governance events handled above in apply_unchecked.
-        EventKind::CreateServer { .. }
-        | EventKind::Propose { .. }
-        | EventKind::Vote { .. } => {}
+        EventKind::CreateServer { .. } | EventKind::Propose { .. } | EventKind::Vote { .. } => {}
     }
 
     ApplyResult::Applied
@@ -676,10 +671,7 @@ mod tests {
             },
         );
         let state = materialize(&dag);
-        assert_eq!(
-            state.profiles[&admin.endpoint_id()].display_name,
-            "Alice"
-        );
+        assert_eq!(state.profiles[&admin.endpoint_id()].display_name, "Alice");
         assert_eq!(
             state.members[&admin.endpoint_id()].display_name,
             Some("Alice".into())
@@ -799,9 +791,7 @@ mod tests {
         );
         let state = materialize(&dag);
         assert!(!state.roles.contains_key("r-1"));
-        assert!(!state.members[&admin.endpoint_id()]
-            .roles
-            .contains("r-1"));
+        assert!(!state.members[&admin.endpoint_id()].roles.contains("r-1"));
     }
 
     #[test]
@@ -819,10 +809,7 @@ mod tests {
         );
         let state = materialize(&dag);
         assert!(state.members.contains_key(&new_peer.endpoint_id()));
-        assert!(state.has_permission(
-            &new_peer.endpoint_id(),
-            &Permission::SendMessages
-        ));
+        assert!(state.has_permission(&new_peer.endpoint_id(), &Permission::SendMessages));
     }
 
     // ── Incremental apply ──────────────────────────────────────────
@@ -1118,9 +1105,7 @@ mod tests {
 
         let state = materialize(&dag);
         assert!(!state.members.contains_key(&target.endpoint_id()));
-        assert!(!state
-            .peer_permissions
-            .contains_key(&target.endpoint_id()));
+        assert!(!state.peer_permissions.contains_key(&target.endpoint_id()));
     }
 
     #[test]
@@ -1186,9 +1171,7 @@ mod tests {
             },
         );
         let state = materialize(&dag);
-        assert!(!state
-            .peer_permissions
-            .contains_key(&target.endpoint_id()));
+        assert!(!state.peer_permissions.contains_key(&target.endpoint_id()));
     }
 
     #[test]
