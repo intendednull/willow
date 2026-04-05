@@ -10,5 +10,4 @@ bincode = { workspace = true }
 iroh-base = { workspace = true, features = ["key"] }
 serde = { workspace = true }
 sha2 = "0.10"
-uuid = { workspace = true }
 willow-identity = { path = "../identity" }
