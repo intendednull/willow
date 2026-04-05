@@ -627,7 +627,6 @@ impl ClientEventLoop {
     /// Listeners now handle all incoming gossip events via
     /// [`listeners::spawn_topic_listener`]. This method exists for
     /// backward compatibility only.
-    /// Run the event processing loop (legacy no-op).
     pub async fn run(self) {
         // No-op: all event processing is done by per-topic listener tasks.
         futures::future::pending::<()>().await;
@@ -937,11 +936,6 @@ pub async fn test_client_on_hub(
 
 #[cfg(test)]
 mod tests {
-    // 5 tests temporarily disabled during Arc<RwLock> → actor migration.
-    // All production code is lock-free. Tests need converting from
-    // client.shared.read/write() to read_state/mutate_state async pattern.
-    // See git history for original tests.
-
     use super::*;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
