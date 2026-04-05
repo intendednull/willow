@@ -381,15 +381,13 @@ the DAG.
 
 #### Known tradeoffs
 
-**Unanimous deadlock.** With the default unanimous threshold and 3
-admins, if one admin loses their key, goes offline permanently, or
-refuses to vote, no governance action can ever pass — including
-changing the threshold. The server is frozen for admin changes.
-Servers that want resilience should proactively lower the threshold
-while all admins are active. This is an accepted tradeoff: unanimous
-is safe but brittle, majority is flexible but can be exploited by
-colluding admins. There is no free lunch. See intendednull/willow#22
-for future hardening work including community-based fallback voting.
+**Unanimous deadlock.** If the threshold is changed to unanimous and
+an admin loses their key, goes offline, or refuses to vote, no
+governance action can ever pass — including changing the threshold
+back. The server is frozen for admin changes. The default majority
+threshold avoids this, but servers that upgrade to unanimous should
+be aware of the risk. See intendednull/willow#22 for future hardening
+work including community-based fallback voting.
 
 **Votes are permanent.** Once a Vote event is published, it cannot
 be retracted (chains are append-only). An admin who changes their
@@ -862,7 +860,12 @@ fn apply_unchecked(state: &mut ServerState, event: &Event) -> ApplyResult {
         _ => {}
     }
 
-    // Non-governance events — permission check.
+    // Permission-checked events.
+    // required_permission returns:
+    //   Message/EditMessage/DeleteMessage/Reaction → SendMessages
+    //   CreateChannel/DeleteChannel/RenameChannel → ManageChannels
+    //   CreateRole/DeleteRole/SetPermission/AssignRole → ManageRoles
+    //   All others (governance, admin-only, SetProfile, etc.) → None
     let required = required_permission(&event.kind);
     if let Some(ref perm) = required {
         if !state.has_permission(&event.author, perm) {
@@ -1574,7 +1577,8 @@ code path between "single linear chain with parent state hash" and
 | `ServerState` (struct) | Kept, minus `owner`/`seen_event_ids`/`hash()`, plus `admins`/`vote_threshold`/`pending_proposals` |
 | `Permission` enum | `Administrator` removed — admin status tracked separately in `ServerState.admins` |
 | `has_permission()` | Admins have all permissions; no owner concept |
-| `Channel`, `Role`, `Member`, `Profile` | Unchanged |
+| `Channel` | `pinned_messages` changes from `HashSet<String>` to `HashSet<EventHash>` |
+| `Role`, `Member`, `Profile` | Unchanged |
 | `ChatMessage` | `id` and `reply_to` change from `String` to `EventHash` |
 | Permission enforcement in apply | Moved to `apply_unchecked()`, governance events handled specially |
 | Zero-I/O crate boundary | Preserved — state crate remains pure |
@@ -2043,7 +2047,7 @@ and what is deferred.
 | Section 1 | `Event`, `EventHash`, `EventKind` (22 variants), `ProposedAction`, `VoteThreshold`, `EventDag`, `InsertError`, `PendingBuffer` |
 | Section 2 | `materialize()`, `apply_unchecked()`, `apply_incremental()`, topological sort, `ServerState` (simplified) |
 | Section 3 | `HeadsSummary`, `SyncMessage`, `AuthorRequest`, sync flow |
-| Section 4 | `ChainStatus`, `compare_chains()` (simplified, no revision) |
+| Section 4 | `ChainStatus` (with `Forked` equivocation detection), `compare_chains()` |
 | Section 7 | Full deletion of legacy types, new module layout, new public API |
 | Section 10 | Test suite (below) |
 
