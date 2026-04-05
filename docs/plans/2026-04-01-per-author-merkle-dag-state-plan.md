@@ -586,13 +586,13 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
-pub use event::{Event, EventKind, ProposedAction, VoteThreshold};
+pub use event::{Event, EventKind, Permission, ProposedAction, VoteThreshold};
 pub use hash::EventHash;
-pub use dag::{ChainStatus, EventDag, InsertError};
+pub use dag::{EventDag, InsertError};
 pub use materialize::{apply_incremental, materialize, ApplyResult};
 pub use server::{PendingProposal, ServerState};
-pub use sync::{AuthorHead, AuthorRequest, HeadsSummary, PendingBuffer, SyncMessage};
-pub use types::{Channel, ChatMessage, Member, Permission, Profile, Role};
+pub use sync::{AuthorHead, AuthorRequest, ChainStatus, HeadsSummary, PendingBuffer, SyncMessage};
+pub use types::{Channel, ChatMessage, Member, Profile, Role};
 ```
 
 Note: `HeadsSummary` is defined in `sync.rs` and re-exported.

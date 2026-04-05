@@ -1588,10 +1588,10 @@ code path between "single linear chain with parent state hash" and
 | Module | Contents |
 |---|---|
 | `hash.rs` | `EventHash` (32-byte SHA-256 wrapper, `Ord`, `Display`) |
-| `event.rs` | `Event`, `EventKind`, `ProposedAction`, `VoteThreshold` |
-| `dag.rs` | `EventDag`, `InsertError`, `ChainStatus`, topological sort |
+| `event.rs` | `Event`, `EventKind`, `Permission`, `ProposedAction`, `VoteThreshold` |
+| `dag.rs` | `EventDag`, `InsertError`, topological sort, `heads_summary`, `events_since` |
 | `materialize.rs` | `materialize()`, `apply_unchecked()`, `apply_incremental()` |
-| `sync.rs` | `HeadsSummary`, `AuthorHead`, `SyncMessage`, `AuthorRequest`, `PendingBuffer` |
+| `sync.rs` | `HeadsSummary`, `AuthorHead`, `SyncMessage`, `AuthorRequest`, `ChainStatus`, `compare_chains`, `PendingBuffer` |
 | `snapshot.rs` | `Snapshot`, `SnapshotHash`, compaction |
 | `types.rs` | Unchanged — `Channel`, `Role`, `Member`, etc. |
 | `server.rs` | `ServerState` (simplified — no `hash()`, no `seen_event_ids`) |
@@ -1601,13 +1601,13 @@ code path between "single linear chain with parent state hash" and
 
 ```rust
 // Core types
-pub use event::{Event, EventKind, ProposedAction, VoteThreshold};
+pub use event::{Event, EventKind, Permission, ProposedAction, VoteThreshold};
 pub use hash::EventHash;
-pub use dag::{EventDag, InsertError, ChainStatus};
+pub use dag::{EventDag, InsertError};
 pub use materialize::{materialize, apply_incremental, ApplyResult};
-pub use sync::{HeadsSummary, AuthorHead, SyncMessage, AuthorRequest, PendingBuffer};
-pub use server::{ServerState, PendingProposal};
-pub use types::{Channel, ChatMessage, Member, Permission, Profile, Role};
+pub use sync::{AuthorHead, AuthorRequest, ChainStatus, HeadsSummary, PendingBuffer, SyncMessage};
+pub use server::{PendingProposal, ServerState};
+pub use types::{Channel, ChatMessage, Member, Profile, Role};
 // Deferred: pub use snapshot::{Snapshot, SnapshotHash};
 ```
 
