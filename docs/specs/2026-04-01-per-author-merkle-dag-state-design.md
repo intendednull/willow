@@ -83,8 +83,9 @@ no per-author granularity, no gap detection, and no incremental sync.
 6. **Scalable hashing** — state verification does not require
    serializing the entire state. Incremental or per-author hashing.
 
-7. **Archival tolerance** — current materialized state may diverge from
-   historical snapshots. This is by design, not a bug.
+7. **Archival tolerance** — append-only history may grow indefinitely.
+   Compaction via snapshots is eventual, not immediate. Old events
+   remain in the DAG until explicitly compacted.
 
 8. **Zero I/O** — the state crate remains pure. No networking, no
    persistence, no async. Just `apply(dag, event) -> Result`.
@@ -138,6 +139,7 @@ self-describing — its identity is its content hash.
 
 ```rust
 /// A single state mutation, content-addressed and author-signed.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Event {
     /// Content hash of this event — SHA-256 of the signable fields
     /// (author, seq, prev, deps, kind, timestamp_hint_ms).
@@ -305,17 +307,19 @@ the governance path.
 
 #### Vote threshold
 
-The default threshold is **unanimous** — all admins must approve. The
-threshold itself can be changed via a `SetVoteThreshold` proposal,
-which must pass under the *current* threshold. This means moving from
-unanimous to majority requires unanimous agreement first.
+The default threshold is **majority** — more than half of admins must
+approve. The threshold itself can be changed via a
+`SetVoteThreshold` proposal, which must pass under the *current*
+threshold. This means moving from majority to unanimous requires
+majority agreement first; moving from unanimous back requires
+unanimous agreement.
 
 ```rust
 pub enum VoteThreshold {
-    /// All admins must approve (default).
-    Unanimous,
-    /// More than half of admins must approve.
+    /// More than half of admins must approve (default).
     Majority,
+    /// All admins must approve.
+    Unanimous,
     /// A specific count of admins must approve (capped at admin count).
     Count(u32),
 }
@@ -336,6 +340,12 @@ Admin B:  Vote(yes) │                  ← 2/3 votes
 Admin C:  Vote(yes) │                  ← 3/3, threshold met → applied
 ```
 
+There is no separate "resolution" event. The state change is inferred
+during materialization: `apply_unchecked` processes a `Vote`, tallies
+the votes in the pending proposal, and if the threshold is met, calls
+`apply_proposed_action` inline. The action is a side effect of the
+Vote event, not a distinct event in the DAG.
+
 This eliminates:
 - Conflicting resolution events (no resolution event exists)
 - Race conditions between admins claiming different outcomes
@@ -349,12 +359,13 @@ the DAG.
 #### Bootstrap sequence
 
 1. Genesis `CreateServer` event. Genesis author is sole admin.
-2. Sole admin proposes `GrantAdmin{alice}`. Quorum = 1 (unanimous of 1).
+2. Sole admin proposes `GrantAdmin{alice}`. Majority of 1 = 1.
    Proposer is implicit "yes." Auto-applies immediately during
    materialization when the Propose event is processed.
-3. Now 2 admins. Propose `GrantAdmin{bob}`. Both must vote (unanimous).
-4. Now 3 admins. They can propose `SetVoteThreshold(Majority)`. All 3
-   must agree. Once applied, future proposals need only 2 of 3.
+3. Now 2 admins. Propose `GrantAdmin{bob}`. Majority of 2 = 2, so
+   both must vote.
+4. Now 3 admins. Proposals need majority (2 of 3). They can propose
+   `SetVoteThreshold(Unanimous)` if they want stricter governance.
 
 #### Edge cases
 
@@ -542,6 +553,11 @@ pub enum EventKind {
 
     // -- Governance (vote-based, auto-apply on threshold) --
     Propose { action: ProposedAction },
+    /// Vote on a proposal. The `proposal` field is the EventHash of
+    /// the Propose event being voted on. This structurally binds the
+    /// vote to a specific proposal — there is no ambiguity about what
+    /// is being voted on. During materialization, the vote is only
+    /// counted if `proposal` matches a pending proposal.
     Vote { proposal: EventHash, accept: bool },
 
     // -- Permissions (direct, by any admin) --
@@ -595,10 +611,16 @@ pub enum ProposedAction {
 /// Does NOT include admin status — that is managed exclusively
 /// through ProposedAction and the vote path.
 pub enum Permission {
+    /// Can sync/provide full history to other peers.
     SyncProvider,
+    /// Can manage channels (create, delete, rename).
     ManageChannels,
+    /// Can manage roles and non-admin permissions.
     ManageRoles,
+    /// Can send messages, edit, delete, react. Required for
+    /// Message, EditMessage, DeleteMessage, and Reaction events.
     SendMessages,
+    /// Can create invites.
     CreateInvite,
     // Administrator is NOT here — admin status is in ServerState.admins
 }
@@ -766,6 +788,20 @@ case requiring a partial re-sort is when buffered out-of-order events
 become ready after a dependency arrives — those are applied in
 topological order among themselves.
 
+**Soft-dep arrival and re-materialization.** Because deps are
+soft-accepted, a cross-author dep may arrive after the event that
+references it has already been applied incrementally. When the dep
+arrives, it adds new causal edges to the DAG, which can change the
+topological sort order of previously concurrent events. If this
+happens, the incrementally-applied state may diverge from a full
+`materialize()`. The correct response is to **re-materialize from
+the DAG** whenever a previously-missing dep arrives and creates new
+causal edges between already-applied events. In practice this is
+rare (most deps arrive before or with the events that reference
+them), and re-materialization is fast for reasonable event counts.
+A future optimization can detect when re-materialization is actually
+needed vs when the new dep doesn't affect ordering.
+
 ### apply_unchecked
 
 The core apply function is simplified — it no longer checks parent
@@ -811,7 +847,22 @@ fn apply_unchecked(state: &mut ServerState, event: &Event) -> ApplyResult {
         _ => {}
     }
 
-    // Non-governance events — standard permission check.
+    // Admin-only events (no specific permission, just admin status).
+    match &event.kind {
+        EventKind::GrantPermission { .. }
+        | EventKind::RevokePermission { .. }
+        | EventKind::RenameServer { .. }
+        | EventKind::SetServerDescription { .. } => {
+            if !state.is_admin(&event.author) {
+                return ApplyResult::Rejected(format!(
+                    "author '{}' is not an admin", event.author
+                ));
+            }
+        }
+        _ => {}
+    }
+
+    // Non-governance events — permission check.
     let required = required_permission(&event.kind);
     if let Some(ref perm) = required {
         if !state.has_permission(&event.author, perm) {
@@ -853,14 +904,52 @@ fn apply_proposed_action(state: &mut ServerState, action: &ProposedAction) {
         }
         ProposedAction::RevokeAdmin { peer_id } => {
             state.admins.remove(peer_id);
+            // Remove this peer's votes from all pending proposals
+            // and re-evaluate thresholds (admin count changed).
+            cleanup_votes_and_reevaluate(state, peer_id);
         }
         ProposedAction::KickMember { peer_id } => {
             state.members.remove(peer_id);
             state.peer_permissions.remove(peer_id);
             state.admins.remove(peer_id);
+            // Remove this peer's votes from all pending proposals
+            // and re-evaluate thresholds (admin count may have changed).
+            cleanup_votes_and_reevaluate(state, peer_id);
         }
         ProposedAction::SetVoteThreshold { threshold } => {
             state.vote_threshold = threshold.clone();
+            // Threshold changed — re-evaluate all pending proposals.
+            reevaluate_all_proposals(state);
+        }
+    }
+}
+
+/// Remove a peer's votes from all pending proposals, then
+/// re-evaluate each proposal against the (potentially changed)
+/// threshold. This handles cascading effects: revoking an admin
+/// changes the admin count, which changes what "majority" means,
+/// which may cause pending proposals to pass or become impossible.
+fn cleanup_votes_and_reevaluate(state: &mut ServerState, peer_id: &EndpointId) {
+    for prop in state.pending_proposals.values_mut() {
+        prop.votes.remove(peer_id);
+    }
+    reevaluate_all_proposals(state);
+}
+
+/// Re-check all pending proposals against the current threshold.
+/// Apply any that now meet the threshold.
+fn reevaluate_all_proposals(state: &mut ServerState) {
+    let passing: Vec<EventHash> = state.pending_proposals.iter()
+        .filter(|(_, prop)| {
+            let yes_count = prop.votes.values().filter(|v| **v).count();
+            state.meets_threshold(yes_count)
+        })
+        .map(|(hash, _)| hash.clone())
+        .collect();
+
+    for hash in passing {
+        if let Some(prop) = state.pending_proposals.remove(&hash) {
+            apply_proposed_action(state, &prop.action);
         }
     }
 }
@@ -875,9 +964,12 @@ content-addressed message identity:
   `Message` event that created it)
 - `reply_to: Option<String>` → `reply_to: Option<EventHash>`
 
-All other types (`Channel`, `Role`, `Member`, `Profile`, `Permission`)
-are unchanged. `Channel.id` and `Role.id` remain `String` (user-
-provided UUIDs, not content hashes).
+Other types are mostly unchanged. `Channel.id` and `Role.id` remain
+`String` (user-provided UUIDs, not content hashes). One additional
+change:
+
+- `Channel.pinned_messages`: `HashSet<String>` → `HashSet<EventHash>`
+  (pinned message IDs are now event hashes)
 
 ### ServerState Changes
 
@@ -1191,6 +1283,9 @@ pub enum ChainStatus {
     Behind { missing_events: u64 },
     /// Same head.
     Synced,
+    /// Same seq, different hash. The author signed two different
+    /// events at the same seq — an equivocation (fork attack).
+    Forked,
 }
 
 pub fn compare_chains(
@@ -1203,13 +1298,39 @@ pub fn compare_chains(
     if their_head.seq > our_head.seq {
         return ChainStatus::Ahead { new_events: their_head.seq - our_head.seq };
     }
-    ChainStatus::Behind { missing_events: our_head.seq - their_head.seq }
+    if their_head.seq < our_head.seq {
+        return ChainStatus::Behind { missing_events: our_head.seq - their_head.seq };
+    }
+    // Same seq, different hash — equivocation detected.
+    ChainStatus::Forked
 }
 ```
 
-No `Revised` variant. No `replace_chain()`. No `RevisionError`. If
-two peers have the same author at the same seq, the hashes must match
-(append-only guarantee). If they don't, one peer has corrupt data.
+### Equivocation Detection
+
+A malicious author can sign two different events with the same
+sequence number and send them to different peers, creating a fork
+in what should be an append-only chain. This is called
+**equivocation** and is a known attack on per-author log systems
+(see SSB, 2P-BFT-Log paper arXiv:2307.08381).
+
+Detection: `compare_chains` returns `Forked` when two peers have
+the same author at the same seq but different hashes. This should
+not happen with honest authors (append-only guarantee).
+
+Response when equivocation is detected:
+
+1. **Freeze the forked author's chain.** Stop accepting new events
+   from this author until the fork is resolved.
+2. **Propagate the equivocation proof.** Both conflicting events
+   (same author, same seq, different hash) serve as proof. Any peer
+   can verify by checking both signatures against the author's key.
+3. **Alert admins.** The forked author's key may be compromised.
+   Admins can vote to kick the forked member.
+4. **Do not attempt to merge forks.** Unlike revision (which we
+   explicitly rejected), forks from equivocation represent malicious
+   behavior, not legitimate correction. The correct response is to
+   quarantine, not reconcile.
 
 ## Section 5: Compaction & Snapshots
 
@@ -2191,6 +2312,27 @@ test grant_permission_cannot_grant_admin
     GrantPermission event can only carry Permission variants
     (SyncProvider, ManageChannels, etc.). Admin status is
     structurally separate — enforced by the type system.
+
+test grant_permission_requires_admin
+    Non-admin with ManageRoles tries GrantPermission. Rejected.
+    Admin can GrantPermission.
+
+test kick_cleans_up_pending_votes
+    Admin B has voted on a pending proposal. B is kicked.
+    B's vote is removed from the pending proposal. If the admin
+    count change causes another proposal to meet threshold, it
+    auto-applies.
+
+test revoke_admin_reevaluates_proposals
+    3 admins, majority threshold. Admin A votes yes on proposal X
+    (1/3, not majority). Admin B is revoked. Now 2 admins.
+    Majority of 2 = 2, so A's 1 vote still not enough. But if A
+    and C had both voted, the threshold change would cascade.
+
+test set_threshold_reevaluates_proposals
+    3 admins, unanimous. Admin A votes yes on proposal X (1/3).
+    Threshold is changed to Count(1). Proposal X now meets
+    threshold and auto-applies.
 ```
 
 ### Incremental Apply Tests
@@ -2216,6 +2358,9 @@ test compare_chains_ahead
 
 test compare_chains_behind
     Our seq > their seq → Behind.
+
+test compare_chains_forked
+    Same seq, different hash → Forked (equivocation detected).
 
 test corrective_events
     Author sends message, then DeleteMessage. Materialized state
@@ -2301,7 +2446,57 @@ The properties these tests covered (determinism, idempotency,
 convergence, replay correctness) are all still tested — just
 through the new API.
 
-## Appendix: References
+## Appendix A: Known Issues and Future Work
+
+Issues identified during deep review that are deferred to future
+iterations. Documented here so they are not lost.
+
+### Hash-grinding on governance events
+
+An attacker who can compute SHA-256 quickly could vary
+`timestamp_hint_ms` to produce event hashes that sort favorably in
+the topological sort, winning concurrent governance races
+deterministically. `timestamp_hint_ms` is "display only" but
+participates in the hash, making grinding cheap.
+
+**Mitigation (future)**: governance events should include all known
+heads in their `deps`, which eliminates true concurrency for
+governance events in practice (each governance event causally depends
+on the latest known state). Alternatively, exclude
+`timestamp_hint_ms` from the hash and add a random nonce.
+
+See intendednull/willow#22 for governance hardening work.
+
+### Optimized incremental apply after soft-dep arrival
+
+Currently, any soft-dep arrival that creates new causal edges
+requires full re-materialization. A future optimization could detect
+whether the new edges actually change the topological order of
+already-applied events, and skip re-materialization when they don't.
+
+### SyncProvider permission evaluation
+
+The `SyncProvider` permission may be unnecessary in the new DAG
+model where replay nodes are regular participants. Evaluate whether
+this permission should be removed or repurposed. Kept for now to
+avoid blocking implementation.
+
+### Versioning strategy
+
+The spec has no versioning mechanism for events or the sync protocol.
+Future work should define how event format changes are handled across
+peers running different versions. Options include: version field in
+`CreateServer`, ALPN-style protocol negotiation at the sync layer,
+or event kind versioning via serde backward compatibility.
+
+### Dynamic channel model
+
+The current model requires admin permission to create channels. A
+future iteration could allow any member to create "topics" or
+ephemeral channels without admin approval, with a configurable
+policy per server. Out of scope for initial implementation.
+
+## Appendix B: References
 
 1. Sanjuán, Pöyhtäri, Teixeira. "Merkle-CRDTs: Merkle-DAGs meet CRDTs." arXiv:2004.00107, 2020.
 2. Auvolat, Taïani. "Merkle Search Trees: Efficient State-Based CRDTs in Open Networks." SRDS, 2019.
@@ -2311,3 +2506,4 @@ through the new API.
 6. AT Protocol Repository Spec. https://atproto.com/specs/repository
 7. Automerge Binary Document Format. https://automerge.org/automerge-binary-format-spec/
 8. iroh by n0. https://github.com/n0-computer/iroh
+9. 2P-BFT-Log: 2-Phase Single-Author Append-Only Log. arXiv:2307.08381, 2023.

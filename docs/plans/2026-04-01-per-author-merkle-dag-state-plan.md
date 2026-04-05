@@ -58,7 +58,8 @@ dependency on event types.
 
 ### EventKind
 
-22 variants total. Changes from current:
+22 variants total. `Event` struct derives `Clone, Debug, Serialize,
+Deserialize`. Changes from current:
 - **Removed**: `StateVerification` (legacy), `KickMember` (now a
   `ProposedAction`), `Resolve` (votes auto-apply on threshold)
 - **Added**: `CreateServer`, `Propose`, `Vote`
@@ -74,10 +75,17 @@ pub enum Permission {
     SyncProvider,
     ManageChannels,
     ManageRoles,
+    /// Required for Message, EditMessage, DeleteMessage, Reaction.
     SendMessages,
     CreateInvite,
 }
 ```
+
+`required_permission` maps: `Message`/`EditMessage`/`DeleteMessage`/
+`Reaction` → `SendMessages`, channel ops → `ManageChannels`, role
+ops → `ManageRoles`. `GrantPermission`/`RevokePermission`/
+`RenameServer`/`SetServerDescription` require admin (checked directly
+via `is_admin`, not via `required_permission`).
 
 Field type changes:
 - `message_id: String` → `message_id: EventHash` in `EditMessage`,
@@ -98,8 +106,8 @@ pub enum ProposedAction {
 }
 
 pub enum VoteThreshold {
+    Majority,   // default
     Unanimous,
-    Majority,
     Count(u32),
 }
 ```
@@ -268,7 +276,7 @@ visited set.
 - Remove `is_trusted()` (legacy backward-compat bridge)
 - Remove `Administrator` from `Permission` enum
 - Add `admins: HashSet<EndpointId>` — admin set, separate from permissions
-- Add `vote_threshold: VoteThreshold` (default: `Unanimous`)
+- Add `vote_threshold: VoteThreshold` (default: `Majority`)
 - Add `pending_proposals: HashMap<EventHash, PendingProposal>`
 - Add `is_admin(&self, peer_id) -> bool`
 - Keep `has_permission()` — admins have all permissions implicitly
@@ -319,8 +327,8 @@ pub fn meets_threshold(&self, yes_count: usize) -> bool {
     let admin_count = self.admins.len();
     if admin_count == 0 { return false; }
     match self.vote_threshold {
-        VoteThreshold::Unanimous => yes_count >= admin_count,
         VoteThreshold::Majority => yes_count > admin_count / 2,
+        VoteThreshold::Unanimous => yes_count >= admin_count,
         VoteThreshold::Count(n) => yes_count >= (n as usize).min(admin_count),
     }
 }
@@ -330,8 +338,8 @@ pub fn meets_threshold(&self, yes_count: usize) -> bool {
 
 - `ChatMessage.id`: `String` → `EventHash`
 - `ChatMessage.reply_to`: `Option<String>` → `Option<EventHash>`
-- All other types unchanged: `Channel`, `Role`, `Member`, `Profile`,
-  `Permission`
+- `Channel.pinned_messages`: `HashSet<String>` → `HashSet<EventHash>`
+- All other types unchanged: `Role`, `Member`, `Profile`
 
 **Tests**:
 - `new_server_has_genesis_author_as_admin`
@@ -380,6 +388,24 @@ After recording a Propose or Vote, check if the pending proposal's
 yes-count meets `state.meets_threshold()`. If so, remove from pending
 and call `apply_proposed_action(state, &prop.action)`.
 
+### cleanup_votes_and_reevaluate / reevaluate_all_proposals
+
+When `RevokeAdmin` or `KickMember` is applied, the admin count
+changes. This affects threshold calculations for ALL pending
+proposals. `apply_proposed_action` must:
+1. Remove the affected peer's votes from all pending proposals
+2. Re-evaluate all pending proposals against the new threshold
+3. Apply any that now meet threshold (cascading)
+
+Similarly, `SetVoteThreshold` re-evaluates all pending proposals.
+
+### Admin-only events
+
+`GrantPermission`, `RevokePermission`, `RenameServer`,
+`SetServerDescription` require `is_admin` check directly in
+`apply_unchecked` (not via `required_permission`). These are admin
+actions that don't map to a specific `Permission` variant.
+
 ### The mutation match block
 
 Ported from current `apply_inner`. Changes:
@@ -387,15 +413,20 @@ Ported from current `apply_inner`. Changes:
 - Remove `KickMember` arm (now in `apply_proposed_action`)
 - Add `CreateServer` no-op arm
 - Add `Propose` / `Vote` governance arms (no Resolve)
+- Admin-only check for GrantPermission/RevokePermission/RenameServer/
+  SetServerDescription
+- `required_permission` maps Message/EditMessage/DeleteMessage/Reaction
+  to `SendMessages`
 - `message_id` fields are `EventHash` not `String`
 - `event.id` references become `event.hash`
 - No `seen_event_ids` insertion
 - `ChatMessage.id` is `event.hash.clone()`
-- `RenameServer` / `SetServerDescription` require admin (via `is_admin`)
-- Permission checks use `has_permission` (admins pass implicitly)
 - `apply_proposed_action` modifies `state.admins` not `peer_permissions`
+- `apply_proposed_action` calls `cleanup_votes_and_reevaluate` for
+  RevokeAdmin/KickMember and `reevaluate_all_proposals` for
+  SetVoteThreshold
 
-Total: 22 match arms in apply_unchecked (3 governance + 19 standard).
+Total: 22 match arms in apply_unchecked (3 governance + 4 admin-only + 15 permission-checked).
 
 **Tests**:
 - `materialize_empty_dag` — just genesis → fresh state with genesis
@@ -435,6 +466,10 @@ Total: 22 match arms in apply_unchecked (3 governance + 19 standard).
 - `vote_on_passed_proposal_ignored`
 - `concurrent_proposals_apply_independently`
 - `grant_permission_cannot_grant_admin` (structurally impossible via type system)
+- `grant_permission_requires_admin`
+- `kick_cleans_up_pending_votes`
+- `revoke_admin_reevaluates_proposals`
+- `set_threshold_reevaluates_proposals`
 
 ## Step 7: Sync types and PendingBuffer
 
@@ -511,6 +546,8 @@ pub enum ChainStatus {
     Ahead { new_events: u64 },
     Behind { missing_events: u64 },
     Synced,
+    /// Same seq, different hash — equivocation detected.
+    Forked,
 }
 
 pub fn compare_chains(
@@ -519,13 +556,15 @@ pub fn compare_chains(
 ) -> ChainStatus
 ```
 
-Simple comparison: same hash = Synced, their seq > ours = Ahead,
-ours > theirs = Behind. No `Revised` variant needed.
+Same hash = Synced, their seq > ours = Ahead, ours > theirs = Behind,
+same seq + different hash = Forked (equivocation). When Forked is
+detected, freeze the author's chain and alert admins.
 
 **Tests**:
 - `compare_chains_synced`
 - `compare_chains_ahead`
 - `compare_chains_behind`
+- `compare_chains_forked` — same seq, different hash = Forked
 - `corrective_events` — author sends message, then DeleteMessage;
   materialized state shows deleted; original event still in DAG
 
