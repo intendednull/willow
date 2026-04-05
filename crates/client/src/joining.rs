@@ -82,7 +82,10 @@ impl<N: willow_network::Network> ClientHandle<N> {
         )
         .await?;
 
-        // Initialize event state for the new server.
+        // Initialize event state for the joined server with a placeholder.
+        // The DAG remains empty — it will be populated from the sync batch
+        // which delivers the full event history including genesis. Local
+        // mutations before sync completes will fail gracefully.
         let sid = accepted.server_id.clone();
         willow_actor::state::mutate(&self.event_state_addr, move |es| {
             *es = willow_state::ServerState::new(&sid, "", genesis_author);

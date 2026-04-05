@@ -459,6 +459,11 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 server_id: sid.clone(),
             });
         }
+        // DAG starts empty for loaded servers. It will be populated via
+        // sync when connect() is called — the sync batch delivers the full
+        // event history including genesis. Local mutations before sync
+        // completes will fail gracefully (apply_event returns early).
+        // For NEW servers, create_server() calls seed_genesis() to populate.
         let dag = Arc::new(RwLock::new(willow_state::EventDag::new()));
         let pending = Arc::new(std::sync::Mutex::new(willow_state::PendingBuffer::new()));
         let topics: Arc<RwLock<HashMap<String, N::Topic>>> = Arc::new(RwLock::new(HashMap::new()));
@@ -698,9 +703,52 @@ pub fn test_client() -> (
     state.active_server = Some(server_id.clone());
 
     let identity_clone = identity.clone();
-    let sys = willow_actor::System::new();
 
-    // Spawn domain actors from initial state before it's consumed.
+    // Create the DAG and seed it with a genesis event so subsequent
+    // build_event/insert calls succeed.
+    let dag = {
+        let mut d = willow_state::EventDag::new();
+        let genesis = d.create_event(
+            &identity,
+            willow_state::EventKind::CreateServer {
+                name: "Test Server".to_string(),
+            },
+            vec![],
+            0,
+        );
+        d.insert(genesis).expect("genesis must insert");
+        Arc::new(RwLock::new(d))
+    };
+    let pending = Arc::new(std::sync::Mutex::new(willow_state::PendingBuffer::new()));
+
+    // Materialize initial state from the DAG — this gives us a ServerState
+    // with the correct server_id (genesis hash) and genesis author as admin.
+    state.event_state = willow_state::materialize(&dag.read().unwrap());
+
+    // Seed event_state with the general channel so event-sourced operations
+    // (e.g. pin/unpin) can find the channel.
+    let ch_id_str = state
+        .servers
+        .get(&server_id)
+        .and_then(|ctx| {
+            ctx.topic_map
+                .values()
+                .find(|(n, _)| n == "general")
+                .map(|(_, cid)| cid.to_string())
+        })
+        .unwrap_or_default();
+    state.event_state.channels.insert(
+        ch_id_str.clone(),
+        willow_state::Channel {
+            id: ch_id_str.clone(),
+            name: "general".to_string(),
+            pinned_messages: std::collections::HashSet::new(),
+            kind: "text".to_string(),
+        },
+    );
+
+    // Now spawn actors AFTER state is fully initialized (DAG materialized + channels seeded).
+    let sys = willow_actor::System::new();
     let event_state_addr = sys.spawn(willow_actor::StateActor::new(state.event_state.clone()));
     let mut registry = state_actors::ServerRegistry::default();
     for (id, ctx) in &state.servers {
@@ -732,47 +780,6 @@ pub fn test_client() -> (
     ));
     let persistence_addr = sys.spawn(persistence_actor::PersistenceActor::new(false));
     let event_broker = sys.spawn(willow_actor::Broker::<ClientEvent>::new());
-    // Create the DAG and seed it with a genesis event so subsequent
-    // build_event/insert calls succeed.
-    let dag = {
-        let mut d = willow_state::EventDag::new();
-        let genesis = d.create_event(
-            &identity,
-            willow_state::EventKind::CreateServer {
-                name: "Test Server".to_string(),
-            },
-            vec![],
-            0,
-        );
-        d.insert(genesis).expect("genesis must insert");
-        Arc::new(RwLock::new(d))
-    };
-    let pending = Arc::new(std::sync::Mutex::new(willow_state::PendingBuffer::new()));
-
-    // Materialize initial state from the DAG (replaces manual ServerState::new).
-    state.event_state = willow_state::materialize(&dag.read().unwrap());
-
-    // Seed event_state with the general channel so event-sourced operations
-    // (e.g. pin/unpin) can find the channel.
-    let ch_id_str = state
-        .servers
-        .get(&server_id)
-        .and_then(|ctx| {
-            ctx.topic_map
-                .values()
-                .find(|(n, _)| n == "general")
-                .map(|(_, cid)| cid.to_string())
-        })
-        .unwrap_or_default();
-    state.event_state.channels.insert(
-        ch_id_str.clone(),
-        willow_state::Channel {
-            id: ch_id_str.clone(),
-            name: "general".to_string(),
-            pinned_messages: std::collections::HashSet::new(),
-            kind: "text".to_string(),
-        },
-    );
 
     let topics: Arc<
         RwLock<
