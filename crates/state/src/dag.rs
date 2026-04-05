@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use willow_identity::{EndpointId, Identity};
 
-use crate::event::{Event, EventKind, VoteThreshold};
+use crate::event::{Event, EventKind};
 use crate::hash::EventHash;
 
 /// Error returned when inserting an event into the DAG fails.
@@ -227,6 +227,45 @@ impl EventDag {
         let seq = self.latest_seq(&author) + 1;
         let prev = self.heads.get(&author).cloned().unwrap_or(EventHash::ZERO);
         Event::new(identity, seq, prev, deps, kind, timestamp_hint_ms)
+    }
+
+    // ── Sync helpers ────────────────────────────────────────────────
+
+    /// Compute a compact summary of the DAG's current heads.
+    pub fn heads_summary(&self) -> crate::sync::HeadsSummary {
+        use crate::sync::{AuthorHead, HeadsSummary};
+        let mut heads = std::collections::HashMap::new();
+        for (author, hash) in &self.heads {
+            let seq = self.latest_seq(author);
+            heads.insert(
+                *author,
+                AuthorHead {
+                    seq,
+                    hash: *hash,
+                },
+            );
+        }
+        HeadsSummary { heads }
+    }
+
+    /// Return events the requester doesn't have, based on their known heads.
+    ///
+    /// For each author we know about: if the requester has a lower seq (or
+    /// doesn't know the author at all), return our events after their seq.
+    pub fn events_since(
+        &self,
+        their_heads: &std::collections::HashMap<EndpointId, u64>,
+    ) -> Vec<&Event> {
+        let mut result = Vec::new();
+        for (author, chain) in &self.chains {
+            let their_seq = their_heads.get(author).copied().unwrap_or(0);
+            for hash in chain.iter().skip(their_seq as usize) {
+                if let Some(event) = self.events.get(hash) {
+                    result.push(event);
+                }
+            }
+        }
+        result
     }
 
     // ── Topological sort ────────────────────────────────────────────

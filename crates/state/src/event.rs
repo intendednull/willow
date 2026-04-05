@@ -52,20 +52,15 @@ pub enum ProposedAction {
 }
 
 /// Vote threshold for admin governance actions.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VoteThreshold {
     /// More than half of admins must approve (default).
+    #[default]
     Majority,
     /// All admins must approve.
     Unanimous,
     /// A specific count of admins must approve (capped at admin count).
     Count(u32),
-}
-
-impl Default for VoteThreshold {
-    fn default() -> Self {
-        Self::Majority
-    }
 }
 
 // ───── EventKind ───────────────────────────────────────────────────────────

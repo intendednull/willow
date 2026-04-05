@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use willow_identity::EndpointId;
 
 use crate::dag::EventDag;
-use crate::event::{Event, EventKind, Permission, ProposedAction, VoteThreshold};
+use crate::event::{Event, EventKind, Permission, ProposedAction};
 use crate::hash::EventHash;
 use crate::server::{PendingProposal, ServerState};
 use crate::types::{Channel, ChatMessage, Member, Profile};
@@ -342,7 +342,7 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
                 edited: false,
                 deleted: false,
                 reactions: HashMap::new(),
-                reply_to: reply_to.clone(),
+                reply_to: *reply_to,
             });
         }
 
