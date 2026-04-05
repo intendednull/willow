@@ -99,8 +99,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 name: "general".to_string(),
                 channel_id: ch_id_str,
                 kind: "text".to_string(),
-            })
-            .await;
+            });
         self.mutation_handle.apply_event(&event).await;
 
         // Open event store on persistence actor.
@@ -115,13 +114,12 @@ impl<N: willow_network::Network> ClientHandle<N> {
 
     pub async fn authorize_workers(&self, worker_peer_ids: &[willow_identity::EndpointId]) {
         for worker_pid in worker_peer_ids {
-            let event = self
-                .mutation_handle
-                .build_event(willow_state::EventKind::GrantPermission {
-                    peer_id: *worker_pid,
-                    permission: willow_state::Permission::SyncProvider,
-                })
-                .await;
+            let event =
+                self.mutation_handle
+                    .build_event(willow_state::EventKind::GrantPermission {
+                        peer_id: *worker_pid,
+                        permission: willow_state::Permission::SyncProvider,
+                    });
             self.mutation_handle.apply_event(&event).await;
             self.mutation_handle.broadcast_event(&event);
         }
@@ -133,8 +131,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             .mutation_handle
             .build_event(willow_state::EventKind::SetProfile {
                 display_name: name.clone(),
-            })
-            .await;
+            });
         self.mutation_handle.apply_event(&event).await;
 
         // Also update global profile.
@@ -158,20 +155,18 @@ impl<N: willow_network::Network> ClientHandle<N> {
             .mutation_handle
             .build_event(willow_state::EventKind::RenameServer {
                 new_name: new_name.to_string(),
-            })
-            .await;
+            });
         self.mutation_handle.apply_event(&event).await;
         self.mutation_handle.broadcast_event(&event);
         Ok(())
     }
 
     pub async fn set_server_description(&self, desc: &str) -> anyhow::Result<()> {
-        let event = self
-            .mutation_handle
-            .build_event(willow_state::EventKind::SetServerDescription {
-                description: desc.to_string(),
-            })
-            .await;
+        let event =
+            self.mutation_handle
+                .build_event(willow_state::EventKind::SetServerDescription {
+                    description: desc.to_string(),
+                });
         self.mutation_handle.apply_event(&event).await;
         self.mutation_handle.broadcast_event(&event);
         Ok(())

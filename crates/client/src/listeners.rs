@@ -1,9 +1,12 @@
 //! Per-topic listener tasks that stream GossipEvents and mutate state via domain actors.
 
+use std::sync::{Arc, Mutex, RwLock};
+
 use willow_actor::Addr;
 use willow_identity::EndpointId;
 use willow_network::traits::TopicHandle;
 use willow_network::traits::{GossipEvent, TopicEvents};
+use willow_state::{EventDag, InsertError, PendingBuffer};
 
 use crate::events::ClientEvent;
 use crate::mutations;
@@ -20,7 +23,9 @@ pub struct ListenerCtx {
     pub persistence: Addr<persistence_actor::PersistenceActor>,
     pub event_broker: Addr<willow_actor::Broker<ClientEvent>>,
     pub identity: willow_identity::Identity,
-    pub join_links: std::sync::Arc<std::sync::Mutex<Vec<crate::ops::JoinLink>>>,
+    pub join_links: Arc<Mutex<Vec<crate::ops::JoinLink>>>,
+    pub dag: Arc<RwLock<EventDag>>,
+    pub pending: Arc<Mutex<PendingBuffer>>,
 }
 
 impl Clone for ListenerCtx {
@@ -34,7 +39,9 @@ impl Clone for ListenerCtx {
             persistence: self.persistence.clone(),
             event_broker: self.event_broker.clone(),
             identity: self.identity.clone(),
-            join_links: std::sync::Arc::clone(&self.join_links),
+            join_links: Arc::clone(&self.join_links),
+            dag: Arc::clone(&self.dag),
+            pending: Arc::clone(&self.pending),
         }
     }
 }
@@ -88,6 +95,73 @@ async fn topic_listener_loop<T: TopicHandle, E: TopicEvents>(
     }
 }
 
+// ───── DAG helpers ──────────────────────────────────────────────────────────
+
+/// Apply an event incrementally to materialized state, persist it, and emit
+/// client events via the broker.
+async fn apply_and_emit(ctx: &ListenerCtx, event: &willow_state::Event) {
+    // Apply incrementally to the materialized ServerState.
+    let event_clone = event.clone();
+    willow_actor::state::mutate(&ctx.event_state, move |state| {
+        willow_state::apply_incremental(state, &event_clone);
+    })
+    .await;
+
+    // Persist event to the event store.
+    let _ = ctx.persistence.do_send(persistence_actor::PersistEvent {
+        event: event.clone(),
+    });
+
+    // Emit client events.
+    let client_events = mutations::derive_client_events(event);
+    for e in client_events {
+        let _ = ctx.event_broker.do_send(willow_actor::Publish(e));
+    }
+}
+
+/// Try to insert an event into the DAG. On success, apply and emit, then
+/// drain any pending events whose `prev` is now satisfied. On chain gap
+/// or prev mismatch, buffer the event for later. Duplicates are silently
+/// ignored.
+async fn try_insert_event(ctx: &ListenerCtx, event: willow_state::Event) {
+    let insert_result = {
+        let mut dag = ctx.dag.write().unwrap();
+        dag.insert(event.clone())
+    };
+
+    match insert_result {
+        Ok(()) => {
+            apply_and_emit(ctx, &event).await;
+
+            // Drain any events that were waiting on this event's hash.
+            let resolved = {
+                let mut pending = ctx.pending.lock().unwrap();
+                pending.resolve(&event.hash)
+            };
+            // Recursively try inserting resolved events — they may unblock
+            // further pending events in turn.
+            for resolved_event in resolved {
+                // Use Box::pin to allow async recursion without growing the
+                // stack frame type infinitely.
+                Box::pin(try_insert_event(ctx, resolved_event)).await;
+            }
+        }
+        Err(InsertError::SeqGap { .. }) | Err(InsertError::PrevMismatch { .. }) => {
+            let prev = event.prev;
+            let mut pending = ctx.pending.lock().unwrap();
+            pending.buffer_for_prev(prev, event);
+        }
+        Err(InsertError::Duplicate) => {
+            // Already have this event — nothing to do.
+        }
+        Err(err) => {
+            eprintln!("DAG insert error: {err}");
+        }
+    }
+}
+
+// ───── Message processing ───────────────────────────────────────────────────
+
 async fn process_received_message<T: TopicHandle>(
     data: &[u8],
     _sender: EndpointId,
@@ -119,6 +193,7 @@ async fn process_received_message<T: TopicHandle>(
 
     match wire_msg {
         crate::ops::WireMessage::Event(event) => {
+            // Verify the event author matches the signer.
             if event.author != signer {
                 return;
             }
@@ -130,28 +205,11 @@ async fn process_received_message<T: TopicHandle>(
                 }
             })
             .await;
-            // Apply event.
-            let event_clone = event.clone();
-            let applied = willow_actor::state::mutate(&ctx.event_state, move |es| {
-                let result = willow_state::apply_lenient(es, &event_clone);
-                matches!(result, willow_state::ApplyResult::Applied)
-            })
-            .await;
-            if applied {
-                // Persist event.
-                let hash = willow_actor::state::select(&ctx.event_state, |es| es.hash()).await;
-                let _ = ctx.persistence.do_send(persistence_actor::PersistEvent {
-                    event: event.clone(),
-                    new_hash: hash,
-                });
-                // Emit client events.
-                let client_events = mutations::derive_client_events(&event);
-                for e in client_events {
-                    let _ = ctx.event_broker.do_send(willow_actor::Publish(e));
-                }
-            }
+            // Insert into DAG (handles dedup, ordering, buffering).
+            try_insert_event(ctx, event).await;
         }
         crate::ops::WireMessage::SyncBatch { events: batch } => {
+            // Track peer.
             let signer2 = signer;
             willow_actor::state::mutate(&ctx.chat_meta, move |c| {
                 if !c.peers.contains(&signer2) {
@@ -159,41 +217,31 @@ async fn process_received_message<T: TopicHandle>(
                 }
             })
             .await;
-            let mut sorted = batch;
-            sorted.sort_by_key(|e| e.timestamp_ms);
-            let count = sorted.len();
-            let mut all_client_events = Vec::new();
-            for event in &sorted {
-                let event_clone = event.clone();
-                let applied = willow_actor::state::mutate(&ctx.event_state, move |es| {
-                    let result = willow_state::apply_lenient(es, &event_clone);
-                    matches!(result, willow_state::ApplyResult::Applied)
-                })
-                .await;
-                if applied {
-                    let hash = willow_actor::state::select(&ctx.event_state, |es| es.hash()).await;
-                    let _ = ctx.persistence.do_send(persistence_actor::PersistEvent {
-                        event: event.clone(),
-                        new_hash: hash,
-                    });
-                    all_client_events.extend(mutations::derive_client_events(event));
-                }
+            let count = batch.len();
+            // Insert each event into the DAG. The DAG enforces per-author
+            // chain ordering; out-of-order events are buffered automatically.
+            for event in batch {
+                try_insert_event(ctx, event).await;
             }
             if count > 0 {
-                all_client_events.push(ClientEvent::SyncCompleted { ops_applied: count });
-            }
-            for e in all_client_events {
-                let _ = ctx.event_broker.do_send(willow_actor::Publish(e));
+                let _ =
+                    ctx.event_broker
+                        .do_send(willow_actor::Publish(ClientEvent::SyncCompleted {
+                            ops_applied: count,
+                        }));
             }
         }
         crate::ops::WireMessage::SyncRequest { state_hash, .. } => {
-            let missing = ctx
-                .persistence
-                .ask(persistence_actor::LoadEventsSince { hash: state_hash })
-                .await
-                .unwrap_or_default();
-            if !missing.is_empty() {
-                let msg = crate::ops::WireMessage::SyncBatch { events: missing };
+            // Use the DAG to get all events for the responder.
+            // If state_hash is ZERO, send everything. Otherwise also send
+            // everything (best effort — the receiver will dedup).
+            let events: Vec<willow_state::Event> = {
+                let dag = ctx.dag.read().unwrap();
+                let _ = state_hash; // Acknowledged but not used for filtering yet.
+                dag.topological_sort().into_iter().cloned().collect()
+            };
+            if !events.is_empty() {
+                let msg = crate::ops::WireMessage::SyncBatch { events };
                 if let Some(data) = crate::ops::pack_wire(&msg, &ctx.identity) {
                     let _ = topic.broadcast(bytes::Bytes::from(data)).await;
                 }

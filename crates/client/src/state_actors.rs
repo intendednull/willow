@@ -104,8 +104,6 @@ pub struct ChatMeta {
     pub current_channel: String,
     /// Online peers.
     pub peers: Vec<EndpointId>,
-    /// Seen message/op IDs for deduplication.
-    pub seen_message_ids: HashSet<String>,
 }
 
 impl Default for ChatMeta {
@@ -113,7 +111,6 @@ impl Default for ChatMeta {
         Self {
             current_channel: crate::state::DEFAULT_CHANNEL.to_string(),
             peers: Vec::new(),
-            seen_message_ids: HashSet::new(),
         }
     }
 }
@@ -144,8 +141,6 @@ pub struct NetworkMeta {
     pub typing_peers: HashMap<EndpointId, (String, u64)>,
     /// Last time we sent a typing indicator (for debouncing).
     pub last_typing_sent_ms: u64,
-    /// State hash verification results from peers.
-    pub state_verification_results: HashMap<EndpointId, willow_state::StateHash>,
 }
 
 /// Voice call state.
@@ -172,7 +167,7 @@ pub struct SourceState {
     pub event_state: willow_actor::state::StateRef<willow_state::ServerState>,
     /// Server registry (all servers, active server, topic maps, keys).
     pub server_registry: willow_actor::state::StateRef<ServerRegistry>,
-    /// Chat session metadata (current channel, peers, dedup IDs).
+    /// Chat session metadata (current channel, peers).
     pub chat_meta: willow_actor::state::StateRef<ChatMeta>,
     /// Global profile display names.
     pub profiles: willow_actor::state::StateRef<ProfileState>,

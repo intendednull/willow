@@ -124,8 +124,15 @@ impl<N: willow_network::Network> ClientHandle<N> {
         views::compute_unread_view(&registry).counts
     }
 
-    pub async fn server_owner(&self) -> willow_identity::EndpointId {
-        willow_actor::state::select(&self.event_state_addr, |es| es.owner).await
+    /// Check if a peer is an admin.
+    pub async fn is_admin(&self, peer_id: &willow_identity::EndpointId) -> bool {
+        let pid = *peer_id;
+        willow_actor::state::select(&self.event_state_addr, move |es| es.is_admin(&pid)).await
+    }
+
+    /// Get the set of admin EndpointIds.
+    pub async fn admins(&self) -> std::collections::HashSet<willow_identity::EndpointId> {
+        willow_actor::state::select(&self.event_state_addr, |es| es.admins.clone()).await
     }
 
     pub async fn channel_kinds(&self) -> Vec<(String, String)> {

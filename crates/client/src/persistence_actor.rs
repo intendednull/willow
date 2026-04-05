@@ -11,23 +11,22 @@
 
 use willow_actor::{Actor, Context, Handler, Message};
 
-use crate::state::PersistentEventStore;
 use crate::storage;
 
 // ───── Actor ─────────────────────────────────────────────────────────────
 
-/// Persistence actor — owns event stores and message databases.
+/// Persistence actor — owns event log and message databases.
 ///
 /// All database I/O goes through this actor's mailbox so that `!Send`
 /// resources (rusqlite) are never shared across threads.
 pub struct PersistenceActor {
-    event_store: PersistentEventStore,
+    events: Vec<willow_state::Event>,
     server_id: Option<String>,
     persistence_enabled: bool,
 }
 
 // Safety: PersistenceActor owns !Send resources (rusqlite::Connection inside
-// PersistentEventStore) but the actor mailbox guarantees single-threaded
+// storage backends) but the actor mailbox guarantees single-threaded
 // execution — messages are processed sequentially on one thread.
 unsafe impl Send for PersistenceActor {}
 
@@ -37,7 +36,7 @@ impl PersistenceActor {
     /// Pass `persistence_enabled: false` to disable all disk I/O (testing).
     pub fn new(persistence_enabled: bool) -> Self {
         Self {
-            event_store: PersistentEventStore::default(),
+            events: Vec::new(),
             server_id: None,
             persistence_enabled,
         }
@@ -62,27 +61,14 @@ impl Handler<OpenEventStore> for PersistenceActor {
         msg: OpenEventStore,
         _ctx: &mut Context<Self>,
     ) -> impl std::future::Future<Output = ()> + Send {
-        if self.persistence_enabled {
-            if let Some(store) = storage::open_event_store(&msg.server_id) {
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    self.event_store = PersistentEventStore::Sqlite(store);
-                }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    self.event_store = PersistentEventStore::LocalStorage(store);
-                }
-            }
-        }
         self.server_id = Some(msg.server_id);
         async {}
     }
 }
 
-/// Append an event to the event store and update the latest hash.
+/// Append an event to the event log.
 pub struct PersistEvent {
     pub event: willow_state::Event,
-    pub new_hash: willow_state::StateHash,
 }
 impl Message for PersistEvent {
     type Result = ();
@@ -94,9 +80,7 @@ impl Handler<PersistEvent> for PersistenceActor {
         msg: PersistEvent,
         _ctx: &mut Context<Self>,
     ) -> impl std::future::Future<Output = ()> + Send {
-        use willow_state::EventStore as _;
-        self.event_store.append(msg.event);
-        self.event_store.set_latest_hash(msg.new_hash);
+        self.events.push(msg.event);
         async {}
     }
 }
@@ -236,7 +220,7 @@ impl Handler<PersistJoinLinks> for PersistenceActor {
 
 // ───── Read messages (ask-based) ─────────────────────────────────────────
 
-/// Load all events from the event store.
+/// Load all events from the internal event log.
 pub struct LoadAllEvents;
 impl Message for LoadAllEvents {
     type Result = Vec<willow_state::Event>;
@@ -248,66 +232,7 @@ impl Handler<LoadAllEvents> for PersistenceActor {
         _msg: LoadAllEvents,
         _ctx: &mut Context<Self>,
     ) -> impl std::future::Future<Output = Vec<willow_state::Event>> + Send {
-        use willow_state::EventStore as _;
-        let events = self.event_store.all_events();
+        let events = self.events.clone();
         async move { events }
-    }
-}
-
-/// Get the latest state hash from the event store.
-pub struct GetLatestHash;
-impl Message for GetLatestHash {
-    type Result = willow_state::StateHash;
-}
-
-impl Handler<GetLatestHash> for PersistenceActor {
-    fn handle(
-        &mut self,
-        _msg: GetLatestHash,
-        _ctx: &mut Context<Self>,
-    ) -> impl std::future::Future<Output = willow_state::StateHash> + Send {
-        use willow_state::EventStore as _;
-        let hash = self.event_store.latest_hash();
-        async move { hash }
-    }
-}
-
-/// Load events since a given state hash.
-pub struct LoadEventsSince {
-    pub hash: willow_state::StateHash,
-}
-impl Message for LoadEventsSince {
-    type Result = Vec<willow_state::Event>;
-}
-
-impl Handler<LoadEventsSince> for PersistenceActor {
-    fn handle(
-        &mut self,
-        msg: LoadEventsSince,
-        _ctx: &mut Context<Self>,
-    ) -> impl std::future::Future<Output = Vec<willow_state::Event>> + Send {
-        use willow_state::EventStore as _;
-        let events = self.event_store.events_since(&msg.hash);
-        async move { events }
-    }
-}
-
-/// Check if an event exists in the store.
-pub struct ContainsEvent {
-    pub event_id: String,
-}
-impl Message for ContainsEvent {
-    type Result = bool;
-}
-
-impl Handler<ContainsEvent> for PersistenceActor {
-    fn handle(
-        &mut self,
-        msg: ContainsEvent,
-        _ctx: &mut Context<Self>,
-    ) -> impl std::future::Future<Output = bool> + Send {
-        use willow_state::EventStore as _;
-        let result = self.event_store.contains(&msg.event_id);
-        async move { result }
     }
 }

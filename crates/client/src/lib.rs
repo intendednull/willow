@@ -117,7 +117,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use willow_identity::Identity;
-use willow_state::EventStore as _;
 
 /// Configuration for creating a [`ClientHandle`].
 pub struct ClientConfig {
@@ -175,12 +174,14 @@ pub struct ClientHandle<N: willow_network::Network> {
         willow_actor::Addr<willow_actor::StateActor<state_actors::VoiceState>>,
     /// Persistence actor (owns rusqlite).
     pub(crate) persistence_addr: willow_actor::Addr<persistence_actor::PersistenceActor>,
-    /// HLC clock (mutation-time concern, not reactive state).
-    pub(crate) hlc: Arc<std::sync::Mutex<willow_messaging::hlc::HLC>>,
     /// Whether persistence to disk is enabled.
     pub(crate) persistence_enabled: bool,
     /// Active join links (rarely modified, shared across tasks).
     pub(crate) join_links: Arc<std::sync::Mutex<Vec<ops::JoinLink>>>,
+    /// The per-author Merkle-DAG — source of truth for all events.
+    pub(crate) dag: Arc<RwLock<willow_state::EventDag>>,
+    /// Pending buffer for out-of-order event reception.
+    pub(crate) pending: Arc<std::sync::Mutex<willow_state::PendingBuffer>>,
 
     // ── New reactive API (spec target) ──────────────────────────────────
     /// Reactive view handle — read state at any granularity.
@@ -204,9 +205,10 @@ impl<N: willow_network::Network> Clone for ClientHandle<N> {
             network_meta_addr: self.network_meta_addr.clone(),
             voice_state_addr: self.voice_state_addr.clone(),
             persistence_addr: self.persistence_addr.clone(),
-            hlc: Arc::clone(&self.hlc),
             persistence_enabled: self.persistence_enabled,
             join_links: Arc::clone(&self.join_links),
+            dag: Arc::clone(&self.dag),
+            pending: Arc::clone(&self.pending),
             view_handle: self.view_handle.clone(),
             mutation_handle: self.mutation_handle.clone(),
         }
@@ -364,57 +366,19 @@ impl<N: willow_network::Network> ClientHandle<N> {
                         ctx.server.owner,
                     );
 
-                    // No saved state -- seed from legacy channels.
-                    // Open persistent event store and replay stored events.
-                    if config.persistence {
-                        if let Some(store) = storage::open_event_store(sid) {
-                            #[cfg(not(target_arch = "wasm32"))]
-                            {
-                                state.event_store = state::PersistentEventStore::Sqlite(store);
-                            }
-                            #[cfg(target_arch = "wasm32")]
-                            {
-                                state.event_store =
-                                    state::PersistentEventStore::LocalStorage(store);
-                            }
-                        }
-                    }
-
-                    // Replay persisted events to rebuild event_state.
-                    let stored_events = state.event_store.all_events();
-                    if !stored_events.is_empty() {
-                        for event in &stored_events {
-                            willow_state::apply_lenient(&mut state.event_state, event);
-                        }
-                    } else {
-                        // No persisted events -- seed event_state with existing
-                        // channels from legacy storage so lookups work.
-                        for (topic, (name, ch_id)) in &ctx.topic_map {
-                            let _ = topic;
-                            state.event_state.channels.insert(
-                                ch_id.to_string(),
-                                willow_state::Channel {
-                                    id: ch_id.to_string(),
-                                    name: name.clone(),
-                                    pinned_messages: std::collections::HashSet::new(),
-                                    kind: "text".to_string(),
-                                },
-                            );
-                        }
-                    }
-                }
-
-                // Still open the event store even if we loaded saved state.
-                if config.persistence {
-                    if let Some(store) = storage::open_event_store(sid) {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        {
-                            state.event_store = state::PersistentEventStore::Sqlite(store);
-                        }
-                        #[cfg(target_arch = "wasm32")]
-                        {
-                            state.event_store = state::PersistentEventStore::LocalStorage(store);
-                        }
+                    // No persisted events -- seed event_state with existing
+                    // channels from legacy storage so lookups work.
+                    for (topic, (name, ch_id)) in &ctx.topic_map {
+                        let _ = topic;
+                        state.event_state.channels.insert(
+                            ch_id.to_string(),
+                            willow_state::Channel {
+                                id: ch_id.to_string(),
+                                name: name.clone(),
+                                pinned_messages: std::collections::HashSet::new(),
+                                kind: "text".to_string(),
+                            },
+                        );
                     }
                 }
             }
@@ -423,11 +387,6 @@ impl<N: willow_network::Network> ClientHandle<N> {
         // Save in multi-server format.
         if config.persistence {
             persist_servers(&state);
-        }
-
-        // Populate seen_message_ids from event_state for dedup.
-        for es_msg in &state.event_state.messages {
-            state.chat.seen_message_ids.insert(es_msg.id.clone());
         }
 
         // Load saved display name, or use config override.
@@ -476,7 +435,6 @@ impl<N: willow_network::Network> ClientHandle<N> {
             let meta = state_actors::ChatMeta {
                 current_channel: state.chat.current_channel.clone(),
                 peers: state.chat.peers.clone(),
-                seen_message_ids: state.chat.seen_message_ids.clone(),
             };
             system.spawn(willow_actor::StateActor::new(meta))
         };
@@ -501,7 +459,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 server_id: sid.clone(),
             });
         }
-        let hlc = Arc::new(std::sync::Mutex::new(willow_messaging::hlc::HLC::new()));
+        let dag = Arc::new(RwLock::new(willow_state::EventDag::new()));
+        let pending = Arc::new(std::sync::Mutex::new(willow_state::PendingBuffer::new()));
         let topics: Arc<RwLock<HashMap<String, N::Topic>>> = Arc::new(RwLock::new(HashMap::new()));
         let join_links = Arc::new(std::sync::Mutex::new(Vec::new()));
 
@@ -586,7 +545,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 social: (**social).clone(),
                 voice: (**voice).clone(),
                 server_name: None,
-                server_owner: None,
+                server_admins: vec![],
                 current_channel: String::new(),
             },
         );
@@ -618,9 +577,9 @@ impl<N: willow_network::Network> ClientHandle<N> {
             event_broker: event_broker.clone(),
             persistence: persistence_addr.clone(),
             identity: identity_clone.clone(),
-            hlc: Arc::clone(&hlc),
             join_links: Arc::clone(&join_links),
             topics: Arc::clone(&topics),
+            dag: Arc::clone(&dag),
         };
 
         reconcile_topic_map(&mut state);
@@ -638,9 +597,10 @@ impl<N: willow_network::Network> ClientHandle<N> {
             network_meta_addr,
             voice_state_addr,
             persistence_addr,
-            hlc,
             persistence_enabled,
             join_links,
+            dag: Arc::clone(&dag),
+            pending: Arc::clone(&pending),
             view_handle,
             mutation_handle,
         };
@@ -696,6 +656,7 @@ fn parse_permission(s: &str) -> anyhow::Result<willow_channel::Permission> {
         "CreateInvite" => Ok(willow_channel::Permission::CreateInvite),
         "AttachFiles" => Ok(willow_channel::Permission::AttachFiles),
         "ManageChannels" => Ok(willow_channel::Permission::ManageChannels),
+        "ManageRoles" => Ok(willow_channel::Permission::ManageRoles),
         _ => anyhow::bail!("unknown permission: {s}"),
     }
 }
@@ -756,7 +717,7 @@ pub fn test_client() -> (
     state.event_state.channels.insert(
         ch_id_str.clone(),
         willow_state::Channel {
-            id: ch_id_str,
+            id: ch_id_str.clone(),
             name: "general".to_string(),
             pinned_messages: std::collections::HashSet::new(),
             kind: "text".to_string(),
@@ -786,7 +747,6 @@ pub fn test_client() -> (
     let chat_meta_addr = sys.spawn(willow_actor::StateActor::new(state_actors::ChatMeta {
         current_channel: state.chat.current_channel.clone(),
         peers: state.chat.peers.clone(),
-        seen_message_ids: state.chat.seen_message_ids.clone(),
     }));
     let profile_state_addr = sys.spawn(willow_actor::StateActor::new(state_actors::ProfileState {
         names: state.profiles.names.clone(),
@@ -799,7 +759,8 @@ pub fn test_client() -> (
     ));
     let persistence_addr = sys.spawn(persistence_actor::PersistenceActor::new(false));
     let event_broker = sys.spawn(willow_actor::Broker::<ClientEvent>::new());
-    let hlc = Arc::new(std::sync::Mutex::new(willow_messaging::hlc::HLC::new()));
+    let dag = Arc::new(RwLock::new(willow_state::EventDag::new()));
+    let pending = Arc::new(std::sync::Mutex::new(willow_state::PendingBuffer::new()));
     let topics: Arc<
         RwLock<
             HashMap<String, <willow_network::mem::MemNetwork as willow_network::Network>::Topic>,
@@ -882,7 +843,7 @@ pub fn test_client() -> (
             social: (**s).clone(),
             voice: (**v).clone(),
             server_name: None,
-            server_owner: None,
+            server_admins: vec![],
             current_channel: String::new(),
         },
     );
@@ -912,9 +873,9 @@ pub fn test_client() -> (
         event_broker: event_broker.clone(),
         persistence: persistence_addr.clone(),
         identity: identity_clone.clone(),
-        hlc: Arc::clone(&hlc),
         join_links: Arc::clone(&join_links),
         topics: Arc::clone(&topics),
+        dag: Arc::clone(&dag),
     };
 
     // Leak the system so actors stay alive for the test duration.
@@ -933,9 +894,10 @@ pub fn test_client() -> (
         network_meta_addr,
         voice_state_addr,
         persistence_addr,
-        hlc,
         persistence_enabled: false,
         join_links,
+        dag: Arc::clone(&dag),
+        pending: Arc::clone(&pending),
         view_handle,
         mutation_handle,
     };
