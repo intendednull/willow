@@ -1,70 +1,96 @@
-//! Server state — the complete shared state of a server.
+//! Server state — the materialized view of a server's DAG.
 //!
-//! [`ServerState`] holds all channels, roles, members, messages, trust
-//! information, and profiles. It is fully derivable from an ordered sequence
-//! of events via [`apply`](crate::apply).
+//! [`ServerState`] holds all channels, roles, members, messages, admin set,
+//! governance state, and profiles. It is derived from a [`EventDag`](crate::dag::EventDag)
+//! via [`materialize`](crate::materialize::materialize).
 
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use willow_identity::EndpointId;
 
-use crate::hash::StateHash;
-use crate::types::{Channel, ChatMessage, Member, Permission, Profile, Role};
+use crate::event::{Permission, ProposedAction, VoteThreshold};
+use crate::hash::EventHash;
+use crate::types::{Channel, ChatMessage, Member, Profile, Role};
 
-/// The complete shared state of a server, derivable from events.
+/// A proposal awaiting admin votes.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PendingProposal {
+    /// The action being proposed.
+    pub action: ProposedAction,
+    /// Who proposed it.
+    pub proposer: EndpointId,
+    /// Votes received: voter -> accept/reject.
+    pub votes: HashMap<EndpointId, bool>,
+}
+
+/// The complete materialized state of a server.
 ///
-/// All fields except `seen_event_ids` participate in the state hash.
+/// All fields except governance state (`admins`, `vote_threshold`,
+/// `pending_proposals`) are standard application state. The governance
+/// fields manage admin membership via a vote-based process.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ServerState {
-    /// Unique server ID.
+    /// Unique server ID (hex of genesis event hash).
     pub server_id: String,
-    /// Display name.
+    /// Display name (from genesis CreateServer, mutable via RenameServer).
     pub server_name: String,
-    /// The peer who owns this server (always trusted).
-    pub owner: EndpointId,
     /// Channels keyed by channel ID.
     pub channels: HashMap<String, Channel>,
     /// Roles keyed by role ID.
     pub roles: HashMap<String, Role>,
     /// Members keyed by peer ID.
     pub members: HashMap<EndpointId, Member>,
-    /// Per-peer permissions. Owner always has all permissions implicitly.
+    /// Non-admin permissions per peer (ManageChannels, SendMessages, etc.).
+    /// Does not control admin status — that's in `admins`.
     pub peer_permissions: HashMap<EndpointId, HashSet<Permission>>,
     /// Chat messages in event-sequence order.
     pub messages: Vec<ChatMessage>,
     /// Peer profiles keyed by peer ID.
     pub profiles: HashMap<EndpointId, Profile>,
-    /// Server description (default empty string).
+    /// Server description.
     pub description: String,
-    /// Encrypted channel key material (opaque bytes, keyed by channel ID).
+    /// Encrypted channel key material keyed by channel ID.
     pub channel_keys: HashMap<String, Vec<u8>>,
-    /// Set of seen event IDs for deduplication.
-    /// Excluded from hash computation (dedup metadata, not state).
-    #[serde(skip)]
-    pub seen_event_ids: HashSet<String>,
+
+    // -- Governance state --
+    /// The set of peers with admin status. Separate from Permission
+    /// enum to make the governance boundary structurally enforced.
+    pub admins: HashSet<EndpointId>,
+    /// Current vote threshold for admin actions.
+    pub vote_threshold: VoteThreshold,
+    /// Pending proposals awaiting votes.
+    pub pending_proposals: HashMap<EventHash, PendingProposal>,
 }
 
 impl ServerState {
-    /// Create a new server state with the given ID, name, and owner.
+    /// Create a new server state.
     ///
-    /// The owner is automatically added as a member.
-    pub fn new(id: impl Into<String>, name: impl Into<String>, owner: EndpointId) -> Self {
+    /// The genesis author is added as both a member and the sole admin.
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        genesis_author: EndpointId,
+    ) -> Self {
         let mut members = HashMap::new();
         members.insert(
-            owner,
+            genesis_author,
             Member {
-                peer_id: owner,
+                peer_id: genesis_author,
                 roles: HashSet::new(),
                 display_name: None,
             },
         );
 
+        let mut admins = HashSet::new();
+        admins.insert(genesis_author);
+
         Self {
             server_id: id.into(),
             server_name: name.into(),
-            owner,
             members,
+            admins,
+            vote_threshold: VoteThreshold::default(),
             channels: HashMap::new(),
             roles: HashMap::new(),
             peer_permissions: HashMap::new(),
@@ -72,90 +98,25 @@ impl ServerState {
             profiles: HashMap::new(),
             description: String::new(),
             channel_keys: HashMap::new(),
-            seen_event_ids: HashSet::new(),
+            pending_proposals: HashMap::new(),
         }
     }
 
-    /// Compute the SHA-256 hash of this state.
-    ///
-    /// The `seen_event_ids` field is excluded (it is dedup metadata, not
-    /// application state). All other fields are serialized canonically with
-    /// bincode and then hashed.
-    pub fn hash(&self) -> StateHash {
-        // Build a hashable view that excludes seen_event_ids.
-        // We serialize the meaningful fields in a fixed order.
-        #[derive(Serialize)]
-        struct Hashable<'a> {
-            server_id: &'a str,
-            server_name: &'a str,
-            owner: &'a EndpointId,
-            description: &'a str,
-            channels: Vec<(&'a String, &'a Channel)>,
-            roles: Vec<(&'a String, &'a Role)>,
-            members: Vec<(&'a EndpointId, &'a Member)>,
-            peer_permissions: Vec<(&'a EndpointId, Vec<&'a Permission>)>,
-            messages: &'a [ChatMessage],
-            profiles: Vec<(&'a EndpointId, &'a Profile)>,
-            channel_keys: Vec<(&'a String, &'a Vec<u8>)>,
-        }
-
-        let mut channels: Vec<_> = self.channels.iter().collect();
-        channels.sort_by_key(|(k, _)| *k);
-
-        let mut roles: Vec<_> = self.roles.iter().collect();
-        roles.sort_by_key(|(k, _)| *k);
-
-        let mut members: Vec<_> = self.members.iter().collect();
-        members.sort_by_key(|(k, _)| k.as_bytes());
-
-        let mut peer_permissions: Vec<_> = self
-            .peer_permissions
-            .iter()
-            .map(|(k, v)| {
-                let mut perms: Vec<_> = v.iter().collect();
-                perms.sort_by_key(|p| format!("{p:?}"));
-                (k, perms)
-            })
-            .collect();
-        peer_permissions.sort_by_key(|(k, _)| k.as_bytes());
-
-        let mut profiles: Vec<_> = self.profiles.iter().collect();
-        profiles.sort_by_key(|(k, _)| k.as_bytes());
-
-        let mut channel_keys: Vec<_> = self.channel_keys.iter().collect();
-        channel_keys.sort_by_key(|(k, _)| *k);
-
-        let hashable = Hashable {
-            server_id: &self.server_id,
-            server_name: &self.server_name,
-            owner: &self.owner,
-            description: &self.description,
-            channels,
-            roles,
-            members,
-            peer_permissions,
-            messages: &self.messages,
-            profiles,
-            channel_keys,
-        };
-
-        // Use bincode for canonical serialization — it is deterministic for
-        // the same input.
-        let bytes = bincode::serialize(&hashable).expect("state serialization should not fail");
-        StateHash::from_bytes(&bytes)
+    /// Check if a peer is an admin.
+    pub fn is_admin(&self, peer_id: &EndpointId) -> bool {
+        self.admins.contains(peer_id)
     }
 
-    /// Check whether a peer has a specific permission.
+    /// Check if a peer has a specific non-admin permission.
     ///
-    /// The owner always has all permissions. Non-owner peers with
-    /// [`Administrator`](Permission::Administrator) also have all permissions.
+    /// Admins implicitly have all permissions.
     pub fn has_permission(&self, peer_id: &EndpointId, perm: &Permission) -> bool {
-        if *peer_id == self.owner {
-            return true; // owner has all permissions
+        if self.admins.contains(peer_id) {
+            return true;
         }
         self.peer_permissions
             .get(peer_id)
-            .map(|perms| perms.contains(&Permission::Administrator) || perms.contains(perm))
+            .map(|perms| perms.contains(perm))
             .unwrap_or(false)
     }
 
@@ -164,19 +125,17 @@ impl ServerState {
         self.has_permission(peer_id, &Permission::SyncProvider)
     }
 
-    /// Check whether a peer is trusted (owner is always trusted).
-    ///
-    /// A peer is considered trusted if it has any permissions granted.
-    /// This is a backward-compatible bridge for code that uses the old
-    /// binary trust model.
-    pub fn is_trusted(&self, peer_id: &EndpointId) -> bool {
-        if *peer_id == self.owner {
-            return true;
+    /// Check if a yes-vote count meets the current threshold.
+    pub fn meets_threshold(&self, yes_count: usize) -> bool {
+        let admin_count = self.admins.len();
+        if admin_count == 0 {
+            return false;
         }
-        self.peer_permissions
-            .get(peer_id)
-            .map(|perms| !perms.is_empty())
-            .unwrap_or(false)
+        match self.vote_threshold {
+            VoteThreshold::Majority => yes_count > admin_count / 2,
+            VoteThreshold::Unanimous => yes_count >= admin_count,
+            VoteThreshold::Count(n) => yes_count >= (n as usize).min(admin_count),
+        }
     }
 }
 
@@ -190,83 +149,87 @@ mod tests {
     }
 
     #[test]
-    fn new_server_has_owner_as_member() {
-        let owner = gen_id();
-        let state = ServerState::new("s1", "Test Server", owner);
-        assert!(state.members.contains_key(&owner));
-        assert_eq!(state.members.len(), 1);
+    fn new_server_has_genesis_author_as_admin() {
+        let author = gen_id();
+        let state = ServerState::new("s1", "Test", author);
+        assert!(state.admins.contains(&author));
+        assert!(state.is_admin(&author));
+        assert!(state.members.contains_key(&author));
+        assert_eq!(state.admins.len(), 1);
     }
 
     #[test]
-    fn owner_is_always_trusted() {
-        let owner = gen_id();
-        let stranger = gen_id();
-        let state = ServerState::new("s1", "Test", owner);
-        assert!(state.is_trusted(&owner));
-        assert!(!state.is_trusted(&stranger));
-    }
-
-    #[test]
-    fn hash_is_deterministic() {
-        let owner = gen_id();
-        let a = ServerState::new("s1", "Test", owner);
-        let b = ServerState::new("s1", "Test", owner);
-        assert_eq!(a.hash(), b.hash());
-    }
-
-    #[test]
-    fn hash_changes_with_state() {
-        let owner = gen_id();
-        let a = ServerState::new("s1", "Test", owner);
-        let mut b = ServerState::new("s1", "Test", owner);
-        b.channels.insert(
-            "ch1".into(),
-            Channel {
-                id: "ch1".into(),
-                name: "general".into(),
-                pinned_messages: std::collections::HashSet::new(),
-                kind: "text".into(),
-            },
-        );
-        assert_ne!(a.hash(), b.hash());
-    }
-
-    #[test]
-    fn seen_event_ids_excluded_from_hash() {
-        let owner = gen_id();
-        let mut a = ServerState::new("s1", "Test", owner);
-        let b = ServerState::new("s1", "Test", owner);
-        a.seen_event_ids.insert("evt-1".into());
-        assert_eq!(a.hash(), b.hash());
-    }
-
-    #[test]
-    fn owner_has_all_permissions() {
-        let owner = gen_id();
-        let state = ServerState::new("s1", "Test", owner);
-        assert!(state.has_permission(&owner, &Permission::ManageChannels));
-        assert!(state.has_permission(&owner, &Permission::Administrator));
-        assert!(state.has_permission(&owner, &Permission::SyncProvider));
+    fn admin_has_all_permissions() {
+        let admin = gen_id();
+        let state = ServerState::new("s1", "Test", admin);
+        assert!(state.has_permission(&admin, &Permission::ManageChannels));
+        assert!(state.has_permission(&admin, &Permission::ManageRoles));
+        assert!(state.has_permission(&admin, &Permission::SendMessages));
+        assert!(state.has_permission(&admin, &Permission::SyncProvider));
+        assert!(state.has_permission(&admin, &Permission::CreateInvite));
     }
 
     #[test]
     fn peer_without_permissions() {
-        let owner = gen_id();
+        let admin = gen_id();
         let stranger = gen_id();
-        let state = ServerState::new("s1", "Test", owner);
+        let state = ServerState::new("s1", "Test", admin);
+        assert!(!state.is_admin(&stranger));
         assert!(!state.has_permission(&stranger, &Permission::ManageChannels));
         assert!(!state.is_sync_provider(&stranger));
     }
 
     #[test]
-    fn hash_changes_with_permissions() {
-        let owner = gen_id();
-        let alice = gen_id();
-        let a = ServerState::new("s1", "Test", owner);
-        let mut b = ServerState::new("s1", "Test", owner);
-        let mut perms = std::collections::HashSet::new();
-        perms.insert(Permission::ManageChannels);
-        b.peer_permissions.insert(alice, perms);
-        assert_ne!(a.hash(), b.hash());
+    fn meets_threshold_majority() {
+        let admin = gen_id();
+        let mut state = ServerState::new("s1", "Test", admin);
+        // 1 admin, majority of 1 = need > 0.5 = need 1.
+        assert!(state.meets_threshold(1));
+        assert!(!state.meets_threshold(0));
+
+        // 3 admins, majority of 3 = need > 1.5 = need 2.
+        state.admins.insert(gen_id());
+        state.admins.insert(gen_id());
+        assert!(!state.meets_threshold(1));
+        assert!(state.meets_threshold(2));
+        assert!(state.meets_threshold(3));
+    }
+
+    #[test]
+    fn meets_threshold_unanimous() {
+        let admin = gen_id();
+        let mut state = ServerState::new("s1", "Test", admin);
+        state.vote_threshold = VoteThreshold::Unanimous;
+        state.admins.insert(gen_id());
+        state.admins.insert(gen_id());
+        // 3 admins, unanimous = need 3.
+        assert!(!state.meets_threshold(2));
+        assert!(state.meets_threshold(3));
+    }
+
+    #[test]
+    fn meets_threshold_count() {
+        let admin = gen_id();
+        let mut state = ServerState::new("s1", "Test", admin);
+        state.vote_threshold = VoteThreshold::Count(2);
+        state.admins.insert(gen_id());
+        state.admins.insert(gen_id());
+        // 3 admins, Count(2) = need 2.
+        assert!(!state.meets_threshold(1));
+        assert!(state.meets_threshold(2));
+
+        // Count(10) with 3 admins = capped at 3.
+        state.vote_threshold = VoteThreshold::Count(10);
+        assert!(!state.meets_threshold(2));
+        assert!(state.meets_threshold(3));
+    }
+
+    #[test]
+    fn meets_threshold_zero_admins() {
+        let admin = gen_id();
+        let mut state = ServerState::new("s1", "Test", admin);
+        state.admins.clear();
+        assert!(!state.meets_threshold(0));
+        assert!(!state.meets_threshold(1));
     }
 }
