@@ -82,17 +82,13 @@ impl<N: willow_network::Network> ClientHandle<N> {
         )
         .await?;
 
-        // Initialize event-sourced state.
-        let new_state = willow_state::ServerState::new(&server_id, name_for_state, peer_id);
-        willow_actor::state::mutate(&self.event_state_addr, move |es| {
-            *es = new_state;
-        })
-        .await;
+        // Seed the DAG with a genesis event and materialize initial state.
+        self.mutation_handle.seed_genesis(&name_for_state).await;
 
         // Switch current channel.
         self.mutation_handle.switch_channel("general").await;
 
-        // Create channel via event.
+        // Create channel via event (DAG is now seeded, so insert will succeed).
         let event = self
             .mutation_handle
             .build_event(willow_state::EventKind::CreateChannel {

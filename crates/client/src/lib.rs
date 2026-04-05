@@ -697,33 +697,6 @@ pub fn test_client() -> (
     state.servers.insert(server_id.clone(), ctx);
     state.active_server = Some(server_id.clone());
 
-    // Initialize event_state with the server's owner (the local identity),
-    // mirroring what ClientHandle::new() does.
-    state.event_state =
-        willow_state::ServerState::new(&server_id, "Test Server", identity.endpoint_id());
-
-    // Seed event_state with the general channel so event-sourced operations
-    // (e.g. pin/unpin) can find the channel.
-    let ch_id_str = state
-        .servers
-        .get(&server_id)
-        .and_then(|ctx| {
-            ctx.topic_map
-                .values()
-                .find(|(n, _)| n == "general")
-                .map(|(_, cid)| cid.to_string())
-        })
-        .unwrap_or_default();
-    state.event_state.channels.insert(
-        ch_id_str.clone(),
-        willow_state::Channel {
-            id: ch_id_str.clone(),
-            name: "general".to_string(),
-            pinned_messages: std::collections::HashSet::new(),
-            kind: "text".to_string(),
-        },
-    );
-
     let identity_clone = identity.clone();
     let sys = willow_actor::System::new();
 
@@ -759,8 +732,48 @@ pub fn test_client() -> (
     ));
     let persistence_addr = sys.spawn(persistence_actor::PersistenceActor::new(false));
     let event_broker = sys.spawn(willow_actor::Broker::<ClientEvent>::new());
-    let dag = Arc::new(RwLock::new(willow_state::EventDag::new()));
+    // Create the DAG and seed it with a genesis event so subsequent
+    // build_event/insert calls succeed.
+    let dag = {
+        let mut d = willow_state::EventDag::new();
+        let genesis = d.create_event(
+            &identity,
+            willow_state::EventKind::CreateServer {
+                name: "Test Server".to_string(),
+            },
+            vec![],
+            0,
+        );
+        d.insert(genesis).expect("genesis must insert");
+        Arc::new(RwLock::new(d))
+    };
     let pending = Arc::new(std::sync::Mutex::new(willow_state::PendingBuffer::new()));
+
+    // Materialize initial state from the DAG (replaces manual ServerState::new).
+    state.event_state = willow_state::materialize(&dag.read().unwrap());
+
+    // Seed event_state with the general channel so event-sourced operations
+    // (e.g. pin/unpin) can find the channel.
+    let ch_id_str = state
+        .servers
+        .get(&server_id)
+        .and_then(|ctx| {
+            ctx.topic_map
+                .values()
+                .find(|(n, _)| n == "general")
+                .map(|(_, cid)| cid.to_string())
+        })
+        .unwrap_or_default();
+    state.event_state.channels.insert(
+        ch_id_str.clone(),
+        willow_state::Channel {
+            id: ch_id_str.clone(),
+            name: "general".to_string(),
+            pinned_messages: std::collections::HashSet::new(),
+            kind: "text".to_string(),
+        },
+    );
+
     let topics: Arc<
         RwLock<
             HashMap<String, <willow_network::mem::MemNetwork as willow_network::Network>::Topic>,

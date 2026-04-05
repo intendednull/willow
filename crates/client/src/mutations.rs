@@ -64,6 +64,36 @@ impl<N: willow_network::Network> Clone for ClientMutations<N> {
 // ───── Internal helpers ──────────────────────────────────────────────────
 
 impl<N: willow_network::Network> ClientMutations<N> {
+    /// Seed the DAG with a genesis `CreateServer` event and materialize
+    /// the initial `ServerState`. Must be called once before any other
+    /// events are created.
+    pub(crate) async fn seed_genesis(&self, server_name: &str) {
+        let genesis = {
+            let dag = self.dag.read().unwrap();
+            dag.create_event(
+                &self.identity,
+                EventKind::CreateServer {
+                    name: server_name.to_string(),
+                },
+                vec![],
+                util::current_time_ms(),
+            )
+        };
+        {
+            let mut dag = self.dag.write().unwrap();
+            dag.insert(genesis.clone())
+                .expect("genesis event must insert successfully");
+        }
+        let state = {
+            let dag = self.dag.read().unwrap();
+            willow_state::materialize(&dag)
+        };
+        willow_actor::state::mutate(&self.event_state, move |es| {
+            *es = state;
+        })
+        .await;
+    }
+
     /// Build an event using the per-author Merkle-DAG.
     ///
     /// Cross-author deps are gathered from the current heads of all other
@@ -75,7 +105,7 @@ impl<N: willow_network::Network> ClientMutations<N> {
         let deps: Vec<EventHash> = dag
             .authors()
             .filter(|a| **a != my_id)
-            .filter_map(|a| dag.head(a).cloned())
+            .filter_map(|a| dag.head(a).copied())
             .collect();
         dag.create_event(&self.identity, kind, deps, ts)
     }
@@ -110,11 +140,17 @@ impl<N: willow_network::Network> ClientMutations<N> {
 
     /// Insert an event into the DAG, apply incrementally to materialized
     /// state, persist to event store, and emit relevant ClientEvents.
+    ///
+    /// If DAG insertion fails (invalid signature, seq gap, etc.), the event
+    /// is **not** applied to state — the DAG is the source of truth.
     pub(crate) async fn apply_event(&self, event: &willow_state::Event) {
-        // Insert into the DAG first.
+        // Insert into the DAG first — reject if invalid.
         {
             let mut dag = self.dag.write().unwrap();
-            let _ = dag.insert(event.clone());
+            if let Err(e) = dag.insert(event.clone()) {
+                eprintln!("DAG insert failed for local event: {e:?}");
+                return;
+            }
         }
         // Apply incrementally to the materialized ServerState.
         let event_clone = event.clone();
@@ -122,7 +158,7 @@ impl<N: willow_network::Network> ClientMutations<N> {
             willow_state::apply_incremental(es, &event_clone);
         })
         .await;
-        // Append to event store (snapshot auto-persists via Notify).
+        // Persist event.
         let _ = self.persistence.do_send(persistence_actor::PersistEvent {
             event: event.clone(),
         });
