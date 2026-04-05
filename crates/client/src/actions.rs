@@ -152,7 +152,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 name: name_for_event,
                 channel_id: ch_id_str,
                 kind: "voice".to_string(),
-            });
+            })?;
         self.mutation_handle.apply_event(&event).await;
         self.mutation_handle.broadcast_event(&event);
         Ok(())
@@ -166,8 +166,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         &self,
         peer_id: willow_identity::EndpointId,
     ) -> anyhow::Result<()> {
-        self.mutation_handle.propose_kick_member(peer_id).await;
-        Ok(())
+        self.mutation_handle.propose_kick_member(peer_id).await
     }
 
     pub async fn create_role(&self, name: &str) -> anyhow::Result<()> {
@@ -207,7 +206,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 role_id,
                 permission,
                 granted,
-            });
+            })?;
         self.mutation_handle.apply_event(&event).await;
         self.mutation_handle.broadcast_event(&event);
         Ok(())
@@ -244,7 +243,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         .await?;
         let event = self
             .mutation_handle
-            .build_event(willow_state::EventKind::AssignRole { peer_id, role_id });
+            .build_event(willow_state::EventKind::AssignRole { peer_id, role_id })?;
         self.mutation_handle.apply_event(&event).await;
         self.mutation_handle.broadcast_event(&event);
         Ok(())

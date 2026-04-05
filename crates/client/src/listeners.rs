@@ -148,8 +148,21 @@ async fn try_insert_event(ctx: &ListenerCtx, event: willow_state::Event) {
         }
         Err(InsertError::SeqGap { .. }) | Err(InsertError::PrevMismatch { .. }) => {
             let prev = event.prev;
-            let mut pending = ctx.pending.lock().unwrap();
-            pending.buffer_for_prev(prev, event);
+            // Buffer the event, then check for TOCTOU: the predecessor
+            // may have been inserted between our failed dag.insert and now.
+            let resolved = {
+                let mut pending = ctx.pending.lock().unwrap();
+                pending.buffer_for_prev(prev, event);
+                let predecessor_exists = ctx.dag.read().unwrap().get(&prev).is_some();
+                if predecessor_exists {
+                    pending.resolve(&prev)
+                } else {
+                    vec![]
+                }
+            };
+            for resolved_event in resolved {
+                Box::pin(try_insert_event(ctx, resolved_event)).await;
+            }
         }
         Err(InsertError::Duplicate) => {
             // Already have this event — nothing to do.
