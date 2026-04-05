@@ -6142,7 +6142,6 @@ dependencies = [
  "iroh-base",
  "serde",
  "sha2 0.10.9",
- "uuid",
  "willow-identity",
 ]
 
