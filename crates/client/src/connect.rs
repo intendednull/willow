@@ -24,6 +24,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             event_broker: self.event_broker.clone(),
             identity: self.identity.clone(),
             join_links: Arc::clone(&self.join_links),
+            dag: self.dag_addr.clone(),
         };
 
         // Subscribe to the server ops topic.
@@ -98,13 +99,9 @@ impl<N: willow_network::Network> ClientHandle<N> {
     }
 
     pub(crate) async fn request_sync_via_network(&self) {
-        let state_hash = self
-            .persistence_addr
-            .ask(persistence_actor::GetLatestHash)
-            .await
-            .unwrap_or(willow_state::StateHash::ZERO);
+        let state_hash = willow_state::EventHash::ZERO;
         let msg = ops::WireMessage::SyncRequest {
-            state_hash: state_hash.clone(),
+            state_hash,
             topic: None,
         };
         if let Some(data) = ops::pack_wire(&msg, &self.identity) {
@@ -122,7 +119,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             .await;
         for topic_str in channel_topics {
             let msg = ops::WireMessage::SyncRequest {
-                state_hash: state_hash.clone(),
+                state_hash,
                 topic: Some(topic_str.clone()),
             };
             if let Some(data) = ops::pack_wire(&msg, &self.identity) {

@@ -93,7 +93,7 @@ pub fn compare_chains(our_head: &AuthorHead, their_head: &AuthorHead) -> ChainSt
 /// — the event is buffered. Cross-author dep gaps (`deps` references an
 /// unknown event) are soft — the event is accepted and the dep is recorded
 /// for background fetching.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct PendingBuffer {
     /// Events waiting for a missing `prev` hash.
     waiting_on_prev: HashMap<EventHash, Vec<Event>>,

@@ -8,7 +8,7 @@
 //! ## Flow
 //!
 //! 1. Recipient shares their PeerId (derived from Ed25519 public key).
-//! 2. Server owner enters the recipient's PeerId and generates an invite.
+//! 2. Server admin enters the recipient's PeerId and generates an invite.
 //! 3. Each channel key is encrypted via [`willow_crypto::encrypt_channel_key_for`]
 //!    using the recipient's Ed25519 public key converted to X25519.
 //! 4. The invite is serialized + base64-encoded for sharing.
@@ -21,11 +21,11 @@ use willow_crypto::ChannelKey;
 
 /// The data embedded in a secure invite code.
 ///
-/// **Security note:** The `owner` and `sync_providers` fields are
+/// **Security note:** The `genesis_author` and `sync_providers` fields are
 /// *suggestions* from the invite creator, NOT guaranteed truths. A
 /// malicious actor could forge an invite with fake trusted users.
 /// The joining peer should verify state from multiple sources and use
-/// the event log (GrantPermission events from the owner) as the
+/// the event log (GrantPermission events from admins) as the
 /// canonical source of trust.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InvitePayload {
@@ -33,9 +33,9 @@ pub struct InvitePayload {
     pub server_name: String,
     /// Server ID (for constructing gossipsub topics).
     pub server_id: String,
-    /// EndpointId of the server owner (root of trust chain).
+    /// EndpointId of the genesis event author (first admin).
     /// This is a *hint* — verify by checking event history.
-    pub owner: willow_identity::EndpointId,
+    pub genesis_author: willow_identity::EndpointId,
     /// Suggested peers that can provide full history (SyncProvider permission).
     /// These are *hints* — the joining peer should verify from multiple sources.
     #[serde(default)]
@@ -85,7 +85,7 @@ pub fn generate_invite(
     let payload = InvitePayload {
         server_name: server.name.clone(),
         server_id: server.id.to_string(),
-        owner: server.owner,
+        genesis_author: server.owner,
         sync_providers: Vec::new(), // populated by caller if known
         channels,
     };
@@ -114,7 +114,7 @@ pub fn accept_invite(
     Some(AcceptedInvite {
         server_name: payload.server_name,
         server_id: payload.server_id,
-        owner: payload.owner,
+        genesis_author: payload.genesis_author,
         sync_providers: payload.sync_providers,
         channel_keys,
     })
@@ -122,13 +122,13 @@ pub fn accept_invite(
 
 /// Result of successfully accepting an invite.
 ///
-/// The `owner` and `sync_providers` are *hints* from the invite creator.
+/// The `genesis_author` and `sync_providers` are *hints* from the invite creator.
 /// They should be verified against the event log from multiple sources.
 pub struct AcceptedInvite {
     pub server_name: String,
     pub server_id: String,
-    /// Suggested owner EndpointId (verify via event history).
-    pub owner: willow_identity::EndpointId,
+    /// Suggested genesis author EndpointId (verify via event history).
+    pub genesis_author: willow_identity::EndpointId,
     /// Suggested sync providers (verify via event history).
     pub sync_providers: Vec<willow_identity::EndpointId>,
     /// topic -> (channel_name, decrypted key)

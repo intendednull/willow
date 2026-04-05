@@ -108,7 +108,7 @@ pub struct ClientView {
     pub social: SocialViews,
     pub voice: VoiceState,
     pub server_name: Option<String>,
-    pub server_owner: Option<EndpointId>,
+    pub server_admins: Vec<EndpointId>,
     pub current_channel: String,
 }
 
@@ -200,11 +200,11 @@ pub fn compute_messages_view(
         .filter(|m| channel_ids.contains(&m.channel_id))
         .map(|m| {
             let author_name = resolve_display_name(events, profiles, &m.author);
-            let reply_preview = m.reply_to.as_ref().and_then(|parent_id| {
+            let reply_preview = m.reply_to.as_ref().and_then(|parent_hash| {
                 events
                     .messages
                     .iter()
-                    .find(|pm| pm.id == *parent_id)
+                    .find(|pm| pm.id == *parent_hash)
                     .map(|pm| {
                         let parent_name = resolve_display_name(events, profiles, &pm.author);
                         let text = if pm.body.len() > 50 {
@@ -227,7 +227,7 @@ pub fn compute_messages_view(
                 })
                 .collect();
             DisplayMessage {
-                id: m.id.clone(),
+                id: m.id.to_string(),
                 channel_id: m.channel_id.clone(),
                 author_peer_id: m.author,
                 author_display_name: author_name,
@@ -237,7 +237,7 @@ pub fn compute_messages_view(
                 reactions,
                 edited: m.edited,
                 deleted: m.deleted,
-                reply_to: m.reply_to.clone(),
+                reply_to: m.reply_to.as_ref().map(|h| h.to_string()),
                 reply_preview,
             }
         })
@@ -378,7 +378,6 @@ pub fn compute_messages_view_for_channel(
     let chat = Arc::new(ChatMeta {
         current_channel: channel.to_string(),
         peers: Vec::new(),
-        seen_message_ids: std::collections::HashSet::new(),
     });
     compute_messages_view(events, registry, &chat, profiles, local_peer_id)
 }

@@ -8,11 +8,11 @@ impl<N: willow_network::Network> ClientHandle<N> {
     pub async fn send_reply(
         &self,
         channel: &str,
-        parent_id: &str,
+        parent_hash: &willow_state::EventHash,
         body: &str,
     ) -> anyhow::Result<()> {
         self.mutation_handle
-            .send_reply(channel, parent_id, body)
+            .send_reply(channel, parent_hash, body)
             .await
     }
 
@@ -34,7 +34,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
     pub async fn edit_message(
         &self,
         _channel: &str,
-        message_id: &str,
+        message_id: &willow_state::EventHash,
         new_body: &str,
     ) -> anyhow::Result<()> {
         self.mutation_handle
@@ -42,25 +42,42 @@ impl<N: willow_network::Network> ClientHandle<N> {
             .await
     }
 
-    pub async fn delete_message(&self, _channel: &str, message_id: &str) -> anyhow::Result<()> {
+    pub async fn delete_message(
+        &self,
+        _channel: &str,
+        message_id: &willow_state::EventHash,
+    ) -> anyhow::Result<()> {
         self.mutation_handle.delete_message(message_id).await
     }
 
-    pub async fn react(&self, _channel: &str, message_id: &str, emoji: &str) -> anyhow::Result<()> {
+    pub async fn react(
+        &self,
+        _channel: &str,
+        message_id: &willow_state::EventHash,
+        emoji: &str,
+    ) -> anyhow::Result<()> {
         self.mutation_handle.react(message_id, emoji).await
     }
 
-    pub async fn pin_message(&self, channel: &str, message_id: &str) -> anyhow::Result<()> {
+    pub async fn pin_message(
+        &self,
+        channel: &str,
+        message_id: &willow_state::EventHash,
+    ) -> anyhow::Result<()> {
         self.mutation_handle.pin_message(channel, message_id).await
     }
 
-    pub async fn unpin_message(&self, channel: &str, message_id: &str) -> anyhow::Result<()> {
+    pub async fn unpin_message(
+        &self,
+        channel: &str,
+        message_id: &willow_state::EventHash,
+    ) -> anyhow::Result<()> {
         self.mutation_handle
             .unpin_message(channel, message_id)
             .await
     }
 
-    pub async fn pinned_message_ids(&self, channel: &str) -> Vec<String> {
+    pub async fn pinned_message_ids(&self, channel: &str) -> Vec<willow_state::EventHash> {
         let channel = channel.to_string();
         willow_actor::state::select(&self.event_state_addr, move |es| {
             let channel_id = es
@@ -72,7 +89,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
             es.channels
                 .get(&channel_id)
                 .map(|ch| {
-                    let mut ids: Vec<String> = ch.pinned_messages.iter().cloned().collect();
+                    let mut ids: Vec<willow_state::EventHash> =
+                        ch.pinned_messages.iter().cloned().collect();
                     ids.sort();
                     ids
                 })
@@ -86,16 +104,16 @@ impl<N: willow_network::Network> ClientHandle<N> {
         if pinned_ids.is_empty() {
             return vec![];
         }
-        let pinned_set: std::collections::HashSet<&str> =
-            pinned_ids.iter().map(|s| s.as_str()).collect();
+        let pinned_set: std::collections::HashSet<String> =
+            pinned_ids.iter().map(|h| h.to_string()).collect();
         self.messages(channel)
             .await
             .into_iter()
-            .filter(|m| pinned_set.contains(m.id.as_str()))
+            .filter(|m| pinned_set.contains(&m.id))
             .collect()
     }
 
-    pub async fn is_pinned(&self, channel: &str, message_id: &str) -> bool {
+    pub async fn is_pinned(&self, channel: &str, message_id: &willow_state::EventHash) -> bool {
         self.pinned_message_ids(channel)
             .await
             .iter()
@@ -135,7 +153,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 channel_id: ch_id_str,
                 kind: "voice".to_string(),
             })
-            .await;
+            .await?;
         self.mutation_handle.apply_event(&event).await;
         self.mutation_handle.broadcast_event(&event);
         Ok(())
@@ -145,57 +163,11 @@ impl<N: willow_network::Network> ClientHandle<N> {
         self.mutation_handle.delete_channel(name).await
     }
 
-    pub async fn trust_peer(&self, peer_id: willow_identity::EndpointId) {
-        self.mutation_handle.trust_peer(peer_id).await;
-    }
-
-    pub async fn untrust_peer(&self, peer_id: willow_identity::EndpointId) {
-        self.mutation_handle.untrust_peer(peer_id).await;
-    }
-
-    pub async fn kick_member(&self, peer_id: willow_identity::EndpointId) -> anyhow::Result<()> {
-        // Remove member from server + rotate channel keys.
-        willow_actor::state::mutate(
-            &self.server_registry_addr,
-            move |reg| -> anyhow::Result<()> {
-                let entry = reg
-                    .active_mut()
-                    .ok_or_else(|| anyhow::anyhow!("no active server"))?;
-                let member_peer = entry
-                    .server
-                    .members()
-                    .iter()
-                    .find(|m| m.peer_id == peer_id)
-                    .map(|m| m.peer_id);
-                let Some(peer) = member_peer else {
-                    anyhow::bail!("peer not found in server members");
-                };
-                let rotated = entry.server.remove_member(&peer)?;
-                for (ch_id, key) in &rotated {
-                    for (topic, (_, tid)) in &entry.topic_map {
-                        if tid == ch_id {
-                            entry.keys.insert(topic.clone(), key.clone());
-                            break;
-                        }
-                    }
-                }
-                Ok(())
-            },
-        )
-        .await?;
-        // Build and apply event.
-        let event = self
-            .mutation_handle
-            .build_event(willow_state::EventKind::KickMember { peer_id })
-            .await;
-        self.mutation_handle.apply_event(&event).await;
-        // Remove from peers.
-        willow_actor::state::mutate(&self.chat_meta_addr, move |c| {
-            c.peers.retain(|p| *p != peer_id);
-        })
-        .await;
-        self.mutation_handle.broadcast_event(&event);
-        Ok(())
+    pub async fn propose_kick_member(
+        &self,
+        peer_id: willow_identity::EndpointId,
+    ) -> anyhow::Result<()> {
+        self.mutation_handle.propose_kick_member(peer_id).await
     }
 
     pub async fn create_role(&self, name: &str) -> anyhow::Result<()> {
@@ -236,7 +208,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 permission,
                 granted,
             })
-            .await;
+            .await?;
         self.mutation_handle.apply_event(&event).await;
         self.mutation_handle.broadcast_event(&event);
         Ok(())
@@ -274,35 +246,10 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let event = self
             .mutation_handle
             .build_event(willow_state::EventKind::AssignRole { peer_id, role_id })
-            .await;
+            .await?;
         self.mutation_handle.apply_event(&event).await;
         self.mutation_handle.broadcast_event(&event);
         Ok(())
-    }
-
-    pub async fn verify_state(&self) -> anyhow::Result<()> {
-        let state_hash = willow_actor::state::select(&self.event_state_addr, |es| es.hash()).await;
-        let event = self
-            .mutation_handle
-            .build_event(willow_state::EventKind::StateVerification { state_hash })
-            .await;
-        self.mutation_handle.apply_event(&event).await;
-        self.mutation_handle.broadcast_event(&event);
-        Ok(())
-    }
-
-    pub async fn state_hash_agreement(&self) -> (usize, usize) {
-        let our_hash = willow_actor::state::select(&self.event_state_addr, |es| es.hash()).await;
-        willow_actor::state::select(&self.network_meta_addr, move |n| {
-            let total = n.state_verification_results.len();
-            let agreeing = n
-                .state_verification_results
-                .values()
-                .filter(|h| **h == our_hash)
-                .count();
-            (agreeing, total)
-        })
-        .await
     }
 
     /// Switch the current channel.

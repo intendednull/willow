@@ -117,7 +117,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use willow_identity::Identity;
-use willow_state::EventStore as _;
 
 /// Configuration for creating a [`ClientHandle`].
 pub struct ClientConfig {
@@ -175,12 +174,12 @@ pub struct ClientHandle<N: willow_network::Network> {
         willow_actor::Addr<willow_actor::StateActor<state_actors::VoiceState>>,
     /// Persistence actor (owns rusqlite).
     pub(crate) persistence_addr: willow_actor::Addr<persistence_actor::PersistenceActor>,
-    /// HLC clock (mutation-time concern, not reactive state).
-    pub(crate) hlc: Arc<std::sync::Mutex<willow_messaging::hlc::HLC>>,
     /// Whether persistence to disk is enabled.
     pub(crate) persistence_enabled: bool,
     /// Active join links (rarely modified, shared across tasks).
     pub(crate) join_links: Arc<std::sync::Mutex<Vec<ops::JoinLink>>>,
+    /// The per-author Merkle-DAG actor — source of truth for all events.
+    pub(crate) dag_addr: willow_actor::Addr<willow_actor::StateActor<state_actors::DagState>>,
 
     // ── New reactive API (spec target) ──────────────────────────────────
     /// Reactive view handle — read state at any granularity.
@@ -204,9 +203,9 @@ impl<N: willow_network::Network> Clone for ClientHandle<N> {
             network_meta_addr: self.network_meta_addr.clone(),
             voice_state_addr: self.voice_state_addr.clone(),
             persistence_addr: self.persistence_addr.clone(),
-            hlc: Arc::clone(&self.hlc),
             persistence_enabled: self.persistence_enabled,
             join_links: Arc::clone(&self.join_links),
+            dag_addr: self.dag_addr.clone(),
             view_handle: self.view_handle.clone(),
             mutation_handle: self.mutation_handle.clone(),
         }
@@ -364,57 +363,19 @@ impl<N: willow_network::Network> ClientHandle<N> {
                         ctx.server.owner,
                     );
 
-                    // No saved state -- seed from legacy channels.
-                    // Open persistent event store and replay stored events.
-                    if config.persistence {
-                        if let Some(store) = storage::open_event_store(sid) {
-                            #[cfg(not(target_arch = "wasm32"))]
-                            {
-                                state.event_store = state::PersistentEventStore::Sqlite(store);
-                            }
-                            #[cfg(target_arch = "wasm32")]
-                            {
-                                state.event_store =
-                                    state::PersistentEventStore::LocalStorage(store);
-                            }
-                        }
-                    }
-
-                    // Replay persisted events to rebuild event_state.
-                    let stored_events = state.event_store.all_events();
-                    if !stored_events.is_empty() {
-                        for event in &stored_events {
-                            willow_state::apply_lenient(&mut state.event_state, event);
-                        }
-                    } else {
-                        // No persisted events -- seed event_state with existing
-                        // channels from legacy storage so lookups work.
-                        for (topic, (name, ch_id)) in &ctx.topic_map {
-                            let _ = topic;
-                            state.event_state.channels.insert(
-                                ch_id.to_string(),
-                                willow_state::Channel {
-                                    id: ch_id.to_string(),
-                                    name: name.clone(),
-                                    pinned_messages: std::collections::HashSet::new(),
-                                    kind: "text".to_string(),
-                                },
-                            );
-                        }
-                    }
-                }
-
-                // Still open the event store even if we loaded saved state.
-                if config.persistence {
-                    if let Some(store) = storage::open_event_store(sid) {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        {
-                            state.event_store = state::PersistentEventStore::Sqlite(store);
-                        }
-                        #[cfg(target_arch = "wasm32")]
-                        {
-                            state.event_store = state::PersistentEventStore::LocalStorage(store);
-                        }
+                    // No persisted events -- seed event_state with existing
+                    // channels from legacy storage so lookups work.
+                    for (topic, (name, ch_id)) in &ctx.topic_map {
+                        let _ = topic;
+                        state.event_state.channels.insert(
+                            ch_id.to_string(),
+                            willow_state::Channel {
+                                id: ch_id.to_string(),
+                                name: name.clone(),
+                                pinned_messages: std::collections::HashSet::new(),
+                                kind: "text".to_string(),
+                            },
+                        );
                     }
                 }
             }
@@ -423,11 +384,6 @@ impl<N: willow_network::Network> ClientHandle<N> {
         // Save in multi-server format.
         if config.persistence {
             persist_servers(&state);
-        }
-
-        // Populate seen_message_ids from event_state for dedup.
-        for es_msg in &state.event_state.messages {
-            state.chat.seen_message_ids.insert(es_msg.id.clone());
         }
 
         // Load saved display name, or use config override.
@@ -476,7 +432,6 @@ impl<N: willow_network::Network> ClientHandle<N> {
             let meta = state_actors::ChatMeta {
                 current_channel: state.chat.current_channel.clone(),
                 peers: state.chat.peers.clone(),
-                seen_message_ids: state.chat.seen_message_ids.clone(),
             };
             system.spawn(willow_actor::StateActor::new(meta))
         };
@@ -501,7 +456,14 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 server_id: sid.clone(),
             });
         }
-        let hlc = Arc::new(std::sync::Mutex::new(willow_messaging::hlc::HLC::new()));
+        // DAG starts empty for loaded servers. It will be populated via
+        // sync when connect() is called — the sync batch delivers the full
+        // event history including genesis. Local mutations before sync
+        // completes will fail gracefully (build_event returns Err).
+        // For NEW servers, create_server() calls seed_genesis() to populate.
+        let dag_addr = system.spawn(willow_actor::StateActor::new(
+            state_actors::DagState::default(),
+        ));
         let topics: Arc<RwLock<HashMap<String, N::Topic>>> = Arc::new(RwLock::new(HashMap::new()));
         let join_links = Arc::new(std::sync::Mutex::new(Vec::new()));
 
@@ -586,7 +548,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 social: (**social).clone(),
                 voice: (**voice).clone(),
                 server_name: None,
-                server_owner: None,
+                server_admins: vec![],
                 current_channel: String::new(),
             },
         );
@@ -618,9 +580,9 @@ impl<N: willow_network::Network> ClientHandle<N> {
             event_broker: event_broker.clone(),
             persistence: persistence_addr.clone(),
             identity: identity_clone.clone(),
-            hlc: Arc::clone(&hlc),
             join_links: Arc::clone(&join_links),
             topics: Arc::clone(&topics),
+            dag: dag_addr.clone(),
         };
 
         reconcile_topic_map(&mut state);
@@ -638,9 +600,9 @@ impl<N: willow_network::Network> ClientHandle<N> {
             network_meta_addr,
             voice_state_addr,
             persistence_addr,
-            hlc,
             persistence_enabled,
             join_links,
+            dag_addr: dag_addr.clone(),
             view_handle,
             mutation_handle,
         };
@@ -665,7 +627,6 @@ impl ClientEventLoop {
     /// Listeners now handle all incoming gossip events via
     /// [`listeners::spawn_topic_listener`]. This method exists for
     /// backward compatibility only.
-    /// Run the event processing loop (legacy no-op).
     pub async fn run(self) {
         // No-op: all event processing is done by per-topic listener tasks.
         futures::future::pending::<()>().await;
@@ -696,6 +657,7 @@ fn parse_permission(s: &str) -> anyhow::Result<willow_channel::Permission> {
         "CreateInvite" => Ok(willow_channel::Permission::CreateInvite),
         "AttachFiles" => Ok(willow_channel::Permission::AttachFiles),
         "ManageChannels" => Ok(willow_channel::Permission::ManageChannels),
+        "ManageRoles" => Ok(willow_channel::Permission::ManageRoles),
         _ => anyhow::bail!("unknown permission: {s}"),
     }
 }
@@ -736,10 +698,24 @@ pub fn test_client() -> (
     state.servers.insert(server_id.clone(), ctx);
     state.active_server = Some(server_id.clone());
 
-    // Initialize event_state with the server's owner (the local identity),
-    // mirroring what ClientHandle::new() does.
-    state.event_state =
-        willow_state::ServerState::new(&server_id, "Test Server", identity.endpoint_id());
+    let identity_clone = identity.clone();
+
+    // Create the DAG and seed it with a genesis event so subsequent
+    // build_event/insert calls succeed.
+    let mut dag_state = state_actors::DagState::default();
+    let genesis = dag_state.dag.create_event(
+        &identity,
+        willow_state::EventKind::CreateServer {
+            name: "Test Server".to_string(),
+        },
+        vec![],
+        0,
+    );
+    dag_state.dag.insert(genesis).expect("genesis must insert");
+
+    // Materialize initial state from the DAG — this gives us a ServerState
+    // with the correct server_id (genesis hash) and genesis author as admin.
+    state.event_state = willow_state::materialize(&dag_state.dag);
 
     // Seed event_state with the general channel so event-sourced operations
     // (e.g. pin/unpin) can find the channel.
@@ -756,17 +732,15 @@ pub fn test_client() -> (
     state.event_state.channels.insert(
         ch_id_str.clone(),
         willow_state::Channel {
-            id: ch_id_str,
+            id: ch_id_str.clone(),
             name: "general".to_string(),
             pinned_messages: std::collections::HashSet::new(),
             kind: "text".to_string(),
         },
     );
 
-    let identity_clone = identity.clone();
+    // Now spawn actors AFTER state is fully initialized (DAG materialized + channels seeded).
     let sys = willow_actor::System::new();
-
-    // Spawn domain actors from initial state before it's consumed.
     let event_state_addr = sys.spawn(willow_actor::StateActor::new(state.event_state.clone()));
     let mut registry = state_actors::ServerRegistry::default();
     for (id, ctx) in &state.servers {
@@ -786,7 +760,6 @@ pub fn test_client() -> (
     let chat_meta_addr = sys.spawn(willow_actor::StateActor::new(state_actors::ChatMeta {
         current_channel: state.chat.current_channel.clone(),
         peers: state.chat.peers.clone(),
-        seen_message_ids: state.chat.seen_message_ids.clone(),
     }));
     let profile_state_addr = sys.spawn(willow_actor::StateActor::new(state_actors::ProfileState {
         names: state.profiles.names.clone(),
@@ -799,7 +772,8 @@ pub fn test_client() -> (
     ));
     let persistence_addr = sys.spawn(persistence_actor::PersistenceActor::new(false));
     let event_broker = sys.spawn(willow_actor::Broker::<ClientEvent>::new());
-    let hlc = Arc::new(std::sync::Mutex::new(willow_messaging::hlc::HLC::new()));
+    let dag_addr = sys.spawn(willow_actor::StateActor::new(dag_state));
+
     let topics: Arc<
         RwLock<
             HashMap<String, <willow_network::mem::MemNetwork as willow_network::Network>::Topic>,
@@ -882,7 +856,7 @@ pub fn test_client() -> (
             social: (**s).clone(),
             voice: (**v).clone(),
             server_name: None,
-            server_owner: None,
+            server_admins: vec![],
             current_channel: String::new(),
         },
     );
@@ -912,9 +886,9 @@ pub fn test_client() -> (
         event_broker: event_broker.clone(),
         persistence: persistence_addr.clone(),
         identity: identity_clone.clone(),
-        hlc: Arc::clone(&hlc),
         join_links: Arc::clone(&join_links),
         topics: Arc::clone(&topics),
+        dag: dag_addr.clone(),
     };
 
     // Leak the system so actors stay alive for the test duration.
@@ -933,9 +907,9 @@ pub fn test_client() -> (
         network_meta_addr,
         voice_state_addr,
         persistence_addr,
-        hlc,
         persistence_enabled: false,
         join_links,
+        dag_addr: dag_addr.clone(),
         view_handle,
         mutation_handle,
     };
@@ -962,11 +936,6 @@ pub async fn test_client_on_hub(
 
 #[cfg(test)]
 mod tests {
-    // 5 tests temporarily disabled during Arc<RwLock> → actor migration.
-    // All production code is lock-free. Tests need converting from
-    // client.shared.read/write() to read_state/mutate_state async pattern.
-    // See git history for original tests.
-
     use super::*;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

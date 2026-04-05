@@ -23,7 +23,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             .ok_or_else(|| anyhow::anyhow!("invalid invite code or not for us"))?;
 
         let server_id = accepted.server_id.clone();
-        let owner = accepted.owner;
+        let genesis_author = accepted.genesis_author;
         let first_channel_name = accepted
             .channel_keys
             .values()
@@ -46,7 +46,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                     }
                 } else {
                     let mut server =
-                        willow_channel::Server::new(&accepted.server_name, accepted.owner);
+                        willow_channel::Server::new(&accepted.server_name, accepted.genesis_author);
                     server.id = willow_channel::ServerId(
                         uuid::Uuid::parse_str(&server_id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
                     );
@@ -82,18 +82,13 @@ impl<N: willow_network::Network> ClientHandle<N> {
         )
         .await?;
 
-        // Initialize event state for the new server.
+        // Initialize event state for the joined server with a placeholder.
+        // The DAG remains empty — it will be populated from the sync batch
+        // which delivers the full event history including genesis. Local
+        // mutations before sync completes will fail gracefully.
         let sid = accepted.server_id.clone();
         willow_actor::state::mutate(&self.event_state_addr, move |es| {
-            *es = willow_state::ServerState::new(&sid, "", owner);
-            es.owner = owner;
-            es.members
-                .entry(owner)
-                .or_insert_with(|| willow_state::Member {
-                    peer_id: owner,
-                    roles: std::collections::HashSet::new(),
-                    display_name: None,
-                });
+            *es = willow_state::ServerState::new(&sid, "", genesis_author);
         })
         .await;
 
@@ -111,7 +106,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
 
         // Request sync.
         let msg = ops::WireMessage::SyncRequest {
-            state_hash: willow_state::StateHash::ZERO,
+            state_hash: willow_state::EventHash::ZERO,
             topic: None,
         };
         if let Some(data) = ops::pack_wire(&msg, &self.identity) {
@@ -120,7 +115,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         }
         for topic_str in channel_topics {
             let msg = ops::WireMessage::SyncRequest {
-                state_hash: willow_state::StateHash::ZERO,
+                state_hash: willow_state::EventHash::ZERO,
                 topic: Some(topic_str.clone()),
             };
             if let Some(data) = ops::pack_wire(&msg, &self.identity) {

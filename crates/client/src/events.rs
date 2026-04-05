@@ -32,7 +32,6 @@ pub enum ClientEvent {
     PeerDisconnected(EndpointId),
     ChannelCreated(String),
     ChannelDeleted(String),
-    MemberKicked(EndpointId),
     PeerTrusted(EndpointId),
     PeerUntrusted(EndpointId),
     ProfileUpdated {
@@ -56,11 +55,6 @@ pub enum ClientEvent {
     RoleDeleted {
         role_id: String,
     },
-    StateHashMismatch {
-        peer_id: EndpointId,
-        our_hash: String,
-        their_hash: String,
-    },
     ServerRenamed {
         new_name: String,
     },
@@ -74,6 +68,17 @@ pub enum ClientEvent {
     MessageUnpinned {
         channel: String,
         message_id: String,
+    },
+    /// A governance proposal was created.
+    ProposalCreated {
+        proposal_hash: String,
+        action_description: String,
+    },
+    /// A vote was cast on a governance proposal.
+    VoteCast {
+        proposal_hash: String,
+        accept: bool,
+        voter: EndpointId,
     },
     /// A peer joined a voice channel.
     VoiceJoined {

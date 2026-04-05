@@ -82,17 +82,13 @@ impl<N: willow_network::Network> ClientHandle<N> {
         )
         .await?;
 
-        // Initialize event-sourced state.
-        let new_state = willow_state::ServerState::new(&server_id, name_for_state, peer_id);
-        willow_actor::state::mutate(&self.event_state_addr, move |es| {
-            *es = new_state;
-        })
-        .await;
+        // Seed the DAG with a genesis event and materialize initial state.
+        self.mutation_handle.seed_genesis(&name_for_state).await;
 
         // Switch current channel.
         self.mutation_handle.switch_channel("general").await;
 
-        // Create channel via event.
+        // Create channel via event (DAG is now seeded, so insert will succeed).
         let event = self
             .mutation_handle
             .build_event(willow_state::EventKind::CreateChannel {
@@ -100,7 +96,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 channel_id: ch_id_str,
                 kind: "text".to_string(),
             })
-            .await;
+            .await?;
         self.mutation_handle.apply_event(&event).await;
 
         // Open event store on persistence actor.
@@ -113,7 +109,10 @@ impl<N: willow_network::Network> ClientHandle<N> {
         Ok(server_id)
     }
 
-    pub async fn authorize_workers(&self, worker_peer_ids: &[willow_identity::EndpointId]) {
+    pub async fn authorize_workers(
+        &self,
+        worker_peer_ids: &[willow_identity::EndpointId],
+    ) -> anyhow::Result<()> {
         for worker_pid in worker_peer_ids {
             let event = self
                 .mutation_handle
@@ -121,10 +120,11 @@ impl<N: willow_network::Network> ClientHandle<N> {
                     peer_id: *worker_pid,
                     permission: willow_state::Permission::SyncProvider,
                 })
-                .await;
+                .await?;
             self.mutation_handle.apply_event(&event).await;
             self.mutation_handle.broadcast_event(&event);
         }
+        Ok(())
     }
 
     pub async fn set_server_display_name(&self, name: &str) -> anyhow::Result<()> {
@@ -134,7 +134,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             .build_event(willow_state::EventKind::SetProfile {
                 display_name: name.clone(),
             })
-            .await;
+            .await?;
         self.mutation_handle.apply_event(&event).await;
 
         // Also update global profile.
@@ -159,7 +159,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             .build_event(willow_state::EventKind::RenameServer {
                 new_name: new_name.to_string(),
             })
-            .await;
+            .await?;
         self.mutation_handle.apply_event(&event).await;
         self.mutation_handle.broadcast_event(&event);
         Ok(())
@@ -171,7 +171,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             .build_event(willow_state::EventKind::SetServerDescription {
                 description: desc.to_string(),
             })
-            .await;
+            .await?;
         self.mutation_handle.apply_event(&event).await;
         self.mutation_handle.broadcast_event(&event);
         Ok(())

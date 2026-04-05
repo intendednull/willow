@@ -91,21 +91,24 @@ pub const PROFILE_TOPIC: &str = "_willow_profiles";
 mod tests {
     use super::*;
     use willow_identity::Identity;
+    use willow_state::EventHash;
+
+    /// Helper to create a signed event for testing.
+    fn make_event(id: &Identity, kind: willow_state::EventKind) -> willow_state::Event {
+        willow_state::Event::new(id, 1, EventHash::ZERO, vec![], kind, 1000)
+    }
 
     #[test]
     fn wire_message_event_round_trip() {
         let id = Identity::generate();
-        let event = willow_state::Event {
-            id: "evt-1".to_string(),
-            parent_hash: willow_state::StateHash::ZERO,
-            author: id.endpoint_id(),
-            timestamp_ms: 1000,
-            kind: willow_state::EventKind::CreateChannel {
+        let event = make_event(
+            &id,
+            willow_state::EventKind::CreateChannel {
                 name: "general".to_string(),
                 channel_id: "ch-1".to_string(),
                 kind: "text".to_string(),
             },
-        };
+        );
 
         let msg = WireMessage::Event(event.clone());
         let data = pack_wire(&msg, &id).unwrap();
@@ -114,7 +117,7 @@ mod tests {
         assert_eq!(signer, id.endpoint_id());
         match decoded {
             WireMessage::Event(e) => {
-                assert_eq!(e.id, "evt-1");
+                assert_eq!(e.hash, event.hash);
                 assert_eq!(e.author, id.endpoint_id());
             }
             _ => panic!("expected WireMessage::Event"),
@@ -125,7 +128,7 @@ mod tests {
     fn wire_message_sync_request_round_trip() {
         let id = Identity::generate();
         let msg = WireMessage::SyncRequest {
-            state_hash: willow_state::StateHash::from_bytes(b"test-hash"),
+            state_hash: EventHash::from_bytes(b"test-hash"),
             topic: Some("my-topic".to_string()),
         };
 
@@ -134,10 +137,7 @@ mod tests {
 
         match decoded {
             WireMessage::SyncRequest { state_hash, topic } => {
-                assert_eq!(
-                    state_hash,
-                    willow_state::StateHash::from_bytes(b"test-hash")
-                );
+                assert_eq!(state_hash, EventHash::from_bytes(b"test-hash"));
                 assert_eq!(topic, Some("my-topic".to_string()));
             }
             _ => panic!("expected WireMessage::SyncRequest"),
@@ -148,31 +148,28 @@ mod tests {
     fn wire_message_sync_batch_round_trip() {
         let id = Identity::generate();
         let peer1 = Identity::generate();
-        let events = vec![
-            willow_state::Event {
-                id: "e1".to_string(),
-                parent_hash: willow_state::StateHash::ZERO,
-                author: peer1.endpoint_id(),
-                timestamp_ms: 100,
-                kind: willow_state::EventKind::CreateChannel {
-                    name: "ch1".to_string(),
-                    channel_id: "cid1".to_string(),
-                    kind: "text".to_string(),
-                },
+        let e1 = make_event(
+            &peer1,
+            willow_state::EventKind::CreateChannel {
+                name: "ch1".to_string(),
+                channel_id: "cid1".to_string(),
+                kind: "text".to_string(),
             },
-            willow_state::Event {
-                id: "e2".to_string(),
-                parent_hash: willow_state::StateHash::ZERO,
-                author: peer1.endpoint_id(),
-                timestamp_ms: 200,
-                kind: willow_state::EventKind::Message {
-                    channel_id: "cid1".to_string(),
-                    body: "hello".to_string(),
-                    reply_to: None,
-                },
+        );
+        let e2 = willow_state::Event::new(
+            &peer1,
+            2,
+            e1.hash,
+            vec![],
+            willow_state::EventKind::Message {
+                channel_id: "cid1".to_string(),
+                body: "hello".to_string(),
+                reply_to: None,
             },
-        ];
+            200,
+        );
 
+        let events = vec![e1.clone(), e2.clone()];
         let msg = WireMessage::SyncBatch {
             events: events.clone(),
         };
@@ -184,8 +181,8 @@ mod tests {
                 events: decoded_events,
             } => {
                 assert_eq!(decoded_events.len(), 2);
-                assert_eq!(decoded_events[0].id, "e1");
-                assert_eq!(decoded_events[1].id, "e2");
+                assert_eq!(decoded_events[0].hash, e1.hash);
+                assert_eq!(decoded_events[1].hash, e2.hash);
             }
             _ => panic!("expected WireMessage::SyncBatch"),
         }
@@ -194,15 +191,12 @@ mod tests {
     #[test]
     fn wire_message_tampered_fails() {
         let id = Identity::generate();
-        let event = willow_state::Event {
-            id: "evt-x".to_string(),
-            parent_hash: willow_state::StateHash::ZERO,
-            author: id.endpoint_id(),
-            timestamp_ms: 500,
-            kind: willow_state::EventKind::DeleteChannel {
+        let event = make_event(
+            &id,
+            willow_state::EventKind::DeleteChannel {
                 channel_id: "ch-1".to_string(),
             },
-        };
+        );
 
         let mut data = pack_wire(&WireMessage::Event(event), &id).unwrap();
         if let Some(byte) = data.last_mut() {

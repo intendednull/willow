@@ -394,10 +394,10 @@ impl willow_state::EventStore for SqliteEventStore {
         let _ = self.conn.execute(
             "INSERT OR IGNORE INTO events (id, parent_hash, author, timestamp_ms, event_data) VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![
-                event.id,
-                event.parent_hash.0.as_slice(),
+                event.hash.to_string(),
+                event.prev.0.as_slice(),
                 event.author.to_string(),
-                event.timestamp_ms as i64,
+                event.timestamp_hint_ms as i64,
                 event_data,
             ],
         );
@@ -474,7 +474,7 @@ impl willow_state::EventStore for SqliteEventStore {
                 if bytes.len() == 32 {
                     let mut arr = [0u8; 32];
                     arr.copy_from_slice(&bytes);
-                    Some(willow_state::StateHash(arr))
+                    Some(willow_state::EventHash(arr))
                 } else {
                     None
                 }
@@ -554,7 +554,7 @@ impl willow_state::EventStore for LocalStorageEventStore {
     fn append(&mut self, event: willow_state::Event) {
         let mut events = self.load_all();
         // Dedup by event ID.
-        if events.iter().any(|e| e.id == event.id) {
+        if events.iter().any(|e| e.hash == event.hash) {
             return;
         }
         events.push(event);
@@ -573,7 +573,7 @@ impl willow_state::EventStore for LocalStorageEventStore {
         let events = self.load_all();
         let start = events
             .iter()
-            .position(|e| e.parent_hash == *hash)
+            .position(|e| e.prev == *hash)
             .unwrap_or(events.len());
         events[start..].to_vec()
     }
@@ -588,7 +588,7 @@ impl willow_state::EventStore for LocalStorageEventStore {
                 if bytes.len() == 32 {
                     let mut arr = [0u8; 32];
                     arr.copy_from_slice(&bytes);
-                    Some(willow_state::StateHash(arr))
+                    Some(willow_state::EventHash(arr))
                 } else {
                     None
                 }
@@ -601,7 +601,9 @@ impl willow_state::EventStore for LocalStorageEventStore {
     }
 
     fn contains(&self, event_id: &str) -> bool {
-        self.load_all().iter().any(|e| e.id == event_id)
+        self.load_all()
+            .iter()
+            .any(|e| e.hash.to_string() == event_id)
     }
 }
 
@@ -672,19 +674,20 @@ mod tests {
     use super::*;
     use willow_state::{Event, EventKind, EventStore, StateHash};
 
-    fn make_event(id: &str, parent: StateHash) -> Event {
+    fn make_event(_id: &str, prev: StateHash) -> Event {
         let peer = willow_identity::Identity::generate();
-        Event {
-            id: id.to_string(),
-            parent_hash: parent,
-            author: peer.endpoint_id(),
-            timestamp_ms: 1000,
-            kind: EventKind::CreateChannel {
+        Event::new(
+            &peer,
+            1,
+            prev,
+            vec![],
+            EventKind::CreateChannel {
                 name: "general".to_string(),
                 channel_id: "ch-1".to_string(),
                 kind: "text".to_string(),
             },
-        }
+            1000,
+        )
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -705,14 +708,16 @@ mod tests {
             let mut store = temp_store();
             let e1 = make_event("e1", StateHash::ZERO);
             let e2 = make_event("e2", StateHash::from_bytes(b"state-a"));
+            let e1_hash = e1.hash.to_string();
+            let e2_hash = e2.hash.to_string();
 
             store.append(e1);
             store.append(e2);
 
             let all = store.all_events();
             assert_eq!(all.len(), 2);
-            assert_eq!(all[0].id, "e1");
-            assert_eq!(all[1].id, "e2");
+            assert_eq!(all[0].hash.to_string(), e1_hash);
+            assert_eq!(all[1].hash.to_string(), e2_hash);
         }
 
         #[test]
@@ -728,11 +733,13 @@ mod tests {
         #[test]
         fn contains_check() {
             let mut store = temp_store();
-            assert!(!store.contains("e1"));
+            let event = make_event("e1", StateHash::ZERO);
+            let hash_str = event.hash.to_string();
+            assert!(!store.contains(&hash_str));
 
-            store.append(make_event("e1", StateHash::ZERO));
-            assert!(store.contains("e1"));
-            assert!(!store.contains("e2"));
+            store.append(event);
+            assert!(store.contains(&hash_str));
+            assert!(!store.contains("nonexistent"));
         }
 
         #[test]
@@ -755,14 +762,20 @@ mod tests {
             let hash_a = StateHash::from_bytes(b"state-a");
             let hash_b = StateHash::from_bytes(b"state-b");
 
-            store.append(make_event("e1", StateHash::ZERO));
-            store.append(make_event("e2", hash_a.clone()));
-            store.append(make_event("e3", hash_b));
+            let e1 = make_event("e1", StateHash::ZERO);
+            let e2 = make_event("e2", hash_a.clone());
+            let e3 = make_event("e3", hash_b);
+            let e2_hash = e2.hash.to_string();
+            let e3_hash = e3.hash.to_string();
+
+            store.append(e1);
+            store.append(e2);
+            store.append(e3);
 
             let since = store.events_since(&hash_a);
             assert_eq!(since.len(), 2);
-            assert_eq!(since[0].id, "e2");
-            assert_eq!(since[1].id, "e3");
+            assert_eq!(since[0].hash.to_string(), e2_hash);
+            assert_eq!(since[1].hash.to_string(), e3_hash);
         }
 
         #[test]
@@ -773,34 +786,8 @@ mod tests {
             let since = store.events_since(&StateHash::from_bytes(b"unknown"));
             assert!(since.is_empty());
         }
-
-        #[test]
-        fn persistent_event_store_enum_delegates() {
-            let inner = temp_store();
-            let mut store = crate::state::PersistentEventStore::Sqlite(inner);
-
-            store.append(make_event("e1", StateHash::ZERO));
-            assert_eq!(store.all_events().len(), 1);
-            assert!(store.contains("e1"));
-
-            let hash = StateHash::from_bytes(b"test");
-            store.set_latest_hash(hash.clone());
-            assert_eq!(store.latest_hash(), hash);
-        }
     }
 
-    #[test]
-    fn persistent_event_store_in_memory_default() {
-        let mut store = crate::state::PersistentEventStore::default();
-        let event = make_event("e1", StateHash::ZERO);
-
-        store.append(event);
-        assert_eq!(store.all_events().len(), 1);
-        assert!(store.contains("e1"));
-        assert_eq!(store.latest_hash(), StateHash::ZERO);
-
-        let hash = StateHash::from_bytes(b"test-hash");
-        store.set_latest_hash(hash.clone());
-        assert_eq!(store.latest_hash(), hash);
-    }
+    // PersistentEventStore tests removed — that type was deleted as part
+    // of the DAG migration. Storage now goes through PersistenceActor.
 }
