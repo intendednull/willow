@@ -152,7 +152,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 name: name_for_event,
                 channel_id: ch_id_str,
                 kind: "voice".to_string(),
-            })?;
+            })
+            .await?;
         self.mutation_handle.apply_event(&event).await;
         self.mutation_handle.broadcast_event(&event);
         Ok(())
@@ -206,7 +207,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 role_id,
                 permission,
                 granted,
-            })?;
+            })
+            .await?;
         self.mutation_handle.apply_event(&event).await;
         self.mutation_handle.broadcast_event(&event);
         Ok(())
@@ -243,7 +245,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
         .await?;
         let event = self
             .mutation_handle
-            .build_event(willow_state::EventKind::AssignRole { peer_id, role_id })?;
+            .build_event(willow_state::EventKind::AssignRole { peer_id, role_id })
+            .await?;
         self.mutation_handle.apply_event(&event).await;
         self.mutation_handle.broadcast_event(&event);
         Ok(())

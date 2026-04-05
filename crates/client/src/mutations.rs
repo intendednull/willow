@@ -18,6 +18,8 @@ use willow_identity::{EndpointId, Identity};
 use willow_network::TopicHandle as _;
 use willow_state::{EventHash, EventKind};
 
+use crate::state_actors::DagState;
+
 use crate::events::ClientEvent;
 use crate::ops;
 use crate::persistence_actor::{self, PersistenceActor};
@@ -37,7 +39,7 @@ pub struct ClientMutations<N: willow_network::Network> {
     pub(crate) event_broker: Addr<Broker<ClientEvent>>,
     pub(crate) persistence: Addr<PersistenceActor>,
     pub(crate) identity: Identity,
-    pub(crate) dag: Arc<RwLock<willow_state::EventDag>>,
+    pub(crate) dag: Addr<StateActor<DagState>>,
     pub(crate) join_links: Arc<Mutex<Vec<crate::ops::JoinLink>>>,
     pub(crate) topics: Arc<RwLock<HashMap<String, N::Topic>>>,
 }
@@ -54,7 +56,7 @@ impl<N: willow_network::Network> Clone for ClientMutations<N> {
             event_broker: self.event_broker.clone(),
             persistence: self.persistence.clone(),
             identity: self.identity.clone(),
-            dag: Arc::clone(&self.dag),
+            dag: self.dag.clone(),
             join_links: Arc::clone(&self.join_links),
             topics: Arc::clone(&self.topics),
         }
@@ -68,26 +70,19 @@ impl<N: willow_network::Network> ClientMutations<N> {
     /// the initial `ServerState`. Must be called once before any other
     /// events are created.
     pub(crate) async fn seed_genesis(&self, server_name: &str) {
-        let genesis = {
-            let dag = self.dag.read().unwrap();
-            dag.create_event(
-                &self.identity,
-                EventKind::CreateServer {
-                    name: server_name.to_string(),
-                },
-                vec![],
-                util::current_time_ms(),
-            )
-        };
-        {
-            let mut dag = self.dag.write().unwrap();
-            dag.insert(genesis.clone())
+        let identity = self.identity.clone();
+        let name = server_name.to_string();
+        let ts = util::current_time_ms();
+        let state = willow_actor::state::mutate(&self.dag, move |ds| {
+            let genesis =
+                ds.dag
+                    .create_event(&identity, EventKind::CreateServer { name }, vec![], ts);
+            ds.dag
+                .insert(genesis)
                 .expect("genesis event must insert successfully");
-        }
-        let state = {
-            let dag = self.dag.read().unwrap();
-            willow_state::materialize(&dag)
-        };
+            willow_state::materialize(&ds.dag)
+        })
+        .await;
         willow_actor::state::mutate(&self.event_state, move |es| {
             *es = state;
         })
@@ -96,21 +91,27 @@ impl<N: willow_network::Network> ClientMutations<N> {
 
     /// Build an event and atomically insert it into the DAG.
     ///
-    /// Holds the DAG write lock for the entire create+insert to prevent
-    /// concurrent mutations from producing events with the same seq/prev.
-    pub(crate) fn build_event(&self, kind: EventKind) -> anyhow::Result<willow_state::Event> {
-        let mut dag = self.dag.write().unwrap();
+    /// Atomicity is guaranteed by the actor mailbox — only one mutation
+    /// runs at a time, so no concurrent mutation can produce events with
+    /// the same seq/prev.
+    pub(crate) async fn build_event(&self, kind: EventKind) -> anyhow::Result<willow_state::Event> {
+        let identity = self.identity.clone();
         let ts = util::current_time_ms();
-        let my_id = self.identity.endpoint_id();
-        let deps: Vec<EventHash> = dag
-            .authors()
-            .filter(|a| **a != my_id)
-            .filter_map(|a| dag.head(a).copied())
-            .collect();
-        let event = dag.create_event(&self.identity, kind, deps, ts);
-        dag.insert(event.clone())
-            .map_err(|e| anyhow::anyhow!("DAG insert failed: {e:?}"))?;
-        Ok(event)
+        willow_actor::state::mutate(&self.dag, move |ds| {
+            let my_id = identity.endpoint_id();
+            let deps: Vec<EventHash> = ds
+                .dag
+                .authors()
+                .filter(|a| **a != my_id)
+                .filter_map(|a| ds.dag.head(a).copied())
+                .collect();
+            let event = ds.dag.create_event(&identity, kind, deps, ts);
+            ds.dag
+                .insert(event.clone())
+                .map_err(|e| anyhow::anyhow!("DAG insert failed: {e:?}"))?;
+            Ok(event)
+        })
+        .await
     }
 
     /// Resolve channel name → channel ID via event state + server registry.
@@ -197,11 +198,13 @@ impl<N: willow_network::Network> ClientMutations<N> {
     /// Send a text message to a channel.
     pub async fn send_message(&self, channel: &str, body: &str) -> anyhow::Result<()> {
         let channel_id = self.resolve_channel_id(channel).await?;
-        let event = self.build_event(EventKind::Message {
-            channel_id,
-            body: body.to_string(),
-            reply_to: None,
-        })?;
+        let event = self
+            .build_event(EventKind::Message {
+                channel_id,
+                body: body.to_string(),
+                reply_to: None,
+            })
+            .await?;
         self.apply_event(&event).await;
         self.broadcast_event(&event);
         Ok(())
@@ -215,11 +218,13 @@ impl<N: willow_network::Network> ClientMutations<N> {
         body: &str,
     ) -> anyhow::Result<()> {
         let channel_id = self.resolve_channel_id(channel).await?;
-        let event = self.build_event(EventKind::Message {
-            channel_id,
-            body: body.to_string(),
-            reply_to: Some(*parent_hash),
-        })?;
+        let event = self
+            .build_event(EventKind::Message {
+                channel_id,
+                body: body.to_string(),
+                reply_to: Some(*parent_hash),
+            })
+            .await?;
         self.apply_event(&event).await;
         self.broadcast_event(&event);
         Ok(())
@@ -227,10 +232,12 @@ impl<N: willow_network::Network> ClientMutations<N> {
 
     /// Edit an existing message.
     pub async fn edit_message(&self, message_id: &EventHash, new_body: &str) -> anyhow::Result<()> {
-        let event = self.build_event(EventKind::EditMessage {
-            message_id: *message_id,
-            new_body: new_body.to_string(),
-        })?;
+        let event = self
+            .build_event(EventKind::EditMessage {
+                message_id: *message_id,
+                new_body: new_body.to_string(),
+            })
+            .await?;
         self.apply_event(&event).await;
         self.broadcast_event(&event);
         Ok(())
@@ -238,9 +245,11 @@ impl<N: willow_network::Network> ClientMutations<N> {
 
     /// Delete a message.
     pub async fn delete_message(&self, message_id: &EventHash) -> anyhow::Result<()> {
-        let event = self.build_event(EventKind::DeleteMessage {
-            message_id: *message_id,
-        })?;
+        let event = self
+            .build_event(EventKind::DeleteMessage {
+                message_id: *message_id,
+            })
+            .await?;
         self.apply_event(&event).await;
         self.broadcast_event(&event);
         Ok(())
@@ -248,10 +257,12 @@ impl<N: willow_network::Network> ClientMutations<N> {
 
     /// React to a message.
     pub async fn react(&self, message_id: &EventHash, emoji: &str) -> anyhow::Result<()> {
-        let event = self.build_event(EventKind::Reaction {
-            message_id: *message_id,
-            emoji: emoji.to_string(),
-        })?;
+        let event = self
+            .build_event(EventKind::Reaction {
+                message_id: *message_id,
+                emoji: emoji.to_string(),
+            })
+            .await?;
         self.apply_event(&event).await;
         self.broadcast_event(&event);
         Ok(())
@@ -260,10 +271,12 @@ impl<N: willow_network::Network> ClientMutations<N> {
     /// Pin a message.
     pub async fn pin_message(&self, channel: &str, message_id: &EventHash) -> anyhow::Result<()> {
         let channel_id = self.resolve_channel_id(channel).await?;
-        let event = self.build_event(EventKind::PinMessage {
-            channel_id,
-            message_id: *message_id,
-        })?;
+        let event = self
+            .build_event(EventKind::PinMessage {
+                channel_id,
+                message_id: *message_id,
+            })
+            .await?;
         self.apply_event(&event).await;
         self.broadcast_event(&event);
         Ok(())
@@ -272,10 +285,12 @@ impl<N: willow_network::Network> ClientMutations<N> {
     /// Unpin a message.
     pub async fn unpin_message(&self, channel: &str, message_id: &EventHash) -> anyhow::Result<()> {
         let channel_id = self.resolve_channel_id(channel).await?;
-        let event = self.build_event(EventKind::UnpinMessage {
-            channel_id,
-            message_id: *message_id,
-        })?;
+        let event = self
+            .build_event(EventKind::UnpinMessage {
+                channel_id,
+                message_id: *message_id,
+            })
+            .await?;
         self.apply_event(&event).await;
         self.broadcast_event(&event);
         Ok(())
@@ -321,11 +336,13 @@ impl<N: willow_network::Network> ClientMutations<N> {
         )
         .await?;
 
-        let event = self.build_event(EventKind::CreateChannel {
-            name: name_for_event,
-            channel_id: ch_id_str,
-            kind: "text".to_string(),
-        })?;
+        let event = self
+            .build_event(EventKind::CreateChannel {
+                name: name_for_event,
+                channel_id: ch_id_str,
+                kind: "text".to_string(),
+            })
+            .await?;
         self.apply_event(&event).await;
 
         // Switch to new channel.
@@ -360,9 +377,11 @@ impl<N: willow_network::Network> ClientMutations<N> {
         )
         .await?;
 
-        let event = self.build_event(EventKind::DeleteChannel {
-            channel_id: ch_id_str,
-        })?;
+        let event = self
+            .build_event(EventKind::DeleteChannel {
+                channel_id: ch_id_str,
+            })
+            .await?;
         self.apply_event(&event).await;
 
         // Switch to first remaining channel if we deleted the current one.
@@ -389,10 +408,12 @@ impl<N: willow_network::Network> ClientMutations<N> {
         peer_id: EndpointId,
         permission: willow_state::Permission,
     ) -> anyhow::Result<()> {
-        let event = self.build_event(EventKind::GrantPermission {
-            peer_id,
-            permission,
-        })?;
+        let event = self
+            .build_event(EventKind::GrantPermission {
+                peer_id,
+                permission,
+            })
+            .await?;
         self.apply_event(&event).await;
         self.broadcast_event(&event);
         Ok(())
@@ -404,10 +425,12 @@ impl<N: willow_network::Network> ClientMutations<N> {
         peer_id: EndpointId,
         permission: willow_state::Permission,
     ) -> anyhow::Result<()> {
-        let event = self.build_event(EventKind::RevokePermission {
-            peer_id,
-            permission,
-        })?;
+        let event = self
+            .build_event(EventKind::RevokePermission {
+                peer_id,
+                permission,
+            })
+            .await?;
         self.apply_event(&event).await;
         self.broadcast_event(&event);
         Ok(())
@@ -415,9 +438,11 @@ impl<N: willow_network::Network> ClientMutations<N> {
 
     /// Propose granting admin status to a peer (requires admin vote).
     pub async fn propose_grant_admin(&self, peer_id: EndpointId) -> anyhow::Result<()> {
-        let event = self.build_event(EventKind::Propose {
-            action: willow_state::ProposedAction::GrantAdmin { peer_id },
-        })?;
+        let event = self
+            .build_event(EventKind::Propose {
+                action: willow_state::ProposedAction::GrantAdmin { peer_id },
+            })
+            .await?;
         self.apply_event(&event).await;
         self.broadcast_event(&event);
         Ok(())
@@ -425,9 +450,11 @@ impl<N: willow_network::Network> ClientMutations<N> {
 
     /// Propose revoking admin status from a peer (requires admin vote).
     pub async fn propose_revoke_admin(&self, peer_id: EndpointId) -> anyhow::Result<()> {
-        let event = self.build_event(EventKind::Propose {
-            action: willow_state::ProposedAction::RevokeAdmin { peer_id },
-        })?;
+        let event = self
+            .build_event(EventKind::Propose {
+                action: willow_state::ProposedAction::RevokeAdmin { peer_id },
+            })
+            .await?;
         self.apply_event(&event).await;
         self.broadcast_event(&event);
         Ok(())
@@ -435,9 +462,11 @@ impl<N: willow_network::Network> ClientMutations<N> {
 
     /// Propose kicking a member (requires admin vote).
     pub async fn propose_kick_member(&self, peer_id: EndpointId) -> anyhow::Result<()> {
-        let event = self.build_event(EventKind::Propose {
-            action: willow_state::ProposedAction::KickMember { peer_id },
-        })?;
+        let event = self
+            .build_event(EventKind::Propose {
+                action: willow_state::ProposedAction::KickMember { peer_id },
+            })
+            .await?;
         self.apply_event(&event).await;
         self.broadcast_event(&event);
         Ok(())
@@ -448,9 +477,11 @@ impl<N: willow_network::Network> ClientMutations<N> {
         &self,
         threshold: willow_state::VoteThreshold,
     ) -> anyhow::Result<()> {
-        let event = self.build_event(EventKind::Propose {
-            action: willow_state::ProposedAction::SetVoteThreshold { threshold },
-        })?;
+        let event = self
+            .build_event(EventKind::Propose {
+                action: willow_state::ProposedAction::SetVoteThreshold { threshold },
+            })
+            .await?;
         self.apply_event(&event).await;
         self.broadcast_event(&event);
         Ok(())
@@ -458,10 +489,12 @@ impl<N: willow_network::Network> ClientMutations<N> {
 
     /// Vote on a proposal (accept or reject).
     pub async fn vote(&self, proposal_hash: &EventHash, accept: bool) -> anyhow::Result<()> {
-        let event = self.build_event(EventKind::Vote {
-            proposal: *proposal_hash,
-            accept,
-        })?;
+        let event = self
+            .build_event(EventKind::Vote {
+                proposal: *proposal_hash,
+                accept,
+            })
+            .await?;
         self.apply_event(&event).await;
         self.broadcast_event(&event);
         Ok(())
@@ -480,10 +513,12 @@ impl<N: willow_network::Network> ClientMutations<N> {
             Ok(())
         })
         .await?;
-        let event = self.build_event(EventKind::CreateRole {
-            name,
-            role_id: role_id.to_string(),
-        })?;
+        let event = self
+            .build_event(EventKind::CreateRole {
+                name,
+                role_id: role_id.to_string(),
+            })
+            .await?;
         self.apply_event(&event).await;
         self.broadcast_event(&event);
         Ok(())
@@ -503,7 +538,7 @@ impl<N: willow_network::Network> ClientMutations<N> {
             Ok(())
         })
         .await?;
-        let event = self.build_event(EventKind::DeleteRole { role_id })?;
+        let event = self.build_event(EventKind::DeleteRole { role_id }).await?;
         self.apply_event(&event).await;
         self.broadcast_event(&event);
         Ok(())

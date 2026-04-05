@@ -24,8 +24,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             event_broker: self.event_broker.clone(),
             identity: self.identity.clone(),
             join_links: Arc::clone(&self.join_links),
-            dag: Arc::clone(&self.dag),
-            pending: Arc::clone(&self.pending),
+            dag: self.dag_addr.clone(),
         };
 
         // Subscribe to the server ops topic.

@@ -68,6 +68,7 @@ impl std::error::Error for InsertError {}
 ///
 /// This is the source of truth from which all state is derived via
 /// [`crate::materialize::materialize`].
+#[derive(Clone)]
 pub struct EventDag {
     /// All events indexed by hash.
     events: HashMap<EventHash, Event>,

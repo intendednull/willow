@@ -156,6 +156,20 @@ pub struct VoiceState {
     pub deafened: bool,
 }
 
+/// Combined EventDag + PendingBuffer, held in a single StateActor.
+///
+/// The DAG is the source of truth for all events. The PendingBuffer
+/// holds events that arrived out of order (missing predecessor).
+/// Combining them in one actor ensures insert + buffer operations
+/// are atomic without manual lock coordination.
+#[derive(Clone, Default)]
+pub struct DagState {
+    /// The per-author Merkle-DAG of all known events.
+    pub dag: willow_state::EventDag,
+    /// Buffer for events waiting on missing predecessors.
+    pub pending: willow_state::PendingBuffer,
+}
+
 // ───── Source state bundle ───────────────────────────────────────────────
 
 /// Bundle of all Layer 1 source state references.

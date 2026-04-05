@@ -1,12 +1,12 @@
 //! Per-topic listener tasks that stream GossipEvents and mutate state via domain actors.
 
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 use willow_actor::Addr;
 use willow_identity::EndpointId;
 use willow_network::traits::TopicHandle;
 use willow_network::traits::{GossipEvent, TopicEvents};
-use willow_state::{EventDag, InsertError, PendingBuffer};
+use willow_state::InsertError;
 
 use crate::events::ClientEvent;
 use crate::mutations;
@@ -24,8 +24,7 @@ pub struct ListenerCtx {
     pub event_broker: Addr<willow_actor::Broker<ClientEvent>>,
     pub identity: willow_identity::Identity,
     pub join_links: Arc<Mutex<Vec<crate::ops::JoinLink>>>,
-    pub dag: Arc<RwLock<EventDag>>,
-    pub pending: Arc<Mutex<PendingBuffer>>,
+    pub dag: Addr<willow_actor::StateActor<state_actors::DagState>>,
 }
 
 impl Clone for ListenerCtx {
@@ -40,8 +39,7 @@ impl Clone for ListenerCtx {
             event_broker: self.event_broker.clone(),
             identity: self.identity.clone(),
             join_links: Arc::clone(&self.join_links),
-            dag: Arc::clone(&self.dag),
-            pending: Arc::clone(&self.pending),
+            dag: self.dag.clone(),
         }
     }
 }
@@ -123,53 +121,38 @@ async fn apply_and_emit(ctx: &ListenerCtx, event: &willow_state::Event) {
 /// drain any pending events whose `prev` is now satisfied. On chain gap
 /// or prev mismatch, buffer the event for later. Duplicates are silently
 /// ignored.
+///
+/// Atomicity is guaranteed by the actor mailbox — the insert + pending
+/// buffer drain happen in a single `mutate` call with no interleaving.
 async fn try_insert_event(ctx: &ListenerCtx, event: willow_state::Event) {
-    let insert_result = {
-        let mut dag = ctx.dag.write().unwrap();
-        dag.insert(event.clone())
-    };
-
-    match insert_result {
-        Ok(()) => {
-            apply_and_emit(ctx, &event).await;
-
-            // Drain any events that were waiting on this event's hash.
-            let resolved = {
-                let mut pending = ctx.pending.lock().unwrap();
-                pending.resolve(&event.hash)
-            };
-            // Recursively try inserting resolved events — they may unblock
-            // further pending events in turn.
-            for resolved_event in resolved {
-                // Use Box::pin to allow async recursion without growing the
-                // stack frame type infinitely.
-                Box::pin(try_insert_event(ctx, resolved_event)).await;
+    // Single atomic mutate: insert into DAG, then either drain pending
+    // (on success) or buffer (on gap). No TOCTOU possible.
+    let (applied, resolved) =
+        willow_actor::state::mutate(&ctx.dag, move |ds| match ds.dag.insert(event.clone()) {
+            Ok(()) => {
+                let resolved = ds.pending.resolve(&event.hash);
+                (Some(event), resolved)
             }
-        }
-        Err(InsertError::SeqGap { .. }) | Err(InsertError::PrevMismatch { .. }) => {
-            let prev = event.prev;
-            // Buffer the event, then check for TOCTOU: the predecessor
-            // may have been inserted between our failed dag.insert and now.
-            let resolved = {
-                let mut pending = ctx.pending.lock().unwrap();
-                pending.buffer_for_prev(prev, event);
-                let predecessor_exists = ctx.dag.read().unwrap().get(&prev).is_some();
-                if predecessor_exists {
-                    pending.resolve(&prev)
-                } else {
-                    vec![]
-                }
-            };
-            for resolved_event in resolved {
-                Box::pin(try_insert_event(ctx, resolved_event)).await;
+            Err(InsertError::SeqGap { .. }) | Err(InsertError::PrevMismatch { .. }) => {
+                ds.pending.buffer_for_prev(event.prev, event);
+                (None, vec![])
             }
-        }
-        Err(InsertError::Duplicate) => {
-            // Already have this event — nothing to do.
-        }
-        Err(err) => {
-            eprintln!("DAG insert error: {err}");
-        }
+            Err(InsertError::Duplicate) => (None, vec![]),
+            Err(err) => {
+                eprintln!("DAG insert error: {err}");
+                (None, vec![])
+            }
+        })
+        .await;
+
+    if let Some(event) = applied {
+        apply_and_emit(ctx, &event).await;
+    }
+
+    // Recursively try inserting resolved events — they may unblock
+    // further pending events in turn.
+    for resolved_event in resolved {
+        Box::pin(try_insert_event(ctx, resolved_event)).await;
     }
 }
 
@@ -248,11 +231,11 @@ async fn process_received_message<T: TopicHandle>(
             // Use the DAG to get all events for the responder.
             // If state_hash is ZERO, send everything. Otherwise also send
             // everything (best effort — the receiver will dedup).
-            let events: Vec<willow_state::Event> = {
-                let dag = ctx.dag.read().unwrap();
-                let _ = state_hash; // Acknowledged but not used for filtering yet.
-                dag.topological_sort().into_iter().cloned().collect()
-            };
+            let _ = state_hash; // Acknowledged but not used for filtering yet.
+            let events: Vec<willow_state::Event> = willow_actor::state::select(&ctx.dag, |ds| {
+                ds.dag.topological_sort().into_iter().cloned().collect()
+            })
+            .await;
             if !events.is_empty() {
                 let msg = crate::ops::WireMessage::SyncBatch { events };
                 if let Some(data) = crate::ops::pack_wire(&msg, &ctx.identity) {

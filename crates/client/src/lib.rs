@@ -178,10 +178,8 @@ pub struct ClientHandle<N: willow_network::Network> {
     pub(crate) persistence_enabled: bool,
     /// Active join links (rarely modified, shared across tasks).
     pub(crate) join_links: Arc<std::sync::Mutex<Vec<ops::JoinLink>>>,
-    /// The per-author Merkle-DAG — source of truth for all events.
-    pub(crate) dag: Arc<RwLock<willow_state::EventDag>>,
-    /// Pending buffer for out-of-order event reception.
-    pub(crate) pending: Arc<std::sync::Mutex<willow_state::PendingBuffer>>,
+    /// The per-author Merkle-DAG actor — source of truth for all events.
+    pub(crate) dag_addr: willow_actor::Addr<willow_actor::StateActor<state_actors::DagState>>,
 
     // ── New reactive API (spec target) ──────────────────────────────────
     /// Reactive view handle — read state at any granularity.
@@ -207,8 +205,7 @@ impl<N: willow_network::Network> Clone for ClientHandle<N> {
             persistence_addr: self.persistence_addr.clone(),
             persistence_enabled: self.persistence_enabled,
             join_links: Arc::clone(&self.join_links),
-            dag: Arc::clone(&self.dag),
-            pending: Arc::clone(&self.pending),
+            dag_addr: self.dag_addr.clone(),
             view_handle: self.view_handle.clone(),
             mutation_handle: self.mutation_handle.clone(),
         }
@@ -462,10 +459,11 @@ impl<N: willow_network::Network> ClientHandle<N> {
         // DAG starts empty for loaded servers. It will be populated via
         // sync when connect() is called — the sync batch delivers the full
         // event history including genesis. Local mutations before sync
-        // completes will fail gracefully (apply_event returns early).
+        // completes will fail gracefully (build_event returns Err).
         // For NEW servers, create_server() calls seed_genesis() to populate.
-        let dag = Arc::new(RwLock::new(willow_state::EventDag::new()));
-        let pending = Arc::new(std::sync::Mutex::new(willow_state::PendingBuffer::new()));
+        let dag_addr = system.spawn(willow_actor::StateActor::new(
+            state_actors::DagState::default(),
+        ));
         let topics: Arc<RwLock<HashMap<String, N::Topic>>> = Arc::new(RwLock::new(HashMap::new()));
         let join_links = Arc::new(std::sync::Mutex::new(Vec::new()));
 
@@ -584,7 +582,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             identity: identity_clone.clone(),
             join_links: Arc::clone(&join_links),
             topics: Arc::clone(&topics),
-            dag: Arc::clone(&dag),
+            dag: dag_addr.clone(),
         };
 
         reconcile_topic_map(&mut state);
@@ -604,8 +602,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             persistence_addr,
             persistence_enabled,
             join_links,
-            dag: Arc::clone(&dag),
-            pending: Arc::clone(&pending),
+            dag_addr: dag_addr.clone(),
             view_handle,
             mutation_handle,
         };
@@ -706,24 +703,20 @@ pub fn test_client() -> (
 
     // Create the DAG and seed it with a genesis event so subsequent
     // build_event/insert calls succeed.
-    let dag = {
-        let mut d = willow_state::EventDag::new();
-        let genesis = d.create_event(
-            &identity,
-            willow_state::EventKind::CreateServer {
-                name: "Test Server".to_string(),
-            },
-            vec![],
-            0,
-        );
-        d.insert(genesis).expect("genesis must insert");
-        Arc::new(RwLock::new(d))
-    };
-    let pending = Arc::new(std::sync::Mutex::new(willow_state::PendingBuffer::new()));
+    let mut dag_state = state_actors::DagState::default();
+    let genesis = dag_state.dag.create_event(
+        &identity,
+        willow_state::EventKind::CreateServer {
+            name: "Test Server".to_string(),
+        },
+        vec![],
+        0,
+    );
+    dag_state.dag.insert(genesis).expect("genesis must insert");
 
     // Materialize initial state from the DAG — this gives us a ServerState
     // with the correct server_id (genesis hash) and genesis author as admin.
-    state.event_state = willow_state::materialize(&dag.read().unwrap());
+    state.event_state = willow_state::materialize(&dag_state.dag);
 
     // Seed event_state with the general channel so event-sourced operations
     // (e.g. pin/unpin) can find the channel.
@@ -780,6 +773,7 @@ pub fn test_client() -> (
     ));
     let persistence_addr = sys.spawn(persistence_actor::PersistenceActor::new(false));
     let event_broker = sys.spawn(willow_actor::Broker::<ClientEvent>::new());
+    let dag_addr = sys.spawn(willow_actor::StateActor::new(dag_state));
 
     let topics: Arc<
         RwLock<
@@ -895,7 +889,7 @@ pub fn test_client() -> (
         identity: identity_clone.clone(),
         join_links: Arc::clone(&join_links),
         topics: Arc::clone(&topics),
-        dag: Arc::clone(&dag),
+        dag: dag_addr.clone(),
     };
 
     // Leak the system so actors stay alive for the test duration.
@@ -916,8 +910,7 @@ pub fn test_client() -> (
         persistence_addr,
         persistence_enabled: false,
         join_links,
-        dag: Arc::clone(&dag),
-        pending: Arc::clone(&pending),
+        dag_addr: dag_addr.clone(),
         view_handle,
         mutation_handle,
     };
