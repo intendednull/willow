@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use willow_identity::EndpointId;
-use willow_state::{Event, ServerState, StateHash};
+use willow_state::{Event, EventHash, ServerState};
 
 /// Gossipsub topic for worker discovery and request/response.
 pub const WORKERS_TOPIC: &str = "_willow_workers";
@@ -80,7 +80,7 @@ pub enum WorkerRequest {
     /// State sync request (handled by replay nodes).
     Sync {
         server_id: String,
-        state_hash: StateHash,
+        state_hash: EventHash,
     },
 
     /// Paginated history request (handled by storage nodes).
@@ -229,7 +229,7 @@ mod tests {
     fn worker_request_sync_round_trip() {
         let req = WorkerRequest::Sync {
             server_id: "srv-1".to_string(),
-            state_hash: StateHash::ZERO,
+            state_hash: EventHash::ZERO,
         };
         let bytes = bincode::serialize(&req).unwrap();
         let decoded: WorkerRequest = bincode::deserialize(&bytes).unwrap();
@@ -239,7 +239,7 @@ mod tests {
                 state_hash,
             } => {
                 assert_eq!(server_id, "srv-1");
-                assert_eq!(state_hash, StateHash::ZERO);
+                assert_eq!(state_hash, EventHash::ZERO);
             }
             _ => panic!("expected Sync"),
         }
@@ -345,7 +345,7 @@ mod tests {
             target_peer: pid,
             payload: WorkerRequest::Sync {
                 server_id: "srv".to_string(),
-                state_hash: StateHash::ZERO,
+                state_hash: EventHash::ZERO,
             },
         };
         let bytes = bincode::serialize(&msg).unwrap();

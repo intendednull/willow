@@ -13,11 +13,11 @@ use willow_identity::EndpointId;
 pub enum WireMessage {
     /// A single event.
     Event(willow_state::Event),
-    /// Request events since a state hash.
+    /// Request events since a given state.
     SyncRequest {
-        /// The state hash the sender has — the responder returns events
-        /// that the sender is missing.
-        state_hash: willow_state::StateHash,
+        /// The event hash the sender's state is at — the responder
+        /// returns events that the sender is missing.
+        state_hash: willow_state::EventHash,
         /// If set, request events for a specific topic (channel).
         topic: Option<String>,
     },
@@ -104,22 +104,24 @@ pub fn unpack_wire(data: &[u8]) -> Option<(WireMessage, willow_identity::Endpoin
 mod tests {
     use super::*;
     use willow_identity::Identity;
-    use willow_state::{EventKind, StateHash};
+    use willow_state::{EventHash, EventKind};
+
+    fn make_event(id: &Identity, kind: EventKind) -> willow_state::Event {
+        willow_state::Event::new(id, 1, EventHash::ZERO, vec![], kind, 1000)
+    }
 
     #[test]
     fn pack_unpack_event_round_trip() {
         let id = Identity::generate();
-        let event = willow_state::Event {
-            id: "evt-1".to_string(),
-            parent_hash: StateHash::ZERO,
-            author: id.endpoint_id(),
-            timestamp_ms: 1000,
-            kind: EventKind::Message {
+        let event = make_event(
+            &id,
+            EventKind::Message {
                 channel_id: "general".to_string(),
                 body: "hello from common".to_string(),
                 reply_to: None,
             },
-        };
+        );
+        let event_hash = event.hash;
 
         let msg = WireMessage::Event(event);
         let data = pack_wire(&msg, &id).unwrap();
@@ -127,7 +129,7 @@ mod tests {
 
         assert_eq!(signer, id.endpoint_id());
         match decoded {
-            WireMessage::Event(e) => assert_eq!(e.id, "evt-1"),
+            WireMessage::Event(e) => assert_eq!(e.hash, event_hash),
             _ => panic!("expected Event"),
         }
     }
@@ -135,17 +137,14 @@ mod tests {
     #[test]
     fn pack_unpack_sync_batch_round_trip() {
         let id = Identity::generate();
-        let events = vec![willow_state::Event {
-            id: "e1".to_string(),
-            parent_hash: StateHash::ZERO,
-            author: id.endpoint_id(),
-            timestamp_ms: 100,
-            kind: EventKind::CreateChannel {
+        let events = vec![make_event(
+            &id,
+            EventKind::CreateChannel {
                 name: "ch".to_string(),
                 channel_id: "cid".to_string(),
                 kind: "text".to_string(),
             },
-        }];
+        )];
 
         let msg = WireMessage::SyncBatch { events };
         let data = pack_wire(&msg, &id).unwrap();
@@ -161,7 +160,7 @@ mod tests {
     fn pack_unpack_sync_request_round_trip() {
         let id = Identity::generate();
         let msg = WireMessage::SyncRequest {
-            state_hash: StateHash::from_bytes(b"test"),
+            state_hash: EventHash::from_bytes(b"test"),
             topic: Some("_willow_server_ops".to_string()),
         };
 
@@ -170,7 +169,7 @@ mod tests {
 
         match decoded {
             WireMessage::SyncRequest { state_hash, topic } => {
-                assert_eq!(state_hash, StateHash::from_bytes(b"test"));
+                assert_eq!(state_hash, EventHash::from_bytes(b"test"));
                 assert_eq!(topic, Some("_willow_server_ops".to_string()));
             }
             _ => panic!("expected SyncRequest"),
@@ -180,15 +179,13 @@ mod tests {
     #[test]
     fn tampered_data_fails_unpack() {
         let id = Identity::generate();
-        let msg = WireMessage::Event(willow_state::Event {
-            id: "e".to_string(),
-            parent_hash: StateHash::ZERO,
-            author: id.endpoint_id(),
-            timestamp_ms: 0,
-            kind: EventKind::DeleteChannel {
+        let event = make_event(
+            &id,
+            EventKind::DeleteChannel {
                 channel_id: "c".to_string(),
             },
-        });
+        );
+        let msg = WireMessage::Event(event);
 
         let mut data = pack_wire(&msg, &id).unwrap();
         if let Some(b) = data.last_mut() {
