@@ -72,27 +72,29 @@ impl ReplayRole {
 
     /// Try to insert an event into the DAG. On chain gap, buffer it.
     /// On success, resolve any events that were waiting on this one.
+    /// Uses an iterative queue to avoid stack overflow on deep chains.
     fn try_insert(data: &mut ServerData, event: Event) {
-        match data.dag.insert(event.clone()) {
-            Ok(()) => {
-                apply_incremental(&mut data.state, &event);
-                // Resolve any events that were waiting for this one.
-                let resolved = data.pending.resolve(&event.hash);
-                for ready in resolved {
-                    Self::try_insert(data, ready);
+        let mut queue = vec![event];
+        while let Some(current) = queue.pop() {
+            match data.dag.insert(current.clone()) {
+                Ok(()) => {
+                    apply_incremental(&mut data.state, &current);
+                    // Resolve any events that were waiting for this one.
+                    let resolved = data.pending.resolve(&current.hash);
+                    queue.extend(resolved);
                 }
+                Err(InsertError::SeqGap { .. }) | Err(InsertError::PrevMismatch { .. }) => {
+                    // Chain predecessor hasn't arrived yet — buffer.
+                    data.pending.buffer_for_prev(current.prev, current);
+                }
+                Err(InsertError::Duplicate) => { /* already have it */ }
+                Err(_) => { /* truly invalid — skip */ }
             }
-            Err(InsertError::SeqGap { .. }) | Err(InsertError::PrevMismatch { .. }) => {
-                // Chain predecessor hasn't arrived yet — buffer.
-                data.pending.buffer_for_prev(event.prev, event);
-            }
-            Err(InsertError::Duplicate) => { /* already have it */ }
-            Err(_) => { /* truly invalid — skip */ }
         }
     }
 
-    /// Get the heads summaries for all tracked servers (used by sync actor).
-    pub fn heads_summaries(&self) -> Vec<(String, HeadsSummary)> {
+    /// Get the heads summaries for all tracked servers.
+    fn compute_heads_summaries(&self) -> Vec<(String, HeadsSummary)> {
         self.servers
             .iter()
             .map(|(id, data)| (id.clone(), data.dag.heads_summary()))
@@ -181,7 +183,7 @@ impl WorkerRole for ReplayRole {
     }
 
     fn heads_summaries(&self) -> Vec<(String, HeadsSummary)> {
-        self.heads_summaries()
+        self.compute_heads_summaries()
     }
 }
 

@@ -70,19 +70,26 @@ pub struct Snapshot {
     pub hash: EventHash,
 }
 
-/// Helper for computing the snapshot hash.
+/// Helper for computing the snapshot hash with deterministic ordering.
+/// Uses sorted vectors instead of HashMaps to ensure consistent hashing.
 #[derive(Serialize)]
 struct SnapshotHashInput<'a> {
     state: &'a ServerState,
-    heads: &'a HeadsSummary,
+    /// Sorted by author to ensure deterministic serialization.
+    heads: Vec<(&'a EndpointId, &'a AuthorHead)>,
 }
 
 impl Snapshot {
     /// Create a new snapshot, computing the verification hash.
+    ///
+    /// The hash is computed from a canonical (sorted) representation of
+    /// the heads to ensure determinism despite HashMap iteration order.
     pub fn new(state: ServerState, heads: HeadsSummary) -> Self {
+        let mut sorted_heads: Vec<_> = heads.heads.iter().collect();
+        sorted_heads.sort_by_key(|(id, _)| id.as_bytes());
         let input = SnapshotHashInput {
             state: &state,
-            heads: &heads,
+            heads: sorted_heads,
         };
         let bytes = bincode::serialize(&input).expect("snapshot serialization should not fail");
         let hash = EventHash::from_bytes(&bytes);
