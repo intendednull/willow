@@ -228,9 +228,11 @@ async fn process_received_message<T: TopicHandle>(
             }
         }
         crate::ops::WireMessage::SyncRequest { state_hash, .. } => {
-            let _ = state_hash; // Legacy field — heads-based sync preferred.
-            // Send at most 500 events to limit bandwidth. The requester will
-            // re-request if they need more.
+            let _ = state_hash; // Legacy field — can't filter by state hash in DAG model.
+            // TODO: Migrate clients to worker's heads-based sync protocol
+            // (WorkerRequest::Sync { heads }) for efficient delta sync.
+            // For now, send the first 500 events from topological sort.
+            // Receiver will dedup via InsertError::Duplicate.
             let events: Vec<willow_state::Event> = willow_actor::state::select(&ctx.dag, |ds| {
                 ds.dag
                     .topological_sort()

@@ -175,8 +175,8 @@ pub fn MemberList(
                                     let hu = handle_untrust.clone();
                                     let pk = pid_kick.clone();
                                     move || {
-                                        let is_owner = app_state.server.server_owner.get() == peer_id.get_untracked();
-                                        if is_self() || !is_owner {
+                                        let is_admin = app_state.server.admin_ids.get().contains(&peer_id.get_untracked());
+                                        if is_self() || !is_admin {
                                             None
                                         } else {
                                             let pt = pt.clone();

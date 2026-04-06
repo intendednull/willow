@@ -74,15 +74,18 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Handler<GossipEventMsg>
 
         async move {
             if let GossipEvent::Received(msg) = event {
+                let requester = msg.sender;
                 match parse_worker_message(&msg.content, &local_peer_id) {
                     WorkerMessageAction::HandleRequest {
                         request_id,
                         payload,
                     } => {
                         if let Ok(response) = state_addr.ask(WorkerRequestMsg(payload)).await {
+                            // target_peer identifies the original requester so
+                            // clients can filter responses addressed to them.
                             let reply = WorkerWireMessage::Response {
                                 request_id,
-                                target_peer: local_peer_id,
+                                target_peer: requester,
                                 payload: Box::new(response),
                             };
                             if let Ok(bytes) = bincode::serialize(&reply) {
