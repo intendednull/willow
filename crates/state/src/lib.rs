@@ -23,7 +23,9 @@ pub use event::{Event, EventKind, Permission, ProposedAction, VoteThreshold};
 pub use hash::EventHash;
 pub use materialize::{apply_incremental, materialize, ApplyResult};
 pub use server::{PendingProposal, ServerState};
-pub use sync::{AuthorHead, AuthorRequest, ChainStatus, HeadsSummary, PendingBuffer, SyncMessage};
+pub use sync::{
+    AuthorHead, AuthorRequest, ChainStatus, HeadsSummary, PendingBuffer, Snapshot, SyncMessage,
+};
 pub use types::{Channel, ChatMessage, Member, Profile, Role};
 
 // Backward-compatible re-exports for downstream crates during migration.

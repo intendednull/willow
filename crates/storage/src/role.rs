@@ -1,6 +1,7 @@
 //! Storage node role implementation.
 //!
-//! Persists events to SQLite, serves paginated history queries.
+//! Persists events to SQLite, serves paginated history queries using
+//! DAG-aware [`HeadsSummary`] cursors.
 
 use tracing::warn;
 use willow_state::Event;
@@ -54,7 +55,7 @@ impl WorkerRole for StorageRole {
 
     fn on_event(&mut self, event: &Event) {
         if let Err(e) = self.store.store_event(&self.default_server_id, event) {
-            warn!(event_id = %event.id, %e, "failed to store event");
+            warn!(event_hash = ?event.hash, %e, "failed to store event");
         }
     }
 
@@ -63,11 +64,11 @@ impl WorkerRole for StorageRole {
             WorkerRequest::History {
                 server_id,
                 channel,
-                before_timestamp,
+                before,
                 limit,
             } => match self
                 .store
-                .history(&server_id, &channel, before_timestamp, limit)
+                .history(&server_id, channel.as_deref(), before.as_ref(), limit)
             {
                 Ok((events, has_more)) => WorkerResponse::HistoryPage { events, has_more },
                 Err(e) => WorkerResponse::Denied {
@@ -85,20 +86,22 @@ impl WorkerRole for StorageRole {
 mod tests {
     use super::*;
     use crate::store::StorageEventStore;
-    use willow_state::{EventKind, StateHash};
+    use willow_identity::Identity;
+    use willow_state::{EventHash, EventKind, HeadsSummary};
 
-    fn make_message(id: &str, channel: &str, ts: u64) -> Event {
-        Event {
-            id: id.to_string(),
-            parent_hash: StateHash::ZERO,
-            author: willow_identity::Identity::generate().endpoint_id(),
-            timestamp_ms: ts,
-            kind: EventKind::Message {
+    fn make_message(id: &Identity, seq: u64, prev: EventHash, channel: &str) -> Event {
+        Event::new(
+            id,
+            seq,
+            prev,
+            vec![],
+            EventKind::Message {
                 channel_id: channel.to_string(),
-                body: format!("msg {id}"),
+                body: format!("msg seq={seq}"),
                 reply_to: None,
             },
-        }
+            seq * 1000,
+        )
     }
 
     #[test]
@@ -107,14 +110,29 @@ mod tests {
         let mut role = StorageRole::new(store);
         role.set_default_server("srv-1".to_string());
 
-        for i in 0..5u64 {
-            role.on_event(&make_message(&format!("e{i}"), "general", (i + 1) * 1000));
+        let id = Identity::generate();
+        let genesis = Event::new(
+            &id,
+            1,
+            EventHash::ZERO,
+            vec![],
+            EventKind::CreateServer {
+                name: "test".to_string(),
+            },
+            0,
+        );
+
+        let mut prev = genesis.hash;
+        for seq in 2..=6 {
+            let e = make_message(&id, seq, prev, "general");
+            prev = e.hash;
+            role.on_event(&e);
         }
 
         let resp = role.handle_request(WorkerRequest::History {
             server_id: "srv-1".to_string(),
-            channel: "general".to_string(),
-            before_timestamp: None,
+            channel: Some("general".to_string()),
+            before: None,
             limit: 3,
         });
 
@@ -134,7 +152,7 @@ mod tests {
 
         let resp = role.handle_request(WorkerRequest::Sync {
             server_id: "srv-1".to_string(),
-            state_hash: StateHash::ZERO,
+            heads: HeadsSummary::default(),
         });
 
         match resp {
@@ -149,7 +167,9 @@ mod tests {
         let mut role = StorageRole::new(store);
         role.set_default_server("srv-1".to_string());
 
-        role.on_event(&make_message("e1", "general", 1000));
+        let id = Identity::generate();
+        let e = make_message(&id, 1, EventHash::ZERO, "general");
+        role.on_event(&e);
 
         match role.role_info() {
             WorkerRoleInfo::Storage {
@@ -165,14 +185,15 @@ mod tests {
     }
 
     #[test]
-    fn on_event_deduplicates_same_id() {
+    fn on_event_deduplicates_same_hash() {
         let store = StorageEventStore::open(":memory:").unwrap();
         let mut role = StorageRole::new(store);
         role.set_default_server("srv-1".to_string());
 
-        let event = make_message("dup-1", "general", 1000);
+        let id = Identity::generate();
+        let event = make_message(&id, 1, EventHash::ZERO, "general");
         role.on_event(&event);
-        role.on_event(&event); // Same event ID
+        role.on_event(&event); // Same event hash
 
         match role.role_info() {
             WorkerRoleInfo::Storage {
@@ -189,12 +210,14 @@ mod tests {
         let mut role = StorageRole::new(store);
         role.set_default_server("srv-1".to_string());
 
-        role.on_event(&make_message("e1", "general", 1000));
+        let id = Identity::generate();
+        let e = make_message(&id, 1, EventHash::ZERO, "general");
+        role.on_event(&e);
 
         let resp = role.handle_request(WorkerRequest::History {
             server_id: "nonexistent".to_string(),
-            channel: "general".to_string(),
-            before_timestamp: None,
+            channel: Some("general".to_string()),
+            before: None,
             limit: 10,
         });
 
@@ -213,12 +236,14 @@ mod tests {
         let mut role = StorageRole::new(store);
         role.set_default_server("srv-1".to_string());
 
-        role.on_event(&make_message("e1", "general", 1000));
+        let id = Identity::generate();
+        let e = make_message(&id, 1, EventHash::ZERO, "general");
+        role.on_event(&e);
 
         let resp = role.handle_request(WorkerRequest::History {
             server_id: "srv-1".to_string(),
-            channel: "nonexistent".to_string(),
-            before_timestamp: None,
+            channel: Some("nonexistent".to_string()),
+            before: None,
             limit: 10,
         });
 

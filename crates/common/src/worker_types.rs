@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use willow_identity::EndpointId;
-use willow_state::{Event, EventHash, ServerState};
+use willow_state::{Event, HeadsSummary, Snapshot};
 
 /// Gossipsub topic for worker discovery and request/response.
 pub const WORKERS_TOPIC: &str = "_willow_workers";
@@ -78,16 +78,19 @@ pub enum WorkerWireMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WorkerRequest {
     /// State sync request (handled by replay nodes).
+    /// Sends our heads so the worker can compute a delta.
     Sync {
         server_id: String,
-        state_hash: EventHash,
+        heads: HeadsSummary,
     },
 
     /// Paginated history request (handled by storage nodes).
+    /// Channel is optional (None = all channels). Cursor is a
+    /// HeadsSummary representing the point to paginate before.
     History {
         server_id: String,
-        channel: String,
-        before_timestamp: Option<u64>,
+        channel: Option<String>,
+        before: Option<HeadsSummary>,
         limit: u32,
     },
 }
@@ -98,8 +101,11 @@ pub enum WorkerResponse {
     /// Batch of events for sync catch-up.
     SyncBatch { events: Vec<Event> },
 
-    /// Full state snapshot for far-behind peers.
-    Snapshot { state: Box<ServerState> },
+    /// Full DAG snapshot for far-behind peers.
+    Snapshot {
+        snapshot: Box<Snapshot>,
+        post_snapshot_events: Vec<Event>,
+    },
 
     /// Paginated history results.
     HistoryPage { events: Vec<Event>, has_more: bool },
@@ -229,17 +235,14 @@ mod tests {
     fn worker_request_sync_round_trip() {
         let req = WorkerRequest::Sync {
             server_id: "srv-1".to_string(),
-            state_hash: EventHash::ZERO,
+            heads: HeadsSummary::default(),
         };
         let bytes = bincode::serialize(&req).unwrap();
         let decoded: WorkerRequest = bincode::deserialize(&bytes).unwrap();
         match decoded {
-            WorkerRequest::Sync {
-                server_id,
-                state_hash,
-            } => {
+            WorkerRequest::Sync { server_id, heads } => {
                 assert_eq!(server_id, "srv-1");
-                assert_eq!(state_hash, EventHash::ZERO);
+                assert_eq!(heads, HeadsSummary::default());
             }
             _ => panic!("expected Sync"),
         }
@@ -247,10 +250,23 @@ mod tests {
 
     #[test]
     fn worker_request_history_round_trip() {
+        use std::collections::HashMap;
+        use willow_state::{AuthorHead, EventHash};
+
+        let mut heads_map = HashMap::new();
+        heads_map.insert(
+            gen_id(),
+            AuthorHead {
+                seq: 5,
+                hash: EventHash::from_bytes(b"test"),
+            },
+        );
+        let cursor = HeadsSummary { heads: heads_map };
+
         let req = WorkerRequest::History {
             server_id: "srv-1".to_string(),
-            channel: "general".to_string(),
-            before_timestamp: Some(1000),
+            channel: Some("general".to_string()),
+            before: Some(cursor.clone()),
             limit: 50,
         };
         let bytes = bincode::serialize(&req).unwrap();
@@ -259,12 +275,12 @@ mod tests {
             WorkerRequest::History {
                 server_id,
                 channel,
-                before_timestamp,
+                before,
                 limit,
             } => {
                 assert_eq!(server_id, "srv-1");
-                assert_eq!(channel, "general");
-                assert_eq!(before_timestamp, Some(1000));
+                assert_eq!(channel, Some("general".to_string()));
+                assert_eq!(before, Some(cursor));
                 assert_eq!(limit, 50);
             }
             _ => panic!("expected History"),
@@ -275,19 +291,21 @@ mod tests {
     fn worker_request_history_no_cursor_round_trip() {
         let req = WorkerRequest::History {
             server_id: "srv-1".to_string(),
-            channel: "general".to_string(),
-            before_timestamp: None,
+            channel: None,
+            before: None,
             limit: 25,
         };
         let bytes = bincode::serialize(&req).unwrap();
         let decoded: WorkerRequest = bincode::deserialize(&bytes).unwrap();
         match decoded {
             WorkerRequest::History {
-                before_timestamp,
+                channel,
+                before,
                 limit,
                 ..
             } => {
-                assert_eq!(before_timestamp, None);
+                assert_eq!(channel, None);
+                assert_eq!(before, None);
                 assert_eq!(limit, 25);
             }
             _ => panic!("expected History"),
@@ -345,7 +363,7 @@ mod tests {
             target_peer: pid,
             payload: WorkerRequest::Sync {
                 server_id: "srv".to_string(),
-                state_hash: EventHash::ZERO,
+                heads: HeadsSummary::default(),
             },
         };
         let bytes = bincode::serialize(&msg).unwrap();

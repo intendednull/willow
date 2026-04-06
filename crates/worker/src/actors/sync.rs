@@ -7,7 +7,7 @@ use willow_actor::{Actor, Addr, Context, Handler, IntervalHandle, Message};
 use willow_network::TopicHandle;
 
 use super::state::StateActor;
-use super::GetStateHashesMsg;
+use super::GetHeadsSummariesMsg;
 use crate::types::{WorkerRequest, WorkerWireMessage};
 
 /// Sync actor that periodically queries state hashes and broadcasts sync requests.
@@ -60,19 +60,16 @@ impl<T: TopicHandle + 'static> Handler<SyncTick> for SyncActor<T> {
         let topic = self.topic.clone();
 
         async move {
-            let hashes = match state_addr.ask(GetStateHashesMsg).await {
-                Ok(h) => h,
+            let summaries = match state_addr.ask(GetHeadsSummariesMsg).await {
+                Ok(s) => s,
                 Err(_) => return,
             };
 
-            for (server_id, state_hash) in hashes {
+            for (server_id, heads) in summaries {
                 let msg = WorkerWireMessage::Request {
                     request_id: uuid::Uuid::new_v4().to_string(),
                     target_peer: peer_id,
-                    payload: WorkerRequest::Sync {
-                        server_id,
-                        state_hash,
-                    },
+                    payload: WorkerRequest::Sync { server_id, heads },
                 };
                 if let Ok(bytes) = bincode::serialize(&msg) {
                     let _ = topic.broadcast(bytes::Bytes::from(bytes)).await;
@@ -93,7 +90,7 @@ mod tests {
 
     use super::super::state::StateActor;
 
-    /// A test role that provides known state hashes.
+    /// A test role that provides known heads summaries.
     struct TestSyncRole;
     impl crate::WorkerRole for TestSyncRole {
         fn role_info(&self) -> crate::types::WorkerRoleInfo {
@@ -114,13 +111,11 @@ mod tests {
         }
     }
 
-    // Override GetStateHashes to return test data.
-    // Since we can't override a handler on StateActor, we need to test
-    // with a state actor that returns empty hashes. The sync actor sends
-    // requests only for hashes returned by GetStateHashesMsg.
-    // StateActor's GetStateHashesMsg handler returns vec![] by default,
-    // so the sync actor won't broadcast any sync requests.
-    // Let's test just that the actor starts and shuts down cleanly.
+    // Since we can't override the GetHeadsSummariesMsg handler on StateActor,
+    // we test with a state actor that returns empty summaries. The sync actor
+    // sends requests only for summaries returned by GetHeadsSummariesMsg.
+    // StateActor returns vec![] by default, so no sync requests are broadcast.
+    // We test that the actor starts and shuts down cleanly.
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sync_actor_exits_on_shutdown() {

@@ -6,7 +6,9 @@
 use tracing::debug;
 use willow_actor::{Actor, Context, Handler};
 
-use super::{EventMsg, GetRoleInfoMsg, GetStateHashesMsg, ServerDiscoveredMsg, WorkerRequestMsg};
+use super::{
+    EventMsg, GetHeadsSummariesMsg, GetRoleInfoMsg, ServerDiscoveredMsg, WorkerRequestMsg,
+};
 use crate::WorkerRole;
 
 /// The state actor holds the worker's mutable role and processes messages sequentially.
@@ -62,13 +64,13 @@ impl Handler<GetRoleInfoMsg> for StateActor {
     }
 }
 
-impl Handler<GetStateHashesMsg> for StateActor {
+impl Handler<GetHeadsSummariesMsg> for StateActor {
     async fn handle(
         &mut self,
-        _msg: GetStateHashesMsg,
+        _msg: GetHeadsSummariesMsg,
         _ctx: &mut Context<Self>,
-    ) -> Vec<(String, willow_state::StateHash)> {
-        // Default: no state hashes. Replay nodes override via WorkerRole.
+    ) -> Vec<(String, willow_state::HeadsSummary)> {
+        // Default: no heads summaries. Replay nodes override via WorkerRole.
         vec![]
     }
 }
@@ -89,7 +91,7 @@ mod tests {
     use super::*;
     use crate::types::{WorkerRequest, WorkerResponse, WorkerRoleInfo};
     use willow_actor::System;
-    use willow_state::{Event, EventKind, StateHash};
+    use willow_state::{Event, EventHash, EventKind, HeadsSummary};
 
     /// A minimal test role that counts events and echoes requests.
     struct TestRole {
@@ -126,17 +128,19 @@ mod tests {
     }
 
     fn make_test_event() -> Event {
-        Event {
-            id: uuid::Uuid::new_v4().to_string(),
-            parent_hash: StateHash::ZERO,
-            author: willow_identity::Identity::generate().endpoint_id(),
-            timestamp_ms: 1000,
-            kind: EventKind::Message {
+        let id = willow_identity::Identity::generate();
+        Event::new(
+            &id,
+            1,
+            EventHash::ZERO,
+            vec![],
+            EventKind::Message {
                 channel_id: "general".to_string(),
                 body: "hello".to_string(),
                 reply_to: None,
             },
-        }
+            1000,
+        )
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -172,7 +176,7 @@ mod tests {
         let resp = addr
             .ask(WorkerRequestMsg(WorkerRequest::Sync {
                 server_id: "srv".to_string(),
-                state_hash: StateHash::ZERO,
+                heads: HeadsSummary::default(),
             }))
             .await
             .unwrap();
@@ -185,8 +189,8 @@ mod tests {
         let resp = addr
             .ask(WorkerRequestMsg(WorkerRequest::History {
                 server_id: "srv".to_string(),
-                channel: "general".to_string(),
-                before_timestamp: None,
+                channel: Some("general".to_string()),
+                before: None,
                 limit: 50,
             }))
             .await
@@ -222,7 +226,7 @@ mod tests {
         for _ in 0..10 {
             let f = addr.ask(WorkerRequestMsg(WorkerRequest::Sync {
                 server_id: "srv".to_string(),
-                state_hash: StateHash::ZERO,
+                heads: HeadsSummary::default(),
             }));
             futs.push(f);
         }

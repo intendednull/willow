@@ -1,7 +1,8 @@
 //! Sync protocol types and pending event buffer.
 //!
 //! [`HeadsSummary`] is the compact representation of a peer's DAG state,
-//! used for efficient sync. [`PendingBuffer`] buffers events that arrive
+//! used for efficient sync. [`Snapshot`] is a frozen checkpoint of the DAG
+//! and materialized state. [`PendingBuffer`] buffers events that arrive
 //! before their per-author chain predecessors.
 
 use std::collections::{HashMap, HashSet};
@@ -11,6 +12,7 @@ use willow_identity::EndpointId;
 
 use crate::event::Event;
 use crate::hash::EventHash;
+use crate::server::ServerState;
 
 // ───── Sync types ──────────────────────────────────────────────────────────
 
@@ -48,6 +50,44 @@ pub struct AuthorRequest {
     pub author: EndpointId,
     /// Send events with seq > after_seq.
     pub after_seq: u64,
+}
+
+// ───── Snapshot ───────────────────────────────────────────────────────────
+
+/// A frozen checkpoint of the DAG and materialized state.
+///
+/// Used for bootstrapping far-behind peers: instead of replaying the full
+/// event history, send a snapshot plus any events created after it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Snapshot {
+    /// The materialized state at this point.
+    pub state: ServerState,
+    /// The heads (author → latest seq + hash) at snapshot time.
+    /// These define exactly which events are included.
+    pub heads: HeadsSummary,
+    /// SHA-256 hash of the canonical serialization of (state, heads).
+    /// Used for verification.
+    pub hash: EventHash,
+}
+
+/// Helper for computing the snapshot hash.
+#[derive(Serialize)]
+struct SnapshotHashInput<'a> {
+    state: &'a ServerState,
+    heads: &'a HeadsSummary,
+}
+
+impl Snapshot {
+    /// Create a new snapshot, computing the verification hash.
+    pub fn new(state: ServerState, heads: HeadsSummary) -> Self {
+        let input = SnapshotHashInput {
+            state: &state,
+            heads: &heads,
+        };
+        let bytes = bincode::serialize(&input).expect("snapshot serialization should not fail");
+        let hash = EventHash::from_bytes(&bytes);
+        Self { state, heads, hash }
+    }
 }
 
 // ───── Chain comparison ────────────────────────────────────────────────────

@@ -161,7 +161,7 @@ mod tests {
     use super::*;
     use willow_common::{WorkerRequest, WorkerResponse};
     use willow_identity::Identity;
-    use willow_state::StateHash;
+    use willow_state::HeadsSummary;
 
     fn gen_id() -> EndpointId {
         Identity::generate().endpoint_id()
@@ -175,7 +175,7 @@ mod tests {
             target_peer: my_id,
             payload: WorkerRequest::Sync {
                 server_id: "srv".to_string(),
-                state_hash: StateHash::ZERO,
+                heads: HeadsSummary::default(),
             },
         };
         let data = bincode::serialize(&msg).unwrap();
@@ -197,7 +197,7 @@ mod tests {
             target_peer: other_id,
             payload: WorkerRequest::Sync {
                 server_id: "srv".to_string(),
-                state_hash: StateHash::ZERO,
+                heads: HeadsSummary::default(),
             },
         };
         let data = bincode::serialize(&msg).unwrap();
@@ -280,25 +280,27 @@ mod tests {
     #[test]
     fn parse_server_message_with_signed_event() {
         let id = willow_identity::Identity::generate();
-        let event = willow_state::Event {
-            id: "e1".to_string(),
-            parent_hash: StateHash::ZERO,
-            author: id.endpoint_id(),
-            timestamp_ms: 1000,
-            kind: willow_state::EventKind::Message {
+        let event = willow_state::Event::new(
+            &id,
+            1,
+            willow_state::EventHash::ZERO,
+            vec![],
+            willow_state::EventKind::Message {
                 channel_id: "general".to_string(),
                 body: "hello".to_string(),
                 reply_to: None,
             },
-        };
+            1000,
+        );
+        let expected_hash = event.hash;
 
-        let data = willow_common::pack_wire(&willow_common::WireMessage::Event(event.clone()), &id)
-            .unwrap();
+        let data =
+            willow_common::pack_wire(&willow_common::WireMessage::Event(event), &id).unwrap();
 
         match parse_server_message(&data) {
             ServerMessageAction::Events(events) => {
                 assert_eq!(events.len(), 1);
-                assert_eq!(events[0].id, "e1");
+                assert_eq!(events[0].hash, expected_hash);
             }
             ServerMessageAction::Ignore => panic!("expected Events"),
         }
@@ -307,30 +309,31 @@ mod tests {
     #[test]
     fn parse_server_message_with_sync_batch() {
         let id = willow_identity::Identity::generate();
-        let events = vec![
-            willow_state::Event {
-                id: "e1".to_string(),
-                parent_hash: StateHash::ZERO,
-                author: id.endpoint_id(),
-                timestamp_ms: 100,
-                kind: willow_state::EventKind::CreateChannel {
-                    name: "ch".to_string(),
-                    channel_id: "c1".to_string(),
-                    kind: "text".to_string(),
-                },
+        let e1 = willow_state::Event::new(
+            &id,
+            1,
+            willow_state::EventHash::ZERO,
+            vec![],
+            willow_state::EventKind::CreateChannel {
+                name: "ch".to_string(),
+                channel_id: "c1".to_string(),
+                kind: "text".to_string(),
             },
-            willow_state::Event {
-                id: "e2".to_string(),
-                parent_hash: StateHash::ZERO,
-                author: id.endpoint_id(),
-                timestamp_ms: 200,
-                kind: willow_state::EventKind::Message {
-                    channel_id: "c1".to_string(),
-                    body: "msg".to_string(),
-                    reply_to: None,
-                },
+            100,
+        );
+        let e2 = willow_state::Event::new(
+            &id,
+            2,
+            e1.hash,
+            vec![],
+            willow_state::EventKind::Message {
+                channel_id: "c1".to_string(),
+                body: "msg".to_string(),
+                reply_to: None,
             },
-        ];
+            200,
+        );
+        let events = vec![e1, e2];
 
         let data = willow_common::pack_wire(&willow_common::WireMessage::SyncBatch { events }, &id)
             .unwrap();
