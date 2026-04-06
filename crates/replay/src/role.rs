@@ -149,19 +149,29 @@ impl WorkerRole for ReplayRole {
     }
 
     fn on_event(&mut self, event: &Event) {
-        // Derive server_id from the event's DAG context. For genesis events
-        // (CreateServer), use the event hash as the server identifier (same
-        // as EventDag::server_id()). For non-genesis events, try to find
-        // which existing server's DAG knows this author; fall back to
-        // "default" if no match.
+        // Derive server_id from the event's DAG context:
+        // 1. CreateServer → use the event hash as server_id.
+        // 2. Known author → find the server whose DAG tracks this author.
+        // 3. Known prev hash → find the server whose DAG contains the
+        //    predecessor (handles new authors joining an existing server).
+        // 4. Fallback → "default" bucket (event will be buffered until
+        //    its predecessor chain connects it to a known server).
         let server_id = if let EventKind::CreateServer { .. } = &event.kind {
             event.hash.to_string()
+        } else if let Some((id, _)) = self
+            .servers
+            .iter()
+            .find(|(_, data)| data.dag.latest_seq(&event.author) > 0)
+        {
+            id.clone()
+        } else if let Some((id, _)) = self
+            .servers
+            .iter()
+            .find(|(_, data)| data.dag.get(&event.prev).is_some())
+        {
+            id.clone()
         } else {
-            self.servers
-                .iter()
-                .find(|(_, data)| data.dag.latest_seq(&event.author) > 0)
-                .map(|(id, _)| id.clone())
-                .unwrap_or_else(|| "default".to_string())
+            "default".to_string()
         };
         self.ingest_event(&server_id, event);
     }
