@@ -131,7 +131,8 @@ impl StorageEventStore {
         all_params.extend(extra_params);
         all_params.push(Box::new(fetch_limit as i64));
 
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = all_params.iter().map(|p| &**p).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            all_params.iter().map(|p| &**p).collect();
         let raw_rows: Vec<Vec<u8>> = stmt
             .query_map(param_refs.as_slice(), |row| row.get(0))?
             .filter_map(|r| r.ok())
@@ -201,14 +202,18 @@ impl StorageEventStore {
         conditions.push(format!("author NOT IN ({known_authors})"));
 
         sql.push_str(&conditions.join(" OR "));
-        sql.push_str(&format!(") ORDER BY seq ASC LIMIT {}", Self::SYNC_BATCH_LIMIT));
+        sql.push_str(&format!(
+            ") ORDER BY seq ASC LIMIT {}",
+            Self::SYNC_BATCH_LIMIT
+        ));
 
         let mut stmt = self.conn.prepare(&sql)?;
 
         let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         all_params.push(Box::new(server_id.to_string()));
         all_params.extend(extra_params);
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = all_params.iter().map(|p| &**p).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            all_params.iter().map(|p| &**p).collect();
 
         let rows: Vec<Vec<u8>> = stmt
             .query_map(param_refs.as_slice(), |row| row.get(0))?

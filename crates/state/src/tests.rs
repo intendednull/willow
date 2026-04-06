@@ -275,7 +275,6 @@ fn stress_governance_many_proposals() {
 // Tests below cover edge cases not in materialize.rs: noop on nonexistent
 // targets, duplicate creates, channel key rotation, reply_to storage, etc.
 
-
 #[test]
 fn grant_and_check_create_invite_permission() {
     let admin = Identity::generate();
@@ -362,7 +361,10 @@ fn non_admin_set_profile_is_accepted() {
 
     let state = materialize(&dag);
     assert_eq!(
-        state.profiles.get(&alice.endpoint_id()).map(|p| p.display_name.as_str()),
+        state
+            .profiles
+            .get(&alice.endpoint_id())
+            .map(|p| p.display_name.as_str()),
         Some("Alice")
     );
 }

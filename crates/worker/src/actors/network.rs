@@ -89,8 +89,7 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Handler<GossipEventMsg>
                                 payload: Box::new(response),
                             };
                             if let Ok(bytes) = bincode::serialize(&reply) {
-                                let _ =
-                                    reply_topic.broadcast(bytes::Bytes::from(bytes)).await;
+                                let _ = reply_topic.broadcast(bytes::Bytes::from(bytes)).await;
                             }
                         }
                     }

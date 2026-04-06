@@ -528,8 +528,7 @@ impl<N: willow_network::Network> ClientMutations<N> {
     pub async fn delete_role(&self, role_id: &str) -> anyhow::Result<()> {
         let role_id = role_id.to_string();
         let rid = willow_channel::RoleId(
-            uuid::Uuid::parse_str(&role_id)
-                .map_err(|e| anyhow::anyhow!("invalid role_id: {e}"))?,
+            uuid::Uuid::parse_str(&role_id).map_err(|e| anyhow::anyhow!("invalid role_id: {e}"))?,
         );
         willow_actor::state::mutate(&self.server_registry, move |reg| -> anyhow::Result<()> {
             let entry = reg
