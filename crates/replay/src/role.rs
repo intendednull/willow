@@ -1,34 +1,40 @@
 //! Replay node role implementation.
 //!
-//! Maintains in-memory [`ServerState`] per server with a bounded event
-//! buffer. Responds to sync requests with event diffs or full state
-//! snapshots for far-behind peers.
+//! Maintains an in-memory [`EventDag`] per server with per-author chain
+//! buffering. Responds to sync requests with event deltas computed from
+//! [`HeadsSummary`], or full [`Snapshot`] for far-behind peers.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
-use willow_state::{Event, ServerState, StateHash};
+use willow_state::{
+    apply_incremental, Event, EventDag, HeadsSummary, InsertError, PendingBuffer, ServerState,
+    Snapshot,
+};
 use willow_worker::{WorkerRequest, WorkerResponse, WorkerRole, WorkerRoleInfo};
 
 /// Per-server state held by the replay node.
 struct ServerData {
-    /// Current computed state.
+    /// Per-author Merkle-DAG of events.
+    dag: EventDag,
+    /// Cached materialized state (maintained incrementally).
     state: ServerState,
-    /// Bounded event buffer (oldest at front).
-    events: VecDeque<Event>,
-    /// Max events to retain.
-    max_events: usize,
+    /// Buffer for events arriving before their chain predecessors.
+    pending: PendingBuffer,
+    /// Max events per author before compaction (reserved for future use).
+    #[allow(dead_code)]
+    max_events_per_author: usize,
 }
 
 /// Configuration for the replay role.
 pub struct ReplayConfig {
-    /// Max events per server before eviction.
-    pub max_events_per_server: usize,
+    /// Max events per author before the oldest are compacted.
+    pub max_events_per_author: usize,
 }
 
 impl Default for ReplayConfig {
     fn default() -> Self {
         Self {
-            max_events_per_server: 1000,
+            max_events_per_author: 1000,
         }
     }
 }
@@ -50,59 +56,74 @@ impl ReplayRole {
 
     /// Ingest an event for a specific server.
     pub fn ingest_event(&mut self, server_id: &str, event: &Event) {
+        let max_per_author = self.config.max_events_per_author;
         let data = self
             .servers
             .entry(server_id.to_string())
             .or_insert_with(|| ServerData {
+                dag: EventDag::new(),
                 state: ServerState::new(server_id, server_id, event.author),
-                events: VecDeque::new(),
-                max_events: self.config.max_events_per_server,
+                pending: PendingBuffer::new(),
+                max_events_per_author: max_per_author,
             });
 
-        willow_state::apply_lenient(&mut data.state, event);
-        data.events.push_back(event.clone());
-
-        while data.events.len() > data.max_events {
-            data.events.pop_front();
-        }
+        Self::try_insert(data, event.clone());
     }
 
-    /// Find events after the given state hash in a server's buffer.
-    fn events_since_hash(&self, server_id: &str, hash: &StateHash) -> Option<Vec<Event>> {
-        let data = self.servers.get(server_id)?;
-
-        // If hash is ZERO, send all buffered events.
-        if *hash == StateHash::ZERO {
-            return Some(data.events.iter().cloned().collect());
-        }
-
-        // Find first event whose parent_hash matches.
-        for (i, event) in data.events.iter().enumerate() {
-            if event.parent_hash == *hash {
-                return Some(data.events.iter().skip(i).cloned().collect());
+    /// Try to insert an event into the DAG. On chain gap, buffer it.
+    /// On success, resolve any events that were waiting on this one.
+    /// Uses an iterative queue to avoid stack overflow on deep chains.
+    fn try_insert(data: &mut ServerData, event: Event) {
+        let mut queue = vec![event];
+        while let Some(current) = queue.pop() {
+            match data.dag.insert(current.clone()) {
+                Ok(()) => {
+                    apply_incremental(&mut data.state, &current);
+                    // Resolve any events that were waiting for this one.
+                    let resolved = data.pending.resolve(&current.hash);
+                    queue.extend(resolved);
+                }
+                Err(InsertError::SeqGap { .. }) => {
+                    // Chain predecessor hasn't arrived yet — buffer until it does.
+                    data.pending.buffer_for_prev(current.prev, current);
+                }
+                Err(InsertError::PrevMismatch { .. }) => {
+                    // Seq is correct but prev hash doesn't match our head.
+                    // This indicates equivocation or conflicting chain versions.
+                    // Buffering won't help — drop the event.
+                }
+                Err(InsertError::NotGenesis) => {
+                    // Non-genesis event for a DAG that hasn't seen genesis yet.
+                    // Buffer on prev — will cascade-resolve once genesis and
+                    // intermediate events arrive.
+                    data.pending.buffer_for_prev(current.prev, current);
+                }
+                Err(InsertError::Duplicate) => { /* already have it */ }
+                Err(InsertError::InvalidSignature) => { /* truly invalid — skip */ }
             }
         }
-
-        // Hash not found in buffer — caller is too far behind.
-        None
     }
 
-    /// Get the state hashes for all tracked servers (used by sync actor).
-    pub fn state_hashes(&self) -> Vec<(String, StateHash)> {
+    /// Get the heads summaries for all tracked servers.
+    fn compute_heads_summaries(&self) -> Vec<(String, HeadsSummary)> {
         self.servers
             .iter()
-            .map(|(id, data)| (id.clone(), data.state.hash()))
+            .map(|(id, data)| (id.clone(), data.dag.heads_summary()))
             .collect()
+    }
+
+    /// Total events buffered across all servers.
+    fn total_events_buffered(&self) -> u32 {
+        self.servers.values().map(|d| d.dag.len() as u32).sum()
     }
 }
 
 impl WorkerRole for ReplayRole {
     fn role_info(&self) -> WorkerRoleInfo {
-        let total_events: u32 = self.servers.values().map(|s| s.events.len() as u32).sum();
         WorkerRoleInfo::Replay {
             servers_loaded: self.servers.len() as u32,
-            events_buffered: total_events,
-            max_events: self.config.max_events_per_server as u32,
+            events_buffered: self.total_events_buffered(),
+            max_events: self.config.max_events_per_author as u32,
         }
     }
 
@@ -115,47 +136,106 @@ impl WorkerRole for ReplayRole {
 
     fn handle_request(&mut self, req: WorkerRequest) -> WorkerResponse {
         match req {
-            WorkerRequest::Sync {
-                server_id,
-                state_hash,
-            } => match self.events_since_hash(&server_id, &state_hash) {
-                Some(events) => WorkerResponse::SyncBatch { events },
-                None => {
-                    // Client is too far behind — send full snapshot.
-                    match self.servers.get(&server_id) {
-                        Some(data) => WorkerResponse::Snapshot {
-                            state: Box::new(data.state.clone()),
-                        },
-                        None => WorkerResponse::Denied {
+            WorkerRequest::Sync { server_id, heads } => {
+                let data = match self.servers.get(&server_id) {
+                    Some(d) => d,
+                    None => {
+                        return WorkerResponse::Denied {
                             reason: format!("unknown server: {server_id}"),
-                        },
+                        }
                     }
+                };
+
+                // Convert HeadsSummary to the HashMap<EndpointId, u64> that
+                // EventDag::events_since() expects.
+                let their_heads: HashMap<_, _> = heads
+                    .heads
+                    .iter()
+                    .map(|(author, head)| (*author, head.seq))
+                    .collect();
+
+                let delta: Vec<Event> = data
+                    .dag
+                    .events_since(&their_heads)
+                    .into_iter()
+                    .cloned()
+                    .collect();
+
+                if delta.is_empty() && !heads.heads.is_empty() {
+                    // They may be too far behind (events compacted), or synced.
+                    // Check if they know authors we don't — if so, they're synced.
+                    // Otherwise send a snapshot.
+                    let our_heads = data.dag.heads_summary();
+                    let they_are_behind = our_heads.heads.iter().any(|(author, our_head)| {
+                        match heads.heads.get(author) {
+                            Some(their_head) => their_head.seq < our_head.seq,
+                            None => true,
+                        }
+                    });
+
+                    if they_are_behind {
+                        let snapshot = Snapshot::new(data.state.clone(), our_heads);
+                        WorkerResponse::Snapshot {
+                            snapshot: Box::new(snapshot),
+                            post_snapshot_events: vec![],
+                        }
+                    } else {
+                        // Fully synced.
+                        WorkerResponse::SyncBatch { events: vec![] }
+                    }
+                } else {
+                    WorkerResponse::SyncBatch { events: delta }
                 }
-            },
+            }
             WorkerRequest::History { .. } => WorkerResponse::Denied {
                 reason: "replay nodes do not serve history".to_string(),
             },
         }
+    }
+
+    fn heads_summaries(&self) -> Vec<(String, HeadsSummary)> {
+        self.compute_heads_summaries()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use willow_state::EventKind;
+    use willow_identity::Identity;
+    use willow_state::{EventHash, EventKind};
 
-    fn make_message(id: &str, ts: u64) -> Event {
-        Event {
-            id: id.to_string(),
-            parent_hash: StateHash::ZERO,
-            author: willow_identity::Identity::generate().endpoint_id(),
-            timestamp_ms: ts,
-            kind: EventKind::Message {
+    fn make_dag_event(id: &Identity, seq: u64, prev: EventHash, kind: EventKind) -> Event {
+        Event::new(id, seq, prev, vec![], kind, seq * 1000)
+    }
+
+    fn make_message(id: &Identity, seq: u64, prev: EventHash) -> Event {
+        make_dag_event(
+            id,
+            seq,
+            prev,
+            EventKind::Message {
                 channel_id: "general".to_string(),
-                body: format!("message {id}"),
+                body: format!("message seq={seq}"),
                 reply_to: None,
             },
-        }
+        )
+    }
+
+    /// Helper to build a server with a genesis event and return the identity + genesis hash.
+    fn setup_server(role: &mut ReplayRole, server_id: &str) -> (Identity, EventHash) {
+        let owner = Identity::generate();
+        let genesis = Event::new(
+            &owner,
+            1,
+            EventHash::ZERO,
+            vec![],
+            EventKind::CreateServer {
+                name: server_id.to_string(),
+            },
+            0,
+        );
+        role.ingest_event(server_id, &genesis);
+        (owner, genesis.hash)
     }
 
     #[test]
@@ -178,10 +258,9 @@ mod tests {
     #[test]
     fn ingest_event_applies_and_buffers() {
         let mut role = ReplayRole::new(ReplayConfig {
-            max_events_per_server: 100,
+            max_events_per_author: 100,
         });
-
-        role.ingest_event("srv-1", &make_message("evt-1", 1000));
+        let (_, _) = setup_server(&mut role, "srv-1");
 
         match role.role_info() {
             WorkerRoleInfo::Replay {
@@ -197,39 +276,28 @@ mod tests {
     }
 
     #[test]
-    fn bounded_buffer_evicts_oldest() {
+    fn sync_request_returns_events_since_empty_heads() {
         let mut role = ReplayRole::new(ReplayConfig {
-            max_events_per_server: 3,
+            max_events_per_author: 100,
         });
+        let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
 
-        for i in 0..5 {
-            role.ingest_event("srv-1", &make_message(&format!("evt-{i}"), (i + 1) * 1000));
+        // Add some messages.
+        let mut prev = genesis_hash;
+        for seq in 2..=4 {
+            let e = make_message(&owner, seq, prev);
+            prev = e.hash;
+            role.ingest_event("srv-1", &e);
         }
 
-        let data = &role.servers["srv-1"];
-        assert_eq!(data.events.len(), 3);
-        assert_eq!(data.events[0].id, "evt-2");
-        assert_eq!(data.events[1].id, "evt-3");
-        assert_eq!(data.events[2].id, "evt-4");
-    }
-
-    #[test]
-    fn sync_request_returns_events_since_zero() {
-        let mut role = ReplayRole::new(ReplayConfig {
-            max_events_per_server: 100,
-        });
-
-        for i in 0..3 {
-            role.ingest_event("srv-1", &make_message(&format!("evt-{i}"), (i + 1) * 1000));
-        }
-
+        // Empty heads = new peer, should get all events.
         let resp = role.handle_request(WorkerRequest::Sync {
             server_id: "srv-1".to_string(),
-            state_hash: StateHash::ZERO,
+            heads: HeadsSummary::default(),
         });
 
         match resp {
-            WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 3),
+            WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 4),
             _ => panic!("expected SyncBatch"),
         }
     }
@@ -240,7 +308,7 @@ mod tests {
 
         let resp = role.handle_request(WorkerRequest::Sync {
             server_id: "nonexistent".to_string(),
-            state_hash: StateHash::ZERO,
+            heads: HeadsSummary::default(),
         });
 
         match resp {
@@ -250,26 +318,36 @@ mod tests {
     }
 
     #[test]
-    fn sync_request_far_behind_returns_snapshot() {
+    fn sync_request_returns_delta() {
         let mut role = ReplayRole::new(ReplayConfig {
-            max_events_per_server: 2,
+            max_events_per_author: 100,
         });
+        let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
 
-        for i in 0..5 {
-            role.ingest_event("srv-1", &make_message(&format!("evt-{i}"), (i + 1) * 1000));
+        let mut prev = genesis_hash;
+        for seq in 2..=5 {
+            let e = make_message(&owner, seq, prev);
+            prev = e.hash;
+            role.ingest_event("srv-1", &e);
         }
 
-        let fake_old_hash = StateHash::from_bytes(b"old state");
+        // Peer knows up to seq 3 — should get seq 4 and 5.
+        let mut their_heads = HashMap::new();
+        their_heads.insert(
+            owner.endpoint_id(),
+            willow_state::AuthorHead {
+                seq: 3,
+                hash: EventHash::from_bytes(b"doesnt-matter-for-delta"),
+            },
+        );
         let resp = role.handle_request(WorkerRequest::Sync {
             server_id: "srv-1".to_string(),
-            state_hash: fake_old_hash,
+            heads: HeadsSummary { heads: their_heads },
         });
 
         match resp {
-            WorkerResponse::Snapshot { state } => {
-                assert_eq!(state.server_id, "srv-1");
-            }
-            _ => panic!("expected Snapshot"),
+            WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 2),
+            _ => panic!("expected SyncBatch"),
         }
     }
 
@@ -279,8 +357,8 @@ mod tests {
 
         let resp = role.handle_request(WorkerRequest::History {
             server_id: "srv-1".to_string(),
-            channel: "general".to_string(),
-            before_timestamp: None,
+            channel: Some("general".to_string()),
+            before: None,
             limit: 50,
         });
 
@@ -293,11 +371,15 @@ mod tests {
     #[test]
     fn role_info_reflects_buffered_events() {
         let mut role = ReplayRole::new(ReplayConfig {
-            max_events_per_server: 100,
+            max_events_per_author: 100,
         });
+        let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
 
-        for i in 0..5 {
-            role.ingest_event("srv-1", &make_message(&format!("evt-{i}"), (i + 1) * 1000));
+        let mut prev = genesis_hash;
+        for seq in 2..=5 {
+            let e = make_message(&owner, seq, prev);
+            prev = e.hash;
+            role.ingest_event("srv-1", &e);
         }
 
         match role.role_info() {
@@ -314,32 +396,41 @@ mod tests {
     }
 
     #[test]
-    fn state_hashes_returns_per_server_hashes() {
+    fn heads_summaries_returns_per_server() {
         let mut role = ReplayRole::new(ReplayConfig::default());
+        let (_, _) = setup_server(&mut role, "srv-1");
+        let (_, _) = setup_server(&mut role, "srv-2");
 
-        role.ingest_event("srv-1", &make_message("e1", 1000));
-        role.ingest_event("srv-2", &make_message("e2", 2000));
-
-        let hashes = role.state_hashes();
-        assert_eq!(hashes.len(), 2);
+        let summaries = role.heads_summaries();
+        assert_eq!(summaries.len(), 2);
     }
 
     #[test]
     fn multiple_servers_tracked_independently() {
         let mut role = ReplayRole::new(ReplayConfig {
-            max_events_per_server: 2,
+            max_events_per_author: 100,
         });
+        let (owner1, genesis1) = setup_server(&mut role, "srv-1");
+        let (owner2, genesis2) = setup_server(&mut role, "srv-2");
 
-        for i in 0..3 {
-            role.ingest_event("srv-1", &make_message(&format!("s1-{i}"), (i + 1) * 1000));
-        }
-        for i in 0..5 {
-            role.ingest_event("srv-2", &make_message(&format!("s2-{i}"), (i + 1) * 1000));
+        // Add 3 messages to srv-1.
+        let mut prev = genesis1;
+        for seq in 2..=4 {
+            let e = make_message(&owner1, seq, prev);
+            prev = e.hash;
+            role.ingest_event("srv-1", &e);
         }
 
-        // srv-1: 2 events (evicted 1), srv-2: 2 events (evicted 3)
-        assert_eq!(role.servers["srv-1"].events.len(), 2);
-        assert_eq!(role.servers["srv-2"].events.len(), 2);
+        // Add 5 messages to srv-2.
+        let mut prev = genesis2;
+        for seq in 2..=6 {
+            let e = make_message(&owner2, seq, prev);
+            prev = e.hash;
+            role.ingest_event("srv-2", &e);
+        }
+
+        assert_eq!(role.servers["srv-1"].dag.len(), 4);
+        assert_eq!(role.servers["srv-2"].dag.len(), 6);
 
         match role.role_info() {
             WorkerRoleInfo::Replay {
@@ -348,9 +439,94 @@ mod tests {
                 ..
             } => {
                 assert_eq!(servers_loaded, 2);
-                assert_eq!(events_buffered, 4);
+                assert_eq!(events_buffered, 10);
             }
             _ => panic!("expected Replay"),
         }
+    }
+
+    #[test]
+    fn duplicate_events_are_deduplicated() {
+        let mut role = ReplayRole::new(ReplayConfig::default());
+        let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
+
+        let e = make_message(&owner, 2, genesis_hash);
+        role.ingest_event("srv-1", &e);
+        role.ingest_event("srv-1", &e); // duplicate
+
+        assert_eq!(role.servers["srv-1"].dag.len(), 2); // genesis + 1
+    }
+
+    #[test]
+    fn out_of_order_events_buffered_and_resolved() {
+        let mut role = ReplayRole::new(ReplayConfig::default());
+        let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
+
+        // Create a chain: genesis → e2 → e3
+        let e2 = make_message(&owner, 2, genesis_hash);
+        let e3 = make_message(&owner, 3, e2.hash);
+
+        // Deliver e3 FIRST (out of order) — should be buffered.
+        role.ingest_event("srv-1", &e3);
+        assert_eq!(role.servers["srv-1"].dag.len(), 1); // only genesis
+        assert_eq!(role.servers["srv-1"].pending.pending_count(), 1);
+
+        // Now deliver e2 — should resolve e3 from the buffer.
+        role.ingest_event("srv-1", &e2);
+        assert_eq!(role.servers["srv-1"].dag.len(), 3); // genesis + e2 + e3
+        assert_eq!(role.servers["srv-1"].pending.pending_count(), 0);
+    }
+
+    #[test]
+    fn deeply_out_of_order_chain_resolves() {
+        let mut role = ReplayRole::new(ReplayConfig::default());
+        let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
+
+        // Create chain: genesis → e2 → e3 → e4
+        let e2 = make_message(&owner, 2, genesis_hash);
+        let e3 = make_message(&owner, 3, e2.hash);
+        let e4 = make_message(&owner, 4, e3.hash);
+
+        // Deliver in reverse order: e4, e3, e2
+        role.ingest_event("srv-1", &e4);
+        role.ingest_event("srv-1", &e3);
+        assert_eq!(role.servers["srv-1"].dag.len(), 1); // only genesis
+        assert_eq!(role.servers["srv-1"].pending.pending_count(), 2);
+
+        // Deliver e2 — should cascade: e2 resolves e3, e3 resolves e4.
+        role.ingest_event("srv-1", &e2);
+        assert_eq!(role.servers["srv-1"].dag.len(), 4);
+        assert_eq!(role.servers["srv-1"].pending.pending_count(), 0);
+    }
+
+    #[test]
+    fn non_genesis_event_buffered_until_genesis_arrives() {
+        let mut role = ReplayRole::new(ReplayConfig::default());
+        let owner = Identity::generate();
+
+        // Create genesis and a follow-up message.
+        let genesis = Event::new(
+            &owner,
+            1,
+            EventHash::ZERO,
+            vec![],
+            EventKind::CreateServer {
+                name: "srv-1".to_string(),
+            },
+            0,
+        );
+        let msg = make_message(&owner, 2, genesis.hash);
+
+        // Deliver message FIRST (before genesis) to a brand new server.
+        role.ingest_event("srv-1", &msg);
+
+        // ServerData was created, but the event should be pending (NotGenesis).
+        assert_eq!(role.servers["srv-1"].dag.len(), 0);
+        assert_eq!(role.servers["srv-1"].pending.pending_count(), 1);
+
+        // Now deliver genesis — should resolve the buffered message.
+        role.ingest_event("srv-1", &genesis);
+        assert_eq!(role.servers["srv-1"].dag.len(), 2); // genesis + msg
+        assert_eq!(role.servers["srv-1"].pending.pending_count(), 0);
     }
 }

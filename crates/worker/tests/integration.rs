@@ -7,22 +7,25 @@ use std::time::Duration;
 
 use willow_actor::System;
 use willow_common::{WorkerRequest, WorkerResponse, WorkerRole, WorkerRoleInfo};
-use willow_state::{Event, EventKind, ServerState, StateHash};
+use willow_identity::Identity;
+use willow_state::{Event, EventHash, EventKind, HeadsSummary, Snapshot};
 use willow_worker::actors::state::StateActor;
 use willow_worker::actors::{EventMsg, GetRoleInfoMsg, WorkerRequestMsg};
 
-/// Full replay role that tracks a single server.
+/// Full replay role that tracks a single server using an EventDag.
 struct TestReplayRole {
-    state: ServerState,
+    dag: willow_state::EventDag,
+    state: willow_state::ServerState,
     events: Vec<Event>,
     max_events: usize,
 }
 
 impl TestReplayRole {
-    fn new(server_id: &str, _owner: &str, max_events: usize) -> Self {
-        let owner_id = willow_identity::Identity::generate().endpoint_id();
+    fn new(server_id: &str, max_events: usize) -> Self {
+        let owner_id = Identity::generate().endpoint_id();
         Self {
-            state: ServerState::new(server_id, server_id, owner_id),
+            dag: willow_state::EventDag::new(),
+            state: willow_state::ServerState::new(server_id, server_id, owner_id),
             events: Vec::new(),
             max_events,
         }
@@ -39,23 +42,27 @@ impl WorkerRole for TestReplayRole {
     }
 
     fn on_event(&mut self, event: &Event) {
-        willow_state::apply_lenient(&mut self.state, event);
-        self.events.push(event.clone());
-        while self.events.len() > self.max_events {
-            self.events.remove(0);
+        if self.dag.insert(event.clone()).is_ok() {
+            willow_state::apply_incremental(&mut self.state, event);
+            self.events.push(event.clone());
+            while self.events.len() > self.max_events {
+                self.events.remove(0);
+            }
         }
     }
 
     fn handle_request(&mut self, req: WorkerRequest) -> WorkerResponse {
         match req {
-            WorkerRequest::Sync { state_hash, .. } => {
-                if state_hash == StateHash::ZERO {
+            WorkerRequest::Sync { heads, .. } => {
+                if heads.heads.is_empty() {
                     WorkerResponse::SyncBatch {
                         events: self.events.clone(),
                     }
                 } else {
+                    let snapshot = Snapshot::new(self.state.clone(), self.dag.heads_summary());
                     WorkerResponse::Snapshot {
-                        state: Box::new(self.state.clone()),
+                        snapshot: Box::new(snapshot),
+                        post_snapshot_events: vec![],
                     }
                 }
             }
@@ -66,31 +73,47 @@ impl WorkerRole for TestReplayRole {
     }
 }
 
-fn make_message(id: &str, ts: u64) -> Event {
-    Event {
-        id: id.to_string(),
-        parent_hash: StateHash::ZERO,
-        author: willow_identity::Identity::generate().endpoint_id(),
-        timestamp_ms: ts,
-        kind: EventKind::Message {
+fn make_message(identity: &Identity, seq: u64, prev: EventHash) -> Event {
+    Event::new(
+        identity,
+        seq,
+        prev,
+        vec![],
+        EventKind::Message {
             channel_id: "general".to_string(),
-            body: format!("message {id}"),
+            body: format!("message seq={seq}"),
             reply_to: None,
         },
-    }
+        seq * 1000,
+    )
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn state_actor_with_replay_role_full_flow() {
     let system = System::new();
     let addr = system.spawn(StateActor {
-        role: Box::new(TestReplayRole::new("srv-1", "owner", 100)),
+        role: Box::new(TestReplayRole::new("srv-1", 100)),
     });
 
     // 1. Ingest 5 events.
-    for i in 0..5u64 {
-        addr.do_send(EventMsg(make_message(&format!("e{i}"), (i + 1) * 1000)))
-            .unwrap();
+    let id = Identity::generate();
+    let genesis = Event::new(
+        &id,
+        1,
+        EventHash::ZERO,
+        vec![],
+        EventKind::CreateServer {
+            name: "srv-1".to_string(),
+        },
+        0,
+    );
+    addr.do_send(EventMsg(genesis.clone())).unwrap();
+
+    let mut prev = genesis.hash;
+    for seq in 2..=5 {
+        let e = make_message(&id, seq, prev);
+        prev = e.hash;
+        addr.do_send(EventMsg(e)).unwrap();
     }
 
     // 2. Verify role info shows 5 buffered events.
@@ -102,11 +125,11 @@ async fn state_actor_with_replay_role_full_flow() {
         _ => panic!("expected Replay"),
     }
 
-    // 3. Sync request with ZERO hash — should return all events.
+    // 3. Sync request with empty heads — should return all events.
     let resp = addr
         .ask(WorkerRequestMsg(WorkerRequest::Sync {
             server_id: "srv-1".to_string(),
-            state_hash: StateHash::ZERO,
+            heads: HeadsSummary::default(),
         }))
         .await
         .unwrap();
@@ -119,8 +142,8 @@ async fn state_actor_with_replay_role_full_flow() {
     let resp = addr
         .ask(WorkerRequestMsg(WorkerRequest::History {
             server_id: "srv-1".to_string(),
-            channel: "general".to_string(),
-            before_timestamp: None,
+            channel: Some("general".to_string()),
+            before: None,
             limit: 10,
         }))
         .await
@@ -150,7 +173,7 @@ async fn heartbeat_and_state_actor_interaction() {
     let system = System::new();
 
     let state_addr = system.spawn(StateActor {
-        role: Box::new(TestReplayRole::new("srv-1", "owner", 100)),
+        role: Box::new(TestReplayRole::new("srv-1", 100)),
     });
 
     let test_worker_id = net_a.id();
@@ -194,7 +217,7 @@ async fn heartbeat_and_state_actor_interaction() {
 async fn concurrent_requests_all_resolve() {
     let system = System::new();
     let addr = system.spawn(StateActor {
-        role: Box::new(TestReplayRole::new("srv-1", "owner", 100)),
+        role: Box::new(TestReplayRole::new("srv-1", 100)),
     });
 
     // Fire 50 concurrent requests.
@@ -202,7 +225,7 @@ async fn concurrent_requests_all_resolve() {
     for _ in 0..50 {
         let f = addr.ask(WorkerRequestMsg(WorkerRequest::Sync {
             server_id: "srv-1".to_string(),
-            state_hash: StateHash::ZERO,
+            heads: HeadsSummary::default(),
         }));
         futs.push(f);
     }
@@ -223,20 +246,35 @@ async fn concurrent_requests_all_resolve() {
 async fn events_applied_then_queried_via_request() {
     let system = System::new();
     let addr = system.spawn(StateActor {
-        role: Box::new(TestReplayRole::new("srv-1", "owner", 5)),
+        role: Box::new(TestReplayRole::new("srv-1", 5)),
     });
 
     // Ingest 10 events into a buffer of size 5.
-    for i in 0..10u64 {
-        addr.do_send(EventMsg(make_message(&format!("e{i}"), (i + 1) * 1000)))
-            .unwrap();
+    let id = Identity::generate();
+    let genesis = Event::new(
+        &id,
+        1,
+        EventHash::ZERO,
+        vec![],
+        EventKind::CreateServer {
+            name: "srv-1".to_string(),
+        },
+        0,
+    );
+    addr.do_send(EventMsg(genesis.clone())).unwrap();
+
+    let mut prev = genesis.hash;
+    for seq in 2..=10 {
+        let e = make_message(&id, seq, prev);
+        prev = e.hash;
+        addr.do_send(EventMsg(e)).unwrap();
     }
 
     // Query — should only get 5 (buffer evicted oldest).
     let resp = addr
         .ask(WorkerRequestMsg(WorkerRequest::Sync {
             server_id: "srv-1".to_string(),
-            state_hash: StateHash::ZERO,
+            heads: HeadsSummary::default(),
         }))
         .await
         .unwrap();
@@ -265,7 +303,7 @@ async fn graceful_shutdown_sends_departure() {
     let system = System::new();
 
     let state_addr = system.spawn(StateActor {
-        role: Box::new(TestReplayRole::new("srv-1", "owner", 100)),
+        role: Box::new(TestReplayRole::new("srv-1", 100)),
     });
 
     let departing_id = net_a.id();
@@ -319,7 +357,7 @@ async fn full_actor_orchestration_without_network() {
     let system = System::new();
 
     let state_addr = system.spawn(StateActor {
-        role: Box::new(TestReplayRole::new("srv-1", "owner", 100)),
+        role: Box::new(TestReplayRole::new("srv-1", 100)),
     });
 
     let orch_id = net_a.id();
@@ -337,10 +375,24 @@ async fn full_actor_orchestration_without_network() {
     ));
 
     // Ingest some events.
-    for i in 0..3u64 {
-        state_addr
-            .do_send(EventMsg(make_message(&format!("orch-{i}"), (i + 1) * 1000)))
-            .unwrap();
+    let id = Identity::generate();
+    let genesis = Event::new(
+        &id,
+        1,
+        EventHash::ZERO,
+        vec![],
+        EventKind::CreateServer {
+            name: "orch".to_string(),
+        },
+        0,
+    );
+    state_addr.do_send(EventMsg(genesis.clone())).unwrap();
+
+    let mut prev = genesis.hash;
+    for seq in 2..=3 {
+        let e = make_message(&id, seq, prev);
+        prev = e.hash;
+        state_addr.do_send(EventMsg(e)).unwrap();
     }
 
     // Collect messages from heartbeat and sync for a bit.
@@ -389,27 +441,28 @@ async fn full_actor_orchestration_without_network() {
 /// from regular members at the data level.
 #[test]
 fn sync_provider_permission_identifies_workers() {
-    use willow_identity::Identity;
-    use willow_state::{EventKind, Permission, ServerState};
+    use willow_state::{Permission, ServerState};
 
-    let owner = Identity::generate().endpoint_id();
+    let owner_identity = Identity::generate();
+    let owner = owner_identity.endpoint_id();
     let worker = Identity::generate().endpoint_id();
     let random = Identity::generate().endpoint_id();
 
     let mut state = ServerState::new("srv", "Test", owner);
 
-    // Grant SyncProvider to a worker.
-    let grant = willow_state::Event {
-        id: "grant-1".to_string(),
-        parent_hash: state.hash(),
-        author: owner,
-        timestamp_ms: 1000,
-        kind: EventKind::GrantPermission {
+    // Grant SyncProvider to a worker — must be signed by the owner (admin).
+    let grant = Event::new(
+        &owner_identity,
+        1,
+        EventHash::ZERO,
+        vec![],
+        EventKind::GrantPermission {
             peer_id: worker,
             permission: Permission::SyncProvider,
         },
-    };
-    willow_state::apply_lenient(&mut state, &grant);
+        1000,
+    );
+    willow_state::apply_incremental(&mut state, &grant);
 
     assert!(state.has_permission(&worker, &Permission::SyncProvider));
     assert!(state.has_permission(&owner, &Permission::SyncProvider));

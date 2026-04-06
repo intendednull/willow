@@ -76,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
     let network = willow_network::iroh::IrohNetwork::new(iroh_config).await?;
 
     let role = ReplayRole::new(ReplayConfig {
-        max_events_per_server: cli.max_events_per_server,
+        max_events_per_author: cli.max_events_per_server,
     });
 
     let config = willow_worker::WorkerConfig {

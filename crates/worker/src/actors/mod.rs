@@ -12,7 +12,7 @@ pub mod state;
 pub mod sync;
 
 use willow_actor::Message;
-use willow_state::{Event, StateHash};
+use willow_state::{Event, HeadsSummary};
 
 use crate::types::{WorkerRequest, WorkerResponse, WorkerRoleInfo};
 
@@ -34,10 +34,10 @@ impl Message for GetRoleInfoMsg {
     type Result = WorkerRoleInfo;
 }
 
-/// Sync actor asking for current state hashes per server.
-pub struct GetStateHashesMsg;
-impl Message for GetStateHashesMsg {
-    type Result = Vec<(String, StateHash)>;
+/// Sync actor asking for current heads summaries per server.
+pub struct GetHeadsSummariesMsg;
+impl Message for GetHeadsSummariesMsg {
+    type Result = Vec<(String, HeadsSummary)>;
 }
 
 /// A server was discovered — add it to the set of tracked servers.
