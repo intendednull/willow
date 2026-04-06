@@ -58,6 +58,25 @@ impl fmt::Display for EventHash {
     }
 }
 
+impl std::str::FromStr for EventHash {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.len() != 64 {
+            return Err(format!(
+                "expected 64-char hex string, got {} chars",
+                s.len()
+            ));
+        }
+        let mut bytes = [0u8; 32];
+        for (i, byte) in bytes.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16)
+                .map_err(|e| format!("invalid hex at position {}: {e}", i * 2))?;
+        }
+        Ok(EventHash(bytes))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,5 +128,24 @@ mod tests {
     #[test]
     fn default_is_zero() {
         assert_eq!(EventHash::default(), EventHash::ZERO);
+    }
+
+    #[test]
+    fn from_str_round_trips_with_display() {
+        let hash = EventHash::from_bytes(b"round-trip test");
+        let hex = hash.to_string();
+        let parsed: EventHash = hex.parse().unwrap();
+        assert_eq!(hash, parsed);
+    }
+
+    #[test]
+    fn from_str_rejects_short_string() {
+        assert!("abcd".parse::<EventHash>().is_err());
+    }
+
+    #[test]
+    fn from_str_rejects_invalid_hex() {
+        let bad = "zz".repeat(32);
+        assert!(bad.parse::<EventHash>().is_err());
     }
 }

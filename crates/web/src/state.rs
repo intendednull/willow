@@ -455,7 +455,13 @@ pub fn wire_derived_signals<N: willow_network::Network>(
     });
     leptos::prelude::Effect::new(move || write.server.set_roles.set(roles_sig.get()));
 
-    let owner = derived_signal(&views.event_state, system, |es| es.owner.to_string());
+    let owner = derived_signal(&views.event_state, system, |es| {
+        es.admins
+            .iter()
+            .next()
+            .map(|a| a.to_string())
+            .unwrap_or_default()
+    });
     leptos::prelude::Effect::new(move || write.server.set_server_owner.set(owner.get()));
 
     let sync_provider_ids = derived_signal(&views.event_state, system, |es| {
@@ -475,12 +481,9 @@ pub fn wire_derived_signals<N: willow_network::Network>(
     });
 
     let admin_ids = derived_signal(&views.event_state, system, |es| {
-        es.peer_permissions
+        es.admins
             .iter()
-            .filter(|(_, perms)| {
-                perms.contains(&willow_client::willow_state::Permission::Administrator)
-            })
-            .map(|(pid, _)| pid.to_string())
+            .map(|pid| pid.to_string())
             .collect::<std::collections::HashSet<String>>()
     });
     leptos::prelude::Effect::new(move || write.server.set_admin_ids.set(admin_ids.get()));

@@ -9,6 +9,7 @@
 use std::sync::Arc;
 use willow_client::{test_client, ClientHandle};
 use willow_network::mem::{MemHub, MemNetwork};
+use willow_state;
 
 use willow_agent::server::WillowMcpServer;
 use willow_agent::tools::WillowToolRouter;
@@ -179,7 +180,8 @@ async fn pin_and_unpin_message() {
     )
     .await;
 
-    assert!(client.is_pinned("general", msg_id).await);
+    let msg_hash: willow_state::EventHash = msg_id.parse().unwrap();
+    assert!(client.is_pinned("general", &msg_hash).await);
 
     call_tool(
         &router,
@@ -188,7 +190,7 @@ async fn pin_and_unpin_message() {
     )
     .await;
 
-    assert!(!client.is_pinned("general", msg_id).await);
+    assert!(!client.is_pinned("general", &msg_hash).await);
 }
 
 // ─────────────────────── Channel Tests ───────────────────────────────────────

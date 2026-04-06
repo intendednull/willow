@@ -163,6 +163,20 @@ impl<N: willow_network::Network> ClientHandle<N> {
         self.mutation_handle.delete_channel(name).await
     }
 
+    pub async fn propose_grant_admin(
+        &self,
+        peer_id: willow_identity::EndpointId,
+    ) -> anyhow::Result<()> {
+        self.mutation_handle.propose_grant_admin(peer_id).await
+    }
+
+    pub async fn propose_revoke_admin(
+        &self,
+        peer_id: willow_identity::EndpointId,
+    ) -> anyhow::Result<()> {
+        self.mutation_handle.propose_revoke_admin(peer_id).await
+    }
+
     pub async fn propose_kick_member(
         &self,
         peer_id: willow_identity::EndpointId,

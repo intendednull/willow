@@ -1,6 +1,6 @@
 //! # MCP Tool Definitions and Handlers
 //!
-//! All 37 MCP tools mapped to `ClientHandle` methods. Each tool has a
+//! All 36 MCP tools mapped to `ClientHandle` methods. Each tool has a
 //! typed parameter struct (JSON Schema via `schemars`) and an async handler.
 
 use std::sync::Arc;
@@ -17,6 +17,12 @@ use willow_network::Network;
 fn parse_endpoint_id(hex: &str) -> Result<EndpointId, String> {
     hex.parse::<EndpointId>()
         .map_err(|e| format!("invalid peer_id: {e}"))
+}
+
+/// Parse a 64-character hex string into an `EventHash`.
+fn parse_event_hash(hex: &str) -> Result<willow_state::EventHash, String> {
+    hex.parse::<willow_state::EventHash>()
+        .map_err(|e| format!("invalid event hash: {e}"))
 }
 
 /// Parse multiple hex peer IDs.
@@ -157,7 +163,7 @@ pub struct SetPermissionParams {
     /// Role ID (UUID).
     pub role_id: String,
     /// Permission name: SyncProvider, ManageChannels, ManageRoles,
-    /// KickMembers, SendMessages, CreateInvite, or Administrator.
+    /// SendMessages, or CreateInvite.
     pub permission: String,
     /// Whether to grant (true) or revoke (false) the permission.
     pub granted: bool,
@@ -312,12 +318,12 @@ impl<N: Network> WillowToolRouter<N> {
             make_tool::<DeleteChannelParams>("delete_channel", "Delete a channel"),
             make_tool::<SwitchChannelParams>("switch_channel", "Set the active channel"),
             // Permissions & Members (7)
-            make_tool::<PeerIdParams>("trust_peer", "Grant Administrator permission to a peer"),
+            make_tool::<PeerIdParams>("trust_peer", "Propose granting admin status to a peer"),
             make_tool::<PeerIdParams>(
                 "untrust_peer",
-                "Revoke Administrator permission from a peer",
+                "Propose revoking admin status from a peer",
             ),
-            make_tool::<PeerIdParams>("kick_member", "Remove a member and rotate channel keys"),
+            make_tool::<PeerIdParams>("kick_member", "Propose kicking a member from the server"),
             make_tool::<CreateRoleParams>("create_role", "Create a permission role"),
             make_tool::<DeleteRoleParams>("delete_role", "Delete a role"),
             make_tool::<SetPermissionParams>(
@@ -361,8 +367,6 @@ impl<N: Network> WillowToolRouter<N> {
             make_tool_no_params("leave_voice", "Leave the current voice channel"),
             make_tool_no_params("toggle_mute", "Toggle mute state. Returns new state."),
             make_tool_no_params("toggle_deafen", "Toggle deafen state. Returns new state."),
-            // State (1)
-            make_tool_no_params("verify_state", "Broadcast state hash for verification"),
         ];
         Self { client, tools }
     }
@@ -392,9 +396,11 @@ impl<N: Network> WillowToolRouter<N> {
             }
             "send_reply" => {
                 let p: SendReplyParams = parse_args(&args)?;
+                let parent_hash = parse_event_hash(&p.parent_id)
+                    .map_err(|e| ErrorData::invalid_params(e, None))?;
                 match self
                     .client
-                    .send_reply(&p.channel, &p.parent_id, &p.body)
+                    .send_reply(&p.channel, &parent_hash, &p.body)
                     .await
                 {
                     Ok(()) => success_json(serde_json::json!({"success": true})),
@@ -417,9 +423,11 @@ impl<N: Network> WillowToolRouter<N> {
             }
             "edit_message" => {
                 let p: EditMessageParams = parse_args(&args)?;
+                let hash = parse_event_hash(&p.message_id)
+                    .map_err(|e| ErrorData::invalid_params(e, None))?;
                 match self
                     .client
-                    .edit_message(&p.channel, &p.message_id, &p.new_body)
+                    .edit_message(&p.channel, &hash, &p.new_body)
                     .await
                 {
                     Ok(()) => success_json(serde_json::json!({"success": true})),
@@ -428,28 +436,36 @@ impl<N: Network> WillowToolRouter<N> {
             }
             "delete_message" => {
                 let p: DeleteMessageParams = parse_args(&args)?;
-                match self.client.delete_message(&p.channel, &p.message_id).await {
+                let hash = parse_event_hash(&p.message_id)
+                    .map_err(|e| ErrorData::invalid_params(e, None))?;
+                match self.client.delete_message(&p.channel, &hash).await {
                     Ok(()) => success_json(serde_json::json!({"success": true})),
                     Err(e) => error_text(e.to_string()),
                 }
             }
             "react" => {
                 let p: ReactParams = parse_args(&args)?;
-                match self.client.react(&p.channel, &p.message_id, &p.emoji).await {
+                let hash = parse_event_hash(&p.message_id)
+                    .map_err(|e| ErrorData::invalid_params(e, None))?;
+                match self.client.react(&p.channel, &hash, &p.emoji).await {
                     Ok(()) => success_json(serde_json::json!({"success": true})),
                     Err(e) => error_text(e.to_string()),
                 }
             }
             "pin_message" => {
                 let p: PinMessageParams = parse_args(&args)?;
-                match self.client.pin_message(&p.channel, &p.message_id).await {
+                let hash = parse_event_hash(&p.message_id)
+                    .map_err(|e| ErrorData::invalid_params(e, None))?;
+                match self.client.pin_message(&p.channel, &hash).await {
                     Ok(()) => success_json(serde_json::json!({"success": true})),
                     Err(e) => error_text(e.to_string()),
                 }
             }
             "unpin_message" => {
                 let p: UnpinMessageParams = parse_args(&args)?;
-                match self.client.unpin_message(&p.channel, &p.message_id).await {
+                let hash = parse_event_hash(&p.message_id)
+                    .map_err(|e| ErrorData::invalid_params(e, None))?;
+                match self.client.unpin_message(&p.channel, &hash).await {
                     Ok(()) => success_json(serde_json::json!({"success": true})),
                     Err(e) => error_text(e.to_string()),
                 }
@@ -488,21 +504,25 @@ impl<N: Network> WillowToolRouter<N> {
                 let p: PeerIdParams = parse_args(&args)?;
                 let eid = parse_endpoint_id(&p.peer_id)
                     .map_err(|e| ErrorData::invalid_params(e, None))?;
-                self.client.trust_peer(eid).await;
-                success_json(serde_json::json!({"success": true}))
+                match self.client.propose_grant_admin(eid).await {
+                    Ok(()) => success_json(serde_json::json!({"success": true})),
+                    Err(e) => error_text(e.to_string()),
+                }
             }
             "untrust_peer" => {
                 let p: PeerIdParams = parse_args(&args)?;
                 let eid = parse_endpoint_id(&p.peer_id)
                     .map_err(|e| ErrorData::invalid_params(e, None))?;
-                self.client.untrust_peer(eid).await;
-                success_json(serde_json::json!({"success": true}))
+                match self.client.propose_revoke_admin(eid).await {
+                    Ok(()) => success_json(serde_json::json!({"success": true})),
+                    Err(e) => error_text(e.to_string()),
+                }
             }
             "kick_member" => {
                 let p: PeerIdParams = parse_args(&args)?;
                 let eid = parse_endpoint_id(&p.peer_id)
                     .map_err(|e| ErrorData::invalid_params(e, None))?;
-                match self.client.kick_member(eid).await {
+                match self.client.propose_kick_member(eid).await {
                     Ok(()) => success_json(serde_json::json!({"success": true})),
                     Err(e) => error_text(e.to_string()),
                 }
@@ -578,7 +598,7 @@ impl<N: Network> WillowToolRouter<N> {
                 let p: AuthorizeWorkersParams = parse_args(&args)?;
                 let eids = parse_endpoint_ids(&p.worker_peer_ids)
                     .map_err(|e| ErrorData::invalid_params(e, None))?;
-                self.client.authorize_workers(&eids).await;
+                let _ = self.client.authorize_workers(&eids).await;
                 success_json(serde_json::json!({"success": true}))
             }
 
@@ -649,12 +669,6 @@ impl<N: Network> WillowToolRouter<N> {
                 success_json(serde_json::json!({"deafened": deafened}))
             }
 
-            // ── State ────────────────────────────────────────────────────
-            "verify_state" => match self.client.verify_state().await {
-                Ok(()) => success_json(serde_json::json!({"success": true})),
-                Err(e) => error_text(e.to_string()),
-            },
-
             _ => Err(ErrorData::new(
                 ErrorCode::METHOD_NOT_FOUND,
                 format!("unknown tool: {name}"),
@@ -680,10 +694,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_37_tools_defined() {
+    fn all_36_tools_defined() {
         // Verify we can construct the tool list without a real client.
         // We test the count by checking the tool_list vector length.
-        let expected = 37;
+        let expected = 36;
         let tools = vec![
             // Messaging (8)
             make_tool::<SendMessageParams>("send_message", ""),
@@ -728,8 +742,6 @@ mod tests {
             make_tool_no_params("leave_voice", ""),
             make_tool_no_params("toggle_mute", ""),
             make_tool_no_params("toggle_deafen", ""),
-            // State (1)
-            make_tool_no_params("verify_state", ""),
         ];
         assert_eq!(tools.len(), expected);
     }
@@ -785,12 +797,11 @@ mod tests {
             "leave_voice",
             "toggle_mute",
             "toggle_deafen",
-            "verify_state",
         ];
         let mut set = std::collections::HashSet::new();
         for name in &tools {
             assert!(set.insert(name), "duplicate tool name: {name}");
         }
-        assert_eq!(set.len(), 37);
+        assert_eq!(set.len(), 36);
     }
 }
