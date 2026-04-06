@@ -1201,7 +1201,7 @@ mod tests {
                 },
             },
         );
-        emit_with_deps(
+        let alice_vote = emit_with_deps(
             &mut dag,
             &alice,
             EventKind::Vote {
@@ -1212,8 +1212,11 @@ mod tests {
         );
         // Now 3 admins. Majority of 3 = 2.
 
-        // Bob votes on a new proposal.
-        let prop = emit(
+        // Bob votes on a new proposal. The proposal must causally follow
+        // alice's vote (which grants bob admin status), otherwise the
+        // topo sort may place the proposal before alice's vote and bob
+        // won't be an admin when his vote is processed.
+        let prop = emit_with_deps(
             &mut dag,
             &admin,
             EventKind::Propose {
@@ -1221,6 +1224,7 @@ mod tests {
                     threshold: VoteThreshold::Unanimous,
                 },
             },
+            vec![alice_vote.hash],
         );
         emit_with_deps(
             &mut dag,
