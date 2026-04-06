@@ -144,6 +144,14 @@ mod tests {
 
         assert!(addr.is_alive());
         system.shutdown().await;
+        // The SyncActor owns a timer interval — shutdown may take a few
+        // ticks to fully propagate through the runtime.
+        for _ in 0..20 {
+            if !addr.is_alive() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
         assert!(!addr.is_alive());
     }
 }

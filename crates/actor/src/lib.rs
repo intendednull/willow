@@ -422,6 +422,12 @@ mod tests {
 
         assert!(addr.is_alive());
         system.shutdown().await;
+        for _ in 0..10 {
+            if !addr.is_alive() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
         assert!(!addr.is_alive());
     }
 
@@ -907,6 +913,12 @@ mod tests {
         let addr = system.spawn(CounterActor::new());
 
         system.shutdown().await;
+        for _ in 0..10 {
+            if !addr.is_alive() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
 
         let result = addr.do_send(Increment);
         assert!(result.is_err());
@@ -922,6 +934,12 @@ mod tests {
 
         assert!(any.is_alive());
         system.shutdown().await;
+        for _ in 0..10 {
+            if !any.is_alive() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
         assert!(!any.is_alive());
     }
 

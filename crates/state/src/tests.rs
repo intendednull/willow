@@ -26,18 +26,6 @@ fn do_emit(dag: &mut EventDag, id: &Identity, kind: EventKind) -> Event {
     e
 }
 
-/// Create an event with explicit cross-author deps and insert it.
-fn emit_with_deps(
-    dag: &mut EventDag,
-    id: &Identity,
-    kind: EventKind,
-    deps: Vec<EventHash>,
-) -> Event {
-    let e = dag.create_event(id, kind, deps, 0);
-    dag.insert(e.clone()).unwrap();
-    e
-}
-
 #[test]
 fn stress_1000_events_single_author() {
     let id = Identity::generate();

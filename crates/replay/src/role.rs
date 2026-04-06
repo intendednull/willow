@@ -594,7 +594,7 @@ mod tests {
         );
         // Add a second author that the peer doesn't know about at all.
         let author2 = Identity::generate();
-        let a2_msg = make_dag_event(
+        let _a2_msg = make_dag_event(
             &author2,
             1,
             EventHash::ZERO,

@@ -986,7 +986,7 @@ mod tests {
         // Alice hasn't voted on bob's proposal.
 
         // Now 2 admins. Propose carol — need majority of 2 = 2 votes.
-        let prop = emit(
+        emit(
             &mut dag,
             &admin,
             EventKind::Propose {
