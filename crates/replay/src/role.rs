@@ -151,9 +151,12 @@ impl WorkerRole for ReplayRole {
     fn on_event(&mut self, event: &Event) {
         // Derive server_id from the event's DAG context:
         // 1. CreateServer → use the event hash as server_id.
-        // 2. Known author → find the server whose DAG tracks this author.
-        // 3. Known prev hash → find the server whose DAG contains the
-        //    predecessor (handles new authors joining an existing server).
+        // 2. Known prev hash → find the server whose DAG contains the
+        //    predecessor. This is the most precise check (prev is unique
+        //    to one DAG) and handles both existing and new authors.
+        // 3. Known author → find the server whose DAG tracks this author.
+        //    Less precise (author could be in multiple servers) but
+        //    catches events whose prev we haven't seen yet.
         // 4. Fallback → "default" bucket (event will be buffered until
         //    its predecessor chain connects it to a known server).
         let server_id = if let EventKind::CreateServer { .. } = &event.kind {
@@ -161,13 +164,13 @@ impl WorkerRole for ReplayRole {
         } else if let Some((id, _)) = self
             .servers
             .iter()
-            .find(|(_, data)| data.dag.latest_seq(&event.author) > 0)
+            .find(|(_, data)| data.dag.get(&event.prev).is_some())
         {
             id.clone()
         } else if let Some((id, _)) = self
             .servers
             .iter()
-            .find(|(_, data)| data.dag.get(&event.prev).is_some())
+            .find(|(_, data)| data.dag.latest_seq(&event.author) > 0)
         {
             id.clone()
         } else {
