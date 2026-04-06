@@ -352,6 +352,8 @@ pub struct Server {
     pub name: String,
     /// Optional description.
     pub description: Option<String>,
+    /// The peer who created the server (genesis author).
+    pub creator: EndpointId,
     /// The set of peers with admin status.
     pub admins: HashSet<EndpointId>,
     /// When the server was created.
@@ -380,6 +382,7 @@ impl Server {
             id: ServerId::new(),
             name: name.into(),
             description: None,
+            creator,
             admins,
             created_at: Utc::now(),
             channels: HashMap::new(),

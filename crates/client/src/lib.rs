@@ -360,11 +360,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                     state.event_state = willow_state::ServerState::new(
                         sid.clone(),
                         ctx.server.name.clone(),
-                        *ctx.server
-                            .admins
-                            .iter()
-                            .next()
-                            .expect("server must have an admin"),
+                        ctx.server.creator,
                     );
 
                     // No persisted events -- seed event_state with existing
