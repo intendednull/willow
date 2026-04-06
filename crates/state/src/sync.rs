@@ -84,6 +84,12 @@ impl Snapshot {
     ///
     /// The hash is computed from a canonical (sorted) representation of
     /// the heads to ensure determinism despite HashMap iteration order.
+    ///
+    /// **Known limitation:** `ServerState` contains `HashMap` fields whose
+    /// iteration order is non-deterministic. Two peers with identical state
+    /// may compute different hashes. Cross-peer verification requires a
+    /// canonical serialization of `ServerState` (tracked for future work).
+    /// Within a single process, the hash is consistent.
     pub fn new(state: ServerState, heads: HeadsSummary) -> Self {
         let mut sorted_heads: Vec<_> = heads.heads.iter().collect();
         sorted_heads.sort_by_key(|(id, _)| id.as_bytes());

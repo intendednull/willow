@@ -83,9 +83,14 @@ impl ReplayRole {
                     let resolved = data.pending.resolve(&current.hash);
                     queue.extend(resolved);
                 }
-                Err(InsertError::SeqGap { .. }) | Err(InsertError::PrevMismatch { .. }) => {
-                    // Chain predecessor hasn't arrived yet — buffer.
+                Err(InsertError::SeqGap { .. }) => {
+                    // Chain predecessor hasn't arrived yet — buffer until it does.
                     data.pending.buffer_for_prev(current.prev, current);
+                }
+                Err(InsertError::PrevMismatch { .. }) => {
+                    // Seq is correct but prev hash doesn't match our head.
+                    // This indicates equivocation or conflicting chain versions.
+                    // Buffering won't help — drop the event.
                 }
                 Err(InsertError::Duplicate) => { /* already have it */ }
                 Err(_) => { /* truly invalid — skip */ }
