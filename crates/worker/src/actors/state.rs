@@ -211,6 +211,9 @@ mod tests {
 
         assert!(addr.is_alive());
         system.shutdown().await;
+        // The actor may not be fully stopped immediately after shutdown
+        // returns — yield to let the runtime process the stop signal.
+        tokio::task::yield_now().await;
         assert!(!addr.is_alive());
     }
 
