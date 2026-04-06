@@ -70,8 +70,7 @@ impl Handler<GetHeadsSummariesMsg> for StateActor {
         _msg: GetHeadsSummariesMsg,
         _ctx: &mut Context<Self>,
     ) -> Vec<(String, willow_state::HeadsSummary)> {
-        // Default: no heads summaries. Replay nodes override via WorkerRole.
-        vec![]
+        self.role.heads_summaries()
     }
 }
 

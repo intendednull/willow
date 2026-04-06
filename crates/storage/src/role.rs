@@ -75,8 +75,13 @@ impl WorkerRole for StorageRole {
                     reason: format!("query failed: {e}"),
                 },
             },
-            WorkerRequest::Sync { .. } => WorkerResponse::Denied {
-                reason: "storage nodes do not serve sync requests".to_string(),
+            WorkerRequest::Sync {
+                server_id, heads, ..
+            } => match self.store.sync_since(&server_id, &heads) {
+                Ok(events) => WorkerResponse::SyncBatch { events },
+                Err(e) => WorkerResponse::Denied {
+                    reason: format!("sync query failed: {e}"),
+                },
             },
         }
     }
@@ -146,18 +151,64 @@ mod tests {
     }
 
     #[test]
-    fn storage_role_denies_sync_requests() {
+    fn storage_role_serves_sync_requests() {
         let store = StorageEventStore::open(":memory:").unwrap();
         let mut role = StorageRole::new(store);
+        role.set_default_server("srv-1".to_string());
 
+        let id = Identity::generate();
+        let mut prev = EventHash::ZERO;
+        for seq in 1..=3 {
+            let e = make_message(&id, seq, prev, "general");
+            prev = e.hash;
+            role.on_event(&e);
+        }
+
+        // Empty heads = new peer, should get all events.
         let resp = role.handle_request(WorkerRequest::Sync {
             server_id: "srv-1".to_string(),
             heads: HeadsSummary::default(),
         });
 
         match resp {
-            WorkerResponse::Denied { reason } => assert!(reason.contains("sync")),
-            _ => panic!("expected Denied"),
+            WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 3),
+            _ => panic!("expected SyncBatch, got {:?}", resp),
+        }
+    }
+
+    #[test]
+    fn storage_role_sync_returns_delta() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let mut role = StorageRole::new(store);
+        role.set_default_server("srv-1".to_string());
+
+        let id = Identity::generate();
+        let mut prev = EventHash::ZERO;
+        let mut hashes = vec![];
+        for seq in 1..=5 {
+            let e = make_message(&id, seq, prev, "general");
+            prev = e.hash;
+            hashes.push((seq, e.hash));
+            role.on_event(&e);
+        }
+
+        // Peer knows up to seq 3 — should get seq 4 and 5.
+        let mut their_heads = std::collections::HashMap::new();
+        their_heads.insert(
+            id.endpoint_id(),
+            willow_state::AuthorHead {
+                seq: 3,
+                hash: hashes[2].1,
+            },
+        );
+        let resp = role.handle_request(WorkerRequest::Sync {
+            server_id: "srv-1".to_string(),
+            heads: HeadsSummary { heads: their_heads },
+        });
+
+        match resp {
+            WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 2),
+            _ => panic!("expected SyncBatch"),
         }
     }
 

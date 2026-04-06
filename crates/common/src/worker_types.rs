@@ -127,6 +127,13 @@ pub trait WorkerRole: Send + 'static {
 
     /// Handle an incoming request from a client peer.
     fn handle_request(&mut self, req: WorkerRequest) -> WorkerResponse;
+
+    /// Returns heads summaries for all tracked servers.
+    /// Used by the sync actor to broadcast current DAG state.
+    /// Default returns empty — override in roles that track server state.
+    fn heads_summaries(&self) -> Vec<(String, HeadsSummary)> {
+        vec![]
+    }
 }
 
 /// Allocation strategy for which servers a worker serves.

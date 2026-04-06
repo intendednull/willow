@@ -7,7 +7,8 @@
 use std::collections::HashMap;
 
 use willow_state::{
-    apply_incremental, Event, EventDag, HeadsSummary, InsertError, ServerState, Snapshot,
+    apply_incremental, Event, EventDag, HeadsSummary, InsertError, PendingBuffer, ServerState,
+    Snapshot,
 };
 use willow_worker::{WorkerRequest, WorkerResponse, WorkerRole, WorkerRoleInfo};
 
@@ -17,6 +18,8 @@ struct ServerData {
     dag: EventDag,
     /// Cached materialized state (maintained incrementally).
     state: ServerState,
+    /// Buffer for events arriving before their chain predecessors.
+    pending: PendingBuffer,
     /// Max events per author before compaction (reserved for future use).
     #[allow(dead_code)]
     max_events_per_author: usize,
@@ -60,15 +63,31 @@ impl ReplayRole {
             .or_insert_with(|| ServerData {
                 dag: EventDag::new(),
                 state: ServerState::new(server_id, server_id, event.author),
+                pending: PendingBuffer::new(),
                 max_events_per_author: max_per_author,
             });
 
+        Self::try_insert(data, event.clone());
+    }
+
+    /// Try to insert an event into the DAG. On chain gap, buffer it.
+    /// On success, resolve any events that were waiting on this one.
+    fn try_insert(data: &mut ServerData, event: Event) {
         match data.dag.insert(event.clone()) {
             Ok(()) => {
-                apply_incremental(&mut data.state, event);
+                apply_incremental(&mut data.state, &event);
+                // Resolve any events that were waiting for this one.
+                let resolved = data.pending.resolve(&event.hash);
+                for ready in resolved {
+                    Self::try_insert(data, ready);
+                }
+            }
+            Err(InsertError::SeqGap { .. }) | Err(InsertError::PrevMismatch { .. }) => {
+                // Chain predecessor hasn't arrived yet — buffer.
+                data.pending.buffer_for_prev(event.prev, event);
             }
             Err(InsertError::Duplicate) => { /* already have it */ }
-            Err(_) => { /* rejected — skip */ }
+            Err(_) => { /* truly invalid — skip */ }
         }
     }
 
@@ -159,6 +178,10 @@ impl WorkerRole for ReplayRole {
                 reason: "replay nodes do not serve history".to_string(),
             },
         }
+    }
+
+    fn heads_summaries(&self) -> Vec<(String, HeadsSummary)> {
+        self.heads_summaries()
     }
 }
 
@@ -419,5 +442,47 @@ mod tests {
         role.ingest_event("srv-1", &e); // duplicate
 
         assert_eq!(role.servers["srv-1"].dag.len(), 2); // genesis + 1
+    }
+
+    #[test]
+    fn out_of_order_events_buffered_and_resolved() {
+        let mut role = ReplayRole::new(ReplayConfig::default());
+        let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
+
+        // Create a chain: genesis → e2 → e3
+        let e2 = make_message(&owner, 2, genesis_hash);
+        let e3 = make_message(&owner, 3, e2.hash);
+
+        // Deliver e3 FIRST (out of order) — should be buffered.
+        role.ingest_event("srv-1", &e3);
+        assert_eq!(role.servers["srv-1"].dag.len(), 1); // only genesis
+        assert_eq!(role.servers["srv-1"].pending.pending_count(), 1);
+
+        // Now deliver e2 — should resolve e3 from the buffer.
+        role.ingest_event("srv-1", &e2);
+        assert_eq!(role.servers["srv-1"].dag.len(), 3); // genesis + e2 + e3
+        assert_eq!(role.servers["srv-1"].pending.pending_count(), 0);
+    }
+
+    #[test]
+    fn deeply_out_of_order_chain_resolves() {
+        let mut role = ReplayRole::new(ReplayConfig::default());
+        let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
+
+        // Create chain: genesis → e2 → e3 → e4
+        let e2 = make_message(&owner, 2, genesis_hash);
+        let e3 = make_message(&owner, 3, e2.hash);
+        let e4 = make_message(&owner, 4, e3.hash);
+
+        // Deliver in reverse order: e4, e3, e2
+        role.ingest_event("srv-1", &e4);
+        role.ingest_event("srv-1", &e3);
+        assert_eq!(role.servers["srv-1"].dag.len(), 1); // only genesis
+        assert_eq!(role.servers["srv-1"].pending.pending_count(), 2);
+
+        // Deliver e2 — should cascade: e2 resolves e3, e3 resolves e4.
+        role.ingest_event("srv-1", &e2);
+        assert_eq!(role.servers["srv-1"].dag.len(), 4);
+        assert_eq!(role.servers["srv-1"].pending.pending_count(), 0);
     }
 }

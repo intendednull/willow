@@ -145,6 +145,63 @@ impl StorageEventStore {
         Ok((events, has_more))
     }
 
+    /// Return events the requester is missing based on their HeadsSummary.
+    ///
+    /// For each author in our store: if the requester has a lower seq (or
+    /// doesn't know the author at all), return events with seq > their_seq.
+    /// If heads is empty, returns all events for the server.
+    pub fn sync_since(&self, server_id: &str, heads: &HeadsSummary) -> anyhow::Result<Vec<Event>> {
+        if heads.heads.is_empty() {
+            // New peer — send everything we have for this server.
+            let mut stmt = self
+                .conn
+                .prepare("SELECT event_data FROM events WHERE server_id = ?1 ORDER BY seq ASC")?;
+            let rows: Vec<Vec<u8>> = stmt
+                .query_map(rusqlite::params![server_id], |row| row.get(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            let events: Vec<Event> = rows
+                .iter()
+                .filter_map(|data| bincode::deserialize(data).ok())
+                .collect();
+            return Ok(events);
+        }
+
+        // Build a query that gets events after the requester's known heads.
+        // For known authors: seq > their_seq. For unknown authors: all events.
+        let mut sql = String::from("SELECT event_data FROM events WHERE server_id = ?1 AND (");
+
+        let mut conditions = Vec::new();
+        for (author, head) in &heads.heads {
+            let author_hex = bytes_to_hex(author.as_bytes());
+            conditions.push(format!("(author = X'{author_hex}' AND seq > {})", head.seq,));
+        }
+
+        // Events from authors not in the heads (they don't know about them).
+        let author_hex_list: Vec<String> = heads
+            .heads
+            .keys()
+            .map(|a| format!("X'{}'", bytes_to_hex(a.as_bytes())))
+            .collect();
+        let known_authors = author_hex_list.join(", ");
+        conditions.push(format!("author NOT IN ({known_authors})"));
+
+        sql.push_str(&conditions.join(" OR "));
+        sql.push_str(") ORDER BY seq ASC");
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows: Vec<Vec<u8>> = stmt
+            .query_map(rusqlite::params![server_id], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        let events: Vec<Event> = rows
+            .iter()
+            .filter_map(|data| bincode::deserialize(data).ok())
+            .collect();
+
+        Ok(events)
+    }
+
     /// Total number of stored events.
     pub fn count(&self) -> anyhow::Result<u64> {
         let count: i64 = self
