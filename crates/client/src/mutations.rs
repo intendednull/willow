@@ -169,7 +169,7 @@ impl<N: willow_network::Network> ClientMutations<N> {
 
     /// Fire-and-forget broadcast of raw data on a named topic.
     pub(crate) fn broadcast_on_topic(&self, topic: &str, data: Vec<u8>) {
-        let topics = self.topics.read().unwrap();
+        let topics = self.topics.read().unwrap_or_else(|e| e.into_inner());
         let Some(handle) = topics.get(topic).cloned() else {
             return;
         };
@@ -528,7 +528,8 @@ impl<N: willow_network::Network> ClientMutations<N> {
     pub async fn delete_role(&self, role_id: &str) -> anyhow::Result<()> {
         let role_id = role_id.to_string();
         let rid = willow_channel::RoleId(
-            uuid::Uuid::parse_str(&role_id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+            uuid::Uuid::parse_str(&role_id)
+                .map_err(|e| anyhow::anyhow!("invalid role_id: {e}"))?,
         );
         willow_actor::state::mutate(&self.server_registry, move |reg| -> anyhow::Result<()> {
             let entry = reg

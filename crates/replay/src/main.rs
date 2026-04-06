@@ -16,9 +16,9 @@ struct Cli {
     #[arg(long)]
     relay_url: Option<String>,
 
-    /// Max events per server to buffer in memory.
+    /// Max events per author chain to buffer in memory.
     #[arg(long, default_value = "1000")]
-    max_events_per_server: usize,
+    max_events_per_author: usize,
 
     /// Active sync interval in seconds.
     #[arg(long, default_value = "30")]
@@ -55,13 +55,17 @@ async fn main() -> anyhow::Result<()> {
 
     let identity = willow_worker::identity::load_or_generate(&cli.identity_path)?;
 
-    let relay_url = cli.relay_url.as_deref().map(|url| {
-        url.parse::<willow_network::iroh::RelayUrl>()
-            .expect("invalid relay URL")
-    });
+    let relay_url = cli
+        .relay_url
+        .as_deref()
+        .map(|url| {
+            url.parse::<willow_network::iroh::RelayUrl>()
+                .map_err(|e| anyhow::anyhow!("invalid relay URL '{url}': {e}"))
+        })
+        .transpose()?;
 
     tracing::info!(
-        max_events = cli.max_events_per_server,
+        max_events = cli.max_events_per_author,
         sync_interval = cli.sync_interval,
         relay_url = ?relay_url,
         "starting replay node"
@@ -76,7 +80,7 @@ async fn main() -> anyhow::Result<()> {
     let network = willow_network::iroh::IrohNetwork::new(iroh_config).await?;
 
     let role = ReplayRole::new(ReplayConfig {
-        max_events_per_author: cli.max_events_per_server,
+        max_events_per_author: cli.max_events_per_author,
     });
 
     let config = willow_worker::WorkerConfig {

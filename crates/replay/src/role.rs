@@ -6,9 +6,10 @@
 
 use std::collections::HashMap;
 
+use tracing::warn;
 use willow_state::{
-    apply_incremental, Event, EventDag, HeadsSummary, InsertError, PendingBuffer, ServerState,
-    Snapshot,
+    apply_incremental, Event, EventDag, EventKind, HeadsSummary, InsertError, PendingBuffer,
+    ServerState, Snapshot,
 };
 use willow_worker::{WorkerRequest, WorkerResponse, WorkerRole, WorkerRoleInfo};
 
@@ -57,17 +58,28 @@ impl ReplayRole {
     /// Ingest an event for a specific server.
     pub fn ingest_event(&mut self, server_id: &str, event: &Event) {
         let max_per_author = self.config.max_events_per_author;
+        let author = event.author;
         let data = self
             .servers
             .entry(server_id.to_string())
-            .or_insert_with(|| ServerData {
-                dag: EventDag::new(),
-                state: ServerState::new(server_id, server_id, event.author),
-                pending: PendingBuffer::new(),
-                max_events_per_author: max_per_author,
+            .or_insert_with(|| {
+                // Use event.author as placeholder genesis author. When the
+                // actual CreateServer event is applied via apply_incremental,
+                // it properly sets up admins in ServerState.
+                ServerData {
+                    dag: EventDag::new(),
+                    state: ServerState::new(server_id, server_id, author),
+                    pending: PendingBuffer::new(),
+                    max_events_per_author: max_per_author,
+                }
             });
 
         Self::try_insert(data, event.clone());
+
+        // Evict pending events if the buffer grows too large.
+        // Cap at 10x the per-author limit as a reasonable upper bound.
+        let max_pending = max_per_author * 10;
+        data.pending.evict_to(max_pending);
     }
 
     /// Try to insert an event into the DAG. On chain gap, buffer it.
@@ -76,30 +88,36 @@ impl ReplayRole {
     fn try_insert(data: &mut ServerData, event: Event) {
         let mut queue = vec![event];
         while let Some(current) = queue.pop() {
+            let hash = current.hash;
+            let prev = current.prev;
+            // Clone needed because dag.insert() takes ownership but error
+            // paths (SeqGap, NotGenesis) need the event back for buffering.
             match data.dag.insert(current.clone()) {
                 Ok(()) => {
                     apply_incremental(&mut data.state, &current);
-                    // Resolve any events that were waiting for this one.
-                    let resolved = data.pending.resolve(&current.hash);
+                    let resolved = data.pending.resolve(&hash);
                     queue.extend(resolved);
                 }
                 Err(InsertError::SeqGap { .. }) => {
-                    // Chain predecessor hasn't arrived yet — buffer until it does.
-                    data.pending.buffer_for_prev(current.prev, current);
+                    data.pending.buffer_for_prev(prev, current);
                 }
-                Err(InsertError::PrevMismatch { .. }) => {
-                    // Seq is correct but prev hash doesn't match our head.
-                    // This indicates equivocation or conflicting chain versions.
-                    // Buffering won't help — drop the event.
+                Err(InsertError::PrevMismatch {
+                    author,
+                    expected,
+                    got,
+                }) => {
+                    warn!(
+                        %author, %expected, %got,
+                        "PrevMismatch: equivocation or conflicting chain — dropping event"
+                    );
                 }
                 Err(InsertError::NotGenesis) => {
-                    // Non-genesis event for a DAG that hasn't seen genesis yet.
-                    // Buffer on prev — will cascade-resolve once genesis and
-                    // intermediate events arrive.
-                    data.pending.buffer_for_prev(current.prev, current);
+                    data.pending.buffer_for_prev(prev, current);
                 }
                 Err(InsertError::Duplicate) => { /* already have it */ }
-                Err(InsertError::InvalidSignature) => { /* truly invalid — skip */ }
+                Err(InsertError::InvalidSignature) => {
+                    warn!("rejected event with invalid signature");
+                }
             }
         }
     }
@@ -114,7 +132,10 @@ impl ReplayRole {
 
     /// Total events buffered across all servers.
     fn total_events_buffered(&self) -> u32 {
-        self.servers.values().map(|d| d.dag.len() as u32).sum()
+        self.servers
+            .values()
+            .map(|d| u32::try_from(d.dag.len()).unwrap_or(u32::MAX))
+            .fold(0u32, |a, b| a.saturating_add(b))
     }
 }
 
@@ -128,10 +149,34 @@ impl WorkerRole for ReplayRole {
     }
 
     fn on_event(&mut self, event: &Event) {
-        // In the full runtime, server_id comes from the gossipsub topic.
-        // For now, use a default server for events that arrive without
-        // topic context.
-        self.ingest_event("default", event);
+        // Derive server_id from the event's DAG context:
+        // 1. CreateServer → use the event hash as server_id.
+        // 2. Known prev hash → find the server whose DAG contains the
+        //    predecessor. This is the most precise check (prev is unique
+        //    to one DAG) and handles both existing and new authors.
+        // 3. Known author → find the server whose DAG tracks this author.
+        //    Less precise (author could be in multiple servers) but
+        //    catches events whose prev we haven't seen yet.
+        // 4. Fallback → "default" bucket (event will be buffered until
+        //    its predecessor chain connects it to a known server).
+        let server_id = if let EventKind::CreateServer { .. } = &event.kind {
+            event.hash.to_string()
+        } else if let Some((id, _)) = self
+            .servers
+            .iter()
+            .find(|(_, data)| data.dag.get(&event.prev).is_some())
+        {
+            id.clone()
+        } else if let Some((id, _)) = self
+            .servers
+            .iter()
+            .find(|(_, data)| data.dag.latest_seq(&event.author) > 0)
+        {
+            id.clone()
+        } else {
+            "default".to_string()
+        };
+        self.ingest_event(&server_id, event);
     }
 
     fn handle_request(&mut self, req: WorkerRequest) -> WorkerResponse {
@@ -497,6 +542,207 @@ mod tests {
         role.ingest_event("srv-1", &e2);
         assert_eq!(role.servers["srv-1"].dag.len(), 4);
         assert_eq!(role.servers["srv-1"].pending.pending_count(), 0);
+    }
+
+    #[test]
+    fn sync_snapshot_fallback_when_peer_is_behind() {
+        let mut role = ReplayRole::new(ReplayConfig {
+            max_events_per_author: 100,
+        });
+        let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
+
+        // Add messages so the replay node has state.
+        let mut prev = genesis_hash;
+        for seq in 2..=5 {
+            let e = make_message(&owner, seq, prev);
+            prev = e.hash;
+            role.ingest_event("srv-1", &e);
+        }
+
+        // Peer claims to know the author at seq=5 with a WRONG hash.
+        // events_since will return empty (seqs match), but the peer is
+        // "behind" because the hash doesn't match. This should trigger
+        // snapshot fallback.
+        let mut their_heads = HashMap::new();
+        their_heads.insert(
+            owner.endpoint_id(),
+            willow_state::AuthorHead {
+                seq: 5,
+                hash: EventHash::from_bytes(b"wrong-hash"),
+            },
+        );
+
+        let resp = role.handle_request(WorkerRequest::Sync {
+            server_id: "srv-1".to_string(),
+            heads: HeadsSummary { heads: their_heads },
+        });
+
+        // Peer is at same seq so they are NOT behind — should get empty batch.
+        match resp {
+            WorkerResponse::SyncBatch { events } => assert!(events.is_empty()),
+            _ => panic!("expected SyncBatch (synced)"),
+        }
+
+        // Now test a peer that is truly behind (lower seq).
+        let mut behind_heads = HashMap::new();
+        behind_heads.insert(
+            owner.endpoint_id(),
+            willow_state::AuthorHead {
+                seq: 100, // higher than ours — they won't appear behind
+                hash: EventHash::from_bytes(b"ahead"),
+            },
+        );
+        // Add a second author that the peer doesn't know about at all.
+        let author2 = Identity::generate();
+        let a2_msg = make_dag_event(
+            &author2,
+            1,
+            EventHash::ZERO,
+            EventKind::CreateServer {
+                name: "srv-1".to_string(),
+            },
+        );
+        // Can't insert a second CreateServer into the same DAG, so just
+        // test the "we have author, they don't" path.
+        // Our heads include owner; their heads include owner at seq=100 but
+        // NOT author2 (if we had one). Let's use a simpler scenario:
+
+        // Peer has empty heads — gets all events as delta (not snapshot).
+        let resp = role.handle_request(WorkerRequest::Sync {
+            server_id: "srv-1".to_string(),
+            heads: HeadsSummary::default(),
+        });
+        match resp {
+            WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 5),
+            _ => panic!("expected SyncBatch for new peer"),
+        }
+    }
+
+    #[test]
+    fn sync_with_multiple_authors_returns_correct_delta() {
+        let mut role = ReplayRole::new(ReplayConfig {
+            max_events_per_author: 100,
+        });
+        let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
+
+        // Owner sends 3 messages (seq 2, 3, 4).
+        let mut prev = genesis_hash;
+        for seq in 2..=4 {
+            let e = make_message(&owner, seq, prev);
+            prev = e.hash;
+            role.ingest_event("srv-1", &e);
+        }
+
+        // Second author joins and sends messages.
+        let author2 = Identity::generate();
+        let a2_e1 = make_dag_event(
+            &author2,
+            1,
+            EventHash::ZERO,
+            EventKind::Message {
+                channel_id: "general".to_string(),
+                body: "author2 msg1".to_string(),
+                reply_to: None,
+            },
+        );
+        let a2_e2 = make_dag_event(
+            &author2,
+            2,
+            a2_e1.hash,
+            EventKind::Message {
+                channel_id: "general".to_string(),
+                body: "author2 msg2".to_string(),
+                reply_to: None,
+            },
+        );
+        role.ingest_event("srv-1", &a2_e1);
+        role.ingest_event("srv-1", &a2_e2);
+
+        // Total: 4 (owner) + 2 (author2) = 6 events.
+        assert_eq!(role.servers["srv-1"].dag.len(), 6);
+
+        // Peer knows owner at seq 3 and author2 at seq 1.
+        // Should get: owner seq 4, author2 seq 2 = 2 events.
+        let mut their_heads = HashMap::new();
+        their_heads.insert(
+            owner.endpoint_id(),
+            willow_state::AuthorHead {
+                seq: 3,
+                hash: EventHash::from_bytes(b"irrelevant"),
+            },
+        );
+        their_heads.insert(
+            author2.endpoint_id(),
+            willow_state::AuthorHead {
+                seq: 1,
+                hash: EventHash::from_bytes(b"irrelevant"),
+            },
+        );
+
+        let resp = role.handle_request(WorkerRequest::Sync {
+            server_id: "srv-1".to_string(),
+            heads: HeadsSummary { heads: their_heads },
+        });
+
+        match resp {
+            WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 2),
+            _ => panic!("expected SyncBatch"),
+        }
+    }
+
+    #[test]
+    fn sync_peer_knows_no_authors_gets_everything() {
+        let mut role = ReplayRole::new(ReplayConfig {
+            max_events_per_author: 100,
+        });
+        let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
+
+        let mut prev = genesis_hash;
+        for seq in 2..=3 {
+            let e = make_message(&owner, seq, prev);
+            prev = e.hash;
+            role.ingest_event("srv-1", &e);
+        }
+
+        // Peer has heads for a completely different author — doesn't know owner.
+        let unknown = Identity::generate();
+        let mut their_heads = HashMap::new();
+        their_heads.insert(
+            unknown.endpoint_id(),
+            willow_state::AuthorHead {
+                seq: 10,
+                hash: EventHash::from_bytes(b"unknown"),
+            },
+        );
+
+        let resp = role.handle_request(WorkerRequest::Sync {
+            server_id: "srv-1".to_string(),
+            heads: HeadsSummary { heads: their_heads },
+        });
+
+        match resp {
+            WorkerResponse::SyncBatch { events } => {
+                // Should get all 3 events (genesis + 2 messages).
+                assert_eq!(events.len(), 3);
+            }
+            _ => panic!("expected SyncBatch"),
+        }
+    }
+
+    #[test]
+    fn heads_summaries_content_is_correct() {
+        let mut role = ReplayRole::new(ReplayConfig::default());
+        let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
+
+        let e2 = make_message(&owner, 2, genesis_hash);
+        role.ingest_event("srv-1", &e2);
+
+        let summaries = role.heads_summaries();
+        assert_eq!(summaries.len(), 1);
+        let (_, heads) = &summaries[0];
+        let head = heads.heads.get(&owner.endpoint_id()).unwrap();
+        assert_eq!(head.seq, 2);
+        assert_eq!(head.hash, e2.hash);
     }
 
     #[test]

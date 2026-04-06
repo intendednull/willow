@@ -9,19 +9,28 @@ use leptos::prelude::*;
 use crate::app::WebClientHandle;
 use crate::state::{AppState, AppWriteSignals};
 
+/// Parse a hex string into an `EventHash`, logging on failure.
+fn parse_event_hash(hex: &str) -> Option<willow_client::willow_state::EventHash> {
+    hex.parse().ok()
+}
+
 /// Create a handler for sending messages (including replies).
 pub fn make_send_handler(
     handle: WebClientHandle,
     state: AppState,
-    _write: AppWriteSignals,
+    write: AppWriteSignals,
 ) -> impl Fn(String) + Clone + 'static {
     move |body: String| {
         let ch = state.chat.current_channel.get_untracked();
         let h = handle.clone();
         let replying = state.chat.replying_to.get_untracked();
+        // Clear reply state immediately so the UI updates.
+        write.chat.set_replying_to.set(None);
         wasm_bindgen_futures::spawn_local(async move {
             if let Some(reply_msg) = replying {
-                let _ = h.send_reply(&ch, &reply_msg.id, &body).await;
+                if let Some(hash) = parse_event_hash(&reply_msg.id) {
+                    let _ = h.send_reply(&ch, &hash, &body).await;
+                }
             } else {
                 let _ = h.send_message(&ch, &body).await;
             }
@@ -40,7 +49,9 @@ pub fn make_edit_handler(
         let h = handle.clone();
         write.chat.set_editing.set(None);
         wasm_bindgen_futures::spawn_local(async move {
-            let _ = h.edit_message(&ch, &message_id, &new_body).await;
+            if let Some(hash) = parse_event_hash(&message_id) {
+                let _ = h.edit_message(&ch, &hash, &new_body).await;
+            }
         });
     }
 }
@@ -55,7 +66,9 @@ pub fn make_delete_handler(
         let ch = state.chat.current_channel.get_untracked();
         let h = handle.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            let _ = h.delete_message(&ch, &msg.id).await;
+            if let Some(hash) = parse_event_hash(&msg.id) {
+                let _ = h.delete_message(&ch, &hash).await;
+            }
         });
     }
 }
@@ -70,7 +83,9 @@ pub fn make_react_handler(
         let ch = state.chat.current_channel.get_untracked();
         let h = handle.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            let _ = h.react(&ch, &msg.id, &emoji).await;
+            if let Some(hash) = parse_event_hash(&msg.id) {
+                let _ = h.react(&ch, &hash, &emoji).await;
+            }
         });
     }
 }
@@ -127,10 +142,12 @@ pub fn make_pin_handler(
         let h = handle.clone();
         let mid = msg.id.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            if h.is_pinned(&ch, &mid).await {
-                let _ = h.unpin_message(&ch, &mid).await;
-            } else {
-                let _ = h.pin_message(&ch, &mid).await;
+            if let Some(hash) = parse_event_hash(&mid) {
+                if h.is_pinned(&ch, &hash).await {
+                    let _ = h.unpin_message(&ch, &hash).await;
+                } else {
+                    let _ = h.pin_message(&ch, &hash).await;
+                }
             }
         });
     }

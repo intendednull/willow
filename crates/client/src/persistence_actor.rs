@@ -25,10 +25,9 @@ pub struct PersistenceActor {
     persistence_enabled: bool,
 }
 
-// Safety: PersistenceActor owns !Send resources (rusqlite::Connection inside
-// storage backends) but the actor mailbox guarantees single-threaded
-// execution — messages are processed sequentially on one thread.
-unsafe impl Send for PersistenceActor {}
+// Note: PersistenceActor fields (Vec, Option, bool) are all Send.
+// The unsafe impl Send that was here has been removed as it's no longer needed —
+// rusqlite connections are now managed in storage functions, not held in the actor.
 
 impl PersistenceActor {
     /// Create a new persistence actor.

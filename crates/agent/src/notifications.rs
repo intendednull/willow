@@ -74,10 +74,6 @@ pub fn event_to_json(event: &ClientEvent) -> serde_json::Value {
             r#type: "ChannelDeleted",
             data: serde_json::json!({ "name": name }),
         }),
-        ClientEvent::MemberKicked(peer) => to_value(&NotificationPayload {
-            r#type: "MemberKicked",
-            data: serde_json::json!({ "peer_id": peer.to_string() }),
-        }),
         ClientEvent::PeerTrusted(peer) => to_value(&NotificationPayload {
             r#type: "PeerTrusted",
             data: serde_json::json!({ "peer_id": peer.to_string() }),
@@ -129,16 +125,26 @@ pub fn event_to_json(event: &ClientEvent) -> serde_json::Value {
             r#type: "RoleDeleted",
             data: serde_json::json!({ "role_id": role_id }),
         }),
-        ClientEvent::StateHashMismatch {
-            peer_id,
-            our_hash,
-            their_hash,
+        ClientEvent::ProposalCreated {
+            proposal_hash,
+            action_description,
         } => to_value(&NotificationPayload {
-            r#type: "StateHashMismatch",
+            r#type: "ProposalCreated",
             data: serde_json::json!({
-                "peer_id": peer_id.to_string(),
-                "our_hash": our_hash,
-                "their_hash": their_hash,
+                "proposal_hash": proposal_hash,
+                "action_description": action_description,
+            }),
+        }),
+        ClientEvent::VoteCast {
+            proposal_hash,
+            accept,
+            voter,
+        } => to_value(&NotificationPayload {
+            r#type: "VoteCast",
+            data: serde_json::json!({
+                "proposal_hash": proposal_hash,
+                "accept": accept,
+                "voter": voter.to_string(),
             }),
         }),
         ClientEvent::ServerRenamed { new_name } => to_value(&NotificationPayload {
@@ -222,7 +228,6 @@ pub const EVENT_TYPE_NAMES: &[&str] = &[
     "PeerDisconnected",
     "ChannelCreated",
     "ChannelDeleted",
-    "MemberKicked",
     "PeerTrusted",
     "PeerUntrusted",
     "ProfileUpdated",
@@ -231,7 +236,8 @@ pub const EVENT_TYPE_NAMES: &[&str] = &[
     "SyncCompleted",
     "RoleCreated",
     "RoleDeleted",
-    "StateHashMismatch",
+    "ProposalCreated",
+    "VoteCast",
     "ServerRenamed",
     "ServerDescriptionChanged",
     "MessagePinned",
@@ -322,7 +328,6 @@ mod tests {
             ClientEvent::PeerDisconnected(id),
             ClientEvent::ChannelCreated("dev".into()),
             ClientEvent::ChannelDeleted("dev".into()),
-            ClientEvent::MemberKicked(id),
             ClientEvent::PeerTrusted(id),
             ClientEvent::PeerUntrusted(id),
             ClientEvent::ProfileUpdated {
@@ -344,10 +349,14 @@ mod tests {
             ClientEvent::RoleDeleted {
                 role_id: "r1".into(),
             },
-            ClientEvent::StateHashMismatch {
-                peer_id: id,
-                our_hash: "aaa".into(),
-                their_hash: "bbb".into(),
+            ClientEvent::ProposalCreated {
+                proposal_hash: "abc123".into(),
+                action_description: "grant admin".into(),
+            },
+            ClientEvent::VoteCast {
+                proposal_hash: "abc123".into(),
+                accept: true,
+                voter: id,
             },
             ClientEvent::ServerRenamed {
                 new_name: "New".into(),

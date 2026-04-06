@@ -89,20 +89,24 @@ impl StorageEventStore {
         // HeadsSummary cursor: exclude events at or after the given heads.
         // For each author in the cursor, only include events with seq < their_seq.
         // For authors NOT in the cursor, include all events.
+        // All values are parameterized to prevent SQL injection.
+        let mut extra_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         if let Some(heads) = before {
             if !heads.heads.is_empty() {
                 let mut conditions = Vec::new();
+                let mut author_placeholders = Vec::new();
                 for (author, head) in &heads.heads {
-                    let author_hex = bytes_to_hex(author.as_bytes());
-                    conditions.push(format!("(author = X'{author_hex}' AND seq < {})", head.seq,));
+                    conditions.push(format!(
+                        "(author = ?{} AND seq < ?{})",
+                        param_idx,
+                        param_idx + 1
+                    ));
+                    extra_params.push(Box::new(author.as_bytes().to_vec()));
+                    extra_params.push(Box::new(head.seq as i64));
+                    author_placeholders.push(format!("?{param_idx}"));
+                    param_idx += 2;
                 }
-                // Events from known authors before their seq, OR events from unknown authors
-                let author_hex_list: Vec<String> = heads
-                    .heads
-                    .keys()
-                    .map(|a| format!("X'{}'", bytes_to_hex(a.as_bytes())))
-                    .collect();
-                let known_authors = author_hex_list.join(", ");
+                let known_authors = author_placeholders.join(", ");
                 let cond = format!(
                     " AND (({}) OR author NOT IN ({}))",
                     conditions.join(" OR "),
@@ -112,27 +116,26 @@ impl StorageEventStore {
             }
         }
 
-        sql.push_str(&format!(" ORDER BY seq DESC LIMIT ?{param_idx}"));
+        sql.push_str(&format!(
+            " ORDER BY timestamp_hint_ms DESC, seq DESC LIMIT ?{param_idx}"
+        ));
 
         let mut stmt = self.conn.prepare(&sql)?;
 
-        // Build params dynamically.
-        let raw_rows: Vec<Vec<u8>> = if channel.is_some() {
-            let rows: Vec<Vec<u8>> = stmt
-                .query_map(
-                    params![server_id, &channel_param, fetch_limit as i64],
-                    |row| row.get(0),
-                )?
-                .filter_map(|r| r.ok())
-                .collect();
-            rows
-        } else {
-            let rows: Vec<Vec<u8>> = stmt
-                .query_map(params![server_id, fetch_limit as i64], |row| row.get(0))?
-                .filter_map(|r| r.ok())
-                .collect();
-            rows
-        };
+        // Build the full parameter list dynamically.
+        let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        all_params.push(Box::new(server_id.to_string()));
+        if channel.is_some() {
+            all_params.push(Box::new(channel_param.clone()));
+        }
+        all_params.extend(extra_params);
+        all_params.push(Box::new(fetch_limit as i64));
+
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = all_params.iter().map(|p| &**p).collect();
+        let raw_rows: Vec<Vec<u8>> = stmt
+            .query_map(param_refs.as_slice(), |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
 
         let events: Vec<Event> = raw_rows
             .iter()
@@ -150,14 +153,20 @@ impl StorageEventStore {
     /// For each author in our store: if the requester has a lower seq (or
     /// doesn't know the author at all), return events with seq > their_seq.
     /// If heads is empty, returns all events for the server.
+    /// Maximum events returned in a single sync batch to prevent OOM.
+    const SYNC_BATCH_LIMIT: usize = 10_000;
+
     pub fn sync_since(&self, server_id: &str, heads: &HeadsSummary) -> anyhow::Result<Vec<Event>> {
         if heads.heads.is_empty() {
-            // New peer — send everything we have for this server.
-            let mut stmt = self
-                .conn
-                .prepare("SELECT event_data FROM events WHERE server_id = ?1 ORDER BY seq ASC")?;
+            // New peer — send up to SYNC_BATCH_LIMIT events for this server.
+            let mut stmt = self.conn.prepare(
+                "SELECT event_data FROM events WHERE server_id = ?1 ORDER BY seq ASC LIMIT ?2",
+            )?;
             let rows: Vec<Vec<u8>> = stmt
-                .query_map(rusqlite::params![server_id], |row| row.get(0))?
+                .query_map(
+                    rusqlite::params![server_id, Self::SYNC_BATCH_LIMIT as i64],
+                    |row| row.get(0),
+                )?
                 .filter_map(|r| r.ok())
                 .collect();
             let events: Vec<Event> = rows
@@ -167,31 +176,42 @@ impl StorageEventStore {
             return Ok(events);
         }
 
-        // Build a query that gets events after the requester's known heads.
+        // Build a parameterized query for events after the requester's known heads.
         // For known authors: seq > their_seq. For unknown authors: all events.
         let mut sql = String::from("SELECT event_data FROM events WHERE server_id = ?1 AND (");
+        let mut param_idx = 2u32;
+        let mut extra_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
         let mut conditions = Vec::new();
+        let mut author_placeholders = Vec::new();
         for (author, head) in &heads.heads {
-            let author_hex = bytes_to_hex(author.as_bytes());
-            conditions.push(format!("(author = X'{author_hex}' AND seq > {})", head.seq,));
+            conditions.push(format!(
+                "(author = ?{} AND seq > ?{})",
+                param_idx,
+                param_idx + 1
+            ));
+            extra_params.push(Box::new(author.as_bytes().to_vec()));
+            extra_params.push(Box::new(head.seq as i64));
+            author_placeholders.push(format!("?{param_idx}"));
+            param_idx += 2;
         }
 
         // Events from authors not in the heads (they don't know about them).
-        let author_hex_list: Vec<String> = heads
-            .heads
-            .keys()
-            .map(|a| format!("X'{}'", bytes_to_hex(a.as_bytes())))
-            .collect();
-        let known_authors = author_hex_list.join(", ");
+        let known_authors = author_placeholders.join(", ");
         conditions.push(format!("author NOT IN ({known_authors})"));
 
         sql.push_str(&conditions.join(" OR "));
-        sql.push_str(") ORDER BY seq ASC");
+        sql.push_str(&format!(") ORDER BY seq ASC LIMIT {}", Self::SYNC_BATCH_LIMIT));
 
         let mut stmt = self.conn.prepare(&sql)?;
+
+        let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        all_params.push(Box::new(server_id.to_string()));
+        all_params.extend(extra_params);
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = all_params.iter().map(|p| &**p).collect();
+
         let rows: Vec<Vec<u8>> = stmt
-            .query_map(rusqlite::params![server_id], |row| row.get(0))?
+            .query_map(param_refs.as_slice(), |row| row.get(0))?
             .filter_map(|r| r.ok())
             .collect();
         let events: Vec<Event> = rows
@@ -230,11 +250,6 @@ impl StorageEventStore {
                 })?;
         Ok(count as u32)
     }
-}
-
-/// Convert bytes to a hex string (no allocator dependency on `hex` crate).
-fn bytes_to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Extract channel_id from an event, if applicable.

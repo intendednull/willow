@@ -51,6 +51,11 @@ pub struct WorkerAnnouncement {
 }
 
 /// Top-level wire message for the `_willow_workers` gossipsub topic.
+///
+/// **Security note:** These messages are not signed. A malicious peer on
+/// the gossipsub topic can forge Announcements, Requests, and Responses.
+/// Future work should add Ed25519 signatures (similar to `pack_wire`/
+/// `unpack_wire` for server ops) or authenticated gossipsub channels.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WorkerWireMessage {
     /// Periodic heartbeat.

@@ -1,6 +1,6 @@
 //! # MCP Resource Definitions and Handlers
 //!
-//! All 15 MCP resources mapped to `ClientHandle` accessors and `StateRef` views.
+//! All 14 MCP resources mapped to `ClientHandle` accessors and `StateRef` views.
 
 use std::sync::Arc;
 
@@ -53,11 +53,6 @@ pub fn list_resources() -> Vec<Resource> {
             "willow://server/join-links",
             "Join Links",
             "Active join links",
-        ),
-        (
-            "willow://server/state-agreement",
-            "State Agreement",
-            "State hash agreement status",
         ),
         (
             "willow://channel/{name}/messages",
@@ -145,13 +140,13 @@ pub async fn read_resource<N: Network>(
         "willow://server/current" => {
             let id = client.active_server_id().await;
             let name = client.active_server_name().await;
-            let owner = client.server_owner().await;
+            let admins: Vec<String> = client.admins().await.iter().map(|a| a.to_string()).collect();
             let description = client.server_description().await;
             let display_name = client.display_name().await;
             to_json(&CurrentServerResource {
                 id,
                 name,
-                owner: owner.to_string(),
+                admins,
                 description,
                 display_name,
             })
@@ -210,11 +205,6 @@ pub async fn read_resource<N: Network>(
                 })
                 .collect();
             to_json(&entries)
-        }
-
-        "willow://server/state-agreement" => {
-            let (agreeing, total) = client.state_hash_agreement().await;
-            to_json(&StateAgreementResource { agreeing, total })
         }
 
         "willow://voice/status" => {
@@ -314,7 +304,7 @@ struct ServerListEntry {
 struct CurrentServerResource {
     id: Option<String>,
     name: String,
-    owner: String,
+    admins: Vec<String>,
     description: String,
     display_name: String,
 }
@@ -346,12 +336,6 @@ struct JoinLinkEntry {
     uses: u32,
     active: bool,
     expires_at: Option<u64>,
-}
-
-#[derive(Serialize)]
-struct StateAgreementResource {
-    agreeing: usize,
-    total: usize,
 }
 
 #[derive(Serialize)]
@@ -393,9 +377,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_15_resources_defined() {
+    fn all_14_resources_defined() {
         let resources = list_resources();
-        assert_eq!(resources.len(), 15);
+        assert_eq!(resources.len(), 14);
     }
 
     #[test]

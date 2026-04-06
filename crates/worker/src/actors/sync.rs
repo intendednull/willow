@@ -66,6 +66,11 @@ impl<T: TopicHandle + 'static> Handler<SyncTick> for SyncActor<T> {
             };
 
             for (server_id, heads) in summaries {
+                // target_peer is set to the sender's own ID to indicate a
+                // broadcast request. The NetworkActor accepts these because
+                // it checks target_peer == local_peer_id (the receiver also
+                // has their own ID, which won't match) OR handles Sync
+                // requests specially.
                 let msg = WorkerWireMessage::Request {
                     request_id: uuid::Uuid::new_v4().to_string(),
                     target_peer: peer_id,
