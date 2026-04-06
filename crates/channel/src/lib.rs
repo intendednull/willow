@@ -186,8 +186,6 @@ pub enum Permission {
     ScreenShare,
     /// Upload files.
     AttachFiles,
-    /// Full administrative access — implies all other permissions.
-    Administrator,
 }
 
 // ───── Role ──────────────────────────────────────────────────────────────────
@@ -228,7 +226,7 @@ impl Role {
 
     /// Check whether this role grants a specific permission.
     pub fn has_permission(&self, perm: Permission) -> bool {
-        self.permissions.contains(&Permission::Administrator) || self.permissions.contains(&perm)
+        self.permissions.contains(&perm)
     }
 }
 
@@ -344,8 +342,8 @@ impl Invite {
 
 /// A named community containing channels and members.
 ///
-/// The server owner has implicit [`Permission::Administrator`] access to
-/// everything. Other members' access is determined by their roles.
+/// Admins have implicit access to all permissions. Other members'
+/// access is determined by their roles and direct permission grants.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Server {
     /// Unique ID.
@@ -354,8 +352,8 @@ pub struct Server {
     pub name: String,
     /// Optional description.
     pub description: Option<String>,
-    /// The peer who created and owns this server.
-    pub owner: EndpointId,
+    /// The set of peers with admin status.
+    pub admins: HashSet<EndpointId>,
     /// When the server was created.
     pub created_at: DateTime<Utc>,
 
@@ -371,16 +369,18 @@ pub struct Server {
 }
 
 impl Server {
-    /// Create a new server. The owner is automatically added as a member.
-    pub fn new(name: impl Into<String>, owner: EndpointId) -> Self {
+    /// Create a new server. The creator is the initial admin and member.
+    pub fn new(name: impl Into<String>, creator: EndpointId) -> Self {
         let mut members = HashMap::new();
-        members.insert(owner, Member::new(owner));
+        members.insert(creator, Member::new(creator));
+        let mut admins = HashSet::new();
+        admins.insert(creator);
 
         Self {
             id: ServerId::new(),
             name: name.into(),
             description: None,
-            owner,
+            admins,
             created_at: Utc::now(),
             channels: HashMap::new(),
             roles: HashMap::new(),
@@ -419,9 +419,9 @@ impl Server {
 
     /// Check whether a peer has a specific permission.
     ///
-    /// The server owner always has all permissions.
+    /// Admins always have all permissions.
     pub fn has_permission(&self, peer: &EndpointId, perm: Permission) -> bool {
-        if *peer == self.owner {
+        if self.admins.contains(peer) {
             return true;
         }
 
@@ -588,16 +588,16 @@ impl Server {
 
     /// Remove a member from the server and rotate all channel keys.
     ///
-    /// Cannot remove the owner. Returns the new channel keys so the app
+    /// Cannot remove an admin. Returns the new channel keys so the app
     /// can distribute them to remaining members.
     pub fn remove_member(
         &mut self,
         peer: &EndpointId,
     ) -> Result<HashMap<ChannelId, willow_crypto::ChannelKey>, ChannelError> {
-        if *peer == self.owner {
+        if self.admins.contains(peer) {
             return Err(ChannelError::PermissionDenied(
                 *peer,
-                Permission::Administrator,
+                Permission::ManageChannels,
             ));
         }
 
@@ -730,11 +730,12 @@ mod tests {
     }
 
     #[test]
-    fn owner_has_all_permissions() {
+    fn admin_has_all_permissions() {
         let (owner, server) = owner_and_server();
-        assert!(server.has_permission(&owner, Permission::Administrator));
+        assert!(server.admins.contains(&owner));
         assert!(server.has_permission(&owner, Permission::ManageChannels));
         assert!(server.has_permission(&owner, Permission::KickMembers));
+        assert!(server.has_permission(&owner, Permission::SendMessages));
     }
 
     #[test]
@@ -810,17 +811,15 @@ mod tests {
     }
 
     #[test]
-    fn administrator_role_grants_everything() {
+    fn admins_set_grants_everything() {
         let (_, mut server) = owner_and_server();
         let bob = Identity::generate().endpoint_id();
-        server.add_member(bob.clone());
+        server.add_member(bob);
 
-        let mut admin_role = Role::new("Admin");
-        admin_role.permissions.insert(Permission::Administrator);
-        let role_id = server.create_role(admin_role);
-        server.assign_role(&bob, &role_id).unwrap();
+        // Add bob to admins set directly.
+        server.admins.insert(bob);
 
-        // Administrator implies every other permission.
+        // Admins have all permissions implicitly.
         assert!(server.has_permission(&bob, Permission::ManageChannels));
         assert!(server.has_permission(&bob, Permission::BanMembers));
         assert!(server.has_permission(&bob, Permission::ScreenShare));
