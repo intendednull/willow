@@ -92,8 +92,14 @@ impl ReplayRole {
                     // This indicates equivocation or conflicting chain versions.
                     // Buffering won't help — drop the event.
                 }
+                Err(InsertError::NotGenesis) => {
+                    // Non-genesis event for a DAG that hasn't seen genesis yet.
+                    // Buffer on prev — will cascade-resolve once genesis and
+                    // intermediate events arrive.
+                    data.pending.buffer_for_prev(current.prev, current);
+                }
                 Err(InsertError::Duplicate) => { /* already have it */ }
-                Err(_) => { /* truly invalid — skip */ }
+                Err(InsertError::InvalidSignature) => { /* truly invalid — skip */ }
             }
         }
     }
@@ -490,6 +496,37 @@ mod tests {
         // Deliver e2 — should cascade: e2 resolves e3, e3 resolves e4.
         role.ingest_event("srv-1", &e2);
         assert_eq!(role.servers["srv-1"].dag.len(), 4);
+        assert_eq!(role.servers["srv-1"].pending.pending_count(), 0);
+    }
+
+    #[test]
+    fn non_genesis_event_buffered_until_genesis_arrives() {
+        let mut role = ReplayRole::new(ReplayConfig::default());
+        let owner = Identity::generate();
+
+        // Create genesis and a follow-up message.
+        let genesis = Event::new(
+            &owner,
+            1,
+            EventHash::ZERO,
+            vec![],
+            EventKind::CreateServer {
+                name: "srv-1".to_string(),
+            },
+            0,
+        );
+        let msg = make_message(&owner, 2, genesis.hash);
+
+        // Deliver message FIRST (before genesis) to a brand new server.
+        role.ingest_event("srv-1", &msg);
+
+        // ServerData was created, but the event should be pending (NotGenesis).
+        assert_eq!(role.servers["srv-1"].dag.len(), 0);
+        assert_eq!(role.servers["srv-1"].pending.pending_count(), 1);
+
+        // Now deliver genesis — should resolve the buffered message.
+        role.ingest_event("srv-1", &genesis);
+        assert_eq!(role.servers["srv-1"].dag.len(), 2); // genesis + msg
         assert_eq!(role.servers["srv-1"].pending.pending_count(), 0);
     }
 }

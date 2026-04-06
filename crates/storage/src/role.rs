@@ -127,6 +127,7 @@ mod tests {
             0,
         );
 
+        role.on_event(&genesis);
         let mut prev = genesis.hash;
         for seq in 2..=6 {
             let e = make_message(&id, seq, prev, "general");
