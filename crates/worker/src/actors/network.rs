@@ -6,24 +6,32 @@
 use willow_actor::{Actor, Addr, Context, Handler};
 use willow_identity::EndpointId;
 use willow_network::traits::{GossipEvent, TopicEvents};
+use willow_network::TopicHandle;
 
 use super::state::StateActor;
 use super::{EventMsg, WorkerRequestMsg};
 use crate::types::WorkerWireMessage;
 
 /// Network actor that streams gossip events and forwards them to the state actor.
-pub struct NetworkActor<E: TopicEvents + 'static> {
+pub struct NetworkActor<E: TopicEvents + 'static, T: TopicHandle + 'static> {
     state_addr: Addr<StateActor>,
     local_peer_id: EndpointId,
     events: Option<E>,
+    reply_topic: T,
 }
 
-impl<E: TopicEvents + 'static> NetworkActor<E> {
-    pub fn new(events: E, state_addr: Addr<StateActor>, local_peer_id: EndpointId) -> Self {
+impl<E: TopicEvents + 'static, T: TopicHandle + 'static> NetworkActor<E, T> {
+    pub fn new(
+        events: E,
+        state_addr: Addr<StateActor>,
+        local_peer_id: EndpointId,
+        reply_topic: T,
+    ) -> Self {
         Self {
             state_addr,
             local_peer_id,
             events: Some(events),
+            reply_topic,
         }
     }
 }
@@ -34,7 +42,7 @@ impl willow_actor::Message for GossipEventMsg {
     type Result = ();
 }
 
-impl<E: TopicEvents + 'static> Actor for NetworkActor<E> {
+impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Actor for NetworkActor<E, T> {
     fn started(&mut self, ctx: &mut Context<Self>) -> impl std::future::Future<Output = ()> + Send {
         // Spawn a task that drains TopicEvents and forwards them as messages.
         if let Some(mut events) = self.events.take() {
@@ -51,7 +59,9 @@ impl<E: TopicEvents + 'static> Actor for NetworkActor<E> {
     }
 }
 
-impl<E: TopicEvents + 'static> Handler<GossipEventMsg> for NetworkActor<E> {
+impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Handler<GossipEventMsg>
+    for NetworkActor<E, T>
+{
     fn handle(
         &mut self,
         msg: GossipEventMsg,
@@ -60,12 +70,26 @@ impl<E: TopicEvents + 'static> Handler<GossipEventMsg> for NetworkActor<E> {
         let state_addr = self.state_addr.clone();
         let local_peer_id = self.local_peer_id;
         let event = msg.0;
+        let reply_topic = self.reply_topic.clone();
 
         async move {
             if let GossipEvent::Received(msg) = event {
                 match parse_worker_message(&msg.content, &local_peer_id) {
-                    WorkerMessageAction::HandleRequest { payload, .. } => {
-                        let _ = state_addr.ask(WorkerRequestMsg(payload)).await;
+                    WorkerMessageAction::HandleRequest {
+                        request_id,
+                        payload,
+                    } => {
+                        if let Ok(response) = state_addr.ask(WorkerRequestMsg(payload)).await {
+                            let reply = WorkerWireMessage::Response {
+                                request_id,
+                                target_peer: local_peer_id,
+                                payload: Box::new(response),
+                            };
+                            if let Ok(bytes) = bincode::serialize(&reply) {
+                                let _ =
+                                    reply_topic.broadcast(bytes::Bytes::from(bytes)).await;
+                            }
+                        }
                     }
                     WorkerMessageAction::Ignore => {}
                     WorkerMessageAction::DeserializeError(_) => {
@@ -116,7 +140,10 @@ pub fn parse_worker_message(data: &[u8], local_peer_id: &EndpointId) -> WorkerMe
             payload,
             request_id,
         } => {
-            if target_peer == *local_peer_id {
+            // Accept Sync requests from any peer (broadcast protocol).
+            // For other request types, only accept if targeted at us.
+            let is_sync = matches!(payload, willow_common::WorkerRequest::Sync { .. });
+            if target_peer == *local_peer_id || is_sync {
                 WorkerMessageAction::HandleRequest {
                     request_id,
                     payload,
@@ -189,7 +216,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_worker_request_not_for_us() {
+    fn sync_request_accepted_regardless_of_target() {
+        // Sync requests are broadcast — accepted even if target_peer differs.
         let my_id = gen_id();
         let other_id = gen_id();
         let msg = WorkerWireMessage::Request {
@@ -198,6 +226,29 @@ mod tests {
             payload: WorkerRequest::Sync {
                 server_id: "srv".to_string(),
                 heads: HeadsSummary::default(),
+            },
+        };
+        let data = bincode::serialize(&msg).unwrap();
+
+        assert!(matches!(
+            parse_worker_message(&data, &my_id),
+            WorkerMessageAction::HandleRequest { .. }
+        ));
+    }
+
+    #[test]
+    fn history_request_not_for_us_ignored() {
+        // Non-Sync requests targeted at another peer are ignored.
+        let my_id = gen_id();
+        let other_id = gen_id();
+        let msg = WorkerWireMessage::Request {
+            request_id: "req-4".to_string(),
+            target_peer: other_id,
+            payload: WorkerRequest::History {
+                server_id: "srv".to_string(),
+                channel: None,
+                before: None,
+                limit: 50,
             },
         };
         let data = bincode::serialize(&msg).unwrap();

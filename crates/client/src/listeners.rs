@@ -228,12 +228,16 @@ async fn process_received_message<T: TopicHandle>(
             }
         }
         crate::ops::WireMessage::SyncRequest { state_hash, .. } => {
-            // Use the DAG to get all events for the responder.
-            // If state_hash is ZERO, send everything. Otherwise also send
-            // everything (best effort — the receiver will dedup).
-            let _ = state_hash; // Acknowledged but not used for filtering yet.
+            let _ = state_hash; // Legacy field — heads-based sync preferred.
+            // Send at most 500 events to limit bandwidth. The requester will
+            // re-request if they need more.
             let events: Vec<willow_state::Event> = willow_actor::state::select(&ctx.dag, |ds| {
-                ds.dag.topological_sort().into_iter().cloned().collect()
+                ds.dag
+                    .topological_sort()
+                    .into_iter()
+                    .take(500)
+                    .cloned()
+                    .collect()
             })
             .await;
             if !events.is_empty() {

@@ -169,7 +169,7 @@ impl<N: willow_network::Network> ClientMutations<N> {
 
     /// Fire-and-forget broadcast of raw data on a named topic.
     pub(crate) fn broadcast_on_topic(&self, topic: &str, data: Vec<u8>) {
-        let topics = self.topics.read().unwrap();
+        let topics = self.topics.read().unwrap_or_else(|e| e.into_inner());
         let Some(handle) = topics.get(topic).cloned() else {
             return;
         };

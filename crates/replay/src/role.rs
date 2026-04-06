@@ -6,9 +6,10 @@
 
 use std::collections::HashMap;
 
+use tracing::warn;
 use willow_state::{
-    apply_incremental, Event, EventDag, HeadsSummary, InsertError, PendingBuffer, ServerState,
-    Snapshot,
+    apply_incremental, Event, EventDag, EventKind, HeadsSummary, InsertError, PendingBuffer,
+    ServerState, Snapshot,
 };
 use willow_worker::{WorkerRequest, WorkerResponse, WorkerRole, WorkerRoleInfo};
 
@@ -57,17 +58,28 @@ impl ReplayRole {
     /// Ingest an event for a specific server.
     pub fn ingest_event(&mut self, server_id: &str, event: &Event) {
         let max_per_author = self.config.max_events_per_author;
+        let author = event.author;
         let data = self
             .servers
             .entry(server_id.to_string())
-            .or_insert_with(|| ServerData {
-                dag: EventDag::new(),
-                state: ServerState::new(server_id, server_id, event.author),
-                pending: PendingBuffer::new(),
-                max_events_per_author: max_per_author,
+            .or_insert_with(|| {
+                // Use event.author as placeholder genesis author. When the
+                // actual CreateServer event is applied via apply_incremental,
+                // it properly sets up admins in ServerState.
+                ServerData {
+                    dag: EventDag::new(),
+                    state: ServerState::new(server_id, server_id, author),
+                    pending: PendingBuffer::new(),
+                    max_events_per_author: max_per_author,
+                }
             });
 
         Self::try_insert(data, event.clone());
+
+        // Evict pending events if the buffer grows too large.
+        // Cap at 10x the per-author limit as a reasonable upper bound.
+        let max_pending = max_per_author * 10;
+        data.pending.evict_to(max_pending);
     }
 
     /// Try to insert an event into the DAG. On chain gap, buffer it.
@@ -76,30 +88,36 @@ impl ReplayRole {
     fn try_insert(data: &mut ServerData, event: Event) {
         let mut queue = vec![event];
         while let Some(current) = queue.pop() {
+            let hash = current.hash;
+            let prev = current.prev;
+            // Clone needed because dag.insert() takes ownership but error
+            // paths (SeqGap, NotGenesis) need the event back for buffering.
             match data.dag.insert(current.clone()) {
                 Ok(()) => {
                     apply_incremental(&mut data.state, &current);
-                    // Resolve any events that were waiting for this one.
-                    let resolved = data.pending.resolve(&current.hash);
+                    let resolved = data.pending.resolve(&hash);
                     queue.extend(resolved);
                 }
                 Err(InsertError::SeqGap { .. }) => {
-                    // Chain predecessor hasn't arrived yet — buffer until it does.
-                    data.pending.buffer_for_prev(current.prev, current);
+                    data.pending.buffer_for_prev(prev, current);
                 }
-                Err(InsertError::PrevMismatch { .. }) => {
-                    // Seq is correct but prev hash doesn't match our head.
-                    // This indicates equivocation or conflicting chain versions.
-                    // Buffering won't help — drop the event.
+                Err(InsertError::PrevMismatch {
+                    author,
+                    expected,
+                    got,
+                }) => {
+                    warn!(
+                        %author, %expected, %got,
+                        "PrevMismatch: equivocation or conflicting chain — dropping event"
+                    );
                 }
                 Err(InsertError::NotGenesis) => {
-                    // Non-genesis event for a DAG that hasn't seen genesis yet.
-                    // Buffer on prev — will cascade-resolve once genesis and
-                    // intermediate events arrive.
-                    data.pending.buffer_for_prev(current.prev, current);
+                    data.pending.buffer_for_prev(prev, current);
                 }
                 Err(InsertError::Duplicate) => { /* already have it */ }
-                Err(InsertError::InvalidSignature) => { /* truly invalid — skip */ }
+                Err(InsertError::InvalidSignature) => {
+                    warn!("rejected event with invalid signature");
+                }
             }
         }
     }
@@ -114,7 +132,10 @@ impl ReplayRole {
 
     /// Total events buffered across all servers.
     fn total_events_buffered(&self) -> u32 {
-        self.servers.values().map(|d| d.dag.len() as u32).sum()
+        self.servers
+            .values()
+            .map(|d| u32::try_from(d.dag.len()).unwrap_or(u32::MAX))
+            .fold(0u32, |a, b| a.saturating_add(b))
     }
 }
 
@@ -128,10 +149,21 @@ impl WorkerRole for ReplayRole {
     }
 
     fn on_event(&mut self, event: &Event) {
-        // In the full runtime, server_id comes from the gossipsub topic.
-        // For now, use a default server for events that arrive without
-        // topic context.
-        self.ingest_event("default", event);
+        // Derive server_id from the event's DAG context. For genesis events
+        // (CreateServer), use the event hash as the server identifier (same
+        // as EventDag::server_id()). For non-genesis events, try to find
+        // which existing server's DAG knows this author; fall back to
+        // "default" if no match.
+        let server_id = if let EventKind::CreateServer { .. } = &event.kind {
+            event.hash.to_string()
+        } else {
+            self.servers
+                .iter()
+                .find(|(_, data)| data.dag.latest_seq(&event.author) > 0)
+                .map(|(id, _)| id.clone())
+                .unwrap_or_else(|| "default".to_string())
+        };
+        self.ingest_event(&server_id, event);
     }
 
     fn handle_request(&mut self, req: WorkerRequest) -> WorkerResponse {

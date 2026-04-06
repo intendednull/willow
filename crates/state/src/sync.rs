@@ -191,6 +191,26 @@ impl PendingBuffer {
     pub fn pending_count(&self) -> usize {
         self.waiting_on_prev.values().map(|v| v.len()).sum()
     }
+
+    /// Evict pending entries to keep the buffer bounded.
+    ///
+    /// Removes the oldest entries (by insertion order approximation)
+    /// until the total pending count is at or below `max_pending`.
+    /// Returns the number of events evicted.
+    pub fn evict_to(&mut self, max_pending: usize) -> usize {
+        let mut evicted = 0;
+        while self.pending_count() > max_pending {
+            // Remove an arbitrary entry (HashMap iteration order).
+            if let Some(key) = self.waiting_on_prev.keys().next().cloned() {
+                if let Some(events) = self.waiting_on_prev.remove(&key) {
+                    evicted += events.len();
+                }
+            } else {
+                break;
+            }
+        }
+        evicted
+    }
 }
 
 #[cfg(test)]

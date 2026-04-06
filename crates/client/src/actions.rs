@@ -201,7 +201,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let role_id = role_id.to_string();
         let permission = permission.to_string();
         let rid = willow_channel::RoleId(
-            uuid::Uuid::parse_str(&role_id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+            uuid::Uuid::parse_str(&role_id).map_err(|e| anyhow::anyhow!("invalid role_id: {e}"))?,
         );
         let perm = parse_permission(&permission)?;
         willow_actor::state::mutate(
@@ -235,7 +235,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
     ) -> anyhow::Result<()> {
         let role_id = role_id.to_string();
         let rid = willow_channel::RoleId(
-            uuid::Uuid::parse_str(&role_id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+            uuid::Uuid::parse_str(&role_id).map_err(|e| anyhow::anyhow!("invalid role_id: {e}"))?,
         );
         willow_actor::state::mutate(
             &self.server_registry_addr,

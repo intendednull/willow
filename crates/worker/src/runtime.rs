@@ -42,6 +42,7 @@ pub async fn run<N: Network>(
         workers_events,
         state_addr.clone(),
         peer_id,
+        workers_sender.clone(),
     ));
 
     let _heartbeat = system.spawn(HeartbeatActor::new(

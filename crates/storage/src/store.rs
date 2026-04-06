@@ -112,7 +112,9 @@ impl StorageEventStore {
             }
         }
 
-        sql.push_str(&format!(" ORDER BY seq DESC LIMIT ?{param_idx}"));
+        sql.push_str(&format!(
+            " ORDER BY timestamp_hint_ms DESC, seq DESC LIMIT ?{param_idx}"
+        ));
 
         let mut stmt = self.conn.prepare(&sql)?;
 
@@ -150,14 +152,20 @@ impl StorageEventStore {
     /// For each author in our store: if the requester has a lower seq (or
     /// doesn't know the author at all), return events with seq > their_seq.
     /// If heads is empty, returns all events for the server.
+    /// Maximum events returned in a single sync batch to prevent OOM.
+    const SYNC_BATCH_LIMIT: usize = 10_000;
+
     pub fn sync_since(&self, server_id: &str, heads: &HeadsSummary) -> anyhow::Result<Vec<Event>> {
         if heads.heads.is_empty() {
-            // New peer — send everything we have for this server.
-            let mut stmt = self
-                .conn
-                .prepare("SELECT event_data FROM events WHERE server_id = ?1 ORDER BY seq ASC")?;
+            // New peer — send up to SYNC_BATCH_LIMIT events for this server.
+            let mut stmt = self.conn.prepare(
+                "SELECT event_data FROM events WHERE server_id = ?1 ORDER BY seq ASC LIMIT ?2",
+            )?;
             let rows: Vec<Vec<u8>> = stmt
-                .query_map(rusqlite::params![server_id], |row| row.get(0))?
+                .query_map(
+                    rusqlite::params![server_id, Self::SYNC_BATCH_LIMIT as i64],
+                    |row| row.get(0),
+                )?
                 .filter_map(|r| r.ok())
                 .collect();
             let events: Vec<Event> = rows
@@ -187,7 +195,7 @@ impl StorageEventStore {
         conditions.push(format!("author NOT IN ({known_authors})"));
 
         sql.push_str(&conditions.join(" OR "));
-        sql.push_str(") ORDER BY seq ASC");
+        sql.push_str(&format!(") ORDER BY seq ASC LIMIT {}", Self::SYNC_BATCH_LIMIT));
 
         let mut stmt = self.conn.prepare(&sql)?;
         let rows: Vec<Vec<u8>> = stmt

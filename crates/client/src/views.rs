@@ -207,8 +207,9 @@ pub fn compute_messages_view(
                     .find(|pm| pm.id == *parent_hash)
                     .map(|pm| {
                         let parent_name = resolve_display_name(events, profiles, &pm.author);
-                        let text = if pm.body.len() > 50 {
-                            format!("{}...", &pm.body[..50])
+                        let text = if pm.body.chars().count() > 50 {
+                            let truncated: String = pm.body.chars().take(50).collect();
+                            format!("{truncated}...")
                         } else {
                             pm.body.clone()
                         };

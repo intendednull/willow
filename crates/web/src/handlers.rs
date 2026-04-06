@@ -18,12 +18,14 @@ fn parse_event_hash(hex: &str) -> Option<willow_client::willow_state::EventHash>
 pub fn make_send_handler(
     handle: WebClientHandle,
     state: AppState,
-    _write: AppWriteSignals,
+    write: AppWriteSignals,
 ) -> impl Fn(String) + Clone + 'static {
     move |body: String| {
         let ch = state.chat.current_channel.get_untracked();
         let h = handle.clone();
         let replying = state.chat.replying_to.get_untracked();
+        // Clear reply state immediately so the UI updates.
+        write.chat.set_replying_to.set(None);
         wasm_bindgen_futures::spawn_local(async move {
             if let Some(reply_msg) = replying {
                 if let Some(hash) = parse_event_hash(&reply_msg.id) {
