@@ -521,6 +521,135 @@ mod tests {
         assert_eq!(resolved_b[0].hash, event_c.hash);
     }
 
+    // ── Issue #51: ZERO-buffered events must resolve after genesis ──
+
+    #[test]
+    fn resolve_zero_drains_pre_genesis_events() {
+        let mut buf = PendingBuffer::new();
+        let id = Identity::generate();
+
+        // Simulate a second author's first event (prev=ZERO) arriving
+        // before genesis. It gets buffered under EventHash::ZERO.
+        let event = Event::new(
+            &id,
+            1,
+            EventHash::ZERO,
+            vec![],
+            EventKind::SetProfile {
+                display_name: "newcomer".into(),
+            },
+            0,
+        );
+        buf.buffer_for_prev(EventHash::ZERO, event.clone());
+        assert_eq!(buf.pending_count(), 1);
+
+        // Resolving with a genesis hash (not ZERO) should NOT return it.
+        let genesis_hash = EventHash::from_bytes(b"genesis-hash");
+        let resolved = buf.resolve(&genesis_hash);
+        assert_eq!(resolved.len(), 0, "should not resolve under genesis hash");
+        assert_eq!(buf.pending_count(), 1, "event should still be pending");
+
+        // Resolving with ZERO should return it.
+        let resolved = buf.resolve(&EventHash::ZERO);
+        assert_eq!(resolved.len(), 1, "should resolve under ZERO");
+        assert_eq!(resolved[0].hash, event.hash);
+        assert_eq!(buf.pending_count(), 0);
+    }
+
+    // ── Issue #50: NotGenesis events can be buffered and recovered ──
+
+    #[test]
+    fn buffer_not_genesis_then_resolve_after_genesis() {
+        let owner = Identity::generate();
+        let member = Identity::generate();
+        let mut dag = EventDag::new();
+        let mut buf = PendingBuffer::new();
+
+        // A non-CreateServer event arrives first → NotGenesis.
+        let member_event = Event::new(
+            &member,
+            1,
+            EventHash::ZERO,
+            vec![],
+            EventKind::SetProfile {
+                display_name: "member".into(),
+            },
+            0,
+        );
+        let err = dag.insert(member_event.clone()).unwrap_err();
+        assert!(
+            matches!(err, crate::dag::InsertError::NotGenesis),
+            "should get NotGenesis error"
+        );
+
+        // Buffer under prev (ZERO), same as the fix will do.
+        buf.buffer_for_prev(member_event.prev, member_event.clone());
+
+        // Now genesis arrives and succeeds.
+        let genesis = Event::new(
+            &owner,
+            1,
+            EventHash::ZERO,
+            vec![],
+            EventKind::CreateServer { name: "srv".into() },
+            0,
+        );
+        dag.insert(genesis.clone()).unwrap();
+
+        // Resolve events buffered under the genesis hash — should be empty.
+        let resolved = buf.resolve(&genesis.hash);
+        assert_eq!(resolved.len(), 0);
+
+        // Resolve ZERO — should return the member event.
+        let resolved = buf.resolve(&EventHash::ZERO);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].hash, member_event.hash);
+
+        // The resolved event should now insert successfully.
+        dag.insert(resolved[0].clone()).unwrap();
+        assert_eq!(dag.len(), 2);
+    }
+
+    // ── Issue #52: PrevMismatch is equivocation, not a chain gap ──
+
+    #[test]
+    fn prev_mismatch_indicates_equivocation_not_gap() {
+        let owner = Identity::generate();
+        let mut dag = test_dag(&owner);
+
+        // Create a legitimate event to establish the chain.
+        let e1 = dag.create_event(
+            &owner,
+            EventKind::SetProfile {
+                display_name: "v1".into(),
+            },
+            vec![],
+            0,
+        );
+        dag.insert(e1.clone()).unwrap();
+
+        // Create a competing event with correct seq (3) but pointing
+        // to genesis as prev instead of e1 — this is equivocation.
+        let genesis_hash = dag.genesis().unwrap().hash;
+        let competing = Event::new(
+            &owner,
+            3,
+            genesis_hash, // wrong prev — should be e1.hash
+            vec![],
+            EventKind::SetProfile {
+                display_name: "equivocating".into(),
+            },
+            0,
+        );
+        let err = dag.insert(competing).unwrap_err();
+        assert!(
+            matches!(err, crate::dag::InsertError::PrevMismatch { .. }),
+            "should get PrevMismatch, not SeqGap: got {err:?}"
+        );
+        // PrevMismatch events should be DROPPED (not buffered) because
+        // the predecessor they reference will never become the head.
+    }
+
     // ── Corrective events test ─────────────────────────────────────
 
     #[test]
