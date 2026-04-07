@@ -61,6 +61,13 @@ pub struct ServerState {
     pub vote_threshold: VoteThreshold,
     /// Pending proposals awaiting votes.
     pub pending_proposals: HashMap<EventHash, PendingProposal>,
+
+    // -- Dedup state --
+    /// Hashes of events already applied to this state. Used by
+    /// [`apply_incremental`](crate::materialize::apply_incremental) to
+    /// guarantee idempotency — applying the same event twice is a no-op.
+    #[serde(default, skip)]
+    pub applied_events: HashSet<EventHash>,
 }
 
 impl ServerState {
@@ -95,6 +102,7 @@ impl ServerState {
             description: String::new(),
             channel_keys: HashMap::new(),
             pending_proposals: HashMap::new(),
+            applied_events: HashSet::new(),
         }
     }
 

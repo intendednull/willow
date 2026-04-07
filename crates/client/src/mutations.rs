@@ -74,12 +74,17 @@ impl<N: willow_network::Network> ClientMutations<N> {
         let name = server_name.to_string();
         let ts = util::current_time_ms();
         let state = willow_actor::state::mutate(&self.dag, move |ds| {
+            // Idempotent: if genesis already exists, return current state.
+            if ds.dag.genesis().is_some() {
+                return willow_state::materialize(&ds.dag);
+            }
             let genesis =
                 ds.dag
                     .create_event(&identity, EventKind::CreateServer { name }, vec![], ts);
             ds.dag
                 .insert(genesis)
                 .expect("genesis event must insert successfully");
+            ds.synced = true;
             willow_state::materialize(&ds.dag)
         })
         .await;
@@ -98,13 +103,27 @@ impl<N: willow_network::Network> ClientMutations<N> {
         let identity = self.identity.clone();
         let ts = util::current_time_ms();
         willow_actor::state::mutate(&self.dag, move |ds| {
+            if !ds.synced {
+                return Err(anyhow::anyhow!(
+                    "cannot create events before sync completes"
+                ));
+            }
             let my_id = identity.endpoint_id();
-            let deps: Vec<EventHash> = ds
+            let mut deps: Vec<EventHash> = ds
                 .dag
                 .authors()
                 .filter(|a| **a != my_id)
                 .filter_map(|a| ds.dag.head(a).copied())
                 .collect();
+
+            // Vote events must causally depend on the proposal so
+            // topological sort always places the proposal first.
+            if let EventKind::Vote { proposal, .. } = &kind {
+                if !deps.contains(proposal) {
+                    deps.push(*proposal);
+                }
+            }
+
             let event = ds.dag.create_event(&identity, kind, deps, ts);
             ds.dag
                 .insert(event.clone())

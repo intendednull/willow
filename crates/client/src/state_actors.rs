@@ -168,6 +168,10 @@ pub struct DagState {
     pub dag: willow_state::EventDag,
     /// Buffer for events waiting on missing predecessors.
     pub pending: willow_state::PendingBuffer,
+    /// Whether the DAG has been populated (via genesis seed or sync batch).
+    /// Mutations are blocked until this is `true` so events don't get
+    /// created with empty/incorrect causal dependencies.
+    pub synced: bool,
 }
 
 // ───── Source state bundle ───────────────────────────────────────────────

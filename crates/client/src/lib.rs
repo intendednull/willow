@@ -650,11 +650,9 @@ fn load_identity() -> Identity {
 /// Parse a permission string into a [`willow_channel::Permission`].
 fn parse_permission(s: &str) -> anyhow::Result<willow_channel::Permission> {
     match s {
+        "SyncProvider" => Ok(willow_channel::Permission::SyncProvider),
         "SendMessages" => Ok(willow_channel::Permission::SendMessages),
-        "ReadMessages" => Ok(willow_channel::Permission::ReadMessages),
-        "KickMembers" => Ok(willow_channel::Permission::KickMembers),
         "CreateInvite" => Ok(willow_channel::Permission::CreateInvite),
-        "AttachFiles" => Ok(willow_channel::Permission::AttachFiles),
         "ManageChannels" => Ok(willow_channel::Permission::ManageChannels),
         "ManageRoles" => Ok(willow_channel::Permission::ManageRoles),
         _ => anyhow::bail!("unknown permission: {s}"),
@@ -711,6 +709,7 @@ pub fn test_client() -> (
         0,
     );
     dag_state.dag.insert(genesis).expect("genesis must insert");
+    dag_state.synced = true;
 
     // Materialize initial state from the DAG — this gives us a ServerState
     // with the correct server_id (genesis hash) and genesis author as admin.

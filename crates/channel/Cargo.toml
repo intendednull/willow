@@ -9,6 +9,7 @@ description = "Servers, channels, roles, and permissions for Willow"
 willow-identity = { path = "../identity" }
 willow-transport = { path = "../transport" }
 willow-crypto = { path = "../crypto" }
+willow-state = { path = "../state" }
 
 serde = { workspace = true }
 chrono = { workspace = true }
