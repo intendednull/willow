@@ -156,22 +156,50 @@ pub struct VoiceState {
     pub deafened: bool,
 }
 
-/// Combined EventDag + PendingBuffer, held in a single StateActor.
+/// Maximum number of events the client will buffer while waiting for
+/// missing predecessors. Prevents unbounded memory growth from malicious
+/// or misbehaving peers sending events with chain gaps.
+const MAX_CLIENT_PENDING: usize = 5_000;
+
+/// Combined EventDag + ServerState + PendingBuffer, held in a single
+/// StateActor via [`ManagedDag`](willow_state::ManagedDag).
 ///
-/// The DAG is the source of truth for all events. The PendingBuffer
-/// holds events that arrived out of order (missing predecessor).
-/// Combining them in one actor ensures insert + buffer operations
-/// are atomic without manual lock coordination.
-#[derive(Clone, Default)]
+/// Using `ManagedDag` ensures that DAG insertions and state
+/// materialization are always atomic — it's structurally impossible
+/// for the DAG and ServerState to diverge.
+#[derive(Clone)]
 pub struct DagState {
-    /// The per-author Merkle-DAG of all known events.
-    pub dag: willow_state::EventDag,
-    /// Buffer for events waiting on missing predecessors.
-    pub pending: willow_state::PendingBuffer,
+    /// The managed DAG that keeps EventDag, ServerState, and
+    /// PendingBuffer in sync atomically.
+    pub managed: willow_state::ManagedDag,
+}
+
+impl DagState {
+    // Convenience accessors for backward compatibility with code that
+    // accessed the old `dag`, `pending`, and `synced` fields directly.
+
+    /// Read-only access to the underlying EventDag.
+    pub fn dag(&self) -> &willow_state::EventDag {
+        self.managed.dag()
+    }
+
+    /// Read-only access to the pending buffer.
+    pub fn pending(&self) -> &willow_state::PendingBuffer {
+        self.managed.pending()
+    }
+
     /// Whether the DAG has been populated (via genesis seed or sync batch).
-    /// Mutations are blocked until this is `true` so events don't get
-    /// created with empty/incorrect causal dependencies.
-    pub synced: bool,
+    pub fn synced(&self) -> bool {
+        self.managed.is_synced()
+    }
+}
+
+impl Default for DagState {
+    fn default() -> Self {
+        Self {
+            managed: willow_state::ManagedDag::empty(MAX_CLIENT_PENDING),
+        }
+    }
 }
 
 // ───── Source state bundle ───────────────────────────────────────────────

@@ -2,16 +2,14 @@
 
 use std::sync::{Arc, Mutex};
 
-use willow_actor::Addr;
-use willow_identity::EndpointId;
-use willow_network::traits::TopicHandle;
-use willow_network::traits::{GossipEvent, TopicEvents};
-use willow_state::InsertError;
-
 use crate::events::ClientEvent;
 use crate::mutations;
 use crate::persistence_actor;
 use crate::state_actors;
+use willow_actor::Addr;
+use willow_identity::EndpointId;
+use willow_network::traits::TopicHandle;
+use willow_network::traits::{GossipEvent, TopicEvents};
 
 /// Context passed to listener tasks with all the actor addresses they need.
 pub struct ListenerCtx {
@@ -95,54 +93,27 @@ async fn topic_listener_loop<T: TopicHandle, E: TopicEvents>(
 
 // ───── DAG helpers ──────────────────────────────────────────────────────────
 
-/// Apply an event incrementally to materialized state, persist it, and emit
-/// client events via the broker.
-async fn apply_and_emit(ctx: &ListenerCtx, event: &willow_state::Event) {
-    // Apply incrementally to the materialized ServerState.
-    let event_clone = event.clone();
-    willow_actor::state::mutate(&ctx.event_state, move |state| {
-        willow_state::apply_incremental(state, &event_clone);
-    })
-    .await;
-
-    // Persist event to the event store.
-    let _ = ctx.persistence.do_send(persistence_actor::PersistEvent {
-        event: event.clone(),
-    });
-
-    // Emit client events.
-    let client_events = mutations::derive_client_events(event);
-    for e in client_events {
-        let _ = ctx.event_broker.do_send(willow_actor::Publish(e));
-    }
-}
-
-/// Try to insert an event into the DAG. On success, apply and emit, then
-/// drain any pending events whose `prev` is now satisfied. On chain gap
-/// or prev mismatch, buffer the event for later. Duplicates are silently
-/// ignored.
+/// Try to insert an event into the DAG. On success, ManagedDag atomically
+/// applies it to state and resolves pending events. On chain gap, the
+/// event is buffered. Duplicates are silently ignored.
 ///
-/// Atomicity is guaranteed by the actor mailbox — the insert + pending
-/// buffer drain happen in a single `mutate` call with no interleaving.
+/// Atomicity is guaranteed by ManagedDag::insert_and_apply — DAG insert
+/// and state materialization happen in the same call.
 async fn try_insert_event(ctx: &ListenerCtx, event: willow_state::Event) {
-    // Single atomic mutate: insert into DAG, then either drain pending
-    // (on success) or buffer (on gap). No TOCTOU possible.
-    let (applied, resolved) =
-        willow_actor::state::mutate(&ctx.dag, move |ds| match ds.dag.insert(event.clone()) {
-            Ok(()) => {
-                let mut resolved = ds.pending.resolve(&event.hash);
-                // If this was genesis, also resolve events buffered under ZERO
-                // (new authors whose first events arrived before genesis).
-                if matches!(event.kind, willow_state::EventKind::CreateServer { .. }) {
-                    resolved.extend(ds.pending.resolve(&willow_state::EventHash::ZERO));
+    // ManagedDag handles insert + apply + pending resolution atomically.
+    let (applied, all_applied) = willow_actor::state::mutate(&ctx.dag, move |ds| {
+        match ds.managed.insert_and_apply(event) {
+            Ok(outcome) => {
+                let mut all = Vec::new();
+                if let Some(ref ev) = outcome.applied {
+                    all.push(ev.clone());
                 }
-                (Some(event), resolved)
+                for r in &outcome.resolved {
+                    all.push(r.clone());
+                }
+                (outcome.applied, all)
             }
-            Err(InsertError::SeqGap { .. }) | Err(InsertError::NotGenesis) => {
-                ds.pending.buffer_for_prev(event.prev, event);
-                (None, vec![])
-            }
-            Err(InsertError::PrevMismatch {
+            Err(willow_state::InsertError::PrevMismatch {
                 author,
                 expected,
                 got,
@@ -153,22 +124,33 @@ async fn try_insert_event(ctx: &ListenerCtx, event: willow_state::Event) {
                 );
                 (None, vec![])
             }
-            Err(InsertError::Duplicate) => (None, vec![]),
             Err(err) => {
                 tracing::warn!("DAG insert error: {err}");
                 (None, vec![])
             }
+        }
+    })
+    .await;
+
+    // Sync state and emit side-effects for all applied events.
+    if applied.is_some() {
+        // Sync state once (ManagedDag already applied all resolved events).
+        let state = willow_actor::state::select(&ctx.dag, |ds| ds.managed.state().clone()).await;
+        willow_actor::state::mutate(&ctx.event_state, move |es| {
+            *es = state;
         })
         .await;
 
-    if let Some(event) = applied {
-        apply_and_emit(ctx, &event).await;
-    }
-
-    // Recursively try inserting resolved events — they may unblock
-    // further pending events in turn.
-    for resolved_event in resolved {
-        Box::pin(try_insert_event(ctx, resolved_event)).await;
+        // Persist and emit for each applied event.
+        for ev in &all_applied {
+            let _ = ctx
+                .persistence
+                .do_send(persistence_actor::PersistEvent { event: ev.clone() });
+            let client_events = mutations::derive_client_events(ev);
+            for e in client_events {
+                let _ = ctx.event_broker.do_send(willow_actor::Publish(e));
+            }
+        }
     }
 }
 
@@ -221,6 +203,16 @@ async fn process_received_message<T: TopicHandle>(
             try_insert_event(ctx, event).await;
         }
         crate::ops::WireMessage::SyncBatch { events: batch } => {
+            // Reject oversized batches to prevent memory exhaustion.
+            const MAX_SYNC_BATCH_SIZE: usize = 10_000;
+            if batch.len() > MAX_SYNC_BATCH_SIZE {
+                tracing::warn!(
+                    size = batch.len(),
+                    "rejecting oversized sync batch (max {})",
+                    MAX_SYNC_BATCH_SIZE
+                );
+                return;
+            }
             // Track peer.
             let signer2 = signer;
             willow_actor::state::mutate(&ctx.chat_meta, move |c| {
@@ -236,13 +228,10 @@ async fn process_received_message<T: TopicHandle>(
                 try_insert_event(ctx, event).await;
             }
             if count > 0 {
-                // Mark DAG as synced once genesis has been received.
-                willow_actor::state::mutate(&ctx.dag, |ds| {
-                    if !ds.synced && ds.dag.genesis().is_some() {
-                        ds.synced = true;
-                    }
-                })
-                .await;
+                // ManagedDag automatically marks synced when genesis arrives.
+                // Just check if we need to signal completion.
+                let _is_synced =
+                    willow_actor::state::select(&ctx.dag, |ds| ds.managed.is_synced()).await;
 
                 let _ =
                     ctx.event_broker
@@ -258,7 +247,8 @@ async fn process_received_message<T: TopicHandle>(
                                 // For now, send the first 500 events from topological sort.
                                 // Receiver will dedup via InsertError::Duplicate.
             let events: Vec<willow_state::Event> = willow_actor::state::select(&ctx.dag, |ds| {
-                ds.dag
+                ds.managed
+                    .dag()
                     .topological_sort()
                     .into_iter()
                     .take(500)

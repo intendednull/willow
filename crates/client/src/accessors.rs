@@ -131,7 +131,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
     }
 
     /// Get the set of admin EndpointIds.
-    pub async fn admins(&self) -> std::collections::HashSet<willow_identity::EndpointId> {
+    pub async fn admins(&self) -> std::collections::BTreeSet<willow_identity::EndpointId> {
         willow_actor::state::select(&self.event_state_addr, |es| es.admins.clone()).await
     }
 

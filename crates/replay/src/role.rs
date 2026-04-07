@@ -4,7 +4,7 @@
 //! buffering. Responds to sync requests with event deltas computed from
 //! [`HeadsSummary`], or full [`Snapshot`] for far-behind peers.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use tracing::warn;
 use willow_state::{
@@ -69,17 +69,12 @@ impl ReplayRole {
                 ServerData {
                     dag: EventDag::new(),
                     state: ServerState::new(server_id, server_id, author),
-                    pending: PendingBuffer::new(),
+                    pending: PendingBuffer::with_capacity(max_per_author * 10),
                     max_events_per_author: max_per_author,
                 }
             });
 
         Self::try_insert(data, event.clone());
-
-        // Evict pending events if the buffer grows too large.
-        // Cap at 10x the per-author limit as a reasonable upper bound.
-        let max_pending = max_per_author * 10;
-        data.pending.evict_to(max_pending);
     }
 
     /// Try to insert an event into the DAG. On chain gap, buffer it.
@@ -202,9 +197,9 @@ impl WorkerRole for ReplayRole {
                     }
                 };
 
-                // Convert HeadsSummary to the HashMap<EndpointId, u64> that
+                // Convert HeadsSummary to the BTreeMap<EndpointId, u64> that
                 // EventDag::events_since() expects.
-                let their_heads: HashMap<_, _> = heads
+                let their_heads: BTreeMap<_, _> = heads
                     .heads
                     .iter()
                     .map(|(author, head)| (*author, head.seq))
@@ -212,7 +207,7 @@ impl WorkerRole for ReplayRole {
 
                 let delta: Vec<Event> = data
                     .dag
-                    .events_since(&their_heads)
+                    .events_since(&their_heads, Some(10_000))
                     .into_iter()
                     .cloned()
                     .collect();
@@ -388,7 +383,7 @@ mod tests {
         }
 
         // Peer knows up to seq 3 — should get seq 4 and 5.
-        let mut their_heads = HashMap::new();
+        let mut their_heads = BTreeMap::new();
         their_heads.insert(
             owner.endpoint_id(),
             willow_state::AuthorHead {
@@ -574,7 +569,7 @@ mod tests {
         // events_since will return empty (seqs match), but the peer is
         // "behind" because the hash doesn't match. This should trigger
         // snapshot fallback.
-        let mut their_heads = HashMap::new();
+        let mut their_heads = BTreeMap::new();
         their_heads.insert(
             owner.endpoint_id(),
             willow_state::AuthorHead {
@@ -595,7 +590,7 @@ mod tests {
         }
 
         // Now test a peer that is truly behind (lower seq).
-        let mut behind_heads = HashMap::new();
+        let mut behind_heads = BTreeMap::new();
         behind_heads.insert(
             owner.endpoint_id(),
             willow_state::AuthorHead {
@@ -674,7 +669,7 @@ mod tests {
 
         // Peer knows owner at seq 3 and author2 at seq 1.
         // Should get: owner seq 4, author2 seq 2 = 2 events.
-        let mut their_heads = HashMap::new();
+        let mut their_heads = BTreeMap::new();
         their_heads.insert(
             owner.endpoint_id(),
             willow_state::AuthorHead {
@@ -717,7 +712,7 @@ mod tests {
 
         // Peer has heads for a completely different author — doesn't know owner.
         let unknown = Identity::generate();
-        let mut their_heads = HashMap::new();
+        let mut their_heads = BTreeMap::new();
         their_heads.insert(
             unknown.endpoint_id(),
             willow_state::AuthorHead {

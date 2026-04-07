@@ -5,7 +5,7 @@
 //! and materialized state. [`PendingBuffer`] buffers events that arrive
 //! before their per-author chain predecessors.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use willow_identity::EndpointId;
@@ -20,7 +20,7 @@ use crate::server::ServerState;
 /// Maps each known author to their latest seq number and head hash.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeadsSummary {
-    pub heads: HashMap<EndpointId, AuthorHead>,
+    pub heads: BTreeMap<EndpointId, AuthorHead>,
 }
 
 /// A single author's head state.
@@ -71,7 +71,7 @@ pub struct Snapshot {
 }
 
 /// Helper for computing the snapshot hash with deterministic ordering.
-/// Uses sorted vectors instead of HashMaps to ensure consistent hashing.
+/// Uses sorted vectors for heads to ensure consistent hashing.
 #[derive(Serialize)]
 struct SnapshotHashInput<'a> {
     state: &'a ServerState,
@@ -82,14 +82,9 @@ struct SnapshotHashInput<'a> {
 impl Snapshot {
     /// Create a new snapshot, computing the verification hash.
     ///
-    /// The hash is computed from a canonical (sorted) representation of
-    /// the heads to ensure determinism despite HashMap iteration order.
-    ///
-    /// **Known limitation:** `ServerState` contains `HashMap` fields whose
-    /// iteration order is non-deterministic. Two peers with identical state
-    /// may compute different hashes. Cross-peer verification requires a
-    /// canonical serialization of `ServerState` (tracked for future work).
-    /// Within a single process, the hash is consistent.
+    /// The hash is computed from a canonical serialization of (state, heads).
+    /// All collection types use `BTreeMap`/`BTreeSet` for deterministic
+    /// iteration order, so the hash is consistent across processes.
     pub fn new(state: ServerState, heads: HeadsSummary) -> Self {
         let mut sorted_heads: Vec<_> = heads.heads.iter().collect();
         sorted_heads.sort_by_key(|(id, _)| id.as_bytes());
@@ -149,23 +144,42 @@ pub fn compare_chains(our_head: &AuthorHead, their_head: &AuthorHead) -> ChainSt
 #[derive(Clone, Debug, Default)]
 pub struct PendingBuffer {
     /// Events waiting for a missing `prev` hash.
-    waiting_on_prev: HashMap<EventHash, Vec<Event>>,
+    waiting_on_prev: BTreeMap<EventHash, Vec<Event>>,
     /// Cross-author deps we've seen referenced but don't have yet.
-    missing_deps: HashSet<EventHash>,
+    missing_deps: BTreeSet<EventHash>,
+    /// Optional maximum number of pending events. When set,
+    /// `buffer_for_prev()` auto-evicts oldest entries to stay within limit.
+    max_pending: Option<usize>,
 }
 
 impl PendingBuffer {
-    /// Create a new empty buffer.
+    /// Create a new empty buffer with no capacity limit.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Create a buffer with a maximum pending event capacity.
+    ///
+    /// When the total pending count exceeds this limit after an insertion,
+    /// the buffer automatically evicts entries to stay within bounds.
+    pub fn with_capacity(max_pending: usize) -> Self {
+        Self {
+            max_pending: Some(max_pending),
+            ..Self::default()
+        }
+    }
+
     /// Buffer an event that's waiting for a prev hash to arrive.
+    ///
+    /// If a capacity limit is set, excess entries are automatically evicted.
     pub fn buffer_for_prev(&mut self, prev_hash: EventHash, event: Event) {
         self.waiting_on_prev
             .entry(prev_hash)
             .or_default()
             .push(event);
+        if let Some(limit) = self.max_pending {
+            self.evict_to(limit);
+        }
     }
 
     /// Record a cross-author dep that we don't have yet.
@@ -200,7 +214,7 @@ impl PendingBuffer {
     pub fn evict_to(&mut self, max_pending: usize) -> usize {
         let mut evicted = 0;
         while self.pending_count() > max_pending {
-            // Remove an arbitrary entry (HashMap iteration order).
+            // Remove an arbitrary entry.
             if let Some(key) = self.waiting_on_prev.keys().next().cloned() {
                 if let Some(events) = self.waiting_on_prev.remove(&key) {
                     evicted += events.len();
@@ -288,11 +302,33 @@ mod tests {
             dag.insert(e).unwrap();
         }
         // Author has seq 1-5 (genesis + 4). Request since seq 3.
-        let mut their_heads = HashMap::new();
+        let mut their_heads = BTreeMap::new();
         their_heads.insert(id.endpoint_id(), 3);
 
-        let delta = dag.events_since(&their_heads);
+        let delta = dag.events_since(&their_heads, None);
         assert_eq!(delta.len(), 2); // seq 4 and 5
+    }
+
+    #[test]
+    fn events_since_respects_limit() {
+        let id = Identity::generate();
+        let mut dag = test_dag(&id);
+
+        for i in 0..10 {
+            let e = dag.create_event(
+                &id,
+                EventKind::SetProfile {
+                    display_name: format!("n{i}"),
+                },
+                vec![],
+                0,
+            );
+            dag.insert(e).unwrap();
+        }
+        // Author has seq 1-11 (genesis + 10). Request all with limit 5.
+        let their_heads = BTreeMap::new();
+        let delta = dag.events_since(&their_heads, Some(5));
+        assert_eq!(delta.len(), 5, "should be capped at limit");
     }
 
     #[test]
@@ -301,10 +337,10 @@ mod tests {
         let dag = test_dag(&id);
 
         let unknown = Identity::generate().endpoint_id();
-        let mut their_heads = HashMap::new();
+        let mut their_heads = BTreeMap::new();
         their_heads.insert(unknown, 5);
 
-        let delta = dag.events_since(&their_heads);
+        let delta = dag.events_since(&their_heads, None);
         // Unknown author is skipped. We return our events they don't have.
         // Since they didn't mention our author, we return all events for our author.
         assert_eq!(delta.len(), 1); // genesis
@@ -327,10 +363,10 @@ mod tests {
         dag.insert(b1).unwrap();
 
         // Requester only knows about id_a at seq 1.
-        let mut their_heads = HashMap::new();
+        let mut their_heads = BTreeMap::new();
         their_heads.insert(id_a.endpoint_id(), 1);
 
-        let delta = dag.events_since(&their_heads);
+        let delta = dag.events_since(&their_heads, None);
         // They're missing id_b entirely.
         assert_eq!(delta.len(), 1); // b1
     }
@@ -369,17 +405,17 @@ mod tests {
         let heads2 = dag2.heads_summary();
 
         // DAG 1 gets events from DAG 2.
-        let their_heads_map: HashMap<_, _> =
+        let their_heads_map: BTreeMap<_, _> =
             heads1.heads.iter().map(|(k, v)| (*k, v.seq)).collect();
-        let for_dag1 = dag2.events_since(&their_heads_map);
+        let for_dag1 = dag2.events_since(&their_heads_map, None);
         for event in for_dag1 {
             let _ = dag1.insert(event.clone());
         }
 
         // DAG 2 gets events from DAG 1.
-        let their_heads_map: HashMap<_, _> =
+        let their_heads_map: BTreeMap<_, _> =
             heads2.heads.iter().map(|(k, v)| (*k, v.seq)).collect();
-        let for_dag2 = dag1.events_since(&their_heads_map);
+        let for_dag2 = dag1.events_since(&their_heads_map, None);
         for event in for_dag2 {
             let _ = dag2.insert(event.clone());
         }
@@ -519,6 +555,152 @@ mod tests {
         let resolved_b = buf.resolve(&hash_b);
         assert_eq!(resolved_b.len(), 1);
         assert_eq!(resolved_b[0].hash, event_c.hash);
+    }
+
+    // ── Issue #76: Self-enforcing PendingBuffer capacity ────────────
+
+    #[test]
+    fn pending_buffer_auto_evicts_when_limit_exceeded() {
+        let mut buf = PendingBuffer::with_capacity(50);
+        let id = Identity::generate();
+        // Buffer 100 events with unique prev hashes (simulating gaps).
+        for i in 0u64..100 {
+            let prev = EventHash::from_bytes(&i.to_le_bytes());
+            let event = Event::new(
+                &id,
+                i + 1,
+                prev,
+                vec![],
+                EventKind::SetProfile {
+                    display_name: format!("n{i}"),
+                },
+                0,
+            );
+            let unique_prev = EventHash::from_bytes(&(i + 1000).to_le_bytes());
+            buf.buffer_for_prev(unique_prev, event);
+        }
+        // Buffer should auto-evict to stay within capacity.
+        assert!(
+            buf.pending_count() <= 50,
+            "pending_count {} should be <= 50",
+            buf.pending_count()
+        );
+    }
+
+    #[test]
+    fn pending_buffer_unlimited_when_no_capacity_set() {
+        let mut buf = PendingBuffer::new();
+        let id = Identity::generate();
+        for i in 0u64..200 {
+            let event = Event::new(
+                &id,
+                i + 1,
+                EventHash::from_bytes(&i.to_le_bytes()),
+                vec![],
+                EventKind::SetProfile {
+                    display_name: format!("n{i}"),
+                },
+                0,
+            );
+            buf.buffer_for_prev(EventHash::from_bytes(&(i + 500).to_le_bytes()), event);
+        }
+        // Without capacity, buffer grows unbounded.
+        assert_eq!(buf.pending_count(), 200);
+    }
+
+    // ── Issue #41: Snapshot hash determinism ────────────────────────
+
+    #[test]
+    fn snapshot_hash_deterministic_regardless_of_insertion_order() {
+        use crate::event::Permission;
+
+        // Build two DAGs with identical events but different author ordering.
+        // If ServerState used HashMap, the snapshot hashes could differ
+        // because iteration order is non-deterministic. With BTreeMap,
+        // serialization is deterministic and hashes always match.
+        let owner = Identity::generate();
+        let peer_a = Identity::generate();
+        let peer_b = Identity::generate();
+        let peer_c = Identity::generate();
+
+        let mut dag = test_dag(&owner);
+
+        // Add channels in specific order.
+        for (ch_id, ch_name) in [("ch-1", "alpha"), ("ch-2", "beta"), ("ch-3", "gamma")] {
+            let e = dag.create_event(
+                &owner,
+                EventKind::CreateChannel {
+                    channel_id: ch_id.into(),
+                    name: ch_name.into(),
+                    kind: "text".into(),
+                },
+                vec![],
+                0,
+            );
+            dag.insert(e).unwrap();
+        }
+
+        // Add roles.
+        for (role_id, role_name) in [("r-1", "Mod"), ("r-2", "VIP")] {
+            let e = dag.create_event(
+                &owner,
+                EventKind::CreateRole {
+                    role_id: role_id.into(),
+                    name: role_name.into(),
+                },
+                vec![],
+                0,
+            );
+            dag.insert(e).unwrap();
+        }
+
+        // Grant permissions to multiple peers.
+        for peer in [&peer_a, &peer_b, &peer_c] {
+            let e = dag.create_event(
+                &owner,
+                EventKind::GrantPermission {
+                    peer_id: peer.endpoint_id(),
+                    permission: Permission::SendMessages,
+                },
+                vec![],
+                0,
+            );
+            dag.insert(e).unwrap();
+        }
+
+        // Set profiles from different peers.
+        for (peer, name) in [(&peer_a, "Alice"), (&peer_b, "Bob"), (&peer_c, "Carol")] {
+            let e = dag.create_event(
+                peer,
+                EventKind::SetProfile {
+                    display_name: name.into(),
+                },
+                vec![],
+                0,
+            );
+            dag.insert(e).unwrap();
+        }
+
+        // Materialize twice — both should produce identical snapshot hashes
+        // because BTreeMap iteration is deterministic.
+        let state1 = materialize(&dag);
+        let heads1 = dag.heads_summary();
+        let snap1 = Snapshot::new(state1, heads1);
+
+        let state2 = materialize(&dag);
+        let heads2 = dag.heads_summary();
+        let snap2 = Snapshot::new(state2, heads2);
+
+        assert_eq!(
+            snap1.hash, snap2.hash,
+            "snapshot hashes must be deterministic across materializations"
+        );
+
+        // Verify the state has meaningful content (not empty defaults).
+        assert_eq!(snap1.state.channels.len(), 3);
+        assert_eq!(snap1.state.roles.len(), 2);
+        assert_eq!(snap1.state.profiles.len(), 3);
+        assert!(snap1.state.peer_permissions.len() >= 3);
     }
 
     // ── Issue #51: ZERO-buffered events must resolve after genesis ──

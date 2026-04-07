@@ -262,10 +262,10 @@ mod tests {
 
     #[test]
     fn worker_request_history_round_trip() {
-        use std::collections::HashMap;
+        use std::collections::BTreeMap;
         use willow_state::{AuthorHead, EventHash};
 
-        let mut heads_map = HashMap::new();
+        let mut heads_map = BTreeMap::new();
         heads_map.insert(
             gen_id(),
             AuthorHead {

@@ -371,7 +371,7 @@ mod tests {
         // Second page: cursor at the last event of page 1.
         let last_seq = page1.last().unwrap().seq;
         let last_hash = page1.last().unwrap().hash;
-        let mut cursor_heads = std::collections::HashMap::new();
+        let mut cursor_heads = std::collections::BTreeMap::new();
         cursor_heads.insert(
             id.endpoint_id(),
             willow_state::AuthorHead {
