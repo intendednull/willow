@@ -30,20 +30,23 @@ pub async fn run<N: Network>(
     let workers_topic_id = willow_network::topic_id(crate::types::WORKERS_TOPIC);
     let (workers_sender, workers_events) = network.subscribe(workers_topic_id, vec![]).await?;
 
-    let _ops_topic_id = willow_network::topic_id(crate::types::SERVER_OPS_TOPIC);
-    let (_ops_sender, _ops_events) = network.subscribe(_ops_topic_id, vec![]).await?;
+    let ops_topic_id = willow_network::topic_id(crate::types::SERVER_OPS_TOPIC);
+    let (_ops_sender, ops_events) = network.subscribe(ops_topic_id, vec![]).await?;
 
     // Create actor system and spawn actors.
     let system = System::new();
 
     let state_addr = system.spawn(StateActor { role });
 
-    let _network = system.spawn(NetworkActor::new(
-        workers_events,
-        state_addr.clone(),
-        peer_id,
-        workers_sender.clone(),
-    ));
+    let _network = system.spawn(
+        NetworkActor::new(
+            workers_events,
+            state_addr.clone(),
+            peer_id,
+            workers_sender.clone(),
+        )
+        .with_ops_events(ops_events),
+    );
 
     let _heartbeat = system.spawn(HeartbeatActor::new(
         peer_id,

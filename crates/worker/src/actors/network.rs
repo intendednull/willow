@@ -17,6 +17,8 @@ pub struct NetworkActor<E: TopicEvents + 'static, T: TopicHandle + 'static> {
     state_addr: Addr<StateActor>,
     local_peer_id: EndpointId,
     events: Option<E>,
+    /// Optional SERVER_OPS topic events stream.
+    ops_events: Option<E>,
     reply_topic: T,
 }
 
@@ -31,8 +33,16 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> NetworkActor<E, T> {
             state_addr,
             local_peer_id,
             events: Some(events),
+            ops_events: None,
             reply_topic,
         }
+    }
+
+    /// Attach a SERVER_OPS topic events stream. Events from this stream are
+    /// parsed with [`parse_server_message`] and forwarded to the state actor.
+    pub fn with_ops_events(mut self, ops_events: E) -> Self {
+        self.ops_events = Some(ops_events);
+        self
     }
 }
 
@@ -42,14 +52,31 @@ impl willow_actor::Message for GossipEventMsg {
     type Result = ();
 }
 
+/// Internal message wrapping a server ops gossip event.
+struct ServerOpsEventMsg(GossipEvent);
+impl willow_actor::Message for ServerOpsEventMsg {
+    type Result = ();
+}
+
 impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Actor for NetworkActor<E, T> {
     fn started(&mut self, ctx: &mut Context<Self>) -> impl std::future::Future<Output = ()> + Send {
-        // Spawn a task that drains TopicEvents and forwards them as messages.
+        // Spawn a task that drains WORKERS topic events.
         if let Some(mut events) = self.events.take() {
             let addr = ctx.address();
             willow_actor::runtime::spawn(async move {
                 while let Some(Ok(event)) = events.next().await {
                     if addr.do_send(GossipEventMsg(event)).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        // Spawn a second task that drains SERVER_OPS topic events.
+        if let Some(mut ops_events) = self.ops_events.take() {
+            let addr = ctx.address();
+            willow_actor::runtime::spawn(async move {
+                while let Some(Ok(event)) = ops_events.next().await {
+                    if addr.do_send(ServerOpsEventMsg(event)).is_err() {
                         break;
                     }
                 }
@@ -110,6 +137,32 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Handler<GossipEventMsg>
     }
 }
 
+impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Handler<ServerOpsEventMsg>
+    for NetworkActor<E, T>
+{
+    fn handle(
+        &mut self,
+        msg: ServerOpsEventMsg,
+        _ctx: &mut Context<Self>,
+    ) -> impl std::future::Future<Output = ()> + Send {
+        let state_addr = self.state_addr.clone();
+        let event = msg.0;
+
+        async move {
+            if let GossipEvent::Received(msg) = event {
+                match parse_server_message(&msg.content) {
+                    ServerMessageAction::Events(events) => {
+                        for event in events {
+                            let _ = state_addr.do_send(EventMsg(event));
+                        }
+                    }
+                    ServerMessageAction::Ignore => {}
+                }
+            }
+        }
+    }
+}
+
 // ───── Pure parse functions (unchanged) ────────────────────────────────────
 
 /// Action produced by parsing an incoming worker topic message.
@@ -131,7 +184,7 @@ pub enum WorkerMessageAction {
 /// This is a pure function — no I/O, no channels — so it's easily
 /// testable. The caller handles the actual I/O.
 pub fn parse_worker_message(data: &[u8], local_peer_id: &EndpointId) -> WorkerMessageAction {
-    let msg = match bincode::deserialize::<WorkerWireMessage>(data) {
+    let msg = match willow_transport::unpack::<WorkerWireMessage>(data) {
         Ok(m) => m,
         Err(e) => return WorkerMessageAction::DeserializeError(e.to_string()),
     };

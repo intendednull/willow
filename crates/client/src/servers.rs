@@ -2,14 +2,55 @@ use super::*;
 
 impl<N: willow_network::Network> ClientHandle<N> {
     pub async fn switch_server(&self, server_id: &str) {
-        let sid = server_id.to_string();
-        willow_actor::state::mutate(&self.server_registry_addr, move |reg| {
-            if reg.servers.contains_key(&sid) {
-                reg.active_server = Some(sid);
+        let target_sid = server_id.to_string();
+
+        // Check the target exists and get the current active server ID.
+        let (target_exists, current_sid) =
+            willow_actor::state::select(&self.server_registry_addr, {
+                let tid = target_sid.clone();
+                move |reg| (reg.servers.contains_key(&tid), reg.active_server.clone())
+            })
+            .await;
+
+        if !target_exists {
+            return;
+        }
+
+        // Stash the current server's DAG and restore the target's.
+        let tid = target_sid.clone();
+        let state = willow_actor::state::mutate(&self.dag_addr, move |ds| {
+            // Stash current DAG under the old server ID.
+            if let Some(old_id) = current_sid {
+                ds.stashed.insert(old_id, ds.managed.clone());
             }
+            // Restore the target server's DAG (or create an empty one).
+            if let Some(restored) = ds.stashed.remove(&tid) {
+                ds.managed = restored;
+            } else {
+                ds.managed = willow_state::ManagedDag::empty(5000);
+            }
+            ds.managed.state().clone()
         })
         .await;
-        // TODO: re-initialize event_state for the new server (Phase 3 follow-up).
+
+        // Update event_state from the restored DAG's materialized state.
+        willow_actor::state::mutate(&self.event_state_addr, move |es| {
+            *es = state;
+        })
+        .await;
+
+        // Update active server in registry.
+        let sid = target_sid.clone();
+        willow_actor::state::mutate(&self.server_registry_addr, move |reg| {
+            reg.active_server = Some(sid);
+        })
+        .await;
+
+        // Reset current channel to "general" (may not exist on new server).
+        willow_actor::state::mutate(&self.chat_meta_addr, |chat| {
+            chat.current_channel = "general".to_string();
+        })
+        .await;
     }
 
     pub async fn server_list(&self) -> Vec<(String, String)> {
@@ -81,6 +122,18 @@ impl<N: willow_network::Network> ClientHandle<N> {
             },
         )
         .await?;
+
+        // Stash the current server's DAG before seeding the new one.
+        let old_sid = self.active_server_id().await;
+        if let Some(old_id) = old_sid {
+            let oid = old_id.clone();
+            willow_actor::state::mutate(&self.dag_addr, move |ds| {
+                ds.stashed.insert(oid, ds.managed.clone());
+                // Reset managed to empty so seed_genesis creates fresh state.
+                ds.managed = willow_state::ManagedDag::empty(5000);
+            })
+            .await;
+        }
 
         // Seed the DAG with a genesis event and materialize initial state.
         self.mutation_handle.seed_genesis(&name_for_state).await;

@@ -701,6 +701,7 @@ pub fn test_client() -> (
     // atomically initialized together.
     let mut dag_state = state_actors::DagState {
         managed: willow_state::ManagedDag::new(&identity, "Test Server", 5000),
+        stashed: HashMap::new(),
     };
 
     // Create the general channel in the DAG so it's part of the
@@ -973,5 +974,41 @@ mod tests {
         let id2 = client.peer_id();
         assert_eq!(id1, id2);
         assert!(!id1.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn switch_server_updates_event_state() {
+        let (client, _rx) = test_client();
+        // test_client creates one server. Get its ID.
+        let server1_id = client.active_server_id().await.unwrap();
+
+        // Create a second server (this switches active to server2).
+        let server2_id = client.create_server("Second Server").await.unwrap();
+        assert_ne!(server1_id, server2_id);
+
+        // Send a message on server2.
+        client
+            .send_message("general", "hello server2")
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Verify the message is on the current (server2) state.
+        let msgs = client.messages("general").await;
+        assert!(
+            msgs.iter().any(|m| m.body == "hello server2"),
+            "message should be on server2"
+        );
+
+        // Switch back to server1.
+        client.switch_server(&server1_id).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // After switching, messages should NOT contain server2's message.
+        let msgs = client.messages("general").await;
+        assert!(
+            msgs.iter().all(|m| m.body != "hello server2"),
+            "server1 should not have server2's messages"
+        );
     }
 }

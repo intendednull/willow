@@ -172,6 +172,10 @@ pub struct DagState {
     /// The managed DAG that keeps EventDag, ServerState, and
     /// PendingBuffer in sync atomically.
     pub managed: willow_state::ManagedDag,
+    /// Stashed DAGs for inactive servers, keyed by server ID.
+    /// When switching servers, the current DAG is stashed and the
+    /// target server's DAG is restored (or a fresh one is created).
+    pub stashed: HashMap<String, willow_state::ManagedDag>,
 }
 
 impl DagState {
@@ -198,6 +202,7 @@ impl Default for DagState {
     fn default() -> Self {
         Self {
             managed: willow_state::ManagedDag::empty(MAX_CLIENT_PENDING),
+            stashed: HashMap::new(),
         }
     }
 }

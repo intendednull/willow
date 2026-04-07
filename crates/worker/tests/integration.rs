@@ -8,7 +8,9 @@ use std::time::Duration;
 use willow_actor::System;
 use willow_common::{WorkerRequest, WorkerResponse, WorkerRole, WorkerRoleInfo};
 use willow_identity::Identity;
+use willow_network::traits::{GossipEvent, GossipMessage, TopicEvents, TopicHandle};
 use willow_state::{Event, EventHash, EventKind, HeadsSummary, Snapshot};
+use willow_worker::actors::network::NetworkActor;
 use willow_worker::actors::state::StateActor;
 use willow_worker::actors::{EventMsg, GetRoleInfoMsg, WorkerRequestMsg};
 
@@ -467,4 +469,112 @@ fn sync_provider_permission_identifies_workers() {
     assert!(state.has_permission(&worker, &Permission::SyncProvider));
     assert!(state.has_permission(&owner, &Permission::SyncProvider));
     assert!(!state.has_permission(&random, &Permission::SyncProvider));
+}
+
+// ───── Mock types for NetworkActor tests ──────────────────────────────────
+
+/// A minimal TopicEvents mock backed by a tokio mpsc channel.
+struct MockTopicEvents {
+    rx: tokio::sync::mpsc::Receiver<GossipEvent>,
+}
+
+#[async_trait::async_trait]
+impl TopicEvents for MockTopicEvents {
+    async fn next(&mut self) -> Option<anyhow::Result<GossipEvent>> {
+        self.rx.recv().await.map(Ok)
+    }
+    async fn joined(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+/// A minimal TopicHandle mock that discards broadcasts.
+#[derive(Clone)]
+struct MockTopicHandle;
+
+#[async_trait::async_trait]
+impl TopicHandle for MockTopicHandle {
+    async fn broadcast(&self, _data: bytes::Bytes) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn broadcast_neighbors(&self, _data: bytes::Bytes) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn neighbors(&self) -> Vec<willow_identity::EndpointId> {
+        vec![]
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_ops_events_forwarded_to_state() {
+    let system = System::new();
+
+    // State actor with a replay role that tracks ingested events.
+    let state_addr = system.spawn(StateActor {
+        role: Box::new(TestReplayRole::new("srv-1", 100)),
+    });
+
+    // Create channels for both WORKERS and SERVER_OPS streams.
+    let (_workers_tx, workers_rx) = tokio::sync::mpsc::channel::<GossipEvent>(16);
+    let (ops_tx, ops_rx) = tokio::sync::mpsc::channel::<GossipEvent>(16);
+
+    let worker_id = Identity::generate();
+    let peer_id = worker_id.endpoint_id();
+
+    let workers_events = MockTopicEvents { rx: workers_rx };
+    let ops_events = MockTopicEvents { rx: ops_rx };
+
+    let _network = system.spawn(
+        NetworkActor::new(workers_events, state_addr.clone(), peer_id, MockTopicHandle)
+            .with_ops_events(ops_events),
+    );
+
+    // Allow the actor to start.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Create a signed server event and send it on the ops stream.
+    let sender_id = Identity::generate();
+    let event = Event::new(
+        &sender_id,
+        1,
+        EventHash::ZERO,
+        vec![],
+        EventKind::CreateServer {
+            name: "srv-1".to_string(),
+        },
+        0,
+    );
+
+    let data = willow_common::pack_wire(
+        &willow_common::WireMessage::Event(event.clone()),
+        &sender_id,
+    )
+    .unwrap();
+
+    ops_tx
+        .send(GossipEvent::Received(GossipMessage {
+            content: bytes::Bytes::from(data),
+            sender: sender_id.endpoint_id(),
+        }))
+        .await
+        .unwrap();
+
+    // Allow the event to be processed.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Verify the state actor received the event.
+    let info = state_addr.ask(GetRoleInfoMsg).await.unwrap();
+    match info {
+        WorkerRoleInfo::Replay {
+            events_buffered, ..
+        } => {
+            assert_eq!(
+                events_buffered, 1,
+                "server ops event should have been forwarded to state actor"
+            );
+        }
+        _ => panic!("expected Replay"),
+    }
+
+    system.shutdown().await;
 }

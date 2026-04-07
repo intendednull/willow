@@ -13,6 +13,10 @@ use willow_state::{
 };
 use willow_worker::{WorkerRequest, WorkerResponse, WorkerRole, WorkerRoleInfo};
 
+/// Maximum number of servers the replay node will track simultaneously.
+/// When exceeded, the least recently accessed server is evicted.
+const MAX_SERVERS: usize = 1000;
+
 /// Per-server state held by the replay node.
 struct ServerData {
     /// Per-author Merkle-DAG of events.
@@ -24,6 +28,8 @@ struct ServerData {
     /// Max events per author before compaction (reserved for future use).
     #[allow(dead_code)]
     max_events_per_author: usize,
+    /// Monotonic counter recording last access (for LRU eviction).
+    last_access: u64,
 }
 
 /// Configuration for the replay role.
@@ -44,6 +50,8 @@ impl Default for ReplayConfig {
 pub struct ReplayRole {
     servers: HashMap<String, ServerData>,
     config: ReplayConfig,
+    /// Monotonic counter for LRU tracking.
+    access_counter: u64,
 }
 
 impl ReplayRole {
@@ -52,6 +60,7 @@ impl ReplayRole {
         Self {
             servers: HashMap::new(),
             config,
+            access_counter: 0,
         }
     }
 
@@ -59,6 +68,22 @@ impl ReplayRole {
     pub fn ingest_event(&mut self, server_id: &str, event: &Event) {
         let max_per_author = self.config.max_events_per_author;
         let author = event.author;
+
+        // Evict least-recently-used server when at capacity and this is a new server.
+        if self.servers.len() >= MAX_SERVERS && !self.servers.contains_key(server_id) {
+            if let Some(lru_key) = self
+                .servers
+                .iter()
+                .min_by_key(|(_, d)| d.last_access)
+                .map(|(k, _)| k.clone())
+            {
+                self.servers.remove(&lru_key);
+            }
+        }
+
+        self.access_counter += 1;
+        let access_counter = self.access_counter;
+
         let data = self
             .servers
             .entry(server_id.to_string())
@@ -66,14 +91,24 @@ impl ReplayRole {
                 // Use event.author as placeholder genesis author. When the
                 // actual CreateServer event is applied via apply_incremental,
                 // it properly sets up admins in ServerState.
+                let pending = if max_per_author == 0 {
+                    // Treat zero as unlimited to avoid immediately evicting
+                    // every buffered event (PendingBuffer::with_capacity(0)
+                    // would evict all entries on each insert).
+                    PendingBuffer::new()
+                } else {
+                    PendingBuffer::with_capacity(max_per_author * 10)
+                };
                 ServerData {
                     dag: EventDag::new(),
                     state: ServerState::new(server_id, server_id, author),
-                    pending: PendingBuffer::with_capacity(max_per_author * 10),
+                    pending,
                     max_events_per_author: max_per_author,
+                    last_access: access_counter,
                 }
             });
 
+        data.last_access = access_counter;
         Self::try_insert(data, event.clone());
     }
 
@@ -831,5 +866,51 @@ mod tests {
             0,
             "no events should remain pending"
         );
+    }
+
+    #[test]
+    fn server_count_bounded_by_max() {
+        let mut role = ReplayRole::new(ReplayConfig {
+            max_events_per_author: 100,
+        });
+        // Insert MAX_SERVERS + 10 unique servers.
+        for i in 0..MAX_SERVERS + 10 {
+            let sid = format!("srv-{i}");
+            setup_server(&mut role, &sid);
+        }
+        assert!(
+            role.servers.len() <= MAX_SERVERS,
+            "server count {} exceeds MAX_SERVERS {}",
+            role.servers.len(),
+            MAX_SERVERS,
+        );
+    }
+
+    #[test]
+    fn zero_max_events_does_not_discard_pending() {
+        let mut role = ReplayRole::new(ReplayConfig {
+            max_events_per_author: 0,
+        });
+        let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
+
+        // Build e2 and e3 to form a proper chain: genesis -> e2 -> e3.
+        let e2 = make_message(&owner, 2, genesis_hash);
+        let e3 = make_message(&owner, 3, e2.hash);
+
+        // Insert e3 first (out of order) — it should be buffered because
+        // its prev (e2.hash) hasn't been inserted yet.
+        role.ingest_event("srv-1", &e3);
+
+        assert!(
+            role.servers["srv-1"].pending.pending_count() > 0,
+            "pending events should not be immediately evicted when max_events_per_author=0"
+        );
+
+        // Now insert e2 to resolve the gap.
+        role.ingest_event("srv-1", &e2);
+
+        // Both e2 and e3 should now be in the DAG (genesis + e2 + e3 = 3).
+        assert_eq!(role.servers["srv-1"].dag.len(), 3);
+        assert_eq!(role.servers["srv-1"].pending.pending_count(), 0);
     }
 }
