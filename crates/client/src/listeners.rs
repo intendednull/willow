@@ -130,16 +130,32 @@ async fn try_insert_event(ctx: &ListenerCtx, event: willow_state::Event) {
     let (applied, resolved) =
         willow_actor::state::mutate(&ctx.dag, move |ds| match ds.dag.insert(event.clone()) {
             Ok(()) => {
-                let resolved = ds.pending.resolve(&event.hash);
+                let mut resolved = ds.pending.resolve(&event.hash);
+                // If this was genesis, also resolve events buffered under ZERO
+                // (new authors whose first events arrived before genesis).
+                if matches!(event.kind, willow_state::EventKind::CreateServer { .. }) {
+                    resolved.extend(ds.pending.resolve(&willow_state::EventHash::ZERO));
+                }
                 (Some(event), resolved)
             }
-            Err(InsertError::SeqGap { .. }) | Err(InsertError::PrevMismatch { .. }) => {
+            Err(InsertError::SeqGap { .. }) | Err(InsertError::NotGenesis) => {
                 ds.pending.buffer_for_prev(event.prev, event);
+                (None, vec![])
+            }
+            Err(InsertError::PrevMismatch {
+                author,
+                expected,
+                got,
+            }) => {
+                tracing::warn!(
+                    %author, %expected, %got,
+                    "PrevMismatch: equivocation or conflicting chain — dropping event"
+                );
                 (None, vec![])
             }
             Err(InsertError::Duplicate) => (None, vec![]),
             Err(err) => {
-                eprintln!("DAG insert error: {err}");
+                tracing::warn!("DAG insert error: {err}");
                 (None, vec![])
             }
         })

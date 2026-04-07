@@ -190,6 +190,10 @@ impl<N: willow_network::Network> ClientMutations<N> {
     pub(crate) fn broadcast_on_topic(&self, topic: &str, data: Vec<u8>) {
         let topics = self.topics.read().unwrap_or_else(|e| e.into_inner());
         let Some(handle) = topics.get(topic).cloned() else {
+            tracing::warn!(
+                topic,
+                "broadcast_on_topic: topic not subscribed, message dropped"
+            );
             return;
         };
         drop(topics);

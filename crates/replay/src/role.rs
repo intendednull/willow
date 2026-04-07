@@ -8,8 +8,8 @@ use std::collections::HashMap;
 
 use tracing::warn;
 use willow_state::{
-    apply_incremental, Event, EventDag, EventKind, HeadsSummary, InsertError, PendingBuffer,
-    ServerState, Snapshot,
+    apply_incremental, Event, EventDag, EventHash, EventKind, HeadsSummary, InsertError,
+    PendingBuffer, ServerState, Snapshot,
 };
 use willow_worker::{WorkerRequest, WorkerResponse, WorkerRole, WorkerRoleInfo};
 
@@ -95,7 +95,12 @@ impl ReplayRole {
             match data.dag.insert(current.clone()) {
                 Ok(()) => {
                     apply_incremental(&mut data.state, &current);
-                    let resolved = data.pending.resolve(&hash);
+                    let mut resolved = data.pending.resolve(&hash);
+                    // If this was genesis, also drain events buffered under ZERO
+                    // (pre-genesis events from other authors with prev=ZERO).
+                    if matches!(current.kind, EventKind::CreateServer { .. }) {
+                        resolved.extend(data.pending.resolve(&EventHash::ZERO));
+                    }
                     queue.extend(resolved);
                 }
                 Err(InsertError::SeqGap { .. }) => {
@@ -780,5 +785,56 @@ mod tests {
         role.ingest_event("srv-1", &genesis);
         assert_eq!(role.servers["srv-1"].dag.len(), 2); // genesis + msg
         assert_eq!(role.servers["srv-1"].pending.pending_count(), 0);
+    }
+
+    /// Issue #51: A second author's first event (prev=ZERO) arrives before
+    /// genesis. It gets buffered under EventHash::ZERO. When genesis is
+    /// inserted, resolve() is called with genesis.hash — not ZERO — so the
+    /// second author's event stays stuck forever.
+    #[test]
+    fn pre_genesis_event_from_second_author_resolves_after_genesis() {
+        let mut role = ReplayRole::new(ReplayConfig::default());
+        let owner = Identity::generate();
+        let member = Identity::generate();
+
+        // Second author's first event (seq=1, prev=ZERO).
+        let member_event = make_dag_event(
+            &member,
+            1,
+            EventHash::ZERO,
+            EventKind::SetProfile {
+                display_name: "member".into(),
+            },
+        );
+
+        // Genesis from owner.
+        let genesis = Event::new(
+            &owner,
+            1,
+            EventHash::ZERO,
+            vec![],
+            EventKind::CreateServer {
+                name: "srv-1".to_string(),
+            },
+            0,
+        );
+
+        // Deliver member event FIRST (before genesis).
+        role.ingest_event("srv-1", &member_event);
+        assert_eq!(role.servers["srv-1"].dag.len(), 0);
+        assert_eq!(role.servers["srv-1"].pending.pending_count(), 1);
+
+        // Now deliver genesis — should resolve the member's ZERO-buffered event.
+        role.ingest_event("srv-1", &genesis);
+        assert_eq!(
+            role.servers["srv-1"].dag.len(),
+            2,
+            "both genesis and member event should be in DAG"
+        );
+        assert_eq!(
+            role.servers["srv-1"].pending.pending_count(),
+            0,
+            "no events should remain pending"
+        );
     }
 }
