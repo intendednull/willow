@@ -17,7 +17,7 @@ use crate::hash::EventHash;
 /// [`ProposedAction`] and the vote path. This structural separation makes
 /// it impossible for any peer to grant admin via a direct
 /// [`EventKind::GrantPermission`] event.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Permission {
     /// Can sync/provide full history to other peers.
     SyncProvider,

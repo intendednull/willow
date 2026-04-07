@@ -5,7 +5,7 @@
 //! [`apply_unchecked`], producing identical output on all peers given the
 //! same DAG contents.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use willow_identity::EndpointId;
 
@@ -80,7 +80,7 @@ fn apply_unchecked(state: &mut ServerState, event: &Event) -> ApplyResult {
                 PendingProposal {
                     action: action.clone(),
                     proposer: event.author,
-                    votes: HashMap::from([(event.author, true)]),
+                    votes: BTreeMap::from([(event.author, true)]),
                 },
             );
             check_and_apply_proposal(state, &event.hash);
@@ -160,7 +160,7 @@ fn apply_proposed_action(state: &mut ServerState, action: &ProposedAction) {
             state.admins.insert(*peer_id);
             state.members.entry(*peer_id).or_insert_with(|| Member {
                 peer_id: *peer_id,
-                roles: HashSet::new(),
+                roles: BTreeSet::new(),
                 display_name: None,
             });
         }
@@ -253,7 +253,7 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
                     Channel {
                         id: channel_id.clone(),
                         name: name.clone(),
-                        pinned_messages: HashSet::new(),
+                        pinned_messages: BTreeSet::new(),
                         kind: kind.clone(),
                     },
                 );
@@ -281,7 +281,7 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
                     crate::types::Role {
                         id: role_id.clone(),
                         name: name.clone(),
-                        permissions: HashSet::new(),
+                        permissions: BTreeSet::new(),
                     },
                 );
             }
@@ -327,7 +327,7 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
                 .insert(*permission);
             state.members.entry(*peer_id).or_insert_with(|| Member {
                 peer_id: *peer_id,
-                roles: HashSet::new(),
+                roles: BTreeSet::new(),
                 display_name: None,
             });
         }
@@ -357,7 +357,7 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
                 timestamp_ms: event.timestamp_hint_ms,
                 edited: false,
                 deleted: false,
-                reactions: HashMap::new(),
+                reactions: BTreeMap::new(),
                 reply_to: *reply_to,
             });
         }

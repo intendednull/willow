@@ -4,7 +4,7 @@
 //! governance state, and profiles. It is derived from a [`EventDag`](crate::dag::EventDag)
 //! via [`materialize`](crate::materialize::materialize).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use willow_identity::EndpointId;
@@ -21,7 +21,7 @@ pub struct PendingProposal {
     /// Who proposed it.
     pub proposer: EndpointId,
     /// Votes received: voter -> accept/reject.
-    pub votes: HashMap<EndpointId, bool>,
+    pub votes: BTreeMap<EndpointId, bool>,
 }
 
 /// The complete materialized state of a server.
@@ -36,39 +36,39 @@ pub struct ServerState {
     /// Display name (from genesis CreateServer, mutable via RenameServer).
     pub server_name: String,
     /// Channels keyed by channel ID.
-    pub channels: HashMap<String, Channel>,
+    pub channels: BTreeMap<String, Channel>,
     /// Roles keyed by role ID.
-    pub roles: HashMap<String, Role>,
+    pub roles: BTreeMap<String, Role>,
     /// Members keyed by peer ID.
-    pub members: HashMap<EndpointId, Member>,
+    pub members: BTreeMap<EndpointId, Member>,
     /// Non-admin permissions per peer (ManageChannels, SendMessages, etc.).
     /// Does not control admin status — that's in `admins`.
-    pub peer_permissions: HashMap<EndpointId, HashSet<Permission>>,
+    pub peer_permissions: BTreeMap<EndpointId, BTreeSet<Permission>>,
     /// Chat messages in event-sequence order.
     pub messages: Vec<ChatMessage>,
     /// Peer profiles keyed by peer ID.
-    pub profiles: HashMap<EndpointId, Profile>,
+    pub profiles: BTreeMap<EndpointId, Profile>,
     /// Server description.
     pub description: String,
     /// Encrypted channel key material: channel ID → (recipient → encrypted key).
     /// Each recipient gets their own encrypted copy of the channel key.
-    pub channel_keys: HashMap<String, HashMap<EndpointId, Vec<u8>>>,
+    pub channel_keys: BTreeMap<String, BTreeMap<EndpointId, Vec<u8>>>,
 
     // -- Governance state --
     /// The set of peers with admin status. Separate from Permission
     /// enum to make the governance boundary structurally enforced.
-    pub admins: HashSet<EndpointId>,
+    pub admins: BTreeSet<EndpointId>,
     /// Current vote threshold for admin actions.
     pub vote_threshold: VoteThreshold,
     /// Pending proposals awaiting votes.
-    pub pending_proposals: HashMap<EventHash, PendingProposal>,
+    pub pending_proposals: BTreeMap<EventHash, PendingProposal>,
 
     // -- Dedup state --
     /// Hashes of events already applied to this state. Used by
     /// [`apply_incremental`](crate::materialize::apply_incremental) to
     /// guarantee idempotency — applying the same event twice is a no-op.
     #[serde(default, skip)]
-    pub applied_events: HashSet<EventHash>,
+    pub applied_events: BTreeSet<EventHash>,
 }
 
 impl ServerState {
@@ -76,17 +76,17 @@ impl ServerState {
     ///
     /// The genesis author is added as both a member and the sole admin.
     pub fn new(id: impl Into<String>, name: impl Into<String>, genesis_author: EndpointId) -> Self {
-        let mut members = HashMap::new();
+        let mut members = BTreeMap::new();
         members.insert(
             genesis_author,
             Member {
                 peer_id: genesis_author,
-                roles: HashSet::new(),
+                roles: BTreeSet::new(),
                 display_name: None,
             },
         );
 
-        let mut admins = HashSet::new();
+        let mut admins = BTreeSet::new();
         admins.insert(genesis_author);
 
         Self {
@@ -95,15 +95,15 @@ impl ServerState {
             members,
             admins,
             vote_threshold: VoteThreshold::default(),
-            channels: HashMap::new(),
-            roles: HashMap::new(),
-            peer_permissions: HashMap::new(),
+            channels: BTreeMap::new(),
+            roles: BTreeMap::new(),
+            peer_permissions: BTreeMap::new(),
             messages: Vec::new(),
-            profiles: HashMap::new(),
+            profiles: BTreeMap::new(),
             description: String::new(),
-            channel_keys: HashMap::new(),
-            pending_proposals: HashMap::new(),
-            applied_events: HashSet::new(),
+            channel_keys: BTreeMap::new(),
+            pending_proposals: BTreeMap::new(),
+            applied_events: BTreeSet::new(),
         }
     }
 

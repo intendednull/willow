@@ -11,6 +11,7 @@ mod tests;
 pub mod dag;
 pub mod event;
 pub mod hash;
+pub mod managed;
 pub mod materialize;
 pub mod server;
 pub mod sync;
@@ -20,6 +21,7 @@ pub mod types;
 pub use dag::{EventDag, InsertError};
 pub use event::{Event, EventKind, Permission, ProposedAction, VoteThreshold};
 pub use hash::EventHash;
+pub use managed::ManagedDag;
 pub use materialize::{apply_incremental, materialize, ApplyResult};
 pub use server::{PendingProposal, ServerState};
 pub use sync::{

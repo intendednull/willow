@@ -75,17 +75,19 @@ impl<N: willow_network::Network> ClientMutations<N> {
         let ts = util::current_time_ms();
         let state = willow_actor::state::mutate(&self.dag, move |ds| {
             // Idempotent: if genesis already exists, return current state.
-            if ds.dag.genesis().is_some() {
-                return willow_state::materialize(&ds.dag);
+            if ds.managed.dag().genesis().is_some() {
+                return ds.managed.state().clone();
             }
-            let genesis =
-                ds.dag
-                    .create_event(&identity, EventKind::CreateServer { name }, vec![], ts);
-            ds.dag
-                .insert(genesis)
+            let genesis = ds.managed.dag().create_event(
+                &identity,
+                EventKind::CreateServer { name },
+                vec![],
+                ts,
+            );
+            ds.managed
+                .insert_and_apply(genesis)
                 .expect("genesis event must insert successfully");
-            ds.synced = true;
-            willow_state::materialize(&ds.dag)
+            ds.managed.state().clone()
         })
         .await;
         willow_actor::state::mutate(&self.event_state, move |es| {
@@ -94,41 +96,16 @@ impl<N: willow_network::Network> ClientMutations<N> {
         .await;
     }
 
-    /// Build an event and atomically insert it into the DAG.
-    ///
-    /// Atomicity is guaranteed by the actor mailbox — only one mutation
-    /// runs at a time, so no concurrent mutation can produce events with
-    /// the same seq/prev.
+    /// Build an event and atomically insert it into the DAG and apply
+    /// to state. ManagedDag ensures the DAG and ServerState are always
+    /// in sync — no separate apply step needed.
     pub(crate) async fn build_event(&self, kind: EventKind) -> anyhow::Result<willow_state::Event> {
         let identity = self.identity.clone();
         let ts = util::current_time_ms();
         willow_actor::state::mutate(&self.dag, move |ds| {
-            if !ds.synced {
-                return Err(anyhow::anyhow!(
-                    "cannot create events before sync completes"
-                ));
-            }
-            let my_id = identity.endpoint_id();
-            let mut deps: Vec<EventHash> = ds
-                .dag
-                .authors()
-                .filter(|a| **a != my_id)
-                .filter_map(|a| ds.dag.head(a).copied())
-                .collect();
-
-            // Vote events must causally depend on the proposal so
-            // topological sort always places the proposal first.
-            if let EventKind::Vote { proposal, .. } = &kind {
-                if !deps.contains(proposal) {
-                    deps.push(*proposal);
-                }
-            }
-
-            let event = ds.dag.create_event(&identity, kind, deps, ts);
-            ds.dag
-                .insert(event.clone())
-                .map_err(|e| anyhow::anyhow!("DAG insert failed: {e:?}"))?;
-            Ok(event)
+            ds.managed
+                .create_and_insert(&identity, kind, ts)
+                .map_err(|e| anyhow::anyhow!("DAG insert failed: {e:?}"))
         })
         .await
     }
@@ -161,12 +138,14 @@ impl<N: willow_network::Network> ClientMutations<N> {
         from_registry.ok_or_else(|| anyhow::anyhow!("channel not found: {channel}"))
     }
 
-    /// Apply an already-inserted event: update materialized state, persist,
-    /// and emit ClientEvents. The event MUST already be in the DAG.
+    /// Sync event_state mirror from ManagedDag, persist, and emit
+    /// ClientEvents. Called after build_event succeeds — ManagedDag has
+    /// already applied the event to its internal state atomically.
     pub(crate) async fn apply_event(&self, event: &willow_state::Event) {
-        let event_clone = event.clone();
+        // Sync event_state mirror from ManagedDag's authoritative state.
+        let state = willow_actor::state::select(&self.dag, |ds| ds.managed.state().clone()).await;
         willow_actor::state::mutate(&self.event_state, move |es| {
-            willow_state::apply_incremental(es, &event_clone);
+            *es = state;
         })
         .await;
         let _ = self.persistence.do_send(persistence_actor::PersistEvent {

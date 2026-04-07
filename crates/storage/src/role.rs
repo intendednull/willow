@@ -194,7 +194,7 @@ mod tests {
         }
 
         // Peer knows up to seq 3 — should get seq 4 and 5.
-        let mut their_heads = std::collections::HashMap::new();
+        let mut their_heads = std::collections::BTreeMap::new();
         their_heads.insert(
             id.endpoint_id(),
             willow_state::AuthorHead {

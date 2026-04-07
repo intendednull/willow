@@ -372,7 +372,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                             willow_state::Channel {
                                 id: ch_id.to_string(),
                                 name: name.clone(),
-                                pinned_messages: std::collections::HashSet::new(),
+                                pinned_messages: std::collections::BTreeSet::new(),
                                 kind: "text".to_string(),
                             },
                         );
@@ -697,26 +697,14 @@ pub fn test_client() -> (
 
     let identity_clone = identity.clone();
 
-    // Create the DAG and seed it with a genesis event so subsequent
-    // build_event/insert calls succeed.
-    let mut dag_state = state_actors::DagState::default();
-    let genesis = dag_state.dag.create_event(
-        &identity,
-        willow_state::EventKind::CreateServer {
-            name: "Test Server".to_string(),
-        },
-        vec![],
-        0,
-    );
-    dag_state.dag.insert(genesis).expect("genesis must insert");
-    dag_state.synced = true;
+    // Create a ManagedDag seeded with genesis — DAG and state are
+    // atomically initialized together.
+    let mut dag_state = state_actors::DagState {
+        managed: willow_state::ManagedDag::new(&identity, "Test Server", 5000),
+    };
 
-    // Materialize initial state from the DAG — this gives us a ServerState
-    // with the correct server_id (genesis hash) and genesis author as admin.
-    state.event_state = willow_state::materialize(&dag_state.dag);
-
-    // Seed event_state with the general channel so event-sourced operations
-    // (e.g. pin/unpin) can find the channel.
+    // Create the general channel in the DAG so it's part of the
+    // authoritative state (not just manually injected into event_state).
     let ch_id_str = state
         .servers
         .get(&server_id)
@@ -727,15 +715,23 @@ pub fn test_client() -> (
                 .map(|(_, cid)| cid.to_string())
         })
         .unwrap_or_default();
-    state.event_state.channels.insert(
-        ch_id_str.clone(),
-        willow_state::Channel {
-            id: ch_id_str.clone(),
-            name: "general".to_string(),
-            pinned_messages: std::collections::HashSet::new(),
-            kind: "text".to_string(),
-        },
-    );
+    if !ch_id_str.is_empty() {
+        dag_state
+            .managed
+            .create_and_insert(
+                &identity,
+                willow_state::EventKind::CreateChannel {
+                    channel_id: ch_id_str.clone(),
+                    name: "general".to_string(),
+                    kind: "text".to_string(),
+                },
+                0,
+            )
+            .expect("channel creation must succeed in test");
+    }
+
+    // Copy the materialized state from ManagedDag.
+    state.event_state = dag_state.managed.state().clone();
 
     // Now spawn actors AFTER state is fully initialized (DAG materialized + channels seeded).
     let sys = willow_actor::System::new();

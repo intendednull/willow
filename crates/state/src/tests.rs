@@ -1748,3 +1748,160 @@ fn rotate_channel_key_for_nonexistent_channel() {
         vec![42]
     );
 }
+
+// ── Issue #74: ManagedDag — atomic insert + apply ──────────────────────
+
+#[test]
+fn managed_dag_insert_and_apply_keeps_state_in_sync() {
+    use crate::managed::ManagedDag;
+
+    let id = Identity::generate();
+    let mut managed = ManagedDag::new(&id, "Test Server", 5000);
+
+    // State should have genesis author as member.
+    assert!(managed.state().members.contains_key(&id.endpoint_id()));
+    assert!(managed.state().is_admin(&id.endpoint_id()));
+
+    // Create a channel — state should be updated atomically.
+    let event = managed
+        .create_and_insert(
+            &id,
+            EventKind::CreateChannel {
+                channel_id: "ch1".into(),
+                name: "general".into(),
+                kind: "text".into(),
+            },
+            1000,
+        )
+        .unwrap();
+
+    // State must ALREADY reflect the channel — no separate apply step needed.
+    assert!(
+        managed.state().channels.contains_key("ch1"),
+        "channel should be in state immediately after create_and_insert"
+    );
+    assert_eq!(managed.state().channels["ch1"].name, "general");
+
+    // DAG should also contain the event.
+    assert!(managed.dag().get(&event.hash).is_some());
+}
+
+#[test]
+fn managed_dag_insert_remote_event_applies_to_state() {
+    use crate::managed::ManagedDag;
+
+    let owner = Identity::generate();
+    let mut managed = ManagedDag::new(&owner, "Test", 5000);
+
+    // Simulate a remote event from a different peer.
+    let peer = Identity::generate();
+    let event = managed.dag().create_event(
+        &peer,
+        EventKind::SetProfile {
+            display_name: "Alice".into(),
+        },
+        vec![],
+        100,
+    );
+    let outcome = managed.insert_and_apply(event).unwrap();
+    assert!(outcome.applied.is_some());
+    assert!(
+        managed.state().profiles.contains_key(&peer.endpoint_id()),
+        "profile should be in state after insert_and_apply"
+    );
+    assert_eq!(
+        managed.state().profiles[&peer.endpoint_id()].display_name,
+        "Alice"
+    );
+}
+
+#[test]
+fn managed_dag_buffers_gap_events_and_resolves() {
+    use crate::managed::ManagedDag;
+
+    let owner = Identity::generate();
+    let peer = Identity::generate();
+    let mut managed = ManagedDag::new(&owner, "Test", 5000);
+
+    // Create peer's seq=1 event.
+    let e1 = managed.dag().create_event(
+        &peer,
+        EventKind::SetProfile {
+            display_name: "first".into(),
+        },
+        vec![],
+        0,
+    );
+
+    // Create peer's seq=2 event (depends on e1).
+    let e2 = Event::new(
+        &peer,
+        2,
+        e1.hash,
+        vec![],
+        EventKind::SetProfile {
+            display_name: "second".into(),
+        },
+        0,
+    );
+
+    // Insert e2 first — should be buffered (seq gap).
+    let outcome = managed.insert_and_apply(e2.clone()).unwrap();
+    assert!(outcome.applied.is_none(), "e2 should be buffered");
+    assert!(managed.pending().pending_count() > 0);
+
+    // Now insert e1 — should resolve and apply both.
+    let outcome = managed.insert_and_apply(e1).unwrap();
+    assert!(outcome.applied.is_some(), "e1 should be applied");
+    assert!(!outcome.resolved.is_empty(), "e2 should be resolved");
+
+    // State should reflect the last profile update.
+    assert_eq!(
+        managed.state().profiles[&peer.endpoint_id()].display_name,
+        "second"
+    );
+}
+
+#[test]
+fn managed_dag_rejects_duplicate() {
+    use crate::managed::ManagedDag;
+
+    let owner = Identity::generate();
+    let mut managed = ManagedDag::new(&owner, "Test", 5000);
+
+    let peer = Identity::generate();
+    let event = managed.dag().create_event(
+        &peer,
+        EventKind::SetProfile {
+            display_name: "Alice".into(),
+        },
+        vec![],
+        0,
+    );
+
+    // First insert succeeds.
+    let outcome = managed.insert_and_apply(event.clone()).unwrap();
+    assert!(outcome.applied.is_some());
+
+    // Second insert is a duplicate — no error, just no-op.
+    let outcome = managed.insert_and_apply(event).unwrap();
+    assert!(outcome.applied.is_none());
+}
+
+#[test]
+fn managed_dag_create_blocks_before_sync() {
+    use crate::managed::ManagedDag;
+
+    let mut managed = ManagedDag::empty(5000);
+    let id = Identity::generate();
+
+    // Creating events on an empty (unsynced) DAG should fail.
+    let result = managed.create_and_insert(
+        &id,
+        EventKind::SetProfile {
+            display_name: "test".into(),
+        },
+        0,
+    );
+    assert!(result.is_err());
+}

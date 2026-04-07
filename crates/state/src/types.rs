@@ -4,7 +4,7 @@
 //! networking, or crypto dependency. They are the building blocks of
 //! [`ServerState`](crate::server::ServerState).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use willow_identity::EndpointId;
@@ -20,7 +20,7 @@ pub struct Channel {
     pub name: String,
     /// Hashes of pinned messages in this channel.
     #[serde(default)]
-    pub pinned_messages: HashSet<EventHash>,
+    pub pinned_messages: BTreeSet<EventHash>,
     /// Channel kind: `"text"` or `"voice"`. Defaults to `"text"`.
     #[serde(default = "default_channel_kind")]
     pub kind: String,
@@ -39,7 +39,7 @@ pub struct Role {
     /// Human-readable name (e.g. "Moderator").
     pub name: String,
     /// The set of permission strings this role grants.
-    pub permissions: HashSet<String>,
+    pub permissions: BTreeSet<String>,
 }
 
 /// A peer's membership record within a server.
@@ -48,7 +48,7 @@ pub struct Member {
     /// The peer's endpoint ID.
     pub peer_id: EndpointId,
     /// Role IDs assigned to this member.
-    pub roles: HashSet<String>,
+    pub roles: BTreeSet<String>,
     /// Optional display name override.
     pub display_name: Option<String>,
 }
@@ -71,7 +71,7 @@ pub struct ChatMessage {
     /// Whether this message has been soft-deleted.
     pub deleted: bool,
     /// Reactions: emoji string -> list of reactor endpoint IDs.
-    pub reactions: HashMap<String, Vec<EndpointId>>,
+    pub reactions: BTreeMap<String, Vec<EndpointId>>,
     /// If this is a reply, the EventHash of the parent message.
     pub reply_to: Option<EventHash>,
 }

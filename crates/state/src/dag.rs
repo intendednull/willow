@@ -263,7 +263,7 @@ impl EventDag {
     /// Compute a compact summary of the DAG's current heads.
     pub fn heads_summary(&self) -> crate::sync::HeadsSummary {
         use crate::sync::{AuthorHead, HeadsSummary};
-        let mut heads = std::collections::HashMap::new();
+        let mut heads = std::collections::BTreeMap::new();
         for (author, hash) in &self.heads {
             let seq = self.latest_seq(author);
             heads.insert(*author, AuthorHead { seq, hash: *hash });
@@ -275,14 +275,21 @@ impl EventDag {
     ///
     /// For each author we know about: if the requester has a lower seq (or
     /// doesn't know the author at all), return our events after their seq.
+    /// An optional `limit` caps the total number of events returned.
     pub fn events_since(
         &self,
-        their_heads: &std::collections::HashMap<EndpointId, u64>,
+        their_heads: &std::collections::BTreeMap<EndpointId, u64>,
+        limit: Option<usize>,
     ) -> Vec<&Event> {
         let mut result = Vec::new();
         for (author, chain) in &self.chains {
             let their_seq = their_heads.get(author).copied().unwrap_or(0);
             for hash in chain.iter().skip(their_seq as usize) {
+                if let Some(max) = limit {
+                    if result.len() >= max {
+                        return result;
+                    }
+                }
                 if let Some(event) = self.events.get(hash) {
                     result.push(event);
                 }
