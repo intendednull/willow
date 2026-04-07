@@ -118,6 +118,12 @@ impl ReplayRole {
                 Err(InsertError::InvalidSignature) => {
                     warn!("rejected event with invalid signature");
                 }
+                Err(InsertError::DuplicateGenesis) => {
+                    warn!("rejected duplicate CreateServer event");
+                }
+                Err(InsertError::MissingGovernanceDep { .. }) => {
+                    warn!("rejected Vote event missing proposal dep");
+                }
             }
         }
     }

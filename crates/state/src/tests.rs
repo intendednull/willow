@@ -840,3 +840,234 @@ fn assign_nonexistent_role_is_noop() {
     let member = state.members.get(&admin.endpoint_id());
     assert!(member.map(|m| m.roles.is_empty()).unwrap_or(true));
 }
+
+#[test]
+fn apply_incremental_is_idempotent() {
+    use crate::materialize::apply_incremental;
+
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    // Grant SendMessages so admin can react.
+    let msg = do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Message {
+            channel_id: "ch".into(),
+            body: "hello".into(),
+            reply_to: None,
+        },
+    );
+    let reaction = do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Reaction {
+            message_id: msg.hash,
+            emoji: "👍".into(),
+        },
+    );
+    let mut state = materialize(&dag);
+
+    // Reaction applied once during materialize.
+    let reactions = &state.messages[0].reactions;
+    assert_eq!(reactions.get("👍").map(|v| v.len()), Some(1));
+
+    // Apply the same reaction event again — should be AlreadyApplied.
+    let result = apply_incremental(&mut state, &reaction);
+    assert_eq!(result, crate::materialize::ApplyResult::AlreadyApplied);
+
+    // Still only 1 reaction (not 2).
+    let reactions = &state.messages[0].reactions;
+    assert_eq!(reactions.get("👍").map(|v| v.len()), Some(1));
+}
+
+#[test]
+fn apply_incremental_dedup_across_messages() {
+    use crate::materialize::apply_incremental;
+
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    let msg = do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Message {
+            channel_id: "ch".into(),
+            body: "hello".into(),
+            reply_to: None,
+        },
+    );
+    let mut state = materialize(&dag);
+    assert_eq!(state.messages.len(), 1);
+
+    // Apply the same message event again — should be AlreadyApplied.
+    let result = apply_incremental(&mut state, &msg);
+    assert_eq!(result, crate::materialize::ApplyResult::AlreadyApplied);
+    assert_eq!(state.messages.len(), 1);
+}
+
+#[test]
+fn all_permission_variants_grant_and_revoke() {
+    let admin = Identity::generate();
+    let peer = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    // Grant each of the 5 permission variants to peer.
+    for perm in [
+        Permission::SyncProvider,
+        Permission::ManageChannels,
+        Permission::ManageRoles,
+        Permission::SendMessages,
+        Permission::CreateInvite,
+    ] {
+        do_emit(
+            &mut dag,
+            &admin,
+            EventKind::GrantPermission {
+                peer_id: peer.endpoint_id(),
+                permission: perm,
+            },
+        );
+    }
+    let state = materialize(&dag);
+    assert!(state.has_permission(&peer.endpoint_id(), &Permission::SyncProvider));
+    assert!(state.has_permission(&peer.endpoint_id(), &Permission::ManageChannels));
+    assert!(state.has_permission(&peer.endpoint_id(), &Permission::ManageRoles));
+    assert!(state.has_permission(&peer.endpoint_id(), &Permission::SendMessages));
+    assert!(state.has_permission(&peer.endpoint_id(), &Permission::CreateInvite));
+
+    // Revoke one, verify it's removed while others remain.
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::RevokePermission {
+            peer_id: peer.endpoint_id(),
+            permission: Permission::ManageChannels,
+        },
+    );
+    let state = materialize(&dag);
+    assert!(!state.has_permission(&peer.endpoint_id(), &Permission::ManageChannels));
+    assert!(state.has_permission(&peer.endpoint_id(), &Permission::SyncProvider));
+    assert!(state.has_permission(&peer.endpoint_id(), &Permission::SendMessages));
+}
+
+#[test]
+fn vote_ordering_with_deps_ensures_admin_status() {
+    // Scenario: Admin A proposes granting Alice admin. With 1 admin,
+    // proposal auto-applies. Now Alice proposes something. Because
+    // Alice's proposal includes deps on A's head (which is >= the
+    // propose event that granted Alice admin), the topo sort correctly
+    // places the grant before Alice's proposal.
+    use crate::event::VoteThreshold;
+
+    let admin_a = Identity::generate();
+    let alice = Identity::generate();
+    let mut dag = test_dag(&admin_a);
+
+    // Grant Alice admin (sole admin, auto-applies).
+    let _prop = do_emit(
+        &mut dag,
+        &admin_a,
+        EventKind::Propose {
+            action: ProposedAction::GrantAdmin {
+                peer_id: alice.endpoint_id(),
+            },
+        },
+    );
+    let state = materialize(&dag);
+    assert!(
+        state.is_admin(&alice.endpoint_id()),
+        "Alice should be admin after sole-admin proposal"
+    );
+
+    // Alice proposes a threshold change — include admin_a's head as dep
+    // so the proposal is causally after the grant.
+    let admin_head = *dag.head(&admin_a.endpoint_id()).unwrap();
+    let alice_prop_event = dag.create_event(
+        &alice,
+        EventKind::Propose {
+            action: ProposedAction::SetVoteThreshold {
+                threshold: VoteThreshold::Unanimous,
+            },
+        },
+        vec![admin_head],
+        0,
+    );
+    dag.insert(alice_prop_event.clone()).unwrap();
+
+    let state = materialize(&dag);
+    // Alice's proposal should be accepted because she is admin and
+    // the dep ensures correct ordering.
+    assert!(
+        state.pending_proposals.contains_key(&alice_prop_event.hash),
+        "Alice's proposal should be pending (she is admin)"
+    );
+}
+
+#[test]
+fn second_create_server_rejected_by_dag() {
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+    let state1 = materialize(&dag);
+
+    // Attempt a second CreateServer — DAG rejects it.
+    let second = dag.create_event(
+        &admin,
+        EventKind::CreateServer {
+            name: "Different".into(),
+        },
+        vec![],
+        0,
+    );
+    let err = dag.insert(second).unwrap_err();
+    assert!(matches!(err, crate::dag::InsertError::DuplicateGenesis));
+
+    // Materialized state is unchanged.
+    let state2 = materialize(&dag);
+    assert_eq!(state1.server_id, state2.server_id);
+    assert_eq!(state1.server_name, state2.server_name);
+}
+
+#[test]
+fn kick_only_via_governance() {
+    // Verify that kicking requires ProposedAction::KickMember vote path.
+    // Granting all 5 permissions does NOT let a non-admin propose a kick.
+    let admin = Identity::generate();
+    let peer = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    // Grant all 5 permissions to peer.
+    for perm in [
+        Permission::SyncProvider,
+        Permission::ManageChannels,
+        Permission::ManageRoles,
+        Permission::SendMessages,
+        Permission::CreateInvite,
+    ] {
+        do_emit(
+            &mut dag,
+            &admin,
+            EventKind::GrantPermission {
+                peer_id: peer.endpoint_id(),
+                permission: perm,
+            },
+        );
+    }
+
+    // Peer tries to propose a kick — should be rejected (not admin).
+    let admin_head = *dag.head(&admin.endpoint_id()).unwrap();
+    let e = dag.create_event(
+        &peer,
+        EventKind::Propose {
+            action: ProposedAction::KickMember {
+                peer_id: admin.endpoint_id(),
+            },
+        },
+        vec![admin_head],
+        0,
+    );
+    dag.insert(e).unwrap();
+    let state = materialize(&dag);
+    // Proposal rejected because peer is not admin.
+    assert!(state.pending_proposals.is_empty());
+}

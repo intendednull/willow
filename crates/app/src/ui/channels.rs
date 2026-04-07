@@ -834,13 +834,11 @@ pub fn sync_role_list(
         }
 
         let key_perms = [
-            ("Admin", willow_channel::Permission::Administrator),
+            ("Sync", willow_channel::Permission::SyncProvider),
             ("Send", willow_channel::Permission::SendMessages),
-            ("Read", willow_channel::Permission::ReadMessages),
-            ("Kick", willow_channel::Permission::KickMembers),
             ("Invite", willow_channel::Permission::CreateInvite),
-            ("Files", willow_channel::Permission::AttachFiles),
             ("ManageCh", willow_channel::Permission::ManageChannels),
+            ("ManageRoles", willow_channel::Permission::ManageRoles),
         ];
 
         for role in &roles {
@@ -996,13 +994,11 @@ pub fn handle_toggle_permission(
 
         let role_id = willow_channel::RoleId(uuid::Uuid::parse_str(&button.0).unwrap_or_default());
         let perm = match button.1.as_str() {
-            "Administrator" => willow_channel::Permission::Administrator,
+            "SyncProvider" => willow_channel::Permission::SyncProvider,
             "SendMessages" => willow_channel::Permission::SendMessages,
-            "ReadMessages" => willow_channel::Permission::ReadMessages,
-            "KickMembers" => willow_channel::Permission::KickMembers,
             "CreateInvite" => willow_channel::Permission::CreateInvite,
-            "AttachFiles" => willow_channel::Permission::AttachFiles,
             "ManageChannels" => willow_channel::Permission::ManageChannels,
+            "ManageRoles" => willow_channel::Permission::ManageRoles,
             _ => continue,
         };
 

@@ -103,7 +103,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         perm: &willow_state::Permission,
     ) -> bool {
         let pid = *peer_id;
-        let p = perm.clone();
+        let p = *perm;
         willow_actor::state::select(&self.event_state_addr, move |es| {
             es.has_permission(&pid, &p)
         })

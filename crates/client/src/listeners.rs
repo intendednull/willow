@@ -220,6 +220,14 @@ async fn process_received_message<T: TopicHandle>(
                 try_insert_event(ctx, event).await;
             }
             if count > 0 {
+                // Mark DAG as synced once genesis has been received.
+                willow_actor::state::mutate(&ctx.dag, |ds| {
+                    if !ds.synced && ds.dag.genesis().is_some() {
+                        ds.synced = true;
+                    }
+                })
+                .await;
+
                 let _ =
                     ctx.event_broker
                         .do_send(willow_actor::Publish(ClientEvent::SyncCompleted {

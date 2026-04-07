@@ -766,13 +766,11 @@ fn handle_op(
                 let rid =
                     willow_channel::RoleId(uuid::Uuid::parse_str(role_id).unwrap_or_default());
                 let perm = match permission.as_str() {
-                    "Administrator" => willow_channel::Permission::Administrator,
+                    "SyncProvider" => willow_channel::Permission::SyncProvider,
                     "SendMessages" => willow_channel::Permission::SendMessages,
-                    "ReadMessages" => willow_channel::Permission::ReadMessages,
-                    "KickMembers" => willow_channel::Permission::KickMembers,
                     "CreateInvite" => willow_channel::Permission::CreateInvite,
-                    "AttachFiles" => willow_channel::Permission::AttachFiles,
                     "ManageChannels" => willow_channel::Permission::ManageChannels,
+                    "ManageRoles" => willow_channel::Permission::ManageRoles,
                     _ => return true,
                 };
                 let _ = server.set_permission(&rid, perm, *granted);

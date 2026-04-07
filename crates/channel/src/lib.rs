@@ -159,34 +159,12 @@ pub enum ChannelError {
 
 // ───── Permissions ───────────────────────────────────────────────────────────
 
-/// Individual permissions that can be granted to roles.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum Permission {
-    /// Send messages in text channels.
-    SendMessages,
-    /// Read message history.
-    ReadMessages,
-    /// Delete other people's messages.
-    ManageMessages,
-    /// Create, rename, or delete channels.
-    ManageChannels,
-    /// Create, edit, or delete roles.
-    ManageRoles,
-    /// Kick members from the server.
-    KickMembers,
-    /// Ban members from the server.
-    BanMembers,
-    /// Create invite links.
-    CreateInvite,
-    /// Connect to voice channels.
-    VoiceConnect,
-    /// Speak in voice channels.
-    VoiceSpeak,
-    /// Share screen in voice channels.
-    ScreenShare,
-    /// Upload files.
-    AttachFiles,
-}
+/// Re-export the single authoritative Permission enum from willow-state.
+///
+/// All permissions are defined in the state crate and enforced by the
+/// event-sourced state machine. Admin status is separate and managed
+/// exclusively through the governance vote path.
+pub use willow_state::Permission;
 
 // ───── Role ──────────────────────────────────────────────────────────────────
 
@@ -737,15 +715,15 @@ mod tests {
         let (owner, server) = owner_and_server();
         assert!(server.admins.contains(&owner));
         assert!(server.has_permission(&owner, Permission::ManageChannels));
-        assert!(server.has_permission(&owner, Permission::KickMembers));
         assert!(server.has_permission(&owner, Permission::SendMessages));
+        assert!(server.has_permission(&owner, Permission::SyncProvider));
     }
 
     #[test]
     fn non_member_has_no_permissions() {
         let (_, server) = owner_and_server();
         let stranger = Identity::generate().endpoint_id();
-        assert!(!server.has_permission(&stranger, Permission::ReadMessages));
+        assert!(!server.has_permission(&stranger, Permission::SendMessages));
     }
 
     #[test]
@@ -797,19 +775,19 @@ mod tests {
         server.add_member(alice.clone());
 
         // Alice starts with no permissions.
-        assert!(!server.has_permission(&alice, Permission::ManageMessages));
+        assert!(!server.has_permission(&alice, Permission::SendMessages));
 
         // Create a moderator role.
         let mut mod_role = Role::new("Moderator");
-        mod_role.permissions.insert(Permission::ManageMessages);
-        mod_role.permissions.insert(Permission::KickMembers);
+        mod_role.permissions.insert(Permission::SendMessages);
+        mod_role.permissions.insert(Permission::ManageChannels);
         let role_id = server.create_role(mod_role);
 
         // Assign it to Alice.
         server.assign_role(&alice, &role_id).unwrap();
 
-        assert!(server.has_permission(&alice, Permission::ManageMessages));
-        assert!(server.has_permission(&alice, Permission::KickMembers));
+        assert!(server.has_permission(&alice, Permission::SendMessages));
+        assert!(server.has_permission(&alice, Permission::ManageChannels));
         assert!(!server.has_permission(&alice, Permission::ManageRoles));
     }
 
@@ -824,8 +802,8 @@ mod tests {
 
         // Admins have all permissions implicitly.
         assert!(server.has_permission(&bob, Permission::ManageChannels));
-        assert!(server.has_permission(&bob, Permission::BanMembers));
-        assert!(server.has_permission(&bob, Permission::ScreenShare));
+        assert!(server.has_permission(&bob, Permission::ManageRoles));
+        assert!(server.has_permission(&bob, Permission::CreateInvite));
     }
 
     #[test]

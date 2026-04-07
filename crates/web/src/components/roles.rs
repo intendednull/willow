@@ -9,7 +9,6 @@ const PERMISSION_NAMES: &[&str] = &[
     "SyncProvider",
     "ManageChannels",
     "ManageRoles",
-    "KickMembers",
     "SendMessages",
     "CreateInvite",
 ];

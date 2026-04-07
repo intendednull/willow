@@ -32,6 +32,13 @@ pub enum InsertError {
     },
     /// Event with this hash already exists.
     Duplicate,
+    /// A CreateServer event was inserted after genesis already exists.
+    DuplicateGenesis,
+    /// A Vote event does not include the proposal hash in its deps.
+    MissingGovernanceDep {
+        vote: EventHash,
+        proposal: EventHash,
+    },
 }
 
 impl std::fmt::Display for InsertError {
@@ -58,6 +65,13 @@ impl std::fmt::Display for InsertError {
                 "prev mismatch for author {author}: expected {expected}, got {got}"
             ),
             Self::Duplicate => write!(f, "duplicate event"),
+            Self::DuplicateGenesis => {
+                write!(f, "CreateServer event rejected: genesis already exists")
+            }
+            Self::MissingGovernanceDep { vote, proposal } => write!(
+                f,
+                "Vote event {vote} must include proposal {proposal} in deps"
+            ),
         }
     }
 }
@@ -107,6 +121,7 @@ impl EventDag {
         }
 
         // 3. Genesis check: first event must be CreateServer.
+        //    After genesis is set, reject any further CreateServer events.
         if self.genesis_hash.is_none() {
             match &event.kind {
                 EventKind::CreateServer { .. } => {
@@ -121,6 +136,8 @@ impl EventDag {
                 }
                 _ => return Err(InsertError::NotGenesis),
             }
+        } else if matches!(event.kind, EventKind::CreateServer { .. }) {
+            return Err(InsertError::DuplicateGenesis);
         }
 
         // 4. Check seq: must be latest_seq + 1.
@@ -147,7 +164,19 @@ impl EventDag {
             });
         }
 
-        // 6. Insert.
+        // 6. Governance structural checks: Vote events must causally
+        //    depend on their proposal (via deps or prev) so topological
+        //    sort always places the proposal before the vote.
+        if let EventKind::Vote { proposal, .. } = &event.kind {
+            if !event.deps.contains(proposal) && event.prev != *proposal {
+                return Err(InsertError::MissingGovernanceDep {
+                    vote: event.hash,
+                    proposal: *proposal,
+                });
+            }
+        }
+
+        // 7. Insert.
         let hash = event.hash;
         let author = event.author;
         self.events.insert(hash, event);
@@ -440,6 +469,133 @@ mod tests {
         dag.insert(genesis.clone()).unwrap();
         let err = dag.insert(genesis).unwrap_err();
         assert!(matches!(err, InsertError::Duplicate));
+    }
+
+    #[test]
+    fn insert_rejects_second_create_server() {
+        let id = Identity::generate();
+        let mut dag = test_dag(&id);
+        // A second CreateServer event has seq=2 and valid prev, but the
+        // DAG must reject it because genesis already exists.
+        let second = dag.create_event(
+            &id,
+            EventKind::CreateServer {
+                name: "Second Server".into(),
+            },
+            vec![],
+            0,
+        );
+        let err = dag.insert(second).unwrap_err();
+        assert!(matches!(err, InsertError::DuplicateGenesis));
+        // DAG still has only the original genesis.
+        assert_eq!(dag.len(), 1);
+    }
+
+    #[test]
+    fn vote_without_proposal_dep_rejected() {
+        let admin = Identity::generate();
+        let admin_b = Identity::generate();
+        let mut dag = test_dag(&admin);
+
+        // Grant admin_b admin status (sole admin, auto-applies).
+        let grant = dag.create_event(
+            &admin,
+            EventKind::Propose {
+                action: crate::event::ProposedAction::GrantAdmin {
+                    peer_id: admin_b.endpoint_id(),
+                },
+            },
+            vec![],
+            0,
+        );
+        dag.insert(grant).unwrap();
+
+        // Admin proposes something new.
+        let prop = dag.create_event(
+            &admin,
+            EventKind::Propose {
+                action: crate::event::ProposedAction::SetVoteThreshold {
+                    threshold: crate::event::VoteThreshold::Unanimous,
+                },
+            },
+            vec![],
+            0,
+        );
+        dag.insert(prop.clone()).unwrap();
+
+        // admin_b votes WITHOUT proposal in deps — prev is NOT the proposal
+        // (admin_b has no prev events yet), so this must be rejected.
+        let vote = dag.create_event(
+            &admin_b,
+            EventKind::Vote {
+                proposal: prop.hash,
+                accept: true,
+            },
+            vec![], // Missing proposal dep!
+            0,
+        );
+        let err = dag.insert(vote).unwrap_err();
+        assert!(matches!(err, InsertError::MissingGovernanceDep { .. }));
+    }
+
+    #[test]
+    fn vote_with_proposal_dep_accepted() {
+        let admin = Identity::generate();
+        let mut dag = test_dag(&admin);
+        let prop = dag.create_event(
+            &admin,
+            EventKind::Propose {
+                action: crate::event::ProposedAction::GrantAdmin {
+                    peer_id: Identity::generate().endpoint_id(),
+                },
+            },
+            vec![],
+            0,
+        );
+        dag.insert(prop.clone()).unwrap();
+        // Vote WITH proposal in deps — should succeed.
+        let vote = dag.create_event(
+            &admin,
+            EventKind::Vote {
+                proposal: prop.hash,
+                accept: true,
+            },
+            vec![prop.hash],
+            0,
+        );
+        assert!(dag.insert(vote).is_ok());
+    }
+
+    #[test]
+    fn vote_with_proposal_as_prev_accepted() {
+        // If the voter is also the proposer, the proposal is the prev event
+        // (previous event from same author), which also satisfies the causal dep.
+        let admin = Identity::generate();
+        let mut dag = test_dag(&admin);
+        let prop = dag.create_event(
+            &admin,
+            EventKind::Propose {
+                action: crate::event::ProposedAction::GrantAdmin {
+                    peer_id: Identity::generate().endpoint_id(),
+                },
+            },
+            vec![],
+            0,
+        );
+        dag.insert(prop.clone()).unwrap();
+        // The admin's prev is now prop.hash, so even with empty deps it works.
+        assert_eq!(dag.head(&admin.endpoint_id()), Some(&prop.hash));
+        // This vote's prev will be prop.hash, satisfying the governance check.
+        let vote = dag.create_event(
+            &admin,
+            EventKind::Vote {
+                proposal: prop.hash,
+                accept: true,
+            },
+            vec![], // prev == proposal, so this is OK
+            0,
+        );
+        assert!(dag.insert(vote).is_ok());
     }
 
     #[test]

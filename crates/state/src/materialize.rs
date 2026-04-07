@@ -22,6 +22,8 @@ pub enum ApplyResult {
     Applied,
     /// The event was rejected (e.g., insufficient permissions).
     Rejected(String),
+    /// The event was already applied (idempotent dedup).
+    AlreadyApplied,
 }
 
 /// Compute the current server state from the full event DAG.
@@ -40,6 +42,7 @@ pub fn materialize(dag: &EventDag) -> ServerState {
     let sorted = dag.topological_sort();
     let mut state = ServerState::new(&server_id, &name, genesis_author);
     for event in sorted {
+        state.applied_events.insert(event.hash);
         apply_unchecked(&mut state, event);
     }
     state
@@ -50,6 +53,9 @@ pub fn materialize(dag: &EventDag) -> ServerState {
 /// Precondition: all causal parents of `event` are already reflected
 /// in `state`. This is O(1) per event.
 pub fn apply_incremental(state: &mut ServerState, event: &Event) -> ApplyResult {
+    if !state.applied_events.insert(event.hash) {
+        return ApplyResult::AlreadyApplied;
+    }
     apply_unchecked(state, event)
 }
 
@@ -305,7 +311,7 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
                 .peer_permissions
                 .entry(*peer_id)
                 .or_default()
-                .insert(permission.clone());
+                .insert(*permission);
             state.members.entry(*peer_id).or_insert_with(|| Member {
                 peer_id: *peer_id,
                 roles: HashSet::new(),
@@ -872,14 +878,15 @@ mod tests {
                 },
             },
         );
-        // Stranger votes — should be rejected.
-        emit(
+        // Stranger votes — should be rejected (not admin).
+        emit_with_deps(
             &mut dag,
             &stranger,
             EventKind::Vote {
                 proposal: prop.hash,
                 accept: true,
             },
+            vec![prop.hash],
         );
         let state = materialize(&dag);
         // With 1 admin and majority, the proposal auto-applied on Propose.
@@ -1142,13 +1149,14 @@ mod tests {
             },
         );
         // Proposal already passed. Late vote from alice — no crash, no-op.
-        emit(
+        emit_with_deps(
             &mut dag,
             &alice,
             EventKind::Vote {
                 proposal: prop.hash,
                 accept: true,
             },
+            vec![prop.hash],
         );
         let state = materialize(&dag);
         assert!(state.is_admin(&alice.endpoint_id()));
