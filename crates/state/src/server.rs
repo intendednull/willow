@@ -50,8 +50,9 @@ pub struct ServerState {
     pub profiles: HashMap<EndpointId, Profile>,
     /// Server description.
     pub description: String,
-    /// Encrypted channel key material keyed by channel ID.
-    pub channel_keys: HashMap<String, Vec<u8>>,
+    /// Encrypted channel key material: channel ID → (recipient → encrypted key).
+    /// Each recipient gets their own encrypted copy of the channel key.
+    pub channel_keys: HashMap<String, HashMap<EndpointId, Vec<u8>>>,
 
     // -- Governance state --
     /// The set of peers with admin status. Separate from Permission
