@@ -22,4 +22,5 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 willow-network = { path = "../network", features = ["test-utils"] }
+async-trait = { workspace = true }
 tempfile = "3"

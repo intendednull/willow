@@ -29,6 +29,12 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 /// incompatible way.
 pub const PROTOCOL_VERSION: u16 = 1;
 
+/// Maximum byte size for deserialization. Payloads exceeding this limit are
+/// rejected before allocation. Set above the gossip layer's 64 KB
+/// `max_message_size` to allow for framing overhead while still preventing
+/// malicious payloads from triggering large allocations.
+pub const MAX_DESER_SIZE: u64 = 256 * 1024;
+
 // ───── Errors ────────────────────────────────────────────────────────────────
 
 /// Errors that can occur during serialization or deserialization.
@@ -135,11 +141,24 @@ pub fn pack<T: Serialize>(data: &T) -> Result<Vec<u8>, TransportError> {
 
 /// Deserialize a byte slice back into a concrete type.
 ///
+/// Rejects payloads larger than [`MAX_DESER_SIZE`] before attempting
+/// deserialization. This prevents untrusted data from triggering large
+/// allocations via crafted length prefixes — bincode pre-allocates
+/// collections based on encoded lengths, so bounding input size bounds
+/// the maximum allocation.
+///
 /// # Errors
 ///
-/// Returns [`TransportError::Deserialize`] if bincode decoding fails or the
-/// bytes don't match the expected type.
+/// Returns [`TransportError::Deserialize`] if the payload exceeds the size
+/// limit, bincode decoding fails, or the bytes don't match the expected type.
 pub fn unpack<T: DeserializeOwned>(data: &[u8]) -> Result<T, TransportError> {
+    if data.len() as u64 > MAX_DESER_SIZE {
+        return Err(TransportError::Deserialize(format!(
+            "payload too large: {} bytes (limit: {} bytes)",
+            data.len(),
+            MAX_DESER_SIZE,
+        )));
+    }
     bincode::deserialize(data).map_err(|e| TransportError::Deserialize(e.to_string()))
 }
 
@@ -275,6 +294,27 @@ mod tests {
         let garbage = vec![0xFF, 0xFE, 0xFD];
         let result = unpack::<String>(&garbage);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn unpack_rejects_payload_exceeding_size_limit() {
+        // A valid bincode payload that exceeds the size limit.
+        // Without a deserialization size limit, this would succeed.
+        let big_vec = vec![0u8; MAX_DESER_SIZE as usize + 1];
+        let encoded = bincode::serialize(&big_vec).unwrap();
+        let result = unpack::<Vec<u8>>(&encoded);
+        assert!(
+            result.is_err(),
+            "should reject payload exceeding MAX_DESER_SIZE"
+        );
+    }
+
+    #[test]
+    fn unpack_accepts_payload_within_size_limit() {
+        let small_vec = vec![0u8; 1024];
+        let encoded = pack(&small_vec).unwrap();
+        let decoded: Vec<u8> = unpack(&encoded).unwrap();
+        assert_eq!(decoded.len(), 1024);
     }
 
     #[test]
