@@ -319,10 +319,7 @@ impl<N: Network> WillowToolRouter<N> {
             make_tool::<SwitchChannelParams>("switch_channel", "Set the active channel"),
             // Permissions & Members (7)
             make_tool::<PeerIdParams>("trust_peer", "Propose granting admin status to a peer"),
-            make_tool::<PeerIdParams>(
-                "untrust_peer",
-                "Propose revoking admin status from a peer",
-            ),
+            make_tool::<PeerIdParams>("untrust_peer", "Propose revoking admin status from a peer"),
             make_tool::<PeerIdParams>("kick_member", "Propose kicking a member from the server"),
             make_tool::<CreateRoleParams>("create_role", "Create a permission role"),
             make_tool::<DeleteRoleParams>("delete_role", "Delete a role"),

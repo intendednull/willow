@@ -211,6 +211,12 @@ mod tests {
 
         assert!(addr.is_alive());
         system.shutdown().await;
+        for _ in 0..20 {
+            if !addr.is_alive() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
         assert!(!addr.is_alive());
     }
 

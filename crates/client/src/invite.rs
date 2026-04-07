@@ -85,7 +85,7 @@ pub fn generate_invite(
     let payload = InvitePayload {
         server_name: server.name.clone(),
         server_id: server.id.to_string(),
-        genesis_author: server.owner,
+        genesis_author: server.creator,
         sync_providers: Vec::new(), // populated by caller if known
         channels,
     };

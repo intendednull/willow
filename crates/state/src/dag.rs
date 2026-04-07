@@ -366,7 +366,7 @@ impl Default for EventDag {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{EventKind, ProposedAction};
+    use crate::event::EventKind;
 
     fn genesis_kind() -> EventKind {
         EventKind::CreateServer {

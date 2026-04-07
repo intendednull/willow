@@ -12,7 +12,6 @@ const PERMISSION_NAMES: &[&str] = &[
     "KickMembers",
     "SendMessages",
     "CreateInvite",
-    "Administrator",
 ];
 
 /// A single role entry: (role_id, role_name, set of granted permission strings).

@@ -360,7 +360,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                     state.event_state = willow_state::ServerState::new(
                         sid.clone(),
                         ctx.server.name.clone(),
-                        ctx.server.owner,
+                        ctx.server.creator,
                     );
 
                     // No persisted events -- seed event_state with existing
@@ -650,7 +650,6 @@ fn load_identity() -> Identity {
 /// Parse a permission string into a [`willow_channel::Permission`].
 fn parse_permission(s: &str) -> anyhow::Result<willow_channel::Permission> {
     match s {
-        "Administrator" => Ok(willow_channel::Permission::Administrator),
         "SendMessages" => Ok(willow_channel::Permission::SendMessages),
         "ReadMessages" => Ok(willow_channel::Permission::ReadMessages),
         "KickMembers" => Ok(willow_channel::Permission::KickMembers),

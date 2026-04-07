@@ -140,7 +140,12 @@ pub async fn read_resource<N: Network>(
         "willow://server/current" => {
             let id = client.active_server_id().await;
             let name = client.active_server_name().await;
-            let admins: Vec<String> = client.admins().await.iter().map(|a| a.to_string()).collect();
+            let admins: Vec<String> = client
+                .admins()
+                .await
+                .iter()
+                .map(|a| a.to_string())
+                .collect();
             let description = client.server_description().await;
             let display_name = client.display_name().await;
             to_json(&CurrentServerResource {
