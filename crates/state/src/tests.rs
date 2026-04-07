@@ -1905,3 +1905,133 @@ fn managed_dag_create_blocks_before_sync() {
     );
     assert!(result.is_err());
 }
+
+#[test]
+fn pin_and_unpin_message() {
+    let id = Identity::generate();
+    let mut dag = test_dag(&id);
+
+    let ch_id = "general".to_string();
+    do_emit(
+        &mut dag,
+        &id,
+        EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: ch_id.clone(),
+            kind: "text".into(),
+        },
+    );
+
+    let msg = do_emit(
+        &mut dag,
+        &id,
+        EventKind::Message {
+            channel_id: ch_id.clone(),
+            body: "hello world".into(),
+            reply_to: None,
+        },
+    );
+
+    // Pin the message.
+    do_emit(
+        &mut dag,
+        &id,
+        EventKind::PinMessage {
+            channel_id: ch_id.clone(),
+            message_id: msg.hash,
+        },
+    );
+
+    let state = materialize(&dag);
+    let channel = state.channels.get(&ch_id).expect("channel should exist");
+    assert!(
+        channel.pinned_messages.contains(&msg.hash),
+        "message should be pinned"
+    );
+
+    // Unpin the message.
+    do_emit(
+        &mut dag,
+        &id,
+        EventKind::UnpinMessage {
+            channel_id: ch_id.clone(),
+            message_id: msg.hash,
+        },
+    );
+
+    let state = materialize(&dag);
+    let channel = state.channels.get(&ch_id).expect("channel should exist");
+    assert!(
+        !channel.pinned_messages.contains(&msg.hash),
+        "message should be unpinned"
+    );
+}
+
+#[test]
+fn pin_nonexistent_channel_is_noop() {
+    let id = Identity::generate();
+    let mut dag = test_dag(&id);
+    let fake_hash = EventHash([0xAA; 32]);
+
+    // Pin on a channel that doesn't exist — should not panic.
+    do_emit(
+        &mut dag,
+        &id,
+        EventKind::PinMessage {
+            channel_id: "nonexistent".into(),
+            message_id: fake_hash,
+        },
+    );
+
+    let state = materialize(&dag);
+    assert!(!state.channels.contains_key("nonexistent"));
+}
+
+#[test]
+fn deep_pending_chain_does_not_stack_overflow() {
+    use crate::managed::ManagedDag;
+
+    let id = Identity::generate();
+    let mut managed = ManagedDag::new(&id, "Deep Chain Test", 100_000);
+
+    let genesis_hash = managed.dag().genesis().unwrap().hash;
+
+    // Build a chain of 3000 events.
+    let chain_len = 3_000;
+    let mut events = Vec::with_capacity(chain_len);
+    let mut prev = genesis_hash;
+    for seq_offset in 0..chain_len {
+        // create_event uses the dag's internal seq tracking, so we build
+        // events manually to control the prev chain.
+        let e = Event::new(
+            &id,
+            (seq_offset + 2) as u64, // seq 2..3001 (genesis is seq 1)
+            prev,
+            vec![],
+            EventKind::SetProfile {
+                display_name: format!("name_{seq_offset}"),
+            },
+            seq_offset as u64,
+        );
+        prev = e.hash;
+        events.push(e);
+    }
+
+    // Insert all except the first in reverse order — they all buffer.
+    for e in events[1..].iter().rev() {
+        let outcome = managed.insert_and_apply(e.clone()).unwrap();
+        assert!(outcome.applied.is_none(), "should buffer (gap event)");
+    }
+    assert_eq!(managed.pending().pending_count(), chain_len - 1);
+
+    // Insert the first event — this should resolve the entire chain
+    // iteratively WITHOUT stack overflow.
+    let outcome = managed.insert_and_apply(events[0].clone()).unwrap();
+    assert!(outcome.applied.is_some());
+    assert_eq!(
+        outcome.resolved.len(),
+        chain_len - 1,
+        "all buffered events should resolve"
+    );
+    assert_eq!(managed.pending().pending_count(), 0);
+}

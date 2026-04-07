@@ -267,4 +267,34 @@ mod tests {
     fn recipient_public_bytes(identity: &Identity) -> [u8; 32] {
         *identity.endpoint_id().as_bytes()
     }
+
+    #[test]
+    fn generate_invite_via_endpoint_id_produces_valid_invite() {
+        use willow_channel::ChannelKind;
+
+        let owner = Identity::generate();
+        let joiner = Identity::generate();
+
+        let mut server = willow_channel::Server::new("Join Test", owner.endpoint_id());
+        let ch_id = server.create_channel("general", ChannelKind::Text).unwrap();
+
+        let mut keys = HashMap::new();
+        let mut topic_map = HashMap::new();
+        let topic = format!("{}/general", server.id);
+
+        if let Some(key) = server.channel_key(&ch_id) {
+            keys.insert(topic.clone(), key.clone());
+        }
+        topic_map.insert(topic.clone(), ("general".into(), ch_id));
+
+        // Use endpoint_id_to_ed25519_public — same path as JoinRequest handler.
+        let pub_key = endpoint_id_to_ed25519_public(&joiner.endpoint_id());
+        let code = generate_invite(&server, &keys, &topic_map, &pub_key);
+        assert!(code.is_some(), "generate_invite should produce a value");
+
+        // Joiner can accept and decrypt the invite.
+        let accepted = accept_invite(&code.unwrap(), &joiner).unwrap();
+        assert_eq!(accepted.server_name, "Join Test");
+        assert_eq!(accepted.channel_keys.len(), 1);
+    }
 }

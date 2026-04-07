@@ -25,6 +25,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             identity: self.identity.clone(),
             join_links: Arc::clone(&self.join_links),
             dag: self.dag_addr.clone(),
+            server_registry: self.server_registry_addr.clone(),
         };
 
         // Subscribe to the server ops topic.

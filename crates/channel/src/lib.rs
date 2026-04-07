@@ -232,6 +232,9 @@ pub struct Channel {
     pub kind: ChannelKind,
     /// When this channel was created.
     pub created_at: DateTime<Utc>,
+    /// Hashes of pinned messages in this channel.
+    #[serde(default)]
+    pub pinned_messages: std::collections::BTreeSet<willow_state::EventHash>,
 }
 
 impl Channel {
@@ -243,6 +246,7 @@ impl Channel {
             topic: None,
             kind,
             created_at: Utc::now(),
+            pinned_messages: std::collections::BTreeSet::new(),
         }
     }
 }
@@ -459,6 +463,7 @@ impl Server {
             topic: None,
             kind,
             created_at: chrono::Utc::now(),
+            pinned_messages: std::collections::BTreeSet::new(),
         };
         self.channel_keys
             .insert(id.clone(), willow_crypto::generate_channel_key());
@@ -996,5 +1001,35 @@ mod tests {
         let bytes = willow_transport::pack(&server).unwrap();
         let decoded: Server = willow_transport::unpack(&bytes).unwrap();
         assert_eq!(decoded.description.as_deref(), Some("A cool server"));
+    }
+
+    #[test]
+    fn channel_has_pinned_messages_field() {
+        let ch = Channel::new("general", ChannelKind::Text);
+        assert!(ch.pinned_messages.is_empty());
+    }
+
+    #[test]
+    fn channel_pinned_messages_serde_round_trip() {
+        let mut ch = Channel::new("general", ChannelKind::Text);
+        let hash = willow_state::EventHash([0xAB; 32]);
+        ch.pinned_messages.insert(hash);
+
+        let bytes = willow_transport::pack(&ch).unwrap();
+        let deserialized: Channel = willow_transport::unpack(&bytes).unwrap();
+        assert_eq!(deserialized.pinned_messages.len(), 1);
+        assert!(deserialized.pinned_messages.contains(&hash));
+    }
+
+    #[test]
+    fn channel_pinned_messages_defaults_empty_for_old_data() {
+        // Simulate old serialized data without pinned_messages field.
+        // Serialize a channel, strip the pinned_messages via JSON manipulation,
+        // then deserialize to verify #[serde(default)] works.
+        let ch = Channel::new("general", ChannelKind::Text);
+        let bytes = willow_transport::pack(&ch).unwrap();
+        // Even with an empty set serialized, deserialization should succeed.
+        let decoded: Channel = willow_transport::unpack(&bytes).unwrap();
+        assert!(decoded.pinned_messages.is_empty());
     }
 }

@@ -116,9 +116,7 @@ impl StorageEventStore {
             }
         }
 
-        sql.push_str(&format!(
-            " ORDER BY timestamp_hint_ms DESC, seq DESC LIMIT ?{param_idx}"
-        ));
+        sql.push_str(&format!(" ORDER BY seq DESC, hash ASC LIMIT ?{param_idx}"));
 
         let mut stmt = self.conn.prepare(&sql)?;
 
@@ -135,12 +133,24 @@ impl StorageEventStore {
             all_params.iter().map(|p| &**p).collect();
         let raw_rows: Vec<Vec<u8>> = stmt
             .query_map(param_refs.as_slice(), |row| row.get(0))?
-            .filter_map(|r| r.ok())
+            .filter_map(|r| match r {
+                Ok(data) => Some(data),
+                Err(e) => {
+                    tracing::warn!("failed to read event row: {e}");
+                    None
+                }
+            })
             .collect();
 
         let events: Vec<Event> = raw_rows
             .iter()
-            .filter_map(|data| bincode::deserialize(data).ok())
+            .filter_map(|data| match bincode::deserialize(data) {
+                Ok(e) => Some(e),
+                Err(e) => {
+                    tracing::warn!("corrupt event data, skipping: {e}");
+                    None
+                }
+            })
             .collect();
 
         let has_more = events.len() > limit as usize;
@@ -168,11 +178,23 @@ impl StorageEventStore {
                     rusqlite::params![server_id, Self::SYNC_BATCH_LIMIT as i64],
                     |row| row.get(0),
                 )?
-                .filter_map(|r| r.ok())
+                .filter_map(|r| match r {
+                    Ok(data) => Some(data),
+                    Err(e) => {
+                        tracing::warn!("failed to read event row in sync_since: {e}");
+                        None
+                    }
+                })
                 .collect();
             let events: Vec<Event> = rows
                 .iter()
-                .filter_map(|data| bincode::deserialize(data).ok())
+                .filter_map(|data| match bincode::deserialize(data) {
+                    Ok(e) => Some(e),
+                    Err(e) => {
+                        tracing::warn!("corrupt event data in sync_since, skipping: {e}");
+                        None
+                    }
+                })
                 .collect();
             return Ok(events);
         }
@@ -217,11 +239,23 @@ impl StorageEventStore {
 
         let rows: Vec<Vec<u8>> = stmt
             .query_map(param_refs.as_slice(), |row| row.get(0))?
-            .filter_map(|r| r.ok())
+            .filter_map(|r| match r {
+                Ok(data) => Some(data),
+                Err(e) => {
+                    tracing::warn!("failed to read event row in sync_since: {e}");
+                    None
+                }
+            })
             .collect();
         let events: Vec<Event> = rows
             .iter()
-            .filter_map(|data| bincode::deserialize(data).ok())
+            .filter_map(|data| match bincode::deserialize(data) {
+                Ok(e) => Some(e),
+                Err(e) => {
+                    tracing::warn!("corrupt event data in sync_since, skipping: {e}");
+                    None
+                }
+            })
             .collect();
 
         Ok(events)
@@ -473,5 +507,103 @@ mod tests {
         let (events, has_more) = store.history("srv-1", Some("general"), None, 10).unwrap();
         assert!(events.is_empty());
         assert!(!has_more);
+    }
+
+    #[test]
+    fn history_ordering_is_deterministic_regardless_of_insertion_order() {
+        let id_a = Identity::generate();
+        let id_b = Identity::generate();
+
+        // Two events with different timestamps but same seq.
+        let e_a = Event::new(
+            &id_a,
+            2,
+            EventHash::ZERO,
+            vec![],
+            EventKind::Message {
+                channel_id: "general".into(),
+                body: "from A".into(),
+                reply_to: None,
+            },
+            5000, // higher timestamp
+        );
+        let e_b = Event::new(
+            &id_b,
+            2,
+            EventHash::ZERO,
+            vec![],
+            EventKind::Message {
+                channel_id: "general".into(),
+                body: "from B".into(),
+                reply_to: None,
+            },
+            3000, // lower timestamp
+        );
+
+        // Store 1: insert A then B.
+        let store1 = StorageEventStore::open(":memory:").unwrap();
+        store1.store_event("srv-1", &e_a).unwrap();
+        store1.store_event("srv-1", &e_b).unwrap();
+        let (events1, _) = store1.history("srv-1", None, None, 10).unwrap();
+
+        // Store 2: insert B then A.
+        let store2 = StorageEventStore::open(":memory:").unwrap();
+        store2.store_event("srv-1", &e_b).unwrap();
+        store2.store_event("srv-1", &e_a).unwrap();
+        let (events2, _) = store2.history("srv-1", None, None, 10).unwrap();
+
+        assert_eq!(events1.len(), 2);
+        assert_eq!(events2.len(), 2);
+        // Both stores must return events in the same order.
+        assert_eq!(
+            events1[0].hash, events2[0].hash,
+            "ordering should be deterministic regardless of insertion order"
+        );
+        assert_eq!(events1[1].hash, events2[1].hash);
+    }
+
+    #[test]
+    fn corrupt_event_data_does_not_panic() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let (id, genesis) = setup_identity_and_genesis("general");
+
+        // Insert a valid event.
+        let e = make_message(&id, 2, genesis.hash, "general");
+        store.store_event("srv-1", &e).unwrap();
+
+        // Manually insert corrupt binary data.
+        store
+            .conn
+            .execute(
+                "INSERT INTO events (hash, server_id, channel_id, author, seq, timestamp_hint_ms, event_data)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    &[0xFFu8; 32] as &[u8],
+                    "srv-1",
+                    "general",
+                    id.endpoint_id().as_bytes(),
+                    99_i64,
+                    0_i64,
+                    &[0xDEu8, 0xAD] as &[u8],
+                ],
+            )
+            .unwrap();
+
+        // history() should not panic and should return only the valid event.
+        let (events, _) = store.history("srv-1", None, None, 100).unwrap();
+        assert_eq!(
+            events.len(),
+            1,
+            "should skip corrupt event and return only valid one"
+        );
+        assert_eq!(events[0].hash, e.hash);
+
+        // sync_since() should also not panic.
+        let synced = store.sync_since("srv-1", &HeadsSummary::default()).unwrap();
+        assert_eq!(
+            synced.len(),
+            1,
+            "sync_since should also skip corrupt events"
+        );
     }
 }

@@ -158,6 +158,28 @@ pub fn load_server_state(id: &str) -> Option<willow_state::ServerState> {
     willow_transport::unpack(&load_raw(&format!("srv_state_{id}"))?).ok()
 }
 
+// ---- Event persistence ---------------------------------------------------------
+
+/// Wrapper for serializing a list of events.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct SavedEvents(Vec<willow_state::Event>);
+
+/// Persist events for a server to disk.
+pub fn save_events(server_id: &str, events: &[willow_state::Event]) {
+    let saved = SavedEvents(events.to_vec());
+    if let Ok(bytes) = willow_transport::pack(&saved) {
+        save_raw(&format!("events_{server_id}"), &bytes);
+    }
+}
+
+/// Load persisted events for a server.
+pub fn load_events(server_id: &str) -> Vec<willow_state::Event> {
+    load_raw(&format!("events_{server_id}"))
+        .and_then(|bytes| willow_transport::unpack::<SavedEvents>(&bytes).ok())
+        .map(|s| s.0)
+        .unwrap_or_default()
+}
+
 // ---- Message Persistence ----------------------------------------------------
 
 /// A stored chat message for display. Lightweight compared to the full
@@ -414,6 +436,76 @@ fn load_raw(key: &str) -> Option<Vec<u8>> {
 
 // ---- Tests ------------------------------------------------------------------
 
-// EventStore tests removed — dead code from compat shim era.
-// Storage now goes through PersistenceActor with Vec<Event> in memory
-// and SqliteDagStore for persistent DAG events.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn save_and_load_events_round_trip() {
+        // Use a unique server_id to avoid polluting other tests.
+        let server_id = format!("test_events_{}", uuid::Uuid::new_v4());
+        let id = willow_identity::Identity::generate();
+
+        let event = willow_state::Event::new(
+            &id,
+            1,
+            willow_state::EventHash::ZERO,
+            vec![],
+            willow_state::EventKind::CreateServer {
+                name: "Test".into(),
+            },
+            0,
+        );
+
+        save_events(&server_id, &[event.clone()]);
+        let loaded = load_events(&server_id);
+        assert_eq!(loaded.len(), 1, "should load back one event");
+        assert_eq!(loaded[0].hash, event.hash, "event hash should match");
+
+        // Clean up.
+        let _ = std::fs::remove_file(data_dir().join(format!("events_{server_id}.bin")));
+    }
+
+    #[test]
+    fn load_events_returns_empty_for_nonexistent_server() {
+        let loaded = load_events("nonexistent_server_12345");
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn save_events_accumulates() {
+        let server_id = format!("test_events_accum_{}", uuid::Uuid::new_v4());
+        let id = willow_identity::Identity::generate();
+
+        let e1 = willow_state::Event::new(
+            &id,
+            1,
+            willow_state::EventHash::ZERO,
+            vec![],
+            willow_state::EventKind::CreateServer {
+                name: "Test".into(),
+            },
+            0,
+        );
+        let e2 = willow_state::Event::new(
+            &id,
+            2,
+            e1.hash,
+            vec![],
+            willow_state::EventKind::SetProfile {
+                display_name: "Bob".into(),
+            },
+            1,
+        );
+
+        // Save two events, load them back.
+        save_events(&server_id, &[e1.clone(), e2.clone()]);
+        let loaded = load_events(&server_id);
+        assert_eq!(loaded.len(), 2, "should load back two events");
+        assert_eq!(loaded[0].hash, e1.hash);
+        assert_eq!(loaded[1].hash, e2.hash);
+
+        // Clean up.
+        let _ = std::fs::remove_file(data_dir().join(format!("events_{server_id}.bin")));
+    }
+}

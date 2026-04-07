@@ -80,6 +80,11 @@ impl Handler<PersistEvent> for PersistenceActor {
         _ctx: &mut Context<Self>,
     ) -> impl std::future::Future<Output = ()> + Send {
         self.events.push(msg.event);
+        if self.persistence_enabled {
+            if let Some(ref server_id) = self.server_id {
+                storage::save_events(server_id, &self.events);
+            }
+        }
         async {}
     }
 }
