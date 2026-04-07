@@ -141,6 +141,10 @@ impl EventDag {
         }
 
         // 4. Check seq: must be latest_seq + 1.
+        //    This also prevents equivocation: an author cannot insert two
+        //    events at the same seq number because only seq = latest + 1
+        //    is accepted. Combined with the prev-hash check below, this
+        //    makes per-author chain forking structurally impossible.
         let expected_seq = self.latest_seq(&event.author) + 1;
         if event.seq != expected_seq {
             return Err(InsertError::SeqGap {
@@ -342,6 +346,17 @@ impl EventDag {
                 }
             }
         }
+
+        // Cycle detection: if any events remain unprocessed, a cycle exists.
+        // Normal insert() prevents cycles via seq/prev chain checks, so this
+        // is a defensive invariant against data corruption.
+        assert_eq!(
+            result.len(),
+            self.events.len(),
+            "Cycle detected in DAG: {} of {} events unprocessable",
+            self.events.len() - result.len(),
+            self.events.len()
+        );
 
         result
     }

@@ -715,6 +715,8 @@ fn rotate_channel_key_stores_key_material() {
 
     let state = materialize(&dag);
     assert!(state.channel_keys.contains_key("ch-1"));
+    let keys = &state.channel_keys["ch-1"];
+    assert_eq!(keys[&admin.endpoint_id()], vec![1, 2, 3]);
 }
 
 #[test]
@@ -1070,4 +1072,679 @@ fn kick_only_via_governance() {
     let state = materialize(&dag);
     // Proposal rejected because peer is not admin.
     assert!(state.pending_proposals.is_empty());
+}
+
+// ── Issue #69: Last admin cannot self-kick/revoke ────────────────────
+
+#[test]
+fn last_admin_cannot_self_kick() {
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    // Sole admin proposes self-kick. With majority threshold (1/1),
+    // the proposer's implicit yes vote auto-applies immediately.
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Propose {
+            action: ProposedAction::KickMember {
+                peer_id: admin.endpoint_id(),
+            },
+        },
+    );
+
+    let state = materialize(&dag);
+    // Admin must still be present — 0-admin state is unreachable.
+    assert!(state.admins.contains(&admin.endpoint_id()));
+    assert_eq!(state.admins.len(), 1);
+    // Member should also still be present (kick was blocked).
+    assert!(state.members.contains_key(&admin.endpoint_id()));
+}
+
+#[test]
+fn last_admin_cannot_self_revoke() {
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Propose {
+            action: ProposedAction::RevokeAdmin {
+                peer_id: admin.endpoint_id(),
+            },
+        },
+    );
+
+    let state = materialize(&dag);
+    assert!(state.admins.contains(&admin.endpoint_id()));
+    assert_eq!(state.admins.len(), 1);
+}
+
+#[test]
+fn second_to_last_admin_can_be_kicked() {
+    let admin_a = Identity::generate();
+    let mut dag = test_dag(&admin_a);
+
+    // While sole admin, set threshold to Count(1) so future proposals
+    // auto-apply with a single vote.
+    do_emit(
+        &mut dag,
+        &admin_a,
+        EventKind::Propose {
+            action: ProposedAction::SetVoteThreshold {
+                threshold: crate::event::VoteThreshold::Count(1),
+            },
+        },
+    );
+
+    // Grant admin to B (auto-applies with Count(1)).
+    let admin_b = Identity::generate();
+    do_emit(
+        &mut dag,
+        &admin_a,
+        EventKind::Propose {
+            action: ProposedAction::GrantAdmin {
+                peer_id: admin_b.endpoint_id(),
+            },
+        },
+    );
+
+    let state = materialize(&dag);
+    assert_eq!(state.admins.len(), 2);
+
+    // Now A proposes to kick B. With Count(1), A's implicit yes auto-applies.
+    do_emit(
+        &mut dag,
+        &admin_a,
+        EventKind::Propose {
+            action: ProposedAction::KickMember {
+                peer_id: admin_b.endpoint_id(),
+            },
+        },
+    );
+
+    let state = materialize(&dag);
+    // B should be kicked, A remains as sole admin.
+    assert_eq!(state.admins.len(), 1);
+    assert!(state.admins.contains(&admin_a.endpoint_id()));
+    assert!(!state.members.contains_key(&admin_b.endpoint_id()));
+}
+
+// ── Issue #70: Topological sort cycle detection ──────────────────────
+
+#[test]
+fn topological_sort_covers_all_events() {
+    let admin = Identity::generate();
+    let alice = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    // Create events from multiple authors with cross-deps.
+    let a1 = do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Message {
+            channel_id: "ch".into(),
+            reply_to: None,
+            body: "a1".into(),
+        },
+    );
+    // Alice's first event depends on admin's message.
+    let b1 = dag.create_event(
+        &alice,
+        EventKind::Message {
+            channel_id: "ch".into(),
+            reply_to: None,
+            body: "b1".into(),
+        },
+        vec![a1.hash],
+        0,
+    );
+    dag.insert(b1).unwrap();
+
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Message {
+            channel_id: "ch".into(),
+            reply_to: None,
+            body: "a2".into(),
+        },
+    );
+
+    let sorted = dag.topological_sort();
+    assert_eq!(sorted.len(), dag.len());
+}
+
+#[test]
+fn topological_sort_diamond_pattern() {
+    // Diamond: genesis → A1, genesis → B1(dep=A1), genesis → C1(dep=A1),
+    //          then D1(deps=[B1,C1]) — D must come last.
+    let admin = Identity::generate();
+    let bob = Identity::generate();
+    let carol = Identity::generate();
+    let dave = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    let a1 = do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Message {
+            channel_id: "ch".into(),
+            reply_to: None,
+            body: "a1".into(),
+        },
+    );
+
+    // Bob depends on A1.
+    let b1 = dag.create_event(
+        &bob,
+        EventKind::Message {
+            channel_id: "ch".into(),
+            reply_to: None,
+            body: "b1".into(),
+        },
+        vec![a1.hash],
+        0,
+    );
+    dag.insert(b1.clone()).unwrap();
+
+    // Carol depends on A1.
+    let c1 = dag.create_event(
+        &carol,
+        EventKind::Message {
+            channel_id: "ch".into(),
+            reply_to: None,
+            body: "c1".into(),
+        },
+        vec![a1.hash],
+        0,
+    );
+    dag.insert(c1.clone()).unwrap();
+
+    // Dave depends on both B1 and C1 (diamond join).
+    let d1 = dag.create_event(
+        &dave,
+        EventKind::Message {
+            channel_id: "ch".into(),
+            reply_to: None,
+            body: "d1".into(),
+        },
+        vec![b1.hash, c1.hash],
+        0,
+    );
+    dag.insert(d1.clone()).unwrap();
+
+    let sorted = dag.topological_sort();
+    assert_eq!(sorted.len(), dag.len()); // All 5 events processed (genesis + 4).
+
+    // D1 must come after both B1 and C1.
+    let pos = |hash: EventHash| sorted.iter().position(|e| e.hash == hash).unwrap();
+    assert!(pos(d1.hash) > pos(b1.hash));
+    assert!(pos(d1.hash) > pos(c1.hash));
+    // B1 and C1 both after A1.
+    assert!(pos(b1.hash) > pos(a1.hash));
+    assert!(pos(c1.hash) > pos(a1.hash));
+}
+
+#[test]
+fn topological_sort_deep_chain() {
+    // 6-event causal chain across 3 authors: A1→B1→C1→A2→B2→C2
+    let admin = Identity::generate();
+    let bob = Identity::generate();
+    let carol = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    let a1 = do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Message {
+            channel_id: "ch".into(),
+            reply_to: None,
+            body: "a1".into(),
+        },
+    );
+    let b1 = dag.create_event(
+        &bob,
+        EventKind::Message {
+            channel_id: "ch".into(),
+            reply_to: None,
+            body: "b1".into(),
+        },
+        vec![a1.hash],
+        0,
+    );
+    dag.insert(b1.clone()).unwrap();
+
+    let c1 = dag.create_event(
+        &carol,
+        EventKind::Message {
+            channel_id: "ch".into(),
+            reply_to: None,
+            body: "c1".into(),
+        },
+        vec![b1.hash],
+        0,
+    );
+    dag.insert(c1.clone()).unwrap();
+
+    let a2 = dag.create_event(
+        &admin,
+        EventKind::Message {
+            channel_id: "ch".into(),
+            reply_to: None,
+            body: "a2".into(),
+        },
+        vec![c1.hash],
+        0,
+    );
+    dag.insert(a2.clone()).unwrap();
+
+    let b2 = dag.create_event(
+        &bob,
+        EventKind::Message {
+            channel_id: "ch".into(),
+            reply_to: None,
+            body: "b2".into(),
+        },
+        vec![a2.hash],
+        0,
+    );
+    dag.insert(b2.clone()).unwrap();
+
+    let c2 = dag.create_event(
+        &carol,
+        EventKind::Message {
+            channel_id: "ch".into(),
+            reply_to: None,
+            body: "c2".into(),
+        },
+        vec![b2.hash],
+        0,
+    );
+    dag.insert(c2.clone()).unwrap();
+
+    let sorted = dag.topological_sort();
+    assert_eq!(sorted.len(), dag.len()); // genesis + 6 = 7
+
+    // Verify strict causal ordering.
+    let pos = |hash: EventHash| sorted.iter().position(|e| e.hash == hash).unwrap();
+    assert!(pos(a1.hash) < pos(b1.hash));
+    assert!(pos(b1.hash) < pos(c1.hash));
+    assert!(pos(c1.hash) < pos(a2.hash));
+    assert!(pos(a2.hash) < pos(b2.hash));
+    assert!(pos(b2.hash) < pos(c2.hash));
+}
+
+// ── Issue #71: Equivocation rejected at insert ───────────────────────
+
+#[test]
+fn equivocation_rejected_at_insert() {
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    // Insert first event at seq=2.
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Message {
+            channel_id: "ch".into(),
+            reply_to: None,
+            body: "first".into(),
+        },
+    );
+
+    // Attempt equivocation: different event at seq=2 (but DAG expects seq=3).
+    let equivocating = Event::new(
+        &admin,
+        2,               // same seq as the event we just inserted
+        EventHash::ZERO, // wrong prev — doesn't matter, seq check fires first
+        vec![],
+        EventKind::Message {
+            channel_id: "ch".into(),
+            reply_to: None,
+            body: "equivocation".into(),
+        },
+        999,
+    );
+    let err = dag.insert(equivocating).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            crate::dag::InsertError::SeqGap {
+                expected: 3,
+                got: 2,
+                ..
+            }
+        ),
+        "Expected SeqGap(expected=3, got=2), got: {err:?}"
+    );
+}
+
+#[test]
+fn equivocation_after_gap_rejected() {
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    // Build chain: genesis(seq=1) → msg(seq=2) → msg(seq=3).
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Message {
+            channel_id: "ch".into(),
+            reply_to: None,
+            body: "m1".into(),
+        },
+    );
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Message {
+            channel_id: "ch".into(),
+            reply_to: None,
+            body: "m2".into(),
+        },
+    );
+
+    // Try inserting at seq=2 (already occupied).
+    let bad = Event::new(
+        &admin,
+        2,
+        EventHash::ZERO,
+        vec![],
+        EventKind::Message {
+            channel_id: "ch".into(),
+            reply_to: None,
+            body: "sneaky".into(),
+        },
+        999,
+    );
+    let err = dag.insert(bad).unwrap_err();
+    assert!(matches!(
+        err,
+        crate::dag::InsertError::SeqGap {
+            expected: 4,
+            got: 2,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn new_author_seq_gap_rejected() {
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    // New author tries to insert at seq=3, skipping 1 and 2.
+    let stranger = Identity::generate();
+    let bad = Event::new(
+        &stranger,
+        3,
+        EventHash::ZERO,
+        vec![],
+        EventKind::Message {
+            channel_id: "ch".into(),
+            reply_to: None,
+            body: "skip".into(),
+        },
+        0,
+    );
+    let err = dag.insert(bad).unwrap_err();
+    assert!(matches!(
+        err,
+        crate::dag::InsertError::SeqGap {
+            expected: 1,
+            got: 3,
+            ..
+        }
+    ));
+}
+
+// ── Issue #72: Vote on missing proposal ──────────────────────────────
+
+#[test]
+fn vote_on_missing_proposal_rejected() {
+    use crate::materialize::apply_incremental;
+
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    // Create a vote referencing a non-existent proposal hash.
+    let fake_proposal = EventHash::ZERO;
+    let vote = dag.create_event(
+        &admin,
+        EventKind::Vote {
+            proposal: fake_proposal,
+            accept: true,
+        },
+        vec![fake_proposal], // include in deps to satisfy governance check
+        0,
+    );
+    dag.insert(vote.clone()).unwrap();
+
+    // Apply incrementally and verify rejection.
+    let genesis = dag.genesis().unwrap().clone();
+    let mut state =
+        crate::server::ServerState::new(dag.server_id().unwrap(), "Test", genesis.author);
+    let _ = apply_incremental(&mut state, &genesis);
+    let result = apply_incremental(&mut state, &vote);
+    assert!(
+        matches!(result, crate::materialize::ApplyResult::Rejected(ref msg) if msg.contains("not found")),
+        "Expected Rejected with 'not found', got: {result:?}"
+    );
+}
+
+#[test]
+fn vote_on_already_applied_proposal_is_safe() {
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    // Create a proposal that auto-applies (sole admin, majority 1/1).
+    let alice = Identity::generate();
+    let prop = do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Propose {
+            action: ProposedAction::GrantAdmin {
+                peer_id: alice.endpoint_id(),
+            },
+        },
+    );
+
+    // Now alice (newly admin) votes on the already-applied proposal.
+    let vote = dag.create_event(
+        &alice,
+        EventKind::Vote {
+            proposal: prop.hash,
+            accept: true,
+        },
+        vec![prop.hash],
+        0,
+    );
+    dag.insert(vote).unwrap();
+
+    // Full materialize should not crash.
+    let state = materialize(&dag);
+    // Alice should be admin (proposal already applied).
+    assert!(state.admins.contains(&alice.endpoint_id()));
+}
+
+#[test]
+fn multi_admin_kick_requires_majority_vote() {
+    // With 2 admins, a kick proposal needs both votes (majority > 1).
+    let admin_a = Identity::generate();
+    let mut dag = test_dag(&admin_a);
+
+    // Grant admin to B (auto-applies, sole admin majority).
+    let admin_b = Identity::generate();
+    do_emit(
+        &mut dag,
+        &admin_a,
+        EventKind::Propose {
+            action: ProposedAction::GrantAdmin {
+                peer_id: admin_b.endpoint_id(),
+            },
+        },
+    );
+
+    let state = materialize(&dag);
+    assert_eq!(state.admins.len(), 2);
+
+    // Add target as member.
+    let target = Identity::generate();
+    do_emit(
+        &mut dag,
+        &admin_a,
+        EventKind::GrantPermission {
+            peer_id: target.endpoint_id(),
+            permission: Permission::SendMessages,
+        },
+    );
+
+    // A proposes to kick target — 1/2 votes, stays pending.
+    let kick_prop = dag.create_event(
+        &admin_a,
+        EventKind::Propose {
+            action: ProposedAction::KickMember {
+                peer_id: target.endpoint_id(),
+            },
+        },
+        vec![],
+        0,
+    );
+    dag.insert(kick_prop.clone()).unwrap();
+
+    let state = materialize(&dag);
+    assert!(state.pending_proposals.contains_key(&kick_prop.hash));
+    assert!(state.members.contains_key(&target.endpoint_id()));
+
+    // B votes yes → 2/2 = passes majority.
+    let vote_b = dag.create_event(
+        &admin_b,
+        EventKind::Vote {
+            proposal: kick_prop.hash,
+            accept: true,
+        },
+        vec![kick_prop.hash],
+        0,
+    );
+    dag.insert(vote_b).unwrap();
+
+    let state = materialize(&dag);
+    // Kick applied — target removed.
+    assert!(!state.members.contains_key(&target.endpoint_id()));
+    // Proposal consumed.
+    assert!(!state.pending_proposals.contains_key(&kick_prop.hash));
+    // Both admins still present.
+    assert_eq!(state.admins.len(), 2);
+}
+
+// ── Issue #73: RotateChannelKey multi-recipient ──────────────────────
+
+#[test]
+fn rotate_channel_key_stores_all_recipients() {
+    let admin = Identity::generate();
+    let alice = Identity::generate();
+    let bob = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::RotateChannelKey {
+            channel_id: "ch-1".to_string(),
+            encrypted_keys: vec![
+                (admin.endpoint_id(), vec![1, 2, 3]),
+                (alice.endpoint_id(), vec![4, 5, 6]),
+                (bob.endpoint_id(), vec![7, 8, 9]),
+            ],
+        },
+    );
+
+    let state = materialize(&dag);
+    let keys = &state.channel_keys["ch-1"];
+    assert_eq!(keys.len(), 3);
+    assert_eq!(keys[&admin.endpoint_id()], vec![1, 2, 3]);
+    assert_eq!(keys[&alice.endpoint_id()], vec![4, 5, 6]);
+    assert_eq!(keys[&bob.endpoint_id()], vec![7, 8, 9]);
+}
+
+#[test]
+fn rotate_channel_key_overwrites_on_second_rotation() {
+    let admin = Identity::generate();
+    let alice = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    // First rotation.
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::RotateChannelKey {
+            channel_id: "ch-1".to_string(),
+            encrypted_keys: vec![
+                (admin.endpoint_id(), vec![1, 1, 1]),
+                (alice.endpoint_id(), vec![2, 2, 2]),
+            ],
+        },
+    );
+
+    // Second rotation with new keys (and alice removed).
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::RotateChannelKey {
+            channel_id: "ch-1".to_string(),
+            encrypted_keys: vec![(admin.endpoint_id(), vec![9, 9, 9])],
+        },
+    );
+
+    let state = materialize(&dag);
+    let keys = &state.channel_keys["ch-1"];
+    // Admin's key overwritten with new value.
+    assert_eq!(keys[&admin.endpoint_id()], vec![9, 9, 9]);
+    // Alice's old key still present (rotation adds/overwrites, doesn't clear).
+    assert_eq!(keys[&alice.endpoint_id()], vec![2, 2, 2]);
+}
+
+#[test]
+fn rotate_channel_key_empty_keys_is_noop() {
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::RotateChannelKey {
+            channel_id: "ch-1".to_string(),
+            encrypted_keys: vec![],
+        },
+    );
+
+    let state = materialize(&dag);
+    // No entry created for empty key rotation.
+    assert!(!state.channel_keys.contains_key("ch-1"));
+}
+
+#[test]
+fn rotate_channel_key_for_nonexistent_channel() {
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    // No CreateChannel — keys stored independently.
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::RotateChannelKey {
+            channel_id: "nonexistent".to_string(),
+            encrypted_keys: vec![(admin.endpoint_id(), vec![42])],
+        },
+    );
+
+    let state = materialize(&dag);
+    assert!(state.channels.is_empty());
+    assert!(state.channel_keys.contains_key("nonexistent"));
+    assert_eq!(
+        state.channel_keys["nonexistent"][&admin.endpoint_id()],
+        vec![42]
+    );
 }

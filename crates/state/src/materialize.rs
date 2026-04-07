@@ -90,8 +90,13 @@ fn apply_unchecked(state: &mut ServerState, event: &Event) -> ApplyResult {
             if !state.is_admin(&event.author) {
                 return ApplyResult::Rejected("not an admin".into());
             }
-            if let Some(prop) = state.pending_proposals.get_mut(proposal) {
-                prop.votes.insert(event.author, *accept);
+            match state.pending_proposals.get_mut(proposal) {
+                Some(prop) => {
+                    prop.votes.insert(event.author, *accept);
+                }
+                None => {
+                    return ApplyResult::Rejected(format!("proposal {} not found", proposal));
+                }
             }
             check_and_apply_proposal(state, proposal);
             return ApplyResult::Applied;
@@ -160,10 +165,18 @@ fn apply_proposed_action(state: &mut ServerState, action: &ProposedAction) {
             });
         }
         ProposedAction::RevokeAdmin { peer_id } => {
+            // Prevent 0-admin state — server becomes permanently ungovernable.
+            if state.admins.len() == 1 && state.admins.contains(peer_id) {
+                return;
+            }
             state.admins.remove(peer_id);
             cleanup_votes_and_reevaluate(state, peer_id);
         }
         ProposedAction::KickMember { peer_id } => {
+            // Prevent 0-admin state — server becomes permanently ungovernable.
+            if state.admins.len() == 1 && state.admins.contains(peer_id) {
+                return;
+            }
             state.members.remove(peer_id);
             state.peer_permissions.remove(peer_id);
             state.admins.remove(peer_id);
@@ -393,10 +406,11 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
             channel_id,
             encrypted_keys,
         } => {
-            if let Some((_, key_bytes)) = encrypted_keys.first() {
-                state
-                    .channel_keys
-                    .insert(channel_id.clone(), key_bytes.clone());
+            if !encrypted_keys.is_empty() {
+                let keys = state.channel_keys.entry(channel_id.clone()).or_default();
+                for (peer_id, key_bytes) in encrypted_keys {
+                    keys.insert(*peer_id, key_bytes.clone());
+                }
             }
         }
 
