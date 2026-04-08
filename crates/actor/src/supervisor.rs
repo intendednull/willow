@@ -35,7 +35,7 @@ pub(crate) fn spawn_supervised<A: Actor + Clone>(
     policy: RestartPolicy,
     system: SystemHandle,
 ) -> Addr<A> {
-    let (tx, rx) = runtime::unbounded_channel::<BoxEnvelope<A>>();
+    let (tx, rx) = runtime::channel::<BoxEnvelope<A>>(runtime::DEFAULT_MAILBOX_CAPACITY);
     let addr = Addr::new(tx.clone());
 
     runtime::spawn(supervisor_loop(actor, policy, rx, tx, system, addr.clone()));

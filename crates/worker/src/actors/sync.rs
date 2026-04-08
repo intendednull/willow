@@ -133,6 +133,7 @@ mod tests {
         let system = System::new();
         let state_addr = system.spawn(StateActor {
             role: Box::new(TestSyncRole),
+            ready: None,
         });
 
         let addr = system.spawn(SyncActor::new(

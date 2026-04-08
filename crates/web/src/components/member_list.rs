@@ -43,7 +43,7 @@ pub fn MemberList(
                         .iter()
                         .filter(|(pid, _, _)| {
                             sync_providers.contains(pid)
-                                && pid != &peer_id.get_untracked()
+                                && pid != &peer_id.get()
                                 && *pid != owner_str
                         })
                         .cloned()
@@ -121,7 +121,7 @@ pub fn MemberList(
                         .filter(|(pid, _, _)| {
                             // Exclude workers from the members section.
                             !sync_providers.contains(pid)
-                                || pid == &peer_id.get_untracked()
+                                || pid == &peer_id.get()
                                 || *pid == owner_str
                         })
                         .collect::<Vec<_>>()
@@ -175,7 +175,7 @@ pub fn MemberList(
                                     let hu = handle_untrust.clone();
                                     let pk = pid_kick.clone();
                                     move || {
-                                        let is_admin = app_state.server.admin_ids.get().contains(&peer_id.get_untracked());
+                                        let is_admin = app_state.server.admin_ids.get().contains(&peer_id.get());
                                         if is_self() || !is_admin {
                                             None
                                         } else {
@@ -224,7 +224,7 @@ pub fn MemberList(
                 let sync_providers = app_state.server.sync_provider_ids.get();
                 let non_worker_count = all.iter().filter(|(pid, _, _)| {
                     !sync_providers.contains(pid)
-                        || pid == &peer_id.get_untracked()
+                        || pid == &peer_id.get()
                         || *pid == owner_str
                 }).count();
                 if non_worker_count == 0 {

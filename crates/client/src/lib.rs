@@ -66,7 +66,8 @@ pub mod event_receiver {
             broker: &Addr<Broker<ClientEvent>>,
             system: &willow_actor::SystemHandle,
         ) -> Self {
-            let (tx, rx) = willow_actor::runtime::unbounded_channel();
+            let (tx, rx) =
+                willow_actor::runtime::channel(willow_actor::runtime::DEFAULT_MAILBOX_CAPACITY);
             let addr = system.spawn(ForwarderActor { tx });
             let recipient = addr.into();
             let _ = broker.ask(BrokerSubscribe(recipient)).await;

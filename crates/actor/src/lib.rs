@@ -606,6 +606,112 @@ mod tests {
         assert!(tx.try_send(3).is_err());
     }
 
+    // ───── Bounded mailbox (issue #78) ───────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mailbox_drops_messages_when_capacity_exceeded() {
+        // Issue #78: Actor mailboxes must be bounded to prevent OOM DoS.
+        // With unbounded channels, send() would never return Err due to
+        // capacity — only if the receiver is closed. With bounded channels,
+        // send() returns Err when the mailbox is full.
+
+        // Test directly at the channel level — this is deterministic.
+        let (tx, _rx) = runtime::channel::<u32>(4);
+        assert!(tx.send(1).is_ok());
+        assert!(tx.send(2).is_ok());
+        assert!(tx.send(3).is_ok());
+        assert!(tx.send(4).is_ok());
+        // Channel is full — this should fail.
+        assert!(
+            tx.send(5).is_err(),
+            "expected mailbox full error, but send succeeded (unbounded!)"
+        );
+
+        // Now test via actor spawn_with_capacity — use a slow actor to
+        // ensure we can fill the mailbox.
+        struct SlowActor;
+        impl Actor for SlowActor {}
+
+        struct SlowMsg;
+        impl Message for SlowMsg {
+            type Result = ();
+        }
+        impl Handler<SlowMsg> for SlowActor {
+            fn handle(
+                &mut self,
+                _msg: SlowMsg,
+                _ctx: &mut Context<Self>,
+            ) -> impl std::future::Future<Output = ()> + Send {
+                async {
+                    runtime::sleep(Duration::from_millis(200)).await;
+                }
+            }
+        }
+
+        let system = System::new();
+        let addr = system.handle().spawn_with_capacity(SlowActor, 4);
+
+        // Send one message to trigger processing (actor will be busy 200ms).
+        addr.do_send(SlowMsg).unwrap();
+        // Let the actor dequeue it and begin handling.
+        runtime::sleep(Duration::from_millis(30)).await;
+
+        // Now fill the remaining mailbox capacity (4 slots).
+        for _ in 0..4 {
+            let _ = addr.do_send(SlowMsg);
+        }
+
+        // The mailbox should now be full — next send should fail.
+        let result = addr.do_send(SlowMsg);
+        assert!(
+            result.is_err(),
+            "expected mailbox full error, but send succeeded (unbounded!)"
+        );
+
+        system.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_succeeds_with_full_mailbox() {
+        // Ensure shutdown doesn't deadlock when a mailbox is full.
+        // The stop flag (AtomicBool) is set even if the noop wake-up
+        // message is dropped due to a full mailbox.
+        struct SlowActor;
+        impl Actor for SlowActor {}
+
+        struct Block;
+        impl Message for Block {
+            type Result = ();
+        }
+        impl Handler<Block> for SlowActor {
+            fn handle(
+                &mut self,
+                _msg: Block,
+                _ctx: &mut Context<Self>,
+            ) -> impl std::future::Future<Output = ()> + Send {
+                async {
+                    runtime::sleep(Duration::from_millis(50)).await;
+                }
+            }
+        }
+
+        let system = System::new();
+        let addr = system.handle().spawn_with_capacity(SlowActor, 2);
+
+        // Fill the mailbox.
+        for _ in 0..4 {
+            let _ = addr.do_send(Block);
+        }
+
+        // Shutdown should complete even though the noop wake-up may
+        // be dropped due to the full mailbox.
+        let shutdown = tokio::time::timeout(Duration::from_secs(5), system.shutdown());
+        assert!(
+            shutdown.await.is_ok(),
+            "shutdown deadlocked with full mailbox"
+        );
+    }
+
     // ───── Supervision ─────────────────────────────────────────────────────
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

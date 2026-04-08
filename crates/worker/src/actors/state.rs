@@ -14,6 +14,10 @@ use crate::WorkerRole;
 /// The state actor holds the worker's mutable role and processes messages sequentially.
 pub struct StateActor {
     pub role: Box<dyn WorkerRole>,
+    /// Optional ready signal — set to `true` when `started()` completes so
+    /// other actors (e.g. `NetworkActor`) can wait before draining events.
+    /// Uses `watch` channel so late subscribers see the value immediately.
+    pub ready: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 impl Actor for StateActor {
@@ -22,6 +26,9 @@ impl Actor for StateActor {
         _ctx: &mut Context<Self>,
     ) -> impl std::future::Future<Output = ()> + Send {
         debug!("state actor started");
+        if let Some(ready) = self.ready.take() {
+            let _ = ready.send(true);
+        }
         async {}
     }
 
@@ -147,6 +154,7 @@ mod tests {
         let system = System::new();
         let addr = system.spawn(StateActor {
             role: Box::new(TestRole::new()),
+            ready: None,
         });
 
         for _ in 0..3 {
@@ -169,6 +177,7 @@ mod tests {
         let system = System::new();
         let addr = system.spawn(StateActor {
             role: Box::new(TestRole::new()),
+            ready: None,
         });
 
         // Sync request.
@@ -207,6 +216,7 @@ mod tests {
         let system = System::new();
         let addr = system.spawn(StateActor {
             role: Box::new(TestRole::new()),
+            ready: None,
         });
 
         assert!(addr.is_alive());
@@ -225,6 +235,7 @@ mod tests {
         let system = System::new();
         let addr = system.spawn(StateActor {
             role: Box::new(TestRole::new()),
+            ready: None,
         });
 
         let mut futs = vec![];
