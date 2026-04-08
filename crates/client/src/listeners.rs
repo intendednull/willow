@@ -23,6 +23,7 @@ pub struct ListenerCtx {
     pub identity: willow_identity::Identity,
     pub join_links: Arc<Mutex<Vec<crate::ops::JoinLink>>>,
     pub dag: Addr<willow_actor::StateActor<state_actors::DagState>>,
+    pub server_registry: Addr<willow_actor::StateActor<state_actors::ServerRegistry>>,
 }
 
 impl Clone for ListenerCtx {
@@ -38,6 +39,7 @@ impl Clone for ListenerCtx {
             identity: self.identity.clone(),
             join_links: Arc::clone(&self.join_links),
             dag: self.dag.clone(),
+            server_registry: self.server_registry.clone(),
         }
     }
 }
@@ -340,11 +342,18 @@ async fn process_received_message<T: TopicHandle>(
                 }
             };
             if should_respond {
-                // Generate invite for the requesting peer.
-                let invite_result = willow_actor::state::select(&ctx.event_state, move |_es| {
-                    // We need the server registry to generate the invite.
-                    // For now, just return None — full invite generation needs refactoring.
-                    None::<String>
+                // Generate invite for the requesting peer using the server registry.
+                let server_registry = ctx.server_registry.clone();
+                let peer_endpoint = peer_id;
+                let invite_result = willow_actor::state::select(&server_registry, move |reg| {
+                    let entry = reg.active()?;
+                    let pub_key = crate::invite::endpoint_id_to_ed25519_public(&peer_endpoint);
+                    crate::invite::generate_invite(
+                        &entry.server,
+                        &entry.keys,
+                        &entry.topic_map,
+                        &pub_key,
+                    )
                 })
                 .await;
                 if let Some(invite_data) = invite_result {

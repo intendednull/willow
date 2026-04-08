@@ -150,6 +150,8 @@ pub struct PendingBuffer {
     /// Optional maximum number of pending events. When set,
     /// `buffer_for_prev()` auto-evicts oldest entries to stay within limit.
     max_pending: Option<usize>,
+    /// Cached total count of pending events for O(1) lookups.
+    cached_count: usize,
 }
 
 impl PendingBuffer {
@@ -177,6 +179,7 @@ impl PendingBuffer {
             .entry(prev_hash)
             .or_default()
             .push(event);
+        self.cached_count += 1;
         if let Some(limit) = self.max_pending {
             self.evict_to(limit);
         }
@@ -191,9 +194,12 @@ impl PendingBuffer {
     /// Returns any buffered events whose `prev` is now satisfied.
     pub fn resolve(&mut self, inserted_hash: &EventHash) -> Vec<Event> {
         self.missing_deps.remove(inserted_hash);
-        self.waiting_on_prev
+        let resolved = self
+            .waiting_on_prev
             .remove(inserted_hash)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        self.cached_count = self.cached_count.saturating_sub(resolved.len());
+        resolved
     }
 
     /// Number of missing cross-author deps being tracked.
@@ -203,7 +209,7 @@ impl PendingBuffer {
 
     /// Number of events waiting for prev chain predecessors.
     pub fn pending_count(&self) -> usize {
-        self.waiting_on_prev.values().map(|v| v.len()).sum()
+        self.cached_count
     }
 
     /// Evict pending entries to keep the buffer bounded.
@@ -213,11 +219,13 @@ impl PendingBuffer {
     /// Returns the number of events evicted.
     pub fn evict_to(&mut self, max_pending: usize) -> usize {
         let mut evicted = 0;
-        while self.pending_count() > max_pending {
+        while self.cached_count > max_pending {
             // Remove an arbitrary entry.
             if let Some(key) = self.waiting_on_prev.keys().next().cloned() {
                 if let Some(events) = self.waiting_on_prev.remove(&key) {
-                    evicted += events.len();
+                    let n = events.len();
+                    evicted += n;
+                    self.cached_count = self.cached_count.saturating_sub(n);
                 }
             } else {
                 break;
@@ -869,5 +877,88 @@ mod tests {
         assert_eq!(state.messages[0].body, "[message deleted]");
         // Original event is still in the DAG.
         assert!(dag.get(&msg.hash).is_some());
+    }
+
+    #[test]
+    fn evict_to_completes_in_linear_time() {
+        let mut buf = PendingBuffer::new();
+        let id = Identity::generate();
+
+        // Insert 10,000 pending events under unique prev hashes.
+        for i in 0..10_000u64 {
+            let mut hash_bytes = [0u8; 32];
+            hash_bytes[..8].copy_from_slice(&i.to_le_bytes());
+            let prev = EventHash(hash_bytes);
+            let e = Event::new(
+                &id,
+                i + 2,
+                prev,
+                vec![],
+                EventKind::SetProfile {
+                    display_name: format!("n{i}"),
+                },
+                0,
+            );
+            buf.buffer_for_prev(prev, e);
+        }
+        assert_eq!(buf.pending_count(), 10_000);
+
+        let start = std::time::Instant::now();
+        let evicted = buf.evict_to(100);
+        let elapsed = start.elapsed();
+
+        assert!(evicted >= 9_900, "should evict most entries, got {evicted}");
+        assert!(
+            buf.pending_count() <= 100,
+            "should have at most 100 pending, got {}",
+            buf.pending_count()
+        );
+        // With cached count: should be near-instant. Without: quadratic and slow.
+        assert!(
+            elapsed.as_millis() < 500,
+            "evict_to took too long: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn cached_count_stays_consistent() {
+        let mut buf = PendingBuffer::new();
+        let id = Identity::generate();
+
+        assert_eq!(buf.pending_count(), 0);
+
+        // Buffer some events.
+        for i in 0..5u64 {
+            let mut hash_bytes = [0u8; 32];
+            hash_bytes[..8].copy_from_slice(&i.to_le_bytes());
+            let prev = EventHash(hash_bytes);
+            let e = Event::new(
+                &id,
+                i + 2,
+                prev,
+                vec![],
+                EventKind::SetProfile {
+                    display_name: format!("n{i}"),
+                },
+                0,
+            );
+            buf.buffer_for_prev(prev, e);
+        }
+        assert_eq!(buf.pending_count(), 5);
+
+        // Resolve one entry.
+        let mut hash_bytes = [0u8; 32];
+        hash_bytes[..8].copy_from_slice(&2u64.to_le_bytes());
+        let resolved = buf.resolve(&EventHash(hash_bytes));
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(buf.pending_count(), 4);
+
+        // Resolve nonexistent — count unchanged.
+        let _ = buf.resolve(&EventHash([0xFF; 32]));
+        assert_eq!(buf.pending_count(), 4);
+
+        // Evict to 2.
+        buf.evict_to(2);
+        assert_eq!(buf.pending_count(), 2);
     }
 }

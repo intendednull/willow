@@ -6,6 +6,8 @@
 //! inserts into the DAG and applies to state, making it structurally
 //! impossible for the two to diverge.
 
+use std::collections::VecDeque;
+
 use willow_identity::Identity;
 
 use crate::dag::{EventDag, InsertError};
@@ -112,13 +114,27 @@ impl ManagedDag {
                     }
                 }
 
-                // Recursively apply resolved events.
+                // Iteratively apply resolved events using a work queue
+                // to avoid stack overflow on deep pending chains.
+                let mut work_queue = VecDeque::from(resolved_from_hash);
                 let mut all_resolved = Vec::new();
-                for r in resolved_from_hash {
-                    match self.insert_and_apply(r.clone()) {
-                        Ok(outcome) => {
-                            all_resolved.push(r);
-                            all_resolved.extend(outcome.resolved);
+
+                while let Some(pending_event) = work_queue.pop_front() {
+                    match self.dag.insert(pending_event.clone()) {
+                        Ok(()) => {
+                            if matches!(pending_event.kind, EventKind::CreateServer { .. }) {
+                                self.state = crate::materialize::materialize(&self.dag);
+                            } else {
+                                apply_incremental(&mut self.state, &pending_event);
+                            }
+
+                            let mut newly_resolved = self.pending.resolve(&pending_event.hash);
+                            if matches!(pending_event.kind, EventKind::CreateServer { .. }) {
+                                newly_resolved.extend(self.pending.resolve(&EventHash::ZERO));
+                            }
+
+                            all_resolved.push(pending_event);
+                            work_queue.extend(newly_resolved);
                         }
                         Err(_) => {
                             // Resolved event failed insertion (e.g. duplicate,
