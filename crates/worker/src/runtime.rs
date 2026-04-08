@@ -34,9 +34,15 @@ pub async fn run<N: Network>(
     let (_ops_sender, ops_events) = network.subscribe(ops_topic_id, vec![]).await?;
 
     // Create actor system and spawn actors.
+    // The ready signal ensures NetworkActor waits for StateActor to
+    // complete initialization before draining gossip events.
     let system = System::new();
+    let (ready_tx, ready_rx) = tokio::sync::watch::channel(false);
 
-    let state_addr = system.spawn(StateActor { role });
+    let state_addr = system.spawn(StateActor {
+        role,
+        ready: Some(ready_tx),
+    });
 
     let _network = system.spawn(
         NetworkActor::new(
@@ -45,7 +51,8 @@ pub async fn run<N: Network>(
             peer_id,
             workers_sender.clone(),
         )
-        .with_ops_events(ops_events),
+        .with_ops_events(ops_events)
+        .with_ready_signal(ready_rx),
     );
 
     let _heartbeat = system.spawn(HeartbeatActor::new(

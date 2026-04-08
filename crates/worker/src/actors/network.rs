@@ -20,6 +20,9 @@ pub struct NetworkActor<E: TopicEvents + 'static, T: TopicHandle + 'static> {
     /// Optional SERVER_OPS topic events stream.
     ops_events: Option<E>,
     reply_topic: T,
+    /// Optional ready signal — drain tasks wait for `true` before pulling events.
+    /// Uses `watch` so late subscribers see the value even if StateActor started first.
+    ready: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 impl<E: TopicEvents + 'static, T: TopicHandle + 'static> NetworkActor<E, T> {
@@ -35,6 +38,7 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> NetworkActor<E, T> {
             events: Some(events),
             ops_events: None,
             reply_topic,
+            ready: None,
         }
     }
 
@@ -42,6 +46,13 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> NetworkActor<E, T> {
     /// parsed with [`parse_server_message`] and forwarded to the state actor.
     pub fn with_ops_events(mut self, ops_events: E) -> Self {
         self.ops_events = Some(ops_events);
+        self
+    }
+
+    /// Attach a ready signal. Drain tasks will wait for `true` before pulling
+    /// events, ensuring the `StateActor` has completed initialization.
+    pub fn with_ready_signal(mut self, ready: tokio::sync::watch::Receiver<bool>) -> Self {
+        self.ready = Some(ready);
         self
     }
 }
@@ -60,10 +71,17 @@ impl willow_actor::Message for ServerOpsEventMsg {
 
 impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Actor for NetworkActor<E, T> {
     fn started(&mut self, ctx: &mut Context<Self>) -> impl std::future::Future<Output = ()> + Send {
+        let ready = self.ready.take();
+
         // Spawn a task that drains WORKERS topic events.
         if let Some(mut events) = self.events.take() {
             let addr = ctx.address();
+            let mut ready = ready.clone();
             willow_actor::runtime::spawn(async move {
+                // Wait for StateActor to be ready before draining events.
+                if let Some(ref mut rx) = ready {
+                    let _ = rx.wait_for(|v| *v).await;
+                }
                 while let Some(Ok(event)) = events.next().await {
                     if addr.do_send(GossipEventMsg(event)).is_err() {
                         break;
@@ -74,7 +92,12 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Actor for NetworkActor<
         // Spawn a second task that drains SERVER_OPS topic events.
         if let Some(mut ops_events) = self.ops_events.take() {
             let addr = ctx.address();
+            let mut ready = ready;
             willow_actor::runtime::spawn(async move {
+                // Wait for StateActor to be ready before draining events.
+                if let Some(ref mut rx) = ready {
+                    let _ = rx.wait_for(|v| *v).await;
+                }
                 while let Some(Ok(event)) = ops_events.next().await {
                     if addr.do_send(ServerOpsEventMsg(event)).is_err() {
                         break;

@@ -3632,3 +3632,98 @@ async fn dropdown_delete_has_danger_class() {
         "danger button should say 'Delete'"
     );
 }
+
+// ── Admin Signal Reactivity Tests (Issue #81) ───────────────────────────────
+
+#[wasm_bindgen_test]
+async fn admin_buttons_hide_when_admin_status_revoked() {
+    // Issue #81: Admin buttons must reactively hide when admin_ids changes.
+    // Tests that using get() (not get_untracked()) for admin_ids makes the
+    // UI update when admin status is revoked.
+    let (admin_ids, set_admin_ids) =
+        signal(std::collections::HashSet::from(["peer-a".to_string()]));
+    let peer_id = "peer-a".to_string();
+
+    let container = mount_test(move || {
+        let pid = peer_id.clone();
+        view! {
+            {move || {
+                let is_admin = admin_ids.get().contains(&pid);
+                if is_admin {
+                    Some(view! {
+                        <div class="admin-actions">
+                            <button class="btn-trust">"Trust"</button>
+                            <button class="btn-kick">"Kick"</button>
+                        </div>
+                    })
+                } else {
+                    None
+                }
+            }}
+        }
+    });
+
+    tick().await;
+
+    // Admin buttons should be visible.
+    assert!(
+        query(&container, ".admin-actions").is_some(),
+        "admin buttons should be visible when peer is admin"
+    );
+
+    // Revoke admin status.
+    set_admin_ids.set(std::collections::HashSet::new());
+    tick().await;
+
+    // Admin buttons should now be hidden.
+    assert!(
+        query(&container, ".admin-actions").is_none(),
+        "admin buttons should hide after admin status revoked"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn admin_buttons_respond_to_peer_id_change() {
+    // Issue #81: Using get() on peer_id (instead of get_untracked()) ensures
+    // the UI updates when the local peer_id signal changes.
+    let admin_set = std::collections::HashSet::from(["peer-a".to_string()]);
+    let (admin_ids, _) = signal(admin_set);
+    let (peer_id, set_peer_id) = signal("peer-a".to_string());
+
+    let container = mount_test(move || {
+        view! {
+            {move || {
+                let is_admin = admin_ids.get().contains(&peer_id.get());
+                if is_admin {
+                    Some(view! {
+                        <div class="admin-actions">
+                            <button class="btn-trust">"Trust"</button>
+                        </div>
+                    })
+                } else {
+                    None
+                }
+            }}
+        }
+    });
+
+    tick().await;
+
+    // Initially peer-a is admin — buttons visible.
+    assert!(
+        query(&container, ".admin-actions").is_some(),
+        "admin buttons should be visible for peer-a"
+    );
+
+    // Change peer_id to peer-b (not in admin set).
+    set_peer_id.set("peer-b".to_string());
+    tick().await;
+
+    // Buttons should now be hidden because peer-b is not admin.
+    // With get_untracked(), this would NOT update — the stale value
+    // "peer-a" would still be checked against admin_ids.
+    assert!(
+        query(&container, ".admin-actions").is_none(),
+        "admin buttons should hide when peer_id changes to non-admin"
+    );
+}

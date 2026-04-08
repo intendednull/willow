@@ -145,6 +145,7 @@ mod tests {
 
         let state_addr = system.spawn(StateActor {
             role: Box::new(TestRole),
+            ready: None,
         });
 
         let test_peer = net_a.id();

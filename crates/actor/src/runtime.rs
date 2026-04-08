@@ -28,14 +28,23 @@ pub async fn sleep(duration: Duration) {
     gloo_timers::future::sleep(duration).await;
 }
 
-// ───── Unbounded MPSC channel ──────────────────────────────────────────────
+// ───── Default mailbox capacity ───────────────────────────────────────────
 
-/// Sender half of an unbounded MPSC channel.
+/// Default capacity for actor mailbox channels.
+///
+/// This prevents unbounded memory growth from message flooding (OOM DoS).
+/// Actors whose mailbox reaches this limit will have messages dropped with
+/// a warning log.
+pub const DEFAULT_MAILBOX_CAPACITY: usize = 10_000;
+
+// ───── Bounded MPSC channel (actor mailbox) ──────────────────────────────
+
+/// Sender half of a bounded MPSC channel used for actor mailboxes.
 #[cfg(not(target_arch = "wasm32"))]
-pub struct Sender<T>(tokio::sync::mpsc::UnboundedSender<T>);
+pub struct Sender<T>(tokio::sync::mpsc::Sender<T>);
 
 #[cfg(target_arch = "wasm32")]
-pub struct Sender<T>(futures_channel::mpsc::UnboundedSender<T>);
+pub struct Sender<T>(futures_channel::mpsc::Sender<T>);
 
 impl<T> Clone for Sender<T> {
     fn clone(&self) -> Self {
@@ -44,16 +53,27 @@ impl<T> Clone for Sender<T> {
 }
 
 impl<T: Send + 'static> Sender<T> {
-    /// Send a value. Returns `Err` if the receiver is closed.
+    /// Try to send a value. Returns `Err(val)` if the channel is full or closed.
     pub fn send(&self, val: T) -> Result<(), T> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.0.send(val).map_err(|e| e.0)
+            self.0.try_send(val).map_err(|e| {
+                if matches!(e, tokio::sync::mpsc::error::TrySendError::Full(_)) {
+                    tracing::warn!("actor mailbox full, dropping message");
+                }
+                e.into_inner()
+            })
         }
 
         #[cfg(target_arch = "wasm32")]
         {
-            self.0.unbounded_send(val).map_err(|e| e.into_inner())
+            let mut sender = self.0.clone();
+            sender.try_send(val).map_err(|e| {
+                if e.is_full() {
+                    tracing::warn!("actor mailbox full, dropping message");
+                }
+                e.into_inner()
+            })
         }
     }
 
@@ -63,12 +83,12 @@ impl<T: Send + 'static> Sender<T> {
     }
 }
 
-/// Receiver half of an unbounded MPSC channel.
+/// Receiver half of a bounded MPSC channel used for actor mailboxes.
 #[cfg(not(target_arch = "wasm32"))]
-pub struct Receiver<T>(tokio::sync::mpsc::UnboundedReceiver<T>);
+pub struct Receiver<T>(tokio::sync::mpsc::Receiver<T>);
 
 #[cfg(target_arch = "wasm32")]
-pub struct Receiver<T>(futures_channel::mpsc::UnboundedReceiver<T>);
+pub struct Receiver<T>(futures_channel::mpsc::Receiver<T>);
 
 impl<T: Send + 'static> Receiver<T> {
     /// Wait for the next value. Returns `None` when all senders are dropped.
@@ -104,17 +124,21 @@ impl<T: Send + 'static> Receiver<T> {
     }
 }
 
-/// Create an unbounded MPSC channel.
-pub fn unbounded_channel<T: Send + 'static>() -> (Sender<T>, Receiver<T>) {
+/// Create a bounded MPSC channel with the given capacity.
+///
+/// This replaces the former `unbounded_channel()` to prevent OOM DoS attacks
+/// from message flooding. When the channel is full, `Sender::send()` returns
+/// an error and the message is dropped.
+pub fn channel<T: Send + 'static>(capacity: usize) -> (Sender<T>, Receiver<T>) {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, rx) = tokio::sync::mpsc::channel(capacity);
         (Sender(tx), Receiver(rx))
     }
 
     #[cfg(target_arch = "wasm32")]
     {
-        let (tx, rx) = futures_channel::mpsc::unbounded();
+        let (tx, rx) = futures_channel::mpsc::channel(capacity);
         (Sender(tx), Receiver(rx))
     }
 }

@@ -95,6 +95,7 @@ async fn state_actor_with_replay_role_full_flow() {
     let system = System::new();
     let addr = system.spawn(StateActor {
         role: Box::new(TestReplayRole::new("srv-1", 100)),
+        ready: None,
     });
 
     // 1. Ingest 5 events.
@@ -176,6 +177,7 @@ async fn heartbeat_and_state_actor_interaction() {
 
     let state_addr = system.spawn(StateActor {
         role: Box::new(TestReplayRole::new("srv-1", 100)),
+        ready: None,
     });
 
     let test_worker_id = net_a.id();
@@ -220,6 +222,7 @@ async fn concurrent_requests_all_resolve() {
     let system = System::new();
     let addr = system.spawn(StateActor {
         role: Box::new(TestReplayRole::new("srv-1", 100)),
+        ready: None,
     });
 
     // Fire 50 concurrent requests.
@@ -249,6 +252,7 @@ async fn events_applied_then_queried_via_request() {
     let system = System::new();
     let addr = system.spawn(StateActor {
         role: Box::new(TestReplayRole::new("srv-1", 5)),
+        ready: None,
     });
 
     // Ingest 10 events into a buffer of size 5.
@@ -306,6 +310,7 @@ async fn graceful_shutdown_sends_departure() {
 
     let state_addr = system.spawn(StateActor {
         role: Box::new(TestReplayRole::new("srv-1", 100)),
+        ready: None,
     });
 
     let departing_id = net_a.id();
@@ -360,6 +365,7 @@ async fn full_actor_orchestration_without_network() {
 
     let state_addr = system.spawn(StateActor {
         role: Box::new(TestReplayRole::new("srv-1", 100)),
+        ready: None,
     });
 
     let orch_id = net_a.id();
@@ -512,6 +518,7 @@ async fn server_ops_events_forwarded_to_state() {
     // State actor with a replay role that tracks ingested events.
     let state_addr = system.spawn(StateActor {
         role: Box::new(TestReplayRole::new("srv-1", 100)),
+        ready: None,
     });
 
     // Create channels for both WORKERS and SERVER_OPS streams.
@@ -571,6 +578,187 @@ async fn server_ops_events_forwarded_to_state() {
             assert_eq!(
                 events_buffered, 1,
                 "server ops event should have been forwarded to state actor"
+            );
+        }
+        _ => panic!("expected Replay"),
+    }
+
+    system.shutdown().await;
+}
+
+/// Issue #79: Verify that the ready signal prevents NetworkActor from draining
+/// gossip events before StateActor has completed initialization.
+///
+/// Without the ready signal, pre-buffered events could arrive at StateActor
+/// before its `started()` hook completes. The fix gates the drain tasks on
+/// a `watch` channel that StateActor sets to `true` after `started()`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pre_buffered_events_wait_for_state_ready_signal() {
+    let system = System::new();
+    let (ready_tx, ready_rx) = tokio::sync::watch::channel(false);
+
+    // State actor — we pass the ready sender so it fires on started().
+    let state_addr = system.spawn(StateActor {
+        role: Box::new(TestReplayRole::new("srv-1", 100)),
+        ready: Some(ready_tx),
+    });
+
+    // Pre-buffer 3 signed events in the ops channel BEFORE spawning NetworkActor.
+    let (_workers_tx, workers_rx) = tokio::sync::mpsc::channel::<GossipEvent>(16);
+    let (ops_tx, ops_rx) = tokio::sync::mpsc::channel::<GossipEvent>(16);
+
+    let sender_id = Identity::generate();
+
+    // EventDag requires CreateServer as genesis event (seq=1).
+    let genesis = Event::new(
+        &sender_id,
+        1,
+        EventHash::ZERO,
+        vec![],
+        EventKind::CreateServer {
+            name: "srv-1".to_string(),
+        },
+        0,
+    );
+    let mut prev_hash = genesis.hash;
+
+    let genesis_data =
+        willow_common::pack_wire(&willow_common::WireMessage::Event(genesis), &sender_id).unwrap();
+    ops_tx
+        .send(GossipEvent::Received(GossipMessage {
+            content: bytes::Bytes::from(genesis_data),
+            sender: sender_id.endpoint_id(),
+        }))
+        .await
+        .unwrap();
+
+    // Buffer 2 more events (messages).
+    for seq in 2..=3 {
+        let event = Event::new(
+            &sender_id,
+            seq,
+            prev_hash,
+            vec![],
+            EventKind::Message {
+                channel_id: "general".to_string(),
+                body: format!("msg-{seq}"),
+                reply_to: None,
+            },
+            seq * 1000,
+        );
+        prev_hash = event.hash;
+
+        let data = willow_common::pack_wire(&willow_common::WireMessage::Event(event), &sender_id)
+            .unwrap();
+
+        ops_tx
+            .send(GossipEvent::Received(GossipMessage {
+                content: bytes::Bytes::from(data),
+                sender: sender_id.endpoint_id(),
+            }))
+            .await
+            .unwrap();
+    }
+
+    let worker_id = Identity::generate();
+    let peer_id = worker_id.endpoint_id();
+
+    // Spawn NetworkActor with the ready signal — drain tasks should wait.
+    let _network = system.spawn(
+        NetworkActor::new(
+            MockTopicEvents { rx: workers_rx },
+            state_addr.clone(),
+            peer_id,
+            MockTopicHandle,
+        )
+        .with_ops_events(MockTopicEvents { rx: ops_rx })
+        .with_ready_signal(ready_rx),
+    );
+
+    // StateActor's started() fires the watch channel, so the
+    // drain tasks should begin and process all pre-buffered events.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Verify all 3 pre-buffered events were processed by StateActor.
+    let info = state_addr.ask(GetRoleInfoMsg).await.unwrap();
+    match info {
+        WorkerRoleInfo::Replay {
+            events_buffered, ..
+        } => {
+            assert_eq!(
+                events_buffered, 3,
+                "all pre-buffered events should have been processed after ready signal"
+            );
+        }
+        _ => panic!("expected Replay"),
+    }
+
+    system.shutdown().await;
+}
+
+/// Issue #79: Verify that without a ready signal, NetworkActor drains
+/// immediately (backward compatibility for tests and simple setups).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn network_actor_drains_immediately_without_ready_signal() {
+    let system = System::new();
+
+    let state_addr = system.spawn(StateActor {
+        role: Box::new(TestReplayRole::new("srv-1", 100)),
+        ready: None,
+    });
+
+    let (_workers_tx, workers_rx) = tokio::sync::mpsc::channel::<GossipEvent>(16);
+    let (ops_tx, ops_rx) = tokio::sync::mpsc::channel::<GossipEvent>(16);
+
+    let worker_id = Identity::generate();
+    let peer_id = worker_id.endpoint_id();
+
+    let _network = system.spawn(
+        NetworkActor::new(
+            MockTopicEvents { rx: workers_rx },
+            state_addr.clone(),
+            peer_id,
+            MockTopicHandle,
+        )
+        .with_ops_events(MockTopicEvents { rx: ops_rx }),
+        // No ready signal — drain starts immediately.
+    );
+
+    // Allow actors to start.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Send a CreateServer event (required as genesis for EventDag).
+    let sender_id = Identity::generate();
+    let event = Event::new(
+        &sender_id,
+        1,
+        EventHash::ZERO,
+        vec![],
+        EventKind::CreateServer {
+            name: "srv-1".to_string(),
+        },
+        0,
+    );
+    let data =
+        willow_common::pack_wire(&willow_common::WireMessage::Event(event), &sender_id).unwrap();
+    ops_tx
+        .send(GossipEvent::Received(GossipMessage {
+            content: bytes::Bytes::from(data),
+            sender: sender_id.endpoint_id(),
+        }))
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let info = state_addr.ask(GetRoleInfoMsg).await.unwrap();
+    match info {
+        WorkerRoleInfo::Replay {
+            events_buffered, ..
+        } => {
+            assert_eq!(
+                events_buffered, 1,
+                "event should be processed without ready signal"
             );
         }
         _ => panic!("expected Replay"),

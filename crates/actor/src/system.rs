@@ -12,7 +12,7 @@ use crate::addr::Addr;
 use crate::context::Context;
 use crate::envelope::BoxEnvelope;
 use crate::mailbox;
-use crate::runtime::{self, OneshotRx, Sender};
+use crate::runtime::{self, OneshotRx, Sender, DEFAULT_MAILBOX_CAPACITY};
 
 // ───── SystemActor (internal) ──────────────────────────────────────────
 
@@ -102,7 +102,7 @@ impl System {
     pub fn new() -> Self {
         // Bootstrap: spawn the SystemActor directly (it can't
         // register itself — it IS the registry).
-        let (tx, rx) = runtime::unbounded_channel();
+        let (tx, rx) = runtime::channel(DEFAULT_MAILBOX_CAPACITY);
         let addr = Addr::new(tx.clone());
         let stop = Arc::new(AtomicBool::new(false));
         let (done_tx, _done_rx) = runtime::oneshot();
@@ -174,7 +174,16 @@ impl SystemHandle {
 
     /// Spawn a top-level actor and return its address.
     pub fn spawn<A: Actor>(&self, actor: A) -> Addr<A> {
-        let (tx, rx) = runtime::unbounded_channel();
+        self.spawn_with_capacity(actor, DEFAULT_MAILBOX_CAPACITY)
+    }
+
+    /// Spawn a top-level actor with a custom mailbox capacity.
+    ///
+    /// Use this when an actor has different backpressure needs than the
+    /// default. Also useful in tests to verify bounded mailbox behavior
+    /// with a small capacity.
+    pub fn spawn_with_capacity<A: Actor>(&self, actor: A, capacity: usize) -> Addr<A> {
+        let (tx, rx) = runtime::channel(capacity);
         let addr = Addr::new(tx.clone());
         let stop = Arc::new(AtomicBool::new(false));
         let (done_tx, done_rx) = runtime::oneshot();
@@ -184,7 +193,9 @@ impl SystemHandle {
         runtime::spawn(mailbox::run_mailbox(actor, ctx, rx, stop.clone(), done_tx));
 
         // Create a stop signal that sets the flag AND sends a no-op envelope
-        // to wake up the mailbox if it's blocked on recv().
+        // to wake up the mailbox if it's blocked on recv(). If the mailbox
+        // is full the noop is dropped, but the stop flag is still set — the
+        // actor will notice it on the next message or idle cycle.
         let signal_stop = {
             let stop = stop.clone();
             let tx = tx;
