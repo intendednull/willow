@@ -16,12 +16,8 @@
     <link data-trunk rel="copy-file" href="icon-512.svg" />
     <link data-trunk rel="copy-file" href="sw.js" />
     <link data-trunk rel="rust" data-wasm-opt="z" />
-    <script>
-        (function() {
-            var theme = localStorage.getItem('willow-theme') || 'dark';
-            document.documentElement.setAttribute('data-theme', theme);
-        })();
-    </script>
+    <link data-trunk rel="copy-file" href="init.js" />
+    <script src="init.js"></script>
 </head>
 <body>
     <div class="loading" id="loading">Loading Willow...</div>

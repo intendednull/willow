@@ -5,6 +5,7 @@
 //! the gossip mesh.
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -100,6 +101,38 @@ async fn main() -> Result<()> {
     let _ = network.subscribe(profiles_topic, vec![]).await?;
 
     info!("bootstrap node subscribed to system topics");
+
+    // ── Bootstrap ID HTTP endpoint ──────────────────────────────────────
+    // Serve the bootstrap node's endpoint ID so web clients can fetch it.
+    let bootstrap_id = Arc::new(identity.endpoint_id().to_string());
+    let id_for_handler = Arc::clone(&bootstrap_id);
+    let bootstrap_listener =
+        tokio::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, args.relay_port + 1))
+            .await
+            .context("failed to bind bootstrap-id HTTP port")?;
+    let bootstrap_port = bootstrap_listener.local_addr()?.port();
+    info!(port = bootstrap_port, "bootstrap-id endpoint listening");
+    tokio::spawn(async move {
+        loop {
+            if let Ok((stream, _)) = bootstrap_listener.accept().await {
+                let id = Arc::clone(&id_for_handler);
+                tokio::spawn(async move {
+                    let (mut reader, mut writer) = stream.into_split();
+                    // Read the request (we don't care about its contents).
+                    let mut buf = [0u8; 1024];
+                    let _ = tokio::io::AsyncReadExt::read(&mut reader, &mut buf).await;
+                    let body = id.as_str();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = tokio::io::AsyncWriteExt::write_all(&mut writer, response.as_bytes()).await;
+                });
+            }
+        }
+    });
+
     info!("relay running — press Ctrl+C to stop");
 
     // Wait for shutdown signal or relay task failure.

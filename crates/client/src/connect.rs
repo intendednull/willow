@@ -30,8 +30,9 @@ impl<N: willow_network::Network> ClientHandle<N> {
 
         // Subscribe to the server ops topic.
         let ops_topic_str = ops::SERVER_OPS_TOPIC;
+        let bootstrap = self.bootstrap_peers.clone();
         if let Ok((sender, events)) = network
-            .subscribe(willow_network::topic_id(ops_topic_str), vec![])
+            .subscribe(willow_network::topic_id(ops_topic_str), bootstrap)
             .await
         {
             self.topics
@@ -43,8 +44,9 @@ impl<N: willow_network::Network> ClientHandle<N> {
 
         // Subscribe to the global profile broadcast topic.
         let profile_topic_str = ops::PROFILE_TOPIC;
+        let bootstrap = self.bootstrap_peers.clone();
         if let Ok((sender, events)) = network
-            .subscribe(willow_network::topic_id(profile_topic_str), vec![])
+            .subscribe(willow_network::topic_id(profile_topic_str), bootstrap)
             .await
         {
             self.topics
@@ -65,8 +67,9 @@ impl<N: willow_network::Network> ClientHandle<N> {
             .await;
 
         for topic_str in channel_topics {
+            let bootstrap = self.bootstrap_peers.clone();
             if let Ok((sender, events)) = network
-                .subscribe(willow_network::topic_id(&topic_str), vec![])
+                .subscribe(willow_network::topic_id(&topic_str), bootstrap)
                 .await
             {
                 self.topics

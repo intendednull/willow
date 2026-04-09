@@ -46,19 +46,18 @@ export async function createServer(page: Page, name: string, displayName?: strin
   await page.waitForTimeout(500);
 }
 
-/** Get the peer ID from the welcome screen or settings. */
+/** Get the full peer ID from the welcome screen or settings. */
 export async function getPeerId(page: Page): Promise<string> {
   // Check welcome screen first.
   const peerIdEl = page.locator('.peer-id-text').first();
   if (await peerIdEl.isVisible()) {
-    return (await peerIdEl.textContent()) || '';
+    return (await peerIdEl.getAttribute('data-full-id')) || (await peerIdEl.textContent()) || '';
   }
   // Try settings.
   await page.locator('text=Settings').click();
   await page.waitForTimeout(300);
   const settingsPeerId = page.locator('.peer-id-text').first();
-  const id = (await settingsPeerId.textContent()) || '';
-  return id;
+  return (await settingsPeerId.getAttribute('data-full-id')) || (await settingsPeerId.textContent()) || '';
 }
 
 /** Send a message in the current channel. */
