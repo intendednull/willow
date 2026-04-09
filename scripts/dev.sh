@@ -75,35 +75,33 @@ fi
 RELAY_IDENTITY="$DEV_DIR/relay.key"
 RELAY_LOG="$LOG_DIR/relay.log"
 
+RELAY_PORT="${WILLOW_RELAY_PORT:-3340}"
+
 echo -e "${BLUE}Starting relay...${NC}"
 cargo run -p willow-relay -- \
-    --tcp-port 9090 \
-    --ws-port 9091 \
+    --relay-port "$RELAY_PORT" \
     --identity "$RELAY_IDENTITY" \
-    --name "Dev Relay" \
     > "$RELAY_LOG" 2>&1 &
 RELAY_PID=$!
 PIDS+=("$RELAY_PID")
 
-# Wait for the relay to log its peer ID (up to 10s)
-RELAY_PEER_ID=""
-for i in $(seq 1 50); do
-    if [ -f "$RELAY_LOG" ]; then
-        RELAY_PEER_ID=$(sed 's/\x1b\[[0-9;]*m//g' "$RELAY_LOG" 2>/dev/null | grep -oP 'peer_id\s*=\s*\K[A-Za-z0-9]+' | head -1 || true)
-        if [ -n "$RELAY_PEER_ID" ]; then
-            break
-        fi
+# Wait for the relay to start (up to 30s — first run may compile)
+RELAY_READY=false
+for i in $(seq 1 150); do
+    if grep -q "relay running" "$RELAY_LOG" 2>/dev/null; then
+        RELAY_READY=true
+        break
     fi
     sleep 0.2
 done
 
-if [ -z "$RELAY_PEER_ID" ]; then
-    echo -e "${RED}Failed to get relay peer ID. Check $RELAY_LOG${NC}"
+if [ "$RELAY_READY" = false ]; then
+    echo -e "${RED}Failed to start relay. Check $RELAY_LOG${NC}"
     exit 1
 fi
 
-RELAY_ADDR="/ip4/127.0.0.1/tcp/9091/ws/p2p/$RELAY_PEER_ID"
-echo -e "${BLUE}Relay started:${NC} $RELAY_ADDR"
+RELAY_URL="http://127.0.0.1:$RELAY_PORT"
+echo -e "${BLUE}Relay started:${NC} $RELAY_URL"
 echo ""
 
 # Tail relay logs with prefix
@@ -118,8 +116,8 @@ REPLAY_IDENTITY="$DEV_DIR/replay.key"
 echo -e "${YELLOW}Starting replay node...${NC}"
 cargo run -p willow-replay -- \
     --identity-path "$REPLAY_IDENTITY" \
-    --relay "$RELAY_ADDR" \
-    --max-events-per-server 1000 \
+    --relay-url "$RELAY_URL" \
+    --max-events-per-author 1000 \
     --sync-interval 10 \
     > "$LOG_DIR/replay.log" 2>&1 &
 PIDS+=($!)
@@ -136,7 +134,7 @@ STORAGE_DB="$DEV_DIR/storage.db"
 echo -e "${MAGENTA}Starting storage node...${NC}"
 cargo run -p willow-storage -- \
     --identity-path "$STORAGE_IDENTITY" \
-    --relay "$RELAY_ADDR" \
+    --relay-url "$RELAY_URL" \
     --db-path "$STORAGE_DB" \
     --sync-interval 15 \
     > "$LOG_DIR/storage.log" 2>&1 &
@@ -161,9 +159,8 @@ echo ""
 echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
 echo -e "${GREEN}  Willow dev stack running${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
-echo -e "  Relay:   ${BLUE}localhost:9090${NC} (TCP) / ${BLUE}localhost:9091${NC} (WS)"
+echo -e "  Relay:   ${BLUE}$RELAY_URL${NC}"
 echo -e "  Web UI:  ${GREEN}http://localhost:8080${NC}"
-echo -e "  Relay ID: ${RELAY_PEER_ID}"
 echo -e "  Logs:    ${LOG_DIR}/"
 echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
 echo -e "  Press ${RED}Ctrl+C${NC} to stop all services"

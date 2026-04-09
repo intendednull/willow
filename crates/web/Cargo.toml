@@ -32,6 +32,7 @@ web-sys = { version = "0.3", features = [
     "AudioContext", "BaseAudioContext", "AudioNode",
     "AnalyserNode", "MediaStreamAudioSourceNode",
     "RtcSignalingState", "RtcRtpTransceiver",
+    "Response", "Headers",
 ] }
 js-sys = "0.3"
 wasm-bindgen-futures = "0.4"

@@ -39,13 +39,49 @@ pub type WebClientHandle = SendWrapper<ClientHandle<willow_network::iroh::IrohNe
 /// Wrapper around `Rc<RefCell<VoiceManager>>` that is `Send` for single-threaded WASM.
 pub type VoiceManagerHandle = SendWrapper<Rc<RefCell<VoiceManager>>>;
 
-/// Default relay address for the deployed Willow relay server.
-pub const DEFAULT_RELAY: &str =
-    "/dns4/willow.intendednull.com/tcp/9443/wss/p2p/12D3KooWMBmUF1rHYG5CneKi8JZfKdMAciJd4oCgknTJkbwCUurd";
+/// Default relay URL for the deployed Willow relay server.
+pub const DEFAULT_RELAY_URL: &str = "https://willow.intendednull.com:9443";
+
+/// Resolve the relay URL at runtime: checks `window.__WILLOW_RELAY_URL`,
+/// then falls back to the compiled-in default.
+fn resolve_relay_url() -> String {
+    if let Ok(val) = js_sys::eval("window.__WILLOW_RELAY_URL") {
+        if let Some(s) = val.as_string() {
+            if !s.is_empty() {
+                return s;
+            }
+        }
+    }
+    DEFAULT_RELAY_URL.to_string()
+}
+
+/// Fetch the bootstrap node's endpoint ID from the relay's companion port.
+/// Returns `None` on any failure (network error, parse error, etc.).
+async fn fetch_bootstrap_id(relay_url: &str) -> Option<willow_identity::EndpointId> {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+
+    // The bootstrap-id endpoint runs on relay_port + 1.
+    let url = relay_url
+        .replace(":3340", ":3341")
+        .replace(":9443", ":9444");
+    let bootstrap_url = format!("{url}/bootstrap-id");
+
+    let window = web_sys::window()?;
+    let resp_value = JsFuture::from(window.fetch_with_str(&bootstrap_url))
+        .await
+        .ok()?;
+    let resp: web_sys::Response = resp_value.dyn_into().ok()?;
+    let text_promise = resp.text().ok()?;
+    let text_value = JsFuture::from(text_promise).await.ok()?;
+    let text = text_value.as_string()?;
+    text.trim().parse::<willow_identity::EndpointId>().ok()
+}
 
 fn new_client() -> WebClientHandle {
+    let relay_url = resolve_relay_url();
     let config = ClientConfig {
-        relay_addr: Some(DEFAULT_RELAY.to_string()),
+        relay_addr: Some(relay_url),
         ..ClientConfig::default()
     };
     let (handle, _event_loop) = ClientHandle::<willow_network::iroh::IrohNetwork>::new(config);
@@ -205,10 +241,33 @@ pub fn App() -> impl IntoView {
         // and then processes the resulting ClientEvent stream.
         wasm_bindgen_futures::spawn_local(async move {
             // Build the iroh network configuration from our identity.
+            let relay_url = resolve_relay_url();
+            let parsed_relay = relay_url
+                .parse::<willow_network::iroh::RelayUrl>()
+                .ok();
+            if parsed_relay.is_none() {
+                tracing::warn!(url = %relay_url, "failed to parse relay URL");
+            }
+
+            // Fetch the bootstrap node's endpoint ID from the relay.
+            let bootstrap_peers = match fetch_bootstrap_id(&relay_url).await {
+                Some(id) => {
+                    tracing::info!(%id, "fetched bootstrap peer from relay");
+                    vec![id]
+                }
+                None => {
+                    tracing::warn!("could not fetch bootstrap peer ID from relay");
+                    vec![]
+                }
+            };
+
+            // Set bootstrap peers on the client handle so topic subscriptions use them.
+            handle_for_connect.bootstrap_peers = bootstrap_peers.clone();
+
             let iroh_config = willow_network::iroh::Config {
                 secret_key: handle_for_connect.identity().secret_key().clone(),
-                relay_url: None,
-                bootstrap_peers: vec![],
+                relay_url: parsed_relay,
+                bootstrap_peers,
                 mdns: false,
             };
 

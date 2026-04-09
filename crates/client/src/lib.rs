@@ -127,6 +127,8 @@ pub struct ClientConfig {
     pub display_name: Option<String>,
     /// Whether to persist state to disk. Defaults to `true`.
     pub persistence: bool,
+    /// Bootstrap peer endpoint IDs for gossip topic discovery.
+    pub bootstrap_peers: Vec<willow_identity::EndpointId>,
 }
 
 impl Default for ClientConfig {
@@ -135,6 +137,7 @@ impl Default for ClientConfig {
             relay_addr: None,
             display_name: None,
             persistence: true,
+            bootstrap_peers: vec![],
         }
     }
 }
@@ -179,6 +182,8 @@ pub struct ClientHandle<N: willow_network::Network> {
     pub(crate) persistence_enabled: bool,
     /// Active join links (rarely modified, shared across tasks).
     pub(crate) join_links: Arc<std::sync::Mutex<Vec<ops::JoinLink>>>,
+    /// Bootstrap peers for gossip topic subscriptions.
+    pub bootstrap_peers: Vec<willow_identity::EndpointId>,
     /// The per-author Merkle-DAG actor — source of truth for all events.
     pub(crate) dag_addr: willow_actor::Addr<willow_actor::StateActor<state_actors::DagState>>,
 
@@ -206,6 +211,7 @@ impl<N: willow_network::Network> Clone for ClientHandle<N> {
             persistence_addr: self.persistence_addr.clone(),
             persistence_enabled: self.persistence_enabled,
             join_links: Arc::clone(&self.join_links),
+            bootstrap_peers: self.bootstrap_peers.clone(),
             dag_addr: self.dag_addr.clone(),
             view_handle: self.view_handle.clone(),
             mutation_handle: self.mutation_handle.clone(),
@@ -603,6 +609,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             persistence_addr,
             persistence_enabled,
             join_links,
+            bootstrap_peers: config.bootstrap_peers,
             dag_addr: dag_addr.clone(),
             view_handle,
             mutation_handle,
@@ -905,6 +912,7 @@ pub fn test_client() -> (
         persistence_addr,
         persistence_enabled: false,
         join_links,
+        bootstrap_peers: vec![],
         dag_addr: dag_addr.clone(),
         view_handle,
         mutation_handle,

@@ -29,7 +29,7 @@ pub fn WelcomeScreen(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Into
                         "Share this with a server owner so they can invite you."
                     </p>
                     <div class="welcome-peer-id">
-                        <code class="peer-id-text">{peer_id_short}</code>
+                        <code class="peer-id-text" data-full-id={peer_id.clone()}>{peer_id_short}</code>
                         <button
                             class="btn btn-sm"
                             on:click={
