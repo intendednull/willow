@@ -22,7 +22,6 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 futures-lite = "2"
-bs58 = "0.5"
 
 # iroh-blobs pulls in bao-tree → tokio net (mio) which doesn't compile
 # on WASM. Gate as native-only; use BlobHash wrapper for cross-platform.
