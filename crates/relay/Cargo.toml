@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 willow-identity = { path = "../identity" }
 willow-network = { path = "../network" }
+willow-common = { path = "../common" }
 
 iroh = { workspace = true }
 iroh-base = { workspace = true }

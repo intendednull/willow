@@ -69,6 +69,12 @@ pub enum WireMessage {
         target_peer: EndpointId,
         reason: String,
     },
+    /// Announce channel topics this peer is subscribed to, so the relay
+    /// can dynamically subscribe and serve as bootstrap for those topics.
+    TopicAnnounce {
+        /// Topic name strings (e.g. "{server_id}/{channel_name}").
+        topics: Vec<String>,
+    },
 }
 
 /// WebRTC signaling payload for voice chat negotiation.

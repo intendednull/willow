@@ -100,22 +100,36 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Parse relay address: try multiaddr first, then plain URL.
+    let (relay_url, bootstrap_peers) = if let Some(ref relay_str) = cli.relay {
+        if let Ok((url, id)) = willow_network::iroh::parse_relay_multiaddr(relay_str) {
+            (Some(url), vec![id])
+        } else if let Ok(url) = relay_str.parse::<RelayUrl>() {
+            (Some(url), vec![])
+        } else {
+            tracing::warn!(relay = %relay_str, "invalid relay address");
+            (None, vec![])
+        }
+    } else {
+        (None, vec![])
+    };
+
     // Build client.
     let config = ClientConfig {
         relay_addr: cli.relay.clone(),
         display_name: Some(cli.name.clone()),
         persistence: cli.persist,
+        bootstrap_peers: bootstrap_peers.clone(),
     };
 
     let (mut client, _event_loop) = ClientHandle::<IrohNetwork>::new(config);
 
     // Connect to network if relay specified.
-    if let Some(ref relay_url) = cli.relay {
-        let relay: RelayUrl = relay_url.parse().expect("invalid relay URL");
+    if let Some(relay) = relay_url {
         let iroh_config = IrohConfig {
             secret_key: identity.secret_key().clone(),
             relay_url: Some(relay),
-            bootstrap_peers: vec![],
+            bootstrap_peers,
             mdns: false,
         };
         let network = IrohNetwork::new(iroh_config).await?;

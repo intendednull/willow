@@ -389,5 +389,7 @@ async fn process_received_message<T: TopicHandle>(
                         }));
             }
         }
+        // TopicAnnounce is consumed by the relay; clients ignore it.
+        crate::ops::WireMessage::TopicAnnounce { .. } => {}
     }
 }
