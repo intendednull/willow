@@ -105,6 +105,7 @@ async fn main() -> anyhow::Result<()> {
         relay_addr: cli.relay.clone(),
         display_name: Some(cli.name.clone()),
         persistence: cli.persist,
+        bootstrap_peers: vec![],
     };
 
     let (mut client, _event_loop) = ClientHandle::<IrohNetwork>::new(config);

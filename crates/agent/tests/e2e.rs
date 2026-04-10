@@ -7,12 +7,10 @@
 //! with a shared `MemHub`.
 
 use std::sync::Arc;
-use willow_client::{test_client, ClientHandle};
-use willow_network::mem::{MemHub, MemNetwork};
-use willow_state;
-
 use willow_agent::server::WillowMcpServer;
 use willow_agent::tools::WillowToolRouter;
+use willow_client::{test_client, ClientHandle};
+use willow_network::mem::{MemHub, MemNetwork};
 
 /// Helper to create a test MCP server.
 fn test_mcp_server() -> (WillowMcpServer<MemNetwork>, ClientHandle<MemNetwork>) {

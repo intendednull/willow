@@ -1457,7 +1457,7 @@ async fn sidebar_open_class_toggles() {
 async fn consecutive_messages_grouped() {
     // When multiple messages come from the same author in a row, only the
     // first should show the `.meta` header; subsequent ones get class `grouped`.
-    let msgs = vec![
+    let msgs = [
         make_msg("Alice", "Hello!", 1000),
         make_msg("Alice", "How are you?", 2000),
         make_msg("Bob", "I'm good", 3000),
@@ -2785,7 +2785,7 @@ async fn pinned_panel_has_jump_buttons() {
     let jump_btn = query(&container, ".pinned-jump");
     assert!(jump_btn.is_some(), "jump button should exist");
     assert!(
-        text(&jump_btn.as_ref().unwrap()).contains("Jump"),
+        text(jump_btn.as_ref().unwrap()).contains("Jump"),
         "jump button should say 'Jump'"
     );
 
@@ -3177,7 +3177,7 @@ async fn messages_with_time_gap_show_separate_headers() {
     let msg1 = make_msg("Alice", "first", now - 600_000); // 10 min ago
     let msg2 = make_msg("Alice", "second", now); // now
 
-    let msgs = vec![msg1, msg2];
+    let msgs = [msg1, msg2];
 
     let container = mount_test(move || {
         let views: Vec<_> = msgs
@@ -3241,7 +3241,7 @@ async fn consecutive_messages_within_gap_are_grouped() {
     let msg1 = make_msg("Alice", "first", now - 1000); // 1 sec ago
     let msg2 = make_msg("Alice", "second", now); // now
 
-    let msgs = vec![msg1, msg2];
+    let msgs = [msg1, msg2];
 
     let container = mount_test(move || {
         let views: Vec<_> = msgs
@@ -3300,7 +3300,7 @@ async fn different_authors_never_grouped() {
     let msg1 = make_msg("Alice", "hello", now - 1000);
     let msg2 = make_msg("Bob", "hi", now);
 
-    let msgs = vec![msg1, msg2];
+    let msgs = [msg1, msg2];
 
     let container = mount_test(move || {
         let views: Vec<_> = msgs

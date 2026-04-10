@@ -445,10 +445,12 @@ mod tests {
         addr.ask(Input::<RecordingLight>(())).await.unwrap();
         addr.ask(Input::<RecordingLight>(())).await.unwrap();
 
-        let recorded = transitions.lock().unwrap();
-        assert_eq!(recorded.len(), 2);
-        assert_eq!(recorded[0], (Light::Red, Light::Green));
-        assert_eq!(recorded[1], (Light::Green, Light::Yellow));
+        {
+            let recorded = transitions.lock().unwrap();
+            assert_eq!(recorded.len(), 2);
+            assert_eq!(recorded[0], (Light::Red, Light::Green));
+            assert_eq!(recorded[1], (Light::Green, Light::Yellow));
+        }
 
         system.shutdown().await;
     }

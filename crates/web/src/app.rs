@@ -242,9 +242,7 @@ pub fn App() -> impl IntoView {
         wasm_bindgen_futures::spawn_local(async move {
             // Build the iroh network configuration from our identity.
             let relay_url = resolve_relay_url();
-            let parsed_relay = relay_url
-                .parse::<willow_network::iroh::RelayUrl>()
-                .ok();
+            let parsed_relay = relay_url.parse::<willow_network::iroh::RelayUrl>().ok();
             if parsed_relay.is_none() {
                 tracing::warn!(url = %relay_url, "failed to parse relay URL");
             }
