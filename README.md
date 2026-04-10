@@ -58,6 +58,54 @@ Leptos Web UI  or  Bevy Desktop UI
 | `willow-web` | Leptos web UI |
 | `willow-app` | Bevy desktop UI |
 
+### State Management
+
+All shared state is **event-sourced** — derived deterministically from a
+per-author Merkle-DAG of signed events. There is no mutable database; the
+event log *is* the data.
+
+```
+  Author A          Author B          Author C
+     │                  │                  │
+  [e1]─→[e2]─→[e3]  [e1]─→[e2]        [e1]
+     │                  │                  │
+     └──────────────────┴──────────────────┘
+                        │
+              topological sort + replay
+                        │
+                   ServerState
+            (channels, roles, members,
+             messages, profiles, keys)
+```
+
+**How it works:**
+
+- **Events** are content-addressed (SHA-256), signed by their author, and
+  linked into a DAG via sequence numbers and dependency pointers.
+- **`ServerState`** is the materialized view — rebuilt deterministically by
+  topologically sorting all events and replaying them through `materialize()`.
+  Peers converge to identical state when they have the same DAG.
+- **22 `EventKind` variants** cover server structure (create/delete/rename
+  channels and roles), chat (messages, edits, deletes, reactions, pins),
+  permissions (grant/revoke), identity (profiles), encryption (key rotation),
+  and governance (proposals and votes).
+- **Sync protocol** uses compact `HeadsSummary` (author → seq + hash) so peers
+  can efficiently request only missing events. Full `Snapshot` bootstraps
+  far-behind peers.
+
+**Trust & permissions:**
+
+- Admin status is granted only through governance votes (`Propose` +
+  `Vote`), never by direct event — protecting against single-actor escalation.
+- Non-admin permissions (ManageChannels, ManageRoles, SendMessages,
+  CreateInvite, SyncProvider) can be granted directly by admins.
+- All permission checks are enforced deterministically during event replay.
+
+**Client layer** (`willow-client`): `ClientHandle` wraps the pure state
+machine with actor-based state management, reactive UI views, a mutations
+API, and persistence — bridging the deterministic core with async networking
+and pub/sub event distribution.
+
 ## Getting Started
 
 ### Prerequisites
