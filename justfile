@@ -31,10 +31,6 @@ test-state:
 test-client:
     cargo test -p willow-client
 
-# Run the Bevy app headless + integration tests
-test-app:
-    cargo test -p willow-app
-
 # Run actor framework tests
 test-actor:
     cargo test -p willow-actor
@@ -54,14 +50,6 @@ test-workers:
 # Build worker node binaries
 build-workers:
     cargo build --release -p willow-replay -p willow-storage
-
-# Run the scaling / performance tests with output
-test-scale:
-    cargo test -p willow-app --test peer_scale -- --nocapture
-
-# Run the end-to-end flow integration tests
-test-e2e:
-    cargo test -p willow-app --test e2e_flow -- --nocapture
 
 # Run in-browser Leptos component tests (requires Firefox + geckodriver)
 test-browser:
@@ -118,18 +106,6 @@ check-native:
 check-wasm:
     cargo check --target wasm32-unknown-unknown -p willow-identity -p willow-state -p willow-channel -p willow-messaging -p willow-crypto -p willow-transport -p willow-common -p willow-network -p willow-client -p willow-web
 
-# Build the native desktop app
-build:
-    cargo build -p willow-app
-
-# Build the native desktop app (release)
-build-release:
-    cargo build --release -p willow-app
-
-# Run the native desktop app
-run:
-    cargo run -p willow-app
-
 # Build the Leptos web app (WASM)
 build-web:
     cd crates/web && trunk build --release
@@ -137,19 +113,6 @@ build-web:
 # Serve the Leptos web app locally
 serve-web:
     cd crates/web && trunk serve
-
-# Build the legacy Bevy WASM app
-build-wasm:
-    cargo build --release --target wasm32-unknown-unknown -p willow-app
-    wasm-bindgen \
-        --out-dir web/pkg \
-        --target web \
-        --no-typescript \
-        target/wasm32-unknown-unknown/release/willow-app.wasm
-
-# Build and serve the legacy Bevy WASM app on localhost:8080
-serve-wasm: build-wasm
-    python3 -m http.server 8080 --directory web
 
 # Build the relay server
 build-relay:
@@ -197,4 +160,4 @@ dev-clean:
 # Clean build artifacts
 clean:
     cargo clean
-    rm -rf web/pkg crates/web/dist
+    rm -rf crates/web/dist

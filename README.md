@@ -11,29 +11,31 @@ accounts, no middlemen. End-to-end encrypted by default.
 - **File sharing** — content-addressed chunking, transferred peer-to-peer
 - **Servers & permissions** — roles, fine-grained permissions, invites
 - **Event-sourced state** — deterministic, mergeable, offline-friendly
-- **Runs everywhere** — native desktop (Bevy) and web browser (Leptos/WASM)
+- **Runs in the browser** — Leptos + WASM web UI
 
 ## Architecture
 
 ```
-Leptos Web UI  or  Bevy Desktop UI
-        │                │
-        └──── Client Library (willow-client) ────┐
-                     │                            │
-              State Machine              Network Layer
-           (willow-state, pure)       (willow-network, iroh)
-                     │                            │
-              ┌──────┴──────┐              ┌──────┴──────┐
-              │  Channels   │              │   Relay     │
-              │  Messaging  │              │   Workers   │
-              │  Crypto     │              │  (replay,   │
-              │  Identity   │              │   storage)  │
-              └─────────────┘              └─────────────┘
-                                                 │
-                                           ┌─────┴─────┐
-                                           │   Actor   │
-                                           │ Framework │
-                                           └───────────┘
+            Leptos Web UI (willow-web)
+                       │
+              Client Library (willow-client)
+                       │
+              ┌────────┴─────────┐
+              │                  │
+       State Machine       Network Layer
+    (willow-state, pure)  (willow-network, iroh)
+              │                  │
+       ┌──────┴──────┐     ┌─────┴─────┐
+       │  Channels   │     │   Relay   │
+       │  Messaging  │     │  Workers  │
+       │  Crypto     │     │ (replay,  │
+       │  Identity   │     │  storage) │
+       └─────────────┘     └───────────┘
+                                 │
+                           ┌─────┴─────┐
+                           │   Actor   │
+                           │ Framework │
+                           └───────────┘
 ```
 
 **Crates:**
@@ -56,7 +58,6 @@ Leptos Web UI  or  Bevy Desktop UI
 | `willow-storage` | Archival disk-backed history worker (SQLite) |
 | `willow-agent` | MCP server exposing ClientHandle to AI agents |
 | `willow-web` | Leptos web UI |
-| `willow-app` | Bevy desktop UI |
 
 ### State Management
 
@@ -148,7 +149,6 @@ just dev-clean   # reset all local dev data
 ```bash
 just relay          # relay server only
 just serve-web      # web UI only (trunk serve)
-just run            # native desktop app
 ```
 
 ### Docker
@@ -162,16 +162,14 @@ just docker-logs    # tail all logs
 
 ## Testing
 
-Willow has 420+ tests across multiple tiers:
+Willow has a multi-tier test suite:
 
 ```bash
 just check          # fmt + clippy + test + WASM check (run before committing)
 just test           # all cargo tests
-just test-state     # pure state machine (64 tests, instant)
-just test-client    # client library (93 tests)
-just test-app       # Bevy headless + network integration (113 tests)
-just test-relay     # relay history sync (3 tests)
-just test-scale     # scaling/performance tests
+just test-state     # pure state machine (instant)
+just test-client    # client library
+just test-relay     # relay history sync
 just test-browser   # in-browser Leptos tests (requires Firefox + geckodriver)
 ```
 

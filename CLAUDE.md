@@ -3,7 +3,7 @@
 ## Project Overview
 
 Willow is a P2P Discord replacement built in Rust. It uses iroh for
-networking, Bevy for the desktop UI, and Ed25519 cryptography for identity.
+networking, Leptos for the web UI, and Ed25519 cryptography for identity.
 
 ## Repository Structure
 
@@ -27,33 +27,10 @@ crates/
 │       ├── mem.rs      — MemNetwork test double (test-utils feature)
 │       └── topics.rs   — TopicId registry (blake3 hashing)
 ├── relay/       — Relay server for bridging TCP and WebSocket peers (willow-relay)
-├── web/         — Leptos web UI application (willow-web)
-└── app/         — Bevy desktop UI application (willow-app)
-    └── src/
-        ├── main.rs          — App entry point
-        ├── lib.rs           — Module exports
-        ├── base64.rs        — Shared base64 encode/decode
-        ├── clipboard.rs     — Cross-platform clipboard (arboard / web_sys)
-        ├── emoji.rs         — Shortcode registry and expansion
-        ├── file_manager.rs  — File sharing and chunk management
-        ├── invite.rs        — Secure per-recipient invite codes
-        ├── network_bridge.rs — Async/sync bridge (tokio ↔ Bevy)
-        ├── server_sync.rs   — Server state sync: StampedOp, SyncMessage, pack/unpack
-        ├── storage.rs       — Cross-platform persistence (filesystem / localStorage)
-        ├── theme.rs         — Discord-style dark color palette
-        ├── tests.rs         — Headless UI tests
-        └── ui/
-            ├── mod.rs        — Plugin registration, helpers
-            ├── resources.rs  — ECS resources (ChatState, etc.)
-            ├── components.rs — Marker components
-            ├── constants.rs  — Shared placeholder strings
-            ├── layout.rs     — Entity spawning
-            ├── init.rs       — Server init, channel subscription
-            ├── input.rs      — Keyboard handling, message sending
-            ├── chat.rs       — Network events, message rendering
-            ├── channels.rs   — Channel/role/member management, invites, trust
-            ├── settings.rs   — Settings view systems
-            └── files.rs      — File picker systems
+└── web/         — Leptos web UI application (willow-web)
+
+Note: the Bevy desktop app (`crates/app`) has been removed. It may be
+re-added later but is not part of the current workspace.
 
 docs/superpowers/
 ├── specs/   — Design specs for new features and architecture changes
@@ -71,16 +48,12 @@ just test-browser   # run in-browser Leptos tests (needs Firefox + geckodriver)
 just test-all       # run ALL tests including browser
 just test-state     # test the pure state machine
 just test-client    # test the client library
-just test-app       # test the Bevy app (headless + integration)
 just test-relay     # test relay history sync
-just test-scale     # run scaling/performance tests with output
 just test-crate X   # test a specific crate
 just check-wasm     # verify WASM compilation
-just build          # build native desktop app
 just build-web      # build Leptos web app (crates/web via trunk)
 just serve-web      # serve Leptos web app locally
 just build-relay    # build relay server (release)
-just run            # run native desktop app
 just relay          # run the relay server
 just dev            # start full local dev stack (relay + workers + web)
 just dev-quick      # same as dev, but skip cargo build
@@ -124,48 +97,36 @@ When adding new code, ensure WASM compatibility:
 - Use `#[cfg(target_arch = "wasm32")]` / `#[cfg(not(target_arch = "wasm32"))]`
   for platform-specific code paths (storage backends, timers, etc.)
 
-### Testing Strategy (420+ tests)
+### Testing Strategy
 
 Willow uses a multi-tier testing strategy:
 
-**1. Pure state machine tests** (`just test-state`, 64 tests):
+**1. Pure state machine tests** (`just test-state`):
 - Determinism, idempotency, permission enforcement
 - Event replay from genesis, merge convergence
 - Stress: 1000 messages, 100-event replay, 3-way merge
 - No I/O, no networking — tests run instantly
 
-**2. Client library tests** (`just test-client`, 93 tests):
+**2. Client library tests** (`just test-client`):
 - Client API methods (send, create channel, trust, kick)
 - Event store persistence, bridge conversion
 - State accessors, display name resolution
 
-**3. Bevy headless UI tests** (`just test-app`, 99 tests):
-- Keyboard input, message sending, chat state
-- Settings, profiles, invites, permissions
-- Uses `test_app()` with `MinimalPlugins` — no window/GPU
-
-**4. Network integration tests** (`just test-app`, 14 tests):
-- Real iroh nodes on localhost
-- Message round-trips, channel isolation, encryption
-- Server op sync, file chunks, 3-node propagation
-
-**5. Scaling tests** (`just test-scale`, 7 tests):
-- 5/10/20 peer connections (~150ms/peer)
-- Message flood delivery (100% at 10 peers)
-- Event throughput (532k events/sec)
-- Merge throughput (1000 events in 2.6ms)
-
-**6. Relay history tests** (`just test-relay`, 3 tests):
+**3. Relay history tests** (`just test-relay`):
 - Relay stores events, serves to new peers
 - Multi-peer history aggregation
 - Offline peer recovery via relay
 
-**7. In-browser Leptos tests** (`just test-browser`, 39 tests):
+**4. In-browser Leptos tests** (`just test-browser`):
 - Real DOM rendering in headless Firefox via wasm-pack
 - Signal reactivity, event handling, Effects
 - All components: sidebar, messages, input, channels,
   settings, member list, server list, connection status
 - Requires: Firefox + geckodriver + wasm-pack
+
+**5. Playwright E2E tests** (`just test-e2e-ui`, `just test-e2e-sync`):
+- Multi-peer sync, permissions, mobile UI
+- Real browser interaction against the Leptos web app
 
 ### Which Test to Write
 
@@ -183,7 +144,6 @@ interaction.
 | Multi-peer behavior (sync, messaging) | Playwright E2E | `e2e/multi-peer-sync.spec.ts` | `just test-e2e-sync` |
 | Permissions (trust, kick, roles) | Playwright E2E | `e2e/permissions.spec.ts` | `just test-e2e-perms` |
 | Mobile UI (touch, sidebar, action sheet) | Playwright E2E | `e2e/mobile.spec.ts` or `e2e/multi-peer-mobile.spec.ts` | `just test-e2e-ui` |
-| Network protocol (iroh, relay) | Network integration | `crates/app/tests/e2e_flow.rs` | `just test-app` |
 
 ### Adding Tests
 
@@ -196,11 +156,6 @@ interaction.
 1. Add to `crates/client/src/lib.rs` test module
 2. Use `test_client()` helper — creates ClientHandle without networking
 3. `cargo test -p willow-client`
-
-**Bevy headless test**:
-1. Add to `crates/app/src/tests.rs`
-2. Use `test_app()` for headless App + command receiver
-3. `cargo test -p willow-app --lib`
 
 **Browser test**:
 1. Add to `crates/web/tests/browser.rs`
@@ -229,58 +184,42 @@ interaction.
 ### Dependency Graph
 
 ```
-willow-app → willow-crypto   → willow-identity → willow-transport
-           → willow-network  → willow-identity (iroh, iroh-gossip, iroh-blobs)
-           → willow-channel  → willow-crypto
-                             → willow-identity
+willow-web → willow-client  → willow-state
+                            → willow-network (iroh, iroh-gossip, iroh-blobs)
+           → willow-crypto  → willow-identity → willow-transport
+           → willow-channel → willow-crypto
+                            → willow-identity
            → willow-messaging → willow-identity
                               (defines SealedContent used by willow-crypto)
 ```
 
-### Async / Sync Boundary
+### Async Model
 
 - **Network layer**: Fully async using iroh's QUIC transport with gossip protocol.
   Runs on a background thread (native) or via spawn_local (WASM).
-- **Bevy app**: Synchronous ECS. Communicates with the network via `std::sync::mpsc` channels.
-- **Bridge**: `network_bridge.rs` (Bevy app specific, not yet migrated) converts
-  between the async iroh network and the synchronous Bevy ECS.
-- **Deferred startup**: Network doesn't start until `ConnectCommand` is sent,
-  allowing the UI to configure relay addresses first.
+- **Client library**: Async API. Consumers drive it from their own runtime
+  (tokio on native, wasm-bindgen futures in the browser).
+- **Deferred startup**: Network doesn't start until the client explicitly
+  connects, allowing the UI to configure relay addresses first.
 
 ### Message Flow
 
-1. User types in Bevy UI → `Message::text()` creates cleartext message
+1. User types in the UI → `Message::text()` creates cleartext message
 2. If channel key exists → `seal_content()` encrypts Content → `Content::Encrypted`
 3. `pack_wire()` signs with Ed25519 → `TopicHandle::broadcast()` sends to gossip
 4. iroh gossip delivers to subscribed peers
 5. Listener task receives `GossipEvent::Received` → `unpack_wire()` verifies
-6. Bridge forwards to Bevy → `NetworkBridgeEvent::MessageReceived`
+6. Client forwards to the UI via its event stream
 7. `identity::unpack()` verifies signature → `unpack_envelope()`
-9. If `Content::Encrypted`, `open_content()` decrypts
-10. Emoji shortcodes expanded → message rendered in UI
+8. If `Content::Encrypted`, `open_content()` decrypts
+9. Message rendered in the UI
 
-### Server State Sync
+### Event-Based Server State Sync
 
 Server mutations (channels, roles, permissions, kicks) are synchronized
-via `StampedOp` over iroh gossip topic `_willow_server_ops`. Operations
-are broadcast and received through the `Network` trait.
-
-- **StampedOp**: wraps a `ServerOp` with UUID (dedup), HLC timestamp
-  (ordering), and author PeerId (verified against Ed25519 signature).
-- **OpLog**: Bevy resource tracking all ops, seen IDs, and trusted peers.
-  Persisted to disk via `storage::save_op_log`.
-- **Trust model**: server owner is implicitly trusted. Other peers must
-  be explicitly trusted via `TrustPeer` ops. Only ops from trusted peers
-  are applied; untrusted ops are rejected but their IDs are recorded.
-- **SyncMessage**: wire-level enum wrapping `Op(StampedOp)`,
-  `SyncRequest { latest_hlc }`, and `SyncBatch { ops }` for catch-up.
-- **Catch-up**: on connect, peers broadcast `SyncRequest` with their
-  latest HLC. Trusted peers respond with `SyncBatch` of newer ops.
-  Ops are sorted by HLC and deduplicated before applying.
-- **Idempotent ops**: `SetPermission { granted: bool }` instead of
-  toggle. `CreateChannel` and `CreateRole` carry deterministic IDs.
-- **Key rotation on kick**: `KickMember` op carries encrypted rotated
-  channel keys per remaining member (X25519 DH + ChaCha20-Poly1305).
+via the event-sourced `willow-state` machine over iroh gossip. Events
+are broadcast and received through the `Network` trait and applied
+deterministically via `apply()`.
 
 ### Event-Sourced State (willow-state)
 
@@ -327,7 +266,7 @@ consistent ordering even when system clocks drift.
 1. Add a variant to `Content` in `crates/messaging/src/lib.rs`
 2. Add a constructor method on `Message`
 3. Add tests
-4. Handle the new variant in the app's network event handler (`ui/chat.rs`)
+4. Handle the new variant in the web UI's message rendering
 
 ### Adding a new permission
 
@@ -342,24 +281,9 @@ consistent ordering even when system clocks drift.
 3. Add a test double in `crates/network/src/mem.rs`
 4. Use the trait in client/worker code
 
-### Adding a new UI system
+### Adding a new EventKind
 
-1. Add the system function to the appropriate `ui/` module
-2. Register it in `ui/mod.rs` under the correct `add_systems()` group
-3. If it needs new resources, add to `ui/resources.rs` and register in `build()`
-4. If it needs new components, add to `ui/components.rs`
-5. Add a test in `tests.rs` using `test_app()`
-
-### Adding a new server operation
-
-1. Add a variant to `ServerOp` in `crates/app/src/server_sync.rs`
-2. Handle it in `handle_server_op()` in `crates/app/src/ui/chat.rs`
-3. Broadcast it from the appropriate UI handler in `crates/app/src/ui/channels.rs`
-   using `broadcast_op()` to stamp, record, persist, and send
-4. Add tests for dedup, trust rejection, and application
-
-### Adding a custom emoji
-
-1. Call `EmojiRegistry::add("shortcode", "replacement")` on the `EmojiRegistryRes`
-2. Users type `:shortcode:` in messages — expanded during rendering
-3. Built-in emoji: edit `emoji.rs` `builtin()` function
+1. Add a variant to `EventKind` in `crates/state/src/lib.rs`
+2. Handle it in `apply()` with the appropriate permission checks
+3. Expose a method on `Client` in `crates/client/src/lib.rs` to emit it
+4. Add state-machine tests for dedup, permission rejection, and application

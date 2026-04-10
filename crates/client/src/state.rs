@@ -1,7 +1,7 @@
 //! # Client State
 //!
-//! Pure state types for the Willow client, extracted from the Bevy UI resources.
-//! These types hold the client's runtime state without any UI framework dependency.
+//! Pure state types for the Willow client. These types hold the client's
+//! runtime state without any UI framework dependency.
 
 use std::collections::HashMap;
 
