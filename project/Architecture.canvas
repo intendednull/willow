@@ -2,8 +2,6 @@
 	"nodes":[
 		{"id":"title","type":"text","text":"# Willow Architecture\n\nP2P encrypted chat — native + WASM\n236+ tests","x":-200,"y":-700,"width":400,"height":80},
 
-		{"id":"app","type":"text","text":"## willow-app (Bevy 0.18)\n- 10 UI modules (chat, settings, channels, files)\n- E2E encrypted send/receive pipeline\n- Ed25519 message signing/verification\n- Emoji shortcodes (100+ built-in)\n- Reactions, search (Ctrl+F)\n- File sharing with native picker\n- Secure per-recipient invites\n- SQLite persistence (native)\n- localStorage persistence (WASM)\n- Discord-style dark theme","x":-200,"y":-580,"width":400,"height":230},
-
 		{"id":"crypto","type":"text","text":"## willow-crypto\n- ChaCha20-Poly1305 (AEAD)\n- X25519 key exchange\n- HKDF-SHA256 key derivation\n- KeyRatchet (forward secrecy)\n- seal/open content\n- Channel key wrapping","x":-620,"y":-300,"width":340,"height":140},
 
 		{"id":"channel","type":"text","text":"## willow-channel\n- Server / Channel / Role / Member\n- 12 permission types\n- Invite with encrypted keys\n- Key rotation on member removal\n- Channel create/delete","x":280,"y":-300,"width":340,"height":140},
@@ -26,9 +24,6 @@
 		{"id":"flow","type":"text","text":"## Message Flow\n1. Type → Message::text()\n2. seal_content() → Encrypted\n3. pack_envelope() → bytes\n4. identity::pack() → signed\n5. GossipSub publish\n6. Peer receives\n7. Verify Ed25519 signature\n8. unpack_envelope()\n9. open_content() → plaintext\n10. Expand :emoji: shortcodes\n11. Display with reactions","x":280,"y":200,"width":270,"height":210}
 	],
 	"edges":[
-		{"id":"e1","fromNode":"app","fromSide":"left","toNode":"crypto","toSide":"top","label":"encrypt/decrypt"},
-		{"id":"e2","fromNode":"app","fromSide":"right","toNode":"channel","toSide":"top","label":"servers/perms"},
-		{"id":"e3","fromNode":"app","fromSide":"bottom","toNode":"transport","toSide":"top","label":"serialize"},
 		{"id":"e4","fromNode":"crypto","fromSide":"bottom","toNode":"messaging","toSide":"top","label":"Content"},
 		{"id":"e5","fromNode":"crypto","fromSide":"right","toNode":"identity","toSide":"left","label":"X25519"},
 		{"id":"e6","fromNode":"channel","fromSide":"bottom","toNode":"identity","toSide":"top","label":"PeerId"},
@@ -39,7 +34,6 @@
 		{"id":"e11","fromNode":"relay","fromSide":"bottom","toNode":"peer_a","toSide":"top","label":"TCP+Noise"},
 		{"id":"e12","fromNode":"network","fromSide":"right","toNode":"peer_b","toSide":"top","label":"WebSocket"},
 		{"id":"e13","fromNode":"network","fromSide":"left","toNode":"peer_a","toSide":"right","label":"TCP"},
-		{"id":"e14","fromNode":"app","fromSide":"right","toNode":"files","toSide":"top","label":"chunks"},
 		{"id":"e15","fromNode":"network","fromSide":"right","toNode":"files","toSide":"bottom","label":"/willow/chunks/1"}
 	]
 }

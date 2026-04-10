@@ -3,6 +3,10 @@
 **Date**: 2026-03-29
 **Status**: Draft
 
+> **Historical document.** References to a Bevy desktop app are
+> retained for historical context only — that crate has since been
+> removed from the workspace.
+
 ## Overview
 
 Expose the `ClientHandle` API to external agents (AI assistants, bots,

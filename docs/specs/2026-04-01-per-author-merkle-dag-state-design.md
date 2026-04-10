@@ -3,6 +3,10 @@
 **Date**: 2026-04-01
 **Status**: Ready for implementation
 
+> **Historical document.** References to `willow-app` or a Bevy UI are
+> retained for historical context only — that crate has since been
+> removed from the workspace.
+
 ## Problem
 
 The current `willow-state` crate models shared state as a single linear

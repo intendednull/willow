@@ -4,6 +4,10 @@
 **Spec**: `docs/specs/2026-04-01-per-author-merkle-dag-state-design.md`
 **Scope**: Sections 1-4, 7, 11 (core foundation)
 
+> **Historical document.** References to `willow-app` (the Bevy
+> desktop UI) are retained for historical context only — that crate
+> has since been removed from the workspace.
+
 ## Approach
 
 Replace the entire `willow-state` crate contents in place. Same

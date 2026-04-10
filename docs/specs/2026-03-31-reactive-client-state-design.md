@@ -3,6 +3,10 @@
 **Date**: 2026-03-31
 **Status**: Draft
 
+> **Historical document.** References to `crates/app/` (the Bevy
+> desktop UI) are retained for historical context only — that crate
+> has since been removed from the workspace.
+
 ## Problem
 
 The `willow-client` crate manages all runtime state through a single monolithic

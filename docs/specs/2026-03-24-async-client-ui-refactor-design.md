@@ -1,5 +1,9 @@
 # Async Client + UI Refactor Design
 
+> **Historical document.** References to `crates/app/` (the Bevy
+> desktop UI) are retained for historical context only — that crate
+> has since been removed from the workspace.
+
 ## Problem
 
 The Willow web UI has two layers of polling that add latency and waste CPU:

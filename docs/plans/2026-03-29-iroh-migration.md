@@ -1,5 +1,9 @@
 # Iroh Migration Implementation Plan
 
+> **Historical document.** References to `crates/app/` and `willow-app`
+> (the Bevy desktop UI) are retained for historical context only —
+> that crate has since been removed from the workspace.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace libp2p with iroh as Willow's networking layer. Iroh-shaped trait abstraction (`Network`, `TopicHandle`, `TopicEvents`, `BlobStore`) with `IrohNetwork` for production and `MemNetwork` for tests. `EndpointId` replaces `String` for peer identity throughout. Clean break — no backward compatibility.

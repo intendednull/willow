@@ -3,6 +3,10 @@
 **Date**: 2026-03-29
 **Status**: Ready for implementation
 
+> **Historical document.** References to a Bevy desktop app are
+> retained for historical context only — that crate has since been
+> removed from the workspace.
+
 ## Existing Solutions
 
 A survey of existing Rust actor crates was conducted to determine whether
