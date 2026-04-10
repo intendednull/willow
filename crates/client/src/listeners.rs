@@ -396,11 +396,11 @@ async fn process_received_message<T: TopicHandle>(
                         })
                         .await;
                         // Persist.
-                        let _ = ctx.persistence.do_send(
-                            crate::persistence_actor::PersistEvent {
+                        let _ = ctx
+                            .persistence
+                            .do_send(crate::persistence_actor::PersistEvent {
                                 event: event.clone(),
-                            },
-                        );
+                            });
                         // Broadcast to other peers.
                         if let Some(data) = crate::ops::pack_wire(
                             &crate::ops::WireMessage::Event(event),

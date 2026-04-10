@@ -1950,7 +1950,9 @@ fn sync_batch_with_grant_permission_allows_new_peer_to_send() {
         vec![],
         10,
     );
-    alice_state.insert_and_apply(create_channel.clone()).unwrap();
+    alice_state
+        .insert_and_apply(create_channel.clone())
+        .unwrap();
 
     let grant_bob = alice_state.dag().create_event(
         &alice,
