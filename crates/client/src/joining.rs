@@ -6,14 +6,32 @@ impl<N: willow_network::Network> ClientHandle<N> {
         recipient_peer_id: &willow_identity::EndpointId,
     ) -> anyhow::Result<String> {
         let pub_key = invite::endpoint_id_to_ed25519_public(recipient_peer_id);
-        willow_actor::state::select(&self.server_registry_addr, move |reg| {
+        let invite_code = willow_actor::state::select(&self.server_registry_addr, move |reg| {
             let entry = reg
                 .active()
                 .ok_or_else(|| anyhow::anyhow!("no active server"))?;
             invite::generate_invite(&entry.server, &entry.keys, &entry.topic_map, &pub_key)
                 .ok_or_else(|| anyhow::anyhow!("invite generation failed"))
         })
-        .await
+        .await?;
+
+        // Grant SendMessages permission to the joining peer so they can
+        // actually send messages once they accept the invite. Without this,
+        // the joined peer's messages are silently rejected by this (the
+        // inviter's) apply_incremental permission check.
+        if let Ok(grant_event) = self
+            .mutation_handle
+            .build_event(willow_state::EventKind::GrantPermission {
+                peer_id: *recipient_peer_id,
+                permission: willow_state::Permission::SendMessages,
+            })
+            .await
+        {
+            self.mutation_handle.apply_event(&grant_event).await;
+            self.mutation_handle.broadcast_event(&grant_event);
+        }
+
+        Ok(invite_code)
     }
 
     pub async fn accept_invite(&self, code: &str) -> anyhow::Result<()> {
