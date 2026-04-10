@@ -1,6 +1,5 @@
 [workspace]
 members = ["crates/*"]
-exclude = ["crates/app"]
 resolver = "2"
 
 [workspace.package]
@@ -33,9 +32,6 @@ blake3 = "1"
 # Time & IDs
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde", "js"] }
-
-# Game engine / UI
-bevy = "0.18"
 
 # Logging
 tracing = "0.1"

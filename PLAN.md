@@ -60,7 +60,6 @@ A web app where you and your friends can:
 | `willow-client` | UI-agnostic client library, DisplayMessage, server management | Done |
 | `willow-web` | Leptos web UI (primary frontend) | Done |
 | `willow-relay` | Relay server bridging TCP and WebSocket peers | Done |
-| `willow-app` | Bevy desktop UI (legacy, excluded from workspace) | Paused |
 
 ## Roadmap
 
