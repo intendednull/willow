@@ -1019,4 +1019,43 @@ mod tests {
             "server1 should not have server2's messages"
         );
     }
+
+    /// Regression test for issue #99: after `generate_invite`, the inviter's
+    /// own state must grant the recipient `SendMessages` permission. Without
+    /// this, messages from the joining peer are silently rejected by
+    /// `apply_incremental` in the inviter's DAG.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generate_invite_grants_send_permission_to_recipient() {
+        let (alice, _rx) = test_client();
+
+        // A fake recipient identity (stands in for Bob).
+        let bob = willow_identity::Identity::generate();
+        let bob_id = bob.endpoint_id();
+
+        // Before generating the invite, Bob has no permission in Alice's state.
+        let has_before = willow_actor::state::select(&alice.event_state_addr, move |es| {
+            es.has_permission(&bob_id, &willow_state::Permission::SendMessages)
+        })
+        .await;
+        assert!(
+            !has_before,
+            "Bob should not have SendMessages before invite"
+        );
+
+        // Alice generates an invite for Bob.
+        alice.generate_invite(&bob_id).await.unwrap();
+
+        // Give the actor system a tick to process the mutation.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Now Bob should have SendMessages permission in Alice's state.
+        let has_after = willow_actor::state::select(&alice.event_state_addr, move |es| {
+            es.has_permission(&bob_id, &willow_state::Permission::SendMessages)
+        })
+        .await;
+        assert!(
+            has_after,
+            "Bob should have SendMessages after generate_invite"
+        );
+    }
 }

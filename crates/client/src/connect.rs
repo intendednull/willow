@@ -66,17 +66,29 @@ impl<N: willow_network::Network> ClientHandle<N> {
             })
             .await;
 
-        for topic_str in channel_topics {
+        for topic_str in &channel_topics {
             let bootstrap = self.bootstrap_peers.clone();
             if let Ok((sender, events)) = network
-                .subscribe(willow_network::topic_id(&topic_str), bootstrap)
+                .subscribe(willow_network::topic_id(topic_str), bootstrap)
                 .await
             {
                 self.topics
                     .write()
                     .unwrap()
-                    .insert(topic_str, sender.clone());
+                    .insert(topic_str.clone(), sender.clone());
                 listeners::spawn_topic_listener(events, sender, listener_ctx.clone());
+            }
+        }
+
+        // Announce channel topics so the relay can subscribe and serve
+        // as bootstrap for those topics.
+        if !channel_topics.is_empty() {
+            let msg = ops::WireMessage::TopicAnnounce {
+                topics: channel_topics,
+            };
+            if let Some(data) = ops::pack_wire(&msg, &self.identity) {
+                self.mutation_handle
+                    .broadcast_on_topic(ops::SERVER_OPS_TOPIC, data);
             }
         }
 

@@ -6,8 +6,8 @@
 #   ./scripts/dev.sh --skip-build  # skip cargo build step
 #
 # Services started:
-#   - Relay       (TCP 9090, WebSocket 9091)
-#   - Replay node (in-memory, max 1000 events/server)
+#   - Relay       (HTTP on port 3340)
+#   - Replay node (in-memory, max 1000 events/author)
 #   - Storage node (SQLite at .dev/storage.db)
 #   - Web UI      (trunk serve on localhost:8080)
 

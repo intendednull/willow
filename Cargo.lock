@@ -6115,6 +6115,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "willow-common",
  "willow-identity",
  "willow-network",
 ]

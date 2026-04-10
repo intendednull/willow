@@ -364,6 +364,51 @@ async fn process_received_message<T: TopicHandle>(
                     if let Some(data) = crate::ops::pack_wire(&msg, &ctx.identity) {
                         let _ = topic.broadcast(bytes::Bytes::from(data)).await;
                     }
+
+                    // Grant SendMessages permission to the joining peer so
+                    // they can send messages, reactions, etc. This creates
+                    // a signed event in the inviter's DAG and broadcasts it
+                    // so all peers (including the new joiner) learn that
+                    // the new member has send permission.
+                    let identity = ctx.identity.clone();
+                    let granted_peer = peer_id;
+                    let ts = crate::util::current_time_ms();
+                    let grant_event = willow_actor::state::mutate(&ctx.dag, move |ds| {
+                        ds.managed
+                            .create_and_insert(
+                                &identity,
+                                willow_state::EventKind::GrantPermission {
+                                    peer_id: granted_peer,
+                                    permission: willow_state::Permission::SendMessages,
+                                },
+                                ts,
+                            )
+                            .ok()
+                    })
+                    .await;
+                    if let Some(event) = grant_event {
+                        // Sync event_state mirror from the DAG.
+                        let new_state =
+                            willow_actor::state::select(&ctx.dag, |ds| ds.managed.state().clone())
+                                .await;
+                        willow_actor::state::mutate(&ctx.event_state, move |es| {
+                            *es = new_state;
+                        })
+                        .await;
+                        // Persist.
+                        let _ = ctx
+                            .persistence
+                            .do_send(crate::persistence_actor::PersistEvent {
+                                event: event.clone(),
+                            });
+                        // Broadcast to other peers.
+                        if let Some(data) = crate::ops::pack_wire(
+                            &crate::ops::WireMessage::Event(event),
+                            &ctx.identity,
+                        ) {
+                            let _ = topic.broadcast(bytes::Bytes::from(data)).await;
+                        }
+                    }
                 }
             }
         }
@@ -389,5 +434,7 @@ async fn process_received_message<T: TopicHandle>(
                         }));
             }
         }
+        // TopicAnnounce is consumed by the relay; clients ignore it.
+        crate::ops::WireMessage::TopicAnnounce { .. } => {}
     }
 }
