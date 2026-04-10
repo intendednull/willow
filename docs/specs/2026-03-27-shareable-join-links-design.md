@@ -1,9 +1,5 @@
 # Shareable Join Links
 
-> **Historical document.** References to a Bevy desktop app are
-> retained for historical context only — that crate has since been
-> removed from the workspace.
-
 ## Goal
 
 Replace the multi-step invite flow (share PeerId, generate per-recipient invite, paste blob) with a single shareable URL that triggers automatic P2P key exchange when clicked.

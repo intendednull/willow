@@ -3,10 +3,6 @@
 **Date**: 2026-03-29
 **Status**: Approved
 
-> **Historical document.** References to `crates/app/` (the Bevy
-> desktop UI) and its tests are retained for historical context only
-> — that crate has since been removed from the workspace.
-
 ## Overview
 
 Replace libp2p with iroh as Willow's networking layer. Iroh provides
