@@ -157,24 +157,18 @@ impl Message for Emit {
 }
 
 impl Handler<Emit> for StreamProducer {
-    fn handle(
-        &mut self,
-        msg: Emit,
-        _ctx: &mut Context<Self>,
-    ) -> impl std::future::Future<Output = ()> + Send {
+    async fn handle(&mut self, msg: Emit, _ctx: &mut Context<Self>) {
         self.output.emit(msg.0);
-        async {}
     }
 }
 
 impl Handler<SubscribeStream<u32>> for StreamProducer {
-    fn handle(
+    async fn handle(
         &mut self,
         _msg: SubscribeStream<u32>,
         _ctx: &mut Context<Self>,
-    ) -> impl std::future::Future<Output = willow_actor::stream::OutputStream<u32>> + Send {
-        let stream = self.output.subscribe();
-        async move { stream }
+    ) -> willow_actor::stream::OutputStream<u32> {
+        self.output.subscribe()
     }
 }
 
@@ -237,12 +231,8 @@ impl Message for WorkMsg {
 }
 
 impl Handler<WorkMsg> for PoolWorker {
-    fn handle(
-        &mut self,
-        _msg: WorkMsg,
-        _ctx: &mut Context<Self>,
-    ) -> impl std::future::Future<Output = u32> + Send {
-        async { 42 }
+    async fn handle(&mut self, _msg: WorkMsg, _ctx: &mut Context<Self>) -> u32 {
+        42
     }
 }
 
@@ -347,7 +337,7 @@ async fn perf_broker_fanout() {
                     count: count.clone(),
                 });
                 let recipient: willow_actor::Recipient<Evt> = counter.into();
-                let _ = broker.ask(BrokerSubscribe(recipient));
+                drop(broker.ask(BrokerSubscribe(recipient)));
                 count
             })
             .collect();
@@ -456,6 +446,7 @@ async fn perf_derived_multi_source_snapshot() {
                 let r3 = StateRef::from(&addrs[3]);
                 let r4 = StateRef::from(&addrs[4]);
                 let r5 = StateRef::from(&addrs[5]);
+                #[allow(clippy::type_complexity)]
                 let d = derived(
                     &system.handle(),
                     (r0, r1, r2, r3, r4, r5),

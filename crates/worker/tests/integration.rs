@@ -407,23 +407,16 @@ async fn full_actor_orchestration_without_network() {
     let mut announcement_count = 0;
     let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
     while tokio::time::Instant::now() < deadline {
-        match tokio::time::timeout(Duration::from_millis(30), events_b.next()).await {
-            Ok(Some(Ok(willow_network::GossipEvent::Received(msg)))) => {
-                if let Ok(decoded) =
-                    bincode::deserialize::<willow_common::WorkerWireMessage>(&msg.content)
-                {
-                    match decoded {
-                        willow_common::WorkerWireMessage::Announcement(_) => {
-                            announcement_count += 1;
-                        }
-                        willow_common::WorkerWireMessage::Request { .. } => {
-                            // Sync requests are expected too.
-                        }
-                        _ => {}
-                    }
+        if let Ok(Some(Ok(willow_network::GossipEvent::Received(msg)))) =
+            tokio::time::timeout(Duration::from_millis(30), events_b.next()).await
+        {
+            if let Ok(decoded) =
+                bincode::deserialize::<willow_common::WorkerWireMessage>(&msg.content)
+            {
+                if matches!(decoded, willow_common::WorkerWireMessage::Announcement(_)) {
+                    announcement_count += 1;
                 }
             }
-            _ => {}
         }
     }
 

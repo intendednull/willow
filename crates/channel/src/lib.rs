@@ -777,7 +777,7 @@ mod tests {
     fn roles_and_permissions() {
         let (_, mut server) = owner_and_server();
         let alice = Identity::generate().endpoint_id();
-        server.add_member(alice.clone());
+        server.add_member(alice);
 
         // Alice starts with no permissions.
         assert!(!server.has_permission(&alice, Permission::SendMessages));
@@ -828,7 +828,7 @@ mod tests {
     fn remove_member() {
         let (_, mut server) = owner_and_server();
         let alice = Identity::generate().endpoint_id();
-        server.add_member(alice.clone());
+        server.add_member(alice);
 
         server.remove_member(&alice).unwrap();
         assert!(!server.is_member(&alice));
@@ -849,7 +849,7 @@ mod tests {
 
         // A new peer uses it.
         let newcomer = Identity::generate().endpoint_id();
-        server.use_invite(&invite_id, newcomer.clone()).unwrap();
+        server.use_invite(&invite_id, newcomer).unwrap();
         assert!(server.is_member(&newcomer));
 
         // Second use fails (max_uses = 1).
@@ -927,7 +927,7 @@ mod tests {
         let original_key = server.channel_key(&ch_id).unwrap().as_bytes().to_owned();
 
         let alice = Identity::generate().endpoint_id();
-        server.add_member(alice.clone());
+        server.add_member(alice);
 
         let new_keys = server.remove_member(&alice).unwrap();
 
@@ -947,7 +947,7 @@ mod tests {
         let ch2 = server.create_channel("random", ChannelKind::Text).unwrap();
 
         let alice = Identity::generate().endpoint_id();
-        server.add_member(alice.clone());
+        server.add_member(alice);
 
         let new_keys = server.remove_member(&alice).unwrap();
         assert_eq!(new_keys.len(), 2);

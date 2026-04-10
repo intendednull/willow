@@ -300,7 +300,7 @@ mod tests {
         let peer = Identity::generate().endpoint_id();
         let channel = ChannelId::new();
 
-        let msg = Message::text(channel.clone(), peer.clone(), "hello!", &mut hlc);
+        let msg = Message::text(channel.clone(), peer, "hello!", &mut hlc);
 
         assert_eq!(msg.channel_id, channel);
         assert_eq!(msg.author, peer);

@@ -457,7 +457,7 @@ mod tests {
             0,
         );
 
-        save_events(&server_id, &[event.clone()]);
+        save_events(&server_id, std::slice::from_ref(&event));
         let loaded = load_events(&server_id);
         assert_eq!(loaded.len(), 1, "should load back one event");
         assert_eq!(loaded[0].hash, event.hash, "event hash should match");

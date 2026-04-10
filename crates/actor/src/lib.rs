@@ -637,14 +637,8 @@ mod tests {
             type Result = ();
         }
         impl Handler<SlowMsg> for SlowActor {
-            fn handle(
-                &mut self,
-                _msg: SlowMsg,
-                _ctx: &mut Context<Self>,
-            ) -> impl std::future::Future<Output = ()> + Send {
-                async {
-                    runtime::sleep(Duration::from_millis(200)).await;
-                }
+            async fn handle(&mut self, _msg: SlowMsg, _ctx: &mut Context<Self>) {
+                runtime::sleep(Duration::from_millis(200)).await;
             }
         }
 
@@ -684,14 +678,8 @@ mod tests {
             type Result = ();
         }
         impl Handler<Block> for SlowActor {
-            fn handle(
-                &mut self,
-                _msg: Block,
-                _ctx: &mut Context<Self>,
-            ) -> impl std::future::Future<Output = ()> + Send {
-                async {
-                    runtime::sleep(Duration::from_millis(50)).await;
-                }
+            async fn handle(&mut self, _msg: Block, _ctx: &mut Context<Self>) {
+                runtime::sleep(Duration::from_millis(50)).await;
             }
         }
 

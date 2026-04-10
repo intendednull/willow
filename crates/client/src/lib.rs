@@ -818,8 +818,7 @@ pub fn test_client() -> (
     let unread_view = willow_actor::derived(&sh, registry_ref.clone(), |reg| {
         views::compute_unread_view(reg)
     });
-    let roles_view =
-        willow_actor::derived(&sh, event_ref.clone(), |es| views::compute_roles_view(es));
+    let roles_view = willow_actor::derived(&sh, event_ref.clone(), views::compute_roles_view);
     let connection_view = willow_actor::derived(
         &sh,
         (network_ref.clone(), chat_ref.clone()),

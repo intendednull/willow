@@ -127,7 +127,8 @@ async fn main() -> Result<()> {
                         body.len(),
                         body
                     );
-                    let _ = tokio::io::AsyncWriteExt::write_all(&mut writer, response.as_bytes()).await;
+                    let _ =
+                        tokio::io::AsyncWriteExt::write_all(&mut writer, response.as_bytes()).await;
                 });
             }
         }

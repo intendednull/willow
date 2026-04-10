@@ -7,7 +7,7 @@ accounts, no middlemen. End-to-end encrypted by default.
 
 - **Text chat** with channels, threads, reactions, pins, and emoji
 - **End-to-end encryption** — ChaCha20-Poly1305 with X25519 key exchange
-- **Peer-to-peer** — libp2p networking with GossipSub, Kademlia, and mDNS
+- **Peer-to-peer** — iroh networking with QUIC transport and gossip protocol
 - **File sharing** — content-addressed chunking, transferred peer-to-peer
 - **Servers & permissions** — roles, fine-grained permissions, invites
 - **Event-sourced state** — deterministic, mergeable, offline-friendly
@@ -21,14 +21,19 @@ Leptos Web UI  or  Bevy Desktop UI
         └──── Client Library (willow-client) ────┐
                      │                            │
               State Machine              Network Layer
-           (willow-state, pure)       (willow-network, libp2p)
+           (willow-state, pure)       (willow-network, iroh)
                      │                            │
               ┌──────┴──────┐              ┌──────┴──────┐
               │  Channels   │              │   Relay     │
               │  Messaging  │              │   Workers   │
               │  Crypto     │              │  (replay,   │
-              │  Files      │              │   storage)  │
+              │  Identity   │              │   storage)  │
               └─────────────┘              └─────────────┘
+                                                 │
+                                           ┌─────┴─────┐
+                                           │   Actor   │
+                                           │ Framework │
+                                           └───────────┘
 ```
 
 **Crates:**
@@ -36,17 +41,70 @@ Leptos Web UI  or  Bevy Desktop UI
 | Crate | Purpose |
 |-------|---------|
 | `willow-state` | Pure event-sourced state machine (zero I/O) |
-| `willow-client` | UI-agnostic client library |
+| `willow-client` | UI-agnostic client library wrapping state + networking |
 | `willow-transport` | Binary serialization & protocol framing |
 | `willow-identity` | Ed25519 identity, message signing, profiles |
-| `willow-messaging` | Chat messages, HLC ordering |
+| `willow-messaging` | Chat messages, HLC ordering, message store |
 | `willow-crypto` | E2E encryption (ChaCha20-Poly1305, X25519) |
 | `willow-channel` | Servers, channels, roles, permissions |
-| `willow-files` | Content-addressed file chunking |
-| `willow-network` | libp2p networking layer (native + WASM) |
+| `willow-network` | iroh-based P2P networking (native + WASM) |
+| `willow-actor` | Lightweight actor framework (dual-target native + WASM) |
+| `willow-common` | Shared wire protocol types (WireMessage, worker types) |
+| `willow-worker` | Shared worker library (roles, actor runtime, peer lifecycle) |
 | `willow-relay` | Relay server bridging TCP and WebSocket peers |
+| `willow-replay` | Bounded-memory state sync worker (in-memory event buffer) |
+| `willow-storage` | Archival disk-backed history worker (SQLite) |
+| `willow-agent` | MCP server exposing ClientHandle to AI agents |
 | `willow-web` | Leptos web UI |
 | `willow-app` | Bevy desktop UI |
+
+### State Management
+
+All shared state is **event-sourced** — derived deterministically from a
+per-author Merkle-DAG of signed events. There is no mutable database; the
+event log *is* the data.
+
+```
+  Author A          Author B          Author C
+     │                  │                  │
+  [e1]─→[e2]─→[e3]  [e1]─→[e2]        [e1]
+     │                  │                  │
+     └──────────────────┴──────────────────┘
+                        │
+              topological sort + replay
+                        │
+                   ServerState
+            (channels, roles, members,
+             messages, profiles, keys)
+```
+
+**How it works:**
+
+- **Events** are content-addressed (SHA-256), signed by their author, and
+  linked into a DAG via sequence numbers and dependency pointers.
+- **`ServerState`** is the materialized view — rebuilt deterministically by
+  topologically sorting all events and replaying them through `materialize()`.
+  Peers converge to identical state when they have the same DAG.
+- **22 `EventKind` variants** cover server structure (create/delete/rename
+  channels and roles), chat (messages, edits, deletes, reactions, pins),
+  permissions (grant/revoke), identity (profiles), encryption (key rotation),
+  and governance (proposals and votes).
+- **Sync protocol** uses compact `HeadsSummary` (author → seq + hash) so peers
+  can efficiently request only missing events. Full `Snapshot` bootstraps
+  far-behind peers.
+
+**Trust & permissions:**
+
+- Admin status is granted only through governance votes (`Propose` +
+  `Vote`), never by direct event — protecting against single-actor escalation.
+- Non-admin permissions (ManageChannels, ManageRoles, SendMessages,
+  CreateInvite, SyncProvider) can be granted directly by admins.
+- All permission checks are enforced deterministically during event replay.
+
+**Client layer** (`willow-client`): `ClientHandle` wraps the pure state
+machine with actor-based state management, reactive UI views, a mutations
+API, and persistence — bridging the deterministic core with async networking
+and pub/sub event distribution.
 
 ## Getting Started
 
