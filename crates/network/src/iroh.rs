@@ -205,11 +205,25 @@ impl IrohNetwork {
         // 1. Build the iroh endpoint.
         let mut builder = Endpoint::empty_builder().secret_key(config.secret_key);
 
-        // Configure relay mode.
+        // Configure relay mode and seed bootstrap peer addresses.
         if let Some(relay_url) = &config.relay_url {
             let relay_map =
                 iroh::RelayMap::try_from_iter([relay_url.as_str()]).context("invalid relay URL")?;
             builder = builder.relay_mode(RelayMode::Custom(relay_map));
+
+            // If bootstrap peers are provided with a relay URL, create a
+            // MemoryLookup so iroh can resolve those peers to the relay
+            // when dialing them. Without this, iroh only knows the peer's
+            // ID but not how to reach it, and gossip dials fail with
+            // "No addressing information available".
+            if !config.bootstrap_peers.is_empty() {
+                let lookup = iroh::address_lookup::memory::MemoryLookup::new();
+                for peer_id in &config.bootstrap_peers {
+                    let addr = iroh::EndpointAddr::new(*peer_id).with_relay_url(relay_url.clone());
+                    lookup.add_endpoint_info(addr);
+                }
+                builder = builder.address_lookup(lookup);
+            }
         } else {
             builder = builder.relay_mode(RelayMode::Disabled);
         }
@@ -225,6 +239,15 @@ impl IrohNetwork {
         let endpoint = builder.bind().await.context("failed to bind endpoint")?;
 
         debug!(id = %endpoint.id().fmt_short(), "iroh endpoint bound");
+
+        // If a relay is configured, wait for the endpoint to become online so
+        // it has discovered its relay URL. Without this, gossip topic
+        // subscriptions publish empty PeerData, which means other peers can't
+        // learn this endpoint's address via ForwardJoin and can't dial it.
+        if config.relay_url.is_some() {
+            endpoint.online().await;
+            debug!(id = %endpoint.id().fmt_short(), "iroh endpoint online");
+        }
 
         // 2. Create the gossip protocol with 64 KiB max message size.
         let gossip = iroh_gossip::Gossip::builder()

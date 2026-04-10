@@ -78,7 +78,15 @@ async fn main() -> Result<()> {
     let relay_addr = relay_server
         .http_addr()
         .context("relay server has no HTTP address")?;
-    let relay_url: RelayUrl = format!("http://{relay_addr}")
+    // The bootstrap node must connect to the relay via a loopback address
+    // (127.0.0.1), not the bind address (0.0.0.0). 0.0.0.0 is a valid bind
+    // address but not a valid destination to connect to.
+    let connect_addr: SocketAddr = if relay_addr.ip().is_unspecified() {
+        (std::net::Ipv4Addr::LOCALHOST, relay_addr.port()).into()
+    } else {
+        relay_addr
+    };
+    let relay_url: RelayUrl = format!("http://{connect_addr}")
         .parse()
         .context("failed to parse relay URL")?;
     info!(%relay_url, "iroh-relay server running");
