@@ -234,8 +234,8 @@ fn required_permission(kind: &EventKind) -> Option<Permission> {
         | EventKind::SetPermission { .. }
         | EventKind::AssignRole { .. } => Some(Permission::ManageRoles),
 
-        // Admin-only, governance, profile, encryption, pinning — no
-        // Permission variant, checked elsewhere or unrestricted.
+        // Admin-only, governance, profile, pinning — no Permission
+        // variant, checked elsewhere or unrestricted.
         _ => None,
     }
 }
