@@ -5,7 +5,6 @@
 //! the gossip mesh. Dynamically subscribes to channel topics announced
 //! by peers via [`TopicAnnounce`](willow_common::WireMessage::TopicAnnounce).
 
-use std::collections::HashSet;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
@@ -13,10 +12,13 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use iroh_base::RelayUrl;
 use iroh_relay::server::{AccessConfig, RelayConfig, Server, ServerConfig};
+use tokio::sync::Semaphore;
 use tracing::info;
 use willow_identity::Identity;
-use willow_network::traits::{GossipEvent, TopicEvents};
 use willow_network::Network;
+use willow_relay::{
+    run_bootstrap_listener, topic_announce_listener, MAX_CONCURRENT_BOOTSTRAP_CONNECTIONS,
+};
 
 #[derive(Parser)]
 #[command(name = "willow-relay", about = "Willow iroh relay + bootstrap node")]
@@ -116,35 +118,22 @@ async fn main() -> Result<()> {
 
     // ── Bootstrap ID HTTP endpoint ──────────────────────────────────────
     // Serve the bootstrap node's endpoint ID so web clients can fetch it.
+    // The accept loop applies per-connection I/O timeouts and is gated
+    // by a semaphore so a connection-flood DoS cannot exhaust file
+    // descriptors. See `willow_relay::run_bootstrap_listener`.
     let bootstrap_id = Arc::new(identity.endpoint_id().to_string());
-    let id_for_handler = Arc::clone(&bootstrap_id);
     let bootstrap_listener =
         tokio::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, args.relay_port + 1))
             .await
             .context("failed to bind bootstrap-id HTTP port")?;
     let bootstrap_port = bootstrap_listener.local_addr()?.port();
     info!(port = bootstrap_port, "bootstrap-id endpoint listening");
-    tokio::spawn(async move {
-        loop {
-            if let Ok((stream, _)) = bootstrap_listener.accept().await {
-                let id = Arc::clone(&id_for_handler);
-                tokio::spawn(async move {
-                    let (mut reader, mut writer) = stream.into_split();
-                    // Read the request (we don't care about its contents).
-                    let mut buf = [0u8; 1024];
-                    let _ = tokio::io::AsyncReadExt::read(&mut reader, &mut buf).await;
-                    let body = id.as_str();
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
-                        body.len(),
-                        body
-                    );
-                    let _ =
-                        tokio::io::AsyncWriteExt::write_all(&mut writer, response.as_bytes()).await;
-                });
-            }
-        }
-    });
+    let bootstrap_semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_BOOTSTRAP_CONNECTIONS));
+    tokio::spawn(run_bootstrap_listener(
+        bootstrap_listener,
+        Arc::clone(&bootstrap_id),
+        bootstrap_semaphore,
+    ));
 
     // Spawn a task that listens for TopicAnnounce messages on _willow_server_ops
     // and dynamically subscribes to announced channel topics.
@@ -170,38 +159,4 @@ async fn main() -> Result<()> {
     relay_server.shutdown().await.ok();
     info!("shut down complete");
     Ok(())
-}
-
-/// Listen for [`TopicAnnounce`] messages on `_willow_server_ops` and
-/// dynamically subscribe to announced channel topics.
-async fn topic_announce_listener(
-    mut events: <willow_network::iroh::IrohNetwork as Network>::Events,
-    network: willow_network::iroh::IrohNetwork,
-) {
-    let mut subscribed: HashSet<String> = HashSet::new();
-
-    while let Some(Ok(event)) = events.next().await {
-        if let GossipEvent::Received(msg) = event {
-            if let Some((willow_common::WireMessage::TopicAnnounce { topics }, _)) =
-                willow_common::unpack_wire(&msg.content)
-            {
-                for topic_str in topics {
-                    if subscribed.insert(topic_str.clone()) {
-                        let topic_id = willow_network::topic_id(&topic_str);
-                        match network.subscribe(topic_id, vec![]).await {
-                            Ok(_) => {
-                                info!(topic = %topic_str, "subscribed to announced channel topic");
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    topic = %topic_str, %e,
-                                    "failed to subscribe to announced topic"
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
