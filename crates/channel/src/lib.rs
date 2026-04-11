@@ -2,6 +2,15 @@
 //!
 //! Servers, channels, roles, and permissions for the Willow P2P network.
 //!
+//! This crate defines data structures for servers, channels, roles, and
+//! permissions. **All authority enforcement happens in
+//! `willow-state::materialize::apply_*`.** Direct mutation of a [`Server`]
+//! value is not an enforcement boundary — it is a data-shape operation
+//! used by the materializer and tests. Code that needs to enforce trust
+//! decisions (admin promotion, kicks, role assignment, etc.) MUST go
+//! through the event-sourced [`willow_state`] machine, not through these
+//! types.
+//!
 //! ## Data model
 //!
 //! Willow borrows Discord's organisational hierarchy:
@@ -326,18 +335,26 @@ impl Invite {
 ///
 /// Admins have implicit access to all permissions. Other members'
 /// access is determined by their roles and direct permission grants.
+///
+/// Identity-bearing fields (`id`, `name`, `description`, `admins`) are
+/// private — direct mutation of them by external code would bypass the
+/// event-sourced authority model in [`willow_state`]. Read them via
+/// [`Server::id`], [`Server::name`], [`Server::description`], and
+/// [`Server::admins`]. The materializer and integration code use the
+/// explicitly-named `*_for_materializer` setters to populate these
+/// fields after applying authoritative events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Server {
     /// Unique ID.
-    pub id: ServerId,
+    id: ServerId,
     /// Display name.
-    pub name: String,
+    name: String,
     /// Optional description.
-    pub description: Option<String>,
+    description: Option<String>,
     /// The peer who created the server (genesis author).
     pub creator: EndpointId,
     /// The set of peers with admin status.
-    pub admins: HashSet<EndpointId>,
+    admins: HashSet<EndpointId>,
     /// When the server was created.
     pub created_at: DateTime<Utc>,
 
@@ -375,7 +392,82 @@ impl Server {
         }
     }
 
+    /// Create a new server with a specific [`ServerId`].
+    ///
+    /// Used by the join flow (and by the materializer if it ever needs
+    /// to seed a [`Server`] mirror) when the ID was decided elsewhere —
+    /// e.g. parsed from an invite payload or derived from the genesis
+    /// event hash. The creator is the initial admin and member, just
+    /// like [`Server::new`].
+    pub fn with_id(id: ServerId, name: impl Into<String>, creator: EndpointId) -> Self {
+        let mut server = Self::new(name, creator);
+        server.id = id;
+        server
+    }
+
     // ── Queries ──────────────────────────────────────────────────────────
+
+    /// The server's unique ID.
+    pub fn id(&self) -> &ServerId {
+        &self.id
+    }
+
+    /// The server's display name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The server's optional description / topic line.
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+
+    /// The set of peers with admin status.
+    ///
+    /// This is a derived view — the authoritative admin set lives in
+    /// [`willow_state::ServerState::admins`]. Mutations to this set on
+    /// a `Server` value have no effect on trust decisions: they are a
+    /// data-shape mirror used by the materializer and tests.
+    pub fn admins(&self) -> &HashSet<EndpointId> {
+        &self.admins
+    }
+
+    // ── Materializer-only setters ────────────────────────────────────────
+    //
+    // These exist so `willow_state::materialize` (a different crate) can
+    // populate the data-shape mirror after applying authoritative events.
+    // `pub(crate)` would not be visible to `willow_state`, so they are
+    // `pub` but explicitly named and `#[doc(hidden)]` to discourage
+    // accidental use. **They are NOT an enforcement boundary** — the
+    // event-sourced model in `willow_state` is the sole authority.
+
+    /// Internal use only — call from `willow-state::materialize` or test
+    /// helpers. The event-sourced model is the authority; this is a
+    /// data-shape mutation, not an enforcement boundary.
+    #[doc(hidden)]
+    pub fn set_admin_for_materializer(&mut self, peer: EndpointId, is_admin: bool) {
+        if is_admin {
+            self.admins.insert(peer);
+        } else {
+            self.admins.remove(&peer);
+        }
+    }
+
+    /// Internal use only — call from `willow-state::materialize` or test
+    /// helpers. The event-sourced model is the authority; this is a
+    /// data-shape mutation, not an enforcement boundary.
+    #[doc(hidden)]
+    pub fn set_name_for_materializer(&mut self, name: impl Into<String>) {
+        self.name = name.into();
+    }
+
+    /// Internal use only — call from `willow-state::materialize` or test
+    /// helpers. The event-sourced model is the authority; this is a
+    /// data-shape mutation, not an enforcement boundary.
+    #[doc(hidden)]
+    pub fn set_description_for_materializer(&mut self, description: Option<String>) {
+        self.description = description;
+    }
 
     /// All channels in this server.
     pub fn channels(&self) -> Vec<&Channel> {
@@ -718,7 +810,7 @@ mod tests {
     #[test]
     fn admin_has_all_permissions() {
         let (owner, server) = owner_and_server();
-        assert!(server.admins.contains(&owner));
+        assert!(server.admins().contains(&owner));
         assert!(server.has_permission(&owner, Permission::ManageChannels));
         assert!(server.has_permission(&owner, Permission::SendMessages));
         assert!(server.has_permission(&owner, Permission::SyncProvider));
@@ -802,8 +894,10 @@ mod tests {
         let bob = Identity::generate().endpoint_id();
         server.add_member(bob);
 
-        // Add bob to admins set directly.
-        server.admins.insert(bob);
+        // Promote bob to admin via the materializer-only setter — this
+        // is the data-shape mirror of an event the state machine would
+        // have applied. It is NOT an enforcement boundary.
+        server.set_admin_for_materializer(bob, true);
 
         // Admins have all permissions implicitly.
         assert!(server.has_permission(&bob, Permission::ManageChannels));
@@ -883,7 +977,7 @@ mod tests {
         let bytes = willow_transport::pack(&server).unwrap();
         let decoded: Server = willow_transport::unpack(&bytes).unwrap();
 
-        assert_eq!(decoded.name, server.name);
+        assert_eq!(decoded.name(), server.name());
         assert_eq!(decoded.channels().len(), 1);
     }
 
@@ -996,11 +1090,11 @@ mod tests {
     #[test]
     fn server_description() {
         let (_, mut server) = owner_and_server();
-        server.description = Some("A cool server".into());
+        server.set_description_for_materializer(Some("A cool server".into()));
 
         let bytes = willow_transport::pack(&server).unwrap();
         let decoded: Server = willow_transport::unpack(&bytes).unwrap();
-        assert_eq!(decoded.description.as_deref(), Some("A cool server"));
+        assert_eq!(decoded.description(), Some("A cool server"));
     }
 
     #[test]
@@ -1031,5 +1125,40 @@ mod tests {
         // Even with an empty set serialized, deserialization should succeed.
         let decoded: Channel = willow_transport::unpack(&bytes).unwrap();
         assert!(decoded.pinned_messages.is_empty());
+    }
+
+    #[test]
+    fn server_id_name_description_admins_are_encapsulated() {
+        // Regression test for issue #118: identity-bearing fields on
+        // `Server` are private. The only public way to read them is via
+        // accessor methods, and the only mutation paths are explicit
+        // `*_for_materializer` setters or the `with_id` constructor.
+        // This test exists so removing those accessors or re-exposing
+        // the fields breaks the build.
+        let (owner, server) = owner_and_server();
+
+        // Accessors return references / Option references.
+        let _: &ServerId = server.id();
+        let _: &str = server.name();
+        let _: Option<&str> = server.description();
+        let _: &HashSet<EndpointId> = server.admins();
+
+        // Mutation only via the explicit constructor / setters.
+        let custom_id = ServerId::new();
+        let mut other = Server::with_id(custom_id.clone(), "Other", owner);
+        assert_eq!(other.id(), &custom_id);
+
+        other.set_name_for_materializer("Renamed");
+        assert_eq!(other.name(), "Renamed");
+
+        other.set_description_for_materializer(Some("desc".into()));
+        assert_eq!(other.description(), Some("desc"));
+
+        let stranger = Identity::generate().endpoint_id();
+        assert!(!other.admins().contains(&stranger));
+        other.set_admin_for_materializer(stranger, true);
+        assert!(other.admins().contains(&stranger));
+        other.set_admin_for_materializer(stranger, false);
+        assert!(!other.admins().contains(&stranger));
     }
 }
