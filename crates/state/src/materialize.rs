@@ -386,7 +386,7 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
                 msg.reactions
                     .entry(emoji.clone())
                     .or_default()
-                    .push(event.author);
+                    .insert(event.author);
             }
         }
 

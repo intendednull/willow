@@ -70,8 +70,10 @@ pub struct ChatMessage {
     pub edited: bool,
     /// Whether this message has been soft-deleted.
     pub deleted: bool,
-    /// Reactions: emoji string -> list of reactor endpoint IDs.
-    pub reactions: BTreeMap<String, Vec<EndpointId>>,
+    /// Reactions: emoji string -> set of reactor endpoint IDs.
+    /// Stored as a `BTreeSet` so each peer can only react once with a
+    /// given emoji to a given message.
+    pub reactions: BTreeMap<String, BTreeSet<EndpointId>>,
     /// If this is a reply, the EventHash of the parent message.
     pub reply_to: Option<EventHash>,
 }

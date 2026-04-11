@@ -628,8 +628,59 @@ fn duplicate_reaction_from_same_peer() {
     );
 
     let state = materialize(&dag);
-    // Implementation-dependent: may deduplicate or not.
-    assert!(!state.messages[0].reactions.is_empty());
+    // The same author reacting twice with the same emoji collapses to a
+    // single entry — reactions are stored as a set keyed by author.
+    let reactors = state.messages[0]
+        .reactions
+        .get("👍")
+        .expect("emoji should be present");
+    assert_eq!(reactors.len(), 1);
+    assert!(reactors.contains(&admin.endpoint_id()));
+}
+
+#[test]
+fn same_author_duplicate_reaction_is_idempotent() {
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    let msg = do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Message {
+            channel_id: "ch-1".to_string(),
+            body: "react to me".to_string(),
+            reply_to: None,
+        },
+    );
+
+    // Apply two distinct Reaction events with the same emoji from the
+    // same author. The events themselves are unique (different hashes
+    // because of timestamps/parents), so dedup must happen at
+    // materialization time.
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Reaction {
+            message_id: msg.hash,
+            emoji: "🎉".to_string(),
+        },
+    );
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Reaction {
+            message_id: msg.hash,
+            emoji: "🎉".to_string(),
+        },
+    );
+
+    let state = materialize(&dag);
+    let reactors = state.messages[0]
+        .reactions
+        .get("🎉")
+        .expect("emoji should be present");
+    assert_eq!(reactors.len(), 1, "duplicate reactions must be deduped");
+    assert!(reactors.contains(&admin.endpoint_id()));
 }
 
 #[test]
