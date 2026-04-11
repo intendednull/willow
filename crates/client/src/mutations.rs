@@ -11,7 +11,9 @@
 //! ```
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
+
+use parking_lot::Mutex;
 
 use willow_actor::{Addr, Broker, Publish, StateActor};
 use willow_identity::{EndpointId, Identity};

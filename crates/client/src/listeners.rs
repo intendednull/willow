@@ -1,6 +1,8 @@
 //! Per-topic listener tasks that stream GossipEvents and mutate state via domain actors.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use crate::events::ClientEvent;
 use crate::mutations;
@@ -330,7 +332,7 @@ async fn process_received_message<T: TopicHandle>(
         }
         crate::ops::WireMessage::JoinRequest { link_id, peer_id } => {
             let should_respond = {
-                let mut links = ctx.join_links.lock().unwrap();
+                let mut links = ctx.join_links.lock();
                 let valid = links
                     .iter_mut()
                     .find(|l| l.link_id == link_id && l.is_valid());
