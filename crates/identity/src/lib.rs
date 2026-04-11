@@ -633,9 +633,11 @@ mod tests {
     #[test]
     fn with_secret_bytes_exposes_full_secret() {
         let id = Identity::generate();
-        let from_to_bytes = id.to_bytes();
-        let from_callback = id.with_secret_bytes(|bytes| bytes.to_vec());
-        assert_eq!(from_to_bytes, from_callback);
+        // Both of these hold raw secret bytes; wrap them in `Zeroizing`
+        // so the test itself doesn't leak unzeroized copies on the heap.
+        let from_to_bytes = zeroize::Zeroizing::new(id.to_bytes());
+        let from_callback = zeroize::Zeroizing::new(id.with_secret_bytes(|bytes| bytes.to_vec()));
+        assert_eq!(*from_to_bytes, *from_callback);
         assert_eq!(from_callback.len(), 32);
     }
 
