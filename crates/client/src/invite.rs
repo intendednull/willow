@@ -83,8 +83,8 @@ pub fn generate_invite(
     }
 
     let payload = InvitePayload {
-        server_name: server.name.clone(),
-        server_id: server.id.to_string(),
+        server_name: server.name().to_string(),
+        server_id: server.id().to_string(),
         genesis_author: server.creator,
         sync_providers: Vec::new(), // populated by caller if known
         channels,
@@ -160,7 +160,7 @@ mod tests {
 
         let mut keys = HashMap::new();
         let mut topic_map = HashMap::new();
-        let topic = format!("{}/general", server.id);
+        let topic = format!("{}/general", server.id());
 
         if let Some(key) = server.channel_key(&ch_id) {
             keys.insert(topic.clone(), key.clone());
@@ -198,7 +198,7 @@ mod tests {
 
         let mut keys = HashMap::new();
         let mut topic_map = HashMap::new();
-        let topic = format!("{}/secret", server.id);
+        let topic = format!("{}/secret", server.id());
 
         if let Some(key) = server.channel_key(&ch_id) {
             keys.insert(topic.clone(), key.clone());
@@ -249,7 +249,7 @@ mod tests {
         let mut topic_map = HashMap::new();
 
         for (ch_id, name) in [(ch1, "general"), (ch2, "random"), (ch3, "voice")] {
-            let topic = format!("{}/{name}", server.id);
+            let topic = format!("{}/{name}", server.id());
             if let Some(key) = server.channel_key(&ch_id) {
                 keys.insert(topic.clone(), key.clone());
             }
@@ -280,7 +280,7 @@ mod tests {
 
         let mut keys = HashMap::new();
         let mut topic_map = HashMap::new();
-        let topic = format!("{}/general", server.id);
+        let topic = format!("{}/general", server.id());
 
         if let Some(key) = server.channel_key(&ch_id) {
             keys.insert(topic.clone(), key.clone());

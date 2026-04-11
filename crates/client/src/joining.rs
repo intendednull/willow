@@ -63,10 +63,13 @@ impl<N: willow_network::Network> ClientHandle<N> {
                         }
                     }
                 } else {
-                    let mut server =
-                        willow_channel::Server::new(&accepted.server_name, accepted.genesis_author);
-                    server.id = willow_channel::ServerId(
+                    let parsed_id = willow_channel::ServerId(
                         uuid::Uuid::parse_str(&server_id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+                    );
+                    let mut server = willow_channel::Server::with_id(
+                        parsed_id,
+                        &accepted.server_name,
+                        accepted.genesis_author,
                     );
                     let mut topic_map = HashMap::new();
                     let mut keys = HashMap::new();

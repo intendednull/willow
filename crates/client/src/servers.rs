@@ -95,7 +95,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             &self.server_registry_addr,
             move |reg| -> anyhow::Result<(String, String)> {
                 let mut server = willow_channel::Server::new(&name, peer_id);
-                let server_id = server.id.to_string();
+                let server_id = server.id().to_string();
                 let ch_id = server
                     .create_channel("general", willow_channel::ChannelKind::Text)
                     .map_err(|e| anyhow::anyhow!("{e:?}"))?;

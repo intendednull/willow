@@ -336,7 +336,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         // Fall back to legacy single-server storage. Do NOT create a default.
         if state.servers.is_empty() {
             if let Some((server, keys)) = storage::load_server() {
-                let sid = server.id.to_string();
+                let sid = server.id().to_string();
                 let mut topic_map = HashMap::new();
                 for ch in server.channels() {
                     let topic = util::make_topic(&server, &ch.name);
@@ -366,7 +366,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 } else {
                     state.event_state = willow_state::ServerState::new(
                         sid.clone(),
-                        ctx.server.name.clone(),
+                        ctx.server.name().to_string(),
                         ctx.server.creator,
                     );
 
@@ -425,7 +425,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                     id.clone(),
                     state_actors::ServerEntry {
                         server: ctx.server.clone(),
-                        name: ctx.server.name.clone(),
+                        name: ctx.server.name().to_string(),
                         topic_map: ctx.topic_map.clone(),
                         keys: ctx.keys.clone(),
                         unread: ctx.unread.clone(),
@@ -684,7 +684,7 @@ pub fn test_client() -> (
         .unwrap();
     let topic = util::make_topic(&server, "general");
 
-    let server_id = server.id.to_string();
+    let server_id = server.id().to_string();
     let mut topic_map = HashMap::new();
     let mut keys = HashMap::new();
 
@@ -751,7 +751,7 @@ pub fn test_client() -> (
             id.clone(),
             state_actors::ServerEntry {
                 server: ctx.server.clone(),
-                name: ctx.server.name.clone(),
+                name: ctx.server.name().to_string(),
                 topic_map: ctx.topic_map.clone(),
                 keys: ctx.keys.clone(),
                 unread: ctx.unread.clone(),
