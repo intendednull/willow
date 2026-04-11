@@ -48,10 +48,19 @@ impl<N: willow_network::Network> ClientHandle<N> {
             .next()
             .map(|(name, _)| name.clone());
 
+        // Validate the server id BEFORE we touch any actor state. If the
+        // invite is malformed we want to surface a typed error to the
+        // caller instead of silently inventing a fresh server id, which
+        // would split-brain the joiner from the rest of the network
+        // (issue #115).
+        let parsed_server_uuid = uuid::Uuid::parse_str(&server_id).map_err(|e| {
+            crate::ClientError::MalformedInvite(format!("invalid server_id `{server_id}`: {e}"))
+        })?;
+
         // Update server registry.
         let channel_topics = willow_actor::state::mutate(
             &self.server_registry_addr,
-            move |reg| -> anyhow::Result<Vec<String>> {
+            move |reg| -> Result<Vec<String>, crate::ClientError> {
                 if let Some(entry) = reg.servers.get_mut(&server_id) {
                     for (topic, (name, key)) in &accepted.channel_keys {
                         entry.keys.insert(topic.clone(), key.clone());
@@ -63,11 +72,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
                         }
                     }
                 } else {
-                    let parsed_id = willow_channel::ServerId(
-                        uuid::Uuid::parse_str(&server_id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
-                    );
                     let mut server = willow_channel::Server::with_id(
-                        parsed_id,
+                        willow_channel::ServerId(parsed_server_uuid),
                         &accepted.server_name,
                         accepted.genesis_author,
                     );
@@ -76,7 +82,11 @@ impl<N: willow_network::Network> ClientHandle<N> {
                     for (topic, (name, key)) in &accepted.channel_keys {
                         let ch_id = server
                             .create_channel(name, willow_channel::ChannelKind::Text)
-                            .unwrap_or_else(|_| willow_channel::ChannelId::new());
+                            .map_err(|e| {
+                                crate::ClientError::MalformedInvite(format!(
+                                    "could not create channel `{name}` from invite: {e}"
+                                ))
+                            })?;
                         server.set_channel_key(ch_id.clone(), key.clone());
                         keys.insert(topic.clone(), key.clone());
                         topic_map.insert(topic.clone(), (name.clone(), ch_id));
@@ -206,20 +216,17 @@ impl<N: willow_network::Network> ClientHandle<N> {
             server_name,
             inviter_name,
         };
-        self.join_links.lock().unwrap().push(link);
+        self.join_links.lock().push(link);
         Ok(token.encode())
     }
 
     pub async fn join_links(&self) -> Vec<ops::JoinLink> {
-        self.join_links.lock().unwrap().clone()
+        self.join_links.lock().clone()
     }
 
     pub async fn delete_join_link(&self, link_id: &str) {
         let link_id = link_id.to_string();
-        self.join_links
-            .lock()
-            .unwrap()
-            .retain(|l| l.link_id != link_id);
+        self.join_links.lock().retain(|l| l.link_id != link_id);
     }
 
     pub async fn set_display_name(&self, name: &str) {
