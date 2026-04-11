@@ -21,6 +21,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use x25519_dalek::{PublicKey as X25519Public, StaticSecret as X25519Secret};
+use zeroize::ZeroizeOnDrop;
 
 use willow_identity::Identity;
 
@@ -54,8 +55,11 @@ pub enum CryptoError {
 // ───── Types ────────────────────────────────────────────────────────────────
 
 /// A 256-bit symmetric key for encrypting a channel's messages.
-#[derive(Clone, PartialEq)]
-pub struct ChannelKey(pub(crate) [u8; 32]);
+///
+/// The wrapped bytes are zeroized when the value is dropped so secret
+/// material doesn't linger in freed memory.
+#[derive(Clone, PartialEq, ZeroizeOnDrop)]
+pub struct ChannelKey(#[zeroize] pub(crate) [u8; 32]);
 
 impl std::fmt::Debug for ChannelKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -747,6 +751,14 @@ mod tests {
         let debug = format!("{key:?}");
         assert!(debug.contains("REDACTED"));
         assert!(!debug.contains(&format!("{:02x}", key.as_bytes()[0])));
+    }
+
+    /// Compile-time guarantee that [`ChannelKey`] zeroizes its secret
+    /// bytes on drop. See issue #127.
+    #[test]
+    fn channel_key_is_zeroize_on_drop() {
+        fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+        assert_zeroize_on_drop::<ChannelKey>();
     }
 
     // ── Issue #110: ratchet counter DoS bound ──────────────────────
