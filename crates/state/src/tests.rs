@@ -1749,6 +1749,152 @@ fn rotate_channel_key_for_nonexistent_channel() {
     );
 }
 
+// ── Issue #109: RotateChannelKey authority ─────────────────────────────
+
+/// Regression guard for issue #109: an outsider (not a member, not an
+/// admin, never granted ManageChannels) must not be able to inject
+/// channel key material via `RotateChannelKey`. The materializer must
+/// reject the event before applying the mutation.
+#[test]
+fn rotate_channel_key_by_outsider_is_rejected() {
+    let admin = Identity::generate();
+    let mallory = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::CreateChannel {
+            name: "general".to_string(),
+            channel_id: "ch-general".to_string(),
+            kind: "text".to_string(),
+        },
+    );
+
+    // Mallory is a brand-new identity with no relationship to the server.
+    // She tries to inject her own encrypted key for the channel.
+    do_emit(
+        &mut dag,
+        &mallory,
+        EventKind::RotateChannelKey {
+            channel_id: "ch-general".to_string(),
+            encrypted_keys: vec![(mallory.endpoint_id(), vec![0xde, 0xad, 0xbe, 0xef])],
+        },
+    );
+
+    let state = materialize(&dag);
+    // Mallory's injected key must NOT appear in state.
+    let mallory_key_present = state
+        .channel_keys
+        .get("ch-general")
+        .map(|keys| keys.contains_key(&mallory.endpoint_id()))
+        .unwrap_or(false);
+    assert!(
+        !mallory_key_present,
+        "outsider must not be able to rotate channel keys"
+    );
+}
+
+/// Regression guard for issue #109: a regular member without
+/// ManageChannels cannot rotate channel keys either — the permission
+/// check is the primary gate.
+#[test]
+fn rotate_channel_key_by_member_without_manage_channels_is_rejected() {
+    use crate::managed::ManagedDag;
+    use crate::materialize::ApplyResult;
+
+    let alice = Identity::generate();
+    let bob = Identity::generate();
+
+    let mut managed = ManagedDag::new(&alice, "Test Server", 5000);
+
+    // Alice creates a channel and grants Bob SendMessages (which also
+    // adds him to `members`). Bob is a legitimate member but lacks
+    // ManageChannels.
+    let create = managed.dag().create_event(
+        &alice,
+        EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: "ch1".into(),
+            kind: "text".into(),
+        },
+        vec![],
+        10,
+    );
+    managed.insert_and_apply(create).unwrap();
+
+    let grant_send = managed.dag().create_event(
+        &alice,
+        EventKind::GrantPermission {
+            peer_id: bob.endpoint_id(),
+            permission: Permission::SendMessages,
+        },
+        vec![],
+        20,
+    );
+    managed.insert_and_apply(grant_send).unwrap();
+
+    // Bob tries to rotate the channel key. He has SendMessages but not
+    // ManageChannels, so the permission check should reject.
+    let rotate = managed.dag().create_event(
+        &bob,
+        EventKind::RotateChannelKey {
+            channel_id: "ch1".into(),
+            encrypted_keys: vec![(bob.endpoint_id(), vec![1, 2, 3])],
+        },
+        vec![],
+        30,
+    );
+    let outcome = managed.insert_and_apply(rotate).unwrap();
+    assert!(
+        matches!(outcome.apply_result, Some(ApplyResult::Rejected(_))),
+        "Bob's rotate should be rejected: {:?}",
+        outcome.apply_result
+    );
+    // Bob's key material must not have been inserted.
+    let bob_key_present = managed
+        .state()
+        .channel_keys
+        .get("ch1")
+        .map(|keys| keys.contains_key(&bob.endpoint_id()))
+        .unwrap_or(false);
+    assert!(!bob_key_present);
+}
+
+/// Regression guard for issue #109: an admin (implicit all-permissions)
+/// still can rotate channel keys after the fix. Sanity check that the
+/// permission + membership additions did not break the legitimate path.
+#[test]
+fn rotate_channel_key_by_admin_still_works() {
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::CreateChannel {
+            name: "general".to_string(),
+            channel_id: "ch-general".to_string(),
+            kind: "text".to_string(),
+        },
+    );
+
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::RotateChannelKey {
+            channel_id: "ch-general".to_string(),
+            encrypted_keys: vec![(admin.endpoint_id(), vec![9, 9, 9])],
+        },
+    );
+
+    let state = materialize(&dag);
+    assert_eq!(
+        state.channel_keys["ch-general"][&admin.endpoint_id()],
+        vec![9, 9, 9]
+    );
+}
+
 // ── Issue #74: ManagedDag — atomic insert + apply ──────────────────────
 
 #[test]

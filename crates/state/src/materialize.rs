@@ -120,7 +120,7 @@ fn apply_unchecked(state: &mut ServerState, event: &Event) -> ApplyResult {
     // Permission-checked events.
     // required_permission returns:
     //   Message/EditMessage/DeleteMessage/Reaction → SendMessages
-    //   CreateChannel/DeleteChannel/RenameChannel → ManageChannels
+    //   CreateChannel/DeleteChannel/RenameChannel/RotateChannelKey → ManageChannels
     //   CreateRole/DeleteRole/SetPermission/AssignRole → ManageRoles
     //   All others → None
     let required = required_permission(&event.kind);
@@ -226,15 +226,16 @@ fn required_permission(kind: &EventKind) -> Option<Permission> {
 
         EventKind::CreateChannel { .. }
         | EventKind::DeleteChannel { .. }
-        | EventKind::RenameChannel { .. } => Some(Permission::ManageChannels),
+        | EventKind::RenameChannel { .. }
+        | EventKind::RotateChannelKey { .. } => Some(Permission::ManageChannels),
 
         EventKind::CreateRole { .. }
         | EventKind::DeleteRole { .. }
         | EventKind::SetPermission { .. }
         | EventKind::AssignRole { .. } => Some(Permission::ManageRoles),
 
-        // Admin-only, governance, profile, encryption, pinning — no
-        // Permission variant, checked elsewhere or unrestricted.
+        // Admin-only, governance, profile, pinning — no Permission
+        // variant, checked elsewhere or unrestricted.
         _ => None,
     }
 }
@@ -406,6 +407,14 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
             channel_id,
             encrypted_keys,
         } => {
+            // Defense-in-depth: reject if the author isn't a member of
+            // the server. The ManageChannels permission check in
+            // `required_permission` is the primary gate, but this guards
+            // against any future code path that might grant permissions
+            // without also adding the peer to `members`.
+            if !state.members.contains_key(&event.author) {
+                return ApplyResult::Rejected(format!("author '{}' is not a member", event.author));
+            }
             if !encrypted_keys.is_empty() {
                 let keys = state.channel_keys.entry(channel_id.clone()).or_default();
                 for (peer_id, key_bytes) in encrypted_keys {

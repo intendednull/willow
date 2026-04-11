@@ -46,6 +46,9 @@ pub enum CryptoError {
 
     #[error("ed25519 to x25519 conversion failed")]
     KeyConversionFailed,
+
+    #[error("ratchet counter {claimed} out of range (max {max})")]
+    RatchetCounterOutOfRange { claimed: u64, max: u64 },
 }
 
 // ───── Types ────────────────────────────────────────────────────────────────
@@ -233,11 +236,49 @@ pub fn seal_content_with_counter(
     })
 }
 
-/// Decrypt a [`SealedContent`] back to a [`Content`] value.
+/// Maximum lookahead above the receiver's current ratchet counter that
+/// [`open_content_bounded`] will accept. This exists to bound the work
+/// [`derive_message_key`] has to do before AEAD verification — without
+/// it, an attacker-controlled `ratchet_counter` in a sealed packet
+/// would force the receiver to perform 2 HKDF-Expand operations per
+/// step up to the claimed value, and `u64::MAX` would take hundreds of
+/// thousands of years on a single core.
 ///
-/// If `ratchet_counter > 0`, derives the per-message key from the channel
-/// key + counter. Otherwise uses the channel key directly (backwards compat).
-pub fn open_content(sealed: &SealedContent, key: &ChannelKey) -> Result<Content, CryptoError> {
+/// The value is deliberately generous (1024 messages) so that a
+/// receiver who misses a burst of messages can still catch up.
+pub const MAX_RATCHET_LOOKAHEAD: u64 = 1024;
+
+/// Decrypt a [`SealedContent`] back to a [`Content`] value, bounding
+/// how far ahead of `current_counter` the sealed packet's claimed
+/// `ratchet_counter` may be.
+///
+/// If `sealed.ratchet_counter > current_counter + MAX_RATCHET_LOOKAHEAD`,
+/// returns [`CryptoError::RatchetCounterOutOfRange`] **before** doing
+/// any HKDF work or AEAD verification. This prevents a CPU DoS where
+/// an attacker ships a packet with a huge `ratchet_counter` and
+/// freezes the receiver inside [`derive_message_key`].
+///
+/// Callers should pass the highest counter they have successfully
+/// processed for this channel epoch. Start at 0 for a fresh channel
+/// and advance monotonically.
+///
+/// If `ratchet_counter == 0`, the channel key is used directly
+/// (backwards compat) and no bounds check applies.
+pub fn open_content_bounded(
+    sealed: &SealedContent,
+    key: &ChannelKey,
+    current_counter: u64,
+) -> Result<Content, CryptoError> {
+    if sealed.ratchet_counter > 0 {
+        let max = current_counter.saturating_add(MAX_RATCHET_LOOKAHEAD);
+        if sealed.ratchet_counter > max {
+            return Err(CryptoError::RatchetCounterOutOfRange {
+                claimed: sealed.ratchet_counter,
+                max,
+            });
+        }
+    }
+
     let decrypt_key = if sealed.ratchet_counter > 0 {
         derive_message_key(key, sealed.key_epoch, sealed.ratchet_counter)
     } else {
@@ -251,6 +292,17 @@ pub fn open_content(sealed: &SealedContent, key: &ChannelKey) -> Result<Content,
         .map_err(|_| CryptoError::DecryptionFailed)?;
 
     willow_transport::unpack(&plaintext).map_err(|e| CryptoError::Serialization(e.to_string()))
+}
+
+/// Decrypt a [`SealedContent`] back to a [`Content`] value.
+///
+/// Thin wrapper over [`open_content_bounded`] with a `current_counter`
+/// of 0 — accepts any `ratchet_counter` up to
+/// [`MAX_RATCHET_LOOKAHEAD`]. Callers that track per-channel ratchet
+/// state should prefer [`open_content_bounded`] directly so they can
+/// advance the allowed window as messages are processed.
+pub fn open_content(sealed: &SealedContent, key: &ChannelKey) -> Result<Content, CryptoError> {
+    open_content_bounded(sealed, key, 0)
 }
 
 // ───── Key Exchange ─────────────────────────────────────────────────────────
@@ -695,5 +747,120 @@ mod tests {
         let debug = format!("{key:?}");
         assert!(debug.contains("REDACTED"));
         assert!(!debug.contains(&format!("{:02x}", key.as_bytes()[0])));
+    }
+
+    // ── Issue #110: ratchet counter DoS bound ──────────────────────
+
+    /// Regression guard for issue #110: a sealed packet with a huge
+    /// `ratchet_counter` must be rejected **before** `derive_message_key`
+    /// is called. Without the bound, u64::MAX would take ~584 000 years
+    /// of HKDF work on a single core.
+    #[test]
+    fn open_content_rejects_huge_ratchet_counter() {
+        let key = generate_channel_key();
+        let content = Content::Text { body: "x".into() };
+
+        // Seal a legitimate packet at counter=1 so the ciphertext is valid
+        // for that key, then tamper with the ratchet_counter field.
+        let mut ratchet = KeyRatchet::new(&key, 0);
+        let (msg_key, epoch, counter) = ratchet.next_key();
+        let mut sealed = seal_content_with_counter(&content, &msg_key, epoch, counter).unwrap();
+        sealed.ratchet_counter = u64::MAX;
+
+        let start = std::time::Instant::now();
+        let result = open_content_bounded(&sealed, &key, 1);
+        let elapsed = start.elapsed();
+
+        assert!(matches!(
+            result,
+            Err(CryptoError::RatchetCounterOutOfRange { .. })
+        ));
+        // Should return almost instantly — an unbounded run would not
+        // complete in any realistic test timeout. 500ms gives CI plenty
+        // of headroom over the ~microsecond real cost of the check.
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "bounds check should return instantly, took {elapsed:?}"
+        );
+    }
+
+    /// Regression guard for issue #110: any counter more than
+    /// `MAX_RATCHET_LOOKAHEAD` above the receiver's current counter
+    /// must be rejected.
+    #[test]
+    fn open_content_bounded_rejects_above_lookahead() {
+        let key = generate_channel_key();
+        let content = Content::Text {
+            body: "attack".into(),
+        };
+        let mut sealed = seal_content_with_counter(&content, &key, 0, 1).unwrap();
+        // current_counter = 100, max = 100 + 1024 = 1124. Claim 1125.
+        sealed.ratchet_counter = 100 + MAX_RATCHET_LOOKAHEAD + 1;
+        let err = open_content_bounded(&sealed, &key, 100).unwrap_err();
+        match err {
+            CryptoError::RatchetCounterOutOfRange { claimed, max } => {
+                assert_eq!(claimed, 100 + MAX_RATCHET_LOOKAHEAD + 1);
+                assert_eq!(max, 100 + MAX_RATCHET_LOOKAHEAD);
+            }
+            other => panic!("expected RatchetCounterOutOfRange, got {other:?}"),
+        }
+    }
+
+    /// Regression guard for issue #110: counters at or within the
+    /// lookahead window must still decrypt successfully.
+    #[test]
+    fn open_content_bounded_accepts_within_lookahead() {
+        let key = generate_channel_key();
+        let content = Content::Text {
+            body: "legitimate catch-up".into(),
+        };
+
+        // Sender is at counter=50.
+        let mut ratchet = KeyRatchet::new(&key, 0);
+        let (mut msg_key, mut epoch, mut counter) = ratchet.next_key();
+        for _ in 0..49 {
+            let (k, e, c) = ratchet.next_key();
+            msg_key = k;
+            epoch = e;
+            counter = c;
+        }
+        assert_eq!(counter, 50);
+        let sealed = seal_content_with_counter(&content, &msg_key, epoch, counter).unwrap();
+
+        // Receiver is at counter=0; 50 is well within 1024 lookahead.
+        let decrypted = open_content_bounded(&sealed, &key, 0).unwrap();
+        assert_eq!(decrypted, content);
+    }
+
+    /// Regression guard for issue #110: the zero-arg `open_content`
+    /// shim rejects counters above `MAX_RATCHET_LOOKAHEAD`, since it
+    /// implicitly uses `current_counter = 0`.
+    #[test]
+    fn open_content_shim_rejects_counter_above_lookahead() {
+        let key = generate_channel_key();
+        let content = Content::Text { body: "x".into() };
+        let mut sealed = seal_content_with_counter(&content, &key, 0, 1).unwrap();
+        sealed.ratchet_counter = MAX_RATCHET_LOOKAHEAD + 1;
+        assert!(matches!(
+            open_content(&sealed, &key),
+            Err(CryptoError::RatchetCounterOutOfRange { .. })
+        ));
+    }
+
+    /// `ratchet_counter == 0` bypasses the ratchet derivation entirely
+    /// (backwards compat), so the bounds check must not apply there.
+    #[test]
+    fn open_content_bounded_counter_zero_bypasses_bounds_check() {
+        let key = generate_channel_key();
+        let content = Content::Text {
+            body: "legacy".into(),
+        };
+        let sealed = seal_content(&content, &key, 0).unwrap();
+        assert_eq!(sealed.ratchet_counter, 0);
+
+        // Even with current_counter = 0, ratchet_counter = 0 means "no
+        // ratchet" and should decrypt fine.
+        let decrypted = open_content_bounded(&sealed, &key, 0).unwrap();
+        assert_eq!(decrypted, content);
     }
 }
