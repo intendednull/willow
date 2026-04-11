@@ -168,7 +168,7 @@ impl ClientState {
     pub fn server_list(&self) -> Vec<(String, String)> {
         self.servers
             .iter()
-            .map(|(id, ctx)| (id.clone(), ctx.server.name.clone()))
+            .map(|(id, ctx)| (id.clone(), ctx.server.name().to_string()))
             .collect()
     }
 
