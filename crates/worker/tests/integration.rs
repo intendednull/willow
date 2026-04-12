@@ -181,11 +181,13 @@ async fn heartbeat_and_state_actor_interaction() {
     });
 
     let test_worker_id = net_a.id();
+    let hb_identity = Identity::generate();
     let _hb = system.spawn(HeartbeatActor::new(
         test_worker_id,
         Duration::from_millis(50),
         state_addr.clone(),
         sender_a,
+        hb_identity,
     ));
 
     // Wait for a heartbeat — drain neighbor events first.
@@ -200,9 +202,9 @@ async fn heartbeat_and_state_actor_interaction() {
         }
     };
 
-    let decoded: willow_common::WorkerWireMessage = bincode::deserialize(&data).unwrap();
-    match decoded {
-        willow_common::WorkerWireMessage::Announcement(a) => {
+    let (wire, _) = willow_common::unpack_wire(&data).expect("signed announcement");
+    match wire {
+        willow_common::WireMessage::Worker(willow_common::WorkerWireMessage::Announcement(a)) => {
             assert_eq!(a.peer_id, test_worker_id);
             match a.role {
                 WorkerRoleInfo::Replay {
@@ -211,7 +213,7 @@ async fn heartbeat_and_state_actor_interaction() {
                 _ => panic!("expected Replay"),
             }
         }
-        _ => panic!("expected Announcement"),
+        _ => panic!("expected Worker(Announcement)"),
     }
 
     system.shutdown().await;
@@ -314,11 +316,13 @@ async fn graceful_shutdown_sends_departure() {
     });
 
     let departing_id = net_a.id();
+    let dep_identity = Identity::generate();
     let _hb = system.spawn(HeartbeatActor::new(
         departing_id,
         Duration::from_secs(60), // Long interval — won't fire naturally
         state_addr,
         sender_a,
+        dep_identity,
     ));
 
     // Immediately shut down.
@@ -335,12 +339,14 @@ async fn graceful_shutdown_sends_departure() {
         }
     };
 
-    let decoded: willow_common::WorkerWireMessage = bincode::deserialize(&departure_data).unwrap();
-    match decoded {
-        willow_common::WorkerWireMessage::Departure { peer_id } => {
+    let (wire, _) = willow_common::unpack_wire(&departure_data).expect("signed departure");
+    match wire {
+        willow_common::WireMessage::Worker(willow_common::WorkerWireMessage::Departure {
+            peer_id,
+        }) => {
             assert_eq!(peer_id, departing_id);
         }
-        _ => panic!("expected Departure"),
+        _ => panic!("expected Worker(Departure)"),
     }
 }
 
@@ -369,17 +375,20 @@ async fn full_actor_orchestration_without_network() {
     });
 
     let orch_id = net_a.id();
+    let orch_identity = Identity::generate();
     let _hb = system.spawn(HeartbeatActor::new(
         orch_id,
         Duration::from_millis(50),
         state_addr.clone(),
         sender_a.clone(),
+        orch_identity.clone(),
     ));
     let _sync = system.spawn(SyncActor::new(
         orch_id,
         Duration::from_millis(80),
         state_addr.clone(),
         sender_a,
+        orch_identity,
     ));
 
     // Ingest some events.
@@ -410,12 +419,14 @@ async fn full_actor_orchestration_without_network() {
         if let Ok(Some(Ok(willow_network::GossipEvent::Received(msg)))) =
             tokio::time::timeout(Duration::from_millis(30), events_b.next()).await
         {
-            if let Ok(decoded) =
-                bincode::deserialize::<willow_common::WorkerWireMessage>(&msg.content)
+            if let Some((
+                willow_common::WireMessage::Worker(willow_common::WorkerWireMessage::Announcement(
+                    _,
+                )),
+                _,
+            )) = willow_common::unpack_wire(&msg.content)
             {
-                if matches!(decoded, willow_common::WorkerWireMessage::Announcement(_)) {
-                    announcement_count += 1;
-                }
+                announcement_count += 1;
             }
         }
     }
@@ -525,8 +536,14 @@ async fn server_ops_events_forwarded_to_state() {
     let ops_events = MockTopicEvents { rx: ops_rx };
 
     let _network = system.spawn(
-        NetworkActor::new(workers_events, state_addr.clone(), peer_id, MockTopicHandle)
-            .with_ops_events(ops_events),
+        NetworkActor::new(
+            workers_events,
+            state_addr.clone(),
+            peer_id,
+            MockTopicHandle,
+            worker_id.clone(),
+        )
+        .with_ops_events(ops_events),
     );
 
     // Allow the actor to start.
@@ -663,6 +680,7 @@ async fn pre_buffered_events_wait_for_state_ready_signal() {
             state_addr.clone(),
             peer_id,
             MockTopicHandle,
+            worker_id.clone(),
         )
         .with_ops_events(MockTopicEvents { rx: ops_rx })
         .with_ready_signal(ready_rx),
@@ -712,6 +730,7 @@ async fn network_actor_drains_immediately_without_ready_signal() {
             state_addr.clone(),
             peer_id,
             MockTopicHandle,
+            worker_id.clone(),
         )
         .with_ops_events(MockTopicEvents { rx: ops_rx }),
         // No ready signal — drain starts immediately.
