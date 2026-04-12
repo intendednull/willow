@@ -472,5 +472,8 @@ async fn process_received_message<T: TopicHandle>(
         }
         // TopicAnnounce is consumed by the relay; clients ignore it.
         crate::ops::WireMessage::TopicAnnounce { .. } => {}
+        // Worker messages travel on the _willow_workers topic and are never
+        // delivered to the client's server-ops listener.
+        crate::ops::WireMessage::Worker(_) => {}
     }
 }

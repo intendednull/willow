@@ -14,6 +14,7 @@ use crate::types::{WorkerAnnouncement, WorkerWireMessage};
 /// Heartbeat actor that periodically queries state and broadcasts announcements.
 pub struct HeartbeatActor<T: TopicHandle + 'static> {
     peer_id: EndpointId,
+    identity: willow_identity::Identity,
     interval: Duration,
     state_addr: Addr<StateActor>,
     topic: T,
@@ -26,9 +27,11 @@ impl<T: TopicHandle + 'static> HeartbeatActor<T> {
         interval: Duration,
         state_addr: Addr<StateActor>,
         topic: T,
+        identity: willow_identity::Identity,
     ) -> Self {
         Self {
             peer_id,
+            identity,
             interval,
             state_addr,
             topic,
@@ -52,11 +55,13 @@ impl<T: TopicHandle + 'static> Actor for HeartbeatActor<T> {
     fn stopped(&mut self) -> impl std::future::Future<Output = ()> + Send {
         debug!("heartbeat actor shutting down");
         let peer_id = self.peer_id;
+        let identity = self.identity.clone();
         let topic = self.topic.clone();
         async move {
             // Send departure before exiting.
             let departure = WorkerWireMessage::Departure { peer_id };
-            if let Ok(bytes) = bincode::serialize(&departure) {
+            let wire = willow_common::WireMessage::Worker(departure);
+            if let Some(bytes) = willow_common::pack_wire(&wire, &identity) {
                 if let Err(e) = topic.broadcast(bytes::Bytes::from(bytes)).await {
                     warn!(%e, "failed to send departure message");
                 }
@@ -73,6 +78,7 @@ impl<T: TopicHandle + 'static> Handler<HeartbeatTick> for HeartbeatActor<T> {
     ) -> impl std::future::Future<Output = ()> + Send {
         let state_addr = self.state_addr.clone();
         let peer_id = self.peer_id;
+        let identity = self.identity.clone();
         let topic = self.topic.clone();
 
         async move {
@@ -95,7 +101,8 @@ impl<T: TopicHandle + 'static> Handler<HeartbeatTick> for HeartbeatActor<T> {
             };
 
             let msg = WorkerWireMessage::Announcement(announcement);
-            if let Ok(bytes) = bincode::serialize(&msg) {
+            let wire = willow_common::WireMessage::Worker(msg);
+            if let Some(bytes) = willow_common::pack_wire(&wire, &identity) {
                 let _ = topic.broadcast(bytes::Bytes::from(bytes)).await;
             }
         }
@@ -149,11 +156,13 @@ mod tests {
         });
 
         let test_peer = net_a.id();
+        let test_identity = willow_identity::Identity::generate();
         let _hb = system.spawn(HeartbeatActor::new(
             test_peer,
             Duration::from_millis(50),
             state_addr,
             sender_a,
+            test_identity,
         ));
 
         // Wait for at least 1 announcement — drain neighbor events first.
@@ -168,12 +177,12 @@ mod tests {
             }
         };
 
-        let decoded: WorkerWireMessage = bincode::deserialize(&data).unwrap();
-        match decoded {
-            WorkerWireMessage::Announcement(a) => {
+        let (wire, _signer) = willow_common::unpack_wire(&data).expect("must decode signed wire");
+        match wire {
+            willow_common::WireMessage::Worker(WorkerWireMessage::Announcement(a)) => {
                 assert_eq!(a.peer_id, test_peer);
             }
-            _ => panic!("expected Announcement"),
+            other => panic!("expected Worker(Announcement), got {:?}", other),
         }
 
         system.shutdown().await;
@@ -189,7 +198,11 @@ mod tests {
                 break msg.content;
             }
         };
-        let decoded: WorkerWireMessage = bincode::deserialize(&departure_data).unwrap();
-        assert!(matches!(decoded, WorkerWireMessage::Departure { .. }));
+        let (wire, _signer) =
+            willow_common::unpack_wire(&departure_data).expect("must decode signed departure");
+        assert!(matches!(
+            wire,
+            willow_common::WireMessage::Worker(WorkerWireMessage::Departure { .. })
+        ));
     }
 }

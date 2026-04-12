@@ -50,6 +50,7 @@ pub async fn run<N: Network>(
             state_addr.clone(),
             peer_id,
             workers_sender.clone(),
+            identity.clone(),
         )
         .with_ops_events(ops_events)
         .with_ready_signal(ready_rx),
@@ -60,6 +61,7 @@ pub async fn run<N: Network>(
         Duration::from_secs(10),
         state_addr.clone(),
         workers_sender.clone(),
+        identity.clone(),
     ));
 
     let _sync = system.spawn(SyncActor::new(
@@ -67,6 +69,7 @@ pub async fn run<N: Network>(
         Duration::from_secs(config.sync_interval_secs),
         state_addr,
         workers_sender,
+        identity,
     ));
 
     // Wait for shutdown.

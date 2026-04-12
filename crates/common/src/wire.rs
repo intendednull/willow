@@ -75,6 +75,12 @@ pub enum WireMessage {
         /// Topic name strings (e.g. "{server_id}/{channel_name}").
         topics: Vec<String>,
     },
+    /// A signed worker node message (announcement, departure, request, or response).
+    ///
+    /// Worker gossip messages travel on the `_willow_workers` topic.
+    /// They are wrapped in this variant so they share the same Ed25519-signed
+    /// envelope as all other gossipsub messages.
+    Worker(crate::WorkerWireMessage),
 }
 
 /// WebRTC signaling payload for voice chat negotiation.

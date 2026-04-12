@@ -16,6 +16,7 @@ use crate::types::WorkerWireMessage;
 pub struct NetworkActor<E: TopicEvents + 'static, T: TopicHandle + 'static> {
     state_addr: Addr<StateActor>,
     local_peer_id: EndpointId,
+    identity: willow_identity::Identity,
     events: Option<E>,
     /// Optional SERVER_OPS topic events stream.
     ops_events: Option<E>,
@@ -31,10 +32,12 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> NetworkActor<E, T> {
         state_addr: Addr<StateActor>,
         local_peer_id: EndpointId,
         reply_topic: T,
+        identity: willow_identity::Identity,
     ) -> Self {
         Self {
             state_addr,
             local_peer_id,
+            identity,
             events: Some(events),
             ops_events: None,
             reply_topic,
@@ -119,6 +122,7 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Handler<GossipEventMsg>
     ) -> impl std::future::Future<Output = ()> + Send {
         let state_addr = self.state_addr.clone();
         let local_peer_id = self.local_peer_id;
+        let identity = self.identity.clone();
         let event = msg.0;
         let reply_topic = self.reply_topic.clone();
 
@@ -138,7 +142,8 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Handler<GossipEventMsg>
                                 target_peer: requester,
                                 payload: Box::new(response),
                             };
-                            if let Ok(bytes) = bincode::serialize(&reply) {
+                            let wire = willow_common::WireMessage::Worker(reply);
+                            if let Some(bytes) = willow_common::pack_wire(&wire, &identity) {
                                 let _ = reply_topic.broadcast(bytes::Bytes::from(bytes)).await;
                             }
                         }
@@ -207,9 +212,10 @@ pub enum WorkerMessageAction {
 /// This is a pure function — no I/O, no channels — so it's easily
 /// testable. The caller handles the actual I/O.
 pub fn parse_worker_message(data: &[u8], local_peer_id: &EndpointId) -> WorkerMessageAction {
-    let msg = match willow_transport::unpack::<WorkerWireMessage>(data) {
-        Ok(m) => m,
-        Err(e) => return WorkerMessageAction::DeserializeError(e.to_string()),
+    let msg = match willow_common::unpack_wire(data) {
+        Some((willow_common::WireMessage::Worker(m), _signer)) => m,
+        Some(_) => return WorkerMessageAction::Ignore,
+        None => return WorkerMessageAction::DeserializeError("invalid or unsigned worker message".to_string()),
     };
 
     match msg {
@@ -264,7 +270,7 @@ pub fn parse_server_message(data: &[u8]) -> ServerMessageAction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use willow_common::{WorkerRequest, WorkerResponse};
+    use willow_common::{WorkerRequest, WorkerResponse, WorkerWireMessage};
     use willow_identity::Identity;
     use willow_state::HeadsSummary;
 
@@ -272,8 +278,13 @@ mod tests {
         Identity::generate().endpoint_id()
     }
 
+    fn pack_worker(msg: WorkerWireMessage, signer: &Identity) -> Vec<u8> {
+        willow_common::pack_wire(&willow_common::WireMessage::Worker(msg), signer).unwrap()
+    }
+
     #[test]
     fn parse_worker_request_targeted_at_us() {
+        let signer = Identity::generate();
         let my_id = gen_id();
         let msg = WorkerWireMessage::Request {
             request_id: "req-1".to_string(),
@@ -283,7 +294,7 @@ mod tests {
                 heads: HeadsSummary::default(),
             },
         };
-        let data = bincode::serialize(&msg).unwrap();
+        let data = pack_worker(msg, &signer);
 
         match parse_worker_message(&data, &my_id) {
             WorkerMessageAction::HandleRequest { request_id, .. } => {
@@ -296,6 +307,7 @@ mod tests {
     #[test]
     fn sync_request_accepted_regardless_of_target() {
         // Sync requests are broadcast — accepted even if target_peer differs.
+        let signer = Identity::generate();
         let my_id = gen_id();
         let other_id = gen_id();
         let msg = WorkerWireMessage::Request {
@@ -306,7 +318,7 @@ mod tests {
                 heads: HeadsSummary::default(),
             },
         };
-        let data = bincode::serialize(&msg).unwrap();
+        let data = pack_worker(msg, &signer);
 
         assert!(matches!(
             parse_worker_message(&data, &my_id),
@@ -317,6 +329,7 @@ mod tests {
     #[test]
     fn history_request_not_for_us_ignored() {
         // Non-Sync requests targeted at another peer are ignored.
+        let signer = Identity::generate();
         let my_id = gen_id();
         let other_id = gen_id();
         let msg = WorkerWireMessage::Request {
@@ -329,7 +342,7 @@ mod tests {
                 limit: 50,
             },
         };
-        let data = bincode::serialize(&msg).unwrap();
+        let data = pack_worker(msg, &signer);
 
         assert!(matches!(
             parse_worker_message(&data, &my_id),
@@ -339,6 +352,7 @@ mod tests {
 
     #[test]
     fn parse_worker_announcement_ignored() {
+        let signer = Identity::generate();
         let my_id = gen_id();
         let msg = WorkerWireMessage::Announcement(willow_common::WorkerAnnouncement {
             peer_id: gen_id(),
@@ -350,7 +364,7 @@ mod tests {
             servers: vec![],
             timestamp: 0,
         });
-        let data = bincode::serialize(&msg).unwrap();
+        let data = pack_worker(msg, &signer);
 
         assert!(matches!(
             parse_worker_message(&data, &my_id),
@@ -360,9 +374,10 @@ mod tests {
 
     #[test]
     fn parse_worker_departure_ignored() {
+        let signer = Identity::generate();
         let my_id = gen_id();
         let msg = WorkerWireMessage::Departure { peer_id: gen_id() };
-        let data = bincode::serialize(&msg).unwrap();
+        let data = pack_worker(msg, &signer);
 
         assert!(matches!(
             parse_worker_message(&data, &my_id),
@@ -372,6 +387,7 @@ mod tests {
 
     #[test]
     fn parse_worker_response_ignored() {
+        let signer = Identity::generate();
         let my_id = gen_id();
         let msg = WorkerWireMessage::Response {
             request_id: "r1".to_string(),
@@ -380,8 +396,54 @@ mod tests {
                 reason: "test".to_string(),
             }),
         };
-        let data = bincode::serialize(&msg).unwrap();
+        let data = pack_worker(msg, &signer);
 
+        assert!(matches!(
+            parse_worker_message(&data, &my_id),
+            WorkerMessageAction::Ignore
+        ));
+    }
+
+    #[test]
+    fn unsigned_bytes_rejected() {
+        // Raw bincode (old unsigned path) must be rejected.
+        let my_id = gen_id();
+        let msg = WorkerWireMessage::Announcement(willow_common::WorkerAnnouncement {
+            peer_id: gen_id(),
+            role: willow_common::WorkerRoleInfo::Replay {
+                servers_loaded: 0,
+                events_buffered: 0,
+                max_events: 1000,
+            },
+            servers: vec![],
+            timestamp: 0,
+        });
+        let data = bincode::serialize(&msg).unwrap();
+        assert!(matches!(
+            parse_worker_message(&data, &my_id),
+            WorkerMessageAction::DeserializeError(_)
+        ));
+    }
+
+    #[test]
+    fn non_worker_wire_message_ignored() {
+        // A signed WireMessage that is not a Worker variant → Ignore.
+        let id = Identity::generate();
+        let my_id = gen_id();
+        let event = willow_state::Event::new(
+            &id,
+            1,
+            willow_state::EventHash::ZERO,
+            vec![],
+            willow_state::EventKind::Message {
+                channel_id: "ch".to_string(),
+                body: "hi".to_string(),
+                reply_to: None,
+            },
+            1000,
+        );
+        let data =
+            willow_common::pack_wire(&willow_common::WireMessage::Event(event), &id).unwrap();
         assert!(matches!(
             parse_worker_message(&data, &my_id),
             WorkerMessageAction::Ignore
