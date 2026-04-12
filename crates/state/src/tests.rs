@@ -2690,7 +2690,6 @@ fn create_and_insert_succeeds_with_permission() {
     );
 }
 
-
 // ── Issue #122: O(1) message lookup via message_index ───────────────────
 
 #[test]
@@ -2920,5 +2919,8 @@ fn message_index_delete_message_marks_deleted() {
     );
     let result = apply_incremental(&mut state, &del);
     assert_eq!(result, crate::materialize::ApplyResult::Applied);
-    assert!(state.messages[0].deleted, "message should be marked deleted");
+    assert!(
+        state.messages[0].deleted,
+        "message should be marked deleted"
+    );
 }

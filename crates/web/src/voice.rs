@@ -509,7 +509,10 @@ impl VoiceManager {
         remote_peer: &str,
     ) -> Result<(&PeerConnectionState, Option<RtcRtpSender>), String> {
         if self.connections.contains_key(remote_peer) {
-            let state = self.connections.get(remote_peer).expect("key just inserted");
+            let state = self
+                .connections
+                .get(remote_peer)
+                .expect("key just inserted");
             return Ok((state, None));
         }
 
@@ -528,7 +531,10 @@ impl VoiceManager {
             PeerConnectionState { pc, making_offer },
         );
 
-        let state = self.connections.get(remote_peer).expect("key just inserted");
+        let state = self
+            .connections
+            .get(remote_peer)
+            .expect("key just inserted");
         Ok((state, video_sender))
     }
 

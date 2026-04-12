@@ -1117,17 +1117,19 @@ mod tests {
         let result = reconcile_topic_map(&raw);
 
         // Only the valid entry should survive.
-        assert_eq!(result.len(), 1, "malformed IDs must be dropped, not included");
+        assert_eq!(
+            result.len(),
+            1,
+            "malformed IDs must be dropped, not included"
+        );
 
-        let expected_cid =
-            willow_messaging::ChannelId(uuid::Uuid::parse_str(&good_id).unwrap());
+        let expected_cid = willow_messaging::ChannelId(uuid::Uuid::parse_str(&good_id).unwrap());
         assert!(
             result.contains_key(&expected_cid),
             "the valid channel ID must be present in the output"
         );
         assert_eq!(
-            result[&expected_cid],
-            "general",
+            result[&expected_cid], "general",
             "the value associated with the valid ID must be preserved"
         );
     }

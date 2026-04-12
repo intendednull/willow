@@ -215,7 +215,11 @@ pub fn parse_worker_message(data: &[u8], local_peer_id: &EndpointId) -> WorkerMe
     let msg = match willow_common::unpack_wire(data) {
         Some((willow_common::WireMessage::Worker(m), _signer)) => m,
         Some(_) => return WorkerMessageAction::Ignore,
-        None => return WorkerMessageAction::DeserializeError("invalid or unsigned worker message".to_string()),
+        None => {
+            return WorkerMessageAction::DeserializeError(
+                "invalid or unsigned worker message".to_string(),
+            )
+        }
     };
 
     match msg {

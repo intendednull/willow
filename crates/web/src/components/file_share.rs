@@ -45,7 +45,9 @@ pub fn FileShareButton(channel: ReadSignal<String>) -> impl IntoView {
         let size = file.size() as u64;
         if size > MAX_FILE_SIZE {
             if let Some(window) = web_sys::window() {
-                window.alert_with_message("File is too large. Maximum size is 256 KB.").ok();
+                window
+                    .alert_with_message("File is too large. Maximum size is 256 KB.")
+                    .ok();
             }
             return;
         }
@@ -81,7 +83,9 @@ pub fn FileShareButton(channel: ReadSignal<String>) -> impl IntoView {
             wasm_bindgen_futures::spawn_local(async move {
                 if let Err(e) = handle_inner.share_file_inline(&ch, &filename, &data).await {
                     if let Some(window) = web_sys::window() {
-                        window.alert_with_message(&format!("Failed to share file: {e}")).ok();
+                        window
+                            .alert_with_message(&format!("Failed to share file: {e}"))
+                            .ok();
                     }
                 }
             });

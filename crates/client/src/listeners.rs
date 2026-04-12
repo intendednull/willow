@@ -152,9 +152,7 @@ async fn try_insert_event(ctx: &ListenerCtx, event: willow_state::Event) {
                 .ok();
             let client_events = mutations::derive_client_events(ev);
             for e in client_events {
-                ctx.event_broker
-                    .do_send(willow_actor::Publish(e))
-                    .ok();
+                ctx.event_broker.do_send(willow_actor::Publish(e)).ok();
             }
         }
     }
