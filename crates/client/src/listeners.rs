@@ -344,27 +344,55 @@ async fn process_received_message<T: TopicHandle>(
                 }
             };
             if should_respond {
-                // Generate invite for the requesting peer using the server registry.
+                // Generate invite for the requesting peer using event_state + registry.
                 let server_registry = ctx.server_registry.clone();
+                let event_state = ctx.event_state.clone();
                 let peer_endpoint = peer_id;
-                let invite_result = willow_actor::state::select(&server_registry, move |reg| {
-                    let entry = reg.active()?;
+
+                // Get server info from registry.
+                let reg_info = willow_actor::state::select(&server_registry, move |reg| {
+                    reg.active().map(|entry| {
+                        (entry.name.clone(), entry.server_id.clone(), entry.keys.clone())
+                    })
+                })
+                .await;
+
+                let invite_result = if let Some((server_name, server_id, keys)) = reg_info {
+                    // Build topic_names and get owner from event_state.
+                    let sid = server_id.clone();
+                    let fallback_id = ctx.identity.endpoint_id();
+                    let (topic_names, genesis_author) =
+                        willow_actor::state::select(&event_state, move |es| {
+                            let names: std::collections::HashMap<String, String> = es
+                                .channels
+                                .values()
+                                .map(|ch| {
+                                    let topic = crate::util::make_topic(&sid, &ch.name);
+                                    (topic, ch.name.clone())
+                                })
+                                .collect();
+                            let author = es
+                                .admins
+                                .iter()
+                                .next()
+                                .copied()
+                                .unwrap_or(fallback_id);
+                            (names, author)
+                        })
+                        .await;
+
                     let pub_key = crate::invite::endpoint_id_to_ed25519_public(&peer_endpoint);
-                    let topic_names: std::collections::HashMap<String, String> = entry
-                        .topic_map
-                        .iter()
-                        .map(|(topic, (name, _))| (topic.clone(), name.clone()))
-                        .collect();
                     crate::invite::generate_invite(
-                        entry.server.name(),
-                        &entry.server.id().to_string(),
-                        entry.server.creator,
-                        &entry.keys,
+                        &server_name,
+                        &server_id,
+                        genesis_author,
+                        &keys,
                         &topic_names,
                         &pub_key,
                     )
-                })
-                .await;
+                } else {
+                    None
+                };
                 if let Some(invite_data) = invite_result {
                     let msg = crate::ops::WireMessage::JoinResponse {
                         target_peer: peer_id,

@@ -23,8 +23,8 @@ pub fn format_timestamp(ms: u64) -> String {
 }
 
 /// Build a gossipsub topic string from a server ID and channel name.
-pub fn make_topic(server: &willow_channel::Server, channel_name: &str) -> String {
-    format!("{}/{}", server.id(), channel_name)
+pub fn make_topic(server_id: &str, channel_name: &str) -> String {
+    format!("{}/{}", server_id, channel_name)
 }
 
 /// Get the current wall-clock time in milliseconds since the Unix epoch.

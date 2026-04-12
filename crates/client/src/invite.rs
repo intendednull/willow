@@ -155,7 +155,7 @@ mod tests {
     /// Helper: create a server_id, a channel key, and the corresponding
     /// keys + topic_map for a single-channel server.
     fn test_server_with_channels(
-        server_name: &str,
+        _server_name: &str,
         channel_names: &[&str],
     ) -> (
         String,                       // server_id

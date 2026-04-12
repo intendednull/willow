@@ -166,7 +166,7 @@ impl Clone for ClientViewHandle {
 /// Compute the messages view for the current channel.
 pub fn compute_messages_view(
     events: &Arc<willow_state::ServerState>,
-    registry: &Arc<ServerRegistry>,
+    _registry: &Arc<ServerRegistry>,
     chat: &Arc<ChatMeta>,
     profiles: &Arc<ProfileState>,
     local_peer_id: EndpointId,
@@ -174,13 +174,6 @@ pub fn compute_messages_view(
     let ch = &chat.current_channel;
     let mut channel_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    if let Some(entry) = registry.active() {
-        for (name, cid) in entry.topic_map.values() {
-            if name == ch {
-                channel_ids.insert(cid.to_string());
-            }
-        }
-    }
     for (id, c) in &events.channels {
         if c.name == *ch {
             channel_ids.insert(id.clone());
@@ -289,28 +282,12 @@ pub fn compute_members_view(
 /// Compute the channels view.
 pub fn compute_channels_view(
     events: &Arc<willow_state::ServerState>,
-    registry: &Arc<ServerRegistry>,
+    _registry: &Arc<ServerRegistry>,
 ) -> ChannelsView {
     let mut names: Vec<ChannelInfo> = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    // From server registry (authoritative channel list).
-    if let Some(entry) = registry.active() {
-        for ch in entry.server.channels() {
-            if seen.insert(ch.name.clone()) {
-                let kind = match ch.kind {
-                    willow_channel::ChannelKind::Text => willow_state::ChannelKind::Text,
-                    willow_channel::ChannelKind::Voice => willow_state::ChannelKind::Voice,
-                };
-                names.push(ChannelInfo {
-                    name: ch.name.clone(),
-                    kind,
-                });
-            }
-        }
-    }
-
-    // From event state (may have channels not yet in registry).
+    // From event state (the single source of truth for channels).
     for ch in events.channels.values() {
         if seen.insert(ch.name.clone()) {
             names.push(ChannelInfo {
