@@ -10,7 +10,7 @@
 //!
 //! This crate defines data structures for servers, channels, roles, and
 //! permissions. **All authority enforcement happens in
-//! `willow-state::materialize::apply_*`.** Direct mutation of a [`Server`]
+//! `willow-state::materialize::apply_event`.** Direct mutation of a [`Server`]
 //! value is not an enforcement boundary — it is a data-shape operation
 //! used by the materializer and tests. Code that needs to enforce trust
 //! decisions (admin promotion, kicks, role assignment, etc.) MUST go

@@ -1,7 +1,7 @@
 # Authority Model
 
 > **One-sentence summary:** All authority checks live in
-> `willow-state::materialize::apply_unchecked` and the
+> `willow-state::materialize::apply_event` and the
 > `required_permission()` table. Every other crate is untrusted plumbing.
 
 ## Single source of truth
@@ -34,7 +34,7 @@ user action
   → gossip broadcast to peers
   → peer receives Event
   → dag.insert() (signature + sequence verification)
-  → apply_incremental() → apply_unchecked()
+  → apply_incremental() → apply_event()
       1. governance check   (Propose/Vote require is_admin)
       2. admin-only check   (GrantPermission, RevokePermission,
                               RenameServer, SetServerDescription)
@@ -45,7 +45,7 @@ user action
 
 **Direct struct mutation is not in this path and does not constitute
 enforcement.** Any code that mutates a `Server` or `ServerState` outside
-`apply_unchecked` is bypassing authority.
+`apply_event` is bypassing authority.
 
 ## Permission tiers
 
@@ -105,7 +105,7 @@ arm, it is a bug.
    permission-gated, or unrestricted.
 3. If permission-gated: add it to `required_permission()`.
 4. If admin-only: add it to the admin-only match block in
-   `apply_unchecked()`.
+   `apply_event()`.
 5. If unrestricted: add it to the comment on the `_ => None` arm
    listing intentionally-unrestricted variants.
 6. Handle it in `apply_mutation()`.

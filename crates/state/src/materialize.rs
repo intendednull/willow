@@ -2,7 +2,7 @@
 //!
 //! The [`materialize`] function is the ONLY way to derive state from a
 //! DAG. It topologically sorts all events and replays them through
-//! [`apply_unchecked`], producing identical output on all peers given the
+//! [`apply_event`], producing identical output on all peers given the
 //! same DAG contents.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -43,7 +43,7 @@ pub fn materialize(dag: &EventDag) -> ServerState {
     let mut state = ServerState::new(&server_id, &name, genesis_author);
     for event in sorted {
         state.applied_events.insert(event.hash);
-        apply_unchecked(&mut state, event);
+        apply_event(&mut state, event);
     }
     state
 }
@@ -56,14 +56,14 @@ pub fn apply_incremental(state: &mut ServerState, event: &Event) -> ApplyResult 
     if !state.applied_events.insert(event.hash) {
         return ApplyResult::AlreadyApplied;
     }
-    apply_unchecked(state, event)
+    apply_event(state, event)
 }
 
 // ───── Internal ────────────────────────────────────────────────────────────
 
 /// Apply an event's mutation to state. Permission checks and governance
 /// logic are enforced here. The DAG guarantees ordering and dedup.
-fn apply_unchecked(state: &mut ServerState, event: &Event) -> ApplyResult {
+fn apply_event(state: &mut ServerState, event: &Event) -> ApplyResult {
     // Governance events — handled specially.
     match &event.kind {
         EventKind::CreateServer { .. } => {
@@ -467,7 +467,7 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
             state.description = description.clone();
         }
 
-        // Governance events handled above in apply_unchecked.
+        // Governance events handled above in apply_event.
         EventKind::CreateServer { .. } | EventKind::Propose { .. } | EventKind::Vote { .. } => {}
     }
 

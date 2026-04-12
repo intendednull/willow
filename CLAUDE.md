@@ -184,7 +184,7 @@ interaction.
 ### Authority Model
 
 See [`docs/specs/2026-04-12-authority-model.md`](docs/specs/2026-04-12-authority-model.md).
-All authority checks live in `willow-state::materialize::apply_unchecked`
+All authority checks live in `willow-state::materialize::apply_event`
 and the `required_permission()` table. Every other crate is untrusted
 plumbing. `willow-channel` is deprecated and scheduled for removal.
 
