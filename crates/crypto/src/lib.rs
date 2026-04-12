@@ -1194,4 +1194,35 @@ mod tests {
             "cache hit ({repeat:?}) should be much faster than warmup ({warmup:?})"
         );
     }
+
+    /// `counter = 0` is the "no ratchet" sentinel — must return the channel
+    /// key unchanged without advancing the ratchet.
+    #[test]
+    fn ratchet_cache_counter_zero_returns_channel_key() {
+        let key = generate_channel_key();
+        let mut cache = RatchetCache::new(64);
+        let result = cache.derive_or_cached(&key, 0, 0);
+        assert_eq!(result, key, "counter=0 should return the channel key as-is");
+        // Cache should remain empty — no ratchet work done.
+        assert!(cache.is_empty());
+    }
+
+    /// Requesting a counter lower than the highest previously derived counter
+    /// (backwards/out-of-order request) correctly falls back to a fresh
+    /// ratchet replay and still returns the right key.
+    #[test]
+    fn ratchet_cache_backwards_request_returns_correct_key() {
+        let key = generate_channel_key();
+        let mut cache = RatchetCache::new(256);
+
+        // Advance to counter 50.
+        let k50 = cache.derive_or_cached(&key, 0, 50);
+        let k50_direct = derive_message_key(&key, 0, 50);
+        assert_eq!(k50, k50_direct);
+
+        // Now request counter 10, which is below the saved ratchet state.
+        let k10 = cache.derive_or_cached(&key, 0, 10);
+        let k10_direct = derive_message_key(&key, 0, 10);
+        assert_eq!(k10, k10_direct, "out-of-order request returned wrong key");
+    }
 }

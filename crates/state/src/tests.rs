@@ -2884,3 +2884,41 @@ fn pending_buffer_eviction_reduces_count_to_cap() {
     }
     assert_eq!(buf.pending_count(), cap);
 }
+
+// ── Issue #122: DeleteMessage path uses message_index ─────────────────────
+
+#[test]
+fn message_index_delete_message_marks_deleted() {
+    use crate::materialize::apply_incremental;
+
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    let msg = do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Message {
+            channel_id: "ch".into(),
+            body: "to be deleted".into(),
+            reply_to: None,
+        },
+    );
+
+    let mut state = materialize(&dag);
+    assert!(!state.messages[0].deleted);
+
+    // Apply DeleteMessage — must use the index to find it.
+    let del = Event::new(
+        &admin,
+        2,
+        EventHash::ZERO,
+        vec![],
+        EventKind::DeleteMessage {
+            message_id: msg.hash,
+        },
+        0,
+    );
+    let result = apply_incremental(&mut state, &del);
+    assert_eq!(result, crate::materialize::ApplyResult::Applied);
+    assert!(state.messages[0].deleted, "message should be marked deleted");
+}

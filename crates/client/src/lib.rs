@@ -631,6 +631,11 @@ fn load_identity() -> Identity {
 /// UUID, which would cause the client to diverge from the rest of the
 /// network (issue #141).
 ///
+/// This function is a pre-wired utility for callers that deserialize topic
+/// maps from wire data (e.g. `accept_invite`, `joining`). It is not yet
+/// called from all such sites — integration into the full invite/join flow
+/// is tracked as follow-up work.
+///
 /// # Arguments
 ///
 /// * `raw` — map from channel-ID string to an arbitrary value `V`

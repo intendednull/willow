@@ -109,4 +109,16 @@ mod tests {
         // 25 hours = 90000 seconds = 90000000 ms -> wraps to 01:00
         assert_eq!(format_timestamp(90_000_000), "01:00");
     }
+
+    /// `with_timeout` must return `Err(ClientError::ActorTimeout)` when the
+    /// wrapped future never resolves.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn with_timeout_fires_on_stall() {
+        let result = with_timeout("test_label", std::future::pending::<()>()).await;
+        assert!(
+            matches!(result, Err(crate::ClientError::ActorTimeout("test_label"))),
+            "expected ActorTimeout, got {result:?}"
+        );
+    }
 }
