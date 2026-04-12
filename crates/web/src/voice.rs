@@ -528,7 +528,7 @@ impl VoiceManager {
             PeerConnectionState { pc, making_offer },
         );
 
-        let state = self.connections.get(remote_peer).unwrap();
+        let state = self.connections.get(remote_peer).expect("key just inserted");
         Ok((state, video_sender))
     }
 

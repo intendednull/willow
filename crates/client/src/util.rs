@@ -24,7 +24,7 @@ where
     }
     #[cfg(target_arch = "wasm32")]
     {
-        // WASM has no tokio timers — await without timeout for now.
+        let _ = label; // WASM has no tokio timers — await without timeout for now.
         Ok(f.await)
     }
 }
