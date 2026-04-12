@@ -39,6 +39,8 @@ pub enum InsertError {
         vote: EventHash,
         proposal: EventHash,
     },
+    /// Author lacks the required permission for this EventKind.
+    PermissionDenied(String),
 }
 
 impl std::fmt::Display for InsertError {
@@ -72,6 +74,7 @@ impl std::fmt::Display for InsertError {
                 f,
                 "Vote event {vote} must include proposal {proposal} in deps"
             ),
+            Self::PermissionDenied(reason) => write!(f, "permission denied: {reason}"),
         }
     }
 }

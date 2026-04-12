@@ -59,12 +59,74 @@ pub fn apply_incremental(state: &mut ServerState, event: &Event) -> ApplyResult 
     apply_event(state, event)
 }
 
+// ───── Permission pre-check ────────────────────────────────────────────────
+
+/// Check whether an author is allowed to emit a given [`EventKind`]
+/// against the current state.
+///
+/// This is the same authority logic used inside [`apply_event`],
+/// extracted so callers can pre-check *before* signing an event.
+/// Returns `Ok(())` if permitted, or an error string describing why
+/// the author is not allowed.
+///
+/// See `docs/specs/2026-04-12-state-authority-and-mutations.md` for
+/// the full permission tier breakdown.
+pub fn check_permission(
+    state: &ServerState,
+    author: &EndpointId,
+    kind: &EventKind,
+) -> Result<(), String> {
+    // Governance: Propose/Vote require admin.
+    match kind {
+        EventKind::Propose { .. } | EventKind::Vote { .. } => {
+            if !state.is_admin(author) {
+                return Err("not an admin".into());
+            }
+            return Ok(());
+        }
+        EventKind::CreateServer { .. } => return Ok(()),
+        _ => {}
+    }
+
+    // Admin-only events.
+    match kind {
+        EventKind::GrantPermission { .. }
+        | EventKind::RevokePermission { .. }
+        | EventKind::RenameServer { .. }
+        | EventKind::SetServerDescription { .. } => {
+            if !state.is_admin(author) {
+                return Err(format!("author '{}' is not an admin", author));
+            }
+        }
+        _ => {}
+    }
+
+    // Permission-gated events.
+    if let Some(ref perm) = required_permission(kind) {
+        if !state.has_permission(author, perm) {
+            return Err(format!(
+                "author '{}' lacks {:?} permission",
+                author, perm
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 // ───── Internal ────────────────────────────────────────────────────────────
 
-/// Apply an event's mutation to state. Permission checks and governance
-/// logic are enforced here. The DAG guarantees ordering and dedup.
+/// Apply an event's mutation to state. Checks permissions via
+/// [`check_permission`], then handles governance state mutations
+/// (inserting proposals, recording votes) and delegates to
+/// [`apply_mutation`] for everything else.
 fn apply_event(state: &mut ServerState, event: &Event) -> ApplyResult {
-    // Governance events — handled specially.
+    // Permission / authority check (read-only against state).
+    if let Err(reason) = check_permission(state, &event.author, &event.kind) {
+        return ApplyResult::Rejected(reason);
+    }
+
+    // Governance events mutate state after the permission check.
     match &event.kind {
         EventKind::CreateServer { .. } => {
             // No-op during replay — genesis data already extracted
@@ -72,9 +134,6 @@ fn apply_event(state: &mut ServerState, event: &Event) -> ApplyResult {
             return ApplyResult::Applied;
         }
         EventKind::Propose { action } => {
-            if !state.is_admin(&event.author) {
-                return ApplyResult::Rejected("not an admin".into());
-            }
             state.pending_proposals.insert(
                 event.hash,
                 PendingProposal {
@@ -87,9 +146,6 @@ fn apply_event(state: &mut ServerState, event: &Event) -> ApplyResult {
             return ApplyResult::Applied;
         }
         EventKind::Vote { proposal, accept } => {
-            if !state.is_admin(&event.author) {
-                return ApplyResult::Rejected("not an admin".into());
-            }
             match state.pending_proposals.get_mut(proposal) {
                 Some(prop) => {
                     prop.votes.insert(event.author, *accept);
@@ -102,35 +158,6 @@ fn apply_event(state: &mut ServerState, event: &Event) -> ApplyResult {
             return ApplyResult::Applied;
         }
         _ => {}
-    }
-
-    // Admin-only events.
-    match &event.kind {
-        EventKind::GrantPermission { .. }
-        | EventKind::RevokePermission { .. }
-        | EventKind::RenameServer { .. }
-        | EventKind::SetServerDescription { .. } => {
-            if !state.is_admin(&event.author) {
-                return ApplyResult::Rejected(format!("author '{}' is not an admin", event.author));
-            }
-        }
-        _ => {}
-    }
-
-    // Permission-checked events.
-    // required_permission returns:
-    //   Message/EditMessage/DeleteMessage/Reaction → SendMessages
-    //   CreateChannel/DeleteChannel/RenameChannel/RotateChannelKey → ManageChannels
-    //   CreateRole/DeleteRole/SetPermission/AssignRole → ManageRoles
-    //   All others → None
-    let required = required_permission(&event.kind);
-    if let Some(ref perm) = required {
-        if !state.has_permission(&event.author, perm) {
-            return ApplyResult::Rejected(format!(
-                "author '{}' lacks {:?} permission",
-                event.author, perm
-            ));
-        }
     }
 
     apply_mutation(state, event)

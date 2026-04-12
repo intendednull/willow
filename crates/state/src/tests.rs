@@ -2448,3 +2448,234 @@ fn deep_pending_chain_does_not_stack_overflow() {
     );
     assert_eq!(managed.pending().pending_count(), 0);
 }
+
+// ───── check_permission tests ──────────────────────────────────────────────
+
+#[test]
+fn check_permission_allows_admin_propose() {
+    let owner = Identity::generate();
+    let dag = test_dag(&owner);
+    let state = materialize(&dag);
+
+    let kind = EventKind::Propose {
+        action: ProposedAction::KickMember {
+            peer_id: owner.endpoint_id(),
+        },
+    };
+    assert!(crate::materialize::check_permission(&state, &owner.endpoint_id(), &kind).is_ok());
+}
+
+#[test]
+fn check_permission_rejects_non_admin_propose() {
+    let owner = Identity::generate();
+    let peer = Identity::generate();
+    let dag = test_dag(&owner);
+    let state = materialize(&dag);
+
+    let kind = EventKind::Propose {
+        action: ProposedAction::KickMember {
+            peer_id: owner.endpoint_id(),
+        },
+    };
+    assert!(crate::materialize::check_permission(&state, &peer.endpoint_id(), &kind).is_err());
+}
+
+#[test]
+fn check_permission_allows_granted_send_messages() {
+    let owner = Identity::generate();
+    let peer = Identity::generate();
+    let mut dag = test_dag(&owner);
+
+    // Grant SendMessages to peer.
+    do_emit(
+        &mut dag,
+        &owner,
+        EventKind::GrantPermission {
+            peer_id: peer.endpoint_id(),
+            permission: Permission::SendMessages,
+        },
+    );
+    let state = materialize(&dag);
+
+    let kind = EventKind::Message {
+        channel_id: "ch1".into(),
+        body: "hello".into(),
+        reply_to: None,
+    };
+    assert!(crate::materialize::check_permission(&state, &peer.endpoint_id(), &kind).is_ok());
+}
+
+#[test]
+fn check_permission_rejects_without_send_messages() {
+    let owner = Identity::generate();
+    let peer = Identity::generate();
+    let dag = test_dag(&owner);
+    let state = materialize(&dag);
+
+    let kind = EventKind::Message {
+        channel_id: "ch1".into(),
+        body: "hello".into(),
+        reply_to: None,
+    };
+    assert!(crate::materialize::check_permission(&state, &peer.endpoint_id(), &kind).is_err());
+}
+
+#[test]
+fn check_permission_admin_implicitly_has_all() {
+    let owner = Identity::generate();
+    let dag = test_dag(&owner);
+    let state = materialize(&dag);
+
+    // Owner (admin) should pass all permission-gated checks without
+    // explicit grants.
+    for kind in [
+        EventKind::Message {
+            channel_id: "ch1".into(),
+            body: "hi".into(),
+            reply_to: None,
+        },
+        EventKind::CreateChannel {
+            name: "dev".into(),
+            channel_id: "ch2".into(),
+            kind: "text".into(),
+        },
+        EventKind::CreateRole {
+            name: "mod".into(),
+            role_id: "r1".into(),
+        },
+    ] {
+        assert!(
+            crate::materialize::check_permission(&state, &owner.endpoint_id(), &kind).is_ok(),
+            "admin should pass check for {:?}",
+            kind
+        );
+    }
+}
+
+#[test]
+fn check_permission_unrestricted_events_always_pass() {
+    let owner = Identity::generate();
+    let peer = Identity::generate();
+    let dag = test_dag(&owner);
+    let state = materialize(&dag);
+
+    // Unrestricted events pass even for non-admin peers with no grants.
+    for kind in [
+        EventKind::SetProfile {
+            display_name: "alice".into(),
+        },
+        EventKind::PinMessage {
+            channel_id: "ch1".into(),
+            message_id: EventHash::ZERO,
+        },
+        EventKind::UnpinMessage {
+            channel_id: "ch1".into(),
+            message_id: EventHash::ZERO,
+        },
+    ] {
+        assert!(
+            crate::materialize::check_permission(&state, &peer.endpoint_id(), &kind).is_ok(),
+            "unrestricted event should pass for any peer: {:?}",
+            kind
+        );
+    }
+}
+
+#[test]
+fn check_permission_rejects_non_admin_rename_server() {
+    let owner = Identity::generate();
+    let peer = Identity::generate();
+    let dag = test_dag(&owner);
+    let state = materialize(&dag);
+
+    let kind = EventKind::RenameServer {
+        new_name: "hacked".into(),
+    };
+    assert!(crate::materialize::check_permission(&state, &peer.endpoint_id(), &kind).is_err());
+}
+
+// ───── create_and_insert pre-check tests ───────────────────────────────────
+
+#[test]
+fn create_and_insert_rejects_without_permission() {
+    use crate::dag::InsertError;
+    use crate::managed::ManagedDag;
+
+    let owner = Identity::generate();
+    let peer = Identity::generate();
+    let mut managed = ManagedDag::new(&owner, "Test", 5000);
+
+    // Peer has no grants — should be rejected.
+    let result = managed.create_and_insert(
+        &peer,
+        EventKind::Message {
+            channel_id: "ch1".into(),
+            body: "hello".into(),
+            reply_to: None,
+        },
+        1000,
+    );
+    assert!(
+        matches!(result, Err(InsertError::PermissionDenied(_))),
+        "expected PermissionDenied, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn create_and_insert_does_not_advance_seq_on_rejection() {
+    use crate::managed::ManagedDag;
+
+    let owner = Identity::generate();
+    let peer = Identity::generate();
+    let mut managed = ManagedDag::new(&owner, "Test", 5000);
+
+    let seq_before = managed.dag().latest_seq(&peer.endpoint_id());
+
+    // Rejected — should not advance sequence.
+    let _ = managed.create_and_insert(
+        &peer,
+        EventKind::Message {
+            channel_id: "ch1".into(),
+            body: "hello".into(),
+            reply_to: None,
+        },
+        1000,
+    );
+
+    let seq_after = managed.dag().latest_seq(&peer.endpoint_id());
+    assert_eq!(seq_before, seq_after, "sequence should not advance on rejection");
+}
+
+#[test]
+fn create_and_insert_succeeds_with_permission() {
+    use crate::managed::ManagedDag;
+
+    let owner = Identity::generate();
+    let peer = Identity::generate();
+    let mut managed = ManagedDag::new(&owner, "Test", 5000);
+
+    // Grant SendMessages to peer.
+    managed
+        .create_and_insert(
+            &owner,
+            EventKind::GrantPermission {
+                peer_id: peer.endpoint_id(),
+                permission: Permission::SendMessages,
+            },
+            1000,
+        )
+        .expect("admin grant should succeed");
+
+    // Now peer can send a message.
+    let result = managed.create_and_insert(
+        &peer,
+        EventKind::Message {
+            channel_id: "ch1".into(),
+            body: "hello".into(),
+            reply_to: None,
+        },
+        2000,
+    );
+    assert!(result.is_ok(), "should succeed with permission: {:?}", result.err());
+}
