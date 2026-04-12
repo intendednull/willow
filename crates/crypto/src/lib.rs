@@ -476,12 +476,20 @@ impl RatchetCache {
     ///
     /// Uses any previously saved ratchet state for `epoch` to resume from the
     /// highest already-computed counter rather than replaying from counter=1.
+    ///
+    /// `target_counter = 0` is the sentinel for "no ratchet" and returns the
+    /// channel key directly without advancing the ratchet.
     pub fn derive_or_cached(
         &mut self,
         channel_key: &ChannelKey,
         epoch: u32,
         target_counter: u64,
     ) -> ChannelKey {
+        // counter=0 is the "no ratchet" sentinel — return the channel key as-is.
+        if target_counter == 0 {
+            return channel_key.clone();
+        }
+
         // Cache hit: return immediately without any HKDF work.
         if let Some(key) = self.cache.get(&(epoch, target_counter)) {
             return key.clone();
@@ -514,21 +522,22 @@ impl RatchetCache {
                 result = Some(key);
             }
 
-            // Keep the saved ratchet state up to date so the next call
-            // for a higher counter can resume from here.
-            let should_save = match self.ratchet_states.get(&epoch) {
-                Some((prev, _)) => counter > *prev,
-                None => true,
-            };
-            if should_save {
-                self.ratchet_states.insert(epoch, (counter, ratchet.clone()));
-            }
-
             if counter >= target_counter {
+                // Save ratchet state only at the final step — the ratchet is
+                // now positioned to produce counter+1 on the next call.
+                let should_save = match self.ratchet_states.get(&epoch) {
+                    Some((prev, _)) => counter > *prev,
+                    None => true,
+                };
+                if should_save {
+                    self.ratchet_states.insert(epoch, (counter, ratchet));
+                }
                 break;
             }
         }
 
+        // result is always Some here: the loop exits only when counter == target_counter,
+        // at which point result was set. The unwrap_or_else is a safety net.
         result.unwrap_or_else(|| derive_message_key(channel_key, epoch, target_counter))
     }
 

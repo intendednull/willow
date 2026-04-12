@@ -4,7 +4,7 @@
 //! governance state, and profiles. It is derived from a [`EventDag`](crate::dag::EventDag)
 //! via [`materialize`](crate::materialize::materialize).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
 use willow_identity::EndpointId;
@@ -76,8 +76,16 @@ pub struct ServerState {
     /// Kept in sync with every insertion into `messages` so that
     /// `EditMessage`, `DeleteMessage`, and `Reaction` handlers can find
     /// their target in O(1) instead of O(N).
+    ///
+    /// This field is excluded from serialization (`#[serde(skip)]`). It is
+    /// always empty on a freshly deserialized `ServerState` and is rebuilt
+    /// incrementally by each subsequent `apply_event` call, or all at once
+    /// by a full `materialize()`. Code that deserializes `ServerState` and
+    /// then calls `apply_incremental` without a prior full materialize will
+    /// silently no-op on `EditMessage`/`DeleteMessage`/`Reaction` events until
+    /// the index is warmed. The intended usage is always through `materialize`.
     #[serde(default, skip)]
-    pub message_index: BTreeMap<EventHash, usize>,
+    pub message_index: HashMap<EventHash, usize>,
 }
 
 impl ServerState {
@@ -113,7 +121,7 @@ impl ServerState {
             channel_keys: BTreeMap::new(),
             pending_proposals: BTreeMap::new(),
             applied_events: BTreeSet::new(),
-            message_index: BTreeMap::new(),
+            message_index: HashMap::new(),
         }
     }
 

@@ -5,7 +5,7 @@
 //! [`apply_event`], producing identical output on all peers given the
 //! same DAG contents.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use willow_identity::EndpointId;
 
@@ -312,7 +312,7 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
                 .iter()
                 .enumerate()
                 .map(|(i, m)| (m.id, i))
-                .collect();
+                .collect::<HashMap<_, _>>();
         }
 
         EventKind::RenameChannel {

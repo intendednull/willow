@@ -20,7 +20,10 @@ where
     {
         tokio::time::timeout(ACTOR_CALL_TIMEOUT, f)
             .await
-            .map_err(|_| crate::ClientError::ActorTimeout(label))
+            .map_err(|_| {
+                tracing::warn!(label, "actor call timed out");
+                crate::ClientError::ActorTimeout(label)
+            })
     }
     #[cfg(target_arch = "wasm32")]
     {
