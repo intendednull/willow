@@ -468,10 +468,7 @@ impl<N: willow_network::Network> ClientMutations<N> {
         let name = name.to_string();
         let role_id = uuid::Uuid::new_v4().to_string();
         let event = self
-            .build_event(EventKind::CreateRole {
-                name,
-                role_id,
-            })
+            .build_event(EventKind::CreateRole { name, role_id })
             .await?;
         self.apply_event(&event).await;
         self.broadcast_event(&event);

@@ -158,9 +158,9 @@ mod tests {
         _server_name: &str,
         channel_names: &[&str],
     ) -> (
-        String,                       // server_id
-        HashMap<String, ChannelKey>,  // keys
-        HashMap<String, String>,      // topic_map: topic → name
+        String,                      // server_id
+        HashMap<String, ChannelKey>, // keys
+        HashMap<String, String>,     // topic_map: topic → name
     ) {
         let server_id = format!("test-server-{}", uuid::Uuid::new_v4());
         let mut keys = HashMap::new();
@@ -282,8 +282,7 @@ mod tests {
         let owner = Identity::generate();
         let joiner = Identity::generate();
 
-        let (server_id, keys, topic_map) =
-            test_server_with_channels("Join Test", &["general"]);
+        let (server_id, keys, topic_map) = test_server_with_channels("Join Test", &["general"]);
 
         let pub_key = endpoint_id_to_ed25519_public(&joiner.endpoint_id());
         let code = generate_invite(

@@ -747,7 +747,10 @@ fn channel_kind_is_preserved() {
     );
 
     let state = materialize(&dag);
-    assert_eq!(state.channels["vc-1"].kind, crate::types::ChannelKind::Voice);
+    assert_eq!(
+        state.channels["vc-1"].kind,
+        crate::types::ChannelKind::Voice
+    );
 }
 
 #[test]
@@ -2644,7 +2647,10 @@ fn create_and_insert_does_not_advance_seq_on_rejection() {
     );
 
     let seq_after = managed.dag().latest_seq(&peer.endpoint_id());
-    assert_eq!(seq_before, seq_after, "sequence should not advance on rejection");
+    assert_eq!(
+        seq_before, seq_after,
+        "sequence should not advance on rejection"
+    );
 }
 
 #[test]
@@ -2677,5 +2683,9 @@ fn create_and_insert_succeeds_with_permission() {
         },
         2000,
     );
-    assert!(result.is_ok(), "should succeed with permission: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "should succeed with permission: {:?}",
+        result.err()
+    );
 }

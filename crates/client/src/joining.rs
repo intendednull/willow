@@ -121,11 +121,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 }
                 reg.active_server = Some(server_id.clone());
                 // Derive channel topics from invite channel_keys.
-                let topics: Vec<String> = accepted
-                    .channel_keys
-                    .keys()
-                    .cloned()
-                    .collect();
+                let topics: Vec<String> = accepted.channel_keys.keys().cloned().collect();
                 Ok(topics)
             },
         )

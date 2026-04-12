@@ -59,8 +59,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         // Subscribe to channel topics from all servers.
         // Derive topic strings from event_state channels + server registry IDs.
         let channel_topics: Vec<String> = {
-            let es =
-                willow_actor::state::get(&self.event_state_addr).await;
+            let es = willow_actor::state::get(&self.event_state_addr).await;
             willow_actor::state::select(&self.server_registry_addr, move |reg| {
                 reg.servers
                     .values()
@@ -130,8 +129,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         }
 
         let channel_topics: Vec<String> = {
-            let es =
-                willow_actor::state::get(&self.event_state_addr).await;
+            let es = willow_actor::state::get(&self.event_state_addr).await;
             willow_actor::state::select(&self.server_registry_addr, move |reg| {
                 reg.servers
                     .values()

@@ -104,10 +104,7 @@ pub fn check_permission(
     // Permission-gated events.
     if let Some(ref perm) = required_permission(kind) {
         if !state.has_permission(author, perm) {
-            return Err(format!(
-                "author '{}' lacks {:?} permission",
-                author, perm
-            ));
+            return Err(format!("author '{}' lacks {:?} permission", author, perm));
         }
     }
 

@@ -230,7 +230,8 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
     let (roles, set_roles) = signal(Vec::<(String, String, Vec<String>)>::new());
     let (display_name, set_display_name) = signal(String::new());
     let (server_owner, set_server_owner) = signal(String::new());
-    let (channel_kinds, set_channel_kinds) = signal(Vec::<(String, willow_state::ChannelKind)>::new());
+    let (channel_kinds, set_channel_kinds) =
+        signal(Vec::<(String, willow_state::ChannelKind)>::new());
     let (sync_provider_ids, set_sync_provider_ids) = signal(HashSet::<String>::new());
     let (admin_ids, set_admin_ids) = signal(HashSet::<String>::new());
 

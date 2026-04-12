@@ -352,7 +352,11 @@ async fn process_received_message<T: TopicHandle>(
                 // Get server info from registry.
                 let reg_info = willow_actor::state::select(&server_registry, move |reg| {
                     reg.active().map(|entry| {
-                        (entry.name.clone(), entry.server_id.clone(), entry.keys.clone())
+                        (
+                            entry.name.clone(),
+                            entry.server_id.clone(),
+                            entry.keys.clone(),
+                        )
                     })
                 })
                 .await;
@@ -371,12 +375,7 @@ async fn process_received_message<T: TopicHandle>(
                                     (topic, ch.name.clone())
                                 })
                                 .collect();
-                            let author = es
-                                .admins
-                                .iter()
-                                .next()
-                                .copied()
-                                .unwrap_or(fallback_id);
+                            let author = es.admins.iter().next().copied().unwrap_or(fallback_id);
                             (names, author)
                         })
                         .await;

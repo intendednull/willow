@@ -35,7 +35,9 @@ fn build_results(
 
     // Channels.
     for ch in channels {
-        let is_voice = channel_kinds.iter().any(|(n, k)| n == ch && *k == willow_state::ChannelKind::Voice);
+        let is_voice = channel_kinds
+            .iter()
+            .any(|(n, k)| n == ch && *k == willow_state::ChannelKind::Voice);
         if q.is_empty() || ch.to_lowercase().contains(&q) {
             items.push(PaletteItem {
                 label: ch.clone(),
