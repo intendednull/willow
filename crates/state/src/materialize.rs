@@ -217,6 +217,11 @@ fn reevaluate_all_proposals(state: &mut ServerState) {
 }
 
 /// Map an EventKind to its required Permission (if any).
+///
+/// This is the permission-gated enforcement table. See
+/// `docs/specs/authority-model.md` for the full authority model,
+/// including which variants are checked elsewhere (governance block,
+/// admin-only block) and which are intentionally unrestricted.
 fn required_permission(kind: &EventKind) -> Option<Permission> {
     match kind {
         EventKind::Message { .. }
@@ -234,8 +239,21 @@ fn required_permission(kind: &EventKind) -> Option<Permission> {
         | EventKind::SetPermission { .. }
         | EventKind::AssignRole { .. } => Some(Permission::ManageRoles),
 
-        // Admin-only, governance, profile, pinning — no Permission
-        // variant, checked elsewhere or unrestricted.
+        // Variants that intentionally return None:
+        //   CreateServer        — genesis, checked structurally
+        //   Propose, Vote       — governance, checked in the governance block above
+        //   GrantPermission,
+        //   RevokePermission,
+        //   RenameServer,
+        //   SetServerDescription — admin-only, checked in the admin block above
+        //   SetProfile          — unrestricted (any member)
+        //   PinMessage,
+        //   UnpinMessage        — unrestricted (any member)
+        //
+        // If a new EventKind variant is added and is NOT listed here or
+        // in an arm above, it will silently get no permission check.
+        // That is a bug. See docs/specs/authority-model.md § "Adding a
+        // new event kind" for the required checklist.
         _ => None,
     }
 }

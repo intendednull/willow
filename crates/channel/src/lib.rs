@@ -1,5 +1,11 @@
 //! # Willow Channel
 //!
+//! **⚠ DEPRECATED — scheduled for removal.** See
+//! `docs/specs/authority-model.md` for the target architecture.
+//! `willow-state::ServerState` is the single source of truth; this
+//! crate's types duplicate it and will be consolidated into
+//! `willow-state` and `willow-client`.
+//!
 //! Servers, channels, roles, and permissions for the Willow P2P network.
 //!
 //! This crate defines data structures for servers, channels, roles, and
