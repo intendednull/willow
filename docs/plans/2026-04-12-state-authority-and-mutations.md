@@ -10,8 +10,9 @@ Two changes to align the codebase with the spec:
 
 1. Add a permission pre-check to `ManagedDag::create_and_insert()` so
    rejected events never enter the DAG or advance the sequence number.
-2. Annotate the `required_permission()` catch-all so new variants
-   can't silently bypass enforcement.
+2. The `required_permission()` catch-all annotation is already in place
+   (exhaustive variant comment at `materialize.rs:237-257`). No further
+   work needed for that requirement.
 
 All work is in `crates/state/src/`. Every step ends with
 `cargo test -p willow-state` passing.
