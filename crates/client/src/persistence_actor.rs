@@ -111,9 +111,10 @@ impl Handler<PersistServerState> for PersistenceActor {
     }
 }
 
-/// Persist server config (name, channels) and channel keys.
+/// Persist server config (name, keys) and channel keys.
 pub struct PersistServerConfig {
-    pub server: willow_channel::Server,
+    pub server_id: String,
+    pub name: String,
     pub keys: std::collections::HashMap<String, willow_crypto::ChannelKey>,
 }
 impl Message for PersistServerConfig {
@@ -127,7 +128,11 @@ impl Handler<PersistServerConfig> for PersistenceActor {
         _ctx: &mut Context<Self>,
     ) -> impl std::future::Future<Output = ()> + Send {
         if self.persistence_enabled {
-            storage::save_server(&msg.server, &msg.keys);
+            let meta = storage::SavedServerMeta {
+                server_id: msg.server_id,
+                name: msg.name,
+            };
+            storage::save_server(&meta, &msg.keys);
         }
         async {}
     }
@@ -157,7 +162,7 @@ impl Handler<PersistServerList> for PersistenceActor {
 /// Persist per-server config by ID.
 pub struct PersistServerById {
     pub server_id: String,
-    pub server: willow_channel::Server,
+    pub name: String,
     pub keys: std::collections::HashMap<String, willow_crypto::ChannelKey>,
 }
 impl Message for PersistServerById {
@@ -171,7 +176,11 @@ impl Handler<PersistServerById> for PersistenceActor {
         _ctx: &mut Context<Self>,
     ) -> impl std::future::Future<Output = ()> + Send {
         if self.persistence_enabled {
-            storage::save_server_by_id(&msg.server_id, &msg.server, &msg.keys);
+            let meta = storage::SavedServerMeta {
+                server_id: msg.server_id.clone(),
+                name: msg.name,
+            };
+            storage::save_server_by_id(&msg.server_id, &meta, &msg.keys);
         }
         async {}
     }

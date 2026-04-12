@@ -317,7 +317,7 @@ struct CurrentServerResource {
 #[derive(Serialize)]
 struct ChannelEntry {
     name: String,
-    kind: String,
+    kind: willow_state::ChannelKind,
 }
 
 #[derive(Serialize)]

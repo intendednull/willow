@@ -22,9 +22,9 @@ pub use dag::{EventDag, InsertError};
 pub use event::{Event, EventKind, Permission, ProposedAction, VoteThreshold};
 pub use hash::EventHash;
 pub use managed::ManagedDag;
-pub use materialize::{apply_incremental, materialize, ApplyResult};
+pub use materialize::{apply_incremental, check_permission, materialize, ApplyResult};
 pub use server::{PendingProposal, ServerState};
 pub use sync::{
     AuthorHead, AuthorRequest, ChainStatus, HeadsSummary, PendingBuffer, Snapshot, SyncMessage,
 };
-pub use types::{Channel, ChatMessage, Member, Profile, Role};
+pub use types::{Channel, ChannelKind, ChatMessage, Member, Profile, Role};

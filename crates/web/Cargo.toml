@@ -10,6 +10,7 @@ willow-actor = { path = "../actor" }
 willow-client = { path = "../client" }
 willow-identity = { path = "../identity" }
 willow-network = { path = "../network" }
+willow-state = { path = "../state" }
 leptos = { version = "0.7", features = ["csr"] }
 tracing = { workspace = true }
 wasm-bindgen = "0.2"

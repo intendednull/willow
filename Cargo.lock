@@ -5975,23 +5975,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "willow-channel"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "getrandom 0.2.17",
- "getrandom 0.3.4",
- "serde",
- "thiserror 1.0.69",
- "tokio",
- "uuid",
- "willow-crypto",
- "willow-identity",
- "willow-state",
- "willow-transport",
-]
-
-[[package]]
 name = "willow-client"
 version = "0.1.0"
 dependencies = [
@@ -6012,7 +5995,6 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "willow-actor",
- "willow-channel",
  "willow-common",
  "willow-crypto",
  "willow-identity",
@@ -6203,6 +6185,7 @@ dependencies = [
  "willow-client",
  "willow-identity",
  "willow-network",
+ "willow-state",
 ]
 
 [[package]]

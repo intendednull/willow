@@ -2,7 +2,7 @@
 //!
 //! The [`materialize`] function is the ONLY way to derive state from a
 //! DAG. It topologically sorts all events and replays them through
-//! [`apply_unchecked`], producing identical output on all peers given the
+//! [`apply_event`], producing identical output on all peers given the
 //! same DAG contents.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -43,7 +43,7 @@ pub fn materialize(dag: &EventDag) -> ServerState {
     let mut state = ServerState::new(&server_id, &name, genesis_author);
     for event in sorted {
         state.applied_events.insert(event.hash);
-        apply_unchecked(&mut state, event);
+        apply_event(&mut state, event);
     }
     state
 }
@@ -56,15 +56,74 @@ pub fn apply_incremental(state: &mut ServerState, event: &Event) -> ApplyResult 
     if !state.applied_events.insert(event.hash) {
         return ApplyResult::AlreadyApplied;
     }
-    apply_unchecked(state, event)
+    apply_event(state, event)
+}
+
+// ───── Permission pre-check ────────────────────────────────────────────────
+
+/// Check whether an author is allowed to emit a given [`EventKind`]
+/// against the current state.
+///
+/// This is the same authority logic used inside [`apply_event`],
+/// extracted so callers can pre-check *before* signing an event.
+/// Returns `Ok(())` if permitted, or an error string describing why
+/// the author is not allowed.
+///
+/// See `docs/specs/2026-04-12-state-authority-and-mutations.md` for
+/// the full permission tier breakdown.
+pub fn check_permission(
+    state: &ServerState,
+    author: &EndpointId,
+    kind: &EventKind,
+) -> Result<(), String> {
+    // Governance: Propose/Vote require admin.
+    match kind {
+        EventKind::Propose { .. } | EventKind::Vote { .. } => {
+            if !state.is_admin(author) {
+                return Err("not an admin".into());
+            }
+            return Ok(());
+        }
+        EventKind::CreateServer { .. } => return Ok(()),
+        _ => {}
+    }
+
+    // Admin-only events.
+    match kind {
+        EventKind::GrantPermission { .. }
+        | EventKind::RevokePermission { .. }
+        | EventKind::RenameServer { .. }
+        | EventKind::SetServerDescription { .. } => {
+            if !state.is_admin(author) {
+                return Err(format!("author '{}' is not an admin", author));
+            }
+        }
+        _ => {}
+    }
+
+    // Permission-gated events.
+    if let Some(ref perm) = required_permission(kind) {
+        if !state.has_permission(author, perm) {
+            return Err(format!("author '{}' lacks {:?} permission", author, perm));
+        }
+    }
+
+    Ok(())
 }
 
 // ───── Internal ────────────────────────────────────────────────────────────
 
-/// Apply an event's mutation to state. Permission checks and governance
-/// logic are enforced here. The DAG guarantees ordering and dedup.
-fn apply_unchecked(state: &mut ServerState, event: &Event) -> ApplyResult {
-    // Governance events — handled specially.
+/// Apply an event's mutation to state. Checks permissions via
+/// [`check_permission`], then handles governance state mutations
+/// (inserting proposals, recording votes) and delegates to
+/// [`apply_mutation`] for everything else.
+fn apply_event(state: &mut ServerState, event: &Event) -> ApplyResult {
+    // Permission / authority check (read-only against state).
+    if let Err(reason) = check_permission(state, &event.author, &event.kind) {
+        return ApplyResult::Rejected(reason);
+    }
+
+    // Governance events mutate state after the permission check.
     match &event.kind {
         EventKind::CreateServer { .. } => {
             // No-op during replay — genesis data already extracted
@@ -72,9 +131,6 @@ fn apply_unchecked(state: &mut ServerState, event: &Event) -> ApplyResult {
             return ApplyResult::Applied;
         }
         EventKind::Propose { action } => {
-            if !state.is_admin(&event.author) {
-                return ApplyResult::Rejected("not an admin".into());
-            }
             state.pending_proposals.insert(
                 event.hash,
                 PendingProposal {
@@ -87,9 +143,6 @@ fn apply_unchecked(state: &mut ServerState, event: &Event) -> ApplyResult {
             return ApplyResult::Applied;
         }
         EventKind::Vote { proposal, accept } => {
-            if !state.is_admin(&event.author) {
-                return ApplyResult::Rejected("not an admin".into());
-            }
             match state.pending_proposals.get_mut(proposal) {
                 Some(prop) => {
                     prop.votes.insert(event.author, *accept);
@@ -102,35 +155,6 @@ fn apply_unchecked(state: &mut ServerState, event: &Event) -> ApplyResult {
             return ApplyResult::Applied;
         }
         _ => {}
-    }
-
-    // Admin-only events.
-    match &event.kind {
-        EventKind::GrantPermission { .. }
-        | EventKind::RevokePermission { .. }
-        | EventKind::RenameServer { .. }
-        | EventKind::SetServerDescription { .. } => {
-            if !state.is_admin(&event.author) {
-                return ApplyResult::Rejected(format!("author '{}' is not an admin", event.author));
-            }
-        }
-        _ => {}
-    }
-
-    // Permission-checked events.
-    // required_permission returns:
-    //   Message/EditMessage/DeleteMessage/Reaction → SendMessages
-    //   CreateChannel/DeleteChannel/RenameChannel/RotateChannelKey → ManageChannels
-    //   CreateRole/DeleteRole/SetPermission/AssignRole → ManageRoles
-    //   All others → None
-    let required = required_permission(&event.kind);
-    if let Some(ref perm) = required {
-        if !state.has_permission(&event.author, perm) {
-            return ApplyResult::Rejected(format!(
-                "author '{}' lacks {:?} permission",
-                event.author, perm
-            ));
-        }
     }
 
     apply_mutation(state, event)
@@ -217,6 +241,11 @@ fn reevaluate_all_proposals(state: &mut ServerState) {
 }
 
 /// Map an EventKind to its required Permission (if any).
+///
+/// This is the permission-gated enforcement table. See
+/// `docs/specs/2026-04-12-state-authority-and-mutations.md` for the full authority model,
+/// including which variants are checked elsewhere (governance block,
+/// admin-only block) and which are intentionally unrestricted.
 fn required_permission(kind: &EventKind) -> Option<Permission> {
     match kind {
         EventKind::Message { .. }
@@ -234,8 +263,21 @@ fn required_permission(kind: &EventKind) -> Option<Permission> {
         | EventKind::SetPermission { .. }
         | EventKind::AssignRole { .. } => Some(Permission::ManageRoles),
 
-        // Admin-only, governance, profile, pinning — no Permission
-        // variant, checked elsewhere or unrestricted.
+        // Variants that intentionally return None:
+        //   CreateServer        — genesis, checked structurally
+        //   Propose, Vote       — governance, checked in the governance block above
+        //   GrantPermission,
+        //   RevokePermission,
+        //   RenameServer,
+        //   SetServerDescription — admin-only, checked in the admin block above
+        //   SetProfile          — unrestricted (any member)
+        //   PinMessage,
+        //   UnpinMessage        — unrestricted (any member)
+        //
+        // If a new EventKind variant is added and is NOT listed here or
+        // in an arm above, it will silently get no permission check.
+        // That is a bug. See docs/specs/2026-04-12-state-authority-and-mutations.md § "Adding a
+        // new event kind" for the required checklist.
         _ => None,
     }
 }
@@ -449,7 +491,7 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
             state.description = description.clone();
         }
 
-        // Governance events handled above in apply_unchecked.
+        // Governance events handled above in apply_event.
         EventKind::CreateServer { .. } | EventKind::Propose { .. } | EventKind::Vote { .. } => {}
     }
 
@@ -516,7 +558,7 @@ mod tests {
             EventKind::CreateChannel {
                 name: "general".into(),
                 channel_id: "ch-1".into(),
-                kind: "text".into(),
+                kind: crate::types::ChannelKind::Text,
             },
         );
         let state = materialize(&dag);
@@ -556,7 +598,7 @@ mod tests {
             EventKind::CreateChannel {
                 name: "evil".into(),
                 channel_id: "ch-evil".into(),
-                kind: "text".into(),
+                kind: crate::types::ChannelKind::Text,
             },
         );
         let state = materialize(&dag);
@@ -585,7 +627,7 @@ mod tests {
             EventKind::CreateChannel {
                 name: "general".into(),
                 channel_id: "ch-1".into(),
-                kind: "text".into(),
+                kind: crate::types::ChannelKind::Text,
             },
         );
         let state = materialize(&dag);
@@ -767,7 +809,7 @@ mod tests {
             EventKind::CreateChannel {
                 name: "doomed".into(),
                 channel_id: "ch-d".into(),
-                kind: "text".into(),
+                kind: crate::types::ChannelKind::Text,
             },
         );
         emit(

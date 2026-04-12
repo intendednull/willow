@@ -8,7 +8,6 @@
 
 use std::collections::HashMap;
 
-use willow_channel::Server;
 use willow_crypto::ChannelKey;
 
 // ---- Public types -----------------------------------------------------------
@@ -60,10 +59,17 @@ pub fn load_join_links(server_id: &str) -> Vec<crate::ops::JoinLink> {
         .unwrap_or_default()
 }
 
+/// Persisted server metadata (server ID and display name).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct SavedServerMeta {
+    pub server_id: String,
+    pub name: String,
+}
+
 // ---- Public API -------------------------------------------------------------
 
-pub fn save_server(server: &Server, keys: &HashMap<String, ChannelKey>) {
-    if let Ok(bytes) = willow_transport::pack(server) {
+pub fn save_server(meta: &SavedServerMeta, keys: &HashMap<String, ChannelKey>) {
+    if let Ok(bytes) = willow_transport::pack(meta) {
         save_raw("server", &bytes);
     }
     let saved = SavedKeys(
@@ -76,15 +82,15 @@ pub fn save_server(server: &Server, keys: &HashMap<String, ChannelKey>) {
     }
 }
 
-pub fn load_server() -> Option<(Server, HashMap<String, ChannelKey>)> {
-    let server: Server = willow_transport::unpack(&load_raw("server")?).ok()?;
+pub fn load_server() -> Option<(SavedServerMeta, HashMap<String, ChannelKey>)> {
+    let meta: SavedServerMeta = willow_transport::unpack(&load_raw("server")?).ok()?;
     let saved: SavedKeys = willow_transport::unpack(&load_raw("keys")?).ok()?;
     let keys = saved
         .0
         .into_iter()
         .map(|(topic, bytes)| (topic, ChannelKey::from_bytes(bytes)))
         .collect();
-    Some((server, keys))
+    Some((meta, keys))
 }
 
 pub fn save_identity_bytes(bytes: &[u8]) {
@@ -108,8 +114,8 @@ pub fn load_settings() -> Option<NetworkSettings> {
 // ---- Multi-server persistence -----------------------------------------------
 
 /// Save a single server context by ID.
-pub fn save_server_by_id(id: &str, server: &Server, keys: &HashMap<String, ChannelKey>) {
-    if let Ok(bytes) = willow_transport::pack(server) {
+pub fn save_server_by_id(id: &str, meta: &SavedServerMeta, keys: &HashMap<String, ChannelKey>) {
+    if let Ok(bytes) = willow_transport::pack(meta) {
         save_raw(&format!("srv_{id}"), &bytes);
     }
     let saved = SavedKeys(
@@ -123,15 +129,15 @@ pub fn save_server_by_id(id: &str, server: &Server, keys: &HashMap<String, Chann
 }
 
 /// Load a single server context by ID.
-pub fn load_server_by_id(id: &str) -> Option<(Server, HashMap<String, ChannelKey>)> {
-    let server: Server = willow_transport::unpack(&load_raw(&format!("srv_{id}"))?).ok()?;
+pub fn load_server_by_id(id: &str) -> Option<(SavedServerMeta, HashMap<String, ChannelKey>)> {
+    let meta: SavedServerMeta = willow_transport::unpack(&load_raw(&format!("srv_{id}"))?).ok()?;
     let saved: SavedKeys = willow_transport::unpack(&load_raw(&format!("srvkeys_{id}"))?).ok()?;
     let keys = saved
         .0
         .into_iter()
         .map(|(topic, bytes)| (topic, ChannelKey::from_bytes(bytes)))
         .collect();
-    Some((server, keys))
+    Some((meta, keys))
 }
 
 /// Save the list of known server IDs.

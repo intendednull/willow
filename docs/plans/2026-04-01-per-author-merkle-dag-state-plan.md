@@ -362,14 +362,14 @@ pub fn meets_threshold(&self, yes_count: usize) -> bool {
 
 ### Internal
 
-- `apply_unchecked(state, event) -> ApplyResult` — governance +
+- `apply_event(state, event) -> ApplyResult` — governance +
   permission check + mutation
 - `apply_mutation(state, event) -> ApplyResult` — the match block
   for non-governance events
 - `apply_proposed_action(state, action)` — applies a voted-on action
 - `required_permission(kind) -> Option<Permission>`
 
-### Governance handling in apply_unchecked
+### Governance handling in apply_event
 
 ```
 CreateServer → no-op (genesis data extracted by materialize)
@@ -403,7 +403,7 @@ Similarly, `SetVoteThreshold` re-evaluates all pending proposals.
 
 `GrantPermission`, `RevokePermission`, `RenameServer`,
 `SetServerDescription` require `is_admin` check directly in
-`apply_unchecked` (not via `required_permission`). These are admin
+`apply_event` (not via `required_permission`). These are admin
 actions that don't map to a specific `Permission` variant.
 
 ### The mutation match block
@@ -426,7 +426,7 @@ Ported from current `apply_inner`. Changes:
   RevokeAdmin/KickMember and `reevaluate_all_proposals` for
   SetVoteThreshold
 
-Total: 22 match arms in apply_unchecked (3 governance + 4 admin-only + 15 permission-checked).
+Total: 22 match arms in apply_event (3 governance + 4 admin-only + 15 permission-checked).
 
 **Tests**:
 - `materialize_empty_dag` — just genesis → fresh state with genesis

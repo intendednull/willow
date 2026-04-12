@@ -6,14 +6,51 @@ impl<N: willow_network::Network> ClientHandle<N> {
         recipient_peer_id: &willow_identity::EndpointId,
     ) -> anyhow::Result<String> {
         let pub_key = invite::endpoint_id_to_ed25519_public(recipient_peer_id);
-        let invite_code = willow_actor::state::select(&self.server_registry_addr, move |reg| {
-            let entry = reg
-                .active()
-                .ok_or_else(|| anyhow::anyhow!("no active server"))?;
-            invite::generate_invite(&entry.server, &entry.keys, &entry.topic_map, &pub_key)
-                .ok_or_else(|| anyhow::anyhow!("invite generation failed"))
+
+        // Gather server info from registry.
+        let (server_name, server_id, keys) =
+            willow_actor::state::select(&self.server_registry_addr, move |reg| {
+                let entry = reg
+                    .active()
+                    .ok_or_else(|| anyhow::anyhow!("no active server"))?;
+                Ok::<_, anyhow::Error>((
+                    entry.name.clone(),
+                    entry.server_id.clone(),
+                    entry.keys.clone(),
+                ))
+            })
+            .await?;
+
+        // Build topic_names from event_state channels + server_id.
+        let sid = server_id.clone();
+        let topic_names: HashMap<String, String> =
+            willow_actor::state::select(&self.event_state_addr, move |es| {
+                es.channels
+                    .values()
+                    .map(|ch| {
+                        let topic = crate::util::make_topic(&sid, &ch.name);
+                        (topic, ch.name.clone())
+                    })
+                    .collect()
+            })
+            .await;
+
+        // Get genesis author (first admin) from event_state.
+        let my_id = self.identity.endpoint_id();
+        let genesis_author = willow_actor::state::select(&self.event_state_addr, move |es| {
+            es.admins.iter().next().copied().unwrap_or(my_id)
         })
-        .await?;
+        .await;
+
+        let invite_code = invite::generate_invite(
+            &server_name,
+            &server_id,
+            genesis_author,
+            &keys,
+            &topic_names,
+            &pub_key,
+        )
+        .ok_or_else(|| anyhow::anyhow!("invite generation failed"))?;
 
         // Grant SendMessages permission to the joining peer so they can
         // actually send messages once they accept the invite. Without this,
@@ -53,7 +90,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         // caller instead of silently inventing a fresh server id, which
         // would split-brain the joiner from the rest of the network
         // (issue #115).
-        let parsed_server_uuid = uuid::Uuid::parse_str(&server_id).map_err(|e| {
+        let _parsed_server_uuid = uuid::Uuid::parse_str(&server_id).map_err(|e| {
             crate::ClientError::MalformedInvite(format!("invalid server_id `{server_id}`: {e}"))
         })?;
 
@@ -62,52 +99,29 @@ impl<N: willow_network::Network> ClientHandle<N> {
             &self.server_registry_addr,
             move |reg| -> Result<Vec<String>, crate::ClientError> {
                 if let Some(entry) = reg.servers.get_mut(&server_id) {
-                    for (topic, (name, key)) in &accepted.channel_keys {
+                    // Existing server — just merge in the channel keys.
+                    for (topic, (_name, key)) in &accepted.channel_keys {
                         entry.keys.insert(topic.clone(), key.clone());
-                        if !entry.topic_map.contains_key(topic) {
-                            entry.topic_map.insert(
-                                topic.clone(),
-                                (name.clone(), willow_channel::ChannelId::new()),
-                            );
-                        }
                     }
                 } else {
-                    let mut server = willow_channel::Server::with_id(
-                        willow_channel::ServerId(parsed_server_uuid),
-                        &accepted.server_name,
-                        accepted.genesis_author,
-                    );
-                    let mut topic_map = HashMap::new();
+                    // New server — build a minimal ServerEntry.
                     let mut keys = HashMap::new();
-                    for (topic, (name, key)) in &accepted.channel_keys {
-                        let ch_id = server
-                            .create_channel(name, willow_channel::ChannelKind::Text)
-                            .map_err(|e| {
-                                crate::ClientError::MalformedInvite(format!(
-                                    "could not create channel `{name}` from invite: {e}"
-                                ))
-                            })?;
-                        server.set_channel_key(ch_id.clone(), key.clone());
+                    for (topic, (_name, key)) in &accepted.channel_keys {
                         keys.insert(topic.clone(), key.clone());
-                        topic_map.insert(topic.clone(), (name.clone(), ch_id));
                     }
                     reg.servers.insert(
                         server_id.clone(),
                         state_actors::ServerEntry {
-                            server,
+                            server_id: server_id.clone(),
                             name: accepted.server_name.clone(),
-                            topic_map,
                             keys,
                             unread: HashMap::new(),
                         },
                     );
                 }
                 reg.active_server = Some(server_id.clone());
-                let topics = reg
-                    .servers
-                    .get(&server_id)
-                    .map(|e| e.topic_map.keys().cloned().collect())
-                    .unwrap_or_default();
+                // Derive channel topics from invite channel_keys.
+                let topics: Vec<String> = accepted.channel_keys.keys().cloned().collect();
                 Ok(topics)
             },
         )

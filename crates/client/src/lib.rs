@@ -266,42 +266,15 @@ fn persist_servers(state: &ClientState) {
     let ids: Vec<String> = state.servers.keys().cloned().collect();
     storage::save_server_list(&ids);
     for (id, ctx) in &state.servers {
-        storage::save_server_by_id(id, &ctx.server, &ctx.keys);
+        let meta = storage::SavedServerMeta {
+            server_id: ctx.server_id.clone(),
+            name: ctx.name.clone(),
+        };
+        storage::save_server_by_id(id, &meta, &ctx.keys);
     }
 }
 
 // on_connected is no longer needed — subscription is handled by connect().
-
-/// Reconcile `topic_map` channel IDs with `event_state.channels`.
-///
-/// After event state is loaded or synced, the `topic_map` may have stale
-/// channel IDs (from invite acceptance or legacy storage). This updates
-/// them to match the authoritative IDs in `event_state`.
-pub(crate) fn reconcile_topic_map(state: &mut ClientState) {
-    // Collect corrections first to avoid borrow conflicts.
-    let corrections: Vec<(String, willow_channel::ChannelId)> = state
-        .event_state
-        .channels
-        .iter()
-        .map(|(id_str, ch)| {
-            let cid = willow_channel::ChannelId(
-                uuid::Uuid::parse_str(id_str).unwrap_or_else(|_| uuid::Uuid::new_v4()),
-            );
-            (ch.name.clone(), cid)
-        })
-        .collect();
-
-    let Some(ctx) = state.active_mut() else {
-        return;
-    };
-    for (ch_name, correct_id) in &corrections {
-        for (_topic, (map_name, map_id)) in ctx.topic_map.iter_mut() {
-            if map_name == ch_name {
-                *map_id = correct_id.clone();
-            }
-        }
-    }
-}
 
 impl<N: willow_network::Network> ClientHandle<N> {
     /// Create a new client. Loads or generates identity, loads or creates
@@ -331,16 +304,10 @@ impl<N: willow_network::Network> ClientHandle<N> {
         if let Some(ids) = &server_ids {
             // Load each server from per-server storage.
             for id in ids {
-                if let Some((server, keys)) = storage::load_server_by_id(id) {
-                    let mut topic_map = HashMap::new();
-                    for ch in server.channels() {
-                        let topic = util::make_topic(&server, &ch.name);
-                        topic_map.insert(topic, (ch.name.clone(), ch.id.clone()));
-                    }
-
+                if let Some((meta, keys)) = storage::load_server_by_id(id) {
                     let ctx = ServerContext {
-                        server,
-                        topic_map,
+                        server_id: meta.server_id,
+                        name: meta.name,
                         keys,
                         unread: HashMap::new(),
                     };
@@ -354,17 +321,11 @@ impl<N: willow_network::Network> ClientHandle<N> {
 
         // Fall back to legacy single-server storage. Do NOT create a default.
         if state.servers.is_empty() {
-            if let Some((server, keys)) = storage::load_server() {
-                let sid = server.id().to_string();
-                let mut topic_map = HashMap::new();
-                for ch in server.channels() {
-                    let topic = util::make_topic(&server, &ch.name);
-                    topic_map.insert(topic, (ch.name.clone(), ch.id.clone()));
-                }
-
+            if let Some((meta, keys)) = storage::load_server() {
+                let sid = meta.server_id.clone();
                 let ctx = ServerContext {
-                    server,
-                    topic_map,
+                    server_id: meta.server_id,
+                    name: meta.name,
                     keys,
                     unread: HashMap::new(),
                 };
@@ -385,24 +346,9 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 } else {
                     state.event_state = willow_state::ServerState::new(
                         sid.clone(),
-                        ctx.server.name().to_string(),
-                        ctx.server.creator,
+                        ctx.name.clone(),
+                        identity.endpoint_id(),
                     );
-
-                    // No persisted events -- seed event_state with existing
-                    // channels from legacy storage so lookups work.
-                    for (topic, (name, ch_id)) in &ctx.topic_map {
-                        let _ = topic;
-                        state.event_state.channels.insert(
-                            ch_id.to_string(),
-                            willow_state::Channel {
-                                id: ch_id.to_string(),
-                                name: name.clone(),
-                                pinned_messages: std::collections::BTreeSet::new(),
-                                kind: "text".to_string(),
-                            },
-                        );
-                    }
                 }
             }
         }
@@ -443,9 +389,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 registry.servers.insert(
                     id.clone(),
                     state_actors::ServerEntry {
-                        server: ctx.server.clone(),
-                        name: ctx.server.name().to_string(),
-                        topic_map: ctx.topic_map.clone(),
+                        server_id: ctx.server_id.clone(),
+                        name: ctx.name.clone(),
                         keys: ctx.keys.clone(),
                         unread: ctx.unread.clone(),
                     },
@@ -611,8 +556,6 @@ impl<N: willow_network::Network> ClientHandle<N> {
             dag: dag_addr.clone(),
         };
 
-        reconcile_topic_map(&mut state);
-
         let handle = ClientHandle {
             system: system.handle(),
             network: None,
@@ -633,8 +576,6 @@ impl<N: willow_network::Network> ClientHandle<N> {
             view_handle,
             mutation_handle,
         };
-
-        // reconcile_topic_map called above before spawning actor
 
         let event_loop = ClientEventLoop { _system: system };
 
@@ -674,14 +615,15 @@ fn load_identity() -> Identity {
     identity
 }
 
-/// Parse a permission string into a [`willow_channel::Permission`].
-fn parse_permission(s: &str) -> anyhow::Result<willow_channel::Permission> {
+/// Parse a permission string into a [`willow_state::Permission`].
+#[allow(dead_code)]
+fn parse_permission(s: &str) -> anyhow::Result<willow_state::Permission> {
     match s {
-        "SyncProvider" => Ok(willow_channel::Permission::SyncProvider),
-        "SendMessages" => Ok(willow_channel::Permission::SendMessages),
-        "CreateInvite" => Ok(willow_channel::Permission::CreateInvite),
-        "ManageChannels" => Ok(willow_channel::Permission::ManageChannels),
-        "ManageRoles" => Ok(willow_channel::Permission::ManageRoles),
+        "SyncProvider" => Ok(willow_state::Permission::SyncProvider),
+        "SendMessages" => Ok(willow_state::Permission::SendMessages),
+        "CreateInvite" => Ok(willow_state::Permission::CreateInvite),
+        "ManageChannels" => Ok(willow_state::Permission::ManageChannels),
+        "ManageRoles" => Ok(willow_state::Permission::ManageRoles),
         _ => anyhow::bail!("unknown permission: {s}"),
     }
 }
@@ -696,34 +638,6 @@ pub fn test_client() -> (
 
     let mut state = ClientState::new(identity.endpoint_id());
 
-    // Create a minimal server.
-    let mut server = willow_channel::Server::new("Test Server", identity.endpoint_id());
-    let ch_id = server
-        .create_channel("general", willow_channel::ChannelKind::Text)
-        .unwrap();
-    let topic = util::make_topic(&server, "general");
-
-    let server_id = server.id().to_string();
-    let mut topic_map = HashMap::new();
-    let mut keys = HashMap::new();
-
-    if let Some(key) = server.channel_key(&ch_id) {
-        keys.insert(topic.clone(), key.clone());
-    }
-    topic_map.insert(topic, ("general".to_string(), ch_id));
-
-    let ctx = ServerContext {
-        server,
-        topic_map,
-        keys,
-        unread: HashMap::new(),
-    };
-
-    state.servers.insert(server_id.clone(), ctx);
-    state.active_server = Some(server_id.clone());
-
-    let identity_clone = identity.clone();
-
     // Create a ManagedDag seeded with genesis — DAG and state are
     // atomically initialized together.
     let mut dag_state = state_actors::DagState {
@@ -731,37 +645,38 @@ pub fn test_client() -> (
         stashed: HashMap::new(),
     };
 
-    // Create the general channel in the DAG so it's part of the
-    // authoritative state (not just manually injected into event_state).
-    let ch_id_str = state
-        .servers
-        .get(&server_id)
-        .and_then(|ctx| {
-            ctx.topic_map
-                .values()
-                .find(|(n, _)| n == "general")
-                .map(|(_, cid)| cid.to_string())
-        })
-        .unwrap_or_default();
-    if !ch_id_str.is_empty() {
-        dag_state
-            .managed
-            .create_and_insert(
-                &identity,
-                willow_state::EventKind::CreateChannel {
-                    channel_id: ch_id_str.clone(),
-                    name: "general".to_string(),
-                    kind: "text".to_string(),
-                },
-                0,
-            )
-            .expect("channel creation must succeed in test");
-    }
+    // Create the general channel in the DAG.
+    let ch_id_str = uuid::Uuid::new_v4().to_string();
+    dag_state
+        .managed
+        .create_and_insert(
+            &identity,
+            willow_state::EventKind::CreateChannel {
+                channel_id: ch_id_str,
+                name: "general".to_string(),
+                kind: willow_state::ChannelKind::Text,
+            },
+            0,
+        )
+        .expect("channel creation must succeed in test");
 
     // Copy the materialized state from ManagedDag.
     state.event_state = dag_state.managed.state().clone();
 
-    // Now spawn actors AFTER state is fully initialized (DAG materialized + channels seeded).
+    // Build a minimal ServerContext from the DAG state.
+    let server_id = state.event_state.server_id.clone();
+    let ctx = ServerContext {
+        server_id: server_id.clone(),
+        name: "Test Server".to_string(),
+        keys: HashMap::new(),
+        unread: HashMap::new(),
+    };
+    state.servers.insert(server_id.clone(), ctx);
+    state.active_server = Some(server_id.clone());
+
+    let identity_clone = identity.clone();
+
+    // Now spawn actors AFTER state is fully initialized.
     let sys = willow_actor::System::new();
     let event_state_addr = sys.spawn(willow_actor::StateActor::new(state.event_state.clone()));
     let mut registry = state_actors::ServerRegistry::default();
@@ -769,9 +684,8 @@ pub fn test_client() -> (
         registry.servers.insert(
             id.clone(),
             state_actors::ServerEntry {
-                server: ctx.server.clone(),
-                name: ctx.server.name().to_string(),
-                topic_map: ctx.topic_map.clone(),
+                server_id: ctx.server_id.clone(),
+                name: ctx.name.clone(),
                 keys: ctx.keys.clone(),
                 unread: ctx.unread.clone(),
             },
@@ -1094,24 +1008,27 @@ mod tests {
         // Build a real server + channel + key, then ask generate_invite
         // to encrypt the channel key for the test client.
         let inviter = Identity::generate();
-        let mut server = willow_channel::Server::new("Tamper Server", inviter.endpoint_id());
-        let ch_id = server
-            .create_channel("general", willow_channel::ChannelKind::Text)
-            .unwrap();
-        let topic = util::make_topic(&server, "general");
+        let server_id = uuid::Uuid::new_v4().to_string();
+        let topic = format!("{}/general", server_id);
+        let key = willow_crypto::generate_channel_key();
         let mut keys = HashMap::new();
-        if let Some(k) = server.channel_key(&ch_id) {
-            keys.insert(topic.clone(), k.clone());
-        }
-        let mut topic_map = HashMap::new();
-        topic_map.insert(topic.clone(), ("general".to_string(), ch_id));
-        let valid_code = invite::generate_invite(&server, &keys, &topic_map, &recipient_pub)
-            .expect("invite generation must succeed");
+        keys.insert(topic.clone(), key);
+        let mut topic_names = HashMap::new();
+        topic_names.insert(topic.clone(), "general".to_string());
+        let valid_code = invite::generate_invite(
+            "Tamper Server",
+            &server_id,
+            inviter.endpoint_id(),
+            &keys,
+            &topic_names,
+            &recipient_pub,
+        )
+        .expect("invite generation must succeed");
 
         // Tamper with the embedded server_id so it no longer parses as
         // a UUID. This is the exact failure mode #115 describes: an
         // invite that looks valid right up to the point where we ask
-        // willow_channel for a ServerId.
+        // parsing as a UUID for the server ID.
         let raw = base64::decode(&valid_code).unwrap();
         let mut payload: invite::InvitePayload = willow_transport::unpack(&raw).unwrap();
         payload.server_id = "not-a-uuid".to_string();

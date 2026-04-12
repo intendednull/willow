@@ -135,7 +135,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         willow_actor::state::select(&self.event_state_addr, |es| es.admins.clone()).await
     }
 
-    pub async fn channel_kinds(&self) -> Vec<(String, String)> {
+    pub async fn channel_kinds(&self) -> Vec<(String, willow_state::ChannelKind)> {
         willow_actor::state::select(&self.event_state_addr, |es| {
             es.channels
                 .values()

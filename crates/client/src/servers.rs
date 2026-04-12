@@ -89,39 +89,26 @@ impl<N: willow_network::Network> ClientHandle<N> {
     pub async fn create_server(&self, name: &str) -> anyhow::Result<String> {
         let name = name.to_string();
         let name_for_state = name.clone();
-        let peer_id = self.identity.endpoint_id();
 
-        let (server_id, ch_id_str) = willow_actor::state::mutate(
-            &self.server_registry_addr,
-            move |reg| -> anyhow::Result<(String, String)> {
-                let mut server = willow_channel::Server::new(&name, peer_id);
-                let server_id = server.id().to_string();
-                let ch_id = server
-                    .create_channel("general", willow_channel::ChannelKind::Text)
-                    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
-                let topic = util::make_topic(&server, "general");
-                let mut topic_map = HashMap::new();
-                let mut keys = HashMap::new();
-                if let Some(key) = server.channel_key(&ch_id) {
-                    keys.insert(topic.clone(), key.clone());
-                }
-                let ch_id_str = ch_id.to_string();
-                topic_map.insert(topic, ("general".to_string(), ch_id));
-                reg.servers.insert(
-                    server_id.clone(),
-                    state_actors::ServerEntry {
-                        server,
-                        name: name.to_string(),
-                        topic_map,
-                        keys,
-                        unread: HashMap::new(),
-                    },
-                );
-                reg.active_server = Some(server_id.clone());
-                Ok((server_id, ch_id_str))
-            },
-        )
-        .await?;
+        let server_id = uuid::Uuid::new_v4().to_string();
+        let ch_id_str = uuid::Uuid::new_v4().to_string();
+
+        // Register the server in the server registry.
+        let sid = server_id.clone();
+        let sname = name.clone();
+        willow_actor::state::mutate(&self.server_registry_addr, move |reg| {
+            reg.servers.insert(
+                sid.clone(),
+                state_actors::ServerEntry {
+                    server_id: sid.clone(),
+                    name: sname,
+                    keys: HashMap::new(),
+                    unread: HashMap::new(),
+                },
+            );
+            reg.active_server = Some(sid);
+        })
+        .await;
 
         // Stash the current server's DAG before seeding the new one.
         let old_sid = self.active_server_id().await;
@@ -147,7 +134,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             .build_event(willow_state::EventKind::CreateChannel {
                 name: "general".to_string(),
                 channel_id: ch_id_str,
-                kind: "text".to_string(),
+                kind: willow_state::ChannelKind::Text,
             })
             .await?;
         self.mutation_handle.apply_event(&event).await;

@@ -57,14 +57,17 @@ impl<N: willow_network::Network> ClientHandle<N> {
         }
 
         // Subscribe to channel topics from all servers.
-        let channel_topics: Vec<String> =
-            willow_actor::state::select(&self.server_registry_addr, |reg| {
+        // Derive topic strings from event_state channels + server registry IDs.
+        let channel_topics: Vec<String> = {
+            let es = willow_actor::state::get(&self.event_state_addr).await;
+            willow_actor::state::select(&self.server_registry_addr, move |reg| {
                 reg.servers
                     .values()
-                    .flat_map(|entry| entry.topic_map.keys().cloned())
+                    .flat_map(|entry| entry.channel_topics(&es))
                     .collect()
             })
-            .await;
+            .await
+        };
 
         for topic_str in &channel_topics {
             let bootstrap = self.bootstrap_peers.clone();
@@ -125,14 +128,16 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 .broadcast_on_topic(ops::SERVER_OPS_TOPIC, data);
         }
 
-        let channel_topics: Vec<String> =
-            willow_actor::state::select(&self.server_registry_addr, |reg| {
+        let channel_topics: Vec<String> = {
+            let es = willow_actor::state::get(&self.event_state_addr).await;
+            willow_actor::state::select(&self.server_registry_addr, move |reg| {
                 reg.servers
                     .values()
-                    .flat_map(|entry| entry.topic_map.keys().cloned())
+                    .flat_map(|entry| entry.channel_topics(&es))
                     .collect()
             })
-            .await;
+            .await
+        };
         for topic_str in channel_topics {
             let msg = ops::WireMessage::SyncRequest {
                 state_hash,

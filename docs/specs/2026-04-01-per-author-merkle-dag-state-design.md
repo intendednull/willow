@@ -341,7 +341,7 @@ Admin C:  Vote(yes) │                  ← 3/3, threshold met → applied
 ```
 
 There is no separate "resolution" event. The state change is inferred
-during materialization: `apply_unchecked` processes a `Vote`, tallies
+during materialization: `apply_event` processes a `Vote`, tallies
 the votes in the pending proposal, and if the threshold is met, calls
 `apply_proposed_action` inline. The action is a side effect of the
 Vote event, not a distinct event in the DAG.
@@ -433,7 +433,7 @@ pub fn materialize(dag: &EventDag) -> ServerState {
     let sorted = dag.topological_sort();
     let mut state = ServerState::new(&server_id, &name, genesis.author);
     for event in sorted {
-        apply_unchecked(&mut state, event);
+        apply_event(&mut state, event);
     }
     state
 }
@@ -667,7 +667,7 @@ pub fn materialize(dag: &EventDag) -> ServerState {
     let sorted = dag.topological_sort();
     let mut state = ServerState::new(&server_id, &name, genesis_author);
     for event in sorted {
-        apply_unchecked(&mut state, event);
+        apply_event(&mut state, event);
     }
     state
 }
@@ -776,7 +776,7 @@ pub fn apply_incremental(
     state: &mut ServerState,
     event: &Event,
 ) -> ApplyResult {
-    apply_unchecked(state, event)
+    apply_event(state, event)
 }
 ```
 
@@ -800,7 +800,7 @@ them), and re-materialization is fast for reasonable event counts.
 A future optimization can detect when re-materialization is actually
 needed vs when the new dep doesn't affect ordering.
 
-### apply_unchecked
+### apply_event
 
 The core apply function is simplified — it no longer checks parent
 hashes or dedup (the DAG handles both structurally):
@@ -809,7 +809,7 @@ hashes or dedup (the DAG handles both structurally):
 /// Apply an event's mutation to state. No structural validation —
 /// the DAG guarantees ordering and dedup. Permission checks and
 /// governance logic are enforced here.
-fn apply_unchecked(state: &mut ServerState, event: &Event) -> ApplyResult {
+fn apply_event(state: &mut ServerState, event: &Event) -> ApplyResult {
     match &event.kind {
         // Governance events — handled specially.
         EventKind::CreateServer { .. } => {
@@ -1557,7 +1557,7 @@ code path between "single linear chain with parent state hash" and
 |---|---|
 | `Event` (old struct) | Replaced by new `Event` with `prev`, `deps`, `seq`, `sig` |
 | `apply()` | Parent-hash check is structurally unnecessary in DAG model |
-| `apply_lenient()` | Replaced by `apply_unchecked()` (DAG guarantees ordering) |
+| `apply_lenient()` | Replaced by `apply_event()` (DAG guarantees ordering) |
 | `merge()` | DAG union + topological sort replaces timestamp-sorted merge |
 | `find_common_ancestor()` | Per-author seq comparison replaces state-hash walking |
 | `StateHash` | No per-event state hash; snapshots use `SnapshotHash` |
@@ -1580,7 +1580,7 @@ code path between "single linear chain with parent state hash" and
 | `Channel` | `pinned_messages` changes from `HashSet<String>` to `HashSet<EventHash>` |
 | `Role`, `Member`, `Profile` | Unchanged |
 | `ChatMessage` | `id` and `reply_to` change from `String` to `EventHash` |
-| Permission enforcement in apply | Moved to `apply_unchecked()`, governance events handled specially |
+| Permission enforcement in apply | Moved to `apply_event()`, governance events handled specially |
 | Zero-I/O crate boundary | Preserved — state crate remains pure |
 
 ### New Modules
@@ -1590,7 +1590,7 @@ code path between "single linear chain with parent state hash" and
 | `hash.rs` | `EventHash` (32-byte SHA-256 wrapper, `Ord`, `Display`) |
 | `event.rs` | `Event`, `EventKind`, `Permission`, `ProposedAction`, `VoteThreshold` |
 | `dag.rs` | `EventDag`, `InsertError`, topological sort, `heads_summary`, `events_since` |
-| `materialize.rs` | `materialize()`, `apply_unchecked()`, `apply_incremental()` |
+| `materialize.rs` | `materialize()`, `apply_event()`, `apply_incremental()` |
 | `sync.rs` | `HeadsSummary`, `AuthorHead`, `SyncMessage`, `AuthorRequest`, `ChainStatus`, `compare_chains`, `PendingBuffer` |
 | `snapshot.rs` | `Snapshot`, `SnapshotHash`, compaction |
 | `types.rs` | Unchanged — `Channel`, `Role`, `Member`, etc. |
@@ -2045,7 +2045,7 @@ and what is deferred.
 | Section | What ships |
 |---|---|
 | Section 1 | `Event`, `EventHash`, `EventKind` (22 variants), `ProposedAction`, `VoteThreshold`, `EventDag`, `InsertError`, `PendingBuffer` |
-| Section 2 | `materialize()`, `apply_unchecked()`, `apply_incremental()`, topological sort, `ServerState` (simplified) |
+| Section 2 | `materialize()`, `apply_event()`, `apply_incremental()`, topological sort, `ServerState` (simplified) |
 | Section 3 | `HeadsSummary`, `SyncMessage`, `AuthorRequest`, sync flow |
 | Section 4 | `ChainStatus` (with `Forked` equivocation detection), `compare_chains()` |
 | Section 7 | Full deletion of legacy types, new module layout, new public API |

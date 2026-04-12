@@ -169,6 +169,9 @@ impl ManagedDag {
     /// Create a local event and atomically insert + apply it.
     ///
     /// Computes cross-author causal dependencies from the current DAG heads.
+    /// **Permissions are checked before the event is created** — if the
+    /// author lacks permission, no event is signed and no sequence number
+    /// is advanced.
     pub fn create_and_insert(
         &mut self,
         identity: &Identity,
@@ -178,6 +181,10 @@ impl ManagedDag {
         if !self.synced {
             return Err(InsertError::NotGenesis);
         }
+
+        // Pre-check: reject before signing if the author lacks permission.
+        crate::materialize::check_permission(&self.state, &identity.endpoint_id(), &kind)
+            .map_err(InsertError::PermissionDenied)?;
 
         let my_id = identity.endpoint_id();
         let mut deps: Vec<EventHash> = self

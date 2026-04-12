@@ -126,32 +126,13 @@ impl<N: willow_network::Network> ClientHandle<N> {
 
     pub async fn create_voice_channel(&self, name: &str) -> anyhow::Result<()> {
         let name = name.to_string();
-        let name_for_event = name.clone();
-        let ch_id_str = willow_actor::state::mutate(
-            &self.server_registry_addr,
-            move |reg| -> anyhow::Result<String> {
-                let entry = reg
-                    .active_mut()
-                    .ok_or_else(|| anyhow::anyhow!("no active server"))?;
-                let ch_id = entry
-                    .server
-                    .create_channel(&name, willow_channel::ChannelKind::Voice)?;
-                let topic = util::make_topic(&entry.server, &name);
-                if let Some(key) = entry.server.channel_key(&ch_id) {
-                    entry.keys.insert(topic.clone(), key.clone());
-                }
-                let ch_id_str = ch_id.to_string();
-                entry.topic_map.insert(topic, (name.clone(), ch_id));
-                Ok(ch_id_str)
-            },
-        )
-        .await?;
+        let ch_id_str = uuid::Uuid::new_v4().to_string();
         let event = self
             .mutation_handle
             .build_event(willow_state::EventKind::CreateChannel {
-                name: name_for_event,
+                name,
                 channel_id: ch_id_str,
-                kind: "voice".to_string(),
+                kind: willow_state::ChannelKind::Voice,
             })
             .await?;
         self.mutation_handle.apply_event(&event).await;
@@ -200,21 +181,6 @@ impl<N: willow_network::Network> ClientHandle<N> {
     ) -> anyhow::Result<()> {
         let role_id = role_id.to_string();
         let permission = permission.to_string();
-        let rid = willow_channel::RoleId(
-            uuid::Uuid::parse_str(&role_id).map_err(|e| anyhow::anyhow!("invalid role_id: {e}"))?,
-        );
-        let perm = parse_permission(&permission)?;
-        willow_actor::state::mutate(
-            &self.server_registry_addr,
-            move |reg| -> anyhow::Result<()> {
-                let entry = reg
-                    .active_mut()
-                    .ok_or_else(|| anyhow::anyhow!("no active server"))?;
-                entry.server.set_permission(&rid, perm, granted)?;
-                Ok(())
-            },
-        )
-        .await?;
         let event = self
             .mutation_handle
             .build_event(willow_state::EventKind::SetPermission {
@@ -234,29 +200,6 @@ impl<N: willow_network::Network> ClientHandle<N> {
         role_id: &str,
     ) -> anyhow::Result<()> {
         let role_id = role_id.to_string();
-        let rid = willow_channel::RoleId(
-            uuid::Uuid::parse_str(&role_id).map_err(|e| anyhow::anyhow!("invalid role_id: {e}"))?,
-        );
-        willow_actor::state::mutate(
-            &self.server_registry_addr,
-            move |reg| -> anyhow::Result<()> {
-                let entry = reg
-                    .active_mut()
-                    .ok_or_else(|| anyhow::anyhow!("no active server"))?;
-                let member_peer = entry
-                    .server
-                    .members()
-                    .iter()
-                    .find(|m| m.peer_id == peer_id)
-                    .map(|m| m.peer_id);
-                let Some(peer) = member_peer else {
-                    anyhow::bail!("peer not found");
-                };
-                entry.server.assign_role(&peer, &rid)?;
-                Ok(())
-            },
-        )
-        .await?;
         let event = self
             .mutation_handle
             .build_event(willow_state::EventKind::AssignRole { peer_id, role_id })

@@ -640,7 +640,7 @@ mod tests {
                 EventKind::CreateChannel {
                     channel_id: ch_id.into(),
                     name: ch_name.into(),
-                    kind: "text".into(),
+                    kind: crate::types::ChannelKind::Text,
                 },
                 vec![],
                 0,

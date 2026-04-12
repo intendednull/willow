@@ -25,7 +25,7 @@ struct PaletteItem {
 /// Build the filtered result list from the current query and pre-fetched data.
 fn build_results(
     channels: &[String],
-    channel_kinds: &[(String, String)],
+    channel_kinds: &[(String, willow_state::ChannelKind)],
     servers: &[(String, String)],
     members: &[(String, String, bool)],
     query: &str,
@@ -35,7 +35,9 @@ fn build_results(
 
     // Channels.
     for ch in channels {
-        let is_voice = channel_kinds.iter().any(|(n, k)| n == ch && k == "voice");
+        let is_voice = channel_kinds
+            .iter()
+            .any(|(n, k)| n == ch && *k == willow_state::ChannelKind::Voice);
         if q.is_empty() || ch.to_lowercase().contains(&q) {
             items.push(PaletteItem {
                 label: ch.clone(),

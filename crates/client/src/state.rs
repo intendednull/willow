@@ -5,7 +5,6 @@
 
 use std::collections::HashMap;
 
-use willow_channel::Server;
 use willow_crypto::ChannelKey;
 use willow_identity::EndpointId;
 use willow_messaging::hlc::HLC;
@@ -15,10 +14,10 @@ pub const DEFAULT_CHANNEL: &str = "general";
 
 /// All state for a single server.
 pub struct ServerContext {
-    /// The channel server instance.
-    pub server: Server,
-    /// Maps gossipsub topic -> (channel_name, channel_id) for display + key lookup.
-    pub topic_map: HashMap<String, (String, willow_channel::ChannelId)>,
+    /// Server ID (UUID string).
+    pub server_id: String,
+    /// Server display name.
+    pub name: String,
     /// Per-channel encryption keys, keyed by topic.
     pub keys: HashMap<String, ChannelKey>,
     /// Unread message counts per channel topic.
@@ -28,27 +27,13 @@ pub struct ServerContext {
 impl ServerContext {
     /// Get the gossipsub topic for a channel by name.
     pub fn topic_for_name(&self, name: &str) -> Option<String> {
-        self.topic_map
-            .iter()
-            .find(|(_, (n, _))| n == name)
-            .map(|(topic, _)| topic.clone())
+        Some(crate::util::make_topic(&self.server_id, name))
     }
 
     /// Get the channel name for a gossipsub topic.
-    pub fn name_for_topic(&self, topic: &str) -> Option<&str> {
-        self.topic_map.get(topic).map(|(name, _)| name.as_str())
-    }
-
-    /// List all channel names in sidebar order.
-    pub fn channel_names(&self) -> Vec<String> {
-        let mut names: Vec<_> = self
-            .server
-            .channels()
-            .iter()
-            .map(|ch| ch.name.clone())
-            .collect();
-        names.sort();
-        names
+    pub fn name_for_topic<'a>(&self, topic: &'a str) -> Option<&'a str> {
+        let prefix = format!("{}/", self.server_id);
+        topic.strip_prefix(&prefix)
     }
 }
 
@@ -157,25 +142,19 @@ impl ClientState {
             .and_then(|id| self.servers.get_mut(id))
     }
 
-    /// Channel names for the active server.
-    pub fn channel_names(&self) -> Vec<String> {
-        self.active()
-            .map(|ctx| ctx.channel_names())
-            .unwrap_or_default()
-    }
-
     /// List all server IDs and names.
     pub fn server_list(&self) -> Vec<(String, String)> {
         self.servers
             .iter()
-            .map(|(id, ctx)| (id.clone(), ctx.server.name().to_string()))
+            .map(|(id, ctx)| (id.clone(), ctx.name.clone()))
             .collect()
     }
 
     /// Find which server owns a given topic.
     pub fn find_server_for_topic(&self, topic: &str) -> Option<&str> {
         for (id, ctx) in &self.servers {
-            if ctx.topic_map.contains_key(topic) {
+            let prefix = format!("{}/", ctx.server_id);
+            if topic.starts_with(&prefix) {
                 return Some(id);
             }
         }

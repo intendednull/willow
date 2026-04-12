@@ -112,7 +112,7 @@ impl<N: willow_network::Network> ClientMutations<N> {
         .await
     }
 
-    /// Resolve channel name → channel ID via event state + server registry.
+    /// Resolve channel name → channel ID via event state.
     pub(crate) async fn resolve_channel_id(&self, channel: &str) -> anyhow::Result<String> {
         let ch = channel.to_string();
         let channel_id = willow_actor::state::select(&self.event_state, move |es| {
@@ -122,22 +122,7 @@ impl<N: willow_network::Network> ClientMutations<N> {
                 .map(|(id, _)| id.clone())
         })
         .await;
-        if let Some(id) = channel_id {
-            return Ok(id);
-        }
-        // Fall back to server registry topic_map.
-        let ch2 = channel.to_string();
-        let from_registry = willow_actor::state::select(&self.server_registry, move |reg| {
-            reg.active().and_then(|entry| {
-                entry
-                    .topic_map
-                    .values()
-                    .find(|(n, _)| n == &ch2)
-                    .map(|(_, cid)| cid.to_string())
-            })
-        })
-        .await;
-        from_registry.ok_or_else(|| anyhow::anyhow!("channel not found: {channel}"))
+        channel_id.ok_or_else(|| anyhow::anyhow!("channel not found: {channel}"))
     }
 
     /// Sync event_state mirror from ManagedDag, persist, and emit
@@ -316,35 +301,15 @@ impl<N: willow_network::Network> ClientMutations<N> {
     /// Create a new text channel.
     pub async fn create_channel(&self, name: &str) -> anyhow::Result<()> {
         let name = name.to_string();
-        let name_for_event = name.clone();
         let name_for_switch = name.clone();
 
-        // Create channel in Server object and update topic_map.
-        let ch_id_str = willow_actor::state::mutate(
-            &self.server_registry,
-            move |reg| -> anyhow::Result<String> {
-                let entry = reg
-                    .active_mut()
-                    .ok_or_else(|| anyhow::anyhow!("no active server"))?;
-                let ch_id = entry
-                    .server
-                    .create_channel(&name, willow_channel::ChannelKind::Text)?;
-                let topic = util::make_topic(&entry.server, &name);
-                if let Some(key) = entry.server.channel_key(&ch_id) {
-                    entry.keys.insert(topic.clone(), key.clone());
-                }
-                let ch_id_str = ch_id.to_string();
-                entry.topic_map.insert(topic, (name.clone(), ch_id));
-                Ok(ch_id_str)
-            },
-        )
-        .await?;
+        let ch_id_str = uuid::Uuid::new_v4().to_string();
 
         let event = self
             .build_event(EventKind::CreateChannel {
-                name: name_for_event,
+                name: name.clone(),
                 channel_id: ch_id_str,
-                kind: "text".to_string(),
+                kind: willow_state::ChannelKind::Text,
             })
             .await?;
         self.apply_event(&event).await;
@@ -360,26 +325,9 @@ impl<N: willow_network::Network> ClientMutations<N> {
     pub async fn delete_channel(&self, name: &str) -> anyhow::Result<()> {
         let name = name.to_string();
         let name_for_check = name.clone();
-        let ch_id_str = willow_actor::state::mutate(
-            &self.server_registry,
-            move |reg| -> anyhow::Result<String> {
-                let entry = reg
-                    .active_mut()
-                    .ok_or_else(|| anyhow::anyhow!("no active server"))?;
-                let (topic, ch_id) = entry
-                    .topic_map
-                    .iter()
-                    .find(|(_, (n, _))| n == &name)
-                    .map(|(t, (_, cid))| (t.clone(), cid.clone()))
-                    .ok_or_else(|| anyhow::anyhow!("channel not found"))?;
-                let ch_id_str = ch_id.to_string();
-                entry.server.delete_channel(&ch_id)?;
-                entry.topic_map.remove(&topic);
-                entry.keys.remove(&topic);
-                Ok(ch_id_str)
-            },
-        )
-        .await?;
+
+        // Resolve channel ID from event state.
+        let ch_id_str = self.resolve_channel_id(&name).await?;
 
         let event = self
             .build_event(EventKind::DeleteChannel {
@@ -388,14 +336,25 @@ impl<N: willow_network::Network> ClientMutations<N> {
             .await?;
         self.apply_event(&event).await;
 
+        // Remove the channel key from registry.
+        let name_for_key = name.clone();
+        willow_actor::state::mutate(&self.server_registry, move |reg| {
+            if let Some(entry) = reg.active_mut() {
+                let topic = crate::util::make_topic(&entry.server_id, &name_for_key);
+                entry.keys.remove(&topic);
+            }
+        })
+        .await;
+
         // Switch to first remaining channel if we deleted the current one.
         let current =
             willow_actor::state::select(&self.chat_meta, |c| c.current_channel.clone()).await;
         if current == name_for_check {
-            let first = willow_actor::state::select(&self.server_registry, |reg| {
-                reg.active()
-                    .map(|e| e.channel_names())
-                    .and_then(|names| names.into_iter().next())
+            let first = willow_actor::state::select(&self.event_state, |es| {
+                es.channels
+                    .values()
+                    .map(|ch| ch.name.clone())
+                    .next()
                     .unwrap_or_default()
             })
             .await;
@@ -507,21 +466,9 @@ impl<N: willow_network::Network> ClientMutations<N> {
     /// Create a new role.
     pub async fn create_role(&self, name: &str) -> anyhow::Result<()> {
         let name = name.to_string();
-        let role_id = willow_channel::RoleId::new();
-        let role = willow_channel::Role::with_id(role_id.clone(), &name);
-        willow_actor::state::mutate(&self.server_registry, |reg| -> anyhow::Result<()> {
-            let entry = reg
-                .active_mut()
-                .ok_or_else(|| anyhow::anyhow!("no active server"))?;
-            entry.server.create_role(role);
-            Ok(())
-        })
-        .await?;
+        let role_id = uuid::Uuid::new_v4().to_string();
         let event = self
-            .build_event(EventKind::CreateRole {
-                name,
-                role_id: role_id.to_string(),
-            })
+            .build_event(EventKind::CreateRole { name, role_id })
             .await?;
         self.apply_event(&event).await;
         self.broadcast_event(&event);
@@ -531,17 +478,6 @@ impl<N: willow_network::Network> ClientMutations<N> {
     /// Delete a role.
     pub async fn delete_role(&self, role_id: &str) -> anyhow::Result<()> {
         let role_id = role_id.to_string();
-        let rid = willow_channel::RoleId(
-            uuid::Uuid::parse_str(&role_id).map_err(|e| anyhow::anyhow!("invalid role_id: {e}"))?,
-        );
-        willow_actor::state::mutate(&self.server_registry, move |reg| -> anyhow::Result<()> {
-            let entry = reg
-                .active_mut()
-                .ok_or_else(|| anyhow::anyhow!("no active server"))?;
-            entry.server.delete_role(&rid)?;
-            Ok(())
-        })
-        .await?;
         let event = self.build_event(EventKind::DeleteRole { role_id }).await?;
         self.apply_event(&event).await;
         self.broadcast_event(&event);

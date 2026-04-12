@@ -51,49 +51,40 @@ impl ServerRegistry {
 }
 
 /// Metadata for a single server.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ServerEntry {
-    /// The channel server instance (stateful — has create_channel/delete_channel methods).
-    pub server: willow_channel::Server,
+    /// Server ID (UUID string).
+    pub server_id: String,
     /// Server display name.
     pub name: String,
-    /// Maps gossipsub topic → (channel_name, channel_id).
-    pub topic_map: HashMap<String, (String, willow_channel::ChannelId)>,
     /// Per-channel encryption keys, keyed by topic.
     pub keys: HashMap<String, ChannelKey>,
     /// Unread message counts per channel topic.
     pub unread: HashMap<String, usize>,
 }
 
-impl PartialEq for ServerEntry {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
-            && self.topic_map == other.topic_map
-            && self.keys == other.keys
-            && self.unread == other.unread
-    }
-}
-
 impl ServerEntry {
     /// Get the gossipsub topic for a channel by name.
     pub fn topic_for_name(&self, name: &str) -> Option<String> {
-        self.topic_map
-            .iter()
-            .find(|(_, (n, _))| n == name)
-            .map(|(topic, _)| topic.clone())
+        Some(crate::util::make_topic(&self.server_id, name))
     }
 
     /// Get the channel name for a gossipsub topic.
-    pub fn name_for_topic(&self, topic: &str) -> Option<&str> {
-        self.topic_map.get(topic).map(|(name, _)| name.as_str())
+    pub fn name_for_topic<'a>(&self, topic: &'a str) -> Option<&'a str> {
+        let prefix = format!("{}/", self.server_id);
+        topic.strip_prefix(&prefix)
     }
 
-    /// List all channel names in sorted order.
-    pub fn channel_names(&self) -> Vec<String> {
-        let mut names: Vec<_> = self.topic_map.values().map(|(n, _)| n.clone()).collect();
-        names.sort();
-        names.dedup();
-        names
+    /// Derive channel topic strings from event state channels.
+    ///
+    /// Iterates over channels in the given `ServerState` and returns
+    /// topic strings of the form `"{server_id}/{channel_name}"`.
+    pub fn channel_topics(&self, event_state: &willow_state::ServerState) -> Vec<String> {
+        event_state
+            .channels
+            .values()
+            .map(|ch| crate::util::make_topic(&self.server_id, &ch.name))
+            .collect()
     }
 }
 

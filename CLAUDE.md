@@ -18,7 +18,6 @@ crates/
 ├── identity/    — Ed25519 identity, message signing, profiles (willow-identity)
 ├── messaging/   — Chat messages, HLC ordering, message store (willow-messaging)
 ├── crypto/      — E2E encryption: ChaCha20-Poly1305, X25519 key exchange (willow-crypto)
-├── channel/     — Servers, channels, roles, permissions (willow-channel)
 ├── network/     — iroh-based P2P networking (willow-network)
 │   └── src/
 │       ├── lib.rs      — Module exports, re-exports
@@ -181,14 +180,19 @@ interaction.
 
 ## Architecture Notes
 
+### Authority Model
+
+See [`docs/specs/2026-04-12-state-authority-and-mutations.md`](docs/specs/2026-04-12-state-authority-and-mutations.md).
+All authority checks live in `willow-state::materialize::apply_event`
+and the `required_permission()` table. Permissions are checked before
+an event is created — rejected events never enter the DAG.
+
 ### Dependency Graph
 
 ```
 willow-web → willow-client  → willow-state
                             → willow-network (iroh, iroh-gossip, iroh-blobs)
            → willow-crypto  → willow-identity → willow-transport
-           → willow-channel → willow-crypto
-                            → willow-identity
            → willow-messaging → willow-identity
                               (defines SealedContent used by willow-crypto)
 ```
@@ -270,9 +274,9 @@ consistent ordering even when system clocks drift.
 
 ### Adding a new permission
 
-1. Add a variant to `Permission` in `crates/channel/src/lib.rs`
-2. Check it in the relevant server methods
-3. Add tests
+1. Add a variant to `Permission` in `crates/state/src/event.rs`
+2. Add the `EventKind` → `Permission` mapping to `required_permission()` in `crates/state/src/materialize.rs`
+3. Add state-machine tests: grant, revoke, rejection without permission
 
 ### Adding a new iroh protocol
 
