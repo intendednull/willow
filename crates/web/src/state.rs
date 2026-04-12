@@ -81,7 +81,7 @@ pub struct ServerState {
     pub roles: ReadSignal<Vec<(String, String, Vec<String>)>>,
     pub display_name: ReadSignal<String>,
     pub server_owner: ReadSignal<String>,
-    pub channel_kinds: ReadSignal<Vec<(String, String)>>,
+    pub channel_kinds: ReadSignal<Vec<(String, willow_state::ChannelKind)>>,
     /// Peer IDs that have the SyncProvider permission.
     pub sync_provider_ids: ReadSignal<HashSet<String>>,
     /// Peer IDs that have the Administrator permission.
@@ -164,7 +164,7 @@ pub struct ServerWriteSignals {
     pub set_roles: WriteSignal<Vec<(String, String, Vec<String>)>>,
     pub set_display_name: WriteSignal<String>,
     pub set_server_owner: WriteSignal<String>,
-    pub set_channel_kinds: WriteSignal<Vec<(String, String)>>,
+    pub set_channel_kinds: WriteSignal<Vec<(String, willow_state::ChannelKind)>>,
     pub set_sync_provider_ids: WriteSignal<HashSet<String>>,
     pub set_admin_ids: WriteSignal<HashSet<String>>,
 }
@@ -230,7 +230,7 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
     let (roles, set_roles) = signal(Vec::<(String, String, Vec<String>)>::new());
     let (display_name, set_display_name) = signal(String::new());
     let (server_owner, set_server_owner) = signal(String::new());
-    let (channel_kinds, set_channel_kinds) = signal(Vec::<(String, String)>::new());
+    let (channel_kinds, set_channel_kinds) = signal(Vec::<(String, willow_state::ChannelKind)>::new());
     let (sync_provider_ids, set_sync_provider_ids) = signal(HashSet::<String>::new());
     let (admin_ids, set_admin_ids) = signal(HashSet::<String>::new());
 

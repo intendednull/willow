@@ -399,7 +399,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                                 id: ch_id.to_string(),
                                 name: name.clone(),
                                 pinned_messages: std::collections::BTreeSet::new(),
-                                kind: "text".to_string(),
+                                kind: willow_state::ChannelKind::Text,
                             },
                         );
                     }
@@ -751,7 +751,7 @@ pub fn test_client() -> (
                 willow_state::EventKind::CreateChannel {
                     channel_id: ch_id_str.clone(),
                     name: "general".to_string(),
-                    kind: "text".to_string(),
+                    kind: willow_state::ChannelKind::Text,
                 },
                 0,
             )

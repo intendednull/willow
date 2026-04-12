@@ -65,11 +65,6 @@ pub enum VoteThreshold {
 
 // ───── EventKind ───────────────────────────────────────────────────────────
 
-/// Default channel kind for deserialization backward compatibility.
-fn default_create_channel_kind() -> String {
-    "text".to_string()
-}
-
 /// All possible state mutations — 22 variants.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum EventKind {
@@ -102,8 +97,8 @@ pub enum EventKind {
     CreateChannel {
         name: String,
         channel_id: String,
-        #[serde(default = "default_create_channel_kind")]
-        kind: String,
+        #[serde(default)]
+        kind: crate::types::ChannelKind,
     },
     /// Delete a channel by ID.
     DeleteChannel { channel_id: String },

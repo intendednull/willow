@@ -561,7 +561,7 @@ mod tests {
             EventKind::CreateChannel {
                 name: "general".into(),
                 channel_id: "ch-1".into(),
-                kind: "text".into(),
+                kind: crate::types::ChannelKind::Text,
             },
         );
         let state = materialize(&dag);
@@ -601,7 +601,7 @@ mod tests {
             EventKind::CreateChannel {
                 name: "evil".into(),
                 channel_id: "ch-evil".into(),
-                kind: "text".into(),
+                kind: crate::types::ChannelKind::Text,
             },
         );
         let state = materialize(&dag);
@@ -630,7 +630,7 @@ mod tests {
             EventKind::CreateChannel {
                 name: "general".into(),
                 channel_id: "ch-1".into(),
-                kind: "text".into(),
+                kind: crate::types::ChannelKind::Text,
             },
         );
         let state = materialize(&dag);
@@ -812,7 +812,7 @@ mod tests {
             EventKind::CreateChannel {
                 name: "doomed".into(),
                 channel_id: "ch-d".into(),
-                kind: "text".into(),
+                kind: crate::types::ChannelKind::Text,
             },
         );
         emit(

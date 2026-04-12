@@ -150,7 +150,7 @@ fn stress_concurrent_channel_creates() {
             EventKind::CreateChannel {
                 name: format!("channel-{i}"),
                 channel_id: format!("ch-{i}"),
-                kind: "text".into(),
+                kind: crate::types::ChannelKind::Text,
             },
             vec![],
             0,
@@ -189,7 +189,7 @@ fn stress_concurrent_channel_creates() {
             EventKind::CreateChannel {
                 name: format!("ch2-{i}"),
                 channel_id: format!("ch2-{i}"),
-                kind: "text".into(),
+                kind: crate::types::ChannelKind::Text,
             },
             vec![admin_head],
             0,
@@ -368,7 +368,7 @@ fn duplicate_create_channel_preserves_original() {
         EventKind::CreateChannel {
             name: "general".to_string(),
             channel_id: "ch-1".to_string(),
-            kind: "text".to_string(),
+            kind: crate::types::ChannelKind::Text,
         },
     );
     // Duplicate channel_id — should be ignored.
@@ -378,7 +378,7 @@ fn duplicate_create_channel_preserves_original() {
         EventKind::CreateChannel {
             name: "different-name".to_string(),
             channel_id: "ch-1".to_string(),
-            kind: "voice".to_string(),
+            kind: crate::types::ChannelKind::Voice,
         },
     );
 
@@ -742,12 +742,12 @@ fn channel_kind_is_preserved() {
         EventKind::CreateChannel {
             name: "voice-chat".to_string(),
             channel_id: "vc-1".to_string(),
-            kind: "voice".to_string(),
+            kind: crate::types::ChannelKind::Voice,
         },
     );
 
     let state = materialize(&dag);
-    assert_eq!(state.channels["vc-1"].kind, "voice");
+    assert_eq!(state.channels["vc-1"].kind, crate::types::ChannelKind::Voice);
 }
 
 #[test]
@@ -781,7 +781,7 @@ fn delete_channel_messages_not_from_other_channels() {
         EventKind::CreateChannel {
             name: "ch1".to_string(),
             channel_id: "ch-1".to_string(),
-            kind: "text".to_string(),
+            kind: crate::types::ChannelKind::Text,
         },
     );
     do_emit(
@@ -790,7 +790,7 @@ fn delete_channel_messages_not_from_other_channels() {
         EventKind::CreateChannel {
             name: "ch2".to_string(),
             channel_id: "ch-2".to_string(),
-            kind: "text".to_string(),
+            kind: crate::types::ChannelKind::Text,
         },
     );
     do_emit(
@@ -1818,7 +1818,7 @@ fn rotate_channel_key_by_outsider_is_rejected() {
         EventKind::CreateChannel {
             name: "general".to_string(),
             channel_id: "ch-general".to_string(),
-            kind: "text".to_string(),
+            kind: crate::types::ChannelKind::Text,
         },
     );
 
@@ -1867,7 +1867,7 @@ fn rotate_channel_key_by_member_without_manage_channels_is_rejected() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
-            kind: "text".into(),
+            kind: crate::types::ChannelKind::Text,
         },
         vec![],
         10,
@@ -1926,7 +1926,7 @@ fn rotate_channel_key_by_admin_still_works() {
         EventKind::CreateChannel {
             name: "general".to_string(),
             channel_id: "ch-general".to_string(),
-            kind: "text".to_string(),
+            kind: crate::types::ChannelKind::Text,
         },
     );
 
@@ -1966,7 +1966,7 @@ fn managed_dag_insert_and_apply_keeps_state_in_sync() {
             EventKind::CreateChannel {
                 channel_id: "ch1".into(),
                 name: "general".into(),
-                kind: "text".into(),
+                kind: crate::types::ChannelKind::Text,
             },
             1000,
         )
@@ -2039,7 +2039,7 @@ fn joined_peer_needs_grant_permission_to_send_messages() {
             EventKind::CreateChannel {
                 name: "general".to_string(),
                 channel_id: "ch-general".to_string(),
-                kind: "text".to_string(),
+                kind: crate::types::ChannelKind::Text,
             },
             vec![],
             10,
@@ -2142,7 +2142,7 @@ fn sync_batch_with_grant_permission_allows_new_peer_to_send() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: "ch1".into(),
-            kind: "text".into(),
+            kind: crate::types::ChannelKind::Text,
         },
         vec![],
         10,
@@ -2331,7 +2331,7 @@ fn pin_and_unpin_message() {
         EventKind::CreateChannel {
             name: "general".into(),
             channel_id: ch_id.clone(),
-            kind: "text".into(),
+            kind: crate::types::ChannelKind::Text,
         },
     );
 
@@ -2537,7 +2537,7 @@ fn check_permission_admin_implicitly_has_all() {
         EventKind::CreateChannel {
             name: "dev".into(),
             channel_id: "ch2".into(),
-            kind: "text".into(),
+            kind: crate::types::ChannelKind::Text,
         },
         EventKind::CreateRole {
             name: "mod".into(),

@@ -170,7 +170,7 @@ pub fn Sidebar(
                         let is_voice = {
                             let name = ch_kind.clone();
                             move || {
-                                app_state.server.channel_kinds.get().iter().any(|(n, k)| n == &name && k == "voice")
+                                app_state.server.channel_kinds.get().iter().any(|(n, k)| n == &name && *k == willow_state::ChannelKind::Voice)
                             }
                         };
 

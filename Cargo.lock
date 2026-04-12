@@ -6203,6 +6203,7 @@ dependencies = [
  "willow-client",
  "willow-identity",
  "willow-network",
+ "willow-state",
 ]
 
 [[package]]

@@ -159,6 +159,9 @@ impl ReplayRole {
                 Err(InsertError::MissingGovernanceDep { .. }) => {
                     warn!("rejected Vote event missing proposal dep");
                 }
+                Err(InsertError::PermissionDenied(reason)) => {
+                    warn!(%reason, "rejected event: permission denied");
+                }
             }
         }
     }

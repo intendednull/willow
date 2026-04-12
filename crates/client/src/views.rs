@@ -38,7 +38,7 @@ pub struct ChannelsView {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChannelInfo {
     pub name: String,
-    pub kind: String,
+    pub kind: willow_state::ChannelKind,
 }
 
 /// Member list with online status.
@@ -299,12 +299,12 @@ pub fn compute_channels_view(
         for ch in entry.server.channels() {
             if seen.insert(ch.name.clone()) {
                 let kind = match ch.kind {
-                    willow_channel::ChannelKind::Text => "text",
-                    willow_channel::ChannelKind::Voice => "voice",
+                    willow_channel::ChannelKind::Text => willow_state::ChannelKind::Text,
+                    willow_channel::ChannelKind::Voice => willow_state::ChannelKind::Voice,
                 };
                 names.push(ChannelInfo {
                     name: ch.name.clone(),
-                    kind: kind.to_string(),
+                    kind,
                 });
             }
         }

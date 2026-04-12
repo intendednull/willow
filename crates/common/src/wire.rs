@@ -148,7 +148,7 @@ mod tests {
             EventKind::CreateChannel {
                 name: "ch".to_string(),
                 channel_id: "cid".to_string(),
-                kind: "text".to_string(),
+                kind: willow_state::ChannelKind::Text,
             },
         )];
 

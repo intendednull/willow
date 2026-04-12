@@ -11,6 +11,18 @@ use willow_identity::EndpointId;
 
 use crate::hash::EventHash;
 
+/// Channel kind — text chat or voice.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChannelKind {
+    /// A text chat channel (default).
+    #[default]
+    #[serde(alias = "text")]
+    Text,
+    /// A voice (and optionally video/screenshare) channel.
+    #[serde(alias = "voice")]
+    Voice,
+}
+
 /// A named conversation space inside a server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Channel {
@@ -21,14 +33,9 @@ pub struct Channel {
     /// Hashes of pinned messages in this channel.
     #[serde(default)]
     pub pinned_messages: BTreeSet<EventHash>,
-    /// Channel kind: `"text"` or `"voice"`. Defaults to `"text"`.
-    #[serde(default = "default_channel_kind")]
-    pub kind: String,
-}
-
-/// Default channel kind for deserialization backward compatibility.
-fn default_channel_kind() -> String {
-    "text".to_string()
+    /// Text or voice.
+    #[serde(default)]
+    pub kind: ChannelKind,
 }
 
 /// A named bundle of permissions that can be assigned to members.

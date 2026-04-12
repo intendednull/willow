@@ -27,4 +27,4 @@ pub use server::{PendingProposal, ServerState};
 pub use sync::{
     AuthorHead, AuthorRequest, ChainStatus, HeadsSummary, PendingBuffer, Snapshot, SyncMessage,
 };
-pub use types::{Channel, ChatMessage, Member, Profile, Role};
+pub use types::{Channel, ChannelKind, ChatMessage, Member, Profile, Role};
