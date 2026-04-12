@@ -112,25 +112,6 @@ pub trait BlobStore: Send + Sync {
     async fn store_size(&self) -> Option<u64>;
 }
 
-// ───── Connection events ────────────────────────────────────────────────────
-
-/// Network connectivity events.
-#[derive(Debug, Clone)]
-pub enum ConnectionEvent {
-    /// Connected to a relay server.
-    RelayConnected,
-    /// Disconnected from the relay server.
-    RelayDisconnected,
-    /// A direct QUIC connection was established to a peer.
-    DirectConnected(EndpointId),
-    /// A direct QUIC connection to a peer was lost.
-    DirectDisconnected(EndpointId),
-}
-
-/// A stream of connection events.
-pub type ConnectionEventStream =
-    std::pin::Pin<Box<dyn futures_lite::Stream<Item = ConnectionEvent> + Send>>;
-
 // ───── Network ──────────────────────────────────────────────────────────────
 
 /// Top-level network handle. Assembled once, passed to client/workers.
@@ -160,8 +141,9 @@ pub trait Network: Send + Sync + 'static {
     /// Access the blob store.
     fn blobs(&self) -> &dyn BlobStore;
 
-    /// Stream of connectivity events (relay up/down, peer connects).
-    async fn connection_events(&self) -> ConnectionEventStream;
+    // TODO(#119): add connection_events() — stream relay up/down and direct
+    // peer connect/disconnect events so the client can surface connectivity
+    // status in the UI.
 
     /// Gracefully shut down the network.
     async fn shutdown(&self) -> Result<()>;

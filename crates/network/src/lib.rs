@@ -27,6 +27,5 @@ pub use topics::{
     channel_topic, topic_id, voice_topic, PROFILES_TOPIC, SERVER_OPS_TOPIC, WORKERS_TOPIC,
 };
 pub use traits::{
-    BlobHash, BlobStore, ConnectionEvent, ConnectionEventStream, GossipEvent, GossipMessage,
-    Network, TopicEvents, TopicHandle,
+    BlobHash, BlobStore, GossipEvent, GossipMessage, Network, TopicEvents, TopicHandle,
 };
