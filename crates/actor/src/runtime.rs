@@ -165,7 +165,7 @@ impl<T: Send + 'static> OneshotTx<T> {
             // futures_channel::oneshot::Sender::send returns Err(T) on failure,
             // but we need Err(T) for our API. The cancellation error doesn't
             // carry the value, so we reconstruct it.
-            self.0.send(val).map_err(|e| e)
+            self.0.send(val)
         }
     }
 }

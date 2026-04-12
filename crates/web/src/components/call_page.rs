@@ -124,7 +124,10 @@ pub fn CallPage(
         }
 
         // MUST call getUserMedia synchronously in click handler for gesture.
-        let window = web_sys::window().unwrap();
+        let Some(window) = web_sys::window() else {
+            tracing::error!("camera click: no window");
+            return;
+        };
         let navigator = window.navigator();
         let Ok(media_devices) = navigator.media_devices() else {
             tracing::error!("No media devices available");
@@ -181,7 +184,10 @@ pub fn CallPage(
         }
 
         // MUST call getDisplayMedia synchronously in click handler for gesture.
-        let window = web_sys::window().unwrap();
+        let Some(window) = web_sys::window() else {
+            tracing::error!("screen share click: no window");
+            return;
+        };
         let navigator = window.navigator();
         let Ok(media_devices) = navigator.media_devices() else {
             tracing::error!("No media devices available");
