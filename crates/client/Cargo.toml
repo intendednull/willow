@@ -12,7 +12,6 @@ test-utils = ["willow-network/test-utils"]
 willow-actor = { path = "../actor" }
 willow-identity = { path = "../identity" }
 willow-messaging = { path = "../messaging" }
-willow-channel = { path = "../channel" }
 willow-network = { path = "../network" }
 willow-transport = { path = "../transport" }
 willow-crypto = { path = "../crypto" }
