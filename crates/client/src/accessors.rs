@@ -1,4 +1,5 @@
 use super::*;
+use crate::util;
 
 impl<N: willow_network::Network> ClientHandle<N> {
     pub fn identity(&self) -> Identity {
@@ -67,18 +68,28 @@ impl<N: willow_network::Network> ClientHandle<N> {
 
     pub async fn event_messages(&self, channel_id: &str) -> Vec<willow_state::ChatMessage> {
         let cid = channel_id.to_string();
-        willow_actor::state::select(&self.event_state_addr, move |es| {
-            es.messages
-                .iter()
-                .filter(|m| m.channel_id == cid && !m.deleted)
-                .cloned()
-                .collect()
+        let addr = self.event_state_addr.clone();
+        util::with_timeout("event_messages", async move {
+            willow_actor::state::select(&addr, move |es| {
+                es.messages
+                    .iter()
+                    .filter(|m| m.channel_id == cid && !m.deleted)
+                    .cloned()
+                    .collect()
+            })
+            .await
         })
         .await
+        .unwrap_or_default()
     }
 
     pub async fn peers(&self) -> Vec<willow_identity::EndpointId> {
-        willow_actor::state::select(&self.chat_meta_addr, |c| c.peers.clone()).await
+        let addr = self.chat_meta_addr.clone();
+        util::with_timeout("peers", async move {
+            willow_actor::state::select(&addr, |c| c.peers.clone()).await
+        })
+        .await
+        .unwrap_or_default()
     }
 
     pub async fn server_members(&self) -> Vec<(willow_identity::EndpointId, String, bool)> {
@@ -94,7 +105,12 @@ impl<N: willow_network::Network> ClientHandle<N> {
     }
 
     pub async fn is_connected(&self) -> bool {
-        willow_actor::state::select(&self.network_meta_addr, |n| n.connected).await
+        let addr = self.network_meta_addr.clone();
+        util::with_timeout("is_connected", async move {
+            willow_actor::state::select(&addr, |n| n.connected).await
+        })
+        .await
+        .unwrap_or(false)
     }
 
     pub async fn has_permission(
@@ -104,10 +120,12 @@ impl<N: willow_network::Network> ClientHandle<N> {
     ) -> bool {
         let pid = *peer_id;
         let p = *perm;
-        willow_actor::state::select(&self.event_state_addr, move |es| {
-            es.has_permission(&pid, &p)
+        let addr = self.event_state_addr.clone();
+        util::with_timeout("has_permission", async move {
+            willow_actor::state::select(&addr, move |es| es.has_permission(&pid, &p)).await
         })
         .await
+        .unwrap_or(false)
     }
 
     pub async fn roles_data(&self) -> Vec<(String, String, Vec<String>)> {
@@ -127,7 +145,12 @@ impl<N: willow_network::Network> ClientHandle<N> {
     /// Check if a peer is an admin.
     pub async fn is_admin(&self, peer_id: &willow_identity::EndpointId) -> bool {
         let pid = *peer_id;
-        willow_actor::state::select(&self.event_state_addr, move |es| es.is_admin(&pid)).await
+        let addr = self.event_state_addr.clone();
+        util::with_timeout("is_admin", async move {
+            willow_actor::state::select(&addr, move |es| es.is_admin(&pid)).await
+        })
+        .await
+        .unwrap_or(false)
     }
 
     /// Get the set of admin EndpointIds.
