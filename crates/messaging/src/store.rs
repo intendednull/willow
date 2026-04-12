@@ -6,9 +6,9 @@
 //! must implement. [`InMemoryStore`] is a simple reference implementation that
 //! keeps everything in RAM — perfect for tests and lightweight nodes.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
-use crate::{ChannelId, Message, MessageId};
+use crate::{hlc::HlcTimestamp, ChannelId, Message, MessageId};
 
 /// Errors that can occur during storage operations.
 #[derive(Debug, thiserror::Error)]
@@ -48,8 +48,9 @@ pub trait MessageStore: Send + Sync {
 
 /// A simple in-memory message store.
 ///
-/// Messages are stored in a `HashMap` keyed by [`MessageId`] and indexed by
-/// [`ChannelId`] for fast channel listing.
+/// Messages are stored in a `HashMap` keyed by [`MessageId`] for O(1) lookup,
+/// and indexed by [`ChannelId`] using a `BTreeMap<HlcTimestamp, Vec<MessageId>>`
+/// for naturally sorted channel iteration without per-insert sorting.
 ///
 /// **Not persistent** — all data is lost when the process exits. Use this for
 /// testing or as a starting point before implementing a disk-backed store.
@@ -74,8 +75,13 @@ pub trait MessageStore: Send + Sync {
 pub struct InMemoryStore {
     /// All messages keyed by their unique ID.
     messages: HashMap<MessageId, Message>,
-    /// Index: channel ID → ordered list of message IDs.
-    channel_index: HashMap<ChannelId, Vec<MessageId>>,
+    /// Index: channel ID → BTreeMap of HLC timestamp → message IDs.
+    ///
+    /// Using `BTreeMap` gives naturally sorted iteration by timestamp, so
+    /// `insert` is O(log N) instead of the previous O(N log N) sort-on-every-insert.
+    /// The `Vec<MessageId>` value handles the (rare) case where two messages share
+    /// the exact same HLC timestamp.
+    channel_index: HashMap<ChannelId, BTreeMap<HlcTimestamp, Vec<MessageId>>>,
 }
 
 impl InMemoryStore {
@@ -93,18 +99,16 @@ impl MessageStore for InMemoryStore {
 
         let id = message.id.clone();
         let channel_id = message.channel_id.clone();
+        let hlc = message.hlc;
 
         self.messages.insert(id.clone(), message);
 
-        let ids = self.channel_index.entry(channel_id).or_default();
-        ids.push(id);
-
-        // Keep the channel index sorted by HLC timestamp.
-        ids.sort_by(|a, b| {
-            let ma = &self.messages[a];
-            let mb = &self.messages[b];
-            ma.hlc.cmp(&mb.hlc)
-        });
+        self.channel_index
+            .entry(channel_id)
+            .or_default()
+            .entry(hlc)
+            .or_default()
+            .push(id);
 
         Ok(())
     }
@@ -116,10 +120,13 @@ impl MessageStore for InMemoryStore {
     }
 
     fn list_channel(&self, channel_id: &ChannelId) -> Vec<&Message> {
-        self.channel_index
-            .get(channel_id)
-            .map(|ids| ids.iter().filter_map(|id| self.messages.get(id)).collect())
-            .unwrap_or_default()
+        match self.channel_index.get(channel_id) {
+            None => Vec::new(),
+            Some(by_ts) => by_ts
+                .values()
+                .flat_map(|ids| ids.iter().filter_map(|id| self.messages.get(id)))
+                .collect(),
+        }
     }
 
     fn len(&self) -> usize {
@@ -230,5 +237,78 @@ mod tests {
 
         assert!(!store.is_empty());
         assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn messages_returned_in_hlc_order_after_random_insertion() {
+        let mut store = InMemoryStore::new();
+        let channel = ChannelId::new();
+        let peer = Identity::generate().endpoint_id();
+
+        // Construct messages with explicit out-of-order HLC timestamps.
+        let make_msg = |millis: u64, counter: u32| -> Message {
+            let mut m = Message::text(channel.clone(), peer, "test", &mut HLC::new());
+            m.hlc = HlcTimestamp { millis, counter };
+            m
+        };
+
+        let msg_t5 = make_msg(1000, 5);
+        let msg_t1 = make_msg(1000, 1);
+        let msg_t3 = make_msg(1000, 3);
+        let msg_t200 = make_msg(2000, 0);
+        let msg_t0 = make_msg(500, 0);
+
+        // Insert in deliberately scrambled order.
+        store.insert(msg_t5.clone()).unwrap();
+        store.insert(msg_t200.clone()).unwrap();
+        store.insert(msg_t1.clone()).unwrap();
+        store.insert(msg_t0.clone()).unwrap();
+        store.insert(msg_t3.clone()).unwrap();
+
+        let listed = store.list_channel(&channel);
+        assert_eq!(listed.len(), 5);
+
+        // Verify strictly ascending HLC order.
+        for window in listed.windows(2) {
+            assert!(
+                window[0].hlc <= window[1].hlc,
+                "expected {:?} <= {:?}",
+                window[0].hlc,
+                window[1].hlc
+            );
+        }
+
+        // Verify the exact order: t0, t1, t3, t5, t200.
+        assert_eq!(listed[0].id, msg_t0.id);
+        assert_eq!(listed[1].id, msg_t1.id);
+        assert_eq!(listed[2].id, msg_t3.id);
+        assert_eq!(listed[3].id, msg_t5.id);
+        assert_eq!(listed[4].id, msg_t200.id);
+    }
+
+    #[test]
+    fn duplicate_hlc_timestamps_handled_gracefully() {
+        let mut store = InMemoryStore::new();
+        let channel = ChannelId::new();
+        let peer = Identity::generate().endpoint_id();
+
+        let ts = HlcTimestamp {
+            millis: 9999,
+            counter: 0,
+        };
+
+        // Two different messages sharing the exact same HLC timestamp.
+        let mut m1 = Message::text(channel.clone(), peer, "first", &mut HLC::new());
+        m1.hlc = ts;
+        let mut m2 = Message::text(channel.clone(), peer, "second", &mut HLC::new());
+        m2.hlc = ts;
+
+        store.insert(m1).unwrap();
+        store.insert(m2).unwrap();
+
+        let listed = store.list_channel(&channel);
+        assert_eq!(listed.len(), 2, "both messages must be present");
+        assert_eq!(listed[0].hlc, ts);
+        assert_eq!(listed[1].hlc, ts);
     }
 }
