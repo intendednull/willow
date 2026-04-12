@@ -45,7 +45,7 @@ After removal:
 | `ChannelKind` (Text/Voice) | Channel type discrimination | **Move** to `willow-state::types`. Replace `kind: String` in `EventKind::CreateChannel` and `types::Channel` with the enum. |
 | `ChannelError` | Error type for channel ops | **Delete.** Errors come from `ApplyResult::Rejected` or `InsertError`. |
 | `Permission` | Re-export of `willow_state::Permission` | **Delete re-export.** Consumers import from `willow-state` directly. |
-| `Channel`, `Role`, `Member` structs | Data model | **Delete.** `willow-state::types` already defines these. |
+| `Channel`, `Role`, `Member` structs | Data model | **Delete.** `willow-state::types` already defines these. `willow-channel::Channel` has extra fields (`topic: Option<String>`, `created_at: DateTime<Utc>`) not present in `willow-state::types::Channel` — drop them (not used in the event-sourced model). |
 | `Invite` struct | Invite data | **Move** to `willow-client::invite`. |
 | `Server` struct + methods | Mutable in-memory state | **Delete.** All mutation goes through the event pipeline. |
 | `Server::channel_key()`, `set_channel_key()` | Channel key storage | **Move** key storage to client-local state (not part of `ServerState`). |
@@ -89,6 +89,23 @@ This is already how most mutations work. The exceptions are:
 
 These need to be rewritten to emit events instead.
 
+### Tests
+
+Several test functions create `willow_channel::Server` directly and
+will break:
+
+- `crates/client/src/lib.rs` — `test_client()` helper, plus
+  `send_message_and_read_back`, `create_channel_shows_in_list`, and
+  invite-related tests all construct `Server::new()`.
+- `crates/client/src/invite.rs` — four test functions
+  (`secure_invite_round_trip`, `wrong_recipient_cannot_decrypt`,
+  `multiple_channels_encrypted`,
+  `generate_invite_via_endpoint_id_produces_valid_invite`) create
+  servers with `Server::new()` and `create_channel()`.
+
+These must be rewritten to use event-sourced `ServerState` via
+`ManagedDag` or replaced with state-machine-level tests.
+
 ### Invite system
 
 `generate_invite()` currently takes a `&willow_channel::Server`. After
@@ -117,8 +134,8 @@ All changes are in `crates/client/src/`:
 
 ### Workspace changes
 
-- Delete `crates/channel/` entirely.
-- Remove `"channel"` from workspace `members` in root `Cargo.toml`.
+- Delete `crates/channel/` entirely. The root `Cargo.toml` uses
+  `members = ["crates/*"]`, so deleting the directory is sufficient.
 - Remove `willow-channel` from `crates/client/Cargo.toml`.
 - Add `willow-state` to `crates/client/Cargo.toml` (if not present).
-- Update `CLAUDE.md` dependency graph.
+- Update `CLAUDE.md` dependency graph to remove `willow-channel`.
