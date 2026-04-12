@@ -406,6 +406,150 @@ pub fn decrypt_channel_key(
     Ok(ChannelKey(key_bytes))
 }
 
+// ───── RatchetCache ─────────────────────────────────────────────────────────
+
+/// A per-channel cache of derived ratchet keys that avoids O(counter) replay
+/// cost on every decryption.
+///
+/// [`derive_message_key`] replays the ratchet from counter=1 on every call,
+/// which costs 2 HKDF-Expand operations per step. For a receiver on a chatty
+/// channel this repeated work accumulates quickly — 1M counter steps cost
+/// roughly 1 second of CPU time.
+///
+/// `RatchetCache` remembers the last-derived keys and the ratchet state at the
+/// highest cached counter per epoch. When asked for a key at counter `c` it
+/// checks the cache first; on a miss it resumes from the highest cached entry
+/// rather than rewinding all the way to counter=1.
+///
+/// The cache is bounded to `max_entries` entries. When the bound is exceeded
+/// the lowest-counter entry is evicted (oldest messages are least likely to be
+/// needed again).
+///
+/// This type is local to the receiver and has no wire-format impact.
+///
+/// # Example
+///
+/// ```
+/// use willow_crypto::{generate_channel_key, RatchetCache};
+///
+/// let key = generate_channel_key();
+/// let mut cache = RatchetCache::new(128);
+///
+/// // First call replays the ratchet; subsequent calls for the same
+/// // (epoch, counter) return the cached key without HKDF work.
+/// let k1 = cache.derive_or_cached(&key, 0, 5);
+/// let k2 = cache.derive_or_cached(&key, 0, 5);
+/// assert_eq!(k1.as_bytes(), k2.as_bytes());
+/// ```
+pub struct RatchetCache {
+    /// Cached message keys keyed by `(epoch, counter)`.
+    cache: std::collections::BTreeMap<(u32, u64), ChannelKey>,
+    /// Saved ratchet state at the highest counter per epoch, so we can
+    /// advance forward without rewinding.
+    ///
+    /// Value is `(counter_at_save, ratchet_ready_to_produce_counter+1)`.
+    ratchet_states: std::collections::HashMap<u32, (u64, KeyRatchet)>,
+    max_entries: usize,
+}
+
+impl std::fmt::Debug for RatchetCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RatchetCache")
+            .field("entries", &self.cache.len())
+            .field("max_entries", &self.max_entries)
+            .finish()
+    }
+}
+
+impl RatchetCache {
+    /// Create a new cache with a maximum of `max_entries` cached keys.
+    pub fn new(max_entries: usize) -> Self {
+        Self {
+            cache: std::collections::BTreeMap::new(),
+            ratchet_states: std::collections::HashMap::new(),
+            max_entries,
+        }
+    }
+
+    /// Return the message key for `(epoch, target_counter)`, deriving and
+    /// caching it if not already present.
+    ///
+    /// Uses any previously saved ratchet state for `epoch` to resume from the
+    /// highest already-computed counter rather than replaying from counter=1.
+    pub fn derive_or_cached(
+        &mut self,
+        channel_key: &ChannelKey,
+        epoch: u32,
+        target_counter: u64,
+    ) -> ChannelKey {
+        // Cache hit: return immediately without any HKDF work.
+        if let Some(key) = self.cache.get(&(epoch, target_counter)) {
+            return key.clone();
+        }
+
+        // Choose the best starting point: either a saved ratchet state for
+        // this epoch (if its counter is below the target) or a fresh ratchet.
+        let mut ratchet = match self.ratchet_states.get(&epoch) {
+            Some((saved_counter, saved_ratchet)) if *saved_counter < target_counter => {
+                saved_ratchet.clone()
+            }
+            _ => KeyRatchet::new(channel_key, epoch),
+        };
+
+        // Advance the ratchet until we hit target_counter, caching each key
+        // along the way so future calls within this range are O(1).
+        let mut result: Option<ChannelKey> = None;
+        loop {
+            let (key, _ep, counter) = ratchet.next_key();
+
+            // Evict oldest entry when the cache is full.
+            if self.cache.len() >= self.max_entries {
+                if let Some(oldest) = self.cache.keys().next().copied() {
+                    self.cache.remove(&oldest);
+                }
+            }
+            self.cache.insert((epoch, counter), key.clone());
+
+            if counter == target_counter {
+                result = Some(key);
+            }
+
+            // Keep the saved ratchet state up to date so the next call
+            // for a higher counter can resume from here.
+            let should_save = match self.ratchet_states.get(&epoch) {
+                Some((prev, _)) => counter > *prev,
+                None => true,
+            };
+            if should_save {
+                self.ratchet_states.insert(epoch, (counter, ratchet.clone()));
+            }
+
+            if counter >= target_counter {
+                break;
+            }
+        }
+
+        result.unwrap_or_else(|| derive_message_key(channel_key, epoch, target_counter))
+    }
+
+    /// Invalidate all cached keys for `epoch` (e.g., on key rotation /
+    /// re-seed). The next call for this epoch will replay from counter=1.
+    pub fn evict_epoch(&mut self, epoch: u32) {
+        self.cache.retain(|(e, _), _| *e != epoch);
+        self.ratchet_states.remove(&epoch);
+    }
+
+    /// Number of entries currently in the cache.
+    pub fn len(&self) -> usize {
+        self.cache.len()
+    }
+
+    /// Returns `true` if the cache contains no entries.
+    pub fn is_empty(&self) -> bool {
+        self.cache.is_empty()
+    }
+}
+
 // ───── Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -874,5 +1018,171 @@ mod tests {
         // ratchet" and should decrypt fine.
         let decrypted = open_content_bounded(&sealed, &key, 0).unwrap();
         assert_eq!(decrypted, content);
+    }
+
+    // ── Issue #120: RatchetCache tests ─────────────────────────────
+
+    /// `derive_or_cached` must return the same key as `derive_message_key`
+    /// for a given (epoch, counter).
+    #[test]
+    fn ratchet_cache_matches_derive_message_key() {
+        let key = generate_channel_key();
+        let mut cache = RatchetCache::new(128);
+
+        for counter in 1u64..=10 {
+            let cached = cache.derive_or_cached(&key, 0, counter);
+            let direct = derive_message_key(&key, 0, counter);
+            assert_eq!(
+                cached.as_bytes(),
+                direct.as_bytes(),
+                "mismatch at counter {counter}"
+            );
+        }
+    }
+
+    /// A second call for the same (epoch, counter) returns the cached value
+    /// without re-deriving it (cache hit).
+    #[test]
+    fn ratchet_cache_hit_returns_same_key() {
+        let key = generate_channel_key();
+        let mut cache = RatchetCache::new(128);
+
+        let first = cache.derive_or_cached(&key, 0, 5);
+        let second = cache.derive_or_cached(&key, 0, 5);
+        assert_eq!(first.as_bytes(), second.as_bytes());
+    }
+
+    /// After warming the cache to counter N, requesting counter N+1 should
+    /// cost only one HKDF step, not N+1 steps.
+    #[test]
+    fn ratchet_cache_advances_incrementally() {
+        let key = generate_channel_key();
+        let mut cache = RatchetCache::new(256);
+
+        // Warm to counter 50.
+        let _ = cache.derive_or_cached(&key, 0, 50);
+
+        // All intermediate keys should now be cached.
+        for c in 1u64..=50 {
+            assert!(
+                cache.cache.contains_key(&(0, c)),
+                "counter {c} should be in cache"
+            );
+        }
+
+        // Requesting counter 51 should produce the correct key.
+        let k51_cached = cache.derive_or_cached(&key, 0, 51);
+        let k51_direct = derive_message_key(&key, 0, 51);
+        assert_eq!(k51_cached.as_bytes(), k51_direct.as_bytes());
+    }
+
+    /// Keys from different epochs must not collide.
+    #[test]
+    fn ratchet_cache_epoch_isolation() {
+        let key = generate_channel_key();
+        let mut cache = RatchetCache::new(128);
+
+        let k_epoch0 = cache.derive_or_cached(&key, 0, 1);
+        let k_epoch1 = cache.derive_or_cached(&key, 1, 1);
+        assert_ne!(
+            k_epoch0.as_bytes(),
+            k_epoch1.as_bytes(),
+            "keys from different epochs must differ"
+        );
+    }
+
+    /// `evict_epoch` removes all cached entries for that epoch and lets the
+    /// next call start fresh.
+    #[test]
+    fn ratchet_cache_evict_epoch() {
+        let key = generate_channel_key();
+        let mut cache = RatchetCache::new(128);
+
+        // Populate epoch 0 and epoch 1.
+        let _ = cache.derive_or_cached(&key, 0, 5);
+        let _ = cache.derive_or_cached(&key, 1, 5);
+
+        assert!(cache.cache.contains_key(&(0, 5)));
+        assert!(cache.cache.contains_key(&(1, 5)));
+
+        cache.evict_epoch(0);
+
+        assert!(
+            !cache.cache.contains_key(&(0, 5)),
+            "epoch 0 entry should be evicted"
+        );
+        assert!(
+            cache.cache.contains_key(&(1, 5)),
+            "epoch 1 entry should survive"
+        );
+
+        // After eviction, derive_or_cached must still return the correct key.
+        let fresh = cache.derive_or_cached(&key, 0, 5);
+        let direct = derive_message_key(&key, 0, 5);
+        assert_eq!(fresh.as_bytes(), direct.as_bytes());
+    }
+
+    /// The cache must not grow beyond `max_entries`.
+    #[test]
+    fn ratchet_cache_respects_max_entries() {
+        let key = generate_channel_key();
+        let max = 10usize;
+        let mut cache = RatchetCache::new(max);
+
+        // Derive 20 keys sequentially; the cache should stay at <= max.
+        for c in 1u64..=20 {
+            let _ = cache.derive_or_cached(&key, 0, c);
+            assert!(
+                cache.len() <= max,
+                "cache size {} exceeded max {max} at counter {c}",
+                cache.len()
+            );
+        }
+    }
+
+    /// `is_empty` and `len` report correct values.
+    #[test]
+    fn ratchet_cache_len_and_is_empty() {
+        let key = generate_channel_key();
+        let mut cache = RatchetCache::new(128);
+
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+
+        let _ = cache.derive_or_cached(&key, 0, 3);
+        assert!(!cache.is_empty());
+        // deriving counter 3 from scratch advances through counters 1, 2, 3
+        assert_eq!(cache.len(), 3);
+    }
+
+    /// `RatchetCache` must be `Send + Sync` for use in async contexts.
+    #[test]
+    fn ratchet_cache_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<RatchetCache>();
+    }
+
+    /// Second call for the same counter is O(1): it should be at least
+    /// 100x faster than the first call (warmup), validating the cache
+    /// hit path as described in issue #120.
+    #[test]
+    fn cached_derive_is_fast_after_warmup() {
+        let key = generate_channel_key();
+        let mut cache = RatchetCache::new(2048);
+
+        // Warm the cache up to counter 1_000.
+        let warmup_start = std::time::Instant::now();
+        let _ = cache.derive_or_cached(&key, 0, 1_000);
+        let warmup = warmup_start.elapsed();
+
+        // Repeat derivation — should be essentially free (cache hit).
+        let repeat_start = std::time::Instant::now();
+        let _ = cache.derive_or_cached(&key, 0, 1_000);
+        let repeat = repeat_start.elapsed();
+
+        assert!(
+            repeat < warmup / 100,
+            "cache hit ({repeat:?}) should be much faster than warmup ({warmup:?})"
+        );
     }
 }
