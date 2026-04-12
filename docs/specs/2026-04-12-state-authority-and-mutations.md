@@ -1,8 +1,9 @@
-# Authority Model
+# State, Authority, and Mutations
 
-> **One-sentence summary:** All authority checks live in
-> `willow-state::materialize::apply_event` and the
-> `required_permission()` table. Every other crate is untrusted plumbing.
+> **One-sentence summary:** `willow-state` is the single source of truth.
+> All authority checks live in `apply_event()` and the
+> `required_permission()` table. Permissions are checked *before* an
+> event is created — rejected events never enter the DAG.
 
 ## Single source of truth
 
@@ -11,30 +12,43 @@
 signed events through `materialize()`. No other crate may hold
 authoritative state or enforce trust decisions.
 
-`willow-channel` is **deprecated and scheduled for removal.** It was an
-earlier data-model crate whose types (`Server`, `Channel`, `Role`,
-`Member`) duplicated what `willow-state` already provides. The client
-currently holds a `willow_channel::Server` alongside a `ServerState` and
-syncs them via `reconcile_topic_map()` — this is tech debt. The target
-architecture is:
-
-- Client holds `ServerState` directly (the single source of truth).
+- Client holds `ServerState` directly.
 - UI derives reactive views from `ServerState` fields.
-- All mutations flow through the event pipeline (no direct struct mutation).
-- Any types still needed from `willow-channel` (e.g. `ChannelKind`,
-  invite helpers) move into `willow-state` or `willow-client`.
+- All mutations flow through the event pipeline (no direct struct
+  mutation).
 
-## Event flow
+## Local mutation flow
 
-Every state mutation follows one path:
+Every local state change follows one path:
 
 ```
 user action
-  → Client emits signed Event (EventKind variant)
-  → gossip broadcast to peers
-  → peer receives Event
-  → dag.insert() (signature + sequence verification)
-  → apply_incremental() → apply_event()
+  → ManagedDag::create_and_insert()
+      1. permission pre-check   (reject before signing)
+      2. dag.create_event()     (sign, compute hash, set seq/prev/deps)
+      3. dag.insert()           (verify signature, check seq, dedup)
+      4. apply_incremental()    → apply_event() → apply_mutation()
+  → broadcast signed Event over gossip
+  → UI observes updated ServerState
+```
+
+**Permissions are checked before the event is created.** If the author
+lacks the required permission, `create_and_insert` returns an error.
+No event is signed, no sequence number is advanced, and the DAG does
+not grow.
+
+This prevents a class of problems where rejected events accumulate in
+the DAG. Since the author has already committed to their sequence
+chain once an event is signed, a post-insert rejection would leave a
+dead event in the DAG that cannot be removed without breaking the
+author's chain.
+
+## Remote event flow
+
+```
+gossip delivers signed Event
+  → dag.insert()           (verify signature, check seq, dedup)
+  → apply_incremental()    → apply_event()
       1. governance check   (Propose/Vote require is_admin)
       2. admin-only check   (GrantPermission, RevokePermission,
                               RenameServer, SetServerDescription)
@@ -43,9 +57,17 @@ user action
   → UI observes updated ServerState
 ```
 
-**Direct struct mutation is not in this path and does not constitute
-enforcement.** Any code that mutates a `Server` or `ServerState` outside
-`apply_event` is bypassing authority.
+For remote events, the permission check happens after DAG insertion
+because the sender has already committed to their chain. There are two
+cases where a remote event is rejected:
+
+- **Out-of-order delivery:** A permission grant hasn't arrived yet.
+  The event is structurally valid but the local state doesn't reflect
+  the grant. This is a sync timing issue — the sender passed the
+  pre-check locally, so the permission exists in the full DAG.
+- **Malicious sender:** The sender forged a chain without permission
+  checks. The event stays in the DAG but does not affect state. A
+  persistently-rejected author can be evicted at the network layer.
 
 ## Permission tiers
 

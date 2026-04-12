@@ -219,7 +219,7 @@ fn reevaluate_all_proposals(state: &mut ServerState) {
 /// Map an EventKind to its required Permission (if any).
 ///
 /// This is the permission-gated enforcement table. See
-/// `docs/specs/2026-04-12-authority-model.md` for the full authority model,
+/// `docs/specs/2026-04-12-state-authority-and-mutations.md` for the full authority model,
 /// including which variants are checked elsewhere (governance block,
 /// admin-only block) and which are intentionally unrestricted.
 fn required_permission(kind: &EventKind) -> Option<Permission> {
@@ -252,7 +252,7 @@ fn required_permission(kind: &EventKind) -> Option<Permission> {
         //
         // If a new EventKind variant is added and is NOT listed here or
         // in an arm above, it will silently get no permission check.
-        // That is a bug. See docs/specs/2026-04-12-authority-model.md § "Adding a
+        // That is a bug. See docs/specs/2026-04-12-state-authority-and-mutations.md § "Adding a
         // new event kind" for the required checklist.
         _ => None,
     }

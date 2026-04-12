@@ -1,7 +1,7 @@
 //! # Willow Channel
 //!
 //! **⚠ DEPRECATED — scheduled for removal.** See
-//! `docs/specs/2026-04-12-authority-model.md` for the target architecture.
+//! `docs/specs/2026-04-12-willow-channel-removal.md` for the removal plan.
 //! `willow-state::ServerState` is the single source of truth; this
 //! crate's types duplicate it and will be consolidated into
 //! `willow-state` and `willow-client`.

@@ -183,10 +183,13 @@ interaction.
 
 ### Authority Model
 
-See [`docs/specs/2026-04-12-authority-model.md`](docs/specs/2026-04-12-authority-model.md).
+See [`docs/specs/2026-04-12-state-authority-and-mutations.md`](docs/specs/2026-04-12-state-authority-and-mutations.md).
 All authority checks live in `willow-state::materialize::apply_event`
-and the `required_permission()` table. Every other crate is untrusted
-plumbing. `willow-channel` is deprecated and scheduled for removal.
+and the `required_permission()` table. Permissions are checked before
+an event is created — rejected events never enter the DAG.
+
+See [`docs/specs/2026-04-12-willow-channel-removal.md`](docs/specs/2026-04-12-willow-channel-removal.md)
+for the plan to remove `willow-channel` and consolidate into `willow-state`.
 
 ### Dependency Graph
 
