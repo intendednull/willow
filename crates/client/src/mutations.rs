@@ -104,24 +104,34 @@ impl<N: willow_network::Network> ClientMutations<N> {
     pub(crate) async fn build_event(&self, kind: EventKind) -> anyhow::Result<willow_state::Event> {
         let identity = self.identity.clone();
         let ts = util::current_time_ms();
-        willow_actor::state::mutate(&self.dag, move |ds| {
-            ds.managed
-                .create_and_insert(&identity, kind, ts)
-                .map_err(|e| anyhow::anyhow!("DAG insert failed: {e:?}"))
+        let dag = self.dag.clone();
+        util::with_timeout("build_event", async move {
+            willow_actor::state::mutate(&dag, move |ds| {
+                ds.managed
+                    .create_and_insert(&identity, kind, ts)
+                    .map_err(|e| anyhow::anyhow!("DAG insert failed: {e:?}"))
+            })
+            .await
         })
         .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?
     }
 
     /// Resolve channel name → channel ID via event state.
     pub(crate) async fn resolve_channel_id(&self, channel: &str) -> anyhow::Result<String> {
         let ch = channel.to_string();
-        let channel_id = willow_actor::state::select(&self.event_state, move |es| {
-            es.channels
-                .iter()
-                .find(|(_, c)| c.name == ch)
-                .map(|(id, _)| id.clone())
+        let event_state = self.event_state.clone();
+        let channel_id = util::with_timeout("resolve_channel_id", async move {
+            willow_actor::state::select(&event_state, move |es| {
+                es.channels
+                    .iter()
+                    .find(|(_, c)| c.name == ch)
+                    .map(|(id, _)| id.clone())
+            })
+            .await
         })
-        .await;
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
         channel_id.ok_or_else(|| anyhow::anyhow!("channel not found: {channel}"))
     }
 
@@ -130,11 +140,30 @@ impl<N: willow_network::Network> ClientMutations<N> {
     /// already applied the event to its internal state atomically.
     pub(crate) async fn apply_event(&self, event: &willow_state::Event) {
         // Sync event_state mirror from ManagedDag's authoritative state.
-        let state = willow_actor::state::select(&self.dag, |ds| ds.managed.state().clone()).await;
-        willow_actor::state::mutate(&self.event_state, move |es| {
-            *es = state;
+        let dag = self.dag.clone();
+        let state = match util::with_timeout("apply_event/select_dag", async move {
+            willow_actor::state::select(&dag, |ds| ds.managed.state().clone()).await
         })
-        .await;
+        .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "apply_event: dag state read timed out, skipping event_state sync");
+                return;
+            }
+        };
+        let event_state = self.event_state.clone();
+        if util::with_timeout("apply_event/mutate_event_state", async move {
+            willow_actor::state::mutate(&event_state, move |es| {
+                *es = state;
+            })
+            .await
+        })
+        .await
+        .is_err()
+        {
+            tracing::warn!("apply_event: event_state mutate timed out");
+        }
         let _ = self.persistence.do_send(persistence_actor::PersistEvent {
             event: event.clone(),
         });
