@@ -126,7 +126,7 @@ impl<Src: DeriveSource, T: PartialEq + Send + Sync + 'static> Actor for DerivedA
         crate::runtime::spawn(async move {
             let snapshot = sources.snapshot().await;
             let value = selector(&snapshot);
-            let _ = addr.do_send(UpdateCache(value));
+            addr.do_send(UpdateCache(value)).ok();
         });
 
         async {}
@@ -151,7 +151,7 @@ impl<Src: DeriveSource, T: PartialEq + Send + Sync + 'static> Handler<Notify>
         crate::runtime::spawn(async move {
             let snapshot = sources.snapshot().await;
             let value = selector(&snapshot);
-            let _ = addr.do_send(UpdateCache(value));
+            addr.do_send(UpdateCache(value)).ok();
         });
         async {}
     }
@@ -241,7 +241,7 @@ impl<Src: DeriveSource, T: PartialEq + Send + Sync + 'static> From<&Addr<Derived
 
         StateRef::new(
             Arc::new(move |recipient| {
-                let _ = addr_sub.do_send(Subscribe(recipient));
+                addr_sub.do_send(Subscribe(recipient)).ok();
             }),
             Arc::new(move || {
                 let addr = addr_get.clone();

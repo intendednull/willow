@@ -595,7 +595,7 @@ impl<N: Network> WillowToolRouter<N> {
                 let p: AuthorizeWorkersParams = parse_args(&args)?;
                 let eids = parse_endpoint_ids(&p.worker_peer_ids)
                     .map_err(|e| ErrorData::invalid_params(e, None))?;
-                let _ = self.client.authorize_workers(&eids).await;
+                self.client.authorize_workers(&eids).await.ok();
                 success_json(serde_json::json!({"success": true}))
             }
 

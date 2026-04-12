@@ -57,5 +57,5 @@ pub async fn run_mailbox<A: Actor>(
 
     actor.stopped().await;
     trace!("actor stopped");
-    let _ = done.send(());
+    done.send(()).ok();
 }

@@ -124,5 +124,5 @@ async fn run_mailbox_inline<A: Actor>(
     }
 
     actor.stopped().await;
-    let _ = done.send(());
+    done.send(()).ok();
 }

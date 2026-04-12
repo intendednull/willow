@@ -45,7 +45,7 @@ pub fn FileShareButton(channel: ReadSignal<String>) -> impl IntoView {
         let size = file.size() as u64;
         if size > MAX_FILE_SIZE {
             if let Some(window) = web_sys::window() {
-                let _ = window.alert_with_message("File is too large. Maximum size is 256 KB.");
+                window.alert_with_message("File is too large. Maximum size is 256 KB.").ok();
             }
             return;
         }
@@ -81,14 +81,14 @@ pub fn FileShareButton(channel: ReadSignal<String>) -> impl IntoView {
             wasm_bindgen_futures::spawn_local(async move {
                 if let Err(e) = handle_inner.share_file_inline(&ch, &filename, &data).await {
                     if let Some(window) = web_sys::window() {
-                        let _ = window.alert_with_message(&format!("Failed to share file: {e}"));
+                        window.alert_with_message(&format!("Failed to share file: {e}")).ok();
                     }
                 }
             });
         });
 
         reader.set_onloadend(Some(cb.as_ref().unchecked_ref()));
-        let _ = reader.read_as_array_buffer(&file);
+        reader.read_as_array_buffer(&file).ok();
         // Intentional leak: the FileReader callback must outlive this scope.
         // Since file picks are infrequent, the leak is acceptable.
         cb.forget();
@@ -160,18 +160,18 @@ pub fn FileCard(filename: String, data: Vec<u8>) -> impl IntoView {
         let Ok(a) = document.create_element("a") else {
             return;
         };
-        let _ = a.set_attribute("href", &url);
-        let _ = a.set_attribute("download", &fname_download);
-        let _ = a.set_attribute("style", "display:none");
+        a.set_attribute("href", &url).ok();
+        a.set_attribute("download", &fname_download).ok();
+        a.set_attribute("style", "display:none").ok();
         if let Some(body) = document.body() {
-            let _ = body.append_child(&a);
+            body.append_child(&a).ok();
             use wasm_bindgen::JsCast;
             if let Ok(html_a) = a.clone().dyn_into::<web_sys::HtmlElement>() {
                 html_a.click();
             }
-            let _ = body.remove_child(&a);
+            body.remove_child(&a).ok();
         }
-        let _ = web_sys::Url::revoke_object_url(&url);
+        web_sys::Url::revoke_object_url(&url).ok();
     };
 
     view! {

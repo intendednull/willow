@@ -143,11 +143,11 @@ impl<N: willow_network::Network> ClientHandle<N> {
         }
 
         // Open event store on persistence actor.
-        let _ = self
-            .persistence_addr
+        self.persistence_addr
             .do_send(persistence_actor::OpenEventStore {
                 server_id: accepted.server_id.clone(),
-            });
+            })
+            .ok();
 
         // Request sync.
         let msg = ops::WireMessage::SyncRequest {

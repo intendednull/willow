@@ -157,7 +157,7 @@ impl<M: StateMachine> From<&Addr<FsmActor<M>>> for StateRef<M::State> {
 
         StateRef::new(
             Arc::new(move |recipient| {
-                let _ = addr_sub.do_send(Subscribe(recipient));
+                addr_sub.do_send(Subscribe(recipient)).ok();
             }),
             Arc::new(move || {
                 let addr = addr_get.clone();

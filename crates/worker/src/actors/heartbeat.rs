@@ -103,7 +103,7 @@ impl<T: TopicHandle + 'static> Handler<HeartbeatTick> for HeartbeatActor<T> {
             let msg = WorkerWireMessage::Announcement(announcement);
             let wire = willow_common::WireMessage::Worker(msg);
             if let Some(bytes) = willow_common::pack_wire(&wire, &identity) {
-                let _ = topic.broadcast(bytes::Bytes::from(bytes)).await;
+                topic.broadcast(bytes::Bytes::from(bytes)).await.ok();
             }
         }
     }

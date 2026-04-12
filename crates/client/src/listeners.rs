@@ -77,9 +77,9 @@ async fn topic_listener_loop<T: TopicHandle, E: TopicEvents>(
                     }
                 })
                 .await;
-                let _ = ctx
-                    .event_broker
-                    .do_send(willow_actor::Publish(ClientEvent::PeerConnected(id)));
+                ctx.event_broker
+                    .do_send(willow_actor::Publish(ClientEvent::PeerConnected(id)))
+                    .ok();
             }
             GossipEvent::NeighborDown(id) => {
                 let id2 = id;
@@ -87,9 +87,9 @@ async fn topic_listener_loop<T: TopicHandle, E: TopicEvents>(
                     c.peers.retain(|p| p != &id2);
                 })
                 .await;
-                let _ = ctx
-                    .event_broker
-                    .do_send(willow_actor::Publish(ClientEvent::PeerDisconnected(id)));
+                ctx.event_broker
+                    .do_send(willow_actor::Publish(ClientEvent::PeerDisconnected(id)))
+                    .ok();
             }
         }
     }
@@ -147,12 +147,14 @@ async fn try_insert_event(ctx: &ListenerCtx, event: willow_state::Event) {
 
         // Persist and emit for each applied event.
         for ev in &all_applied {
-            let _ = ctx
-                .persistence
-                .do_send(persistence_actor::PersistEvent { event: ev.clone() });
+            ctx.persistence
+                .do_send(persistence_actor::PersistEvent { event: ev.clone() })
+                .ok();
             let client_events = mutations::derive_client_events(ev);
             for e in client_events {
-                let _ = ctx.event_broker.do_send(willow_actor::Publish(e));
+                ctx.event_broker
+                    .do_send(willow_actor::Publish(e))
+                    .ok();
             }
         }
     }
@@ -176,12 +178,12 @@ async fn process_received_message<T: TopicHandle>(
             p.names.insert(peer_id, display_name);
         })
         .await;
-        let _ = ctx
-            .event_broker
+        ctx.event_broker
             .do_send(willow_actor::Publish(ClientEvent::ProfileUpdated {
                 peer_id: profile.peer_id,
                 display_name: profile.display_name,
-            }));
+            }))
+            .ok();
         return;
     }
 
@@ -237,11 +239,11 @@ async fn process_received_message<T: TopicHandle>(
                 let _is_synced =
                     willow_actor::state::select(&ctx.dag, |ds| ds.managed.is_synced()).await;
 
-                let _ =
-                    ctx.event_broker
-                        .do_send(willow_actor::Publish(ClientEvent::SyncCompleted {
-                            ops_applied: count,
-                        }));
+                ctx.event_broker
+                    .do_send(willow_actor::Publish(ClientEvent::SyncCompleted {
+                        ops_applied: count,
+                    }))
+                    .ok();
             }
         }
         crate::ops::WireMessage::SyncRequest { state_hash, .. } => {
@@ -263,7 +265,7 @@ async fn process_received_message<T: TopicHandle>(
             if !events.is_empty() {
                 let msg = crate::ops::WireMessage::SyncBatch { events };
                 if let Some(data) = crate::ops::pack_wire(&msg, &ctx.identity) {
-                    let _ = topic.broadcast(bytes::Bytes::from(data)).await;
+                    topic.broadcast(bytes::Bytes::from(data)).await.ok();
                 }
             }
         }
@@ -290,12 +292,12 @@ async fn process_received_message<T: TopicHandle>(
                 v.participants.entry(ch).or_default().insert(peer_id);
             })
             .await;
-            let _ = ctx
-                .event_broker
+            ctx.event_broker
                 .do_send(willow_actor::Publish(ClientEvent::VoiceJoined {
                     channel_id,
                     peer_id,
-                }));
+                }))
+                .ok();
         }
         crate::ops::WireMessage::VoiceLeave {
             channel_id,
@@ -308,12 +310,12 @@ async fn process_received_message<T: TopicHandle>(
                 }
             })
             .await;
-            let _ = ctx
-                .event_broker
+            ctx.event_broker
                 .do_send(willow_actor::Publish(ClientEvent::VoiceLeft {
                     channel_id,
                     peer_id,
-                }));
+                }))
+                .ok();
         }
         crate::ops::WireMessage::VoiceSignal {
             channel_id,
@@ -321,13 +323,13 @@ async fn process_received_message<T: TopicHandle>(
             signal,
         } => {
             if target_peer == ctx.identity.endpoint_id() {
-                let _ = ctx
-                    .event_broker
+                ctx.event_broker
                     .do_send(willow_actor::Publish(ClientEvent::VoiceSignal {
                         channel_id,
                         from_peer: signer,
                         signal,
-                    }));
+                    }))
+                    .ok();
             }
         }
         crate::ops::WireMessage::JoinRequest { link_id, peer_id } => {
@@ -398,7 +400,7 @@ async fn process_received_message<T: TopicHandle>(
                         invite_data,
                     };
                     if let Some(data) = crate::ops::pack_wire(&msg, &ctx.identity) {
-                        let _ = topic.broadcast(bytes::Bytes::from(data)).await;
+                        topic.broadcast(bytes::Bytes::from(data)).await.ok();
                     }
 
                     // Grant SendMessages permission to the joining peer so
@@ -432,17 +434,17 @@ async fn process_received_message<T: TopicHandle>(
                         })
                         .await;
                         // Persist.
-                        let _ = ctx
-                            .persistence
+                        ctx.persistence
                             .do_send(crate::persistence_actor::PersistEvent {
                                 event: event.clone(),
-                            });
+                            })
+                            .ok();
                         // Broadcast to other peers.
                         if let Some(data) = crate::ops::pack_wire(
                             &crate::ops::WireMessage::Event(event),
                             &ctx.identity,
                         ) {
-                            let _ = topic.broadcast(bytes::Bytes::from(data)).await;
+                            topic.broadcast(bytes::Bytes::from(data)).await.ok();
                         }
                     }
                 }
@@ -453,9 +455,11 @@ async fn process_received_message<T: TopicHandle>(
             invite_data,
         } => {
             if target_peer == ctx.identity.endpoint_id() {
-                let _ = ctx.event_broker.do_send(willow_actor::Publish(
-                    ClientEvent::JoinLinkResponse { invite_data },
-                ));
+                ctx.event_broker
+                    .do_send(willow_actor::Publish(ClientEvent::JoinLinkResponse {
+                        invite_data,
+                    }))
+                    .ok();
             }
         }
         crate::ops::WireMessage::JoinDenied {
@@ -463,11 +467,11 @@ async fn process_received_message<T: TopicHandle>(
             reason,
         } => {
             if target_peer == ctx.identity.endpoint_id() {
-                let _ =
-                    ctx.event_broker
-                        .do_send(willow_actor::Publish(ClientEvent::JoinLinkDenied {
-                            reason,
-                        }));
+                ctx.event_broker
+                    .do_send(willow_actor::Publish(ClientEvent::JoinLinkDenied {
+                        reason,
+                    }))
+                    .ok();
             }
         }
         // TopicAnnounce is consumed by the relay; clients ignore it.

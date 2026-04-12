@@ -164,12 +164,14 @@ impl<N: willow_network::Network> ClientMutations<N> {
         {
             tracing::warn!("apply_event: event_state mutate timed out");
         }
-        let _ = self.persistence.do_send(persistence_actor::PersistEvent {
-            event: event.clone(),
-        });
+        self.persistence
+            .do_send(persistence_actor::PersistEvent {
+                event: event.clone(),
+            })
+            .ok();
         let client_events = derive_client_events(event);
         for e in client_events {
-            let _ = self.event_broker.do_send(Publish(e));
+            self.event_broker.do_send(Publish(e)).ok();
         }
     }
 
@@ -197,14 +199,14 @@ impl<N: willow_network::Network> ClientMutations<N> {
         {
             if let Ok(rt) = tokio::runtime::Handle::try_current() {
                 rt.spawn(async move {
-                    let _ = handle.broadcast(bytes).await;
+                    handle.broadcast(bytes).await.ok();
                 });
             }
         }
         #[cfg(target_arch = "wasm32")]
         {
             wasm_bindgen_futures::spawn_local(async move {
-                let _ = handle.broadcast(bytes).await;
+                handle.broadcast(bytes).await.ok();
             });
         }
     }
@@ -595,9 +597,9 @@ impl<N: willow_network::Network> ClientMutations<N> {
             }
         })
         .await;
-        let _ = self
-            .event_broker
-            .do_send(Publish(ClientEvent::PeerConnected(peer_id)));
+        self.event_broker
+            .do_send(Publish(ClientEvent::PeerConnected(peer_id)))
+            .ok();
     }
 
     /// Track a peer as offline.
@@ -606,9 +608,9 @@ impl<N: willow_network::Network> ClientMutations<N> {
             c.peers.retain(|p| p != &peer_id);
         })
         .await;
-        let _ = self
-            .event_broker
-            .do_send(Publish(ClientEvent::PeerDisconnected(peer_id)));
+        self.event_broker
+            .do_send(Publish(ClientEvent::PeerDisconnected(peer_id)))
+            .ok();
     }
 
     /// Update a peer's display name from a profile broadcast.
@@ -618,12 +620,12 @@ impl<N: willow_network::Network> ClientMutations<N> {
             p.names.insert(peer_id, name);
         })
         .await;
-        let _ = self
-            .event_broker
+        self.event_broker
             .do_send(Publish(ClientEvent::ProfileUpdated {
                 peer_id,
                 display_name,
-            }));
+            }))
+            .ok();
     }
 
     /// Record a typing indicator from a peer.
@@ -657,10 +659,12 @@ impl<N: willow_network::Network> ClientMutations<N> {
             v.participants.entry(ch).or_default().insert(peer_id);
         })
         .await;
-        let _ = self.event_broker.do_send(Publish(ClientEvent::VoiceJoined {
-            channel_id,
-            peer_id,
-        }));
+        self.event_broker
+            .do_send(Publish(ClientEvent::VoiceJoined {
+                channel_id,
+                peer_id,
+            }))
+            .ok();
     }
 
     /// Handle a voice leave event from a peer.
@@ -672,10 +676,12 @@ impl<N: willow_network::Network> ClientMutations<N> {
             }
         })
         .await;
-        let _ = self.event_broker.do_send(Publish(ClientEvent::VoiceLeft {
-            channel_id,
-            peer_id,
-        }));
+        self.event_broker
+            .do_send(Publish(ClientEvent::VoiceLeft {
+                channel_id,
+                peer_id,
+            }))
+            .ok();
     }
 }
 

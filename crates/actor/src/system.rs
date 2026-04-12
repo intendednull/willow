@@ -151,7 +151,7 @@ impl System {
         };
 
         for rx in done_rxs {
-            let _ = rx.recv().await;
+            rx.recv().await.ok();
         }
     }
 }
@@ -202,17 +202,19 @@ impl SystemHandle {
             Box::new(move || {
                 stop.store(true, Ordering::SeqCst);
                 let noop: BoxEnvelope<A> = Box::new(|_actor, _ctx| Box::pin(async {}));
-                let _ = tx.send(noop);
+                tx.send(noop).ok();
             }) as Box<dyn Fn() + Send>
         };
 
         // Register for shutdown tracking (fire-and-forget).
         // FIFO ordering guarantees this is processed before any
         // subsequent Shutdown message.
-        let _ = self.system_addr.do_send(Register(ActorEntry {
-            signal_stop,
-            done_rx: Some(done_rx),
-        }));
+        self.system_addr
+            .do_send(Register(ActorEntry {
+                signal_stop,
+                done_rx: Some(done_rx),
+            }))
+            .ok();
 
         addr
     }

@@ -77,7 +77,7 @@ impl<A: Actor> Context<A> {
                     }
                     None => {
                         let envelope = envelope::envelope_stream_finished::<A, S>();
-                        let _ = tx.send(envelope);
+                        tx.send(envelope).ok();
                         break;
                     }
                 }
@@ -138,7 +138,7 @@ impl<A: Actor> Context<A> {
             }
 
             let envelope = envelope::envelope_send::<A, M>(msg);
-            let _ = tx.send(envelope);
+            tx.send(envelope).ok();
         });
 
         TimerHandle { cancelled }

@@ -140,11 +140,11 @@ impl<N: willow_network::Network> ClientHandle<N> {
         self.mutation_handle.apply_event(&event).await;
 
         // Open event store on persistence actor.
-        let _ = self
-            .persistence_addr
+        self.persistence_addr
             .do_send(persistence_actor::OpenEventStore {
                 server_id: server_id.clone(),
-            });
+            })
+            .ok();
 
         Ok(server_id)
     }

@@ -42,7 +42,7 @@ where
     Box::new(move |actor: &mut A, ctx: &mut Context<A>| {
         Box::pin(async move {
             let result = actor.handle(msg, ctx).await;
-            let _ = reply_tx.send(result);
+            reply_tx.send(result).ok();
         })
     })
 }
