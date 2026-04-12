@@ -1094,19 +1094,22 @@ mod tests {
         // Build a real server + channel + key, then ask generate_invite
         // to encrypt the channel key for the test client.
         let inviter = Identity::generate();
-        let mut server = willow_channel::Server::new("Tamper Server", inviter.endpoint_id());
-        let ch_id = server
-            .create_channel("general", willow_channel::ChannelKind::Text)
-            .unwrap();
-        let topic = util::make_topic(&server, "general");
+        let server_id = uuid::Uuid::new_v4().to_string();
+        let topic = format!("{}/general", server_id);
+        let key = willow_crypto::generate_channel_key();
         let mut keys = HashMap::new();
-        if let Some(k) = server.channel_key(&ch_id) {
-            keys.insert(topic.clone(), k.clone());
-        }
-        let mut topic_map = HashMap::new();
-        topic_map.insert(topic.clone(), ("general".to_string(), ch_id));
-        let valid_code = invite::generate_invite(&server, &keys, &topic_map, &recipient_pub)
-            .expect("invite generation must succeed");
+        keys.insert(topic.clone(), key);
+        let mut topic_names = HashMap::new();
+        topic_names.insert(topic.clone(), "general".to_string());
+        let valid_code = invite::generate_invite(
+            "Tamper Server",
+            &server_id,
+            inviter.endpoint_id(),
+            &keys,
+            &topic_names,
+            &recipient_pub,
+        )
+        .expect("invite generation must succeed");
 
         // Tamper with the embedded server_id so it no longer parses as
         // a UUID. This is the exact failure mode #115 describes: an

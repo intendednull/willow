@@ -58,19 +58,24 @@ pub struct EncryptedChannel {
 
 /// Generate a secure invite code encrypted for a specific recipient.
 ///
-/// The `recipient_ed25519_public` is the 32-byte Ed25519 public key of
-/// the intended recipient (extracted from their PeerId).
+/// Takes the data it needs directly rather than a Server object:
+/// - `server_name` / `server_id` / `genesis_author` for the invite payload
+/// - `keys`: topic → channel key
+/// - `topic_map`: topic → channel name
+/// - `recipient_ed25519_public`: 32-byte Ed25519 public key
 ///
 /// Returns `None` if encryption fails.
 pub fn generate_invite(
-    server: &willow_channel::Server,
+    server_name: &str,
+    server_id: &str,
+    genesis_author: willow_identity::EndpointId,
     keys: &HashMap<String, ChannelKey>,
-    topic_map: &HashMap<String, (String, willow_channel::ChannelId)>,
+    topic_map: &HashMap<String, String>,
     recipient_ed25519_public: &[u8; 32],
 ) -> Option<String> {
     let mut channels = Vec::new();
 
-    for (topic, (name, _ch_id)) in topic_map {
+    for (topic, name) in topic_map {
         if let Some(key) = keys.get(topic) {
             let encrypted_key =
                 willow_crypto::encrypt_channel_key_for(key, recipient_ed25519_public).ok()?;
@@ -83,9 +88,9 @@ pub fn generate_invite(
     }
 
     let payload = InvitePayload {
-        server_name: server.name().to_string(),
-        server_id: server.id().to_string(),
-        genesis_author: server.creator,
+        server_name: server_name.to_string(),
+        server_id: server_id.to_string(),
+        genesis_author,
         sync_providers: Vec::new(), // populated by caller if known
         channels,
     };
@@ -147,39 +152,59 @@ mod tests {
     use super::*;
     use willow_identity::Identity;
 
+    /// Helper: create a server_id, a channel key, and the corresponding
+    /// keys + topic_map for a single-channel server.
+    fn test_server_with_channels(
+        server_name: &str,
+        channel_names: &[&str],
+    ) -> (
+        String,                       // server_id
+        HashMap<String, ChannelKey>,  // keys
+        HashMap<String, String>,      // topic_map: topic → name
+    ) {
+        let server_id = format!("test-server-{}", uuid::Uuid::new_v4());
+        let mut keys = HashMap::new();
+        let mut topic_map = HashMap::new();
+
+        for name in channel_names {
+            let topic = format!("{}/{}", server_id, name);
+            let key = willow_crypto::generate_channel_key();
+            keys.insert(topic.clone(), key);
+            topic_map.insert(topic, name.to_string());
+        }
+
+        (server_id, keys, topic_map)
+    }
+
+    /// Helper to extract Ed25519 public key bytes from an Identity.
+    fn recipient_public_bytes(identity: &Identity) -> [u8; 32] {
+        *identity.endpoint_id().as_bytes()
+    }
+
     #[test]
     fn secure_invite_round_trip() {
-        use willow_channel::ChannelKind;
-
         let owner = Identity::generate();
         let recipient = Identity::generate();
 
-        // Owner creates a server with a channel.
-        let mut server = willow_channel::Server::new("Secure Server", owner.endpoint_id());
-        let ch_id = server.create_channel("general", ChannelKind::Text).unwrap();
-
-        let mut keys = HashMap::new();
-        let mut topic_map = HashMap::new();
-        let topic = format!("{}/general", server.id());
-
-        if let Some(key) = server.channel_key(&ch_id) {
-            keys.insert(topic.clone(), key.clone());
-        }
-        topic_map.insert(topic.clone(), ("general".into(), ch_id));
-
-        // Get recipient's Ed25519 public key bytes.
+        let (server_id, keys, topic_map) = test_server_with_channels("Secure Server", &["general"]);
+        let topic = format!("{}/general", server_id);
         let recipient_pub = recipient_public_bytes(&recipient);
 
-        // Generate invite encrypted for the recipient.
-        let code = generate_invite(&server, &keys, &topic_map, &recipient_pub).unwrap();
+        let code = generate_invite(
+            "Secure Server",
+            &server_id,
+            owner.endpoint_id(),
+            &keys,
+            &topic_map,
+            &recipient_pub,
+        )
+        .unwrap();
 
-        // Recipient accepts the invite.
         let accepted = accept_invite(&code, &recipient).unwrap();
 
         assert_eq!(accepted.server_name, "Secure Server");
         assert_eq!(accepted.channel_keys.len(), 1);
 
-        // Verify the decrypted key matches the original.
         let (name, decrypted_key) = &accepted.channel_keys[&topic];
         assert_eq!(name, "general");
         assert_eq!(decrypted_key.as_bytes(), keys[&topic].as_bytes());
@@ -187,26 +212,22 @@ mod tests {
 
     #[test]
     fn wrong_recipient_cannot_decrypt() {
-        use willow_channel::ChannelKind;
-
         let owner = Identity::generate();
         let intended = Identity::generate();
         let intruder = Identity::generate();
 
-        let mut server = willow_channel::Server::new("Secure", owner.endpoint_id());
-        let ch_id = server.create_channel("secret", ChannelKind::Text).unwrap();
-
-        let mut keys = HashMap::new();
-        let mut topic_map = HashMap::new();
-        let topic = format!("{}/secret", server.id());
-
-        if let Some(key) = server.channel_key(&ch_id) {
-            keys.insert(topic.clone(), key.clone());
-        }
-        topic_map.insert(topic, ("secret".into(), ch_id));
+        let (server_id, keys, topic_map) = test_server_with_channels("Secure", &["secret"]);
 
         let intended_pub = recipient_public_bytes(&intended);
-        let code = generate_invite(&server, &keys, &topic_map, &intended_pub).unwrap();
+        let code = generate_invite(
+            "Secure",
+            &server_id,
+            owner.endpoint_id(),
+            &keys,
+            &topic_map,
+            &intended_pub,
+        )
+        .unwrap();
 
         // Intruder cannot decrypt the invite.
         assert!(accept_invite(&code, &intruder).is_none());
@@ -235,64 +256,46 @@ mod tests {
 
     #[test]
     fn multiple_channels_encrypted() {
-        use willow_channel::ChannelKind;
-
         let owner = Identity::generate();
         let recipient = Identity::generate();
 
-        let mut server = willow_channel::Server::new("Multi", owner.endpoint_id());
-        let ch1 = server.create_channel("general", ChannelKind::Text).unwrap();
-        let ch2 = server.create_channel("random", ChannelKind::Text).unwrap();
-        let ch3 = server.create_channel("voice", ChannelKind::Voice).unwrap();
-
-        let mut keys = HashMap::new();
-        let mut topic_map = HashMap::new();
-
-        for (ch_id, name) in [(ch1, "general"), (ch2, "random"), (ch3, "voice")] {
-            let topic = format!("{}/{name}", server.id());
-            if let Some(key) = server.channel_key(&ch_id) {
-                keys.insert(topic.clone(), key.clone());
-            }
-            topic_map.insert(topic, (name.into(), ch_id));
-        }
+        let (server_id, keys, topic_map) =
+            test_server_with_channels("Multi", &["general", "random", "voice"]);
 
         let recipient_pub = recipient_public_bytes(&recipient);
-        let code = generate_invite(&server, &keys, &topic_map, &recipient_pub).unwrap();
+        let code = generate_invite(
+            "Multi",
+            &server_id,
+            owner.endpoint_id(),
+            &keys,
+            &topic_map,
+            &recipient_pub,
+        )
+        .unwrap();
         let accepted = accept_invite(&code, &recipient).unwrap();
 
         assert_eq!(accepted.channel_keys.len(), 3);
     }
 
-    /// Helper to extract Ed25519 public key bytes from an Identity.
-    fn recipient_public_bytes(identity: &Identity) -> [u8; 32] {
-        *identity.endpoint_id().as_bytes()
-    }
-
     #[test]
     fn generate_invite_via_endpoint_id_produces_valid_invite() {
-        use willow_channel::ChannelKind;
-
         let owner = Identity::generate();
         let joiner = Identity::generate();
 
-        let mut server = willow_channel::Server::new("Join Test", owner.endpoint_id());
-        let ch_id = server.create_channel("general", ChannelKind::Text).unwrap();
+        let (server_id, keys, topic_map) =
+            test_server_with_channels("Join Test", &["general"]);
 
-        let mut keys = HashMap::new();
-        let mut topic_map = HashMap::new();
-        let topic = format!("{}/general", server.id());
-
-        if let Some(key) = server.channel_key(&ch_id) {
-            keys.insert(topic.clone(), key.clone());
-        }
-        topic_map.insert(topic.clone(), ("general".into(), ch_id));
-
-        // Use endpoint_id_to_ed25519_public — same path as JoinRequest handler.
         let pub_key = endpoint_id_to_ed25519_public(&joiner.endpoint_id());
-        let code = generate_invite(&server, &keys, &topic_map, &pub_key);
+        let code = generate_invite(
+            "Join Test",
+            &server_id,
+            owner.endpoint_id(),
+            &keys,
+            &topic_map,
+            &pub_key,
+        );
         assert!(code.is_some(), "generate_invite should produce a value");
 
-        // Joiner can accept and decrypt the invite.
         let accepted = accept_invite(&code.unwrap(), &joiner).unwrap();
         assert_eq!(accepted.server_name, "Join Test");
         assert_eq!(accepted.channel_keys.len(), 1);

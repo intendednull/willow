@@ -10,8 +10,20 @@ impl<N: willow_network::Network> ClientHandle<N> {
             let entry = reg
                 .active()
                 .ok_or_else(|| anyhow::anyhow!("no active server"))?;
-            invite::generate_invite(&entry.server, &entry.keys, &entry.topic_map, &pub_key)
-                .ok_or_else(|| anyhow::anyhow!("invite generation failed"))
+            let topic_names: HashMap<String, String> = entry
+                .topic_map
+                .iter()
+                .map(|(topic, (name, _))| (topic.clone(), name.clone()))
+                .collect();
+            invite::generate_invite(
+                entry.server.name(),
+                &entry.server.id().to_string(),
+                entry.server.creator,
+                &entry.keys,
+                &topic_names,
+                &pub_key,
+            )
+            .ok_or_else(|| anyhow::anyhow!("invite generation failed"))
         })
         .await?;
 

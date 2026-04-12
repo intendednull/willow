@@ -350,10 +350,17 @@ async fn process_received_message<T: TopicHandle>(
                 let invite_result = willow_actor::state::select(&server_registry, move |reg| {
                     let entry = reg.active()?;
                     let pub_key = crate::invite::endpoint_id_to_ed25519_public(&peer_endpoint);
+                    let topic_names: std::collections::HashMap<String, String> = entry
+                        .topic_map
+                        .iter()
+                        .map(|(topic, (name, _))| (topic.clone(), name.clone()))
+                        .collect();
                     crate::invite::generate_invite(
-                        &entry.server,
+                        entry.server.name(),
+                        &entry.server.id().to_string(),
+                        entry.server.creator,
                         &entry.keys,
-                        &entry.topic_map,
+                        &topic_names,
                         &pub_key,
                     )
                 })
