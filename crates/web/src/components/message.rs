@@ -71,15 +71,15 @@ fn download_blob(data: &[u8], filename: &str) {
     let Ok(a) = document.create_element("a") else {
         return;
     };
-    let _ = a.set_attribute("href", &url);
-    let _ = a.set_attribute("download", filename);
-    let _ = a.set_attribute("style", "display:none");
-    let _ = body.append_child(&a);
+    a.set_attribute("href", &url).ok();
+    a.set_attribute("download", filename).ok();
+    a.set_attribute("style", "display:none").ok();
+    body.append_child(&a).ok();
     if let Ok(html_a) = a.clone().dyn_into::<web_sys::HtmlElement>() {
         html_a.click();
     }
-    let _ = body.remove_child(&a);
-    let _ = web_sys::Url::revoke_object_url(&url);
+    body.remove_child(&a).ok();
+    web_sys::Url::revoke_object_url(&url).ok();
 }
 
 /// Extract URLs from text. Returns (segments, image_urls).

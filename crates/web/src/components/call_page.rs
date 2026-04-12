@@ -158,7 +158,7 @@ pub fn CallPage(
         let on_error = wasm_bindgen::closure::Closure::once(move |_err: wasm_bindgen::JsValue| {
             tracing::error!("Camera access denied");
         });
-        let _ = promise.then2(&on_success, &on_error);
+        drop(promise.then2(&on_success, &on_error));
         on_success.forget();
         on_error.forget();
     };
@@ -230,7 +230,7 @@ pub fn CallPage(
         let on_error = wasm_bindgen::closure::Closure::once(move |_err: wasm_bindgen::JsValue| {
             tracing::error!("Screen share denied or cancelled");
         });
-        let _ = promise.then2(&on_success, &on_error);
+        drop(promise.then2(&on_success, &on_error));
         on_success.forget();
         on_error.forget();
     };

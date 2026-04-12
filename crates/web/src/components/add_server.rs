@@ -43,7 +43,7 @@ pub fn AddServerPanel(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Int
             match h.create_server(&n).await {
                 Ok(_) => {
                     if !dn.trim().is_empty() {
-                        let _ = h.set_server_display_name(dn.trim()).await;
+                        h.set_server_display_name(dn.trim()).await.ok();
                     }
                     done_cb(());
                 }
@@ -115,7 +115,7 @@ pub fn AddServerPanel(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Int
                                 match h.accept_invite(&code).await {
                                     Ok(()) => {
                                         if !name.trim().is_empty() {
-                                            let _ = h.set_server_display_name(name.trim()).await;
+                                            h.set_server_display_name(name.trim()).await.ok();
                                         }
                                         set_join_code.set(String::new());
                                         set_join_step.set(false);

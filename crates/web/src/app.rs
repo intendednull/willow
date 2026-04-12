@@ -19,15 +19,17 @@ use crate::voice::VoiceManager;
 // fn play_notification_sound() { ... }
 
 fn init_theme() {
-    let _ = js_sys::eval(
+    js_sys::eval(
         r#"var t=localStorage.getItem('willow-theme')||'dark';document.documentElement.setAttribute('data-theme',t);"#,
-    );
+    )
+    .ok();
 }
 
 pub fn toggle_theme() {
-    let _ = js_sys::eval(
+    js_sys::eval(
         r#"var h=document.documentElement;var c=h.getAttribute('data-theme')||'dark';var n=c==='dark'?'light':'dark';h.setAttribute('data-theme',n);localStorage.setItem('willow-theme',n);"#,
-    );
+    )
+    .ok();
 }
 
 /// How many milliseconds to wait before clearing the loading state automatically.
@@ -168,8 +170,9 @@ pub fn App() -> impl IntoView {
             },
         );
         if let Some(window) = web_sys::window() {
-            let _ = window
-                .add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref());
+            window
+                .add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref())
+                .ok();
         }
         closure.forget();
     }
@@ -223,8 +226,9 @@ pub fn App() -> impl IntoView {
             },
         );
         if let Some(window) = web_sys::window() {
-            let _ = window
-                .add_event_listener_with_callback("hashchange", closure.as_ref().unchecked_ref());
+            window
+                .add_event_listener_with_callback("hashchange", closure.as_ref().unchecked_ref())
+                .ok();
         }
         closure.forget();
     }
@@ -607,7 +611,7 @@ pub fn App() -> impl IntoView {
                                         write.voice.set_voice_channel_name.set(String::new());
                                         write.ui.set_show_call_page.set(false);
                                     });
-                                    let _ = promise.then2(&on_success, &on_error);
+                                    drop(promise.then2(&on_success, &on_error));
                                     on_success.forget();
                                     on_error.forget();
                                 }
@@ -695,10 +699,10 @@ pub fn App() -> impl IntoView {
                                                         <PinnedPanel
                                                             messages=pinned_messages
                                                             on_jump=move |msg_id: String| {
-                                                                let _ = js_sys::eval(&format!(
+                                                                js_sys::eval(&format!(
                                                                     "document.getElementById('msg-{}')?.scrollIntoView({{behavior:'smooth',block:'center'}})",
                                                                     msg_id.replace('\'', "")
-                                                                ));
+                                                                )).ok();
                                                                 write.ui.set_show_pinned.set(false);
                                                             }
                                                             on_close=move |_| write.ui.set_show_pinned.set(false)
@@ -714,11 +718,11 @@ pub fn App() -> impl IntoView {
                                                 local_display_name={let s: Signal<String> = Signal::from(display_name); s}
                                                 on_message_click=Callback::new(move |msg: DisplayMessage| {
                                                     write.chat.set_replying_to.set(Some(msg));
-                                                    let _ = js_sys::eval("setTimeout(function(){var i=document.querySelector('.input-area input,.input-area textarea');if(i)i.focus();},50)");
+                                                    js_sys::eval("setTimeout(function(){var i=document.querySelector('.input-area input,.input-area textarea');if(i)i.focus();},50)").ok();
                                                 })
                                                 on_edit=Callback::new(move |msg: DisplayMessage| {
                                                     write.chat.set_editing.set(Some(msg));
-                                                    let _ = js_sys::eval("setTimeout(function(){var i=document.querySelector('.input-area input,.input-area textarea');if(i)i.focus();},50)");
+                                                    js_sys::eval("setTimeout(function(){var i=document.querySelector('.input-area input,.input-area textarea');if(i)i.focus();},50)").ok();
                                                 })
                                                 on_delete=Callback::new(del_msg2)
                                                 on_react=Callback::new(react2)
@@ -814,7 +818,7 @@ pub fn App() -> impl IntoView {
 #[allow(clippy::await_holding_refcell_ref)]
 pub async fn handle_voice_create_offer(vm: VoiceManagerHandle, peer_id: String) {
     let mut mgr = vm.borrow_mut();
-    let _ = mgr.create_offer(&peer_id).await;
+    mgr.create_offer(&peer_id).await.ok();
 }
 
 /// Helper to handle an incoming WebRTC offer.
@@ -824,7 +828,7 @@ pub async fn handle_voice_create_offer(vm: VoiceManagerHandle, peer_id: String) 
 #[allow(clippy::await_holding_refcell_ref)]
 pub async fn handle_voice_offer(vm: VoiceManagerHandle, from: String, sdp: String) {
     let mut mgr = vm.borrow_mut();
-    let _ = mgr.handle_offer(&from, &sdp).await;
+    mgr.handle_offer(&from, &sdp).await.ok();
 }
 
 /// Helper to handle an incoming WebRTC answer.
@@ -834,5 +838,5 @@ pub async fn handle_voice_offer(vm: VoiceManagerHandle, from: String, sdp: Strin
 #[allow(clippy::await_holding_refcell_ref)]
 pub async fn handle_voice_answer(vm: VoiceManagerHandle, from: String, sdp: String) {
     let mgr = vm.borrow();
-    let _ = mgr.handle_answer(&from, &sdp).await;
+    mgr.handle_answer(&from, &sdp).await.ok();
 }

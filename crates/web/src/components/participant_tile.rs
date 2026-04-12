@@ -74,7 +74,7 @@ pub fn ParticipantTile(
                 leptos::prelude::set_timeout(
                     move || {
                         media_el.set_src_object(Some(&media_stream));
-                        let _ = media_el.play();
+                        media_el.play().ok();
                     },
                     std::time::Duration::ZERO,
                 );

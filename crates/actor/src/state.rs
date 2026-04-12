@@ -205,7 +205,7 @@ where
     A: Handler<Notify>,
 {
     let recipient: Recipient<Notify> = subscriber.into();
-    let _ = state.do_send(Subscribe(recipient));
+    state.do_send(Subscribe(recipient)).ok();
 }
 
 // ───── StateRef ───────────────────────────────────────────────────────────
@@ -285,7 +285,7 @@ impl<S: Send + Sync + 'static> From<&Addr<StateActor<S>>> for StateRef<S> {
 
         Self {
             subscribe_fn: Arc::new(move |recipient| {
-                let _ = addr_sub.do_send(Subscribe(recipient));
+                addr_sub.do_send(Subscribe(recipient)).ok();
             }),
             get_fn: Arc::new(move || {
                 let addr = addr_get.clone();

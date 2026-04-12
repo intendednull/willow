@@ -275,11 +275,11 @@ impl Identity {
         let write_result =
             identity.with_secret_bytes(|bytes| -> std::io::Result<()> { file.write_all(bytes) });
         if let Err(e) = write_result {
-            let _ = fs::remove_file(&tmp_path);
+            fs::remove_file(&tmp_path).ok();
             return Err(IdentityError::Other(format!("write temp key file: {e}")));
         }
         if let Err(e) = file.sync_all() {
-            let _ = fs::remove_file(&tmp_path);
+            fs::remove_file(&tmp_path).ok();
             return Err(IdentityError::Other(format!("fsync temp key file: {e}")));
         }
         // Drop the file handle before rename — Windows requires it,
@@ -292,13 +292,13 @@ impl Identity {
         {
             use std::os::unix::fs::PermissionsExt;
             if let Err(e) = fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o600)) {
-                let _ = fs::remove_file(&tmp_path);
+                fs::remove_file(&tmp_path).ok();
                 return Err(IdentityError::Other(format!("chmod temp key file: {e}")));
             }
         }
 
         if let Err(e) = fs::rename(&tmp_path, path) {
-            let _ = fs::remove_file(&tmp_path);
+            fs::remove_file(&tmp_path).ok();
             return Err(IdentityError::Other(format!("rename key file: {e}")));
         }
         Ok(())

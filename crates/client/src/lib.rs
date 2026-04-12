@@ -92,7 +92,7 @@ pub mod event_receiver {
                 willow_actor::runtime::channel(willow_actor::runtime::DEFAULT_MAILBOX_CAPACITY);
             let addr = system.spawn(ForwarderActor { tx });
             let recipient = addr.into();
-            let _ = broker.ask(BrokerSubscribe(recipient)).await;
+            broker.ask(BrokerSubscribe(recipient)).await.ok();
             Self { rx }
         }
 
@@ -120,7 +120,7 @@ pub mod event_receiver {
             msg: ClientEvent,
             _ctx: &mut Context<Self>,
         ) -> impl std::future::Future<Output = ()> + Send {
-            let _ = self.tx.send(msg);
+            self.tx.send(msg).ok();
             async {}
         }
     }
@@ -429,9 +429,11 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let event_broker = system.spawn(willow_actor::Broker::<ClientEvent>::new());
         // Open event store on the persistence actor if we have an active server.
         if let Some(sid) = &state.active_server {
-            let _ = persistence_addr.do_send(persistence_actor::OpenEventStore {
-                server_id: sid.clone(),
-            });
+            persistence_addr
+                .do_send(persistence_actor::OpenEventStore {
+                    server_id: sid.clone(),
+                })
+                .ok();
         }
         // DAG starts empty for loaded servers. It will be populated via
         // sync when connect() is called — the sync batch delivers the full

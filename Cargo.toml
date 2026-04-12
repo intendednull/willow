@@ -40,3 +40,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Synchronization primitives (poison-free, WASM-compatible)
 parking_lot = "0.12"
+
+[workspace.lints.clippy]
+let_underscore_must_use = "deny"

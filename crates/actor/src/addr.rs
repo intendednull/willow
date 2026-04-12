@@ -39,7 +39,7 @@ impl<A: Actor> Addr<A> {
         let envelope = envelope::envelope_send(msg);
         // Channel could close between our check and send — that's fine,
         // the message is lost (same as any async channel race).
-        let _ = self.tx.send(envelope);
+        self.tx.send(envelope).ok();
         Ok(())
     }
 

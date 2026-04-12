@@ -83,7 +83,7 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Actor for NetworkActor<
             willow_actor::runtime::spawn(async move {
                 // Wait for StateActor to be ready before draining events.
                 if let Some(ref mut rx) = ready {
-                    let _ = rx.wait_for(|v| *v).await;
+                    rx.wait_for(|v| *v).await.ok();
                 }
                 while let Some(Ok(event)) = events.next().await {
                     if addr.do_send(GossipEventMsg(event)).is_err() {
@@ -99,7 +99,7 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Actor for NetworkActor<
             willow_actor::runtime::spawn(async move {
                 // Wait for StateActor to be ready before draining events.
                 if let Some(ref mut rx) = ready {
-                    let _ = rx.wait_for(|v| *v).await;
+                    rx.wait_for(|v| *v).await.ok();
                 }
                 while let Some(Ok(event)) = ops_events.next().await {
                     if addr.do_send(ServerOpsEventMsg(event)).is_err() {
@@ -144,7 +144,7 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Handler<GossipEventMsg>
                             };
                             let wire = willow_common::WireMessage::Worker(reply);
                             if let Some(bytes) = willow_common::pack_wire(&wire, &identity) {
-                                let _ = reply_topic.broadcast(bytes::Bytes::from(bytes)).await;
+                                reply_topic.broadcast(bytes::Bytes::from(bytes)).await.ok();
                             }
                         }
                     }
@@ -153,7 +153,7 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Handler<GossipEventMsg>
                         match parse_server_message(&msg.content) {
                             ServerMessageAction::Events(events) => {
                                 for event in events {
-                                    let _ = state_addr.do_send(EventMsg(event));
+                                    state_addr.do_send(EventMsg(event)).ok();
                                 }
                             }
                             ServerMessageAction::Ignore => {}
@@ -181,7 +181,7 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Handler<ServerOpsEventM
                 match parse_server_message(&msg.content) {
                     ServerMessageAction::Events(events) => {
                         for event in events {
-                            let _ = state_addr.do_send(EventMsg(event));
+                            state_addr.do_send(EventMsg(event)).ok();
                         }
                     }
                     ServerMessageAction::Ignore => {}
