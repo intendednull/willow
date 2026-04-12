@@ -181,7 +181,14 @@ impl PendingBuffer {
             .push(event);
         self.cached_count += 1;
         if let Some(limit) = self.max_pending {
-            self.evict_to(limit);
+            let evicted = self.evict_to(limit);
+            if evicted > 0 {
+                tracing::warn!(
+                    evicted,
+                    buffer_size = self.cached_count,
+                    "pending buffer at capacity; dropped oldest events"
+                );
+            }
         }
     }
 

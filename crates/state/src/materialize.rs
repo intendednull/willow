@@ -306,6 +306,13 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
         EventKind::DeleteChannel { channel_id } => {
             state.channels.remove(channel_id);
             state.messages.retain(|m| m.channel_id != *channel_id);
+            // Rebuild message_index because retain may have shifted indexes.
+            state.message_index = state
+                .messages
+                .iter()
+                .enumerate()
+                .map(|(i, m)| (m.id, i))
+                .collect();
         }
 
         EventKind::RenameChannel {
@@ -392,6 +399,7 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
             body,
             reply_to,
         } => {
+            let idx = state.messages.len();
             state.messages.push(ChatMessage {
                 id: event.hash,
                 channel_id: channel_id.clone(),
@@ -403,32 +411,39 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
                 reactions: BTreeMap::new(),
                 reply_to: *reply_to,
             });
+            state.message_index.insert(event.hash, idx);
         }
 
         EventKind::EditMessage {
             message_id,
             new_body,
         } => {
-            if let Some(msg) = state.messages.iter_mut().find(|m| m.id == *message_id) {
-                msg.body = new_body.clone();
-                msg.edited = true;
+            if let Some(&idx) = state.message_index.get(message_id) {
+                if let Some(msg) = state.messages.get_mut(idx) {
+                    msg.body = new_body.clone();
+                    msg.edited = true;
+                }
             }
         }
 
         EventKind::DeleteMessage { message_id } => {
-            if let Some(msg) = state.messages.iter_mut().find(|m| m.id == *message_id) {
-                msg.deleted = true;
-                msg.body = "[message deleted]".to_string();
-                msg.reactions.clear();
+            if let Some(&idx) = state.message_index.get(message_id) {
+                if let Some(msg) = state.messages.get_mut(idx) {
+                    msg.deleted = true;
+                    msg.body = "[message deleted]".to_string();
+                    msg.reactions.clear();
+                }
             }
         }
 
         EventKind::Reaction { message_id, emoji } => {
-            if let Some(msg) = state.messages.iter_mut().find(|m| m.id == *message_id) {
-                msg.reactions
-                    .entry(emoji.clone())
-                    .or_default()
-                    .insert(event.author);
+            if let Some(&idx) = state.message_index.get(message_id) {
+                if let Some(msg) = state.messages.get_mut(idx) {
+                    msg.reactions
+                        .entry(emoji.clone())
+                        .or_default()
+                        .insert(event.author);
+                }
             }
         }
 

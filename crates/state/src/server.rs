@@ -69,6 +69,15 @@ pub struct ServerState {
     /// guarantee idempotency — applying the same event twice is a no-op.
     #[serde(default, skip)]
     pub applied_events: BTreeSet<EventHash>,
+
+    // -- Fast-lookup indexes --
+    /// Maps each message's [`EventHash`] to its index in [`messages`].
+    ///
+    /// Kept in sync with every insertion into `messages` so that
+    /// `EditMessage`, `DeleteMessage`, and `Reaction` handlers can find
+    /// their target in O(1) instead of O(N).
+    #[serde(default, skip)]
+    pub message_index: BTreeMap<EventHash, usize>,
 }
 
 impl ServerState {
@@ -104,6 +113,7 @@ impl ServerState {
             channel_keys: BTreeMap::new(),
             pending_proposals: BTreeMap::new(),
             applied_events: BTreeSet::new(),
+            message_index: BTreeMap::new(),
         }
     }
 
