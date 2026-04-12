@@ -81,6 +81,62 @@ across restarts so peer IDs stay stable. Use `just dev-clean` to reset.
 After the first run, use `just dev-quick` to skip the build step and
 start services immediately.
 
+If `vibe-annotations-server` is installed, `just dev` starts it automatically
+at `http://127.0.0.1:3846` alongside the other services.
+
+## Agent Tooling
+
+Two tools are configured for agents working on this project:
+
+### agent-browser
+
+CLI browser automation tool for driving the Willow web UI directly. Installed
+as a skill at `.agents/skills/agent-browser` (symlinked into `.claude/skills/`).
+
+**One-time setup (human):**
+```bash
+npm install -g agent-browser
+agent-browser install          # downloads Chromium
+npx skills add vercel-labs/agent-browser --yes
+```
+
+**Usage:**
+```bash
+agent-browser open http://localhost:8080   # navigate to a URL
+agent-browser snapshot                     # get interactive element tree with refs
+agent-browser click e3                     # click element by ref
+agent-browser fill e4 "some text"          # fill a text input
+agent-browser key "Enter"                  # press a key
+agent-browser screenshot shot.png          # capture screenshot
+agent-browser close                        # close the browser
+```
+
+Use agent-browser to verify UI features after changes, test flows end-to-end,
+or investigate bugs by navigating the live app. Always run `just dev` first.
+
+### Vibe Annotations
+
+Browser extension + local MCP server for visual UI feedback. Lets you click
+elements in Chrome and leave annotated feedback that agents read via MCP.
+
+The MCP server is pre-configured in `.mcp.json` at `http://127.0.0.1:3846/mcp`.
+
+**One-time setup (human):**
+1. Install the [Chrome extension](https://chromewebstore.google.com/detail/vibe-annotations-visual-f/gkofobaeeepjopdpahbicefmljcmpeof)
+2. `npm install -g vibe-annotations-server`
+
+**Usage:**
+- `just dev` starts the server automatically if installed
+- Open `http://localhost:8080` in Chrome, click the extension to annotate elements
+- Agent reads pending annotations via the `read_annotations` MCP tool
+- Agent deletes annotations after implementing fixes via `delete_annotation`
+
+**MCP tools available** (requires restarting Claude Code after first setup):
+- `read_annotations` — fetch all pending annotations
+- `watch_annotations` — poll for new annotations
+- `delete_annotation` — mark an annotation as resolved
+- `get_project_context` — infer tech stack from URL
+
 ### Dual-Target Support (Native + WASM)
 
 All library crates must compile for both native and `wasm32-unknown-unknown`.
