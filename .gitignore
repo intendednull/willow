@@ -3,6 +3,7 @@ dist
 project/.obsidian/
 web/pkg/
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 
 # Playwright
 node_modules/
