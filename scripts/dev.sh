@@ -153,6 +153,17 @@ echo -e "${GREEN}Starting web UI (trunk serve)...${NC}"
 done &
 PIDS+=($!)
 
+# --- Vibe Annotations (optional) ---------------------------------------------
+
+CYAN='\033[0;36m'
+VIBE_RUNNING=false
+if command -v vibe-annotations-server &>/dev/null; then
+    echo -e "${CYAN}Starting vibe-annotations server...${NC}"
+    vibe-annotations-server start > "$LOG_DIR/vibe-annotations.log" 2>&1 &
+    PIDS+=($!)
+    VIBE_RUNNING=true
+fi
+
 # --- Summary ------------------------------------------------------------------
 
 echo ""
@@ -161,6 +172,9 @@ echo -e "${GREEN}  Willow dev stack running${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
 echo -e "  Relay:   ${BLUE}$RELAY_URL${NC}"
 echo -e "  Web UI:  ${GREEN}http://localhost:8080${NC}"
+if [ "$VIBE_RUNNING" = true ]; then
+    echo -e "  Vibe:    ${CYAN}http://127.0.0.1:3846${NC}"
+fi
 echo -e "  Logs:    ${LOG_DIR}/"
 echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
 echo -e "  Press ${RED}Ctrl+C${NC} to stop all services"
