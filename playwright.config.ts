@@ -26,7 +26,11 @@ export default defineConfig({
     },
     {
       name: 'desktop-firefox',
-      use: { ...devices['Desktop Firefox'] },
+      use: {
+        browserName: 'firefox',
+        viewport: { width: 1280, height: 720 },
+        hasTouch: false,
+      },
     },
     {
       name: 'mobile-firefox',

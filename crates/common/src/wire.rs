@@ -75,6 +75,13 @@ pub enum WireMessage {
         /// Topic name strings (e.g. "{server_id}/{channel_name}").
         topics: Vec<String>,
     },
+    /// Announce the sender's display name so peers can resolve the profile
+    /// without requiring a separate PROFILE_TOPIC subscription. Sent on
+    /// SERVER_OPS_TOPIC so delivery is guaranteed whenever the sync path works.
+    ProfileAnnounce {
+        /// Human-readable display name of the sender.
+        display_name: String,
+    },
     /// A signed worker node message (announcement, departure, request, or response).
     ///
     /// Worker gossip messages travel on the `_willow_workers` topic.

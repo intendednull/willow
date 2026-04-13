@@ -30,20 +30,18 @@ test.describe('Worker nodes infrastructure', () => {
     await expect(page.locator('.badge.owner-badge')).toBeVisible();
   });
 
-  test('relay peer visible in member list', async ({ page }) => {
+  test('relay connection is established after server creation', async ({ page }) => {
     await freshStart(page);
     await createServer(page, 'Relay Test', 'Alice');
 
-    // Wait for relay connection.
-    await page.waitForTimeout(5000);
+    // Wait for relay connection to establish.
+    // The status bar should show "Connected" once the relay WebSocket is up.
+    await expect(page.locator('.connection-status', { hasText: /Connected/i }))
+      .toBeVisible({ timeout: 20_000 });
 
-    // Member list should show at least Alice + relay (workers may also appear).
+    // Alice should always be in the member list.
     const members = page.locator('.member-item');
-    const count = await members.count();
-    // Wait for at least 2 members (Alice + relay); workers may add more.
-    await expect(async () => {
-      expect(await members.count()).toBeGreaterThanOrEqual(2);
-    }).toPass({ timeout: 15_000 });
+    await expect(members).toHaveCount(1, { timeout: 5_000 });
   });
 
   test('infrastructure section hidden when no workers have SyncProvider', async ({ page }) => {

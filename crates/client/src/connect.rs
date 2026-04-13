@@ -1,4 +1,5 @@
 use super::*;
+use willow_network::TopicHandle as _;
 
 impl<N: willow_network::Network> ClientHandle<N> {
     /// Connect to the P2P network.
@@ -21,14 +22,21 @@ impl<N: willow_network::Network> ClientHandle<N> {
             network: self.network_meta_addr.clone(),
             voice: self.voice_state_addr.clone(),
             persistence: self.persistence_addr.clone(),
+            persistence_enabled: self.persistence_enabled,
             event_broker: self.event_broker.clone(),
             identity: self.identity.clone(),
             join_links: Arc::clone(&self.join_links),
             dag: self.dag_addr.clone(),
             server_registry: self.server_registry_addr.clone(),
+            on_neighbor_up: None,
         };
 
         // Subscribe to the server ops topic.
+        // On NeighborUp, re-send a SyncRequest so peers that join the gossip
+        // mesh after the initial SyncRequest (sent at the end of connect())
+        // can still trigger a full state sync. This is critical for
+        // cross-browser scenarios where the relay connection is established
+        // after accept_invite() has already sent its SyncRequest.
         let ops_topic_str = ops::SERVER_OPS_TOPIC;
         let bootstrap = self.bootstrap_peers.clone();
         if let Ok((sender, events)) = network
@@ -39,10 +47,49 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 .write()
                 .unwrap()
                 .insert(ops_topic_str.to_string(), sender.clone());
-            listeners::spawn_topic_listener(events, sender, listener_ctx.clone());
+            let ops_topics_for_retry = Arc::clone(&self.topics);
+            let ops_identity_for_retry = self.identity.clone();
+            let ops_on_neighbor_up: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+                let topics = ops_topics_for_retry
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner());
+                let Some(handle) = topics.get(ops::SERVER_OPS_TOPIC).cloned() else {
+                    return;
+                };
+                drop(topics);
+                let msg = ops::WireMessage::SyncRequest {
+                    state_hash: willow_state::EventHash::ZERO,
+                    topic: None,
+                };
+                let Some(data) = ops::pack_wire(&msg, &ops_identity_for_retry) else {
+                    return;
+                };
+                let bytes = bytes::Bytes::from(data);
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                        rt.spawn(async move {
+                            handle.broadcast(bytes).await.ok();
+                        });
+                    }
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    wasm_bindgen_futures::spawn_local(async move {
+                        handle.broadcast(bytes).await.ok();
+                    });
+                }
+            });
+            let ops_listener_ctx = listeners::ListenerCtx {
+                on_neighbor_up: Some(ops_on_neighbor_up),
+                ..listener_ctx.clone()
+            };
+            listeners::spawn_topic_listener(events, sender, ops_listener_ctx);
         }
 
         // Subscribe to the global profile broadcast topic.
+        // On NeighborUp, re-broadcast the local profile so that late-joining
+        // peers receive our display name even if they missed the initial burst.
         let profile_topic_str = ops::PROFILE_TOPIC;
         let bootstrap = self.bootstrap_peers.clone();
         if let Ok((sender, events)) = network
@@ -53,7 +100,48 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 .write()
                 .unwrap()
                 .insert(profile_topic_str.to_string(), sender.clone());
-            listeners::spawn_topic_listener(events, sender, listener_ctx.clone());
+            let identity_for_cb = self.identity.clone();
+            let topics_for_cb = Arc::clone(&self.topics);
+            let profile_ctx = listeners::ListenerCtx {
+                on_neighbor_up: Some(Arc::new(move || {
+                    let saved = crate::storage::load_profile().unwrap_or_default();
+                    if saved.display_name.is_empty() {
+                        return;
+                    }
+                    let profile = willow_identity::UserProfile::new(
+                        identity_for_cb.endpoint_id(),
+                        saved.display_name,
+                    );
+                    let Ok(data) = willow_transport::pack_envelope(
+                        willow_transport::MessageType::Identity,
+                        &profile,
+                    ) else {
+                        return;
+                    };
+                    let topics = topics_for_cb.read().unwrap_or_else(|e| e.into_inner());
+                    let Some(handle) = topics.get(ops::PROFILE_TOPIC).cloned() else {
+                        return;
+                    };
+                    drop(topics);
+                    let bytes = bytes::Bytes::from(data);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                            rt.spawn(async move {
+                                handle.broadcast(bytes).await.ok();
+                            });
+                        }
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        wasm_bindgen_futures::spawn_local(async move {
+                            handle.broadcast(bytes).await.ok();
+                        });
+                    }
+                })),
+                ..listener_ctx.clone()
+            };
+            listeners::spawn_topic_listener(events, sender, profile_ctx);
         }
 
         // Subscribe to channel topics from all servers.
@@ -96,6 +184,20 @@ impl<N: willow_network::Network> ClientHandle<N> {
         }
 
         self.broadcast_profile_via_network();
+        // Also announce via SERVER_OPS_TOPIC for peers that have a sync path
+        // but may not have received the PROFILE_TOPIC broadcast.
+        {
+            let saved = storage::load_profile().unwrap_or_default();
+            if !saved.display_name.is_empty() {
+                let announce = ops::WireMessage::ProfileAnnounce {
+                    display_name: saved.display_name,
+                };
+                if let Some(data) = ops::pack_wire(&announce, &self.identity) {
+                    self.mutation_handle
+                        .broadcast_on_topic(ops::SERVER_OPS_TOPIC, data);
+                }
+            }
+        }
         self.request_sync_via_network().await;
 
         self.mutation_handle.set_connected(true).await;

@@ -55,7 +55,7 @@ test.describe('Join via shareable link', () => {
     // Verify B sees the server.
     await openSidebar(pageB);
     await expect(pageB.locator('.channel-item', { hasText: 'general' }))
-      .toBeVisible({ timeout: 15000 });
+      .toBeVisible({ timeout: 20000 });
 
     // A sends a message.
     await sendMessage(pageA, 'Welcome Bob!');

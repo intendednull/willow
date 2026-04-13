@@ -149,6 +149,30 @@ impl<N: willow_network::Network> ClientHandle<N> {
             })
             .ok();
 
+        // Persist the server list and metadata so this joined server survives
+        // a page reload without requiring a network sync round-trip.
+        // Use synchronous direct storage writes so the data is guaranteed to
+        // be in localStorage before this function returns — fire-and-forget
+        // actor messages may be delayed past a page reload.
+        if self.persistence_enabled {
+            let (all_ids, entry_name, entry_keys) =
+                willow_actor::state::select(&self.server_registry_addr, |reg| {
+                    let ids = reg.servers.keys().cloned().collect::<Vec<_>>();
+                    let (name, keys) = reg
+                        .active()
+                        .map(|e| (e.name.clone(), e.keys.clone()))
+                        .unwrap_or_default();
+                    (ids, name, keys)
+                })
+                .await;
+            storage::save_server_list(&all_ids);
+            let meta = storage::SavedServerMeta {
+                server_id: accepted.server_id.clone(),
+                name: entry_name,
+            };
+            storage::save_server_by_id(&accepted.server_id, &meta, &entry_keys);
+        }
+
         // Request sync.
         let msg = ops::WireMessage::SyncRequest {
             state_hash: willow_state::EventHash::ZERO,

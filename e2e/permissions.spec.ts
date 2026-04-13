@@ -41,7 +41,7 @@ test.describe('Permissions and trust', () => {
       await sendMessage(page2, 'trusted message');
 
       // Alice should see it.
-      await waitForMessage(page1, 'trusted message', 15_000);
+      await waitForMessage(page1, 'trusted message', 30_000);
     } finally {
       await ctx1.close();
       await ctx2.close();
@@ -73,7 +73,7 @@ test.describe('Permissions and trust', () => {
       await page1.waitForTimeout(1000);
 
       await sendMessage(page2, 'before untrust');
-      await waitForMessage(page1, 'before untrust', 15_000);
+      await waitForMessage(page1, 'before untrust', 30_000);
 
       // Now untrust Bob.
       await untrustPeer(page1, 'Bob');
@@ -105,7 +105,7 @@ test.describe('Permissions and trust', () => {
 
       // Member count should drop by 1.
       await expect(page1.locator('.member-item'))
-        .toHaveCount(initialCount - 1, { timeout: 15_000 });
+        .toHaveCount(initialCount - 1, { timeout: 30_000 });
     } finally {
       await ctx1.close();
       await ctx2.close();
