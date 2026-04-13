@@ -325,6 +325,8 @@ test.describe('Multi-peer state synchronization', () => {
       // Peer 2 reopens in the same context (localStorage preserved — server key intact).
       const page2new = await ctx2.newPage();
       await page2new.goto('/');
+      // Wait for WASM to load before checking for messages — a timeout here is a
+      // load failure, not a P2P failure, and should appear as such in CI logs.
       await waitForApp(page2new);
 
       // On reconnect Peer 2 sends a SyncRequest; Peer 1 responds with the missed event.
