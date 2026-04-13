@@ -146,6 +146,24 @@ impl<N: willow_network::Network> ClientHandle<N> {
             })
             .ok();
 
+        // Persist the server list and metadata so the server survives a
+        // page reload without requiring a network sync round-trip.
+        // Use synchronous direct storage writes so the data is guaranteed to
+        // be in localStorage before this function returns — fire-and-forget
+        // actor messages may be delayed past a page reload.
+        if self.persistence_enabled {
+            let all_ids = willow_actor::state::select(&self.server_registry_addr, |reg| {
+                reg.servers.keys().cloned().collect::<Vec<_>>()
+            })
+            .await;
+            storage::save_server_list(&all_ids);
+            let meta = storage::SavedServerMeta {
+                server_id: server_id.clone(),
+                name: name.clone(),
+            };
+            storage::save_server_by_id(&server_id, &meta, &HashMap::new());
+        }
+
         Ok(server_id)
     }
 
@@ -169,23 +187,51 @@ impl<N: willow_network::Network> ClientHandle<N> {
 
     pub async fn set_server_display_name(&self, name: &str) -> anyhow::Result<()> {
         let name = name.to_string();
-        let event = self
+
+        // Update the global profile actor and broadcast via PROFILE_TOPIC first.
+        // This must happen unconditionally so peers can see the display name even
+        // when the DAG is not yet populated (e.g. immediately after accept_invite,
+        // before the first sync round-trip delivers the genesis event).
+        let pid = self.identity.endpoint_id();
+        let n = name.clone();
+        willow_actor::state::mutate(&self.profile_state_addr, move |p| {
+            p.names.insert(pid, n);
+        })
+        .await;
+        // Persist to localStorage so broadcast_profile_via_network() can read
+        // it. This is required on the join path where no prior profile exists.
+        if self.persistence_enabled {
+            storage::save_profile(&storage::LocalProfile {
+                display_name: name.clone(),
+            });
+        }
+        self.broadcast_profile_via_network();
+
+        // Also broadcast via SERVER_OPS_TOPIC so peers that have an established
+        // sync path receive the name even if PROFILE_TOPIC gossip hasn't converged.
+        let announce = ops::WireMessage::ProfileAnnounce {
+            display_name: name.clone(),
+        };
+        if let Some(data) = ops::pack_wire(&announce, &self.identity) {
+            self.mutation_handle
+                .broadcast_on_topic(ops::SERVER_OPS_TOPIC, data);
+        }
+
+        // Also create a DAG SetProfile event so the name persists in the
+        // server's event history. This may fail if the DAG is empty (e.g.
+        // just after joining before sync). That's fine — the profile was
+        // already broadcast above.
+        if let Ok(event) = self
             .mutation_handle
             .build_event(willow_state::EventKind::SetProfile {
                 display_name: name.clone(),
             })
-            .await?;
-        self.mutation_handle.apply_event(&event).await;
+            .await
+        {
+            self.mutation_handle.apply_event(&event).await;
+            self.mutation_handle.broadcast_event(&event);
+        }
 
-        // Also update global profile.
-        let pid = self.identity.endpoint_id();
-        willow_actor::state::mutate(&self.profile_state_addr, move |p| {
-            p.names.insert(pid, name);
-        })
-        .await;
-
-        self.mutation_handle.broadcast_event(&event);
-        self.broadcast_profile_via_network();
         Ok(())
     }
 

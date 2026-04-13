@@ -104,7 +104,7 @@ check-native:
 
 # Check WASM compilation (excludes native-only binaries that pull in tokio/mio)
 check-wasm:
-    cargo check --target wasm32-unknown-unknown -p willow-identity -p willow-state -p willow-channel -p willow-messaging -p willow-crypto -p willow-transport -p willow-common -p willow-network -p willow-client -p willow-web
+    cargo check --target wasm32-unknown-unknown -p willow-identity -p willow-state -p willow-messaging -p willow-crypto -p willow-transport -p willow-common -p willow-network -p willow-client -p willow-web
 
 # Build the Leptos web app (WASM)
 build-web:

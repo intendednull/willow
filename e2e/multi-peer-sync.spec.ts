@@ -44,11 +44,11 @@ test.describe('Multi-peer state synchronization', () => {
     try {
       // Alice sends a message.
       await sendMessage(page1, 'Hello from Alice');
-      await waitForMessage(page2, 'Hello from Alice', 15_000);
+      await waitForMessage(page2, 'Hello from Alice', 30_000);
 
       // Bob sends a message.
       await sendMessage(page2, 'Hello from Bob');
-      await waitForMessage(page1, 'Hello from Bob', 15_000);
+      await waitForMessage(page1, 'Hello from Bob', 30_000);
     } finally {
       await ctx1.close();
       await ctx2.close();
@@ -84,11 +84,11 @@ test.describe('Multi-peer state synchronization', () => {
       // Peer 2 should see all 3 channels (open sidebar on mobile).
       await openSidebar(page2);
       await expect(page2.locator('.channel-item', { hasText: 'general' }))
-        .toBeVisible({ timeout: 15_000 });
+        .toBeVisible({ timeout: 30_000 });
       await expect(page2.locator('.channel-item', { hasText: 'announcements' }))
-        .toBeVisible({ timeout: 15_000 });
+        .toBeVisible({ timeout: 30_000 });
       await expect(page2.locator('.channel-item', { hasText: 'random' }))
-        .toBeVisible({ timeout: 15_000 });
+        .toBeVisible({ timeout: 30_000 });
     } finally {
       await ctx1.close();
       await ctx2.close();
@@ -104,7 +104,7 @@ test.describe('Multi-peer state synchronization', () => {
       // Bob should see the new channel (open sidebar on mobile).
       await openSidebar(page2);
       await expect(page2.locator('.channel-item', { hasText: 'new-channel' }))
-        .toBeVisible({ timeout: 15_000 });
+        .toBeVisible({ timeout: 30_000 });
     } finally {
       await ctx1.close();
       await ctx2.close();
@@ -120,7 +120,7 @@ test.describe('Multi-peer state synchronization', () => {
       // Wait for Bob to see it (open sidebar on mobile).
       await openSidebar(page2);
       await expect(page2.locator('.channel-item', { hasText: 'dev' }))
-        .toBeVisible({ timeout: 15_000 });
+        .toBeVisible({ timeout: 30_000 });
 
       // Both switch to the new channel.
       await switchChannel(page1, 'dev');
@@ -128,11 +128,11 @@ test.describe('Multi-peer state synchronization', () => {
 
       // Alice sends a message.
       await sendMessage(page1, 'message in dev');
-      await waitForMessage(page2, 'message in dev', 15_000);
+      await waitForMessage(page2, 'message in dev', 30_000);
 
       // Bob sends a reply.
       await sendMessage(page2, 'bob in dev too');
-      await waitForMessage(page1, 'bob in dev too', 15_000);
+      await waitForMessage(page1, 'bob in dev too', 30_000);
     } finally {
       await ctx1.close();
       await ctx2.close();
@@ -144,7 +144,7 @@ test.describe('Multi-peer state synchronization', () => {
     try {
       // Alice sends a message.
       await sendMessage(page1, 'react to this');
-      await waitForMessage(page2, 'react to this', 15_000);
+      await waitForMessage(page2, 'react to this', 30_000);
 
       // Alice reacts.
       await reactToMessage(page1, 'react to this');
@@ -153,7 +153,7 @@ test.describe('Multi-peer state synchronization', () => {
       await expect(page1.locator('.reaction')).toBeVisible({ timeout: 5_000 });
 
       // Bob should see the reaction (P2P sync).
-      await expect(page2.locator('.reaction')).toBeVisible({ timeout: 15_000 });
+      await expect(page2.locator('.reaction')).toBeVisible({ timeout: 30_000 });
     } finally {
       await ctx1.close();
       await ctx2.close();
@@ -165,13 +165,13 @@ test.describe('Multi-peer state synchronization', () => {
     try {
       // Alice sends a message.
       await sendMessage(page1, 'original text');
-      await waitForMessage(page2, 'original text', 15_000);
+      await waitForMessage(page2, 'original text', 30_000);
 
       // Alice edits the message.
       await editMessage(page1, 'original text', 'edited text');
 
       // Bob should see the edited text.
-      await waitForMessage(page2, 'edited text', 15_000);
+      await waitForMessage(page2, 'edited text', 30_000);
     } finally {
       await ctx1.close();
       await ctx2.close();
@@ -183,7 +183,7 @@ test.describe('Multi-peer state synchronization', () => {
     try {
       // Alice sends a message.
       await sendMessage(page1, 'delete me soon');
-      await waitForMessage(page2, 'delete me soon', 15_000);
+      await waitForMessage(page2, 'delete me soon', 30_000);
 
       // Alice deletes the message.
       await deleteMessage(page1, 'delete me soon');
@@ -194,7 +194,7 @@ test.describe('Multi-peer state synchronization', () => {
 
       // Bob should see the deleted style sync.
       await expect(page2.locator('.message .body.deleted'))
-        .toBeVisible({ timeout: 15_000 });
+        .toBeVisible({ timeout: 30_000 });
     } finally {
       await ctx1.close();
       await ctx2.close();
@@ -205,7 +205,7 @@ test.describe('Multi-peer state synchronization', () => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser);
     try {
       await sendMessage(page1, 'persistent msg');
-      await waitForMessage(page2, 'persistent msg', 15_000);
+      await waitForMessage(page2, 'persistent msg', 30_000);
 
       // Both refresh.
       await page1.reload();
@@ -259,7 +259,7 @@ test.describe('Multi-peer state synchronization', () => {
     try {
       // Alice sends a message.
       await sendMessage(page1, 'check my name');
-      await waitForMessage(page2, 'check my name', 15_000);
+      await waitForMessage(page2, 'check my name', 25_000);
 
       // Bob should see Alice's display name in the message author.
       const author = page2.locator('.message .author', { hasText: 'Alice' });

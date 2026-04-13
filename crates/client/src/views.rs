@@ -252,7 +252,6 @@ pub fn compute_members_view(
 ) -> MembersView {
     let online: std::collections::HashSet<EndpointId> = chat.peers.iter().copied().collect();
     let mut result = Vec::new();
-    let mut seen = std::collections::HashSet::new();
     for (pid, member) in &events.members {
         let name = member
             .display_name
@@ -265,16 +264,6 @@ pub fn compute_members_view(
             display_name: name,
             is_online,
         });
-        seen.insert(*pid);
-    }
-    for pid in &chat.peers {
-        if !seen.contains(pid) {
-            result.push(MemberInfo {
-                peer_id: *pid,
-                display_name: resolve_display_name(events, profiles, pid),
-                is_online: true,
-            });
-        }
     }
     MembersView { members: result }
 }

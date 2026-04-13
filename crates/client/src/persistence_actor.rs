@@ -60,6 +60,9 @@ impl Handler<OpenEventStore> for PersistenceActor {
         msg: OpenEventStore,
         _ctx: &mut Context<Self>,
     ) -> impl std::future::Future<Output = ()> + Send {
+        // Load previously saved events so they are not lost when new events
+        // are appended and the whole list is re-saved.
+        self.events = storage::load_events(&msg.server_id);
         self.server_id = Some(msg.server_id);
         async {}
     }
@@ -106,6 +109,32 @@ impl Handler<PersistServerState> for PersistenceActor {
     ) -> impl std::future::Future<Output = ()> + Send {
         if self.persistence_enabled {
             storage::save_server_state(&msg.server_id, &msg.state);
+        }
+        async {}
+    }
+}
+
+/// Persist the server state snapshot using the actor's own server_id.
+///
+/// Prefer this over `PersistServerState` when the call site doesn't have
+/// the server_id readily available.
+pub struct PersistSnapshot {
+    pub state: willow_state::ServerState,
+}
+impl Message for PersistSnapshot {
+    type Result = ();
+}
+
+impl Handler<PersistSnapshot> for PersistenceActor {
+    fn handle(
+        &mut self,
+        msg: PersistSnapshot,
+        _ctx: &mut Context<Self>,
+    ) -> impl std::future::Future<Output = ()> + Send {
+        if self.persistence_enabled {
+            if let Some(ref server_id) = self.server_id {
+                storage::save_server_state(server_id, &msg.state);
+            }
         }
         async {}
     }

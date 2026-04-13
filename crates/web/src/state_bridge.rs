@@ -24,7 +24,17 @@ impl<T: Send + Sync + 'static, U: PartialEq + Clone + Send + Sync + 'static> Act
     fn started(&mut self, ctx: &mut Context<Self>) -> impl std::future::Future<Output = ()> + Send {
         let recipient: Recipient<Notify> = ctx.address().into();
         self.source.subscribe(recipient);
-        async {}
+        // Seed the signal immediately with the current value so that state
+        // restored from storage during ClientHandle::new() is reflected before
+        // any mutation fires a Notify (e.g. after a page reload).
+        let selector = self.selector.clone();
+        let source = self.source.clone();
+        let write = self.write.clone();
+        async move {
+            let snapshot = source.get().await;
+            let result = selector(&snapshot);
+            (*write).set(result);
+        }
     }
 }
 

@@ -56,8 +56,10 @@ test.describe('Mobile action sheet', () => {
     await longPress(page, '.message');
     await expect(page.locator('.mobile-action-sheet.open')).toBeVisible({ timeout: 3000 });
 
-    // Click the overlay area (top of screen, away from sheet).
-    await page.mouse.click(200, 100);
+    // Dispatch a click event directly on the overlay — bypasses Playwright's
+    // hit-test check which fails because the server rail sits above z-index 99
+    // at the top-left of the viewport.
+    await page.locator('.mobile-action-sheet-overlay.open').dispatchEvent('click');
     await page.waitForTimeout(500);
 
     await expect(page.locator('.mobile-action-sheet.open')).toBeHidden();
