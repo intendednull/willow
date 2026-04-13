@@ -8,12 +8,9 @@ import {
 test.describe('Worker nodes infrastructure', () => {
   test.setTimeout(60_000);
 
-  // Skip on mobile — member list toggle behavior differs.
-  test.beforeEach(({}, testInfo) => {
-    test.skip(testInfo.project.name.startsWith('mobile'), 'desktop only');
-  });
-
-  test('member list renders with correct section structure', async ({ page }) => {
+  test('member list renders with correct section structure', async ({ page }, testInfo) => {
+    // Member list is always visible on desktop; toggling differs on mobile.
+    test.skip(testInfo.project.name.startsWith('mobile'), 'member list always-visible on desktop only');
     await freshStart(page);
     await createServer(page, 'Section Test', 'Alice');
     await page.waitForTimeout(3000);
@@ -44,7 +41,8 @@ test.describe('Worker nodes infrastructure', () => {
     await expect(members).toHaveCount(1, { timeout: 5_000 });
   });
 
-  test('infrastructure section hidden when no workers have SyncProvider', async ({ page }) => {
+  test('infrastructure section hidden when no workers have SyncProvider', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name.startsWith('mobile'), 'member list always-visible on desktop only');
     await freshStart(page);
     await createServer(page, 'No Workers', 'Alice');
     await page.waitForTimeout(3000);

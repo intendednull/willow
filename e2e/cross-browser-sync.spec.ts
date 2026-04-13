@@ -79,10 +79,13 @@ test.describe('Cross-browser peer sync', () => {
       await expect(mobilePage.locator('.channel-item', { hasText: 'general' }))
         .toBeVisible({ timeout: 5_000 });
 
-      // Wait until desktop Firefox sees mobile Chrome as a member — this confirms
-      // the gossip mesh is bidirectionally established (NeighborUp fired on both
-      // sides) before we test the Firefox→Chrome direction, which is the slow path.
-      await desktopPage.locator('.member-item').nth(1).waitFor({ timeout: 30_000 });
+      // Establish bidirectional gossip mesh: Chrome→Firefox is the reliable direction.
+      // Waiting for Firefox to *receive* a Chrome message proves both gossip paths are
+      // open — round-trip delivery requires NeighborUp to have fired on both sides.
+      // (member-item appearance on Firefox alone only confirms Firefox's NeighborUp,
+      // not Chrome's reverse path which is required for the main assertion below.)
+      await sendMessage(mobilePage, 'warmup');
+      await waitForMessage(desktopPage, 'warmup', 30_000);
 
       // Desktop Firefox: send a message.
       await sendMessage(desktopPage, 'Hello from Firefox desktop');

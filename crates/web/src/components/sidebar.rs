@@ -46,6 +46,10 @@ pub fn Sidebar(
     let handle = use_context::<WebClientHandle>().unwrap();
     let app_state = use_context::<crate::state::AppState>().unwrap();
 
+    // Determine if the local user can create channels (owner only for now).
+    let peer_id = app_state.network.peer_id;
+    let is_owner = move || app_state.server.server_owner.get() == peer_id.get();
+
     let (creating, set_creating) = signal(false);
     let (new_name, set_new_name) = signal(String::new());
     let (create_voice, set_create_voice) = signal(false);
@@ -109,13 +113,15 @@ pub fn Sidebar(
             <div class="channel-list">
                 <div class="channel-list-header">
                     <span class="channel-list-title">"CHANNELS"</span>
-                    <button
-                        class="channel-add-btn"
-                        title="Create channel"
-                        on:click=move |_| set_creating.set(true)
-                    >
-                        {icons::icon_plus()}
-                    </button>
+                    {move || is_owner().then(|| view! {
+                        <button
+                            class="channel-add-btn"
+                            title="Create channel"
+                            on:click=move |_| set_creating.set(true)
+                        >
+                            {icons::icon_plus()}
+                        </button>
+                    })}
                 </div>
                 {move || {
                     if creating.get() {

@@ -14,7 +14,6 @@ import {
   editMessage,
   deleteMessage,
   reactToMessage,
-  waitForPeerCount,
   openSidebar,
 } from './helpers';
 
@@ -336,29 +335,23 @@ test.describe('Multi-peer state synchronization', () => {
     }
   });
 
-  test('concurrent channel creation — both channels appear on both peers', async ({ browser }) => {
-    // Both peers create a channel at the same time; the gossip merge must
-    // converge so both channels are visible on both sides. Mirrors the
-    // state-machine stress_concurrent_channel_creates test at the E2E layer.
+  test('rapid channel creation by owner — both channels propagate to peer', async ({ browser }) => {
+    // Owner creates two channels in quick succession; the gossip mesh must
+    // deliver both events to the remote peer without dropping or reordering.
+    // E2E companion to the state-machine stress_concurrent_channel_creates test.
+    // Note: only the owner (Alice) can create channels — non-owners lack
+    // ManageChannels permission and their creation attempts are rejected.
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser);
     try {
-      // Create channels concurrently.
-      await Promise.all([
-        createChannel(page1, 'chan-alice'),
-        createChannel(page2, 'chan-bob'),
-      ]);
+      // Alice (owner) creates two channels back-to-back.
+      await createChannel(page1, 'chan-a');
+      await createChannel(page1, 'chan-b');
 
-      // Both channels should appear on both peers after gossip merge.
-      await openSidebar(page1);
-      await expect(page1.locator('.channel-item', { hasText: 'chan-alice' }))
-        .toBeVisible({ timeout: 30_000 });
-      await expect(page1.locator('.channel-item', { hasText: 'chan-bob' }))
-        .toBeVisible({ timeout: 30_000 });
-
+      // Both should appear on Bob's side after gossip delivery.
       await openSidebar(page2);
-      await expect(page2.locator('.channel-item', { hasText: 'chan-alice' }))
+      await expect(page2.locator('.channel-item', { hasText: 'chan-a' }))
         .toBeVisible({ timeout: 30_000 });
-      await expect(page2.locator('.channel-item', { hasText: 'chan-bob' }))
+      await expect(page2.locator('.channel-item', { hasText: 'chan-b' }))
         .toBeVisible({ timeout: 30_000 });
     } finally {
       await ctx1.close();

@@ -282,7 +282,9 @@ export async function setupTwoPeers(
       await page1.locator('.member-item', { hasText: peer2Name })
         .waitFor({ timeout: 20_000 });
     } catch {
-      // Display name sync may be slow; proceed anyway.
+      // Display name sync may be slow; proceed anyway — but warn so failures
+      // here don't produce misleading timeouts in downstream assertions.
+      console.warn('[setupTwoPeers] peer2 display name did not sync in time — P2P may be slow');
     }
     await closeMemberList(page1);
   }
