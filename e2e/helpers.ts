@@ -303,13 +303,6 @@ export async function createChannel(page: Page, name: string) {
   await closeSidebar(page);
 }
 
-/** Switches to a channel by name on mobile (opens sidebar, clicks channel). */
-export async function switchChannelMobile(page: Page, channelName: string) {
-  await openSidebar(page);
-  await page.locator('.channel-item', { hasText: channelName }).click();
-  await page.waitForTimeout(300);
-}
-
 // ── Message actions ───────────────────────────────────────────────────
 
 /** Performs a named action on a message (desktop: hover+dropdown, mobile: long-press+sheet). */
@@ -346,7 +339,7 @@ export async function editMessage(page: Page, originalText: string, newText: str
 export async function deleteMessage(page: Page, text: string) {
   await messageAction(page, text, 'Delete');
   // Confirm the deletion dialog.
-  const confirmBtn = page.locator('.confirm-dialog .btn-danger, .confirm-dialog button', { hasText: 'Delete' });
+  const confirmBtn = page.locator('.confirm-dialog .btn-danger', { hasText: 'Delete' });
   await confirmBtn.waitFor({ timeout: 3000 });
   await confirmBtn.click();
   await page.waitForTimeout(500);
@@ -410,7 +403,7 @@ export async function kickPeer(page: Page, peerName: string) {
   await member.locator('.btn-danger', { hasText: 'Kick' }).click();
   await page.waitForTimeout(500);
   // Confirm the kick dialog.
-  const confirmBtn = page.locator('.confirm-dialog .btn-danger, .confirm-dialog button', { hasText: 'Kick' });
+  const confirmBtn = page.locator('.confirm-dialog .btn-danger', { hasText: 'Kick' });
   await confirmBtn.waitFor({ timeout: 5_000 });
   await confirmBtn.click();
   await page.waitForTimeout(500);

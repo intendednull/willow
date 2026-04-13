@@ -1,7 +1,9 @@
 import { test, expect, chromium, firefox, devices } from '@playwright/test';
 
-// Custom Firefox context options — avoids the relay connectivity issue
-// caused by devices['Desktop Firefox'] (Windows UA + screen dimensions).
+// Custom Firefox context options — avoids flakiness seen with the full
+// devices['Desktop Firefox'] preset (which sets a Windows UA + specific screen
+// dimensions that appear to slow gossip mesh formation, cause unknown).
+// Using a plain viewport gives consistent behaviour.
 const desktopFirefoxContext = {
   viewport: { width: 1280, height: 720 },
   hasTouch: false,
@@ -68,11 +70,8 @@ test.describe('Cross-browser peer sync', () => {
       await mobilePage.waitForTimeout(500);
       await mobilePage.locator('button', { hasText: 'Join Server' }).click();
       await mobilePage.waitForSelector('.sidebar, .app', { timeout: 20_000 });
-      await mobilePage.waitForTimeout(5000); // Wait for P2P sync.
 
-      // Verify mobile sees the server (sidebar should have "general" channel).
-      // First wait for the channel item to be in the DOM regardless of sidebar state
-      // (gossip sync can take time; sidebar may close during the wait on mobile).
+      // Verify mobile sees the server — wait for DOM attachment first (gossip may lag).
       await expect(mobilePage.locator('.channel-item', { hasText: 'general' }))
         .toBeAttached({ timeout: 60_000 });
       // Now open the sidebar and confirm the item is visible.
@@ -80,12 +79,10 @@ test.describe('Cross-browser peer sync', () => {
       await expect(mobilePage.locator('.channel-item', { hasText: 'general' }))
         .toBeVisible({ timeout: 5_000 });
 
-      // Warmup: Mobile Chrome sends first — this direction is reliable and
-      // ensures the gossip mesh is bidirectionally established before the
-      // main assertion. The relay's QUIC-dial to Firefox WASM peers can fail,
-      // so we need Chrome→Firefox traffic to stabilise the mesh first.
-      await sendMessage(mobilePage, 'mobile warmup');
-      await waitForMessage(desktopPage, 'mobile warmup', 30_000);
+      // Wait until desktop Firefox sees mobile Chrome as a member — this confirms
+      // the gossip mesh is bidirectionally established (NeighborUp fired on both
+      // sides) before we test the Firefox→Chrome direction, which is the slow path.
+      await desktopPage.locator('.member-item').nth(1).waitFor({ timeout: 30_000 });
 
       // Desktop Firefox: send a message.
       await sendMessage(desktopPage, 'Hello from Firefox desktop');
@@ -150,12 +147,12 @@ test.describe('Cross-browser peer sync', () => {
       await desktopPage.waitForTimeout(500);
       await desktopPage.locator('button', { hasText: 'Join Server' }).click();
       await desktopPage.waitForSelector('.sidebar', { timeout: 20_000 });
-      await desktopPage.waitForTimeout(5000);
 
-      // Desktop should see "general" channel.
-      // Gossip sync after joining can be slow; wait up to 60s for the channel list.
+      // Gossip sync after joining can be slow — wait for DOM attachment before visibility.
       await expect(desktopPage.locator('.channel-item', { hasText: 'general' }))
-        .toBeVisible({ timeout: 60_000 });
+        .toBeAttached({ timeout: 60_000 });
+      await expect(desktopPage.locator('.channel-item', { hasText: 'general' }))
+        .toBeVisible({ timeout: 5_000 });
 
       // Mobile sends a message.
       await sendMessage(mobilePage, 'Cross browser works!');

@@ -158,6 +158,22 @@ test.describe('Permissions and trust', () => {
     }
   });
 
+  test('non-owner cannot create a channel — add button absent', async ({ browser }, testInfo) => {
+    // Desktop only — easier to assert button visibility without sidebar toggle.
+    test.skip(testInfo.project.name.startsWith('mobile'), 'desktop only');
+
+    const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Chan Perm', 'Alice', 'Bob');
+    try {
+      // Bob (non-owner, no ManageChannels grant) should not see the channel-add button.
+      // The state machine rejects ManageChannels mutations from non-owners, but the
+      // UI must also hide the control — otherwise errors are swallowed silently.
+      await expect(page2.locator('.channel-add-btn')).toBeHidden({ timeout: 5_000 });
+    } finally {
+      await ctx1.close();
+      await ctx2.close();
+    }
+  });
+
   test('non-owner has no action buttons in member list', async ({ browser }, testInfo) => {
     // Skip on mobile — two-peer setup + member list toggle is flaky on narrow viewports.
     test.skip(testInfo.project.name.startsWith('mobile'), 'desktop only');
