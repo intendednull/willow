@@ -412,9 +412,3 @@ export async function kickPeer(page: Page, peerName: string) {
   await closeMemberList(page);
 }
 
-/** Waits until the member list shows the expected count of members. */
-export async function waitForPeerCount(page: Page, count: number, timeout = 20_000) {
-  await openMemberList(page);
-  await expect(page.locator('.member-item')).toHaveCount(count, { timeout });
-  await closeMemberList(page);
-}

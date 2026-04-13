@@ -107,7 +107,7 @@ test.describe('Cross-browser peer sync', () => {
     }
   });
 
-  test('desktop Firefox to mobile Chrome — invite + channel sync', async () => {
+  test('mobile Chrome to desktop Firefox — server owner sends, joiner receives', async () => {
     const mobileBrowser = await chromium.launch();
     const mobileCtx = await mobileBrowser.newContext({
       ...devices['Pixel 7'],
