@@ -72,7 +72,7 @@ impl<M: Message<Result = ()> + Send + 'static> Handler<Enqueue<M>> for Debounce<
 impl<M: Message<Result = ()> + Send + 'static> Handler<Flush> for Debounce<M> {
     fn handle(&mut self, _msg: Flush, _ctx: &mut Context<Self>) -> impl Future<Output = ()> + Send {
         if let Some(pending) = self.pending.take() {
-            let _ = self.target.do_send(pending);
+            self.target.do_send(pending).ok();
         }
         async {}
     }
@@ -120,7 +120,7 @@ impl<M: Message<Result = ()> + Send + 'static> Handler<Enqueue<M>> for Throttle<
         ctx: &mut Context<Self>,
     ) -> impl Future<Output = ()> + Send {
         if !self.cooling_down {
-            let _ = self.target.do_send(msg.0);
+            self.target.do_send(msg.0).ok();
             self.cooling_down = true;
             self._timer = Some(ctx.run_after(self.interval, CooldownExpired));
         } else {
@@ -139,7 +139,7 @@ impl<M: Message<Result = ()> + Send + 'static> Handler<CooldownExpired> for Thro
         self.cooling_down = false;
         self._timer = None;
         if let Some(pending) = self.pending.take() {
-            let _ = self.target.do_send(pending);
+            self.target.do_send(pending).ok();
             self.cooling_down = true;
             self._timer = Some(ctx.run_after(self.interval, CooldownExpired));
         }

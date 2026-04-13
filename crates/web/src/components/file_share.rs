@@ -44,8 +44,11 @@ pub fn FileShareButton(channel: ReadSignal<String>) -> impl IntoView {
 
         let size = file.size() as u64;
         if size > MAX_FILE_SIZE {
-            let window = web_sys::window().unwrap();
-            let _ = window.alert_with_message("File is too large. Maximum size is 256 KB.");
+            if let Some(window) = web_sys::window() {
+                window
+                    .alert_with_message("File is too large. Maximum size is 256 KB.")
+                    .ok();
+            }
             return;
         }
 
@@ -53,25 +56,43 @@ pub fn FileShareButton(channel: ReadSignal<String>) -> impl IntoView {
         let ch = channel.get_untracked();
         let handle_inner = handle_change.clone();
 
-        let reader = web_sys::FileReader::new().unwrap();
+        let Ok(reader) = web_sys::FileReader::new() else {
+            tracing::error!("FileShareButton: FileReader::new failed");
+            return;
+        };
         let reader_clone = reader.clone();
 
         let cb = Closure::once(move || {
-            let result = reader_clone.result().unwrap();
-            let array_buf = result.dyn_into::<js_sys::ArrayBuffer>().unwrap();
+            let result = match reader_clone.result() {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!("FileReader result error: {e:?}");
+                    return;
+                }
+            };
+            let array_buf = match result.dyn_into::<js_sys::ArrayBuffer>() {
+                Ok(b) => b,
+                Err(_) => {
+                    tracing::error!("FileReader result was not an ArrayBuffer");
+                    return;
+                }
+            };
             let uint8 = js_sys::Uint8Array::new(&array_buf);
             let data = uint8.to_vec();
 
             wasm_bindgen_futures::spawn_local(async move {
                 if let Err(e) = handle_inner.share_file_inline(&ch, &filename, &data).await {
-                    let window = web_sys::window().unwrap();
-                    let _ = window.alert_with_message(&format!("Failed to share file: {e}"));
+                    if let Some(window) = web_sys::window() {
+                        window
+                            .alert_with_message(&format!("Failed to share file: {e}"))
+                            .ok();
+                    }
                 }
             });
         });
 
         reader.set_onloadend(Some(cb.as_ref().unchecked_ref()));
-        let _ = reader.read_as_array_buffer(&file);
+        reader.read_as_array_buffer(&file).ok();
         // Intentional leak: the FileReader callback must outlive this scope.
         // Since file picks are infrequent, the leak is acceptable.
         cb.forget();
@@ -125,22 +146,36 @@ pub fn FileCard(filename: String, data: Vec<u8>) -> impl IntoView {
         let parts = js_sys::Array::new();
         parts.push(&array.buffer());
 
-        let blob = web_sys::Blob::new_with_u8_array_sequence(&parts).unwrap();
-        let url = web_sys::Url::create_object_url_with_blob(&blob).unwrap();
+        let Ok(blob) = web_sys::Blob::new_with_u8_array_sequence(&parts) else {
+            tracing::error!("FileCard: Blob::new failed");
+            return;
+        };
+        let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else {
+            tracing::error!("FileCard: create_object_url failed");
+            return;
+        };
 
-        let window = web_sys::window().unwrap();
-        let document = window.document().unwrap();
-        let a = document.create_element("a").unwrap();
-        a.set_attribute("href", &url).unwrap();
-        a.set_attribute("download", &fname_download).unwrap();
-        a.set_attribute("style", "display:none").unwrap();
-        document.body().unwrap().append_child(&a).unwrap();
-
-        let html_a: web_sys::HtmlElement = a.clone().dyn_into().unwrap();
-        html_a.click();
-
-        document.body().unwrap().remove_child(&a).unwrap();
-        web_sys::Url::revoke_object_url(&url).unwrap();
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let Some(document) = window.document() else {
+            return;
+        };
+        let Ok(a) = document.create_element("a") else {
+            return;
+        };
+        a.set_attribute("href", &url).ok();
+        a.set_attribute("download", &fname_download).ok();
+        a.set_attribute("style", "display:none").ok();
+        if let Some(body) = document.body() {
+            body.append_child(&a).ok();
+            use wasm_bindgen::JsCast;
+            if let Ok(html_a) = a.clone().dyn_into::<web_sys::HtmlElement>() {
+                html_a.click();
+            }
+            body.remove_child(&a).ok();
+        }
+        web_sys::Url::revoke_object_url(&url).ok();
     };
 
     view! {

@@ -146,13 +146,17 @@ impl SpeakingDetector {
             }
         }) as Box<dyn FnMut()>);
 
-        let window = web_sys::window().unwrap();
-        let id = window
-            .set_interval_with_callback_and_timeout_and_arguments_0(
-                closure.as_ref().unchecked_ref(),
-                60,
-            )
-            .unwrap();
+        let Some(window) = web_sys::window() else {
+            tracing::error!("SpeakingDetector::start_polling: no window");
+            return;
+        };
+        let Ok(id) = window.set_interval_with_callback_and_timeout_and_arguments_0(
+            closure.as_ref().unchecked_ref(),
+            60,
+        ) else {
+            tracing::error!("SpeakingDetector::start_polling: set_interval failed");
+            return;
+        };
         // Intentional leak: the closure must outlive the interval.
         closure.forget();
 
@@ -363,7 +367,10 @@ impl VoiceManager {
             let stream: MediaStream = if streams.length() > 0 {
                 streams.get(0).unchecked_into()
             } else {
-                let s = MediaStream::new().unwrap();
+                let Ok(s) = MediaStream::new() else {
+                    tracing::warn!("ontrack: MediaStream::new failed");
+                    return;
+                };
                 s.add_track(&track);
                 s
             };
@@ -502,7 +509,10 @@ impl VoiceManager {
         remote_peer: &str,
     ) -> Result<(&PeerConnectionState, Option<RtcRtpSender>), String> {
         if self.connections.contains_key(remote_peer) {
-            let state = self.connections.get(remote_peer).unwrap();
+            let state = self
+                .connections
+                .get(remote_peer)
+                .expect("key just inserted");
             return Ok((state, None));
         }
 
@@ -521,7 +531,10 @@ impl VoiceManager {
             PeerConnectionState { pc, making_offer },
         );
 
-        let state = self.connections.get(remote_peer).unwrap();
+        let state = self
+            .connections
+            .get(remote_peer)
+            .expect("key just inserted");
         Ok((state, video_sender))
     }
 

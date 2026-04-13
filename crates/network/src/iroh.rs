@@ -342,12 +342,6 @@ impl Network for IrohNetwork {
         &self.blob_store
     }
 
-    async fn connection_events(&self) -> ConnectionEventStream {
-        // Placeholder: return a stream that never yields.
-        // Full implementation would monitor endpoint relay and direct connection state.
-        Box::pin(futures_lite::stream::pending())
-    }
-
     async fn shutdown(&self) -> Result<()> {
         // Drop all subscriptions first.
         {

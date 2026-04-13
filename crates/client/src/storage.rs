@@ -206,7 +206,7 @@ pub struct StoredMessage {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn open_message_db() -> Option<MessageDb> {
     let dir = data_dir();
-    let _ = std::fs::create_dir_all(&dir);
+    std::fs::create_dir_all(&dir).ok();
     let path = dir.join("messages.db");
     MessageDb::open(&path)
 }
@@ -241,23 +241,23 @@ impl MessageDb {
         )
         .ok()?;
         // Migration: add msg_id column if it doesn't exist (existing DBs).
-        let _ =
-            conn.execute_batch("ALTER TABLE messages ADD COLUMN msg_id TEXT NOT NULL DEFAULT '';");
+        conn.execute_batch("ALTER TABLE messages ADD COLUMN msg_id TEXT NOT NULL DEFAULT '';")
+            .ok();
         Some(Self { conn })
     }
 
     /// Insert a message, deduplicating by msg_id.
     pub fn insert(&self, msg: &StoredMessage) {
         if msg.msg_id.is_empty() {
-            let _ = self.conn.execute(
+            self.conn.execute(
                 "INSERT INTO messages (topic, author, body, is_local, timestamp_ms) VALUES (?1, ?2, ?3, ?4, ?5)",
                 rusqlite::params![msg.topic, msg.author, msg.body, msg.is_local as i32, msg.timestamp_ms],
-            );
+            ).ok();
         } else {
-            let _ = self.conn.execute(
+            self.conn.execute(
                 "INSERT OR IGNORE INTO messages (topic, author, body, is_local, timestamp_ms, msg_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 rusqlite::params![msg.topic, msg.author, msg.body, msg.is_local as i32, msg.timestamp_ms, msg.msg_id],
-            );
+            ).ok();
         }
     }
 
@@ -391,7 +391,7 @@ pub fn open_message_db() -> Option<MessageDb> {
 #[allow(dead_code)]
 pub fn save_download(filename: &str, data: &[u8]) -> Option<std::path::PathBuf> {
     let dir = dirs::download_dir().unwrap_or_else(|| data_dir().join("downloads"));
-    let _ = std::fs::create_dir_all(&dir);
+    std::fs::create_dir_all(&dir).ok();
     let path = dir.join(filename);
     std::fs::write(&path, data).ok()?;
     Some(path)
@@ -409,8 +409,8 @@ fn data_dir() -> std::path::PathBuf {
 #[cfg(not(target_arch = "wasm32"))]
 fn save_raw(key: &str, data: &[u8]) {
     let dir = data_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    let _ = std::fs::write(dir.join(format!("{key}.bin")), data);
+    std::fs::create_dir_all(&dir).ok();
+    std::fs::write(dir.join(format!("{key}.bin")), data).ok();
 }
 
 #[cfg(not(target_arch = "wasm32"))]

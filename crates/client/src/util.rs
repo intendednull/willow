@@ -2,6 +2,36 @@
 //!
 //! Shared helper functions for the Willow client.
 
+use std::time::Duration;
+
+/// Default timeout for actor calls (native only; WASM awaits without timeout).
+pub const ACTOR_CALL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Run `f` with a timeout, returning `Err(ClientError::ActorTimeout(label))`
+/// if it does not complete within [`ACTOR_CALL_TIMEOUT`].
+///
+/// On WASM there are no tokio timers, so the future is simply awaited with
+/// no timeout applied.
+pub async fn with_timeout<T, F>(label: &'static str, f: F) -> Result<T, crate::ClientError>
+where
+    F: std::future::Future<Output = T>,
+{
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        tokio::time::timeout(ACTOR_CALL_TIMEOUT, f)
+            .await
+            .map_err(|_| {
+                tracing::warn!(label, "actor call timed out");
+                crate::ClientError::ActorTimeout(label)
+            })
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = label; // WASM has no tokio timers — await without timeout for now.
+        Ok(f.await)
+    }
+}
+
 /// Truncate a peer ID for display.
 pub fn truncate_peer_id(s: &str) -> String {
     if s.len() > 12 {
@@ -78,5 +108,17 @@ mod tests {
     fn format_timestamp_wraps_24h() {
         // 25 hours = 90000 seconds = 90000000 ms -> wraps to 01:00
         assert_eq!(format_timestamp(90_000_000), "01:00");
+    }
+
+    /// `with_timeout` must return `Err(ClientError::ActorTimeout)` when the
+    /// wrapped future never resolves.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn with_timeout_fires_on_stall() {
+        let result = with_timeout("test_label", std::future::pending::<()>()).await;
+        assert!(
+            matches!(result, Err(crate::ClientError::ActorTimeout("test_label"))),
+            "expected ActorTimeout, got {result:?}"
+        );
     }
 }

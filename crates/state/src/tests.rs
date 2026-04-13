@@ -2689,3 +2689,238 @@ fn create_and_insert_succeeds_with_permission() {
         result.err()
     );
 }
+
+// ── Issue #122: O(1) message lookup via message_index ───────────────────
+
+#[test]
+fn message_index_populated_on_insert() {
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    let msg = do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Message {
+            channel_id: "ch".into(),
+            body: "hello".into(),
+            reply_to: None,
+        },
+    );
+
+    let state = materialize(&dag);
+    assert_eq!(state.message_index.len(), 1);
+    assert_eq!(state.message_index[&msg.hash], 0);
+}
+
+#[test]
+fn message_index_reaction_is_fast_with_many_messages() {
+    // Insert many messages then apply a reaction — verify the index is
+    // correct and apply_incremental finds the right message.
+    use crate::materialize::apply_incremental;
+
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    // Insert 1000 messages.
+    let mut last_hash = None;
+    for i in 0..1000u32 {
+        let e = do_emit(
+            &mut dag,
+            &admin,
+            EventKind::Message {
+                channel_id: "ch".into(),
+                body: format!("msg {i}"),
+                reply_to: None,
+            },
+        );
+        if i == 0 {
+            last_hash = Some(e.hash);
+        }
+    }
+
+    let mut state = materialize(&dag);
+    assert_eq!(state.messages.len(), 1000);
+    // Index must be fully populated.
+    assert_eq!(state.message_index.len(), 1000);
+
+    // Apply a reaction to the first message.
+    let target = last_hash.unwrap();
+    let reaction = crate::event::Event::new(
+        &admin,
+        1002,
+        EventHash::ZERO,
+        vec![],
+        EventKind::Reaction {
+            message_id: target,
+            emoji: "🚀".into(),
+        },
+        0,
+    );
+    let result = apply_incremental(&mut state, &reaction);
+    assert_eq!(result, crate::materialize::ApplyResult::Applied);
+    // The first message should now have a reaction.
+    let idx = state.message_index[&target];
+    assert!(
+        state.messages[idx].reactions.contains_key("🚀"),
+        "reaction should be on the correct message"
+    );
+}
+
+#[test]
+fn message_index_stable_after_delete_channel() {
+    // DeleteChannel removes messages via retain() and rebuilds the index.
+    // Subsequent operations on surviving messages must still work correctly.
+    use crate::materialize::apply_incremental;
+
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::CreateChannel {
+            name: "ch1".into(),
+            channel_id: "ch-1".into(),
+            kind: crate::types::ChannelKind::Text,
+        },
+    );
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::CreateChannel {
+            name: "ch2".into(),
+            channel_id: "ch-2".into(),
+            kind: crate::types::ChannelKind::Text,
+        },
+    );
+
+    // Message in ch-1 (index 0).
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Message {
+            channel_id: "ch-1".into(),
+            body: "in ch1".into(),
+            reply_to: None,
+        },
+    );
+    // Message in ch-2 (index 1).
+    let msg_ch2 = do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Message {
+            channel_id: "ch-2".into(),
+            body: "in ch2".into(),
+            reply_to: None,
+        },
+    );
+
+    // Delete ch-1 — ch-2's message shifts from index 1 to index 0.
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::DeleteChannel {
+            channel_id: "ch-1".into(),
+        },
+    );
+
+    let mut state = materialize(&dag);
+    assert_eq!(state.messages.len(), 1);
+    // After rebuild, msg_ch2 must be at index 0.
+    assert_eq!(state.message_index[&msg_ch2.hash], 0);
+
+    // Apply an edit to the surviving message — must succeed.
+    let edit = crate::event::Event::new(
+        &admin,
+        100,
+        EventHash::ZERO,
+        vec![],
+        EventKind::EditMessage {
+            message_id: msg_ch2.hash,
+            new_body: "edited".into(),
+        },
+        0,
+    );
+    let result = apply_incremental(&mut state, &edit);
+    assert_eq!(result, crate::materialize::ApplyResult::Applied);
+    assert_eq!(state.messages[0].body, "edited");
+}
+
+// ── Issue #123: PendingBuffer eviction logging ──────────────────────────
+
+#[test]
+fn pending_buffer_eviction_reduces_count_to_cap() {
+    use crate::sync::PendingBuffer;
+
+    // Insert more events than the cap and verify cached_count stays <= cap.
+    let id = Identity::generate();
+    let cap = 10usize;
+    let mut buf = PendingBuffer::with_capacity(cap);
+
+    for i in 0u64..50 {
+        let mut hash_bytes = [0u8; 32];
+        hash_bytes[..8].copy_from_slice(&i.to_le_bytes());
+        let unique_prev = EventHash(hash_bytes);
+        let event = crate::event::Event::new(
+            &id,
+            i + 1,
+            unique_prev,
+            vec![],
+            EventKind::SetProfile {
+                display_name: format!("n{i}"),
+            },
+            0,
+        );
+        buf.buffer_for_prev(unique_prev, event);
+        // After each insertion, count must never exceed the cap.
+        assert!(
+            buf.pending_count() <= cap,
+            "pending_count {} exceeded cap {} after insertion {}",
+            buf.pending_count(),
+            cap,
+            i
+        );
+    }
+    assert_eq!(buf.pending_count(), cap);
+}
+
+// ── Issue #122: DeleteMessage path uses message_index ─────────────────────
+
+#[test]
+fn message_index_delete_message_marks_deleted() {
+    use crate::materialize::apply_incremental;
+
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    let msg = do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Message {
+            channel_id: "ch".into(),
+            body: "to be deleted".into(),
+            reply_to: None,
+        },
+    );
+
+    let mut state = materialize(&dag);
+    assert!(!state.messages[0].deleted);
+
+    // Apply DeleteMessage — must use the index to find it.
+    let del = Event::new(
+        &admin,
+        2,
+        EventHash::ZERO,
+        vec![],
+        EventKind::DeleteMessage {
+            message_id: msg.hash,
+        },
+        0,
+    );
+    let result = apply_incremental(&mut state, &del);
+    assert_eq!(result, crate::materialize::ApplyResult::Applied);
+    assert!(
+        state.messages[0].deleted,
+        "message should be marked deleted"
+    );
+}

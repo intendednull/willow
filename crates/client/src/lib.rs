@@ -61,6 +61,12 @@ pub enum ClientError {
     /// joiner from the rest of the network.
     #[error("malformed invite: {0}")]
     MalformedInvite(String),
+    /// An actor call did not complete within the allowed timeout.
+    ///
+    /// The label names the call site so callers can distinguish which
+    /// actor became unresponsive without needing to inspect backtraces.
+    #[error("actor call timed out: {0}")]
+    ActorTimeout(&'static str),
 }
 
 /// Helper to bridge `Broker<ClientEvent>` into an async stream receiver.
@@ -86,7 +92,7 @@ pub mod event_receiver {
                 willow_actor::runtime::channel(willow_actor::runtime::DEFAULT_MAILBOX_CAPACITY);
             let addr = system.spawn(ForwarderActor { tx });
             let recipient = addr.into();
-            let _ = broker.ask(BrokerSubscribe(recipient)).await;
+            broker.ask(BrokerSubscribe(recipient)).await.ok();
             Self { rx }
         }
 
@@ -114,7 +120,7 @@ pub mod event_receiver {
             msg: ClientEvent,
             _ctx: &mut Context<Self>,
         ) -> impl std::future::Future<Output = ()> + Send {
-            let _ = self.tx.send(msg);
+            self.tx.send(msg).ok();
             async {}
         }
     }
@@ -423,9 +429,11 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let event_broker = system.spawn(willow_actor::Broker::<ClientEvent>::new());
         // Open event store on the persistence actor if we have an active server.
         if let Some(sid) = &state.active_server {
-            let _ = persistence_addr.do_send(persistence_actor::OpenEventStore {
-                server_id: sid.clone(),
-            });
+            persistence_addr
+                .do_send(persistence_actor::OpenEventStore {
+                    server_id: sid.clone(),
+                })
+                .ok();
         }
         // DAG starts empty for loaded servers. It will be populated via
         // sync when connect() is called — the sync batch delivers the full
@@ -613,6 +621,44 @@ fn load_identity() -> Identity {
     let identity = Identity::generate();
     storage::save_identity_bytes(&identity.to_bytes());
     identity
+}
+
+/// Reconcile a topic map from raw string channel IDs to typed
+/// [`willow_messaging::ChannelId`] values.
+///
+/// Entries whose channel ID string is not a valid UUID are skipped with a
+/// warning log instead of being silently replaced by a randomly generated
+/// UUID, which would cause the client to diverge from the rest of the
+/// network (issue #141).
+///
+/// This function is a pre-wired utility for callers that deserialize topic
+/// maps from wire data (e.g. `accept_invite`, `joining`). It is not yet
+/// called from all such sites — integration into the full invite/join flow
+/// is tracked as follow-up work.
+///
+/// # Arguments
+///
+/// * `raw` — map from channel-ID string to an arbitrary value `V`
+///
+/// # Returns
+///
+/// A new map with only the entries whose key parsed successfully.
+#[allow(dead_code)]
+pub fn reconcile_topic_map<V: Clone>(
+    raw: &std::collections::HashMap<String, V>,
+) -> std::collections::HashMap<willow_messaging::ChannelId, V> {
+    let mut out = std::collections::HashMap::new();
+    for (id_str, value) in raw {
+        let cid = match uuid::Uuid::parse_str(id_str) {
+            Ok(u) => willow_messaging::ChannelId(u),
+            Err(e) => {
+                tracing::warn!(id_str, error = %e, "skipping unparseable channel id in reconcile_topic_map");
+                continue;
+            }
+        };
+        out.insert(cid, value.clone());
+    }
+    out
 }
 
 /// Parse a permission string into a [`willow_state::Permission`].
@@ -1047,6 +1093,44 @@ mod tests {
         assert!(
             matches!(downcast, ClientError::MalformedInvite(ref msg) if msg.contains("server_id")),
             "expected MalformedInvite about server_id, got {downcast:?}"
+        );
+    }
+
+    /// Regression test for issue #141: `reconcile_topic_map` must skip
+    /// entries whose channel ID is not a valid UUID instead of silently
+    /// substituting a randomly generated UUID, which would corrupt the
+    /// topic map with an ID that no peer has ever seen.
+    #[test]
+    fn reconcile_topic_map_skips_malformed_id() {
+        use std::collections::HashMap;
+
+        let mut raw: HashMap<String, String> = HashMap::new();
+
+        // A valid UUID entry — should be retained.
+        let good_id = uuid::Uuid::new_v4().to_string();
+        raw.insert(good_id.clone(), "general".to_string());
+
+        // A malformed entry — must not appear in the output.
+        raw.insert("not-a-uuid".to_string(), "corrupted".to_string());
+        raw.insert("also!bad@id".to_string(), "also-corrupted".to_string());
+
+        let result = reconcile_topic_map(&raw);
+
+        // Only the valid entry should survive.
+        assert_eq!(
+            result.len(),
+            1,
+            "malformed IDs must be dropped, not included"
+        );
+
+        let expected_cid = willow_messaging::ChannelId(uuid::Uuid::parse_str(&good_id).unwrap());
+        assert!(
+            result.contains_key(&expected_cid),
+            "the valid channel ID must be present in the output"
+        );
+        assert_eq!(
+            result[&expected_cid], "general",
+            "the value associated with the valid ID must be preserved"
         );
     }
 

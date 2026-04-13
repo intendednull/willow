@@ -13,6 +13,7 @@ use crate::types::{WorkerRequest, WorkerWireMessage};
 /// Sync actor that periodically queries state hashes and broadcasts sync requests.
 pub struct SyncActor<T: TopicHandle + 'static> {
     peer_id: willow_identity::EndpointId,
+    identity: willow_identity::Identity,
     interval: Duration,
     state_addr: Addr<StateActor>,
     topic: T,
@@ -25,9 +26,11 @@ impl<T: TopicHandle + 'static> SyncActor<T> {
         interval: Duration,
         state_addr: Addr<StateActor>,
         topic: T,
+        identity: willow_identity::Identity,
     ) -> Self {
         Self {
             peer_id,
+            identity,
             interval,
             state_addr,
             topic,
@@ -57,6 +60,7 @@ impl<T: TopicHandle + 'static> Handler<SyncTick> for SyncActor<T> {
     ) -> impl std::future::Future<Output = ()> + Send {
         let state_addr = self.state_addr.clone();
         let peer_id = self.peer_id;
+        let identity = self.identity.clone();
         let topic = self.topic.clone();
 
         async move {
@@ -76,8 +80,9 @@ impl<T: TopicHandle + 'static> Handler<SyncTick> for SyncActor<T> {
                     target_peer: peer_id,
                     payload: WorkerRequest::Sync { server_id, heads },
                 };
-                if let Ok(bytes) = bincode::serialize(&msg) {
-                    let _ = topic.broadcast(bytes::Bytes::from(bytes)).await;
+                let wire = willow_common::WireMessage::Worker(msg);
+                if let Some(bytes) = willow_common::pack_wire(&wire, &identity) {
+                    topic.broadcast(bytes::Bytes::from(bytes)).await.ok();
                 }
             }
         }
@@ -136,11 +141,13 @@ mod tests {
             ready: None,
         });
 
+        let sync_identity = Identity::generate();
         let addr = system.spawn(SyncActor::new(
-            Identity::generate().endpoint_id(),
+            sync_identity.endpoint_id(),
             Duration::from_secs(60),
             state_addr,
             sender,
+            sync_identity,
         ));
 
         assert!(addr.is_alive());

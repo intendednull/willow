@@ -375,11 +375,6 @@ impl Network for MemNetwork {
         &self.blobs
     }
 
-    async fn connection_events(&self) -> ConnectionEventStream {
-        // MemNetwork is always "connected" — return a stream that never yields.
-        Box::pin(futures_lite::stream::pending())
-    }
-
     async fn shutdown(&self) -> Result<()> {
         let subs = self.subscriptions.lock().unwrap().clone();
         for topic in subs {

@@ -124,7 +124,10 @@ pub fn CallPage(
         }
 
         // MUST call getUserMedia synchronously in click handler for gesture.
-        let window = web_sys::window().unwrap();
+        let Some(window) = web_sys::window() else {
+            tracing::error!("camera click: no window");
+            return;
+        };
         let navigator = window.navigator();
         let Ok(media_devices) = navigator.media_devices() else {
             tracing::error!("No media devices available");
@@ -155,7 +158,7 @@ pub fn CallPage(
         let on_error = wasm_bindgen::closure::Closure::once(move |_err: wasm_bindgen::JsValue| {
             tracing::error!("Camera access denied");
         });
-        let _ = promise.then2(&on_success, &on_error);
+        drop(promise.then2(&on_success, &on_error));
         on_success.forget();
         on_error.forget();
     };
@@ -181,7 +184,10 @@ pub fn CallPage(
         }
 
         // MUST call getDisplayMedia synchronously in click handler for gesture.
-        let window = web_sys::window().unwrap();
+        let Some(window) = web_sys::window() else {
+            tracing::error!("screen share click: no window");
+            return;
+        };
         let navigator = window.navigator();
         let Ok(media_devices) = navigator.media_devices() else {
             tracing::error!("No media devices available");
@@ -224,7 +230,7 @@ pub fn CallPage(
         let on_error = wasm_bindgen::closure::Closure::once(move |_err: wasm_bindgen::JsValue| {
             tracing::error!("Screen share denied or cancelled");
         });
-        let _ = promise.then2(&on_success, &on_error);
+        drop(promise.then2(&on_success, &on_error));
         on_success.forget();
         on_error.forget();
     };

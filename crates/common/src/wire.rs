@@ -75,6 +75,12 @@ pub enum WireMessage {
         /// Topic name strings (e.g. "{server_id}/{channel_name}").
         topics: Vec<String>,
     },
+    /// A signed worker node message (announcement, departure, request, or response).
+    ///
+    /// Worker gossip messages travel on the `_willow_workers` topic.
+    /// They are wrapped in this variant so they share the same Ed25519-signed
+    /// envelope as all other gossipsub messages.
+    Worker(crate::WorkerWireMessage),
 }
 
 /// WebRTC signaling payload for voice chat negotiation.
@@ -198,6 +204,34 @@ mod tests {
             *b ^= 0xFF;
         }
         assert!(unpack_wire(&data).is_none());
+    }
+
+    #[test]
+    fn pack_unpack_worker_message_round_trip() {
+        use crate::{WorkerAnnouncement, WorkerRoleInfo, WorkerWireMessage};
+        let id = Identity::generate();
+        let announcement = WorkerAnnouncement {
+            peer_id: id.endpoint_id(),
+            role: WorkerRoleInfo::Replay {
+                servers_loaded: 2,
+                events_buffered: 100,
+                max_events: 1000,
+            },
+            servers: vec!["srv-abc".to_string()],
+            timestamp: 12345,
+        };
+        let msg = WireMessage::Worker(WorkerWireMessage::Announcement(announcement.clone()));
+        let data = pack_wire(&msg, &id).unwrap();
+        let (decoded, signer) = unpack_wire(&data).unwrap();
+        assert_eq!(signer, id.endpoint_id());
+        match decoded {
+            WireMessage::Worker(WorkerWireMessage::Announcement(a)) => {
+                assert_eq!(a.peer_id, announcement.peer_id);
+                assert_eq!(a.servers, announcement.servers);
+                assert_eq!(a.timestamp, announcement.timestamp);
+            }
+            _ => panic!("expected Worker(Announcement)"),
+        }
     }
 
     #[test]

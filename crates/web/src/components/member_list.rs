@@ -192,7 +192,7 @@ pub fn MemberList(
                                                         if let Some(eid) = parse_eid(&pt) {
                                                             let ht = ht.clone();
                                                             wasm_bindgen_futures::spawn_local(async move {
-                                                                let _ = ht.propose_grant_admin(eid).await;
+                                                                ht.propose_grant_admin(eid).await.ok();
                                                             });
                                                         }
                                                     }>"Trust"</button>
@@ -200,7 +200,7 @@ pub fn MemberList(
                                                         if let Some(eid) = parse_eid(&pu) {
                                                             let hu = hu.clone();
                                                             wasm_bindgen_futures::spawn_local(async move {
-                                                                let _ = hu.propose_revoke_admin(eid).await;
+                                                                hu.propose_revoke_admin(eid).await.ok();
                                                             });
                                                         }
                                                     }>"Untrust"</button>
@@ -248,7 +248,7 @@ pub fn MemberList(
                         if let Some(eid) = parse_eid(&pid) {
                             let hk = handle_kick_confirm.clone();
                             wasm_bindgen_futures::spawn_local(async move {
-                                let _ = hk.propose_kick_member(eid).await;
+                                hk.propose_kick_member(eid).await.ok();
                             });
                         }
                     }

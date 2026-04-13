@@ -27,7 +27,7 @@ impl Actor for StateActor {
     ) -> impl std::future::Future<Output = ()> + Send {
         debug!("state actor started");
         if let Some(ready) = self.ready.take() {
-            let _ = ready.send(true);
+            ready.send(true).ok();
         }
         async {}
     }
