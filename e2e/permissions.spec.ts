@@ -164,9 +164,9 @@ test.describe('Permissions and trust', () => {
 
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Chan Perm', 'Alice', 'Bob');
     try {
-      // Bob (non-owner, no ManageChannels grant) should not see the channel-add button.
-      // The state machine rejects ManageChannels mutations from non-owners, but the
-      // UI must also hide the control — otherwise errors are swallowed silently.
+      // Bob (non-admin) should not see the channel-add or delete buttons.
+      // The state machine rejects ManageChannels mutations from non-admins, but the
+      // UI must also hide the controls — otherwise errors are swallowed silently.
       await expect(page2.locator('.channel-add-btn')).toBeHidden({ timeout: 5_000 });
     } finally {
       await ctx1.close();
