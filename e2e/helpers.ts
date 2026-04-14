@@ -282,7 +282,9 @@ export async function setupTwoPeers(
       await page1.locator('.member-item', { hasText: peer2Name })
         .waitFor({ timeout: 20_000 });
     } catch {
-      // Display name sync may be slow; proceed anyway.
+      // Display name sync may be slow; proceed anyway — but warn so failures
+      // here don't produce misleading timeouts in downstream assertions.
+      console.warn('[setupTwoPeers] peer2 display name did not sync in time — P2P may be slow');
     }
     await closeMemberList(page1);
   }
@@ -301,13 +303,6 @@ export async function createChannel(page: Page, name: string) {
   await page.locator('.channel-create-input input').press('Enter');
   await page.waitForTimeout(500);
   await closeSidebar(page);
-}
-
-/** Switches to a channel by name on mobile (opens sidebar, clicks channel). */
-export async function switchChannelMobile(page: Page, channelName: string) {
-  await openSidebar(page);
-  await page.locator('.channel-item', { hasText: channelName }).click();
-  await page.waitForTimeout(300);
 }
 
 // ── Message actions ───────────────────────────────────────────────────
@@ -346,7 +341,7 @@ export async function editMessage(page: Page, originalText: string, newText: str
 export async function deleteMessage(page: Page, text: string) {
   await messageAction(page, text, 'Delete');
   // Confirm the deletion dialog.
-  const confirmBtn = page.locator('.confirm-dialog .btn-danger, .confirm-dialog button', { hasText: 'Delete' });
+  const confirmBtn = page.locator('.confirm-dialog .btn-danger', { hasText: 'Delete' });
   await confirmBtn.waitFor({ timeout: 3000 });
   await confirmBtn.click();
   await page.waitForTimeout(500);
@@ -410,16 +405,10 @@ export async function kickPeer(page: Page, peerName: string) {
   await member.locator('.btn-danger', { hasText: 'Kick' }).click();
   await page.waitForTimeout(500);
   // Confirm the kick dialog.
-  const confirmBtn = page.locator('.confirm-dialog .btn-danger, .confirm-dialog button', { hasText: 'Kick' });
+  const confirmBtn = page.locator('.confirm-dialog .btn-danger', { hasText: 'Kick' });
   await confirmBtn.waitFor({ timeout: 5_000 });
   await confirmBtn.click();
   await page.waitForTimeout(500);
   await closeMemberList(page);
 }
 
-/** Waits until the member list shows the expected count of members. */
-export async function waitForPeerCount(page: Page, count: number, timeout = 20_000) {
-  await openMemberList(page);
-  await expect(page.locator('.member-item')).toHaveCount(count, { timeout });
-  await closeMemberList(page);
-}

@@ -7,7 +7,7 @@ import {
   openSidebar,
   openMemberList,
   closeMemberList,
-  switchChannelMobile,
+  switchChannel,
 } from './helpers';
 
 test.describe('Multi-peer mobile', () => {
@@ -87,11 +87,11 @@ test.describe('Multi-peer mobile', () => {
         .toBeAttached({ timeout: 60_000 });
 
       // Alice switches to the new channel and sends a message.
-      await switchChannelMobile(page1, 'mobile-dev');
+      await switchChannel(page1, 'mobile-dev');
       await sendMessage(page1, 'dev channel msg');
 
       // Bob switches to the new channel and should see the message.
-      await switchChannelMobile(page2, 'mobile-dev');
+      await switchChannel(page2, 'mobile-dev');
       await waitForMessage(page2, 'dev channel msg', 30_000);
     } finally {
       await ctx1.close();

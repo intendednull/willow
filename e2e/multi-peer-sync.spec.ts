@@ -14,7 +14,6 @@ import {
   editMessage,
   deleteMessage,
   reactToMessage,
-  waitForPeerCount,
   openSidebar,
 } from './helpers';
 
@@ -264,6 +263,98 @@ test.describe('Multi-peer state synchronization', () => {
       // Bob should see Alice's display name in the message author.
       const author = page2.locator('.message .author', { hasText: 'Alice' });
       await expect(author).toBeVisible({ timeout: 10_000 });
+    } finally {
+      await ctx1.close();
+      await ctx2.close();
+    }
+  });
+
+  test('pre-existing messages visible to peer who joins later', async ({ browser }) => {
+    // Manual setup — Peer 1 sends messages BEFORE Peer 2 joins.
+    // Verifies the SyncBatch history-replay path in the WASM client.
+    const ctx1 = await browser.newContext();
+    const ctx2 = await browser.newContext();
+    const page1 = await ctx1.newPage();
+    const page2 = await ctx2.newPage();
+
+    try {
+      // Peer 1: Create server and send messages before anyone else joins.
+      await freshStart(page1);
+      await createServer(page1, 'History Server', 'Alice');
+
+      await sendMessage(page1, 'msg before join 1');
+      await sendMessage(page1, 'msg before join 2');
+      await sendMessage(page1, 'msg before join 3');
+
+      // Peer 2: Get peer ID.
+      await freshStart(page2);
+      const peer2Id = await getPeerId(page2);
+
+      // Peer 1: Generate invite.
+      const inviteCode = await generateInvite(page1, peer2Id);
+
+      // Peer 2: Join (Peer 1 is still online — Peer 2 gets history via SyncBatch).
+      await joinViaInvite(page2, inviteCode, 'Bob');
+
+      // All three pre-existing messages should arrive via SyncBatch from Peer 1.
+      await waitForMessage(page2, 'msg before join 1', 30_000);
+      await waitForMessage(page2, 'msg before join 2', 30_000);
+      await waitForMessage(page2, 'msg before join 3', 30_000);
+    } finally {
+      await ctx1.close();
+      await ctx2.close();
+    }
+  });
+
+  test('missed messages received after peer reconnects', async ({ browser }) => {
+    // Peer 2 goes offline, Peer 1 sends a message, Peer 2 comes back and
+    // receives the missed message via SyncRequest on reconnect.
+    const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser);
+    try {
+      // Establish baseline — both peers online.
+      await sendMessage(page1, 'before disconnect');
+      await waitForMessage(page2, 'before disconnect', 30_000);
+
+      // Peer 2 closes its page (simulates browser tab close / brief offline).
+      await page2.close();
+
+      // Peer 1 sends a message while Peer 2 is offline.
+      await sendMessage(page1, 'sent while offline');
+      await page1.waitForTimeout(1000);
+
+      // Peer 2 reopens in the same context (localStorage preserved — server key intact).
+      const page2new = await ctx2.newPage();
+      await page2new.goto('/');
+      // Wait for WASM to load before checking for messages — a timeout here is a
+      // load failure, not a P2P failure, and should appear as such in CI logs.
+      await waitForApp(page2new);
+
+      // On reconnect Peer 2 sends a SyncRequest; Peer 1 responds with the missed event.
+      await waitForMessage(page2new, 'sent while offline', 30_000);
+    } finally {
+      await ctx1.close();
+      await ctx2.close();
+    }
+  });
+
+  test('rapid channel creation by owner — both channels propagate to peer', async ({ browser }) => {
+    // Owner creates two channels in quick succession; the gossip mesh must
+    // deliver both events to the remote peer without dropping or reordering.
+    // E2E companion to the state-machine stress_concurrent_channel_creates test.
+    // Note: only the owner (Alice) can create channels — non-owners lack
+    // ManageChannels permission and their creation attempts are rejected.
+    const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser);
+    try {
+      // Alice (owner) creates two channels back-to-back.
+      await createChannel(page1, 'chan-a');
+      await createChannel(page1, 'chan-b');
+
+      // Both should appear on Bob's side after gossip delivery.
+      await openSidebar(page2);
+      await expect(page2.locator('.channel-item', { hasText: 'chan-a' }))
+        .toBeVisible({ timeout: 30_000 });
+      await expect(page2.locator('.channel-item', { hasText: 'chan-b' }))
+        .toBeVisible({ timeout: 30_000 });
     } finally {
       await ctx1.close();
       await ctx2.close();
