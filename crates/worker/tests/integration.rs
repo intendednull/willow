@@ -1144,7 +1144,11 @@ async fn two_workers_sync_state_via_gossip() {
 
     match parse_server_message(&batch_bytes) {
         ServerMessageAction::Events(events) => {
-            assert_eq!(events.len(), 2, "parse_server_message must extract both events");
+            assert_eq!(
+                events.len(),
+                2,
+                "parse_server_message must extract both events"
+            );
             for event in events {
                 state_b.do_send(EventMsg(event)).unwrap();
             }
