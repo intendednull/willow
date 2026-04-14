@@ -208,6 +208,21 @@ impl TopicHandle for MemTopicHandle {
         Ok(())
     }
 
+    /// Broadcast to all topic subscribers regardless of the `neighbors_only`
+    /// flag.
+    ///
+    /// # MemNetwork divergence from real iroh
+    ///
+    /// In production iroh, `broadcast_neighbors` delivers only to direct
+    /// gossip-mesh neighbors (the immediate peers this node is connected to).
+    /// `MemNetwork` has no concept of per-peer connections: the `HubMessage`
+    /// is placed on the shared broadcast channel and received by every
+    /// subscriber on the topic. The `neighbors_only` flag is recorded in the
+    /// message but **has no effect on delivery** — all subscribers receive it.
+    ///
+    /// Tests that specifically rely on neighbor-scoped delivery will produce
+    /// false-positive results here and should use the real `IrohNetwork` or
+    /// a custom test double that models topology explicitly.
     async fn broadcast_neighbors(&self, data: Bytes) -> Result<()> {
         if let Some(sender) = self.hub.get_sender(&self.topic) {
             let _ = sender.send(HubMessage {

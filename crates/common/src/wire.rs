@@ -235,6 +235,183 @@ mod tests {
     }
 
     #[test]
+    fn pack_unpack_typing_indicator_round_trip() {
+        let id = Identity::generate();
+        let msg = WireMessage::TypingIndicator {
+            channel: "general".to_string(),
+        };
+        let data = pack_wire(&msg, &id).unwrap();
+        let (decoded, signer) = unpack_wire(&data).unwrap();
+        assert_eq!(signer, id.endpoint_id());
+        match decoded {
+            WireMessage::TypingIndicator { channel } => {
+                assert_eq!(channel, "general");
+            }
+            _ => panic!("expected TypingIndicator"),
+        }
+    }
+
+    #[test]
+    fn pack_unpack_topic_announce_round_trip() {
+        let id = Identity::generate();
+        let topics = vec![
+            "srv-abc/general".to_string(),
+            "srv-abc/announcements".to_string(),
+        ];
+        let msg = WireMessage::TopicAnnounce {
+            topics: topics.clone(),
+        };
+        let data = pack_wire(&msg, &id).unwrap();
+        let (decoded, signer) = unpack_wire(&data).unwrap();
+        assert_eq!(signer, id.endpoint_id());
+        match decoded {
+            WireMessage::TopicAnnounce {
+                topics: decoded_topics,
+            } => {
+                assert_eq!(decoded_topics, topics);
+            }
+            _ => panic!("expected TopicAnnounce"),
+        }
+    }
+
+    #[test]
+    fn pack_unpack_join_request_round_trip() {
+        use willow_identity::Identity;
+        let id = Identity::generate();
+        let peer = Identity::generate().endpoint_id();
+        let msg = WireMessage::JoinRequest {
+            link_id: "link-xyz".to_string(),
+            peer_id: peer,
+        };
+        let data = pack_wire(&msg, &id).unwrap();
+        let (decoded, signer) = unpack_wire(&data).unwrap();
+        assert_eq!(signer, id.endpoint_id());
+        match decoded {
+            WireMessage::JoinRequest { link_id, peer_id } => {
+                assert_eq!(link_id, "link-xyz");
+                assert_eq!(peer_id, peer);
+            }
+            _ => panic!("expected JoinRequest"),
+        }
+    }
+
+    #[test]
+    fn pack_unpack_join_response_round_trip() {
+        let id = Identity::generate();
+        let target = Identity::generate().endpoint_id();
+        let msg = WireMessage::JoinResponse {
+            target_peer: target,
+            invite_data: "encrypted-invite-payload".to_string(),
+        };
+        let data = pack_wire(&msg, &id).unwrap();
+        let (decoded, _) = unpack_wire(&data).unwrap();
+        match decoded {
+            WireMessage::JoinResponse {
+                target_peer,
+                invite_data,
+            } => {
+                assert_eq!(target_peer, target);
+                assert_eq!(invite_data, "encrypted-invite-payload");
+            }
+            _ => panic!("expected JoinResponse"),
+        }
+    }
+
+    #[test]
+    fn pack_unpack_join_denied_round_trip() {
+        let id = Identity::generate();
+        let target = Identity::generate().endpoint_id();
+        let msg = WireMessage::JoinDenied {
+            target_peer: target,
+            reason: "invite expired".to_string(),
+        };
+        let data = pack_wire(&msg, &id).unwrap();
+        let (decoded, _) = unpack_wire(&data).unwrap();
+        match decoded {
+            WireMessage::JoinDenied {
+                target_peer,
+                reason,
+            } => {
+                assert_eq!(target_peer, target);
+                assert_eq!(reason, "invite expired");
+            }
+            _ => panic!("expected JoinDenied"),
+        }
+    }
+
+    #[test]
+    fn pack_unpack_voice_join_round_trip() {
+        let id = Identity::generate();
+        let peer = Identity::generate().endpoint_id();
+        let msg = WireMessage::VoiceJoin {
+            channel_id: "voice-1".to_string(),
+            peer_id: peer,
+        };
+        let data = pack_wire(&msg, &id).unwrap();
+        let (decoded, _) = unpack_wire(&data).unwrap();
+        match decoded {
+            WireMessage::VoiceJoin {
+                channel_id,
+                peer_id,
+            } => {
+                assert_eq!(channel_id, "voice-1");
+                assert_eq!(peer_id, peer);
+            }
+            _ => panic!("expected VoiceJoin"),
+        }
+    }
+
+    #[test]
+    fn pack_unpack_voice_leave_round_trip() {
+        let id = Identity::generate();
+        let peer = Identity::generate().endpoint_id();
+        let msg = WireMessage::VoiceLeave {
+            channel_id: "voice-1".to_string(),
+            peer_id: peer,
+        };
+        let data = pack_wire(&msg, &id).unwrap();
+        let (decoded, _) = unpack_wire(&data).unwrap();
+        match decoded {
+            WireMessage::VoiceLeave {
+                channel_id,
+                peer_id,
+            } => {
+                assert_eq!(channel_id, "voice-1");
+                assert_eq!(peer_id, peer);
+            }
+            _ => panic!("expected VoiceLeave"),
+        }
+    }
+
+    #[test]
+    fn pack_unpack_voice_signal_offer_round_trip() {
+        let id = Identity::generate();
+        let target = Identity::generate().endpoint_id();
+        let msg = WireMessage::VoiceSignal {
+            channel_id: "voice-2".to_string(),
+            target_peer: target,
+            signal: VoiceSignalPayload::Offer("sdp-offer-data".to_string()),
+        };
+        let data = pack_wire(&msg, &id).unwrap();
+        let (decoded, _) = unpack_wire(&data).unwrap();
+        match decoded {
+            WireMessage::VoiceSignal {
+                channel_id,
+                target_peer,
+                signal,
+            } => {
+                assert_eq!(channel_id, "voice-2");
+                assert_eq!(target_peer, target);
+                match signal {
+                    VoiceSignalPayload::Offer(sdp) => assert_eq!(sdp, "sdp-offer-data"),
+                    _ => panic!("expected Offer signal"),
+                }
+            }
+            _ => panic!("expected VoiceSignal"),
+        }
+    }
+
+    #[test]
     fn empty_data_fails_unpack() {
         assert!(unpack_wire(&[]).is_none());
     }

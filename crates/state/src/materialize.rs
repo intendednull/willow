@@ -420,8 +420,10 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
         } => {
             if let Some(&idx) = state.message_index.get(message_id) {
                 if let Some(msg) = state.messages.get_mut(idx) {
-                    msg.body = new_body.clone();
-                    msg.edited = true;
+                    if msg.author == event.author {
+                        msg.body = new_body.clone();
+                        msg.edited = true;
+                    }
                 }
             }
         }
@@ -429,9 +431,11 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
         EventKind::DeleteMessage { message_id } => {
             if let Some(&idx) = state.message_index.get(message_id) {
                 if let Some(msg) = state.messages.get_mut(idx) {
-                    msg.deleted = true;
-                    msg.body = "[message deleted]".to_string();
-                    msg.reactions.clear();
+                    if msg.author == event.author {
+                        msg.deleted = true;
+                        msg.body = "[message deleted]".to_string();
+                        msg.reactions.clear();
+                    }
                 }
             }
         }

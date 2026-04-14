@@ -41,8 +41,7 @@ test.describe('Multi-peer mobile', () => {
       // Alice creates a new channel.
       await createChannel(page1, 'mobile-news');
 
-      // Bob opens sidebar and should see the new channel.
-      await page2.waitForTimeout(5000);
+      // Bob opens sidebar and waits for the new channel to appear (event-driven).
       await openSidebar(page2);
       await expect(page2.locator('.channel-item', { hasText: 'mobile-news' }))
         .toBeVisible({ timeout: 30_000 });
@@ -72,14 +71,13 @@ test.describe('Multi-peer mobile', () => {
       // Alice creates a channel.
       await createChannel(page1, 'mobile-dev');
 
-      // Wait for Bob to receive the channel.
-      await page2.waitForTimeout(5000);
-
       // Alice switches to the new channel and sends a message.
       await switchChannelMobile(page1, 'mobile-dev');
       await sendMessage(page1, 'dev channel msg');
 
-      // Bob switches to the new channel and should see the message.
+      // Bob waits for the channel to arrive, then switches and reads the message.
+      await expect(page2.locator('.channel-item', { hasText: 'mobile-dev' }))
+        .toBeVisible({ timeout: 15_000 });
       await switchChannelMobile(page2, 'mobile-dev');
       await waitForMessage(page2, 'dev channel msg', 30_000);
     } finally {

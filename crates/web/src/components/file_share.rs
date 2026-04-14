@@ -191,3 +191,67 @@ pub fn FileCard(filename: String, data: Vec<u8>) -> impl IntoView {
         </div>
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_inline_file_valid() {
+        // encode "hello" in base64 and wrap in the inline file format
+        let data = b"hello";
+        let b64 = willow_client::base64::encode(data);
+        let body = format!("[file:notes.txt:{b64}]");
+        let result = parse_inline_file(&body);
+        assert!(result.is_some(), "should parse valid inline file body");
+        let (filename, bytes) = result.unwrap();
+        assert_eq!(filename, "notes.txt");
+        assert_eq!(bytes, b"hello");
+    }
+
+    #[test]
+    fn parse_inline_file_plain_message_returns_none() {
+        assert!(
+            parse_inline_file("just a normal message").is_none(),
+            "plain text should not parse as a file"
+        );
+    }
+
+    #[test]
+    fn parse_inline_file_malformed_returns_none() {
+        // Missing closing bracket.
+        assert!(parse_inline_file("[file:foo.txt:abc").is_none());
+        // No colon separating filename from base64.
+        assert!(parse_inline_file("[file:nodatahere]").is_none());
+        // Empty body.
+        assert!(parse_inline_file("").is_none());
+    }
+
+    #[test]
+    fn format_file_size_bytes() {
+        assert_eq!(format_file_size(0), "0 B");
+        assert_eq!(format_file_size(512), "512 B");
+        assert_eq!(format_file_size(1023), "1023 B");
+    }
+
+    #[test]
+    fn format_file_size_kilobytes() {
+        assert_eq!(format_file_size(1024), "1.0 KB");
+        assert_eq!(format_file_size(1536), "1.5 KB");
+        assert_eq!(format_file_size(1024 * 1023), "1023.0 KB");
+    }
+
+    #[test]
+    fn format_file_size_megabytes() {
+        assert_eq!(format_file_size(1024 * 1024), "1.0 MB");
+        assert_eq!(format_file_size(1024 * 1024 * 2), "2.0 MB");
+    }
+
+    #[test]
+    fn parse_inline_file_preserves_filename_with_extension() {
+        let b64 = willow_client::base64::encode(b"data");
+        let body = format!("[file:my-document.pdf:{b64}]");
+        let (name, _) = parse_inline_file(&body).unwrap();
+        assert_eq!(name, "my-document.pdf");
+    }
+}

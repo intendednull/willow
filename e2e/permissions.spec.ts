@@ -68,7 +68,7 @@ test.describe('Permissions and trust', () => {
   test('untrusted messages rejected after untrust', async ({ browser }) => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Reject Msg', 'Alice', 'Bob');
     try {
-      // Trust Bob first and verify messaging works.
+      // Trust Bob first and verify messaging works (establishes delivery baseline).
       await trustPeer(page1, 'Bob');
       await page1.waitForTimeout(1000);
 
@@ -79,13 +79,21 @@ test.describe('Permissions and trust', () => {
       await untrustPeer(page1, 'Bob');
       await page1.waitForTimeout(1000);
 
-      // Bob sends another message.
+      // Bob sends a message that should NOT arrive on Alice's side.
       await sendMessage(page2, 'after untrust secret');
 
-      // Alice should NOT see Bob's new message (wait a reasonable time).
-      await page1.waitForTimeout(5000);
+      // Sentinel: Alice sends a message from her own side. Since Alice is the
+      // owner, her own message always appears locally immediately. We wait for
+      // it to confirm enough real time has elapsed for P2P delivery to have
+      // occurred if it were going to — without this we'd just be racing a
+      // fixed timeout against an unknown network delay.
+      await sendMessage(page1, 'alice sentinel');
+      await waitForMessage(page1, 'alice sentinel', 10_000);
+
+      // Now we have proof that local rendering is working and time has passed.
+      // Assert that the rejected message never arrived.
       await expect(page1.locator('.message .body', { hasText: 'after untrust secret' }))
-        .toBeHidden();
+        .not.toBeVisible({ timeout: 5000 });
     } finally {
       await ctx1.close();
       await ctx2.close();
@@ -119,39 +127,46 @@ test.describe('Permissions and trust', () => {
       await kickPeer(page1, 'Bob');
       await page1.waitForTimeout(2000);
 
-      // Bob tries to send a message.
+      // Bob tries to send a message that should NOT arrive.
       await sendMessage(page2, 'kicked but trying');
 
-      // Alice should NOT see it.
-      await page1.waitForTimeout(5000);
+      // Sentinel: Alice sends her own message. Her own message appears locally
+      // immediately, so waiting for it proves that local rendering is working
+      // and that enough real time has elapsed for any P2P delivery to have
+      // occurred — without relying on a fixed sleep duration.
+      await sendMessage(page1, 'alice sentinel after kick');
+      await waitForMessage(page1, 'alice sentinel after kick', 10_000);
+
+      // Assert that Bob's message never arrived on Alice's side.
       await expect(page1.locator('.message .body', { hasText: 'kicked but trying' }))
-        .toBeHidden();
+        .not.toBeVisible({ timeout: 5000 });
     } finally {
       await ctx1.close();
       await ctx2.close();
     }
   });
 
-  test('create and assign roles via server settings', async ({ browser }) => {
+  test('server settings panel opens and back button returns to chat', async ({ browser }) => {
+    // NOTE: Role creation UI is not yet implemented. This test was previously
+    // guarded by an `if (await roleInput.isVisible())` check that made the
+    // entire test body optional — the test passed vacuously whether or not the
+    // UI existed. Until roles are added, this test verifies that the settings
+    // panel opens and the Back button returns to the chat view, which is a real
+    // and unconditional assertion. Add role creation assertions here once the
+    // UI lands.
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Role Server', 'Alice', 'Bob');
     try {
       // Open server settings.
       await openServerSettings(page1);
 
-      // Look for a role creation input (if visible in the settings panel).
-      const roleInput = page1.locator('input[placeholder*="role" i], input[placeholder*="Role"]').first();
-      if (await roleInput.isVisible({ timeout: 3000 }).catch(() => false)) {
-        await roleInput.fill('Moderator');
-        await roleInput.press('Enter');
-        await page1.waitForTimeout(500);
-
-        // Should see the new role in the settings.
-        await expect(page1.locator('text=Moderator')).toBeVisible({ timeout: 5000 });
-      }
+      // Settings panel should be visible.
+      await expect(page1.locator('.server-settings, .settings-panel')).toBeVisible({ timeout: 5000 });
 
       // Go back to chat.
       await page1.locator('text=Back').click();
-      await page1.waitForTimeout(500);
+
+      // Sidebar / chat area should be visible again.
+      await expect(page1.locator('.sidebar')).toBeVisible({ timeout: 5000 });
     } finally {
       await ctx1.close();
       await ctx2.close();

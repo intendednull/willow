@@ -10,14 +10,30 @@ export async function waitForApp(page: Page) {
   await page.waitForTimeout(1000);
 }
 
-/** Clear all Willow localStorage keys and reload. */
+/** Clear all Willow localStorage keys and IndexedDB databases, then reload. */
 export async function freshStart(page: Page) {
   await page.goto('/');
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
     const keys = Object.keys(localStorage).filter(k => k.startsWith('willow_'));
     keys.forEach(k => localStorage.removeItem(k));
     // Also clear non-prefixed keys that might be ours.
     localStorage.clear();
+
+    // Clear Willow-related IndexedDB databases so each test starts from a
+    // truly clean state. Without this, identity keys and event stores
+    // persisted in IDB survive localStorage.clear() and can leak state
+    // between tests running in the same browser context.
+    const dbNames = await indexedDB.databases?.() ?? [];
+    await Promise.all(
+      dbNames
+        .filter(db => db.name && (db.name.startsWith('willow') || db.name.startsWith('iroh')))
+        .map(db => new Promise<void>((resolve, reject) => {
+          const req = indexedDB.deleteDatabase(db.name!);
+          req.onsuccess = () => resolve();
+          req.onerror = () => reject(req.error);
+          req.onblocked = () => resolve(); // Proceed even if blocked.
+        }))
+    );
   });
   await page.reload();
   await waitForApp(page);

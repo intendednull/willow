@@ -284,4 +284,66 @@ mod tests {
         assert!(b1 < a2);
         assert!(a2 < b2);
     }
+
+    #[test]
+    fn now_handles_backward_clock_drift() {
+        let mut clock = HLC::new();
+
+        // Simulate a node whose `latest` is far in the future relative to the
+        // real wall clock — the wall clock has "drifted backward" from the HLC's
+        // perspective.
+        let future_millis = u64::MAX / 2;
+        clock.latest = HlcTimestamp {
+            millis: future_millis,
+            counter: 0,
+        };
+
+        let before = clock.latest;
+        let t = clock.now();
+
+        // The returned timestamp must be strictly greater than the forced
+        // `latest`, even though the real wall clock is far behind it.
+        assert!(
+            t > before,
+            "now() must be monotonically greater than the previous latest \
+             even when the wall clock is behind (got {t} <= {before})"
+        );
+    }
+
+    #[test]
+    fn receive_when_local_is_ahead_of_remote() {
+        let mut clock = HLC::new();
+
+        // Force the local clock far ahead of real time.
+        let large_millis = u64::MAX / 2;
+        clock.latest = HlcTimestamp {
+            millis: large_millis,
+            counter: 10,
+        };
+
+        let local_before = clock.latest;
+
+        // A remote timestamp with a much smaller millis value.
+        let remote = HlcTimestamp {
+            millis: 1_000,
+            counter: 99,
+        };
+
+        let result = clock.receive(remote);
+
+        // The result must be strictly greater than the local clock before the
+        // call, even though the remote timestamp is behind.
+        assert!(
+            result > local_before,
+            "receive() must advance past the local latest when local is ahead \
+             of remote (got {result} <= {local_before})"
+        );
+
+        // A subsequent now() must also remain monotonically increasing.
+        let next = clock.now();
+        assert!(
+            next > result,
+            "now() after receive() must continue advancing (got {next} <= {result})"
+        );
+    }
 }
