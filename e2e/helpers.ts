@@ -95,14 +95,15 @@ export async function getMessages(page: Page): Promise<string[]> {
   return texts;
 }
 
-/** Click a channel in the sidebar. */
+/** Click a channel in the sidebar (opens sidebar first on mobile). */
 export async function switchChannel(page: Page, channelName: string) {
+  await openSidebar(page); // no-op on desktop, opens sidebar on mobile
   await page.locator('.channel-item', { hasText: channelName }).click();
   await page.waitForTimeout(300);
 }
 
 /** Wait for a specific message to appear. */
-export async function waitForMessage(page: Page, text: string, timeout = 15_000) {
+export async function waitForMessage(page: Page, text: string, timeout = 20_000) {
   await page.locator('.message .body', { hasText: text }).waitFor({ timeout });
 }
 
@@ -169,9 +170,12 @@ export function isMobile(page: Page): boolean {
   return (page.viewportSize()?.width ?? 1024) < 768;
 }
 
-/** Opens the sidebar on mobile (no-op on desktop). */
+/** Opens the sidebar on mobile (no-op on desktop). Idempotent — won't close if already open. */
 export async function openSidebar(page: Page) {
   if (!isMobile(page)) return;
+  // Check if already open to avoid double-toggling it closed.
+  const alreadyOpen = await page.locator('.sidebar.open').isVisible().catch(() => false);
+  if (alreadyOpen) return;
   await page.locator('.mobile-nav-toggle').click();
   await page.waitForTimeout(500);
 }
@@ -180,8 +184,11 @@ export async function openSidebar(page: Page) {
 export async function closeSidebar(page: Page) {
   if (!isMobile(page)) return;
   const overlay = page.locator('.sidebar-overlay.open');
-  if (await overlay.isVisible()) {
-    await overlay.click();
+  if (await overlay.isVisible().catch(() => false)) {
+    // dispatchEvent bypasses Playwright's hit-test: the sidebar (z-index 10)
+    // sits above the overlay (z-index 9) at the center click point, which
+    // makes a normal .click() retry until timeout.
+    await overlay.dispatchEvent('click');
     await page.waitForTimeout(300);
   }
 }
@@ -202,13 +209,18 @@ export async function closeMemberList(page: Page) {
   // On desktop the member list is always visible; nothing to close.
   if ((page.viewportSize()?.width ?? 1024) > 900) return;
 
-  // Re-click the toggle to close (works on both mobile and tablet).
-  // Use force:true because the open panel may cover the toggle button.
-  const panel = page.locator('.member-list-wrapper.open');
-  if (await panel.isVisible().catch(() => false)) {
-    await page.locator('.mobile-members-toggle').click({ force: true });
-    await page.waitForTimeout(300);
-  }
+  // Check if the member list overlay is currently open.
+  const overlay = page.locator('.members-overlay.open');
+  const isOpen = await overlay.isVisible().catch(() => false);
+  if (!isOpen) return;
+
+  // dispatchEvent bypasses Playwright's hit-test: the member-list-wrapper
+  // (z-index 10) sits above the overlay (z-index 9) at any click point,
+  // which makes a normal .click() retry until timeout.
+  await overlay.dispatchEvent('click');
+  // Wait for the overlay to disappear.
+  await overlay.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => {});
+  await page.waitForTimeout(200);
 }
 
 // ── Invite flow ───────────────────────────────────────────────────────
@@ -249,7 +261,7 @@ export async function joinViaInvite(page: Page, inviteCode: string, displayName?
     }
   }
   await page.locator('button', { hasText: 'Join Server' }).click();
-  await page.waitForSelector('.sidebar', { timeout: 15_000 });
+  await page.waitForSelector('.sidebar', { timeout: 20_000 });
   await page.waitForTimeout(3000);
 }
 
@@ -284,9 +296,11 @@ export async function setupTwoPeers(
     await openMemberList(page1);
     try {
       await page1.locator('.member-item', { hasText: peer2Name })
-        .waitFor({ timeout: 15_000 });
+        .waitFor({ timeout: 20_000 });
     } catch {
-      // Display name sync may be slow; proceed anyway.
+      // Display name sync may be slow; proceed anyway — but warn so failures
+      // here don't produce misleading timeouts in downstream assertions.
+      console.warn('[setupTwoPeers] peer2 display name did not sync in time — P2P may be slow');
     }
     await closeMemberList(page1);
   }
@@ -305,13 +319,6 @@ export async function createChannel(page: Page, name: string) {
   await page.locator('.channel-create-input input').press('Enter');
   await page.waitForTimeout(500);
   await closeSidebar(page);
-}
-
-/** Switches to a channel by name on mobile (opens sidebar, clicks channel). */
-export async function switchChannelMobile(page: Page, channelName: string) {
-  await openSidebar(page);
-  await page.locator('.channel-item', { hasText: channelName }).click();
-  await page.waitForTimeout(300);
 }
 
 // ── Message actions ───────────────────────────────────────────────────
@@ -350,7 +357,7 @@ export async function editMessage(page: Page, originalText: string, newText: str
 export async function deleteMessage(page: Page, text: string) {
   await messageAction(page, text, 'Delete');
   // Confirm the deletion dialog.
-  const confirmBtn = page.locator('.confirm-dialog .btn-danger, .confirm-dialog button', { hasText: 'Delete' });
+  const confirmBtn = page.locator('.confirm-dialog .btn-danger', { hasText: 'Delete' });
   await confirmBtn.waitFor({ timeout: 3000 });
   await confirmBtn.click();
   await page.waitForTimeout(500);
@@ -384,6 +391,8 @@ export async function trustPeer(page: Page, peerName: string) {
   await openMemberList(page);
   const member = page.locator('.member-item', { hasText: peerName });
   await member.waitFor({ timeout: 30_000 });
+  // Hover to reveal action buttons (desktop hides them until hover).
+  await member.hover();
   // Use a regex to avoid matching "Untrust" when looking for "Trust".
   await member.locator('button').filter({ hasText: /^Trust$/ }).click();
   await page.waitForTimeout(500);
@@ -395,6 +404,8 @@ export async function untrustPeer(page: Page, peerName: string) {
   await openMemberList(page);
   const member = page.locator('.member-item', { hasText: peerName });
   await member.waitFor({ timeout: 30_000 });
+  // Hover to reveal action buttons (desktop hides them until hover).
+  await member.hover();
   await member.locator('button', { hasText: 'Untrust' }).click();
   await page.waitForTimeout(500);
   await closeMemberList(page);
@@ -405,14 +416,15 @@ export async function kickPeer(page: Page, peerName: string) {
   await openMemberList(page);
   const member = page.locator('.member-item', { hasText: peerName });
   await member.waitFor({ timeout: 30_000 });
+  // Hover to reveal action buttons (desktop hides them until hover).
+  await member.hover();
   await member.locator('.btn-danger', { hasText: 'Kick' }).click();
+  await page.waitForTimeout(500);
+  // Confirm the kick dialog.
+  const confirmBtn = page.locator('.confirm-dialog .btn-danger', { hasText: 'Kick' });
+  await confirmBtn.waitFor({ timeout: 5_000 });
+  await confirmBtn.click();
   await page.waitForTimeout(500);
   await closeMemberList(page);
 }
 
-/** Waits until the member list shows the expected count of members. */
-export async function waitForPeerCount(page: Page, count: number, timeout = 15_000) {
-  await openMemberList(page);
-  await expect(page.locator('.member-item')).toHaveCount(count, { timeout });
-  await closeMemberList(page);
-}

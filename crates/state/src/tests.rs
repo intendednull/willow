@@ -1631,7 +1631,7 @@ fn multi_admin_kick_requires_majority_vote() {
 
     // Grant admin to B (auto-applies, sole admin majority).
     let admin_b = Identity::generate();
-    do_emit(
+    let grant_admin_event = do_emit(
         &mut dag,
         &admin_a,
         EventKind::Propose {
@@ -1646,7 +1646,7 @@ fn multi_admin_kick_requires_majority_vote() {
 
     // Add target as member.
     let target = Identity::generate();
-    do_emit(
+    let grant_perm_event = do_emit(
         &mut dag,
         &admin_a,
         EventKind::GrantPermission {
@@ -1655,15 +1655,19 @@ fn multi_admin_kick_requires_majority_vote() {
         },
     );
 
-    // A proposes to kick target — 1/2 votes, stays pending.
+    // B proposes to kick target — 1/2 votes, stays pending.
+    // (admin_a is genesis author; genesis proposals auto-apply, so we use admin_b.)
+    // Deps on grant_admin_event and grant_perm_event ensure the DAG topological sort
+    // processes admin_b's admin status and target's membership BEFORE this proposal,
+    // so the state has 2 admins when the vote threshold is evaluated (1/2 < majority).
     let kick_prop = dag.create_event(
-        &admin_a,
+        &admin_b,
         EventKind::Propose {
             action: ProposedAction::KickMember {
                 peer_id: target.endpoint_id(),
             },
         },
-        vec![],
+        vec![grant_admin_event.hash, grant_perm_event.hash],
         0,
     );
     dag.insert(kick_prop.clone()).unwrap();
@@ -1672,9 +1676,9 @@ fn multi_admin_kick_requires_majority_vote() {
     assert!(state.pending_proposals.contains_key(&kick_prop.hash));
     assert!(state.members.contains_key(&target.endpoint_id()));
 
-    // B votes yes → 2/2 = passes majority.
-    let vote_b = dag.create_event(
-        &admin_b,
+    // A votes yes → 2/2 = passes majority.
+    let vote_a = dag.create_event(
+        &admin_a,
         EventKind::Vote {
             proposal: kick_prop.hash,
             accept: true,
@@ -1682,7 +1686,7 @@ fn multi_admin_kick_requires_majority_vote() {
         vec![kick_prop.hash],
         0,
     );
-    dag.insert(vote_b).unwrap();
+    dag.insert(vote_a).unwrap();
 
     let state = materialize(&dag);
     // Kick applied — target removed.

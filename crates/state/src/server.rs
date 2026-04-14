@@ -55,6 +55,13 @@ pub struct ServerState {
     pub channel_keys: BTreeMap<String, BTreeMap<EndpointId, Vec<u8>>>,
 
     // -- Governance state --
+    /// The peer who created the server (author of the genesis event).
+    /// This is the permanent server owner and never changes, unlike `admins`
+    /// which can grow when admins are promoted via the governance process.
+    /// Stored as `Option` for backwards compatibility with serialized state;
+    /// always `Some` for servers created with this version.
+    #[serde(default)]
+    pub genesis_author: Option<EndpointId>,
     /// The set of peers with admin status. Separate from Permission
     /// enum to make the governance boundary structurally enforced.
     pub admins: BTreeSet<EndpointId>,
@@ -109,6 +116,7 @@ impl ServerState {
         Self {
             server_id: id.into(),
             server_name: name.into(),
+            genesis_author: Some(genesis_author),
             members,
             admins,
             vote_threshold: VoteThreshold::default(),

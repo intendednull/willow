@@ -21,11 +21,18 @@ pub struct ListenerCtx {
     pub network: Addr<willow_actor::StateActor<state_actors::NetworkMeta>>,
     pub voice: Addr<willow_actor::StateActor<state_actors::VoiceState>>,
     pub persistence: Addr<persistence_actor::PersistenceActor>,
+    /// Whether persistence to disk is enabled.
+    pub persistence_enabled: bool,
     pub event_broker: Addr<willow_actor::Broker<ClientEvent>>,
     pub identity: willow_identity::Identity,
     pub join_links: Arc<Mutex<Vec<crate::ops::JoinLink>>>,
     pub dag: Addr<willow_actor::StateActor<state_actors::DagState>>,
     pub server_registry: Addr<willow_actor::StateActor<state_actors::ServerRegistry>>,
+    /// Optional callback invoked on `NeighborUp`. Used by the profile topic
+    /// listener to re-broadcast the local profile when a new peer joins the
+    /// gossip mesh — ensuring late-arriving peers see the display name even
+    /// when the initial broadcast happened before the link was established.
+    pub on_neighbor_up: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Clone for ListenerCtx {
@@ -37,11 +44,13 @@ impl Clone for ListenerCtx {
             network: self.network.clone(),
             voice: self.voice.clone(),
             persistence: self.persistence.clone(),
+            persistence_enabled: self.persistence_enabled,
             event_broker: self.event_broker.clone(),
             identity: self.identity.clone(),
             join_links: Arc::clone(&self.join_links),
             dag: self.dag.clone(),
             server_registry: self.server_registry.clone(),
+            on_neighbor_up: self.on_neighbor_up.clone(),
         }
     }
 }
@@ -80,6 +89,11 @@ async fn topic_listener_loop<T: TopicHandle, E: TopicEvents>(
                 ctx.event_broker
                     .do_send(willow_actor::Publish(ClientEvent::PeerConnected(id)))
                     .ok();
+                // Re-broadcast local profile so the newly joined peer gets
+                // our display name even if they missed the initial broadcast.
+                if let Some(cb) = &ctx.on_neighbor_up {
+                    cb();
+                }
             }
             GossipEvent::NeighborDown(id) => {
                 let id2 = id;
@@ -153,6 +167,22 @@ async fn try_insert_event(ctx: &ListenerCtx, event: willow_state::Event) {
             let client_events = mutations::derive_client_events(ev);
             for e in client_events {
                 ctx.event_broker.do_send(willow_actor::Publish(e)).ok();
+            }
+        }
+        // Persist the state snapshot so messages survive a page reload
+        // without requiring a network sync round-trip. Use a direct synchronous
+        // storage write so the snapshot is on disk before this task yields —
+        // fire-and-forget actor messages may be delayed past a page reload.
+        // Key by registry UUID (not ServerState.server_id which is the genesis
+        // hash) so that load_server_state() can find the saved snapshot.
+        if ctx.persistence_enabled {
+            let snapshot_state =
+                willow_actor::state::select(&ctx.dag, |ds| ds.managed.state().clone()).await;
+            let registry_id =
+                willow_actor::state::select(&ctx.server_registry, |reg| reg.active_server.clone())
+                    .await;
+            if let Some(id) = registry_id {
+                crate::storage::save_server_state(&id, &snapshot_state);
             }
         }
     }
@@ -474,6 +504,22 @@ async fn process_received_message<T: TopicHandle>(
         }
         // TopicAnnounce is consumed by the relay; clients ignore it.
         crate::ops::WireMessage::TopicAnnounce { .. } => {}
+        // Update the local ProfileState with the sender's display name.
+        // Sent on SERVER_OPS_TOPIC so delivery is guaranteed via the sync path.
+        crate::ops::WireMessage::ProfileAnnounce { display_name } => {
+            let peer_id = signer;
+            let name = display_name.clone();
+            willow_actor::state::mutate(&ctx.profiles, move |p| {
+                p.names.insert(peer_id, name);
+            })
+            .await;
+            ctx.event_broker
+                .do_send(willow_actor::Publish(ClientEvent::ProfileUpdated {
+                    peer_id,
+                    display_name,
+                }))
+                .ok();
+        }
         // Worker messages travel on the _willow_workers topic and are never
         // delivered to the client's server-ops listener.
         crate::ops::WireMessage::Worker(_) => {}

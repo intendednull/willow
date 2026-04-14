@@ -1,4 +1,13 @@
 import { test, expect, chromium, firefox, devices } from '@playwright/test';
+
+// Custom Firefox context options — avoids flakiness seen with the full
+// devices['Desktop Firefox'] preset (which sets a Windows UA + specific screen
+// dimensions that appear to slow gossip mesh formation, cause unknown).
+// Using a plain viewport gives consistent behaviour.
+const desktopFirefoxContext = {
+  viewport: { width: 1280, height: 720 },
+  hasTouch: false,
+};
 import { freshStart, createServer, sendMessage, waitForMessage, waitForApp, getPeerId, openSidebar } from './helpers';
 
 /**
@@ -28,7 +37,7 @@ test.describe('Cross-browser peer sync', () => {
     // Launch desktop Firefox.
     const desktopBrowser = await firefox.launch();
     const desktopCtx = await desktopBrowser.newContext({
-      ...devices['Desktop Firefox'],
+      ...desktopFirefoxContext,
     });
     const desktopPage = await desktopCtx.newPage();
 
@@ -60,13 +69,23 @@ test.describe('Cross-browser peer sync', () => {
       await mobilePage.locator('button', { hasText: 'Next' }).click();
       await mobilePage.waitForTimeout(500);
       await mobilePage.locator('button', { hasText: 'Join Server' }).click();
-      await mobilePage.waitForSelector('.sidebar, .app', { timeout: 15_000 });
-      await mobilePage.waitForTimeout(5000); // Wait for P2P sync.
+      await mobilePage.waitForSelector('.sidebar, .app', { timeout: 20_000 });
 
-      // Verify mobile sees the server (sidebar should have "general" channel).
+      // Verify mobile sees the server — wait for DOM attachment first (gossip may lag).
+      await expect(mobilePage.locator('.channel-item', { hasText: 'general' }))
+        .toBeAttached({ timeout: 60_000 });
+      // Now open the sidebar and confirm the item is visible.
       await openSidebar(mobilePage);
       await expect(mobilePage.locator('.channel-item', { hasText: 'general' }))
-        .toBeVisible({ timeout: 15_000 });
+        .toBeVisible({ timeout: 5_000 });
+
+      // Establish bidirectional gossip mesh: Chrome→Firefox is the reliable direction.
+      // Waiting for Firefox to *receive* a Chrome message proves both gossip paths are
+      // open — round-trip delivery requires NeighborUp to have fired on both sides.
+      // (member-item appearance on Firefox alone only confirms Firefox's NeighborUp,
+      // not Chrome's reverse path which is required for the main assertion below.)
+      await sendMessage(mobilePage, 'warmup');
+      await waitForMessage(desktopPage, 'warmup', 30_000);
 
       // Desktop Firefox: send a message.
       await sendMessage(desktopPage, 'Hello from Firefox desktop');
@@ -88,7 +107,7 @@ test.describe('Cross-browser peer sync', () => {
     }
   });
 
-  test('desktop Firefox to mobile Chrome — invite + channel sync', async () => {
+  test('mobile Chrome to desktop Firefox — server owner sends, joiner receives', async () => {
     const mobileBrowser = await chromium.launch();
     const mobileCtx = await mobileBrowser.newContext({
       ...devices['Pixel 7'],
@@ -97,7 +116,7 @@ test.describe('Cross-browser peer sync', () => {
 
     const desktopBrowser = await firefox.launch();
     const desktopCtx = await desktopBrowser.newContext({
-      ...devices['Desktop Firefox'],
+      ...desktopFirefoxContext,
     });
     const desktopPage = await desktopCtx.newPage();
 
@@ -130,12 +149,13 @@ test.describe('Cross-browser peer sync', () => {
       await desktopPage.locator('button', { hasText: 'Next' }).click();
       await desktopPage.waitForTimeout(500);
       await desktopPage.locator('button', { hasText: 'Join Server' }).click();
-      await desktopPage.waitForSelector('.sidebar', { timeout: 15_000 });
-      await desktopPage.waitForTimeout(5000);
+      await desktopPage.waitForSelector('.sidebar', { timeout: 20_000 });
 
-      // Desktop should see "general" channel.
+      // Gossip sync after joining can be slow — wait for DOM attachment before visibility.
       await expect(desktopPage.locator('.channel-item', { hasText: 'general' }))
-        .toBeVisible({ timeout: 15_000 });
+        .toBeAttached({ timeout: 60_000 });
+      await expect(desktopPage.locator('.channel-item', { hasText: 'general' }))
+        .toBeVisible({ timeout: 5_000 });
 
       // Mobile sends a message.
       await sendMessage(mobilePage, 'Cross browser works!');

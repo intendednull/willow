@@ -167,7 +167,14 @@ fn check_and_apply_proposal(state: &mut ServerState, proposal: &EventHash) {
         .get(proposal)
         .map(|prop| {
             let yes_count = prop.votes.values().filter(|v| **v).count();
-            state.meets_threshold(yes_count)
+            // The genesis author (server owner) is the root of trust and can
+            // push governance actions through unilaterally. This matches the
+            // "Owner is root of trust" principle from the authority model spec.
+            let owner_override = state
+                .genesis_author
+                .map(|owner| owner == prop.proposer)
+                .unwrap_or(false);
+            owner_override || state.meets_threshold(yes_count)
         })
         .unwrap_or(false);
 
@@ -1043,61 +1050,51 @@ mod tests {
 
     #[test]
     fn vote_does_not_apply_below_threshold() {
-        let admin = Identity::generate();
+        // The genesis author can bypass the majority threshold, but a regular
+        // (non-genesis) admin cannot — their proposals require majority vote.
+        let genesis = Identity::generate();
         let alice = Identity::generate();
         let bob = Identity::generate();
         let carol = Identity::generate();
-        let mut dag = test_dag(&admin);
+        let mut dag = test_dag(&genesis);
 
-        // Add alice and bob as admins.
+        // Genesis author promotes alice (sole admin — auto-applies with 1 vote).
         emit(
             &mut dag,
-            &admin,
+            &genesis,
             EventKind::Propose {
                 action: ProposedAction::GrantAdmin {
                     peer_id: alice.endpoint_id(),
                 },
             },
         );
+
+        // Now 2 admins. Alice (non-genesis) proposes bob — 1/2 votes, stays pending.
         emit(
             &mut dag,
-            &admin,
+            &alice,
             EventKind::Propose {
                 action: ProposedAction::GrantAdmin {
                     peer_id: bob.endpoint_id(),
                 },
             },
         );
-        // Wait — with 2 admins and majority, adding bob needs 2 votes.
-        // Let's check: after adding alice (2 admins), admin proposes bob.
-        // Majority of 2 = need 2. admin is proposer (1 yes). Need alice's vote.
-        // But alice hasn't voted yet. Let's verify bob isn't admin.
-        // Actually, admin proposed adding alice (sole admin, auto-applies: 1 admin).
-        // Then admin proposed adding bob (2 admins, admin = 1 yes, need 2).
-        // Alice hasn't voted on bob's proposal.
 
-        // Now 2 admins. Propose carol — need majority of 2 = 2 votes.
+        // Alice also proposes carol — 1/2 votes, stays pending.
         emit(
             &mut dag,
-            &admin,
+            &alice,
             EventKind::Propose {
                 action: ProposedAction::GrantAdmin {
                     peer_id: carol.endpoint_id(),
                 },
             },
         );
-        // Only admin voted (implicit). Alice didn't vote. Below threshold.
 
         let state = materialize(&dag);
-        // Carol should NOT be admin (only 1 of 2 voted).
-        // But wait — we need to check if bob was added. Let me trace:
-        // 1. Genesis: admin is sole admin
-        // 2. Propose GrantAdmin{alice}: sole admin, auto-applies. Now 2 admins.
-        // 3. Propose GrantAdmin{bob}: 2 admins, admin=1 yes. Need 2. Not met.
-        //    So bob is NOT admin yet.
-        // 4. Propose GrantAdmin{carol}: 2 admins, admin=1 yes. Need 2. Not met.
+        // Carol should NOT be admin (alice is not genesis author — needs majority).
         assert!(!state.is_admin(&carol.endpoint_id()));
-        // Bob also not admin (no second vote).
+        // Bob also not admin (alice's vote alone doesn't satisfy majority of 2).
         assert!(!state.is_admin(&bob.endpoint_id()));
     }
 

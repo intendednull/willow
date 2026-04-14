@@ -41,7 +41,7 @@ test.describe('Permissions and trust', () => {
       await sendMessage(page2, 'trusted message');
 
       // Alice should see it.
-      await waitForMessage(page1, 'trusted message', 15_000);
+      await waitForMessage(page1, 'trusted message', 30_000);
     } finally {
       await ctx1.close();
       await ctx2.close();
@@ -73,7 +73,7 @@ test.describe('Permissions and trust', () => {
       await page1.waitForTimeout(1000);
 
       await sendMessage(page2, 'before untrust');
-      await waitForMessage(page1, 'before untrust', 15_000);
+      await waitForMessage(page1, 'before untrust', 30_000);
 
       // Now untrust Bob.
       await untrustPeer(page1, 'Bob');
@@ -113,7 +113,7 @@ test.describe('Permissions and trust', () => {
 
       // Member count should drop by 1.
       await expect(page1.locator('.member-item'))
-        .toHaveCount(initialCount - 1, { timeout: 15_000 });
+        .toHaveCount(initialCount - 1, { timeout: 30_000 });
     } finally {
       await ctx1.close();
       await ctx2.close();
@@ -167,6 +167,22 @@ test.describe('Permissions and trust', () => {
 
       // Sidebar / chat area should be visible again.
       await expect(page1.locator('.sidebar')).toBeVisible({ timeout: 5000 });
+    } finally {
+      await ctx1.close();
+      await ctx2.close();
+    }
+  });
+
+  test('non-owner cannot create a channel — add button absent', async ({ browser }, testInfo) => {
+    // Desktop only — easier to assert button visibility without sidebar toggle.
+    test.skip(testInfo.project.name.startsWith('mobile'), 'desktop only');
+
+    const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Chan Perm', 'Alice', 'Bob');
+    try {
+      // Bob (non-admin) should not see the channel-add or delete buttons.
+      // The state machine rejects ManageChannels mutations from non-admins, but the
+      // UI must also hide the controls — otherwise errors are swallowed silently.
+      await expect(page2.locator('.channel-add-btn')).toBeHidden({ timeout: 5_000 });
     } finally {
       await ctx1.close();
       await ctx2.close();

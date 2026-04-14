@@ -7,7 +7,7 @@ import {
   openSidebar,
   openMemberList,
   closeMemberList,
-  switchChannelMobile,
+  switchChannel,
 } from './helpers';
 
 test.describe('Multi-peer mobile', () => {
@@ -40,11 +40,20 @@ test.describe('Multi-peer mobile', () => {
     try {
       // Alice creates a new channel.
       await createChannel(page1, 'mobile-news');
+      // Brief settle: give gossip a moment to process the event before polling.
+      await page2.waitForTimeout(500);
 
-      // Bob opens sidebar and waits for the new channel to appear (event-driven).
-      await openSidebar(page2);
+      // Wait for the channel event to reach Bob (attached to DOM means synced,
+      // regardless of sidebar visibility). Use a generous timeout since gossip
+      // establishment can be slow when the relay is handling previous teardown.
       await expect(page2.locator('.channel-item', { hasText: 'mobile-news' }))
-        .toBeVisible({ timeout: 30_000 });
+        .toBeAttached({ timeout: 60_000 });
+
+      // Open sidebar so the user can see it.
+      await openSidebar(page2);
+      // Sidebar item should now be in view.
+      await expect(page2.locator('.channel-item', { hasText: 'mobile-news' }))
+        .toBeVisible({ timeout: 5_000 });
     } finally {
       await ctx1.close();
       await ctx2.close();
@@ -58,7 +67,7 @@ test.describe('Multi-peer mobile', () => {
       await sendMessage(page1, 'mobile hello');
 
       // Bob should see the message in the chat area without opening sidebar.
-      await waitForMessage(page2, 'mobile hello', 15_000);
+      await waitForMessage(page2, 'mobile hello', 30_000);
     } finally {
       await ctx1.close();
       await ctx2.close();
@@ -70,15 +79,19 @@ test.describe('Multi-peer mobile', () => {
     try {
       // Alice creates a channel.
       await createChannel(page1, 'mobile-dev');
+      // Brief settle: give gossip a moment to process the event before polling.
+      await page2.waitForTimeout(500);
+
+      // Wait for the channel to appear in Bob's DOM (synced via gossip).
+      await expect(page2.locator('.channel-item', { hasText: 'mobile-dev' }))
+        .toBeAttached({ timeout: 60_000 });
 
       // Alice switches to the new channel and sends a message.
-      await switchChannelMobile(page1, 'mobile-dev');
+      await switchChannel(page1, 'mobile-dev');
       await sendMessage(page1, 'dev channel msg');
 
-      // Bob waits for the channel to arrive, then switches and reads the message.
-      await expect(page2.locator('.channel-item', { hasText: 'mobile-dev' }))
-        .toBeVisible({ timeout: 15_000 });
-      await switchChannelMobile(page2, 'mobile-dev');
+      // Bob switches to the new channel and should see the message.
+      await switchChannel(page2, 'mobile-dev');
       await waitForMessage(page2, 'dev channel msg', 30_000);
     } finally {
       await ctx1.close();

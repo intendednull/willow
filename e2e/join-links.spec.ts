@@ -50,12 +50,13 @@ test.describe('Join via shareable link', () => {
 
     // Wait for join to complete (join page disappears, chat appears).
     await pageB.waitForSelector('.sidebar, .app', { timeout: 30000 });
-    await pageB.waitForTimeout(5000);
 
-    // Verify B sees the server.
+    // Verify B sees the server — wait for DOM attachment first (gossip may lag).
+    await expect(pageB.locator('.channel-item', { hasText: 'general' }))
+      .toBeAttached({ timeout: 30_000 });
     await openSidebar(pageB);
     await expect(pageB.locator('.channel-item', { hasText: 'general' }))
-      .toBeVisible({ timeout: 15000 });
+      .toBeVisible({ timeout: 5_000 });
 
     // A sends a message.
     await sendMessage(pageA, 'Welcome Bob!');
@@ -65,5 +66,25 @@ test.describe('Join via shareable link', () => {
 
     await ctxA.close();
     await ctxB.close();
+  });
+
+  test('joining with invalid code does not reach the chat', async ({ browser }) => {
+    // Entering a garbage invite code and attempting to join should not navigate
+    // to a server. The app must fail gracefully — no channel list, no chat area.
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    try {
+      await freshStart(page);
+      await page.locator('.welcome-invite-input').fill('this-is-definitely-not-a-valid-invite-code');
+      await page.locator('button', { hasText: 'Next' }).click();
+      // Current behaviour: Next shows the join form for any non-empty input
+      // (server lookup is deferred to the join step).
+      await page.locator('button', { hasText: 'Join Server' }).waitFor({ timeout: 3_000 });
+      await page.locator('button', { hasText: 'Join Server' }).click();
+      // The join should fail — no channel list should ever appear.
+      await expect(page.locator('.channel-item')).toBeHidden({ timeout: 10_000 });
+    } finally {
+      await ctx.close();
+    }
   });
 });

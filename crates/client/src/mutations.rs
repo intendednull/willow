@@ -40,6 +40,8 @@ pub struct ClientMutations<N: willow_network::Network> {
     pub(crate) voice: Addr<StateActor<VoiceState>>,
     pub(crate) event_broker: Addr<Broker<ClientEvent>>,
     pub(crate) persistence: Addr<PersistenceActor>,
+    /// Whether persistence to disk is enabled.
+    pub(crate) persistence_enabled: bool,
     pub(crate) identity: Identity,
     pub(crate) dag: Addr<StateActor<DagState>>,
     pub(crate) join_links: Arc<Mutex<Vec<crate::ops::JoinLink>>>,
@@ -57,6 +59,7 @@ impl<N: willow_network::Network> Clone for ClientMutations<N> {
             voice: self.voice.clone(),
             event_broker: self.event_broker.clone(),
             persistence: self.persistence.clone(),
+            persistence_enabled: self.persistence_enabled,
             identity: self.identity.clone(),
             dag: self.dag.clone(),
             join_links: Arc::clone(&self.join_links),
@@ -169,6 +172,22 @@ impl<N: willow_network::Network> ClientMutations<N> {
                 event: event.clone(),
             })
             .ok();
+        // Persist the state snapshot so messages survive a page reload without
+        // requiring a network sync round-trip. Call storage directly (synchronous)
+        // so the snapshot is guaranteed to be on disk before this await point —
+        // fire-and-forget actor messages may be delayed past a page reload.
+        // Key by registry UUID (not ServerState.server_id which is the genesis
+        // hash) so that load_server_state() can find the saved snapshot.
+        if self.persistence_enabled {
+            let snapshot_state =
+                willow_actor::state::select(&self.dag, |ds| ds.managed.state().clone()).await;
+            let registry_id =
+                willow_actor::state::select(&self.server_registry, |reg| reg.active_server.clone())
+                    .await;
+            if let Some(id) = registry_id {
+                crate::storage::save_server_state(&id, &snapshot_state);
+            }
+        }
         let client_events = derive_client_events(event);
         for e in client_events {
             self.event_broker.do_send(Publish(e)).ok();
@@ -443,7 +462,11 @@ impl<N: willow_network::Network> ClientMutations<N> {
     }
 
     /// Propose revoking admin status from a peer (requires admin vote).
+    ///
+    /// Also revokes the peer's `SendMessages` permission so their future
+    /// messages are rejected by the state machine — i.e., a full "untrust".
     pub async fn propose_revoke_admin(&self, peer_id: EndpointId) -> anyhow::Result<()> {
+        // Governance proposal: remove from admin set (may require majority).
         let event = self
             .build_event(EventKind::Propose {
                 action: willow_state::ProposedAction::RevokeAdmin { peer_id },
@@ -451,6 +474,14 @@ impl<N: willow_network::Network> ClientMutations<N> {
             .await?;
         self.apply_event(&event).await;
         self.broadcast_event(&event);
+
+        // Immediate admin action: revoke message-sending rights so the peer
+        // can no longer write to this server regardless of proposal timing.
+        // Ignore errors (caller may not be admin, or peer had no SendMessages).
+        let _ = self
+            .revoke_permission(peer_id, willow_state::Permission::SendMessages)
+            .await;
+
         Ok(())
     }
 

@@ -46,6 +46,12 @@ pub fn Sidebar(
     let handle = use_context::<WebClientHandle>().unwrap();
     let app_state = use_context::<crate::state::AppState>().unwrap();
 
+    // Admins (including the genesis owner) can create and delete channels.
+    // `admin_ids` always contains the genesis author (server.rs ensures this),
+    // so this check covers the owner as well as any governance-promoted admins.
+    let peer_id = app_state.network.peer_id;
+    let can_manage_channels = move || app_state.server.admin_ids.get().contains(&peer_id.get());
+
     let (creating, set_creating) = signal(false);
     let (new_name, set_new_name) = signal(String::new());
     let (create_voice, set_create_voice) = signal(false);
@@ -109,13 +115,15 @@ pub fn Sidebar(
             <div class="channel-list">
                 <div class="channel-list-header">
                     <span class="channel-list-title">"CHANNELS"</span>
-                    <button
-                        class="channel-add-btn"
-                        title="Create channel"
-                        on:click=move |_| set_creating.set(true)
-                    >
-                        {icons::icon_plus()}
-                    </button>
+                    {move || can_manage_channels().then(|| view! {
+                        <button
+                            class="channel-add-btn"
+                            title="Create channel"
+                            on:click=move |_| set_creating.set(true)
+                        >
+                            {icons::icon_plus()}
+                        </button>
+                    })}
                 </div>
                 {move || {
                     if creating.get() {
@@ -210,18 +218,23 @@ pub fn Sidebar(
                                     }
                                     {
                                         let ch_d = ch_delete.clone();
-                                        view! {
-                                            <button
-                                                class="delete-btn"
-                                                title="Delete channel"
-                                                on:click=move |ev| {
-                                                    ev.stop_propagation();
-                                                    set_pending_del_channel.set(Some(ch_d.clone()));
-                                                    set_show_del_confirm.set(true);
-                                                }
-                                            >
-                                                "x"
-                                            </button>
+                                        // Clone ch_d inside the reactive closure so it
+                                        // remains FnMut (String is not Copy).
+                                        move || {
+                                            let ch_d = ch_d.clone();
+                                            can_manage_channels().then(|| view! {
+                                                <button
+                                                    class="delete-btn"
+                                                    title="Delete channel"
+                                                    on:click=move |ev| {
+                                                        ev.stop_propagation();
+                                                        set_pending_del_channel.set(Some(ch_d.clone()));
+                                                        set_show_del_confirm.set(true);
+                                                    }
+                                                >
+                                                    "x"
+                                                </button>
+                                            })
                                         }
                                     }
                                 </span>

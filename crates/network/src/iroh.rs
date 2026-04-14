@@ -244,9 +244,25 @@ impl IrohNetwork {
         // it has discovered its relay URL. Without this, gossip topic
         // subscriptions publish empty PeerData, which means other peers can't
         // learn this endpoint's address via ForwardJoin and can't dial it.
+        //
+        // We cap the wait at 5 s so the app never hangs indefinitely when
+        // the relay is slow to respond (common in cross-browser CI setups).
+        // A local relay connects in <100ms; a remote relay typically connects
+        // in 1–3s. Capping at 5s gives enough margin while leaving more of
+        // the 60-second test window for gossip mesh formation and sync.
+        // If the relay connects later, gossip will self-heal via NeighborUp.
         if config.relay_url.is_some() {
-            endpoint.online().await;
-            debug!(id = %endpoint.id().fmt_short(), "iroh endpoint online");
+            #[cfg(not(target_arch = "wasm32"))]
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(5), endpoint.online()).await;
+
+            #[cfg(target_arch = "wasm32")]
+            futures_lite::future::race(endpoint.online(), async {
+                gloo_timers::future::TimeoutFuture::new(5_000).await
+            })
+            .await;
+
+            debug!(id = %endpoint.id().fmt_short(), "iroh endpoint online (or timed out)");
         }
 
         // 2. Create the gossip protocol with 64 KiB max message size.

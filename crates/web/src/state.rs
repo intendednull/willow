@@ -457,10 +457,11 @@ pub fn wire_derived_signals<N: willow_network::Network>(
     leptos::prelude::Effect::new(move || write.server.set_roles.set(roles_sig.get()));
 
     let owner = derived_signal(&views.event_state, system, |es| {
-        // Pick the lexicographically smallest admin for a deterministic owner.
-        es.admins
-            .iter()
-            .min()
+        // Use the genesis author as the permanent server owner.
+        // Fall back to the lexicographically smallest admin for state
+        // loaded from older localStorage snapshots that lack genesis_author.
+        es.genesis_author
+            .or_else(|| es.admins.iter().next().copied())
             .map(|a| a.to_string())
             .unwrap_or_default()
     });

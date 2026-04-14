@@ -59,7 +59,7 @@ pub fn MemberList(
                             </h3>
                             <For
                                 each=move || workers.clone()
-                                key=|(id, _, _)| id.clone()
+                                key=|(id, name, online)| format!("{id}:{name}:{online}")
                                 let:worker
                             >
                                 {
@@ -126,7 +126,7 @@ pub fn MemberList(
                         })
                         .collect::<Vec<_>>()
                 }
-                key=|(id, _, _)| id.clone()
+                key=|(id, name, online)| format!("{id}:{name}:{online}")
                 let:peer
             >
                 {
