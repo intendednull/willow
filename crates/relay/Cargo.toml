@@ -24,3 +24,11 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+willow-network = { path = "../network", features = ["test-utils"] }
+willow-identity = { path = "../identity" }
+willow-common = { path = "../common" }
+bytes = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+

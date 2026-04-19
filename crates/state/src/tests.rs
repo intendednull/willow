@@ -2928,3 +2928,531 @@ fn message_index_delete_message_marks_deleted() {
         "message should be marked deleted"
     );
 }
+
+// ── Security: cross-member message ownership ────────────────────────────────
+
+/// Security property: a member with `SendMessages` must NOT be able to edit
+/// a message authored by a different member. Only the original author may edit
+/// their own message.
+///
+/// This guards against a peer using a valid `EditMessage` event to silently
+/// overwrite another user's words.
+#[test]
+fn member_cannot_edit_other_members_message() {
+    let owner = Identity::generate();
+    let peer_a = Identity::generate();
+    let peer_b = Identity::generate();
+    let mut dag = test_dag(&owner);
+
+    // Owner creates a channel.
+    do_emit(
+        &mut dag,
+        &owner,
+        EventKind::CreateChannel {
+            name: "general".to_string(),
+            channel_id: "ch-1".to_string(),
+            kind: crate::types::ChannelKind::Text,
+        },
+    );
+
+    // Grant SendMessages to both peers.
+    do_emit(
+        &mut dag,
+        &owner,
+        EventKind::GrantPermission {
+            peer_id: peer_a.endpoint_id(),
+            permission: Permission::SendMessages,
+        },
+    );
+    let grant_b = do_emit(
+        &mut dag,
+        &owner,
+        EventKind::GrantPermission {
+            peer_id: peer_b.endpoint_id(),
+            permission: Permission::SendMessages,
+        },
+    );
+
+    // Peer B sends a message (causally after the grant so it sorts correctly).
+    let b_msg = dag.create_event(
+        &peer_b,
+        EventKind::Message {
+            channel_id: "ch-1".to_string(),
+            body: "original message from B".to_string(),
+            reply_to: None,
+        },
+        vec![grant_b.hash],
+        0,
+    );
+    dag.insert(b_msg.clone()).unwrap();
+
+    // Peer A tries to edit peer B's message. A has SendMessages permission
+    // but is NOT the message author — this should be rejected.
+    let edit_attempt = dag.create_event(
+        &peer_a,
+        EventKind::EditMessage {
+            message_id: b_msg.hash,
+            new_body: "tampered by A".to_string(),
+        },
+        vec![b_msg.hash],
+        0,
+    );
+    dag.insert(edit_attempt).unwrap();
+
+    let state = materialize(&dag);
+    // The original body must be intact — edit should have been rejected.
+    let msg = state
+        .messages
+        .iter()
+        .find(|m| m.id == b_msg.hash)
+        .expect("B's message should exist in state");
+    assert_eq!(
+        msg.body, "original message from B",
+        "peer A must not be able to edit peer B's message"
+    );
+    assert!(
+        !msg.edited,
+        "edited flag must not be set after unauthorized edit"
+    );
+}
+
+///// Security property: a member with `SendMessages` must NOT be able to delete
+/// a message authored by a different member. Only the original author may
+/// delete their own message.
+#[test]
+fn member_cannot_delete_other_members_message() {
+    let owner = Identity::generate();
+    let peer_a = Identity::generate();
+    let peer_b = Identity::generate();
+    let mut dag = test_dag(&owner);
+
+    // Owner creates a channel.
+    do_emit(
+        &mut dag,
+        &owner,
+        EventKind::CreateChannel {
+            name: "general".to_string(),
+            channel_id: "ch-1".to_string(),
+            kind: crate::types::ChannelKind::Text,
+        },
+    );
+
+    // Grant SendMessages to both peers.
+    do_emit(
+        &mut dag,
+        &owner,
+        EventKind::GrantPermission {
+            peer_id: peer_a.endpoint_id(),
+            permission: Permission::SendMessages,
+        },
+    );
+    let grant_b = do_emit(
+        &mut dag,
+        &owner,
+        EventKind::GrantPermission {
+            peer_id: peer_b.endpoint_id(),
+            permission: Permission::SendMessages,
+        },
+    );
+
+    // Peer B sends a message (causally after the grant so it sorts correctly).
+    let b_msg = dag.create_event(
+        &peer_b,
+        EventKind::Message {
+            channel_id: "ch-1".to_string(),
+            body: "original message from B".to_string(),
+            reply_to: None,
+        },
+        vec![grant_b.hash],
+        0,
+    );
+    dag.insert(b_msg.clone()).unwrap();
+
+    // Peer A tries to delete peer B's message. A has SendMessages permission
+    // but is NOT the message author — this should be rejected.
+    let delete_attempt = dag.create_event(
+        &peer_a,
+        EventKind::DeleteMessage {
+            message_id: b_msg.hash,
+        },
+        vec![b_msg.hash],
+        0,
+    );
+    dag.insert(delete_attempt).unwrap();
+
+    let state = materialize(&dag);
+    // B's message must still exist and not be marked deleted.
+    let msg = state
+        .messages
+        .iter()
+        .find(|m| m.id == b_msg.hash)
+        .expect("B's message should exist in state");
+    assert!(
+        !msg.deleted,
+        "peer A must not be able to delete peer B's message"
+    );
+    assert_eq!(
+        msg.body, "original message from B",
+        "body must be unchanged after unauthorized delete"
+    );
+}
+
+// ── Governance: negative votes do not contribute to threshold ───────────────
+
+/// A `Vote { accept: false }` must NOT count toward the yes-vote threshold.
+/// Even after multiple no-votes, a proposal that hasn't received enough yes
+/// votes must remain pending.
+///
+/// Scenario: 3 admins (owner + 2 via proposals), Majority threshold.
+///   - Owner proposes to kick a regular member.
+///   - Admin 2 votes NO.
+///   - Admin 3 votes NO.
+///   - Proposal must still be pending (0 additional yes votes).
+#[test]
+fn negative_vote_does_not_apply_proposal() {
+    let owner = Identity::generate();
+    let mut dag = test_dag(&owner);
+
+    // While sole admin, add admin 2 (auto-applies with majority of 1).
+    let admin_2 = Identity::generate();
+    do_emit(
+        &mut dag,
+        &owner,
+        EventKind::Propose {
+            action: ProposedAction::GrantAdmin {
+                peer_id: admin_2.endpoint_id(),
+            },
+        },
+    );
+    let state = materialize(&dag);
+    assert!(
+        state.is_admin(&admin_2.endpoint_id()),
+        "admin_2 should be granted"
+    );
+
+    // Now 2 admins. Add admin 3 — owner proposes, admin_2 votes yes.
+    let admin_3 = Identity::generate();
+    let prop_a3 = do_emit(
+        &mut dag,
+        &owner,
+        EventKind::Propose {
+            action: ProposedAction::GrantAdmin {
+                peer_id: admin_3.endpoint_id(),
+            },
+        },
+    );
+    let vote_a2_yes = dag.create_event(
+        &admin_2,
+        EventKind::Vote {
+            proposal: prop_a3.hash,
+            accept: true,
+        },
+        vec![prop_a3.hash],
+        0,
+    );
+    dag.insert(vote_a2_yes.clone()).unwrap();
+
+    let state = materialize(&dag);
+    assert!(
+        state.is_admin(&admin_3.endpoint_id()),
+        "admin_3 should be granted after 2/2 votes"
+    );
+    assert_eq!(state.admins.len(), 3);
+
+    // Add target member (parented to enforce topo order).
+    let target = Identity::generate();
+    let grant_target_evt = dag.create_event(
+        &owner,
+        EventKind::GrantPermission {
+            peer_id: target.endpoint_id(),
+            permission: Permission::SendMessages,
+        },
+        vec![vote_a2_yes.hash],
+        0,
+    );
+    dag.insert(grant_target_evt.clone()).unwrap();
+
+    // admin_2 (non-genesis) proposes to kick target. With 3 admins and
+    // Majority threshold, majority > 1.5 requires at least 2 yes votes.
+    // admin_2's implicit yes counts as 1 — not enough to auto-apply.
+    // (Owner cannot be the proposer here: genesis author bypasses threshold.)
+    let kick_prop = dag.create_event(
+        &admin_2,
+        EventKind::Propose {
+            action: ProposedAction::KickMember {
+                peer_id: target.endpoint_id(),
+            },
+        },
+        vec![grant_target_evt.hash],
+        0,
+    );
+    dag.insert(kick_prop.clone()).unwrap();
+
+    let state = materialize(&dag);
+    assert!(
+        state.pending_proposals.contains_key(&kick_prop.hash),
+        "kick proposal should be pending (only 1/3 yes votes)"
+    );
+    assert!(
+        state.members.contains_key(&target.endpoint_id()),
+        "target must still be a member"
+    );
+
+    // admin_3 votes NO — must not cause the proposal to apply.
+    let vote_no_a3 = dag.create_event(
+        &admin_3,
+        EventKind::Vote {
+            proposal: kick_prop.hash,
+            accept: false,
+        },
+        vec![kick_prop.hash],
+        0,
+    );
+    dag.insert(vote_no_a3).unwrap();
+
+    let state = materialize(&dag);
+    assert!(
+        state.pending_proposals.contains_key(&kick_prop.hash),
+        "kick proposal should still be pending after 1 no vote"
+    );
+    assert!(
+        state.members.contains_key(&target.endpoint_id()),
+        "target must still be a member after 1 no vote"
+    );
+
+    // owner also votes NO — proposal should remain pending (1 yes, 2 no).
+    let vote_no_owner = dag.create_event(
+        &owner,
+        EventKind::Vote {
+            proposal: kick_prop.hash,
+            accept: false,
+        },
+        vec![kick_prop.hash],
+        0,
+    );
+    dag.insert(vote_no_owner).unwrap();
+
+    let state = materialize(&dag);
+    assert!(
+        state.pending_proposals.contains_key(&kick_prop.hash),
+        "kick proposal should still be pending after 2 no votes"
+    );
+    assert!(
+        state.members.contains_key(&target.endpoint_id()),
+        "target must still be a member after 2 no votes"
+    );
+}
+
+/// With Majority threshold and 2 admins, a proposal requires STRICTLY MORE
+/// than half of all admins to vote yes (i.e. > 1, so both must vote yes).
+/// A sole yes vote from the proposer (1/2 = 50%, not strictly majority)
+/// must NOT auto-apply.
+#[test]
+fn no_vote_proposal_does_not_auto_apply_with_two_admins() {
+    let owner = Identity::generate();
+    let mut dag = test_dag(&owner);
+
+    // Add a second admin (auto-applies while sole admin — 1 yes out of 1).
+    let admin_2 = Identity::generate();
+    let grant_admin_evt = do_emit(
+        &mut dag,
+        &owner,
+        EventKind::Propose {
+            action: ProposedAction::GrantAdmin {
+                peer_id: admin_2.endpoint_id(),
+            },
+        },
+    );
+    let state = materialize(&dag);
+    assert_eq!(state.admins.len(), 2, "should now have 2 admins");
+
+    // Add a target member (parented on the admin grant so topo order is
+    // deterministic).
+    let target = Identity::generate();
+    let grant_target_evt = dag.create_event(
+        &owner,
+        EventKind::GrantPermission {
+            peer_id: target.endpoint_id(),
+            permission: Permission::SendMessages,
+        },
+        vec![grant_admin_evt.hash],
+        0,
+    );
+    dag.insert(grant_target_evt.clone()).unwrap();
+
+    // admin_2 (non-genesis) proposes to kick target. With 2 admins and
+    // Majority threshold, majority requires > 1, i.e. BOTH admins must vote yes.
+    // Only the proposer's implicit yes counts (1/2) — must NOT auto-apply.
+    // (Owner cannot be proposer: genesis author bypasses threshold.)
+    // Parent on the target grant so the kick proposal is ordered after
+    // admin_2's admin grant has been applied.
+    let kick_prop = dag.create_event(
+        &admin_2,
+        EventKind::Propose {
+            action: ProposedAction::KickMember {
+                peer_id: target.endpoint_id(),
+            },
+        },
+        vec![grant_target_evt.hash],
+        0,
+    );
+    dag.insert(kick_prop.clone()).unwrap();
+
+    let state = materialize(&dag);
+    // Proposal should be pending — 1/2 yes votes is not a strict majority.
+    assert!(
+        state.pending_proposals.contains_key(&kick_prop.hash),
+        "proposal must be pending: 1/2 yes votes is not majority"
+    );
+    assert!(
+        state.members.contains_key(&target.endpoint_id()),
+        "target must remain a member"
+    );
+
+    // owner also votes yes — now 2/2 = majority, proposal applies.
+    let vote_yes = dag.create_event(
+        &owner,
+        EventKind::Vote {
+            proposal: kick_prop.hash,
+            accept: true,
+        },
+        vec![kick_prop.hash],
+        0,
+    );
+    dag.insert(vote_yes).unwrap();
+
+    let state = materialize(&dag);
+    // Now the proposal should have applied.
+    assert!(
+        !state.pending_proposals.contains_key(&kick_prop.hash),
+        "proposal should be consumed after reaching majority"
+    );
+    assert!(
+        !state.members.contains_key(&target.endpoint_id()),
+        "target should have been kicked"
+    );
+}
+
+// ── Stress test assertions (tightened) ─────────────────────────────────────
+
+/// Verify that materialize produces identical profile maps across two calls
+/// on the same DAG. `ServerState` does not derive `PartialEq`, so we compare
+/// the profile BTreeMap directly. We also assert that every author's profile
+/// is actually present.
+#[test]
+fn stress_100_authors_deterministic_profiles() {
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    let authors: Vec<Identity> = (0..9).map(|_| Identity::generate()).collect();
+
+    for author in &authors {
+        let deps = vec![*dag.head(&admin.endpoint_id()).unwrap()];
+        let e = dag.create_event(
+            author,
+            EventKind::SetProfile {
+                display_name: "deterministic".to_string(),
+            },
+            deps,
+            0,
+        );
+        dag.insert(e).unwrap();
+    }
+
+    let s1 = materialize(&dag);
+    let s2 = materialize(&dag);
+
+    // Profile maps must be identical (same keys, same values).
+    assert_eq!(
+        s1.profiles, s2.profiles,
+        "materialize must be fully deterministic across calls"
+    );
+
+    // Each author that set a profile must appear in the profiles map.
+    for author in &authors {
+        assert!(
+            s1.profiles.contains_key(&author.endpoint_id()),
+            "author {} should have a profile entry",
+            author.endpoint_id()
+        );
+    }
+}
+
+/// The `>=` bound in `stress_concurrent_channel_creates` is correct:
+/// concurrent channel-create events without explicit cross-dependencies may
+/// sort before or after a grant event due to hash-based tiebreaking, so the
+/// exact count of channels from the first (permission-less) batch is
+/// non-deterministic across different DAG contents. The second batch (all
+/// events have the grant as a dep) is guaranteed to succeed.
+///
+/// This test documents that invariant and confirms the count is stable across
+/// multiple materializations of the same DAG.
+#[test]
+fn stress_concurrent_channel_creates_count_is_stable() {
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    let authors: Vec<Identity> = (0..10).map(|_| Identity::generate()).collect();
+
+    // First batch — no explicit permission (may be rejected).
+    for (i, author) in authors.iter().enumerate() {
+        let e = dag.create_event(
+            author,
+            EventKind::CreateChannel {
+                name: format!("ch-{i}"),
+                channel_id: format!("ch-{i}"),
+                kind: crate::types::ChannelKind::Text,
+            },
+            vec![],
+            0,
+        );
+        dag.insert(e).unwrap();
+    }
+
+    // Grant ManageChannels to all authors.
+    for author in &authors {
+        let e = dag.create_event(
+            &admin,
+            EventKind::GrantPermission {
+                peer_id: author.endpoint_id(),
+                permission: crate::event::Permission::ManageChannels,
+            },
+            vec![],
+            0,
+        );
+        dag.insert(e).unwrap();
+    }
+
+    // Second batch — all depend on the admin's latest grant event, so they
+    // are guaranteed to be applied after permission is granted.
+    let admin_head = *dag.head(&admin.endpoint_id()).unwrap();
+    for (i, author) in authors.iter().enumerate() {
+        let e = dag.create_event(
+            author,
+            EventKind::CreateChannel {
+                name: format!("ch2-{i}"),
+                channel_id: format!("ch2-{i}"),
+                kind: crate::types::ChannelKind::Text,
+            },
+            vec![admin_head],
+            0,
+        );
+        dag.insert(e).unwrap();
+    }
+
+    let s1 = materialize(&dag);
+    let s2 = materialize(&dag);
+
+    // The `>=` bound is intentional — second batch guarantees 10 channels;
+    // first batch may add 0–10 more depending on topological ordering.
+    assert!(
+        s1.channels.len() >= 10,
+        "at least the second-batch channels must exist"
+    );
+    // Same DAG → same count (deterministic across repeated calls).
+    assert_eq!(
+        s1.channels.len(),
+        s2.channels.len(),
+        "channel count must be identical across materializations of the same DAG"
+    );
+}

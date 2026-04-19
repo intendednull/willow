@@ -469,7 +469,7 @@ mod tests {
         )
     }
 
-    fn setup_identity_and_genesis(channel: &str) -> (Identity, Event) {
+    fn setup_identity_and_genesis() -> (Identity, Event) {
         let id = Identity::generate();
         let genesis = Event::new(
             &id,
@@ -481,14 +481,13 @@ mod tests {
             },
             0,
         );
-        let _ = channel; // channel used by caller
         (id, genesis)
     }
 
     #[test]
     fn store_and_count() {
         let store = StorageEventStore::open(":memory:").unwrap();
-        let (id, genesis) = setup_identity_and_genesis("general");
+        let (id, genesis) = setup_identity_and_genesis();
         let event = make_message(&id, 2, genesis.hash, "general");
         assert!(store.store_event("srv-1", &event).unwrap());
         assert_eq!(store.count().unwrap(), 1);
@@ -497,7 +496,7 @@ mod tests {
     #[test]
     fn deduplicates_by_event_hash() {
         let store = StorageEventStore::open(":memory:").unwrap();
-        let (id, genesis) = setup_identity_and_genesis("general");
+        let (id, genesis) = setup_identity_and_genesis();
         let event = make_message(&id, 2, genesis.hash, "general");
         assert!(store.store_event("srv-1", &event).unwrap());
         assert!(!store.store_event("srv-1", &event).unwrap());
@@ -507,7 +506,7 @@ mod tests {
     #[test]
     fn history_returns_newest_first() {
         let store = StorageEventStore::open(":memory:").unwrap();
-        let (id, genesis) = setup_identity_and_genesis("general");
+        let (id, genesis) = setup_identity_and_genesis();
 
         let mut prev = genesis.hash;
         for seq in 2..=6 {
@@ -528,7 +527,7 @@ mod tests {
     #[test]
     fn history_pagination_with_heads_cursor() {
         let store = StorageEventStore::open(":memory:").unwrap();
-        let (id, genesis) = setup_identity_and_genesis("general");
+        let (id, genesis) = setup_identity_and_genesis();
 
         let mut prev = genesis.hash;
         let mut event_hashes = vec![];
@@ -572,7 +571,7 @@ mod tests {
     #[test]
     fn history_filters_by_channel() {
         let store = StorageEventStore::open(":memory:").unwrap();
-        let (id, genesis) = setup_identity_and_genesis("general");
+        let (id, genesis) = setup_identity_and_genesis();
 
         let e1 = make_message(&id, 2, genesis.hash, "general");
         store.store_event("srv-1", &e1).unwrap();
@@ -590,7 +589,7 @@ mod tests {
     #[test]
     fn history_all_channels() {
         let store = StorageEventStore::open(":memory:").unwrap();
-        let (id, genesis) = setup_identity_and_genesis("general");
+        let (id, genesis) = setup_identity_and_genesis();
 
         let e1 = make_message(&id, 2, genesis.hash, "general");
         store.store_event("srv-1", &e1).unwrap();
@@ -605,7 +604,7 @@ mod tests {
     #[test]
     fn history_filters_by_server() {
         let store = StorageEventStore::open(":memory:").unwrap();
-        let (id, genesis) = setup_identity_and_genesis("general");
+        let (id, genesis) = setup_identity_and_genesis();
 
         let e1 = make_message(&id, 2, genesis.hash, "general");
         store.store_event("srv-1", &e1).unwrap();
@@ -620,7 +619,7 @@ mod tests {
     #[test]
     fn server_count_tracks_distinct_servers() {
         let store = StorageEventStore::open(":memory:").unwrap();
-        let (id, genesis) = setup_identity_and_genesis("general");
+        let (id, genesis) = setup_identity_and_genesis();
 
         let e1 = make_message(&id, 2, genesis.hash, "general");
         store.store_event("srv-1", &e1).unwrap();
@@ -637,7 +636,7 @@ mod tests {
     #[test]
     fn disk_usage_returns_nonzero_after_insert() {
         let store = StorageEventStore::open(":memory:").unwrap();
-        let (id, genesis) = setup_identity_and_genesis("general");
+        let (id, genesis) = setup_identity_and_genesis();
 
         let e = make_message(&id, 2, genesis.hash, "general");
         store.store_event("srv-1", &e).unwrap();
@@ -708,7 +707,7 @@ mod tests {
     #[test]
     fn corrupt_event_data_does_not_panic() {
         let store = StorageEventStore::open(":memory:").unwrap();
-        let (id, genesis) = setup_identity_and_genesis("general");
+        let (id, genesis) = setup_identity_and_genesis();
 
         // Insert a valid event.
         let e = make_message(&id, 2, genesis.hash, "general");
@@ -855,7 +854,7 @@ mod tests {
     #[test]
     fn batched_store_inserts_all_rows() {
         let (_dir, store) = open_file_store();
-        let (id, genesis) = setup_identity_and_genesis("general");
+        let (id, genesis) = setup_identity_and_genesis();
 
         let mut prev = genesis.hash;
         let mut batch = Vec::new();
@@ -873,7 +872,7 @@ mod tests {
     #[test]
     fn batched_store_is_atomic() {
         let (_dir, store) = open_file_store();
-        let (id, genesis) = setup_identity_and_genesis("general");
+        let (id, genesis) = setup_identity_and_genesis();
 
         // Three valid events; the third one shares its primary key with the
         // first, which forces a UNIQUE-constraint violation mid-batch.
@@ -904,7 +903,7 @@ mod tests {
     fn store_event_after_failed_batch_still_works() {
         // Sanity check that a failed batch doesn't poison the connection.
         let (_dir, store) = open_file_store();
-        let (id, genesis) = setup_identity_and_genesis("general");
+        let (id, genesis) = setup_identity_and_genesis();
 
         let e1 = make_message(&id, 2, genesis.hash, "general");
         let dup = e1.clone();
@@ -917,5 +916,206 @@ mod tests {
         // Subsequent single-event store should succeed.
         assert!(store.store_event("srv-1", &e1).unwrap());
         assert_eq!(store.count().unwrap(), 1);
+    }
+
+    // -------------------------------------------------------------------------
+    // Round-trip equality
+    // -------------------------------------------------------------------------
+
+    /// Retrieving a stored event via `history` must return an event whose
+    /// serialized bytes are identical to the original (full round-trip).
+    #[test]
+    fn stored_event_round_trips_with_full_equality() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let (id, genesis) = setup_identity_and_genesis();
+        let original = make_message(&id, 2, genesis.hash, "general");
+
+        store.store_event("srv-1", &original).unwrap();
+
+        let (events, _) = store.history("srv-1", None, None, 10).unwrap();
+        assert_eq!(events.len(), 1);
+
+        let retrieved = &events[0];
+        // Event does not implement PartialEq, so compare all public fields.
+        assert_eq!(retrieved.hash, original.hash, "hash mismatch");
+        assert_eq!(retrieved.author, original.author, "author mismatch");
+        assert_eq!(retrieved.seq, original.seq, "seq mismatch");
+        assert_eq!(retrieved.prev, original.prev, "prev mismatch");
+        assert_eq!(
+            retrieved.timestamp_hint_ms, original.timestamp_hint_ms,
+            "timestamp_hint_ms mismatch"
+        );
+        // Verify bincode round-trip produces identical bytes.
+        let orig_bytes = bincode::serialize(&original).unwrap();
+        let ret_bytes = bincode::serialize(retrieved).unwrap();
+        assert_eq!(
+            orig_bytes, ret_bytes,
+            "serialized bytes of retrieved event must match original"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // sync_since tests
+    // -------------------------------------------------------------------------
+
+    /// `sync_since` with a non-empty HeadsSummary should return only events
+    /// the remote peer is missing — i.e., events after the peer's known seq.
+    #[test]
+    fn sync_since_returns_delta_for_known_heads() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let (id, genesis) = setup_identity_and_genesis();
+
+        // Store events e1..e5 (seq 2..=6 — seq 1 is genesis, not stored).
+        let mut prev = genesis.hash;
+        let mut events = Vec::new();
+        for seq in 2..=6 {
+            let e = make_message(&id, seq, prev, "general");
+            prev = e.hash;
+            store.store_event("srv-1", &e).unwrap();
+            events.push(e);
+        }
+
+        // The remote peer knows events up to seq=4 (the third stored event,
+        // i.e., e1=seq2, e2=seq3, e3=seq4).
+        let e3 = &events[2]; // seq=4
+        let mut heads_map = std::collections::BTreeMap::new();
+        heads_map.insert(
+            id.endpoint_id(),
+            willow_state::AuthorHead {
+                seq: e3.seq,
+                hash: e3.hash,
+            },
+        );
+        let remote_heads = HeadsSummary { heads: heads_map };
+
+        let delta = store.sync_since("srv-1", &remote_heads).unwrap();
+
+        // Should return only seq=5 and seq=6.
+        assert_eq!(
+            delta.len(),
+            2,
+            "expected exactly 2 delta events (seq 5 and 6), got {}",
+            delta.len()
+        );
+        let seqs: Vec<u64> = delta.iter().map(|e| e.seq).collect();
+        assert!(
+            seqs.contains(&5),
+            "delta must contain seq=5; got seqs: {seqs:?}"
+        );
+        assert!(
+            seqs.contains(&6),
+            "delta must contain seq=6; got seqs: {seqs:?}"
+        );
+        // Confirm the early events are NOT in the delta.
+        for e in &delta {
+            assert!(
+                e.seq > 4,
+                "delta must not include events the peer already knows (seq={})",
+                e.seq
+            );
+        }
+    }
+
+    /// `sync_since` for a server ID with no stored events must return an
+    /// empty Vec, not an error.
+    #[test]
+    fn sync_since_unknown_server_returns_empty() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+
+        // Don't store anything — query a completely unknown server.
+        let delta = store
+            .sync_since("nonexistent-server", &HeadsSummary::default())
+            .unwrap();
+        assert!(
+            delta.is_empty(),
+            "sync_since for an unknown server must return empty, not error"
+        );
+    }
+
+    /// `sync_since` with an empty HeadsSummary (new peer) returns all events.
+    #[test]
+    fn sync_since_empty_heads_returns_all_events() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let (id, genesis) = setup_identity_and_genesis();
+
+        let mut prev = genesis.hash;
+        for seq in 2..=5 {
+            let e = make_message(&id, seq, prev, "general");
+            prev = e.hash;
+            store.store_event("srv-1", &e).unwrap();
+        }
+
+        let all = store.sync_since("srv-1", &HeadsSummary::default()).unwrap();
+        assert_eq!(
+            all.len(),
+            4,
+            "empty heads should return all 4 stored events"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Durability: persist → drop → reopen
+    // -------------------------------------------------------------------------
+
+    /// Events written to a file-backed store must survive a close/reopen cycle.
+    #[test]
+    fn events_survive_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("durability.db");
+        let path_str = path.to_str().unwrap();
+
+        let (id, genesis) = setup_identity_and_genesis();
+
+        // Create three events and remember the first one for full-equality check.
+        let e1 = make_message(&id, 2, genesis.hash, "general");
+        let e2 = make_message(&id, 3, e1.hash, "general");
+        let e3 = make_message(&id, 4, e2.hash, "general");
+        let original_e1 = e1.clone();
+
+        // Store in first store instance, then drop it (closes the connection).
+        {
+            let store = StorageEventStore::open(path_str).unwrap();
+            store.store_event("srv-1", &e1).unwrap();
+            store.store_event("srv-1", &e2).unwrap();
+            store.store_event("srv-1", &e3).unwrap();
+        }
+
+        // Reopen from the same file path.
+        let store2 = StorageEventStore::open(path_str).unwrap();
+        let (events, _) = store2.history("srv-1", None, None, 10).unwrap();
+
+        assert_eq!(events.len(), 3, "all 3 events must survive the reopen");
+
+        // history() returns newest-first (ORDER BY seq DESC), so the last
+        // element is the oldest (e1 = seq 2).
+        let recovered_e1 = events.iter().find(|e| e.seq == 2).unwrap();
+        // Event does not implement PartialEq — compare all public fields.
+        assert_eq!(
+            recovered_e1.hash, original_e1.hash,
+            "hash mismatch after reopen"
+        );
+        assert_eq!(
+            recovered_e1.author, original_e1.author,
+            "author mismatch after reopen"
+        );
+        assert_eq!(
+            recovered_e1.seq, original_e1.seq,
+            "seq mismatch after reopen"
+        );
+        assert_eq!(
+            recovered_e1.prev, original_e1.prev,
+            "prev mismatch after reopen"
+        );
+        assert_eq!(
+            recovered_e1.timestamp_hint_ms, original_e1.timestamp_hint_ms,
+            "timestamp_hint_ms mismatch after reopen"
+        );
+        // Full byte-level equality via bincode.
+        let orig_bytes = bincode::serialize(&original_e1).unwrap();
+        let rec_bytes = bincode::serialize(recovered_e1).unwrap();
+        assert_eq!(
+            orig_bytes, rec_bytes,
+            "serialized bytes of recovered event must match original after reopen"
+        );
     }
 }

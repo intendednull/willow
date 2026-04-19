@@ -1136,6 +1136,358 @@ mod tests {
         );
     }
 
+    // ── New tests ────────────────────────────────────────────────────────
+
+    /// Sending a message emits a `ClientEvent::MessageReceived` to subscribers.
+    ///
+    /// This exercises the broker path in `apply_event` → `derive_client_events`
+    /// → `event_broker.do_send(Publish(...))`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_message_emits_client_event() {
+        let (client, _broker) = test_client();
+
+        // Subscribe before sending so we don't miss the event.
+        let mut rx = client.subscribe_events().await;
+
+        client.send_message("general", "hello event").await.unwrap();
+
+        // Await MessageReceived with a generous timeout. Under CI load the
+        // actor system may not schedule a publish within a handful of
+        // cooperative yields, so use an event-driven wait instead of polling.
+        let deadline = std::time::Duration::from_secs(10);
+        let found = tokio::time::timeout(deadline, async {
+            loop {
+                match rx.recv().await {
+                    Some(ClientEvent::MessageReceived { .. }) => return true,
+                    Some(_) => continue, // Other events (ChannelCreated etc.) — skip.
+                    None => return false, // broker closed
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+        assert!(
+            found,
+            "expected ClientEvent::MessageReceived after send_message"
+        );
+    }
+
+    /// A peer without ManageChannels permission cannot create a channel.
+    ///
+    /// `test_client()` makes the local peer the server owner (genesis author),
+    /// so it implicitly has every permission.  To test a *non-admin* we build
+    /// a second `ClientMutations` handle that uses a fresh identity (Bob) but
+    /// shares all the same actor addresses as Alice's client.  Bob is not in
+    /// Alice's server state, so `create_and_insert` must reject his
+    /// CreateChannel event with a permission error.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn non_admin_cannot_create_channel() {
+        let (alice, _broker) = test_client();
+
+        // Bob is a fresh peer — he's not Alice's genesis author and has no
+        // explicit permissions in Alice's DAG.
+        let bob_identity = willow_identity::Identity::generate();
+
+        // Build a ClientMutations that shares Alice's actors but signs as Bob.
+        let bob_mutations = mutations::ClientMutations::<willow_network::mem::MemNetwork> {
+            event_state: alice.event_state_addr.clone(),
+            server_registry: alice.server_registry_addr.clone(),
+            chat_meta: alice.chat_meta_addr.clone(),
+            profiles: alice.profile_state_addr.clone(),
+            network: alice.network_meta_addr.clone(),
+            voice: alice.voice_state_addr.clone(),
+            event_broker: alice.event_broker.clone(),
+            persistence: alice.persistence_addr.clone(),
+            persistence_enabled: alice.persistence_enabled,
+            identity: bob_identity,
+            dag: alice.dag_addr.clone(),
+            join_links: Arc::clone(&alice.join_links),
+            topics: Arc::clone(&alice.topics),
+        };
+
+        // Bob attempts to create a channel — must fail (PermissionDenied).
+        let result = bob_mutations.create_channel("secret").await;
+        assert!(
+            result.is_err(),
+            "non-admin should not be able to create a channel, got: {:?}",
+            result
+        );
+
+        // The channel list must not include "secret".
+        let channels = alice.channels().await;
+        assert!(
+            !channels.contains(&"secret".to_string()),
+            "rejected channel creation must not appear in the channel list"
+        );
+    }
+
+    /// `derive_client_events` maps the main `EventKind` variants to the
+    /// expected `ClientEvent` variants.  This is a pure-function unit test.
+    #[test]
+    fn derive_client_events_coverage() {
+        use mutations::derive_client_events;
+        use willow_identity::Identity;
+        use willow_state::{Event, EventHash, EventKind};
+
+        let identity = Identity::generate();
+        let author = identity.endpoint_id();
+
+        // Helper: build a minimal signed event for a given kind.
+        let make = |kind: EventKind| -> Event {
+            Event::new(&identity, 1, EventHash::ZERO, vec![], kind, 0)
+        };
+
+        // --- Message → MessageReceived --
+        let ch_id = uuid::Uuid::new_v4().to_string();
+        let ev = make(EventKind::Message {
+            channel_id: ch_id.clone(),
+            body: "hello".to_string(),
+            reply_to: None,
+        });
+        let events = derive_client_events(&ev);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ClientEvent::MessageReceived { channel, .. } if channel == &ch_id),
+            "Message kind should yield MessageReceived"
+        );
+
+        // --- CreateChannel → ChannelCreated ---
+        let ev = make(EventKind::CreateChannel {
+            channel_id: uuid::Uuid::new_v4().to_string(),
+            name: "dev".to_string(),
+            kind: willow_state::ChannelKind::Text,
+        });
+        let events = derive_client_events(&ev);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ClientEvent::ChannelCreated(n) if n == "dev"),
+            "CreateChannel kind should yield ChannelCreated"
+        );
+
+        // --- DeleteChannel → ChannelDeleted ---
+        let del_id = uuid::Uuid::new_v4().to_string();
+        let ev = make(EventKind::DeleteChannel {
+            channel_id: del_id.clone(),
+        });
+        let events = derive_client_events(&ev);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ClientEvent::ChannelDeleted(id) if id == &del_id),
+            "DeleteChannel kind should yield ChannelDeleted"
+        );
+
+        // --- GrantPermission → PeerTrusted ---
+        let bob = Identity::generate().endpoint_id();
+        let ev = make(EventKind::GrantPermission {
+            peer_id: bob,
+            permission: willow_state::Permission::SendMessages,
+        });
+        let events = derive_client_events(&ev);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ClientEvent::PeerTrusted(pid) if *pid == bob),
+            "GrantPermission kind should yield PeerTrusted"
+        );
+
+        // --- RevokePermission → PeerUntrusted ---
+        let ev = make(EventKind::RevokePermission {
+            peer_id: bob,
+            permission: willow_state::Permission::SendMessages,
+        });
+        let events = derive_client_events(&ev);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ClientEvent::PeerUntrusted(pid) if *pid == bob),
+            "RevokePermission kind should yield PeerUntrusted"
+        );
+
+        // --- EditMessage → MessageEdited ---
+        let msg_hash = EventHash::ZERO;
+        let ev = make(EventKind::EditMessage {
+            message_id: msg_hash,
+            new_body: "updated".to_string(),
+        });
+        let events = derive_client_events(&ev);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ClientEvent::MessageEdited { new_body, .. } if new_body == "updated"),
+            "EditMessage kind should yield MessageEdited"
+        );
+
+        // --- DeleteMessage → MessageDeleted ---
+        let ev = make(EventKind::DeleteMessage {
+            message_id: msg_hash,
+        });
+        let events = derive_client_events(&ev);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ClientEvent::MessageDeleted { .. }),
+            "DeleteMessage kind should yield MessageDeleted"
+        );
+
+        // --- CreateRole → RoleCreated ---
+        let role_id = uuid::Uuid::new_v4().to_string();
+        let ev = make(EventKind::CreateRole {
+            name: "mod".to_string(),
+            role_id: role_id.clone(),
+        });
+        let events = derive_client_events(&ev);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ClientEvent::RoleCreated { name, role_id: rid } if name == "mod" && rid == &role_id),
+            "CreateRole kind should yield RoleCreated"
+        );
+
+        // --- DeleteRole → RoleDeleted ---
+        let ev = make(EventKind::DeleteRole {
+            role_id: role_id.clone(),
+        });
+        let events = derive_client_events(&ev);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ClientEvent::RoleDeleted { role_id: rid } if rid == &role_id),
+            "DeleteRole kind should yield RoleDeleted"
+        );
+
+        // --- CreateServer (no matching client event) ---
+        let ev = make(EventKind::CreateServer {
+            name: "my server".to_string(),
+        });
+        let events = derive_client_events(&ev);
+        assert!(
+            events.is_empty(),
+            "CreateServer should produce no ClientEvent (handled by server-level logic)"
+        );
+
+        // Suppress unused variable warning (author is captured by `make`).
+        let _ = author;
+    }
+
+    /// Two clients on the same `MemHub` can exchange events.
+    ///
+    /// Client A (the server owner) sends a message.  Client B is seeded
+    /// with A's entire DAG so it shares the same server state.  After the
+    /// broadcast, B's actor state must contain A's message.
+    ///
+    /// Note: `spawn_topic_listener` uses `tokio::task::spawn_local`, which
+    /// requires a `LocalSet`.  The test wraps the async body in one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn two_clients_sync_messages() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let hub = std::sync::Arc::new(willow_network::mem::MemHub::new());
+
+                // ── Client A: server owner ──
+                let (mut client_a, _broker_a) = test_client();
+                let net_a = willow_network::mem::MemNetwork::new(&hub);
+                client_a.connect(net_a).await;
+
+                // Collect A's full DAG (genesis + CreateChannel).
+                let a_events: Vec<willow_state::Event> =
+                    willow_actor::state::select(&client_a.dag_addr, |ds| {
+                        ds.managed
+                            .dag()
+                            .topological_sort()
+                            .into_iter()
+                            .cloned()
+                            .collect()
+                    })
+                    .await;
+
+                // Grant SendMessages to any peer so B can receive A's messages.
+                // (B's identity isn't known yet — we grant the permission after
+                //  creating B, but here we just need A's DAG to be coherent.)
+
+                // ── Client B: fresh peer seeded with A's server state ──
+                let (mut client_b, broker_b) = test_client();
+                // Replace B's DAG with A's events so they share the same server state.
+                // We mutate B's dag_addr directly before connecting so the listener
+                // context it registers already has A's genesis.
+                let events_for_b = a_events.clone();
+                willow_actor::state::mutate(&client_b.dag_addr, move |ds| {
+                    // Reset to an empty DAG and replay A's events.
+                    ds.managed = willow_state::ManagedDag::empty(5000);
+                    for event in events_for_b {
+                        ds.managed.insert_and_apply(event).ok();
+                    }
+                })
+                .await;
+                // Sync B's event_state mirror from the DAG.
+                let b_dag_state = willow_actor::state::select(&client_b.dag_addr, |ds| {
+                    ds.managed.state().clone()
+                })
+                .await;
+                willow_actor::state::mutate(&client_b.event_state_addr, move |es| {
+                    *es = b_dag_state;
+                })
+                .await;
+
+                // Subscribe B's event receiver BEFORE connecting so we don't
+                // miss the MessageReceived event that arrives via gossip.
+                let mut b_rx = EventReceiver::subscribe(&broker_b, &client_b.system).await;
+
+                let net_b = willow_network::mem::MemNetwork::new(&hub);
+                client_b.connect(net_b).await;
+
+                // ── A sends a message on the shared server ──
+                // The "general" channel exists in A's DAG; B now has it too.
+                client_a
+                    .send_message("general", "hello from A")
+                    .await
+                    .unwrap();
+
+                // Wait for B's listener to receive and apply the gossip event.
+                // We use a timeout to avoid hanging indefinitely if delivery fails,
+                // while giving enough time for the async machinery to settle.
+                // The deadline is generous because we're driving a LocalSet on top of
+                // a multi-thread runtime and need both schedulers to make progress.
+                let deadline = std::time::Duration::from_secs(2);
+                let found = tokio::time::timeout(deadline, async {
+                    loop {
+                        match b_rx.try_recv() {
+                            Some(ClientEvent::MessageReceived { .. }) => return true,
+                            Some(_) => {}
+                            None => {
+                                tokio::task::yield_now().await;
+                            }
+                        }
+                    }
+                })
+                .await
+                .unwrap_or(false);
+
+                // Fallback: check B's event_messages in case the event was applied
+                // but the broker event was missed (e.g. subscribe race).
+                let found = if !found {
+                    for _ in 0..50 {
+                        tokio::task::yield_now().await;
+                    }
+                    let b_es = willow_actor::state::get(&client_b.event_state_addr).await;
+                    let general_id = b_es
+                        .channels
+                        .iter()
+                        .find(|(_, ch)| ch.name == "general")
+                        .map(|(id, _)| id.clone())
+                        .unwrap_or_default();
+                    if !general_id.is_empty() {
+                        let b_msgs = client_b.event_messages(&general_id).await;
+                        b_msgs.iter().any(|m| m.body == "hello from A")
+                    } else {
+                        false
+                    }
+                } else {
+                    true
+                };
+
+                assert!(
+                    found,
+                    "client B should have received the message sent by client A"
+                );
+            })
+            .await;
+    }
+
     /// Regression test for issue #114: switching `join_links` to
     /// `parking_lot::Mutex` makes lock poisoning impossible by
     /// construction. After a panic in one task that holds the lock, a

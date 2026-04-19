@@ -174,21 +174,9 @@ test.describe('Mobile UX', () => {
   });
 
   // ── Bug #6: Long-press doesn't trigger on quick tap ───────────────
-
-  test('quick tap does NOT open action sheet', async ({ page }) => {
-    await freshStart(page);
-    await createServer(page, 'QuickTap');
-    await sendMessage(page, 'tap me fast');
-    await page.waitForTimeout(500);
-
-    // Quick tap on message.
-    const msg = page.locator('.message').first();
-    await msg.tap();
-    await page.waitForTimeout(600); // Wait longer than the 500ms timer.
-
-    // Action sheet should NOT be visible after a quick tap.
-    await expect(page.locator('.mobile-action-sheet.open')).toBeHidden();
-  });
+  // NOTE: "quick tap does NOT open action sheet" is covered with stronger
+  // raw-TouchEvent assertions in mobile-actions.spec.ts. The test below
+  // covers the complementary "tap-then-wait" variant.
 
   test('single tap then wait does NOT open action sheet', async ({ page }) => {
     await freshStart(page);
@@ -227,17 +215,9 @@ test.describe('Mobile UX', () => {
   });
 
   // ── Bug #13: No always-visible dropdown on mobile ─────────────────
-
-  test('action trigger button hidden on mobile', async ({ page }) => {
-    await freshStart(page);
-    await createServer(page, 'No Dropdown');
-    await sendMessage(page, 'no dots');
-    await page.waitForTimeout(500);
-
-    // The ⋯ trigger should be hidden on mobile.
-    const trigger = page.locator('.action-trigger').first();
-    await expect(trigger).toBeHidden();
-  });
+  // NOTE: "action trigger button hidden on mobile" is covered with stronger
+  // assertions (checks both .action-trigger and .message-actions) in
+  // mobile-actions.spec.ts.
 
   // ── Persistence on mobile ─────────────────────────────────────────
 

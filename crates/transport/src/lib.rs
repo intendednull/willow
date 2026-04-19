@@ -329,4 +329,110 @@ mod tests {
         assert_eq!(MessageType::Presence as u8, 5);
         assert_eq!(MessageType::Ping as u8, 6);
     }
+
+    /// An envelope that is structurally valid (correct version, valid
+    /// MessageType) but carries garbage bytes as its payload must cause
+    /// `unpack_envelope` to return an error when the inner type is
+    /// deserialized.
+    #[test]
+    fn unpack_envelope_with_bad_inner_payload_fails() {
+        #[derive(Debug, Serialize, Deserialize)]
+        struct RealPayload {
+            value: u64,
+        }
+
+        // Build an envelope whose payload is pure garbage instead of a
+        // properly serialized `RealPayload`.
+        let bad_envelope = Envelope {
+            version: PROTOCOL_VERSION,
+            message_type: MessageType::Chat,
+            payload: vec![0xDE, 0xAD, 0xBE, 0xEF, 0xFF],
+        };
+        let bytes = pack(&bad_envelope).unwrap();
+
+        let result = unpack_envelope::<RealPayload>(&bytes);
+        assert!(
+            result.is_err(),
+            "envelope with garbage inner payload should fail to unpack"
+        );
+    }
+
+    /// `validate_version` must reject version 0 just as it rejects version 999 —
+    /// any version other than `PROTOCOL_VERSION` is unsupported.
+    #[test]
+    fn validate_version_rejects_zero() {
+        let env = Envelope {
+            version: 0,
+            message_type: MessageType::Ping,
+            payload: vec![],
+        };
+        let err = env.validate_version().unwrap_err();
+        assert!(
+            matches!(
+                err,
+                TransportError::UnsupportedVersion {
+                    expected: PROTOCOL_VERSION,
+                    got: 0
+                }
+            ),
+            "expected UnsupportedVersion {{ got: 0 }}, got: {err:?}"
+        );
+    }
+
+    /// A raw byte slice of exactly `MAX_DESER_SIZE` bytes must be accepted by
+    /// `unpack`. The size limit is a strict greater-than check, so the boundary
+    /// value itself must succeed.
+    #[test]
+    fn payload_at_exactly_max_size_succeeds() {
+        // Build a Vec<u8> whose bincode encoding is exactly MAX_DESER_SIZE bytes.
+        //
+        // bincode encodes a Vec<u8> as: 8-byte length prefix + data bytes.
+        // So a Vec of (MAX_DESER_SIZE - 8) bytes encodes to exactly
+        // MAX_DESER_SIZE bytes on the wire.
+        let data_len = (MAX_DESER_SIZE - 8) as usize;
+        let payload = vec![0u8; data_len];
+        let encoded = bincode::serialize(&payload).unwrap();
+        assert_eq!(
+            encoded.len() as u64,
+            MAX_DESER_SIZE,
+            "test setup: encoded length should equal MAX_DESER_SIZE"
+        );
+
+        let result: Result<Vec<u8>, _> = unpack(&encoded);
+        assert!(
+            result.is_ok(),
+            "payload at exactly MAX_DESER_SIZE bytes should be accepted"
+        );
+    }
+
+    /// A raw byte slice of exactly `MAX_DESER_SIZE + 1` bytes must be rejected
+    /// by `unpack` before any allocation attempt.
+    #[test]
+    fn payload_one_over_max_fails() {
+        // One byte over the limit: the entire encoded blob is MAX_DESER_SIZE + 1.
+        let data_len = (MAX_DESER_SIZE - 8 + 1) as usize;
+        let payload = vec![0u8; data_len];
+        let encoded = bincode::serialize(&payload).unwrap();
+        assert_eq!(
+            encoded.len() as u64,
+            MAX_DESER_SIZE + 1,
+            "test setup: encoded length should equal MAX_DESER_SIZE + 1"
+        );
+
+        let result: Result<Vec<u8>, _> = unpack(&encoded);
+        assert!(
+            result.is_err(),
+            "payload one byte over MAX_DESER_SIZE should be rejected"
+        );
+    }
+
+    /// `unpack` on an empty byte slice must return an error, not panic.
+    #[test]
+    fn unpack_empty_bytes_returns_error() {
+        let result = unpack::<String>(&[]);
+        assert!(
+            result.is_err(),
+            "unpack of empty bytes should return an error, not panic"
+        );
+    }
 }

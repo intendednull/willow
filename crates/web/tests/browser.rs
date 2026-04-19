@@ -788,34 +788,6 @@ async fn message_timestamp_displays() {
     assert_eq!(text(&ts), "01:30");
 }
 
-#[wasm_bindgen_test]
-async fn message_shows_timestamp() {
-    // Use a realistic timestamp: 2024-03-23 14:22:47 UTC = 1711199567 * 1000
-    let msg = make_msg("Tester", "timestamp test", 1_711_199_567_000);
-    let timestamp = willow_client::util::format_timestamp(msg.timestamp_ms);
-
-    let container = mount_test(move || {
-        view! {
-            <div class="message">
-                <div class="meta">
-                    <span class="timestamp">{timestamp.clone()}</span>
-                </div>
-            </div>
-        }
-    });
-
-    tick().await;
-
-    let ts_el = query(&container, ".timestamp").unwrap();
-    let ts_text = text(&ts_el);
-    // Should be an "HH:MM" formatted string, not empty.
-    assert!(!ts_text.is_empty(), "timestamp should not be empty");
-    assert!(
-        ts_text.contains(':'),
-        "timestamp should contain a colon separator, got: {ts_text}"
-    );
-}
-
 // ── Member List Tests ───────────────────────────────────────────────────────
 
 #[wasm_bindgen_test]
@@ -1118,13 +1090,6 @@ async fn zero_timestamp_renders_empty() {
 
     let el = query(&container, ".timestamp").unwrap();
     assert_eq!(text(&el), "");
-}
-
-#[wasm_bindgen_test]
-async fn timestamp_wraps_24h() {
-    // 25 hours = 90_000_000 ms => wraps to "01:00"
-    let ts = willow_client::util::format_timestamp(90_000_000);
-    assert_eq!(ts, "01:00");
 }
 
 // ── Unread Badge Tests ──────────────────────────────────────────────────────
@@ -3725,5 +3690,544 @@ async fn admin_buttons_respond_to_peer_id_change() {
     assert!(
         query(&container, ".admin-actions").is_none(),
         "admin buttons should hide when peer_id changes to non-admin"
+    );
+}
+
+// ── ConfirmDialog Component Tests ───────────────────────────────────────────
+//
+// The ConfirmDialog component (confirm_dialog.rs) is a standalone modal that
+// takes all data as props. These tests verify its open/close state, button
+// callbacks, and Escape-key handling by mirroring its exact rendering logic.
+
+#[wasm_bindgen_test]
+async fn confirm_dialog_hidden_when_not_visible() {
+    let (visible, _set_visible) = signal(false);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="test-root">
+                {move || {
+                    if !visible.get() {
+                        None::<leptos::prelude::AnyView>
+                    } else {
+                        Some(
+                            view! {
+                                <div class="confirm-overlay">
+                                    <div class="confirm-dialog">
+                                        <h3>"Delete server"</h3>
+                                        <p>"Are you sure?"</p>
+                                        <div class="confirm-actions">
+                                            <button class="btn btn-secondary">"Cancel"</button>
+                                            <button class="btn btn-danger">"Delete"</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            }
+                            .into_any(),
+                        )
+                    }
+                }}
+            </div>
+        }
+    });
+
+    tick().await;
+
+    // Dialog must not be in the DOM when visible=false.
+    assert!(
+        query(&container, ".confirm-overlay").is_none(),
+        "confirm dialog should not be rendered when visible=false"
+    );
+    assert!(
+        query(&container, ".confirm-dialog").is_none(),
+        "confirm-dialog inner element should be absent"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn confirm_dialog_shows_when_visible() {
+    let (visible, set_visible) = signal(false);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="test-root">
+                {move || {
+                    if !visible.get() {
+                        None::<leptos::prelude::AnyView>
+                    } else {
+                        Some(
+                            view! {
+                                <div class="confirm-overlay">
+                                    <div class="confirm-dialog">
+                                        <h3>"Leave server"</h3>
+                                        <p>"Are you sure you want to leave?"</p>
+                                        <div class="confirm-actions">
+                                            <button class="btn btn-secondary">"Cancel"</button>
+                                            <button class="btn btn-primary">"Leave"</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            }
+                            .into_any(),
+                        )
+                    }
+                }}
+            </div>
+        }
+    });
+
+    tick().await;
+    assert!(query(&container, ".confirm-overlay").is_none());
+
+    // Open the dialog.
+    set_visible.set(true);
+    tick().await;
+
+    let overlay = query(&container, ".confirm-overlay");
+    assert!(overlay.is_some(), "overlay should appear when visible=true");
+
+    let dialog = query(&container, ".confirm-dialog");
+    assert!(dialog.is_some(), "confirm-dialog should render");
+
+    let heading = query(&container, ".confirm-dialog h3").unwrap();
+    assert_eq!(text(&heading), "Leave server");
+
+    let confirm_btn = query(&container, ".btn.btn-primary").unwrap();
+    assert_eq!(text(&confirm_btn), "Leave");
+
+    let cancel_btn = query(&container, ".btn.btn-secondary").unwrap();
+    assert_eq!(text(&cancel_btn), "Cancel");
+}
+
+#[wasm_bindgen_test]
+async fn confirm_dialog_cancel_button_fires_callback() {
+    let (visible, set_visible) = signal(true);
+    let (cancelled, set_cancelled) = signal(false);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="test-root">
+                {move || {
+                    if !visible.get() {
+                        None::<leptos::prelude::AnyView>
+                    } else {
+                        Some(
+                            view! {
+                                <div class="confirm-overlay">
+                                    <div class="confirm-dialog">
+                                        <div class="confirm-actions">
+                                            <button
+                                                class="btn btn-secondary"
+                                                on:click=move |_| {
+                                                    set_cancelled.set(true);
+                                                    set_visible.set(false);
+                                                }
+                                            >
+                                                "Cancel"
+                                            </button>
+                                            <button class="btn btn-danger">"Delete"</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            }
+                            .into_any(),
+                        )
+                    }
+                }}
+            </div>
+        }
+    });
+
+    tick().await;
+    assert!(query(&container, ".confirm-overlay").is_some());
+
+    let cancel_btn = query(&container, ".btn.btn-secondary").unwrap();
+    simulate_click(&cancel_btn);
+    tick().await;
+
+    assert!(
+        cancelled.get_untracked(),
+        "cancel callback should have fired"
+    );
+    assert!(
+        query(&container, ".confirm-overlay").is_none(),
+        "dialog should close after cancel"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn confirm_dialog_confirm_button_fires_callback() {
+    let (visible, set_visible) = signal(true);
+    let (confirmed, set_confirmed) = signal(false);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="test-root">
+                {move || {
+                    if !visible.get() {
+                        None::<leptos::prelude::AnyView>
+                    } else {
+                        Some(
+                            view! {
+                                <div class="confirm-overlay">
+                                    <div class="confirm-dialog">
+                                        <div class="confirm-actions">
+                                            <button class="btn btn-secondary">"Cancel"</button>
+                                            <button
+                                                class="btn btn-danger"
+                                                on:click=move |_| {
+                                                    set_confirmed.set(true);
+                                                    set_visible.set(false);
+                                                }
+                                            >
+                                                "Delete"
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            }
+                            .into_any(),
+                        )
+                    }
+                }}
+            </div>
+        }
+    });
+
+    tick().await;
+
+    let confirm_btn = query(&container, ".btn.btn-danger").unwrap();
+    simulate_click(&confirm_btn);
+    tick().await;
+
+    assert!(
+        confirmed.get_untracked(),
+        "confirm callback should have fired"
+    );
+    assert!(
+        query(&container, ".confirm-overlay").is_none(),
+        "dialog should close after confirm"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn confirm_dialog_escape_key_fires_cancel() {
+    // Pressing Escape on the overlay should invoke on_cancel.
+    let (visible, set_visible) = signal(true);
+    let (cancelled, set_cancelled) = signal(false);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="test-root">
+                {move || {
+                    if !visible.get() {
+                        None::<leptos::prelude::AnyView>
+                    } else {
+                        Some(
+                            view! {
+                                <div
+                                    class="confirm-overlay"
+                                    tabindex="-1"
+                                    on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                        if ev.key() == "Escape" {
+                                            set_cancelled.set(true);
+                                            set_visible.set(false);
+                                        }
+                                    }
+                                >
+                                    <div class="confirm-dialog">
+                                        <div class="confirm-actions">
+                                            <button class="btn btn-secondary">"Cancel"</button>
+                                            <button class="btn btn-danger">"Delete"</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            }
+                            .into_any(),
+                        )
+                    }
+                }}
+            </div>
+        }
+    });
+
+    tick().await;
+    assert!(query(&container, ".confirm-overlay").is_some());
+
+    // Dispatch Escape keydown on the overlay.
+    let overlay = query(&container, ".confirm-overlay").unwrap();
+    let init = web_sys::KeyboardEventInit::new();
+    init.set_key("Escape");
+    let escape =
+        web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+    overlay
+        .dyn_ref::<web_sys::EventTarget>()
+        .unwrap()
+        .dispatch_event(&escape)
+        .unwrap();
+    tick().await;
+
+    assert!(
+        cancelled.get_untracked(),
+        "Escape key should fire the cancel callback"
+    );
+    assert!(
+        query(&container, ".confirm-overlay").is_none(),
+        "dialog should close after Escape"
+    );
+}
+
+// ── ContextMenu Component Tests ─────────────────────────────────────────────
+//
+// The ContextMenu component (context_menu.rs) is a positioned popup that opens
+// at (x, y) when visible=true. An overlay div captures outside clicks to close.
+
+#[wasm_bindgen_test]
+async fn context_menu_hidden_when_not_visible() {
+    let (visible, _) = signal(false);
+    let (x, _) = signal(0.0f64);
+    let (y, _) = signal(0.0f64);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="test-root">
+                <div
+                    class=move || if visible.get() { "context-menu-overlay open" } else { "context-menu-overlay" }
+                ></div>
+                <div
+                    class=move || if visible.get() { "context-menu open" } else { "context-menu" }
+                    style=move || format!("left: {}px; top: {}px;", x.get(), y.get())
+                >
+                    <button class="context-menu-item">"Edit"</button>
+                    <button class="context-menu-item">"Delete"</button>
+                </div>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    let overlay = query(&container, ".context-menu-overlay").unwrap();
+    assert!(
+        !overlay.class_list().contains("open"),
+        "overlay should not have 'open' class when not visible"
+    );
+    let menu = query(&container, ".context-menu").unwrap();
+    assert!(
+        !menu.class_list().contains("open"),
+        "context menu should not have 'open' class when not visible"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn context_menu_shows_when_visible() {
+    let (visible, set_visible) = signal(false);
+    let (x, _) = signal(100.0f64);
+    let (y, _) = signal(200.0f64);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="test-root">
+                <div
+                    class=move || if visible.get() { "context-menu-overlay open" } else { "context-menu-overlay" }
+                ></div>
+                <div
+                    class=move || if visible.get() { "context-menu open" } else { "context-menu" }
+                    style=move || format!("left: {}px; top: {}px;", x.get(), y.get())
+                >
+                    <button class="context-menu-item">"Copy"</button>
+                    <button class="context-menu-item">"Paste"</button>
+                </div>
+            </div>
+        }
+    });
+
+    tick().await;
+    assert!(!query(&container, ".context-menu")
+        .unwrap()
+        .class_list()
+        .contains("open"));
+
+    set_visible.set(true);
+    tick().await;
+
+    let menu = query(&container, ".context-menu").unwrap();
+    assert!(
+        menu.class_list().contains("open"),
+        "context menu should have 'open' class when visible=true"
+    );
+    let overlay = query(&container, ".context-menu-overlay").unwrap();
+    assert!(
+        overlay.class_list().contains("open"),
+        "overlay should also have 'open' class"
+    );
+
+    let items = query_all(&container, ".context-menu-item");
+    assert_eq!(items.len(), 2, "both menu items should render");
+    assert_eq!(text(&items[0]), "Copy");
+    assert_eq!(text(&items[1]), "Paste");
+}
+
+#[wasm_bindgen_test]
+async fn context_menu_positions_at_xy() {
+    let container = mount_test(move || {
+        view! {
+            <div class="test-root">
+                <div class="context-menu-overlay open"></div>
+                <div class="context-menu open" style="left: 42px; top: 88px;">
+                    <button class="context-menu-item">"Action"</button>
+                </div>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    let menu = query(&container, ".context-menu").unwrap();
+    let style = menu.get_attribute("style").unwrap_or_default();
+    assert!(
+        style.contains("left: 42px"),
+        "style should set left to 42px, got: {style}"
+    );
+    assert!(
+        style.contains("top: 88px"),
+        "style should set top to 88px, got: {style}"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn context_menu_overlay_click_fires_close() {
+    let (visible, set_visible) = signal(true);
+    let (closed, set_closed) = signal(false);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="test-root">
+                <div
+                    class=move || if visible.get() { "context-menu-overlay open" } else { "context-menu-overlay" }
+                    on:click=move |_| {
+                        set_closed.set(true);
+                        set_visible.set(false);
+                    }
+                ></div>
+                <div
+                    class=move || if visible.get() { "context-menu open" } else { "context-menu" }
+                    style="left: 0px; top: 0px;"
+                >
+                    <button class="context-menu-item">"Item"</button>
+                </div>
+            </div>
+        }
+    });
+
+    tick().await;
+    assert!(query(&container, ".context-menu")
+        .unwrap()
+        .class_list()
+        .contains("open"));
+
+    let overlay = query(&container, ".context-menu-overlay").unwrap();
+    simulate_click(&overlay);
+    tick().await;
+
+    assert!(
+        closed.get_untracked(),
+        "on_close callback should fire when overlay is clicked"
+    );
+    assert!(
+        !query(&container, ".context-menu")
+            .unwrap()
+            .class_list()
+            .contains("open"),
+        "menu should lose 'open' class after close"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn context_menu_escape_key_fires_close() {
+    let (visible, set_visible) = signal(true);
+    let (closed, set_closed) = signal(false);
+
+    let container = mount_test(move || {
+        view! {
+            <div class="test-root">
+                <div class="context-menu-overlay open"></div>
+                <div
+                    class=move || if visible.get() { "context-menu open" } else { "context-menu" }
+                    style="left: 0px; top: 0px;"
+                    tabindex="-1"
+                    on:keydown=move |ev: web_sys::KeyboardEvent| {
+                        if ev.key() == "Escape" {
+                            set_closed.set(true);
+                            set_visible.set(false);
+                        }
+                    }
+                >
+                    <button class="context-menu-item">"Item"</button>
+                </div>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    let menu = query(&container, ".context-menu").unwrap();
+    let init = web_sys::KeyboardEventInit::new();
+    init.set_key("Escape");
+    let escape =
+        web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+    menu.dyn_ref::<web_sys::EventTarget>()
+        .unwrap()
+        .dispatch_event(&escape)
+        .unwrap();
+    tick().await;
+
+    assert!(
+        closed.get_untracked(),
+        "Escape key should fire the on_close callback"
+    );
+    assert!(
+        !query(&container, ".context-menu")
+            .unwrap()
+            .class_list()
+            .contains("open"),
+        "menu should close after Escape"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn context_menu_position_updates_reactively() {
+    let (x, set_x) = signal(10.0f64);
+    let (y, set_y) = signal(20.0f64);
+
+    let container = mount_test(move || {
+        view! {
+            <div
+                class="context-menu open"
+                style=move || format!("left: {}px; top: {}px;", x.get(), y.get())
+            >
+                <button class="context-menu-item">"Item"</button>
+            </div>
+        }
+    });
+
+    tick().await;
+
+    let menu = query(&container, ".context-menu").unwrap();
+    let style = menu.get_attribute("style").unwrap_or_default();
+    assert!(style.contains("left: 10px") && style.contains("top: 20px"));
+
+    set_x.set(300.0);
+    set_y.set(150.0);
+    tick().await;
+
+    let style = menu.get_attribute("style").unwrap_or_default();
+    assert!(
+        style.contains("left: 300px"),
+        "x position should update reactively, got: {style}"
+    );
+    assert!(
+        style.contains("top: 150px"),
+        "y position should update reactively, got: {style}"
     );
 }

@@ -157,10 +157,25 @@ pub enum AllocationStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{pack_wire, unpack_wire, WireMessage};
     use willow_identity::Identity;
 
     fn gen_id() -> EndpointId {
         Identity::generate().endpoint_id()
+    }
+
+    /// Round-trip a `WorkerWireMessage` through the actual production wire
+    /// path: wrapped in `WireMessage::Worker`, signed via `pack_wire`, and
+    /// verified+decoded via `unpack_wire`.
+    fn worker_wire_round_trip(msg: WorkerWireMessage, identity: &Identity) -> WorkerWireMessage {
+        let wire = WireMessage::Worker(msg);
+        let bytes = pack_wire(&wire, identity).expect("pack_wire should succeed");
+        let (decoded, signer) = unpack_wire(&bytes).expect("unpack_wire should succeed");
+        assert_eq!(signer, identity.endpoint_id(), "signer mismatch");
+        match decoded {
+            WireMessage::Worker(inner) => inner,
+            _ => panic!("expected WireMessage::Worker"),
+        }
     }
 
     #[test]
@@ -208,7 +223,8 @@ mod tests {
 
     #[test]
     fn worker_wire_message_announcement_round_trip() {
-        let pid = gen_id();
+        let id = Identity::generate();
+        let pid = id.endpoint_id();
         let msg = WorkerWireMessage::Announcement(WorkerAnnouncement {
             peer_id: pid,
             role: WorkerRoleInfo::Storage {
@@ -219,12 +235,24 @@ mod tests {
             servers: vec!["s1".to_string()],
             timestamp: 999,
         });
-        let bytes = bincode::serialize(&msg).unwrap();
-        let decoded: WorkerWireMessage = bincode::deserialize(&bytes).unwrap();
+        let decoded = worker_wire_round_trip(msg, &id);
         match decoded {
             WorkerWireMessage::Announcement(a) => {
                 assert_eq!(a.peer_id, pid);
-                assert_eq!(a.servers.len(), 1);
+                assert_eq!(a.servers, vec!["s1".to_string()]);
+                assert_eq!(a.timestamp, 999);
+                match a.role {
+                    WorkerRoleInfo::Storage {
+                        servers_tracked,
+                        total_events_stored,
+                        disk_used_bytes,
+                    } => {
+                        assert_eq!(servers_tracked, 2);
+                        assert_eq!(total_events_stored, 5000);
+                        assert_eq!(disk_used_bytes, 1_000_000);
+                    }
+                    _ => panic!("expected Storage role"),
+                }
             }
             _ => panic!("expected Announcement"),
         }
@@ -232,10 +260,10 @@ mod tests {
 
     #[test]
     fn worker_wire_message_departure_round_trip() {
-        let pid = gen_id();
+        let id = Identity::generate();
+        let pid = id.endpoint_id();
         let msg = WorkerWireMessage::Departure { peer_id: pid };
-        let bytes = bincode::serialize(&msg).unwrap();
-        let decoded: WorkerWireMessage = bincode::deserialize(&bytes).unwrap();
+        let decoded = worker_wire_round_trip(msg, &id);
         match decoded {
             WorkerWireMessage::Departure { peer_id } => {
                 assert_eq!(peer_id, pid);
@@ -312,11 +340,12 @@ mod tests {
         let decoded: WorkerRequest = bincode::deserialize(&bytes).unwrap();
         match decoded {
             WorkerRequest::History {
+                server_id,
                 channel,
                 before,
                 limit,
-                ..
             } => {
+                assert_eq!(server_id, "srv-1");
                 assert_eq!(channel, None);
                 assert_eq!(before, None);
                 assert_eq!(limit, 25);
@@ -333,6 +362,36 @@ mod tests {
         match decoded {
             WorkerResponse::SyncBatch { events } => assert!(events.is_empty()),
             _ => panic!("expected SyncBatch"),
+        }
+    }
+
+    #[test]
+    fn worker_response_snapshot_round_trip() {
+        use willow_state::{HeadsSummary, ServerState, Snapshot};
+
+        let id = Identity::generate();
+        let state = ServerState::new("srv-snap", "Snap Server", id.endpoint_id());
+        let heads = HeadsSummary::default();
+        let snapshot = Snapshot::new(state, heads);
+        let snapshot_hash = snapshot.hash;
+
+        let resp = WorkerResponse::Snapshot {
+            snapshot: Box::new(snapshot),
+            post_snapshot_events: vec![],
+        };
+        let bytes = bincode::serialize(&resp).unwrap();
+        let decoded: WorkerResponse = bincode::deserialize(&bytes).unwrap();
+        match decoded {
+            WorkerResponse::Snapshot {
+                snapshot,
+                post_snapshot_events,
+            } => {
+                assert_eq!(snapshot.hash, snapshot_hash);
+                assert_eq!(snapshot.state.server_id, "srv-snap");
+                assert_eq!(snapshot.state.server_name, "Snap Server");
+                assert!(post_snapshot_events.is_empty());
+            }
+            _ => panic!("expected Snapshot"),
         }
     }
 
@@ -370,7 +429,8 @@ mod tests {
 
     #[test]
     fn worker_wire_message_request_round_trip() {
-        let pid = gen_id();
+        let id = Identity::generate();
+        let pid = id.endpoint_id();
         let msg = WorkerWireMessage::Request {
             request_id: "req-123".to_string(),
             target_peer: pid,
@@ -379,16 +439,22 @@ mod tests {
                 heads: HeadsSummary::default(),
             },
         };
-        let bytes = bincode::serialize(&msg).unwrap();
-        let decoded: WorkerWireMessage = bincode::deserialize(&bytes).unwrap();
+        let decoded = worker_wire_round_trip(msg, &id);
         match decoded {
             WorkerWireMessage::Request {
                 request_id,
                 target_peer,
-                ..
+                payload,
             } => {
                 assert_eq!(request_id, "req-123");
                 assert_eq!(target_peer, pid);
+                match payload {
+                    WorkerRequest::Sync { server_id, heads } => {
+                        assert_eq!(server_id, "srv");
+                        assert_eq!(heads, HeadsSummary::default());
+                    }
+                    _ => panic!("expected Sync payload"),
+                }
             }
             _ => panic!("expected Request"),
         }
@@ -396,7 +462,8 @@ mod tests {
 
     #[test]
     fn worker_wire_message_response_round_trip() {
-        let pid = gen_id();
+        let id = Identity::generate();
+        let pid = id.endpoint_id();
         let msg = WorkerWireMessage::Response {
             request_id: "req-456".to_string(),
             target_peer: pid,
@@ -404,16 +471,21 @@ mod tests {
                 reason: "unknown server".to_string(),
             }),
         };
-        let bytes = bincode::serialize(&msg).unwrap();
-        let decoded: WorkerWireMessage = bincode::deserialize(&bytes).unwrap();
+        let decoded = worker_wire_round_trip(msg, &id);
         match decoded {
             WorkerWireMessage::Response {
                 request_id,
                 target_peer,
-                ..
+                payload,
             } => {
                 assert_eq!(request_id, "req-456");
                 assert_eq!(target_peer, pid);
+                match *payload {
+                    WorkerResponse::Denied { reason } => {
+                        assert_eq!(reason, "unknown server");
+                    }
+                    _ => panic!("expected Denied payload"),
+                }
             }
             _ => panic!("expected Response"),
         }

@@ -231,34 +231,30 @@ async fn node_disconnect_detected() {
         .expect("timed out waiting for join")
         .unwrap();
 
-    // Also drain A's NeighborUp event.
-    let _event = timeout(EVENT_TIMEOUT, receiver_a.next()).await;
+    // Drain A's initial neighbor events (NeighborUp from B joining).
+    let _ = timeout(Duration::from_secs(2), receiver_a.next()).await;
 
-    // B shuts down.
+    // B shuts down by dropping all its handles and closing the endpoint.
     drop(_sender_b);
     drop(receiver_b);
     node_b.shutdown().await;
 
-    // A should eventually see NeighborDown or stream end.
-    // In test environments this may take a while or not happen at all,
-    // so we accept any outcome within the timeout.
-    let result = timeout(Duration::from_secs(5), async {
+    // After B shuts down, A must eventually observe the disconnect as either
+    // a NeighborDown event or a closed stream. Timing out here means the
+    // disconnect signaling is broken — that should be a test failure.
+    let detected = timeout(Duration::from_secs(10), async {
         loop {
             match receiver_a.next().await {
                 Some(Ok(iroh_gossip::api::Event::NeighborDown(_))) => return true,
-                Some(_) => continue,
-                None => return false,
+                Some(_) => continue, // drain other events
+                None => return true, // stream closed — also counts as detection
             }
         }
     })
-    .await;
+    .await
+    .expect("timed out: A did not detect B's disconnect within 10 s");
 
-    // All outcomes are acceptable — the test verifies we don't crash.
-    match result {
-        Ok(true) => {}  // Got NeighborDown.
-        Ok(false) => {} // Stream ended.
-        Err(_) => {}    // Timed out — acceptable in test envs.
-    }
+    assert!(detected, "expected disconnect detection but got false");
 
     node_a.shutdown().await;
 }

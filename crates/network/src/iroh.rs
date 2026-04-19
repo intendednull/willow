@@ -387,20 +387,15 @@ impl Network for IrohNetwork {
 
 // ───── Tests ───────────────────────────────────────────────────────────────
 
+// NOTE: IrohNetwork requires a live iroh endpoint (bound UDP socket + protocol
+// router) and cannot be tested without real I/O. Unit tests for Config struct
+// construction have been removed because they exercise no runtime behavior.
+// End-to-end startup is covered by `iroh_network_new_and_shutdown` in the
+// integration test suite (`crates/network/tests/integration.rs`).
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn config_accepts_generated_key() {
-        let identity = willow_identity::Identity::generate();
-        let _config = Config {
-            secret_key: identity.secret_key().clone(),
-            relay_url: None,
-            bootstrap_peers: vec![],
-            mdns: false,
-        };
-    }
 
     #[tokio::test]
     async fn blob_store_round_trip() {

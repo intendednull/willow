@@ -350,6 +350,7 @@ mod tests {
         assert_eq!(decoded.id, msg.id);
         assert_eq!(decoded.content, msg.content);
         assert_eq!(decoded.author, msg.author);
+        assert_eq!(decoded.hlc, msg.hlc);
     }
 
     #[test]
@@ -380,6 +381,30 @@ mod tests {
                 && mime_type == "image/jpeg"
                 && size_bytes == 1024
         ));
+    }
+
+    #[test]
+    fn content_reaction_serde_round_trip() {
+        let target = MessageId::new();
+        let content = Content::Reaction {
+            target: target.clone(),
+            emoji: "🎉".into(),
+        };
+        let bytes = willow_transport::pack(&content).unwrap();
+        let decoded: Content = willow_transport::unpack(&bytes).unwrap();
+        assert_eq!(decoded, content);
+    }
+
+    #[test]
+    fn content_reply_serde_round_trip() {
+        let parent = MessageId::new();
+        let content = Content::Reply {
+            parent: parent.clone(),
+            body: "great point!".into(),
+        };
+        let bytes = willow_transport::pack(&content).unwrap();
+        let decoded: Content = willow_transport::unpack(&bytes).unwrap();
+        assert_eq!(decoded, content);
     }
 
     #[test]

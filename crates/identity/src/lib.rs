@@ -708,4 +708,56 @@ mod tests {
         assert_eq!(map.get(&b), Some(&"bob"));
         assert_eq!(map.len(), 2);
     }
+
+    /// A message signed by Alice unpacks with Alice's EndpointId, not Bob's.
+    ///
+    /// This confirms that signing attribution is correct — two different
+    /// identities cannot be confused by the verify/recover path.
+    #[test]
+    fn signature_from_alice_does_not_verify_as_bob() {
+        let alice = Identity::generate();
+        let bob = Identity::generate();
+
+        // Ensure they are genuinely different identities.
+        assert_ne!(alice.endpoint_id(), bob.endpoint_id());
+
+        let signed = pack(&String::from("hello from alice"), &alice).unwrap();
+        let (msg, recovered_id) = unpack::<String>(&signed).unwrap();
+
+        assert_eq!(msg, "hello from alice");
+        // The recovered signer must be Alice, not Bob.
+        assert_eq!(recovered_id, alice.endpoint_id());
+        assert_ne!(recovered_id, bob.endpoint_id());
+    }
+
+    /// Passing an empty byte slice to `unpack` returns an error, not a panic.
+    #[test]
+    fn unpack_empty_bytes_returns_none() {
+        let result = unpack::<String>(&[]);
+        assert!(
+            result.is_err(),
+            "unpack of empty bytes should return an error"
+        );
+    }
+
+    /// A key file with fewer than 32 bytes causes `load_or_generate` to return
+    /// an error rather than panic.
+    #[test]
+    #[cfg(unix)]
+    fn load_truncated_key_file_returns_error() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("truncated.key");
+
+        // Write 16 bytes (half the expected 32-byte secret key) with secure perms.
+        std::fs::write(&path, &[0u8; 16]).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let result = Identity::load_or_generate(&path);
+        assert!(
+            result.is_err(),
+            "truncated key file should produce an error, got: {result:?}"
+        );
+    }
 }

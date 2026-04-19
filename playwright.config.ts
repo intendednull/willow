@@ -8,7 +8,12 @@ export default defineConfig({
   testDir: './e2e',
   timeout: 60_000,
   retries: 1,
-  workers: 1, // Sequential — tests share server state
+  // Two workers: each spec file gets its own browser contexts and each test
+  // calls freshStart() which clears localStorage + IndexedDB, so tests are
+  // self-contained. Parallelism is capped at 2 rather than the default
+  // (cpuCount/2) to limit P2P connection churn on the shared relay server
+  // during CI; raise further if the relay is stable under load.
+  workers: 2,
   use: {
     baseURL: BASE_URL,
     headless: true,

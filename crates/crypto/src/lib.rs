@@ -1225,4 +1225,69 @@ mod tests {
         let k10_direct = derive_message_key(&key, 0, 10);
         assert_eq!(k10, k10_direct, "out-of-order request returned wrong key");
     }
+
+    // ── New gap-filling tests ───────────────────────────────────────────────
+
+    /// `EncryptedChannelKey` travels on the wire; verify it survives a
+    /// `willow_transport::pack` / `unpack` round-trip and can still be
+    /// decrypted after deserialization.
+    #[test]
+    fn encrypted_channel_key_serde_round_trip() {
+        let recipient = Identity::generate();
+        let channel_key = generate_channel_key();
+        let pub_bytes = recipient_public_bytes(&recipient);
+
+        let encrypted = encrypt_channel_key_for(&channel_key, &pub_bytes).unwrap();
+
+        // Serialize → deserialize.
+        let bytes = willow_transport::pack(&encrypted).unwrap();
+        let deserialized: EncryptedChannelKey = willow_transport::unpack(&bytes).unwrap();
+
+        // The deserialized value must still decrypt to the original key.
+        let decrypted = decrypt_channel_key(&deserialized, &recipient).unwrap();
+        assert_eq!(
+            decrypted.as_bytes(),
+            channel_key.as_bytes(),
+            "key recovered from deserialized EncryptedChannelKey must match original"
+        );
+    }
+
+    /// Flipping a byte in `ephemeral_public` changes the DH shared secret,
+    /// so the derived wrapping key is wrong and AEAD decryption must fail.
+    #[test]
+    fn tampered_ephemeral_public_fails_decryption() {
+        let recipient = Identity::generate();
+        let channel_key = generate_channel_key();
+        let pub_bytes = recipient_public_bytes(&recipient);
+
+        let mut encrypted = encrypt_channel_key_for(&channel_key, &pub_bytes).unwrap();
+
+        // Flip the first byte of the ephemeral public key.
+        encrypted.ephemeral_public[0] ^= 0xFF;
+
+        let result = decrypt_channel_key(&encrypted, &recipient);
+        assert!(
+            matches!(result, Err(CryptoError::DecryptionFailed)),
+            "expected DecryptionFailed after ephemeral_public tamper, got {result:?}"
+        );
+    }
+
+    /// `y = 2` (bytes `[2, 0, 0, …, 0]`) has no valid x-coordinate on the
+    /// Ed25519 curve, so `ed25519_public_to_x25519` must return
+    /// `KeyConversionFailed` rather than panic or succeed with a garbage key.
+    #[test]
+    fn encrypt_channel_key_for_invalid_public_key() {
+        // [2, 0, …, 0] encodes y=2 in compressed Edwards form.  There is no
+        // point on curve25519 with y=2, so decompression must fail.
+        let mut invalid_pub = [0u8; 32];
+        invalid_pub[0] = 2;
+
+        let channel_key = generate_channel_key();
+        let result = encrypt_channel_key_for(&channel_key, &invalid_pub);
+
+        assert!(
+            matches!(result, Err(CryptoError::KeyConversionFailed)),
+            "expected KeyConversionFailed for invalid Ed25519 public key, got {result:?}"
+        );
+    }
 }

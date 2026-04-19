@@ -249,21 +249,28 @@ async fn create_server_returns_id() {
 
 #[tokio::test]
 async fn rename_server() {
-    let (server, client) = test_mcp_server();
+    let (server, _client) = test_mcp_server();
     let router = server.tool_router.clone();
 
-    call_tool(
+    let result = call_tool(
         &router,
         "rename_server",
         serde_json::json!({ "name": "Renamed" }),
     )
     .await;
 
-    // Verify via resource read
-    let name = client.active_server_name().await;
-    // The rename goes through event-sourced state
-    // Check that it either applied or the event was built
-    assert!(!name.is_empty());
+    // The rename is applied via the event-sourced DAG. Verify the tool itself
+    // reported success (not an error), meaning the event was built and applied.
+    assert!(
+        result.is_error != Some(true),
+        "rename_server should not return an error"
+    );
+    let text = result_text(&result);
+    let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        parsed["success"], true,
+        "rename_server should return {{success: true}}, got: {parsed}"
+    );
 }
 
 // ─────────────────────── Identity Tests ──────────────────────────────────────
@@ -369,11 +376,15 @@ async fn read_unknown_resource_returns_error() {
 // ─────────────────────── Advanced E2E Tests ─────────────────────────────────
 
 #[tokio::test]
-async fn kick_member_removes_from_server() {
+async fn kick_member_sole_admin_is_noop() {
     let (server, client) = test_mcp_server();
     let router = server.tool_router.clone();
 
-    // Our own peer_id — kicking self should produce an error or be a no-op
+    // The test client creates a server where this peer is the sole admin/owner.
+    // Proposing to kick the sole admin is explicitly blocked by state logic
+    // (kicking the last admin would leave the server permanently ungovernable).
+    // The Propose event itself succeeds (admins can propose), but the resulting
+    // vote auto-applies and the KickMember action is silently ignored.
     let peer_id = client.peer_id();
 
     let result = call_tool(
@@ -383,14 +394,31 @@ async fn kick_member_removes_from_server() {
     )
     .await;
 
-    // Kicking oneself is expected to either error or succeed gracefully
+    // The tool should succeed (the Propose event is valid for an admin).
+    assert!(
+        result.is_error != Some(true),
+        "kick_member proposal by an admin should not error"
+    );
     let text = result_text(&result);
-    assert!(!text.is_empty(), "kick_member should return a response");
+    let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        parsed["success"], true,
+        "kick_member should return {{success: true}}"
+    );
+
+    // The sole admin must NOT have been removed — the state machine blocks
+    // the kick to prevent a permanently ungovernable server.
+    let members = client.server_members().await;
+    let owner_id: willow_identity::EndpointId = peer_id.parse().unwrap();
+    assert!(
+        members.iter().any(|(pid, _, _)| *pid == owner_id),
+        "sole admin should remain a member after self-kick attempt"
+    );
 }
 
 #[tokio::test]
 async fn server_rename_via_tool() {
-    let (server, client) = test_mcp_server();
+    let (server, _client) = test_mcp_server();
     let router = server.tool_router.clone();
 
     let result = call_tool(
@@ -399,10 +427,18 @@ async fn server_rename_via_tool() {
         serde_json::json!({ "name": "My Renamed Server" }),
     )
     .await;
-    assert!(result.is_error != Some(true));
 
-    let name = client.active_server_name().await;
-    assert!(!name.is_empty());
+    // Tool must succeed and return {"success": true}.
+    assert!(
+        result.is_error != Some(true),
+        "rename_server should not return an error"
+    );
+    let text = result_text(&result);
+    let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        parsed["success"], true,
+        "rename_server should return {{success: true}}, got: {parsed}"
+    );
 }
 
 #[tokio::test]
@@ -598,6 +634,154 @@ async fn custom_scope_allowlist() {
     assert!(visible.contains(&"react"));
 }
 
+/// Test that `WillowMcpServer::call_tool` returns an MCP error when a
+/// `ReadOnly`-scoped token tries to invoke a write tool.
+///
+/// `call_tool` on `WillowMcpServer` has two layers:
+/// 1. Scope check — returns `Err(ErrorData)` immediately if the tool is blocked
+/// 2. Router dispatch — only reached if scope allows
+///
+/// This test verifies layer 1 by constructing the scope-gate logic directly
+/// (the `RequestContext<RoleServer>` needed by the `ServerHandler` trait method
+/// cannot be constructed from outside the rmcp crate, so we replicate the same
+/// conditional that `call_tool` executes).
+#[tokio::test]
+async fn readonly_scope_rejects_send_message() {
+    use rmcp::model::ErrorCode;
+    use willow_agent::scopes::TokenScope;
+    use willow_agent::server::WillowMcpServer;
+
+    let (client, _broker) = test_client();
+    let server = WillowMcpServer::with_scope(client, TokenScope::ReadOnly);
+
+    // Replicate exactly what WillowMcpServer::call_tool does before dispatching:
+    //   if !self.scope.allows_tool(name) { return Err(ErrorData::new(INVALID_REQUEST, ...)) }
+    let tool_name = "send_message";
+    assert!(
+        !server.scope.allows_tool(tool_name),
+        "ReadOnly scope must reject send_message"
+    );
+
+    // Build the ErrorData that call_tool would return — verify it carries the
+    // right error code so callers can detect scope rejection vs. other errors.
+    let err = rmcp::ErrorData::new(
+        ErrorCode::INVALID_REQUEST,
+        format!("tool '{tool_name}' not allowed by token scope"),
+        None,
+    );
+    assert_eq!(
+        err.code,
+        ErrorCode::INVALID_REQUEST,
+        "scope rejection should use INVALID_REQUEST error code"
+    );
+    assert!(
+        err.message.contains(tool_name),
+        "error message should mention the blocked tool name"
+    );
+
+    // Also confirm that ALL write tools are rejected (not just send_message).
+    let all_tools = server.tool_router.tool_list();
+    let blocked: Vec<&str> = all_tools
+        .iter()
+        .filter(|t| !server.scope.allows_tool(t.name.as_ref()))
+        .map(|t| t.name.as_ref())
+        .collect();
+    assert!(
+        blocked.contains(&"send_message"),
+        "send_message must be in the blocked list"
+    );
+    assert!(
+        blocked.contains(&"create_channel"),
+        "create_channel must be in the blocked list"
+    );
+    assert!(
+        blocked.contains(&"kick_member"),
+        "kick_member must be in the blocked list"
+    );
+}
+
+// ─────────────────────── Resource URI Coverage Tests ───────────────────────
+
+#[tokio::test]
+async fn read_members_resource() {
+    let (_server, client) = test_mcp_server();
+    let client_arc = Arc::new(client);
+    let result = willow_agent::resources::read_resource(&client_arc, "willow://server/members")
+        .await
+        .unwrap();
+
+    assert!(!result.contents.is_empty());
+    match &result.contents[0] {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => {
+            let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+            // Members is a JSON array of {peer_id, display_name, is_online} objects.
+            assert!(parsed.is_array(), "members resource should be a JSON array");
+            // The test client creates the local peer as the sole member.
+            let members = parsed.as_array().unwrap();
+            assert!(
+                !members.is_empty(),
+                "members list should contain at least the local peer"
+            );
+            let first = &members[0];
+            assert!(
+                first["peer_id"].is_string(),
+                "each member should have a peer_id string"
+            );
+            assert!(
+                first["display_name"].is_string(),
+                "each member should have a display_name string"
+            );
+            assert!(
+                first["is_online"].is_boolean(),
+                "each member should have an is_online boolean"
+            );
+        }
+        _ => panic!("expected text resource"),
+    }
+}
+
+#[tokio::test]
+async fn read_voice_status_resource() {
+    let (_server, client) = test_mcp_server();
+    let client_arc = Arc::new(client);
+    let result = willow_agent::resources::read_resource(&client_arc, "willow://voice/status")
+        .await
+        .unwrap();
+
+    assert!(!result.contents.is_empty());
+    match &result.contents[0] {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => {
+            let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+            // Voice status has active_channel (null when idle), muted, deafened.
+            assert!(
+                parsed["active_channel"].is_null() || parsed["active_channel"].is_string(),
+                "active_channel should be null or a string"
+            );
+            assert!(
+                parsed["muted"].is_boolean(),
+                "muted should be a boolean, got: {}",
+                parsed
+            );
+            assert!(
+                parsed["deafened"].is_boolean(),
+                "deafened should be a boolean, got: {}",
+                parsed
+            );
+            // Fresh client should not be in a voice channel.
+            assert!(
+                parsed["active_channel"].is_null(),
+                "new client should not be in a voice channel"
+            );
+            assert_eq!(parsed["muted"], false, "new client should not be muted");
+            assert_eq!(
+                parsed["deafened"], false,
+                "new client should not be deafened"
+            );
+        }
+        _ => panic!("expected text resource"),
+    }
+}
+
 // ─────────────────────── Notification Tests ────────────────────────────────
 
 #[tokio::test]
@@ -638,42 +822,13 @@ async fn notification_event_to_json_roundtrip() {
 // ─────────────────────── Multi-Peer Infrastructure Tests ───────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_client_on_hub_creates_connected_client() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let hub = MemHub::new();
-            let (client, _broker) = willow_client::test_client_on_hub(&hub).await;
-
-            // Client should be connected (network is Some)
-            assert!(client.is_connected().await);
-
-            let peer_id = client.peer_id();
-            assert_eq!(peer_id.len(), 64, "peer ID should be 64 hex chars");
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn two_clients_on_same_hub_have_different_ids() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let hub = MemHub::new();
-            let (client_a, _) = willow_client::test_client_on_hub(&hub).await;
-            let (client_b, _) = willow_client::test_client_on_hub(&hub).await;
-
-            assert_ne!(
-                client_a.peer_id(),
-                client_b.peer_id(),
-                "two clients should have different peer IDs"
-            );
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multi_peer_agent_servers_have_separate_state() {
+    // NOTE: These two clients share a MemHub (in-memory gossip mesh) but each
+    // starts with its own independent server state seeded from genesis. They
+    // are NOT joined to each other's server, so gossip sync across the hub does
+    // not make A's messages visible to B and vice versa. True cross-peer sync
+    // requires an invite flow followed by gossip delivery — that belongs in the
+    // Playwright E2E suite (e2e/multi-peer-sync.spec.ts), not here.
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {

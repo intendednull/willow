@@ -350,10 +350,17 @@ async fn graceful_shutdown_sends_departure() {
     }
 }
 
-/// Tests the full actor wiring pattern used by runtime::run() —
-/// state + heartbeat + sync actors coordinating via channels.
+/// Tests the heartbeat actor wiring pattern used by runtime::run() —
+/// state + heartbeat actors coordinating via channels.
+///
+/// Note: the `SyncActor` is spawned here but does **not** broadcast because
+/// `TestReplayRole::heads_summaries()` returns empty. This test only verifies
+/// that the heartbeat fires, that multiple actors can share the same
+/// `state_addr` without deadlocking, and that `StateActor` remains responsive
+/// after the 200 ms window. For sync-broadcast coverage see
+/// `sync_actor_broadcasts_request_when_heads_nonempty`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn full_actor_orchestration_without_network() {
+async fn heartbeat_actor_orchestration_without_network() {
     use willow_network::mem::{MemHub, MemNetwork};
     use willow_network::{Network, TopicEvents};
     use willow_worker::actors::heartbeat::HeartbeatActor;
@@ -709,6 +716,10 @@ async fn pre_buffered_events_wait_for_state_ready_signal() {
 
 /// Issue #79: Verify that without a ready signal, NetworkActor drains
 /// immediately (backward compatibility for tests and simple setups).
+///
+/// This test pre-buffers the event in the channel BEFORE spawning the
+/// NetworkActor — confirming that the drain loop starts without waiting
+/// for any ready signal when none is provided.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn network_actor_drains_immediately_without_ready_signal() {
     let system = System::new();
@@ -721,25 +732,9 @@ async fn network_actor_drains_immediately_without_ready_signal() {
     let (_workers_tx, workers_rx) = tokio::sync::mpsc::channel::<GossipEvent>(16);
     let (ops_tx, ops_rx) = tokio::sync::mpsc::channel::<GossipEvent>(16);
 
-    let worker_id = Identity::generate();
-    let peer_id = worker_id.endpoint_id();
-
-    let _network = system.spawn(
-        NetworkActor::new(
-            MockTopicEvents { rx: workers_rx },
-            state_addr.clone(),
-            peer_id,
-            MockTopicHandle,
-            worker_id.clone(),
-        )
-        .with_ops_events(MockTopicEvents { rx: ops_rx }),
-        // No ready signal — drain starts immediately.
-    );
-
-    // Allow actors to start.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    // Send a CreateServer event (required as genesis for EventDag).
+    // Pre-buffer a CreateServer event BEFORE spawning the NetworkActor.
+    // Without a ready signal the drain loop should process it immediately
+    // after the actor starts — no 50ms sleep needed to "simulate arrival".
     let sender_id = Identity::generate();
     let event = Event::new(
         &sender_id,
@@ -761,6 +756,22 @@ async fn network_actor_drains_immediately_without_ready_signal() {
         .await
         .unwrap();
 
+    let worker_id = Identity::generate();
+    let peer_id = worker_id.endpoint_id();
+
+    // Spawn NetworkActor with no ready signal — drain must start immediately.
+    let _network = system.spawn(
+        NetworkActor::new(
+            MockTopicEvents { rx: workers_rx },
+            state_addr.clone(),
+            peer_id,
+            MockTopicHandle,
+            worker_id.clone(),
+        )
+        .with_ops_events(MockTopicEvents { rx: ops_rx }),
+    );
+
+    // Allow the drain task to run and the event to be forwarded to StateActor.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let info = state_addr.ask(GetRoleInfoMsg).await.unwrap();
@@ -770,7 +781,392 @@ async fn network_actor_drains_immediately_without_ready_signal() {
         } => {
             assert_eq!(
                 events_buffered, 1,
-                "event should be processed without ready signal"
+                "pre-buffered event should be processed without ready signal"
+            );
+        }
+        _ => panic!("expected Replay"),
+    }
+
+    system.shutdown().await;
+}
+
+// ───── A role that overrides heads_summaries() ────────────────────────────
+
+/// A WorkerRole that returns a non-empty [`HeadsSummary`] for one server,
+/// so the SyncActor has something to broadcast.
+struct TestHeadsRole {
+    server_id: String,
+    heads: willow_state::HeadsSummary,
+}
+
+impl TestHeadsRole {
+    fn new(server_id: &str, heads: willow_state::HeadsSummary) -> Self {
+        Self {
+            server_id: server_id.to_string(),
+            heads,
+        }
+    }
+}
+
+impl willow_common::WorkerRole for TestHeadsRole {
+    fn role_info(&self) -> willow_common::WorkerRoleInfo {
+        willow_common::WorkerRoleInfo::Replay {
+            servers_loaded: 1,
+            events_buffered: 1,
+            max_events: 100,
+        }
+    }
+
+    fn on_event(&mut self, _event: &willow_state::Event) {}
+
+    fn handle_request(
+        &mut self,
+        _req: willow_common::WorkerRequest,
+    ) -> willow_common::WorkerResponse {
+        willow_common::WorkerResponse::Denied {
+            reason: "test".to_string(),
+        }
+    }
+
+    fn heads_summaries(&self) -> Vec<(String, willow_state::HeadsSummary)> {
+        vec![(self.server_id.clone(), self.heads.clone())]
+    }
+}
+
+/// Verify that SyncActor broadcasts a `WorkerWireMessage::Request` containing
+/// a `WorkerRequest::Sync` when the role reports non-empty heads.
+///
+/// This tests the SyncActor's core behavior: query heads → build wire message →
+/// call `topic.broadcast()`. Previously only shutdown was tested.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sync_actor_broadcasts_request_when_heads_nonempty() {
+    use std::collections::BTreeMap;
+    use willow_network::mem::{MemHub, MemNetwork};
+    use willow_network::{Network, TopicEvents};
+    use willow_state::{AuthorHead, EventHash};
+    use willow_worker::actors::sync::SyncActor;
+
+    // Build a non-empty HeadsSummary with one author.
+    let author_id = Identity::generate();
+    let mut heads_map = BTreeMap::new();
+    heads_map.insert(
+        author_id.endpoint_id(),
+        AuthorHead {
+            seq: 3,
+            hash: EventHash::from_bytes(b"fake-hash-for-test"),
+        },
+    );
+    let heads = willow_state::HeadsSummary { heads: heads_map };
+
+    let hub = MemHub::new();
+    let net_a = MemNetwork::new(&hub);
+    let net_b = MemNetwork::new(&hub);
+
+    let topic_id = willow_network::topic_id(willow_common::WORKERS_TOPIC);
+    // net_a is the SyncActor's network; net_b is the observer.
+    let (sender_a, _events_a) = net_a.subscribe(topic_id, vec![]).await.unwrap();
+    let (_sender_b, mut events_b) = net_b.subscribe(topic_id, vec![]).await.unwrap();
+
+    let system = System::new();
+
+    // StateActor backed by a role that returns non-empty heads_summaries.
+    let state_addr = system.spawn(StateActor {
+        role: Box::new(TestHeadsRole::new("srv-sync", heads)),
+        ready: None,
+    });
+
+    let sync_identity = Identity::generate();
+    let sync_peer_id = net_a.id();
+
+    // Very short interval so the sync fires quickly in the test.
+    let _sync = system.spawn(SyncActor::new(
+        sync_peer_id,
+        Duration::from_millis(30),
+        state_addr,
+        sender_a,
+        sync_identity,
+    ));
+
+    // Drain events from net_b until we see a Request message or time out.
+    let found_request = loop {
+        let event = match tokio::time::timeout(Duration::from_secs(2), events_b.next()).await {
+            Ok(Some(Ok(e))) => e,
+            _ => break false,
+        };
+        if let willow_network::GossipEvent::Received(msg) = event {
+            if let Some((willow_common::WireMessage::Worker(wire), _)) =
+                willow_common::unpack_wire(&msg.content)
+            {
+                if let willow_common::WorkerWireMessage::Request { payload, .. } = wire {
+                    if let willow_common::WorkerRequest::Sync { server_id, heads } = payload {
+                        assert_eq!(server_id, "srv-sync");
+                        assert_eq!(heads.heads.len(), 1, "heads should have the one author");
+                        break true;
+                    }
+                }
+            }
+        }
+    };
+
+    assert!(
+        found_request,
+        "SyncActor should have broadcast a WorkerRequest::Sync message"
+    );
+
+    system.shutdown().await;
+}
+
+/// Verify the request→response cycle at the StateActor level:
+/// inject a `WorkerRequest::Sync` into a StateActor that already holds
+/// events and assert the response contains those events.
+///
+/// This covers the core worker convergence path without full gossip wiring.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sync_request_response_returns_known_events() {
+    let system = System::new();
+
+    // Build a TestReplayRole pre-loaded with genesis + two messages.
+    let mut role = TestReplayRole::new("srv-conv", 100);
+    let author = Identity::generate();
+
+    let genesis = Event::new(
+        &author,
+        1,
+        EventHash::ZERO,
+        vec![],
+        EventKind::CreateServer {
+            name: "srv-conv".to_string(),
+        },
+        0,
+    );
+    role.on_event(&genesis);
+
+    let msg1 = make_message(&author, 2, genesis.hash);
+    role.on_event(&msg1);
+
+    let msg2 = make_message(&author, 3, msg1.hash);
+    role.on_event(&msg2);
+
+    let state_addr = system.spawn(StateActor {
+        role: Box::new(role),
+        ready: None,
+    });
+
+    // A peer that has no events sends Sync with empty heads.
+    let resp = state_addr
+        .ask(WorkerRequestMsg(willow_common::WorkerRequest::Sync {
+            server_id: "srv-conv".to_string(),
+            heads: willow_state::HeadsSummary::default(),
+        }))
+        .await
+        .unwrap();
+
+    match resp {
+        willow_common::WorkerResponse::SyncBatch { events } => {
+            assert_eq!(
+                events.len(),
+                3,
+                "SyncBatch should contain all three events (genesis + 2 messages)"
+            );
+            // Events should include genesis and both messages.
+            let hashes: std::collections::HashSet<_> = events.iter().map(|e| e.hash).collect();
+            assert!(hashes.contains(&genesis.hash), "genesis missing from batch");
+            assert!(hashes.contains(&msg1.hash), "msg1 missing from batch");
+            assert!(hashes.contains(&msg2.hash), "msg2 missing from batch");
+        }
+        other => panic!("expected SyncBatch, got {:?}", other),
+    }
+
+    system.shutdown().await;
+}
+
+/// Two-worker state convergence: verify that events held by Worker A
+/// are delivered to Worker B via the sync request/response cycle routed
+/// through real gossip (MemNetwork).
+///
+/// Flow:
+///   1. Worker A's StateActor holds [genesis, msg1].
+///   2. Worker B has no events; its NetworkActor receives a sync request
+///      from the WORKERS topic (injected directly), forwards it to A's
+///      StateActor, and A broadcasts the SyncBatch response.
+///   3. Worker B's NetworkActor receives the Response and its StateActor
+///      processes the events via `parse_server_message` fallback
+///      (SyncBatch on the ops channel).
+///
+/// For simplicity we test the critical sub-path: inject a Sync request
+/// into Worker A via gossip and verify a Response containing the events
+/// is broadcast back on the topic.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_workers_sync_state_via_gossip() {
+    use willow_network::mem::{MemHub, MemNetwork};
+    use willow_network::{Network, TopicEvents};
+
+    let hub = MemHub::new();
+    let net_a = MemNetwork::new(&hub); // Worker A (has events)
+    let net_b = MemNetwork::new(&hub); // Worker B (observer / requester)
+
+    let topic_id = willow_network::topic_id(willow_common::WORKERS_TOPIC);
+
+    // Worker A subscribes for reading requests and broadcasting responses.
+    let (sender_a, events_a) = net_a.subscribe(topic_id, vec![]).await.unwrap();
+    // Worker B subscribes to observe responses.
+    let (sender_b, mut events_b) = net_b.subscribe(topic_id, vec![]).await.unwrap();
+
+    let system = System::new();
+
+    // Worker A's StateActor has genesis + msg1.
+    let mut role_a = TestReplayRole::new("srv-ab", 100);
+    let author = Identity::generate();
+    let genesis = Event::new(
+        &author,
+        1,
+        EventHash::ZERO,
+        vec![],
+        EventKind::CreateServer {
+            name: "srv-ab".to_string(),
+        },
+        0,
+    );
+    role_a.on_event(&genesis);
+    let msg1 = make_message(&author, 2, genesis.hash);
+    role_a.on_event(&msg1);
+
+    let state_a = system.spawn(StateActor {
+        role: Box::new(role_a),
+        ready: None,
+    });
+
+    let worker_a_identity = Identity::generate();
+    let worker_a_id = net_a.id();
+
+    // Wire up Worker A's NetworkActor to process incoming requests.
+    let _network_a = system.spawn(NetworkActor::new(
+        events_a,
+        state_a.clone(),
+        worker_a_id,
+        sender_a,
+        worker_a_identity.clone(),
+    ));
+
+    // Allow actors to start.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Worker B sends a Sync request with empty heads — simulates a peer
+    // that has no events yet.
+    let requester_b_id = net_b.id();
+    let request_id = "req-b-to-a".to_string();
+    let sync_req = willow_common::WorkerWireMessage::Request {
+        request_id: request_id.clone(),
+        // Sync requests are accepted regardless of target_peer (broadcast protocol).
+        target_peer: requester_b_id,
+        payload: willow_common::WorkerRequest::Sync {
+            server_id: "srv-ab".to_string(),
+            heads: willow_state::HeadsSummary::default(),
+        },
+    };
+    let b_identity = Identity::generate();
+    let data = willow_common::pack_wire(&willow_common::WireMessage::Worker(sync_req), &b_identity)
+        .unwrap();
+    sender_b.broadcast(bytes::Bytes::from(data)).await.unwrap();
+
+    // Drain events_b until we see a WorkerWireMessage::Response addressed
+    // to requester_b_id containing a SyncBatch with the expected events.
+    let mut found_response = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < deadline {
+        let event = match tokio::time::timeout(Duration::from_millis(100), events_b.next()).await {
+            Ok(Some(Ok(e))) => e,
+            _ => break,
+        };
+
+        if let willow_network::GossipEvent::Received(msg) = event {
+            if let Some((willow_common::WireMessage::Worker(wire), _)) =
+                willow_common::unpack_wire(&msg.content)
+            {
+                if let willow_common::WorkerWireMessage::Response {
+                    request_id: rid,
+                    target_peer,
+                    payload,
+                } = wire
+                {
+                    if rid == request_id && target_peer == requester_b_id {
+                        match *payload {
+                            willow_common::WorkerResponse::SyncBatch { events } => {
+                                assert_eq!(events.len(), 2, "Worker A should send genesis + msg1");
+                                let hashes: std::collections::HashSet<_> =
+                                    events.iter().map(|e| e.hash).collect();
+                                assert!(hashes.contains(&genesis.hash));
+                                assert!(hashes.contains(&msg1.hash));
+                                found_response = true;
+                                break;
+                            }
+                            other => {
+                                panic!("expected SyncBatch in response payload, got {:?}", other)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        found_response,
+        "Worker B should have received a SyncBatch response from Worker A"
+    );
+
+    // ── Phase 2: verify Worker B's StateActor processes the SyncBatch ──────
+    //
+    // The `parse_server_message` path in NetworkActor converts a received
+    // `WorkerWireMessage::Response` into events for the state actor (via the
+    // DeserializeError fallback). We exercise that path manually here by:
+    //   1. Re-serialising the two events as `WireMessage::SyncBatch`.
+    //   2. Passing the bytes through `parse_server_message`.
+    //   3. Feeding the resulting events into a fresh `state_b` actor.
+    //   4. Asserting that `state_b` reports `events_buffered == 2`.
+
+    use willow_worker::actors::network::parse_server_message;
+    use willow_worker::actors::network::ServerMessageAction;
+
+    // Build the same SyncBatch payload that Worker A would have sent.
+    let batch_bytes = willow_common::pack_wire(
+        &willow_common::WireMessage::SyncBatch {
+            events: vec![genesis.clone(), msg1.clone()],
+        },
+        &worker_a_identity,
+    )
+    .unwrap();
+
+    let state_b = system.spawn(StateActor {
+        role: Box::new(TestReplayRole::new("srv-ab", 100)),
+        ready: None,
+    });
+
+    match parse_server_message(&batch_bytes) {
+        ServerMessageAction::Events(events) => {
+            assert_eq!(
+                events.len(),
+                2,
+                "parse_server_message must extract both events"
+            );
+            for event in events {
+                state_b.do_send(EventMsg(event)).unwrap();
+            }
+        }
+        ServerMessageAction::Ignore => panic!("parse_server_message should have returned Events"),
+    }
+
+    // Allow the EventMsg deliveries to be processed.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let info_b = state_b.ask(GetRoleInfoMsg).await.unwrap();
+    match info_b {
+        WorkerRoleInfo::Replay {
+            events_buffered, ..
+        } => {
+            assert_eq!(
+                events_buffered, 2,
+                "Worker B's StateActor should have buffered genesis + msg1"
             );
         }
         _ => panic!("expected Replay"),
