@@ -1151,22 +1151,21 @@ mod tests {
 
         client.send_message("general", "hello event").await.unwrap();
 
-        // Drain the receiver looking for MessageReceived.  Give the actor
-        // system a bounded number of ticks rather than sleeping.
-        let mut found = false;
-        for _ in 0..50 {
-            match rx.try_recv() {
-                Some(ClientEvent::MessageReceived { .. }) => {
-                    found = true;
-                    break;
-                }
-                Some(_) => {} // Other events (ChannelCreated etc.) — skip.
-                None => {
-                    // Give the actors one more scheduler tick.
-                    tokio::task::yield_now().await;
+        // Await MessageReceived with a generous timeout. Under CI load the
+        // actor system may not schedule a publish within a handful of
+        // cooperative yields, so use an event-driven wait instead of polling.
+        let deadline = std::time::Duration::from_secs(10);
+        let found = tokio::time::timeout(deadline, async {
+            loop {
+                match rx.recv().await {
+                    Some(ClientEvent::MessageReceived { .. }) => return true,
+                    Some(_) => continue, // Other events (ChannelCreated etc.) — skip.
+                    None => return false, // broker closed
                 }
             }
-        }
+        })
+        .await
+        .unwrap_or(false);
         assert!(
             found,
             "expected ClientEvent::MessageReceived after send_message"
