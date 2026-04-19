@@ -85,12 +85,14 @@ pub struct ServerState {
     /// their target in O(1) instead of O(N).
     ///
     /// This field is excluded from serialization (`#[serde(skip)]`). It is
-    /// always empty on a freshly deserialized `ServerState` and is rebuilt
-    /// incrementally by each subsequent `apply_event` call, or all at once
-    /// by a full `materialize()`. Code that deserializes `ServerState` and
-    /// then calls `apply_incremental` without a prior full materialize will
-    /// silently no-op on `EditMessage`/`DeleteMessage`/`Reaction` events until
-    /// the index is warmed. The intended usage is always through `materialize`.
+    /// always empty on a freshly deserialized `ServerState`. To protect
+    /// against silent mutation loss when a caller deserializes state and
+    /// then applies incremental `EditMessage`/`DeleteMessage`/`Reaction`
+    /// events, [`apply_incremental`](crate::materialize::apply_incremental)
+    /// lazily rebuilds the index on first use via
+    /// [`rebuild_message_index`](Self::rebuild_message_index). Callers that
+    /// load state from disk may also invoke `rebuild_message_index` eagerly
+    /// to amortize the O(N) cost up front.
     #[serde(default, skip)]
     pub message_index: HashMap<EventHash, usize>,
 }
@@ -154,6 +156,28 @@ impl ServerState {
     /// Check if a peer can provide sync (trusted for history).
     pub fn is_sync_provider(&self, peer_id: &EndpointId) -> bool {
         self.has_permission(peer_id, &Permission::SyncProvider)
+    }
+
+    /// Rebuild [`message_index`](Self::message_index) from `messages`.
+    ///
+    /// This is O(N) in the number of messages. It exists because
+    /// `message_index` is `#[serde(skip)]` and is therefore empty on a
+    /// freshly deserialized `ServerState`. Without rebuilding, the
+    /// `EditMessage`, `DeleteMessage`, and `Reaction` handlers would
+    /// silently no-op against the stale (empty) index — a silent
+    /// data-loss bug on persisted clients.
+    ///
+    /// Callers that deserialize state from disk should either invoke this
+    /// method eagerly after load, or rely on the lazy rebuild performed
+    /// automatically by
+    /// [`apply_incremental`](crate::materialize::apply_incremental).
+    pub fn rebuild_message_index(&mut self) {
+        self.message_index = self
+            .messages
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (m.id, i))
+            .collect();
     }
 
     /// Check if a yes-vote count meets the current threshold.
