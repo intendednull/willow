@@ -81,6 +81,7 @@ async fn main() -> anyhow::Result<()> {
 
     let role = ReplayRole::new(ReplayConfig {
         max_events_per_author: cli.max_events_per_author,
+        ..Default::default()
     });
 
     let config = willow_worker::WorkerConfig {

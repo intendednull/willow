@@ -123,6 +123,7 @@ mod tests {
                 servers_loaded: servers.len() as u32,
                 events_buffered: 100,
                 max_events: 1000,
+                pending_count: 0,
             },
             servers: servers.into_iter().map(String::from).collect(),
             timestamp: 1000,

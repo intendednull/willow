@@ -116,6 +116,7 @@ mod tests {
                 servers_loaded: 1,
                 events_buffered: self.event_count,
                 max_events: 100,
+                pending_count: 0,
             }
         }
 

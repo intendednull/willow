@@ -40,6 +40,7 @@ impl WorkerRole for TestReplayRole {
             servers_loaded: 1,
             events_buffered: self.events.len() as u32,
             max_events: self.max_events as u32,
+            pending_count: 0,
         }
     }
 
@@ -814,6 +815,7 @@ impl willow_common::WorkerRole for TestHeadsRole {
             servers_loaded: 1,
             events_buffered: 1,
             max_events: 100,
+            pending_count: 0,
         }
     }
 

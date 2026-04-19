@@ -223,6 +223,7 @@ mod tests {
                 servers_loaded: 2,
                 events_buffered: 100,
                 max_events: 1000,
+                pending_count: 0,
             },
             servers: vec!["srv-abc".to_string()],
             timestamp: 12345,

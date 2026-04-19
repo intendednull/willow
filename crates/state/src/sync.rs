@@ -135,27 +135,61 @@ pub fn compare_chains(our_head: &AuthorHead, their_head: &AuthorHead) -> ChainSt
 
 // ───── Pending buffer ──────────────────────────────────────────────────────
 
+/// Default maximum age for pending entries before they are evicted (1 hour).
+pub const DEFAULT_PENDING_MAX_AGE_MS: u64 = 60 * 60 * 1000;
+
+/// Default maximum number of pending events across all prev-hash buckets.
+pub const DEFAULT_PENDING_MAX_ENTRIES: usize = 10_000;
+
+/// A single pending entry — the event plus the time it was buffered.
+///
+/// `inserted_at_ms` is `None` when the caller did not supply a timestamp
+/// (via legacy [`PendingBuffer::buffer_for_prev`]). Such entries are
+/// immune to age-based eviction but still subject to capacity eviction.
+#[derive(Clone, Debug)]
+struct PendingEntry {
+    event: Event,
+    /// Wall-clock time (ms since epoch) the entry was buffered. `None`
+    /// means the caller did not record a time and age eviction is skipped.
+    inserted_at_ms: Option<u64>,
+}
+
 /// Buffer for events that arrive before their per-author chain predecessors.
 ///
 /// Per-author chain gaps (`prev` references an unknown event) are hard gaps
 /// — the event is buffered. Cross-author dep gaps (`deps` references an
 /// unknown event) are soft — the event is accepted and the dep is recorded
 /// for background fetching.
+///
+/// Two independent eviction policies keep the buffer bounded:
+///
+/// * **Age-based** — entries older than `max_age_ms` are dropped when any
+///   method that carries a clock is called ([`buffer_for_prev_at`] or
+///   [`evict_expired`]).
+/// * **Capacity-based** — after any insertion, if the total pending count
+///   exceeds `max_entries`, the oldest entries are evicted.
+///
+/// Legacy callers that use [`buffer_for_prev`] (without a timestamp) get
+/// capacity-based eviction only. Each eviction is logged at `warn!` level
+/// with the event hash and (for age eviction) the entry's age.
 #[derive(Clone, Debug, Default)]
 pub struct PendingBuffer {
     /// Events waiting for a missing `prev` hash.
-    waiting_on_prev: BTreeMap<EventHash, Vec<Event>>,
+    waiting_on_prev: BTreeMap<EventHash, Vec<PendingEntry>>,
     /// Cross-author deps we've seen referenced but don't have yet.
     missing_deps: BTreeSet<EventHash>,
     /// Optional maximum number of pending events. When set,
-    /// `buffer_for_prev()` auto-evicts oldest entries to stay within limit.
-    max_pending: Option<usize>,
+    /// inserts auto-evict the oldest entries to stay within limit.
+    max_entries: Option<usize>,
+    /// Optional maximum age in ms before an entry is evicted. Only applies
+    /// to entries inserted with a timestamp via [`buffer_for_prev_at`].
+    max_age_ms: Option<u64>,
     /// Cached total count of pending events for O(1) lookups.
     cached_count: usize,
 }
 
 impl PendingBuffer {
-    /// Create a new empty buffer with no capacity limit.
+    /// Create a new empty buffer with no capacity or age limit.
     pub fn new() -> Self {
         Self::default()
     }
@@ -163,24 +197,58 @@ impl PendingBuffer {
     /// Create a buffer with a maximum pending event capacity.
     ///
     /// When the total pending count exceeds this limit after an insertion,
-    /// the buffer automatically evicts entries to stay within bounds.
-    pub fn with_capacity(max_pending: usize) -> Self {
+    /// the buffer automatically evicts entries to stay within bounds. No
+    /// age-based eviction is applied — use [`PendingBuffer::with_limits`]
+    /// if you also want timeout-based eviction.
+    pub fn with_capacity(max_entries: usize) -> Self {
         Self {
-            max_pending: Some(max_pending),
+            max_entries: Some(max_entries),
+            ..Self::default()
+        }
+    }
+
+    /// Create a buffer with both a maximum pending event count and a
+    /// maximum age (in ms) before entries are evicted.
+    ///
+    /// Sensible defaults are [`DEFAULT_PENDING_MAX_ENTRIES`] and
+    /// [`DEFAULT_PENDING_MAX_AGE_MS`].
+    pub fn with_limits(max_entries: usize, max_age_ms: u64) -> Self {
+        Self {
+            max_entries: Some(max_entries),
+            max_age_ms: Some(max_age_ms),
             ..Self::default()
         }
     }
 
     /// Buffer an event that's waiting for a prev hash to arrive.
     ///
-    /// If a capacity limit is set, excess entries are automatically evicted.
+    /// Legacy entry point: entries inserted this way have no timestamp and
+    /// so are exempt from age-based eviction (but still subject to capacity
+    /// eviction). Use [`PendingBuffer::buffer_for_prev_at`] when the caller
+    /// can supply a monotonic wall-clock.
     pub fn buffer_for_prev(&mut self, prev_hash: EventHash, event: Event) {
+        self.insert_entry(prev_hash, event, None);
+    }
+
+    /// Buffer an event with a wall-clock timestamp. Evicts expired entries
+    /// first, then enforces the capacity limit.
+    pub fn buffer_for_prev_at(&mut self, prev_hash: EventHash, event: Event, now_ms: u64) {
+        // Sweep age-expired entries before inserting the new one so the
+        // capacity check only considers live pending entries.
+        self.evict_expired(now_ms);
+        self.insert_entry(prev_hash, event, Some(now_ms));
+    }
+
+    fn insert_entry(&mut self, prev_hash: EventHash, event: Event, inserted_at_ms: Option<u64>) {
         self.waiting_on_prev
             .entry(prev_hash)
             .or_default()
-            .push(event);
+            .push(PendingEntry {
+                event,
+                inserted_at_ms,
+            });
         self.cached_count += 1;
-        if let Some(limit) = self.max_pending {
+        if let Some(limit) = self.max_entries {
             let evicted = self.evict_to(limit);
             if evicted > 0 {
                 tracing::warn!(
@@ -201,12 +269,12 @@ impl PendingBuffer {
     /// Returns any buffered events whose `prev` is now satisfied.
     pub fn resolve(&mut self, inserted_hash: &EventHash) -> Vec<Event> {
         self.missing_deps.remove(inserted_hash);
-        let resolved = self
+        let entries = self
             .waiting_on_prev
             .remove(inserted_hash)
             .unwrap_or_default();
-        self.cached_count = self.cached_count.saturating_sub(resolved.len());
-        resolved
+        self.cached_count = self.cached_count.saturating_sub(entries.len());
+        entries.into_iter().map(|e| e.event).collect()
     }
 
     /// Number of missing cross-author deps being tracked.
@@ -219,18 +287,64 @@ impl PendingBuffer {
         self.cached_count
     }
 
+    /// Evict all pending entries whose age exceeds `max_age_ms` (if set)
+    /// relative to `now_ms`. Entries inserted without a timestamp are
+    /// never evicted by age. Returns the number of events evicted.
+    pub fn evict_expired(&mut self, now_ms: u64) -> usize {
+        let max_age = match self.max_age_ms {
+            Some(v) => v,
+            None => return 0,
+        };
+        let mut evicted = 0usize;
+        let mut empty_keys: Vec<EventHash> = Vec::new();
+        for (prev_hash, entries) in self.waiting_on_prev.iter_mut() {
+            entries.retain(|entry| {
+                let Some(inserted_at) = entry.inserted_at_ms else {
+                    return true; // no timestamp → immune to age eviction
+                };
+                let age = now_ms.saturating_sub(inserted_at);
+                if age > max_age {
+                    tracing::warn!(
+                        event_hash = %entry.event.hash,
+                        age_ms = age,
+                        max_age_ms = max_age,
+                        "pending buffer: evicting aged-out event"
+                    );
+                    evicted += 1;
+                    false
+                } else {
+                    true
+                }
+            });
+            if entries.is_empty() {
+                empty_keys.push(*prev_hash);
+            }
+        }
+        for k in empty_keys {
+            self.waiting_on_prev.remove(&k);
+        }
+        self.cached_count = self.cached_count.saturating_sub(evicted);
+        evicted
+    }
+
     /// Evict pending entries to keep the buffer bounded.
     ///
     /// Removes the oldest entries (by insertion order approximation)
-    /// until the total pending count is at or below `max_pending`.
+    /// until the total pending count is at or below `max_entries`.
     /// Returns the number of events evicted.
-    pub fn evict_to(&mut self, max_pending: usize) -> usize {
+    pub fn evict_to(&mut self, max_entries: usize) -> usize {
         let mut evicted = 0;
-        while self.cached_count > max_pending {
+        while self.cached_count > max_entries {
             // Remove an arbitrary entry.
             if let Some(key) = self.waiting_on_prev.keys().next().cloned() {
-                if let Some(events) = self.waiting_on_prev.remove(&key) {
-                    let n = events.len();
+                if let Some(entries) = self.waiting_on_prev.remove(&key) {
+                    for entry in &entries {
+                        tracing::warn!(
+                            event_hash = %entry.event.hash,
+                            "pending buffer: evicting event to enforce capacity"
+                        );
+                    }
+                    let n = entries.len();
                     evicted += n;
                     self.cached_count = self.cached_count.saturating_sub(n);
                 }
@@ -967,5 +1081,161 @@ mod tests {
         // Evict to 2.
         buf.evict_to(2);
         assert_eq!(buf.pending_count(), 2);
+    }
+
+    // ── Issue #40: Age + capacity eviction for pending events ──────
+
+    fn make_pending_event(id: &Identity, seed: u64) -> (EventHash, Event) {
+        let mut hash_bytes = [0u8; 32];
+        hash_bytes[..8].copy_from_slice(&seed.to_le_bytes());
+        let prev = EventHash(hash_bytes);
+        let event = Event::new(
+            id,
+            seed + 2,
+            prev,
+            vec![],
+            EventKind::SetProfile {
+                display_name: format!("n{seed}"),
+            },
+            0,
+        );
+        (prev, event)
+    }
+
+    /// An entry older than `max_age_ms` is evicted when a later insert
+    /// carries a timestamp that advances past the age threshold.
+    #[test]
+    fn age_eviction_drops_stale_entries_on_insert() {
+        let id = Identity::generate();
+        let max_age_ms = 1_000u64;
+        let mut buf = PendingBuffer::with_limits(10_000, max_age_ms);
+
+        // Insert one entry at t=0.
+        let (prev_a, event_a) = make_pending_event(&id, 1);
+        buf.buffer_for_prev_at(prev_a, event_a, 0);
+        assert_eq!(buf.pending_count(), 1);
+
+        // Advance past max_age (t = max_age + 100). Inserting a new entry
+        // at that time must first evict the stale entry.
+        let (prev_b, event_b) = make_pending_event(&id, 2);
+        buf.buffer_for_prev_at(prev_b, event_b, max_age_ms + 100);
+
+        assert_eq!(
+            buf.pending_count(),
+            1,
+            "stale entry should have been evicted, leaving only the fresh one"
+        );
+    }
+
+    /// An entry within `max_age_ms` is retained across subsequent inserts.
+    #[test]
+    fn age_eviction_retains_fresh_entries() {
+        let id = Identity::generate();
+        let max_age_ms = 60_000u64;
+        let mut buf = PendingBuffer::with_limits(10_000, max_age_ms);
+
+        let (prev_a, event_a) = make_pending_event(&id, 1);
+        buf.buffer_for_prev_at(prev_a, event_a, 0);
+
+        // Only 500 ms later — still fresh.
+        let (prev_b, event_b) = make_pending_event(&id, 2);
+        buf.buffer_for_prev_at(prev_b, event_b, 500);
+
+        assert_eq!(
+            buf.pending_count(),
+            2,
+            "both entries should still be pending within max_age_ms"
+        );
+    }
+
+    /// Entries inserted via the legacy timestamp-less entry point are
+    /// immune to age eviction.
+    #[test]
+    fn age_eviction_ignores_entries_without_timestamp() {
+        let id = Identity::generate();
+        let mut buf = PendingBuffer::with_limits(10_000, 1_000);
+
+        let (prev_a, event_a) = make_pending_event(&id, 1);
+        buf.buffer_for_prev(prev_a, event_a); // no timestamp
+
+        let evicted = buf.evict_expired(u64::MAX);
+        assert_eq!(evicted, 0, "timestamp-less entries must not be evicted");
+        assert_eq!(buf.pending_count(), 1);
+    }
+
+    /// After filling to `max_entries + 1` the oldest entry is evicted
+    /// so the count stays at the configured capacity.
+    #[test]
+    fn capacity_eviction_drops_oldest_when_exceeded() {
+        let id = Identity::generate();
+        let max_entries = 5usize;
+        let mut buf = PendingBuffer::with_limits(max_entries, 60_000);
+
+        for i in 0..max_entries as u64 {
+            let (prev, event) = make_pending_event(&id, i);
+            buf.buffer_for_prev_at(prev, event, 0);
+        }
+        assert_eq!(buf.pending_count(), max_entries);
+
+        // Insert one more — capacity is exceeded, so eviction kicks in.
+        let (prev, event) = make_pending_event(&id, 999);
+        buf.buffer_for_prev_at(prev, event, 100);
+        assert_eq!(
+            buf.pending_count(),
+            max_entries,
+            "count must stay at max_entries after overfill"
+        );
+    }
+
+    /// `pending_count()` accurately reflects eviction activity.
+    #[test]
+    fn pending_count_reflects_both_eviction_policies() {
+        let id = Identity::generate();
+        let max_age_ms = 1_000u64;
+        let mut buf = PendingBuffer::with_limits(4, max_age_ms);
+
+        // Four fresh entries at t=0 → fills capacity exactly.
+        for i in 0..4u64 {
+            let (prev, event) = make_pending_event(&id, i);
+            buf.buffer_for_prev_at(prev, event, 0);
+        }
+        assert_eq!(buf.pending_count(), 4);
+
+        // Add one at t = max_age + 50. All old entries should age out;
+        // the new entry is the only survivor.
+        let (prev, event) = make_pending_event(&id, 100);
+        buf.buffer_for_prev_at(prev, event, max_age_ms + 50);
+        assert_eq!(
+            buf.pending_count(),
+            1,
+            "age eviction must sweep the four stale entries before the new insert"
+        );
+    }
+
+    /// `evict_expired` on a buffer without a configured `max_age_ms` is a
+    /// no-op (returns 0).
+    #[test]
+    fn evict_expired_without_age_limit_is_noop() {
+        let id = Identity::generate();
+        let mut buf = PendingBuffer::with_capacity(1_000); // no max_age_ms
+
+        let (prev, event) = make_pending_event(&id, 1);
+        buf.buffer_for_prev_at(prev, event, 0);
+
+        let evicted = buf.evict_expired(u64::MAX);
+        assert_eq!(evicted, 0);
+        assert_eq!(buf.pending_count(), 1);
+    }
+
+    /// Defaults (`with_limits(DEFAULT_PENDING_MAX_ENTRIES, DEFAULT_PENDING_MAX_AGE_MS)`)
+    /// compile cleanly and behave as expected for a tiny workload.
+    #[test]
+    fn default_limits_construct_and_work() {
+        let id = Identity::generate();
+        let mut buf =
+            PendingBuffer::with_limits(DEFAULT_PENDING_MAX_ENTRIES, DEFAULT_PENDING_MAX_AGE_MS);
+        let (prev, event) = make_pending_event(&id, 1);
+        buf.buffer_for_prev_at(prev, event, 42);
+        assert_eq!(buf.pending_count(), 1);
     }
 }
