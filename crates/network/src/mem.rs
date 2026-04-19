@@ -39,8 +39,6 @@ use crate::traits::*;
 struct HubMessage {
     sender: EndpointId,
     data: Bytes,
-    #[allow(dead_code)]
-    neighbors_only: bool,
 }
 
 /// Subscriber tracking for neighbor events.
@@ -202,14 +200,12 @@ impl TopicHandle for MemTopicHandle {
             let _ = sender.send(HubMessage {
                 sender: self.id,
                 data,
-                neighbors_only: false,
             });
         }
         Ok(())
     }
 
-    /// Broadcast to all topic subscribers regardless of the `neighbors_only`
-    /// flag.
+    /// Broadcast to all topic subscribers.
     ///
     /// # MemNetwork divergence from real iroh
     ///
@@ -217,8 +213,8 @@ impl TopicHandle for MemTopicHandle {
     /// gossip-mesh neighbors (the immediate peers this node is connected to).
     /// `MemNetwork` has no concept of per-peer connections: the `HubMessage`
     /// is placed on the shared broadcast channel and received by every
-    /// subscriber on the topic. The `neighbors_only` flag is recorded in the
-    /// message but **has no effect on delivery** — all subscribers receive it.
+    /// subscriber on the topic, so this method behaves identically to
+    /// [`broadcast`](Self::broadcast).
     ///
     /// Tests that specifically rely on neighbor-scoped delivery will produce
     /// false-positive results here and should use the real `IrohNetwork` or
@@ -228,7 +224,6 @@ impl TopicHandle for MemTopicHandle {
             let _ = sender.send(HubMessage {
                 sender: self.id,
                 data,
-                neighbors_only: true,
             });
         }
         Ok(())

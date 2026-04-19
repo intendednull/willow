@@ -263,7 +263,6 @@ impl<N: willow_network::Network> ClientHandle<N> {
 /// compatibility but its [`run()`](ClientEventLoop::run) method is a no-op
 /// that simply drains the internal channel.
 pub struct ClientEventLoop {
-    #[allow(dead_code)]
     pub(crate) _system: willow_actor::System,
 }
 
@@ -644,7 +643,6 @@ fn load_identity() -> Identity {
 /// # Returns
 ///
 /// A new map with only the entries whose key parsed successfully.
-#[allow(dead_code)]
 pub fn reconcile_topic_map<V: Clone>(
     raw: &std::collections::HashMap<String, V>,
 ) -> std::collections::HashMap<willow_messaging::ChannelId, V> {
@@ -660,19 +658,6 @@ pub fn reconcile_topic_map<V: Clone>(
         out.insert(cid, value.clone());
     }
     out
-}
-
-/// Parse a permission string into a [`willow_state::Permission`].
-#[allow(dead_code)]
-fn parse_permission(s: &str) -> anyhow::Result<willow_state::Permission> {
-    match s {
-        "SyncProvider" => Ok(willow_state::Permission::SyncProvider),
-        "SendMessages" => Ok(willow_state::Permission::SendMessages),
-        "CreateInvite" => Ok(willow_state::Permission::CreateInvite),
-        "ManageChannels" => Ok(willow_state::Permission::ManageChannels),
-        "ManageRoles" => Ok(willow_state::Permission::ManageRoles),
-        _ => anyhow::bail!("unknown permission: {s}"),
-    }
 }
 
 /// Create a test-only ClientHandle without connecting to the network.

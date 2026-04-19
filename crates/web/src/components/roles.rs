@@ -21,7 +21,6 @@ type RoleEntry = (String, String, Vec<String>);
 ///
 /// Only the server owner sees management controls (create, delete,
 /// permission toggles, assign). Non-owners see a read-only list.
-#[allow(dead_code)]
 #[component]
 pub fn RoleManager(
     peer_id: ReadSignal<String>,

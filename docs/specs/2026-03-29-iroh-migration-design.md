@@ -1,7 +1,9 @@
 # Iroh Migration Design Spec
 
 **Date**: 2026-03-29
-**Status**: Approved
+**Status**: Completed 2026-04-18. The Bevy app (`crates/app/`) has been retired
+and removed from the workspace; references to `crates/app/` tests below are
+historical only.
 
 ## Overview
 
