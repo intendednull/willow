@@ -1199,6 +1199,7 @@ mod tests {
             voice: alice.voice_state_addr.clone(),
             event_broker: alice.event_broker.clone(),
             persistence: alice.persistence_addr.clone(),
+            persistence_enabled: alice.persistence_enabled,
             identity: bob_identity,
             dag: alice.dag_addr.clone(),
             join_links: Arc::clone(&alice.join_links),
