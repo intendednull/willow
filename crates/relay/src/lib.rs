@@ -4,6 +4,42 @@
 //! thin library wrapper so that the bootstrap-handler logic and topic
 //! validation can be exercised by integration tests in
 //! `crates/relay/tests/`. The actual `main` lives in `src/main.rs`.
+//!
+//! ## Scope: transport only
+//!
+//! All routines in this crate operate at the **transport layer**.
+//! They forward bytes, manage gossip subscriptions, and rate-limit
+//! incoming connections. They do **not** inspect, validate, or filter
+//! application-level payloads:
+//!
+//! - No Ed25519 signature verification on relayed messages.
+//! - No event-sourced state machine application (see `willow-state`).
+//! - No permission, role, or governance enforcement.
+//! - No content-based routing or filtering.
+//!
+//! The only semantic work performed here is syntactic topic-string
+//! validation in [`topic_str_is_valid`] (length + allowed characters),
+//! which is purely a DoS guard, not a trust or governance check.
+//!
+//! ## Trust model
+//!
+//! The relay is a **regular client** in the DAG sync protocol. Its
+//! Ed25519 identity carries **no implicit authority** over any server.
+//! Per the DAG spec
+//! (`docs/specs/2026-04-01-per-author-merkle-dag-state-design.md`)
+//! and `CLAUDE.md` "Trust Model":
+//!
+//! > The relay is a regular client — trusted only if explicitly granted
+//! > `SyncProvider` permission by the owner.
+//!
+//! A hostile or compromised relay can affect **availability** (drop,
+//! delay, or reorder messages) but cannot forge events, bypass
+//! permissions, or corrupt state — those invariants are enforced
+//! cryptographically and deterministically at each **client**.
+//! Clients are therefore responsible for **all** DAG validation:
+//! signatures, parent-hash chain integrity, permission checks, and
+//! merge/replay correctness. Relayed bytes are never trusted on the
+//! strength of having passed through this crate.
 
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -324,6 +360,14 @@ pub async fn run_proxy_listener(
 /// dynamically subscribe to announced channel topics. Topics are
 /// validated against [`topic_str_is_valid`] and the number of distinct
 /// subscribed topics is capped at [`MAX_TOPICS`].
+///
+/// This is a **transport-layer** routine. The relay simply joins the
+/// announced gossip topics so clients on those topics can reach each
+/// other through it; it performs no governance check on who is
+/// announcing, no signature verification on the underlying events, and
+/// no authority check against the server's DAG state. Clients are
+/// responsible for validating any messages that arrive on those
+/// topics. See the crate-level docs for the full trust model.
 pub async fn topic_announce_listener<N>(mut events: N::Events, network: N)
 where
     N: Network,
