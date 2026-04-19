@@ -139,13 +139,22 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Handler<GossipEventMsg>
                             // target_peer identifies the original requester so
                             // clients can filter responses addressed to them.
                             let reply = WorkerWireMessage::Response {
-                                request_id,
+                                request_id: request_id.clone(),
                                 target_peer: requester,
                                 payload: Box::new(response),
                             };
                             let wire = willow_common::WireMessage::Worker(reply);
                             if let Some(bytes) = willow_common::pack_wire(&wire, &identity) {
-                                reply_topic.broadcast(bytes::Bytes::from(bytes)).await.ok();
+                                if let Err(err) =
+                                    reply_topic.broadcast(bytes::Bytes::from(bytes)).await
+                                {
+                                    warn!(
+                                        %err,
+                                        %request_id,
+                                        %requester,
+                                        "worker reply broadcast failed"
+                                    );
+                                }
                             }
                         }
                     }
@@ -166,7 +175,14 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Handler<GossipEventMsg>
                         match parse_server_message(&msg.content) {
                             ServerMessageAction::Events(events) => {
                                 for event in events {
-                                    state_addr.do_send(EventMsg(event)).ok();
+                                    let event_hash = event.hash;
+                                    if state_addr.do_send(EventMsg(event)).is_err() {
+                                        warn!(
+                                            %event_hash,
+                                            source = "workers-topic",
+                                            "worker event dropped: state mailbox full"
+                                        );
+                                    }
                                 }
                             }
                             ServerMessageAction::Ignore => {}
@@ -194,7 +210,14 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Handler<ServerOpsEventM
                 match parse_server_message(&msg.content) {
                     ServerMessageAction::Events(events) => {
                         for event in events {
-                            state_addr.do_send(EventMsg(event)).ok();
+                            let event_hash = event.hash;
+                            if state_addr.do_send(EventMsg(event)).is_err() {
+                                warn!(
+                                    %event_hash,
+                                    source = "server-ops-topic",
+                                    "worker event dropped: state mailbox full"
+                                );
+                            }
                         }
                     }
                     ServerMessageAction::Ignore => {}

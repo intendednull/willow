@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use tracing::debug;
+use tracing::{debug, warn};
 use willow_actor::{Actor, Addr, Context, Handler, IntervalHandle, Message};
 use willow_network::TopicHandle;
 
@@ -75,14 +75,17 @@ impl<T: TopicHandle + 'static> Handler<SyncTick> for SyncActor<T> {
                 // it checks target_peer == local_peer_id (the receiver also
                 // has their own ID, which won't match) OR handles Sync
                 // requests specially.
+                let request_id = uuid::Uuid::new_v4().to_string();
                 let msg = WorkerWireMessage::Request {
-                    request_id: uuid::Uuid::new_v4().to_string(),
+                    request_id: request_id.clone(),
                     target_peer: peer_id,
                     payload: WorkerRequest::Sync { server_id, heads },
                 };
                 let wire = willow_common::WireMessage::Worker(msg);
                 if let Some(bytes) = willow_common::pack_wire(&wire, &identity) {
-                    topic.broadcast(bytes::Bytes::from(bytes)).await.ok();
+                    if let Err(err) = topic.broadcast(bytes::Bytes::from(bytes)).await {
+                        warn!(%err, %request_id, "sync request broadcast failed");
+                    }
                 }
             }
         }
