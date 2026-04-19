@@ -21,7 +21,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use x25519_dalek::{PublicKey as X25519Public, StaticSecret as X25519Secret};
-use zeroize::ZeroizeOnDrop;
+use zeroize::{ZeroizeOnDrop, Zeroizing};
 
 use willow_identity::Identity;
 
@@ -98,10 +98,12 @@ pub struct EncryptedChannelKey {
 ///
 /// The ratchet is seeded from a [`ChannelKey`] and can be re-seeded on
 /// key rotation (epoch change).
-#[derive(Clone)]
+#[derive(Clone, ZeroizeOnDrop)]
 pub struct KeyRatchet {
     seed: [u8; 32],
+    #[zeroize(skip)]
     counter: u64,
+    #[zeroize(skip)]
     epoch: u32,
 }
 
@@ -355,9 +357,11 @@ pub fn encrypt_channel_key_for(
     let shared_secret = ephemeral_secret.diffie_hellman(&recipient_x25519);
 
     // Derive wrapping key via HKDF-SHA256.
+    // Wrapped in `Zeroizing` so the derived key is wiped on drop rather
+    // than lingering on the stack after `cipher` is consumed.
     let hk = Hkdf::<Sha256>::new(None, shared_secret.as_bytes());
-    let mut wrapping_key = [0u8; 32];
-    hk.expand(b"willow-channel-key-wrap", &mut wrapping_key)
+    let mut wrapping_key: Zeroizing<[u8; 32]> = Zeroizing::new([0u8; 32]);
+    hk.expand(b"willow-channel-key-wrap", wrapping_key.as_mut())
         .map_err(|_| CryptoError::KeyDerivationFailed)?;
 
     let cipher = ChaCha20Poly1305::new(wrapping_key.as_ref().into());
@@ -385,9 +389,11 @@ pub fn decrypt_channel_key(
     let sender_ephemeral = X25519Public::from(encrypted.ephemeral_public);
     let shared_secret = our_x25519.diffie_hellman(&sender_ephemeral);
 
+    // Wrap the derived key in `Zeroizing` so it's wiped on drop rather
+    // than lingering on the stack after `cipher` is consumed.
     let hk = Hkdf::<Sha256>::new(None, shared_secret.as_bytes());
-    let mut wrapping_key = [0u8; 32];
-    hk.expand(b"willow-channel-key-wrap", &mut wrapping_key)
+    let mut wrapping_key: Zeroizing<[u8; 32]> = Zeroizing::new([0u8; 32]);
+    hk.expand(b"willow-channel-key-wrap", wrapping_key.as_mut())
         .map_err(|_| CryptoError::KeyDerivationFailed)?;
 
     let cipher = ChaCha20Poly1305::new(wrapping_key.as_ref().into());

@@ -89,6 +89,23 @@ fn wall_clock_ms() -> u64 {
     js_sys::Date::now() as u64
 }
 
+/// Advance `counter` by one within `millis`, rolling over into the next
+/// millisecond if the u32 counter would overflow.
+///
+/// The counter field is only 32 bits wide, so a node that generates more
+/// than `u32::MAX` timestamps inside a single millisecond would otherwise
+/// wrap around and break monotonicity. When that happens we borrow from
+/// the millisecond field instead: bump `millis` by 1 and reset the counter
+/// to 0. This keeps every generated timestamp strictly greater than the
+/// previous one.
+fn bump_counter(millis: u64, counter: u32) -> (u64, u32) {
+    match counter.checked_add(1) {
+        Some(next) => (millis, next),
+        // Saturated: roll into the next millisecond to preserve monotonicity.
+        None => (millis.saturating_add(1), 0),
+    }
+}
+
 /// A Hybrid Logical Clock instance.
 ///
 /// Each node in the network maintains its own `HLC`. It must be used to
@@ -131,10 +148,10 @@ impl HLC {
         let wall = wall_clock_ms();
         let millis = wall.max(self.latest.millis);
 
-        let counter = if millis == self.latest.millis {
-            self.latest.counter + 1
+        let (millis, counter) = if millis == self.latest.millis {
+            bump_counter(millis, self.latest.counter)
         } else {
-            0
+            (millis, 0)
         };
 
         self.latest = HlcTimestamp { millis, counter };
@@ -149,14 +166,14 @@ impl HLC {
         let wall = wall_clock_ms();
         let millis = wall.max(self.latest.millis).max(remote.millis);
 
-        let counter = if millis == self.latest.millis && millis == remote.millis {
-            self.latest.counter.max(remote.counter) + 1
+        let (millis, counter) = if millis == self.latest.millis && millis == remote.millis {
+            bump_counter(millis, self.latest.counter.max(remote.counter))
         } else if millis == self.latest.millis {
-            self.latest.counter + 1
+            bump_counter(millis, self.latest.counter)
         } else if millis == remote.millis {
-            remote.counter + 1
+            bump_counter(millis, remote.counter)
         } else {
-            0
+            (millis, 0)
         };
 
         self.latest = HlcTimestamp { millis, counter };
@@ -308,6 +325,75 @@ mod tests {
             "now() must be monotonically greater than the previous latest \
              even when the wall clock is behind (got {t} <= {before})"
         );
+    }
+
+    #[test]
+    fn now_rolls_into_next_millis_when_counter_saturates() {
+        let mut clock = HLC::new();
+
+        // Force the clock into a far-future millisecond with the counter
+        // already at u32::MAX so the real wall clock stays below it.
+        let future_millis = u64::MAX / 2;
+        clock.latest = HlcTimestamp {
+            millis: future_millis,
+            counter: u32::MAX,
+        };
+
+        let t = clock.now();
+
+        // The counter cannot go higher within the same millisecond without
+        // wrapping, so we must have borrowed from the next millisecond.
+        assert_eq!(t.millis, future_millis + 1);
+        assert_eq!(t.counter, 0);
+
+        // And monotonicity still holds.
+        let t2 = clock.now();
+        assert!(t2 > t);
+    }
+
+    #[test]
+    fn receive_rolls_into_next_millis_when_counter_saturates() {
+        let mut clock = HLC::new();
+
+        let future_millis = u64::MAX / 2;
+        clock.latest = HlcTimestamp {
+            millis: future_millis,
+            counter: u32::MAX,
+        };
+
+        // Remote is in the same millisecond with the same saturated counter.
+        let remote = HlcTimestamp {
+            millis: future_millis,
+            counter: u32::MAX,
+        };
+
+        let t = clock.receive(remote);
+
+        assert_eq!(t.millis, future_millis + 1);
+        assert_eq!(t.counter, 0);
+        assert!(t > remote);
+    }
+
+    #[test]
+    fn now_near_overflow_preserves_monotonicity_across_boundary() {
+        let mut clock = HLC::new();
+
+        // Position the clock one step away from saturation in a future
+        // millisecond the wall clock can't catch up with.
+        let future_millis = u64::MAX / 2;
+        clock.latest = HlcTimestamp {
+            millis: future_millis,
+            counter: u32::MAX - 1,
+        };
+
+        let t1 = clock.now(); // should land at counter = u32::MAX
+        assert_eq!(t1.millis, future_millis);
+        assert_eq!(t1.counter, u32::MAX);
+
+        let t2 = clock.now(); // next tick must roll over, not wrap
+        assert!(t2 > t1, "got {t2} <= {t1}");
+        assert_eq!(t2.millis, future_millis + 1);
+        assert_eq!(t2.counter, 0);
     }
 
     #[test]
