@@ -188,7 +188,8 @@ impl StorageEventStore {
         before: Option<&HeadsSummary>,
         limit: u32,
     ) -> anyhow::Result<(Vec<Event>, bool)> {
-        let fetch_limit = limit as usize + 1;
+        let capped = (limit as usize).min(Self::SYNC_BATCH_LIMIT);
+        let fetch_limit = capped + 1;
 
         // Build the query dynamically based on filters.
         let mut sql = String::from("SELECT event_data FROM events WHERE server_id = ?1");
@@ -271,8 +272,8 @@ impl StorageEventStore {
             })
             .collect();
 
-        let has_more = events.len() > limit as usize;
-        let events: Vec<Event> = events.into_iter().take(limit as usize).collect();
+        let has_more = events.len() > capped;
+        let events: Vec<Event> = events.into_iter().take(capped).collect();
 
         Ok((events, has_more))
     }
@@ -395,7 +396,9 @@ impl StorageEventStore {
         let page_size: i64 = self
             .conn
             .query_row("PRAGMA page_size", [], |row| row.get(0))?;
-        Ok((pages * page_size) as u64)
+        let pages = u64::try_from(pages).unwrap_or(0);
+        let page_size = u64::try_from(page_size).unwrap_or(0);
+        Ok(pages.saturating_mul(page_size))
     }
 
     /// Number of distinct servers tracked.
@@ -405,7 +408,7 @@ impl StorageEventStore {
                 .query_row("SELECT COUNT(DISTINCT server_id) FROM events", [], |row| {
                     row.get(0)
                 })?;
-        Ok(count as u32)
+        Ok(u32::try_from(count).unwrap_or(u32::MAX))
     }
 }
 
