@@ -112,10 +112,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                         identity_for_cb.endpoint_id(),
                         saved.display_name,
                     );
-                    let Ok(data) = willow_transport::pack_envelope(
-                        willow_transport::MessageType::Identity,
-                        &profile,
-                    ) else {
+                    let Ok(data) = willow_identity::pack_profile(&profile, &identity_for_cb) else {
                         return;
                     };
                     let topics = topics_for_cb.read().unwrap_or_else(|e| e.into_inner());
@@ -211,9 +208,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         }
         let profile =
             willow_identity::UserProfile::new(self.identity.endpoint_id(), saved.display_name);
-        if let Ok(data) =
-            willow_transport::pack_envelope(willow_transport::MessageType::Identity, &profile)
-        {
+        if let Ok(data) = willow_identity::pack_profile(&profile, &self.identity) {
             self.mutation_handle
                 .broadcast_on_topic(ops::PROFILE_TOPIC, data);
         }

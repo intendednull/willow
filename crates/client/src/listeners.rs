@@ -196,23 +196,38 @@ async fn process_received_message<T: TopicHandle>(
     ctx: &ListenerCtx,
     topic: &T,
 ) {
-    // Try profile broadcast first.
-    if let Ok((profile, willow_transport::MessageType::Identity)) =
-        willow_transport::unpack_envelope::<willow_identity::UserProfile>(data)
-    {
-        let peer_id = profile.peer_id;
-        let display_name = profile.display_name.clone();
-        willow_actor::state::mutate(&ctx.profiles, move |p| {
-            p.names.insert(peer_id, display_name);
-        })
-        .await;
-        ctx.event_broker
-            .do_send(willow_actor::Publish(ClientEvent::ProfileUpdated {
-                peer_id: profile.peer_id,
-                display_name: profile.display_name,
-            }))
-            .ok();
-        return;
+    // Try profile broadcast first. Profile envelopes are Ed25519-signed
+    // and we reject anything where the signer doesn't match the claimed
+    // `peer_id` — otherwise any peer could spoof another peer's display
+    // name. See issue #145.
+    match willow_identity::unpack_profile(data) {
+        Ok(profile) => {
+            let peer_id = profile.peer_id;
+            let display_name = profile.display_name.clone();
+            willow_actor::state::mutate(&ctx.profiles, move |p| {
+                p.names.insert(peer_id, display_name);
+            })
+            .await;
+            ctx.event_broker
+                .do_send(willow_actor::Publish(ClientEvent::ProfileUpdated {
+                    peer_id: profile.peer_id,
+                    display_name: profile.display_name,
+                }))
+                .ok();
+            return;
+        }
+        Err(willow_identity::IdentityError::PeerMismatch { claimed, signer }) => {
+            tracing::warn!(
+                %claimed,
+                %signer,
+                "rejecting spoofed profile broadcast: signer does not match claimed peer_id"
+            );
+            return;
+        }
+        Err(_) => {
+            // Not a profile envelope — fall through to the WireMessage
+            // path below.
+        }
     }
 
     let Some((wire_msg, signer)) = crate::ops::unpack_wire(data) else {
