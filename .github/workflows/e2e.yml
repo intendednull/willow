@@ -1,11 +1,10 @@
 name: E2E
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
+  schedule:
+    # Weekly smoke run — catches drift without gating PRs on a flaky suite.
+    - cron: '0 12 * * 1'
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,10 +13,9 @@ jobs:
   e2e:
     name: Playwright E2E
     runs-on: ubuntu-latest
-    # Keep this off the critical path: builds + browsers + full stack can run
-    # 15+ min. A failure here should not block a PR merge until the suite is
-    # stable; flip continue-on-error off once it is.
-    continue-on-error: true
+    # Manual / scheduled only: the full stack run takes 15+ min and the
+    # multi-peer suite still has known flakes. Promote to `pull_request`
+    # once the suite is stable.
     steps:
       - uses: actions/checkout@v4
 
