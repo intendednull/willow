@@ -199,6 +199,26 @@ pub struct VoiceWriteSignals {
         WriteSignal<Option<send_wrapper::SendWrapper<web_sys::MediaStream>>>,
 }
 
+impl VoiceWriteSignals {
+    /// Reset all voice-related UI signals to their defaults: no active
+    /// voice channel, unmuted/undeafened, no local or remote media
+    /// streams, no speaking peers, and an empty participants map.
+    ///
+    /// Used when leaving a voice channel, switching between channels,
+    /// and when microphone permission is denied.
+    pub fn reset(&self) {
+        self.set_voice_channel.set(None);
+        self.set_voice_channel_name.set(String::new());
+        self.set_voice_muted.set(false);
+        self.set_voice_deafened.set(false);
+        self.set_video_source.set(None);
+        self.set_local_video_stream.set(None);
+        self.set_remote_video_streams.update(|m| m.clear());
+        self.set_speaking_peers.set(HashSet::new());
+        self.set_voice_participants_map.update(|m| m.clear());
+    }
+}
+
 /// Create all signal pairs and return the read/write halves.
 ///
 /// Signals that reflect `SharedState` are created via `derived_signal()` when

@@ -407,18 +407,7 @@ pub fn App() -> impl IntoView {
             handle_voice_leave.leave_voice().await;
         });
         vm_disconnect.borrow_mut().close_all();
-        write.voice.set_voice_channel.set(None);
-        write.voice.set_voice_channel_name.set(String::new());
-        write.voice.set_voice_muted.set(false);
-        write.voice.set_voice_deafened.set(false);
-        write.voice.set_video_source.set(None);
-        write.voice.set_local_video_stream.set(None);
-        write.voice.set_remote_video_streams.update(|m| m.clear());
-        write
-            .voice
-            .set_speaking_peers
-            .set(std::collections::HashSet::new());
-        write.voice.set_voice_participants_map.update(|m| m.clear());
+        write.voice.reset();
         write.ui.set_show_call_page.set(false);
         write
             .ui
@@ -551,15 +540,7 @@ pub fn App() -> impl IntoView {
                                             vc_leave.leave_voice().await;
                                         });
                                         vm.borrow_mut().close_all();
-                                        write.voice.set_voice_channel.set(None);
-                                        write.voice.set_voice_channel_name.set(String::new());
-                                        write.voice.set_voice_muted.set(false);
-                                        write.voice.set_voice_deafened.set(false);
-                                        write.voice.set_video_source.set(None);
-                                        write.voice.set_local_video_stream.set(None);
-                                        write.voice.set_remote_video_streams.update(|m| m.clear());
-                                        write.voice.set_speaking_peers.set(std::collections::HashSet::new());
-                                        write.voice.set_voice_participants_map.update(|m| m.clear());
+                                        write.voice.reset();
                                     }
 
                                     // If already in this voice channel, just navigate to the call page.
@@ -626,8 +607,7 @@ pub fn App() -> impl IntoView {
                                     });
                                     let on_error = wasm_bindgen::closure::Closure::once(move |_err: wasm_bindgen::JsValue| {
                                         tracing::error!("Microphone access denied");
-                                        write.voice.set_voice_channel.set(None);
-                                        write.voice.set_voice_channel_name.set(String::new());
+                                        write.voice.reset();
                                         write.ui.set_show_call_page.set(false);
                                     });
                                     drop(promise.then2(&on_success, &on_error));
