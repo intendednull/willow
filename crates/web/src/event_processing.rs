@@ -31,13 +31,11 @@ pub fn process_event_batch(
             ClientEvent::PeerConnected(_) => {
                 write.network.set_loading.set(false);
             }
-            ClientEvent::Listening(ref addr) => {
-                if addr == "reconnecting" {
-                    write
-                        .network
-                        .set_connection_status
-                        .set("reconnecting".to_string());
-                }
+            ClientEvent::Listening(ref addr) if addr == "reconnecting" => {
+                write
+                    .network
+                    .set_connection_status
+                    .set("reconnecting".to_string());
             }
             ClientEvent::VoiceJoined {
                 channel_id,

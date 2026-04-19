@@ -3170,11 +3170,12 @@ fn negative_vote_does_not_apply_proposal() {
         },
     );
 
-    // Owner proposes to kick target. With 3 admins and Majority threshold,
-    // majority > 1.5 requires at least 2 yes votes.
-    // Owner's implicit yes counts as 1 — not enough to auto-apply.
+    // admin_2 (non-genesis) proposes to kick target. With 3 admins and
+    // Majority threshold, majority > 1.5 requires at least 2 yes votes.
+    // admin_2's implicit yes counts as 1 — not enough to auto-apply.
+    // (Owner cannot be the proposer here: genesis author bypasses threshold.)
     let kick_prop = dag.create_event(
-        &owner,
+        &admin_2,
         EventKind::Propose {
             action: ProposedAction::KickMember {
                 peer_id: target.endpoint_id(),
@@ -3195,9 +3196,9 @@ fn negative_vote_does_not_apply_proposal() {
         "target must still be a member"
     );
 
-    // admin_2 votes NO — must not cause the proposal to apply.
-    let vote_no_a2 = dag.create_event(
-        &admin_2,
+    // admin_3 votes NO — must not cause the proposal to apply.
+    let vote_no_a3 = dag.create_event(
+        &admin_3,
         EventKind::Vote {
             proposal: kick_prop.hash,
             accept: false,
@@ -3205,7 +3206,7 @@ fn negative_vote_does_not_apply_proposal() {
         vec![kick_prop.hash],
         0,
     );
-    dag.insert(vote_no_a2).unwrap();
+    dag.insert(vote_no_a3).unwrap();
 
     let state = materialize(&dag);
     assert!(
@@ -3217,9 +3218,9 @@ fn negative_vote_does_not_apply_proposal() {
         "target must still be a member after 1 no vote"
     );
 
-    // admin_3 also votes NO — proposal should remain pending (2 no, 1 yes).
-    let vote_no_a3 = dag.create_event(
-        &admin_3,
+    // owner also votes NO — proposal should remain pending (1 yes, 2 no).
+    let vote_no_owner = dag.create_event(
+        &owner,
         EventKind::Vote {
             proposal: kick_prop.hash,
             accept: false,
@@ -3227,7 +3228,7 @@ fn negative_vote_does_not_apply_proposal() {
         vec![kick_prop.hash],
         0,
     );
-    dag.insert(vote_no_a3).unwrap();
+    dag.insert(vote_no_owner).unwrap();
 
     let state = materialize(&dag);
     assert!(
@@ -3274,11 +3275,12 @@ fn no_vote_proposal_does_not_auto_apply_with_two_admins() {
         },
     );
 
-    // Owner proposes to kick target. With 2 admins and Majority threshold,
-    // majority requires > 1, i.e. BOTH admins must vote yes.
+    // admin_2 (non-genesis) proposes to kick target. With 2 admins and
+    // Majority threshold, majority requires > 1, i.e. BOTH admins must vote yes.
     // Only the proposer's implicit yes counts (1/2) — must NOT auto-apply.
+    // (Owner cannot be proposer: genesis author bypasses threshold.)
     let kick_prop = dag.create_event(
-        &owner,
+        &admin_2,
         EventKind::Propose {
             action: ProposedAction::KickMember {
                 peer_id: target.endpoint_id(),
@@ -3300,9 +3302,9 @@ fn no_vote_proposal_does_not_auto_apply_with_two_admins() {
         "target must remain a member"
     );
 
-    // admin_2 also votes yes — now 2/2 = majority, proposal applies.
+    // owner also votes yes — now 2/2 = majority, proposal applies.
     let vote_yes = dag.create_event(
-        &admin_2,
+        &owner,
         EventKind::Vote {
             proposal: kick_prop.hash,
             accept: true,
