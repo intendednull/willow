@@ -1,0 +1,43 @@
+name: E2E
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly smoke run — catches drift without gating PRs on a flaky suite.
+    - cron: '0 12 * * 1'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  e2e:
+    name: Playwright E2E
+    runs-on: ubuntu-latest
+    # Manual / scheduled only: the full stack run takes 15+ min and the
+    # multi-peer suite still has known flakes. Promote to `pull_request`
+    # once the suite is stable.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: e2e-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: e2e-
+
+      - name: Install just
+        uses: taiki-e/install-action@just
+
+      - name: Run full E2E flow (setup + tests + teardown)
+        run: just test-e2e-full

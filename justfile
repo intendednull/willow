@@ -55,6 +55,28 @@ build-workers:
 test-browser:
     wasm-pack test --headless --firefox crates/web
 
+# Bootstrap the E2E test environment (install tooling, build, start services)
+setup-e2e:
+    ./scripts/setup-e2e.sh
+
+# Install/build for E2E but don't start services
+setup-e2e-no-start:
+    ./scripts/setup-e2e.sh --no-start
+
+# Stop any services started by setup-e2e
+teardown-e2e:
+    ./scripts/teardown-e2e.sh
+
+# Run the full E2E flow: setup, run tests, teardown (teardown runs even on failure)
+test-e2e-full:
+    #!/usr/bin/env bash
+    set -u
+    ./scripts/setup-e2e.sh
+    EXIT_CODE=0
+    npx playwright test --project=desktop-chrome --project=mobile-chrome || EXIT_CODE=$?
+    ./scripts/teardown-e2e.sh
+    exit $EXIT_CODE
+
 # Run Playwright E2E tests against deployed site
 test-e2e-ui:
     npx playwright test --project=desktop-chrome --project=mobile-chrome
