@@ -1,0 +1,45 @@
+name: E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  e2e:
+    name: Playwright E2E
+    runs-on: ubuntu-latest
+    # Keep this off the critical path: builds + browsers + full stack can run
+    # 15+ min. A failure here should not block a PR merge until the suite is
+    # stable; flip continue-on-error off once it is.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: e2e-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: e2e-
+
+      - name: Install just
+        uses: taiki-e/install-action@just
+
+      - name: Run full E2E flow (setup + tests + teardown)
+        run: just test-e2e-full
