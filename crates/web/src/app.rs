@@ -57,17 +57,36 @@ fn resolve_relay_url() -> String {
     DEFAULT_RELAY_URL.to_string()
 }
 
-/// Fetch the bootstrap node's endpoint ID from the relay's companion port.
-/// Returns `None` on any failure (network error, parse error, etc.).
+/// Derive the HTTP URL for the relay's `/bootstrap-id` endpoint from a
+/// relay URL. Handles `ws://` → `http://` and `wss://` → `https://`
+/// scheme rewrites so clients can fetch the endpoint ID from the same
+/// port as the relay's main HTTP/WebSocket listener.
+///
+/// This function is pure so it can be unit-tested without a browser.
+pub(crate) fn bootstrap_id_url(relay_url: &str) -> String {
+    let trimmed = relay_url.trim_end_matches('/');
+    // Swap the scheme to the HTTP equivalent so `fetch` works even
+    // when the caller configured a ws(s) URL (the iroh-relay serves
+    // HTTP and WebSocket on the same port).
+    let base = if let Some(rest) = trimmed.strip_prefix("wss://") {
+        format!("https://{rest}")
+    } else if let Some(rest) = trimmed.strip_prefix("ws://") {
+        format!("http://{rest}")
+    } else {
+        trimmed.to_string()
+    };
+    format!("{base}/bootstrap-id")
+}
+
+/// Fetch the bootstrap node's endpoint ID from the relay. The relay
+/// multiplexes `/bootstrap-id` onto its main HTTP/WebSocket port — no
+/// companion port required — see issue #101. Returns `None` on any
+/// failure (network error, parse error, etc.).
 async fn fetch_bootstrap_id(relay_url: &str) -> Option<willow_identity::EndpointId> {
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
 
-    // The bootstrap-id endpoint runs on relay_port + 1.
-    let url = relay_url
-        .replace(":3340", ":3341")
-        .replace(":9443", ":9444");
-    let bootstrap_url = format!("{url}/bootstrap-id");
+    let bootstrap_url = bootstrap_id_url(relay_url);
 
     let window = web_sys::window()?;
     let resp_value = JsFuture::from(window.fetch_with_str(&bootstrap_url))
@@ -839,4 +858,65 @@ pub async fn handle_voice_offer(vm: VoiceManagerHandle, from: String, sdp: Strin
 pub async fn handle_voice_answer(vm: VoiceManagerHandle, from: String, sdp: String) {
     let mgr = vm.borrow();
     mgr.handle_answer(&from, &sdp).await.ok();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bootstrap_id_url;
+
+    #[test]
+    fn bootstrap_id_url_http_is_passthrough() {
+        assert_eq!(
+            bootstrap_id_url("http://localhost:3340"),
+            "http://localhost:3340/bootstrap-id"
+        );
+    }
+
+    #[test]
+    fn bootstrap_id_url_https_is_passthrough() {
+        assert_eq!(
+            bootstrap_id_url("https://willow.example.com:9443"),
+            "https://willow.example.com:9443/bootstrap-id"
+        );
+    }
+
+    #[test]
+    fn bootstrap_id_url_ws_becomes_http() {
+        assert_eq!(
+            bootstrap_id_url("ws://localhost:3340"),
+            "http://localhost:3340/bootstrap-id"
+        );
+    }
+
+    #[test]
+    fn bootstrap_id_url_wss_becomes_https() {
+        assert_eq!(
+            bootstrap_id_url("wss://willow.example.com:9443"),
+            "https://willow.example.com:9443/bootstrap-id"
+        );
+    }
+
+    #[test]
+    fn bootstrap_id_url_strips_trailing_slash() {
+        assert_eq!(
+            bootstrap_id_url("https://willow.example.com:9443/"),
+            "https://willow.example.com:9443/bootstrap-id"
+        );
+    }
+
+    #[test]
+    fn bootstrap_id_url_uses_same_port_as_relay() {
+        // Regression test for issue #101: the old behaviour rewrote
+        // ":9443" to ":9444" / ":3340" to ":3341". The derived URL must
+        // use the SAME port as the relay URL.
+        let derived = bootstrap_id_url("https://relay.example.com:9443");
+        assert!(
+            derived.contains(":9443/"),
+            "derived URL should use the same port: {derived}"
+        );
+        assert!(
+            !derived.contains(":9444"),
+            "derived URL must not use the deprecated +1 port: {derived}"
+        );
+    }
 }

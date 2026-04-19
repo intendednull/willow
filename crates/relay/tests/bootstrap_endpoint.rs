@@ -12,8 +12,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
 
 use willow_relay::{
-    handle_bootstrap_connection, run_bootstrap_listener, topic_str_is_valid, BOOTSTRAP_IO_TIMEOUT,
-    MAX_TOPIC_LEN,
+    handle_bootstrap_connection, run_bootstrap_listener, run_proxy_listener, topic_str_is_valid,
+    BOOTSTRAP_IO_TIMEOUT, MAX_TOPIC_LEN,
 };
 
 const TEST_ID: &str = "0123456789abcdef0123456789abcdef";
@@ -182,6 +182,131 @@ async fn bootstrap_listener_recovers_after_permit_released() {
         response.contains(TEST_ID),
         "second request failed: {response}"
     );
+}
+
+// ── Proxy dispatch (#101) ───────────────────────────────────────────────
+//
+// The public relay listener multiplexes `/bootstrap-id` onto the same
+// port that serves the iroh-relay protocol. These tests exercise the
+// dispatch logic without standing up a real iroh-relay upstream — we
+// stub the upstream with a dummy TCP server that just records that it
+// was contacted.
+
+/// Spawn a dummy upstream that accepts any connection, reads briefly,
+/// then closes. Returns its bound address and a receiver that signals
+/// whenever a connection is accepted.
+async fn spawn_dummy_upstream() -> (std::net::SocketAddr, tokio::sync::mpsc::Receiver<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local_addr");
+    let (tx, rx) = tokio::sync::mpsc::channel(16);
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let _ = tx.send(()).await;
+                // Drain a little so the client sees EOF rather than RST.
+                let mut buf = [0u8; 1024];
+                let _ =
+                    tokio::time::timeout(Duration::from_millis(100), stream.read(&mut buf)).await;
+                drop(stream);
+            });
+        }
+    });
+    (addr, rx)
+}
+
+/// Spawn the public proxy listener backed by `upstream_addr` and
+/// return its bound address.
+async fn spawn_proxy(upstream_addr: std::net::SocketAddr) -> std::net::SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local_addr");
+    let semaphore = Arc::new(Semaphore::new(16));
+    let id = Arc::new(TEST_ID.to_string());
+    tokio::spawn(run_proxy_listener(listener, upstream_addr, id, semaphore));
+    addr
+}
+
+#[tokio::test]
+async fn proxy_serves_bootstrap_id_on_same_port() {
+    // GET /bootstrap-id must be served locally with a 200 + id body.
+    let (upstream, _rx) = spawn_dummy_upstream().await;
+    let addr = spawn_proxy(upstream).await;
+
+    let mut stream = TcpStream::connect(addr).await.expect("connect");
+    stream
+        .write_all(b"GET /bootstrap-id HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .expect("write request");
+
+    let response = read_full_response(&mut stream).await;
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK\r\n"),
+        "response: {response}"
+    );
+    assert!(response.contains(TEST_ID), "body missing id: {response:?}");
+    // CORS header must be present so browsers can fetch from any origin.
+    assert!(
+        response.contains("Access-Control-Allow-Origin: *"),
+        "missing CORS header: {response:?}"
+    );
+}
+
+#[tokio::test]
+async fn proxy_forwards_non_bootstrap_requests_to_upstream() {
+    // Any request that is NOT /bootstrap-id must be proxied to the
+    // upstream iroh-relay listener.
+    let (upstream, mut rx) = spawn_dummy_upstream().await;
+    let addr = spawn_proxy(upstream).await;
+
+    let mut stream = TcpStream::connect(addr).await.expect("connect");
+    stream
+        .write_all(b"GET /relay HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n\r\n")
+        .await
+        .expect("write request");
+
+    // The upstream must receive a connection.
+    let got = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("upstream connection not observed within timeout");
+    assert!(got.is_some(), "upstream channel closed unexpectedly");
+}
+
+#[tokio::test]
+async fn proxy_rejects_non_matching_path_with_upstream_proxy() {
+    // A GET to a path that happens to share a prefix with /bootstrap-id
+    // must NOT be served locally — we match the path verbatim.
+    let (upstream, mut rx) = spawn_dummy_upstream().await;
+    let addr = spawn_proxy(upstream).await;
+
+    let mut stream = TcpStream::connect(addr).await.expect("connect");
+    stream
+        .write_all(b"GET /bootstrap-id-extra HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .expect("write request");
+
+    let got = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("prefix-only path should fall through to upstream proxy");
+    assert!(got.is_some(), "upstream channel closed unexpectedly");
+}
+
+#[tokio::test]
+async fn proxy_rejects_non_get_method_with_upstream_proxy() {
+    // Only GET /bootstrap-id is handled locally; POST /bootstrap-id is
+    // proxied to upstream like any other request.
+    let (upstream, mut rx) = spawn_dummy_upstream().await;
+    let addr = spawn_proxy(upstream).await;
+
+    let mut stream = TcpStream::connect(addr).await.expect("connect");
+    stream
+        .write_all(b"POST /bootstrap-id HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .expect("write request");
+
+    let got = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("POST /bootstrap-id should fall through to upstream proxy");
+    assert!(got.is_some(), "upstream channel closed unexpectedly");
 }
 
 // ── Topic validation (#113) ─────────────────────────────────────────────
