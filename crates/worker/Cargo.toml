@@ -10,7 +10,6 @@ willow-state = { path = "../state" }
 willow-identity = { path = "../identity" }
 willow-transport = { path = "../transport" }
 willow-network = { path = "../network" }
-futures-core = "0.3"
 serde = { workspace = true }
 bytes = { workspace = true }
 bincode = { workspace = true }
