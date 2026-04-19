@@ -6,10 +6,12 @@
 //! `crates/relay/tests/`. The actual `main` lives in `src/main.rs`.
 
 use std::collections::HashSet;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
 use tracing::{info, warn};
 use willow_network::traits::{GossipEvent, TopicEvents};
@@ -19,6 +21,18 @@ use willow_network::Network;
 /// HTTP endpoint. Excess accepts are dropped immediately to prevent
 /// FD/memory exhaustion under a connection-flood DoS.
 pub const MAX_CONCURRENT_BOOTSTRAP_CONNECTIONS: usize = 1024;
+
+/// HTTP path served by [`handle_bootstrap_connection`] to expose the
+/// bootstrap node's endpoint ID. The public proxy routes requests to
+/// this path into the bootstrap handler; any other path is proxied to
+/// the internal iroh-relay server.
+pub const BOOTSTRAP_ID_PATH: &str = "/bootstrap-id";
+
+/// Maximum number of bytes to buffer while peeking the HTTP request
+/// line during proxy dispatch. HTTP/1.1 permits long request URIs, but
+/// for our single-route dispatch we only need the first line which
+/// should always fit comfortably.
+const PROXY_REQUEST_LINE_BUFFER: usize = 8 * 1024;
 
 /// I/O deadline for any single read or write on a bootstrap-id
 /// connection. Slow clients (Slowloris) are dropped at this deadline.
@@ -119,6 +133,188 @@ pub async fn run_bootstrap_listener(
                 tracing::debug!(%e, %peer, "bootstrap connection error");
             }
             // Hold the permit for the lifetime of the per-connection task.
+            drop(permit);
+        });
+    }
+}
+
+/// Dispatch a single accepted connection to either the bootstrap-id
+/// handler or the upstream iroh-relay, based on the HTTP request line.
+///
+/// Peeks at the incoming bytes until a `\r\n` delimits the request
+/// line. If the path is exactly [`BOOTSTRAP_ID_PATH`] the connection is
+/// answered locally; otherwise a TCP connection is opened to
+/// `upstream_addr`, the already-read bytes are replayed, and the two
+/// streams are proxied bidirectionally (which transparently handles
+/// WebSocket upgrades used by the iroh-relay protocol).
+pub async fn dispatch_connection(
+    mut client: TcpStream,
+    upstream_addr: SocketAddr,
+    bootstrap_id: Arc<String>,
+) -> std::io::Result<()> {
+    // Disable Nagle — the iroh-relay expects the upstream path to be
+    // responsive, and responses from the bootstrap handler are small
+    // single-shot writes.
+    let _ = client.set_nodelay(true);
+
+    // Read until we have a full HTTP request line (terminated by CRLF)
+    // or hit the buffer cap. We do NOT attempt to parse the full
+    // headers — the upstream server does that.
+    let mut buffered = Vec::with_capacity(1024);
+    let mut chunk = [0u8; 1024];
+    let request_line_end = loop {
+        if buffered.len() >= PROXY_REQUEST_LINE_BUFFER {
+            // Request line too long — give up and proxy to upstream.
+            break None;
+        }
+        let read_fut = client.read(&mut chunk);
+        let n = match tokio::time::timeout(BOOTSTRAP_IO_TIMEOUT, read_fut).await {
+            Ok(Ok(0)) => break None, // EOF before a request line.
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => return Err(e),
+            Err(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "timed out reading request line",
+                ));
+            }
+        };
+        buffered.extend_from_slice(&chunk[..n]);
+        if let Some(pos) = buffered.windows(2).position(|w| w == b"\r\n") {
+            break Some(pos);
+        }
+    };
+
+    // If we have a request line, try to match the bootstrap-id path.
+    if let Some(end) = request_line_end {
+        let line = &buffered[..end];
+        if request_line_matches_bootstrap_id(line) {
+            return handle_bootstrap_request_after_line(client, &buffered, &bootstrap_id).await;
+        }
+    }
+
+    // Fall through: forward everything we've buffered so far plus the
+    // remainder of the stream to the upstream iroh-relay.
+    let mut upstream = TcpStream::connect(upstream_addr).await?;
+    let _ = upstream.set_nodelay(true);
+    if !buffered.is_empty() {
+        upstream.write_all(&buffered).await?;
+    }
+    // Bidirectional copy exits when either side hits EOF or errors.
+    // We deliberately drop any error — it's the normal way for HTTP/1.1
+    // responses with Connection: close to terminate.
+    let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+    Ok(())
+}
+
+/// Returns `true` iff the HTTP request line (without trailing CRLF)
+/// targets [`BOOTSTRAP_ID_PATH`] with method `GET`. We match the path
+/// verbatim (no query string support) because the endpoint does not
+/// use any request parameters.
+fn request_line_matches_bootstrap_id(line: &[u8]) -> bool {
+    // Expected shape: "GET /bootstrap-id HTTP/1.x"
+    let mut parts = line.splitn(3, |b| *b == b' ');
+    let Some(method) = parts.next() else {
+        return false;
+    };
+    let Some(path) = parts.next() else {
+        return false;
+    };
+    method == b"GET" && path == BOOTSTRAP_ID_PATH.as_bytes()
+}
+
+/// Complete a bootstrap-id request once the proxy has identified the
+/// path. Drains any remaining bytes of the request (up to the
+/// end-of-headers marker) so the client sees a well-formed response
+/// before the connection is closed.
+async fn handle_bootstrap_request_after_line(
+    mut client: TcpStream,
+    already_read: &[u8],
+    id: &str,
+) -> std::io::Result<()> {
+    // Drain the rest of the request (best effort). If the
+    // end-of-headers marker "\r\n\r\n" is already in what we read, we
+    // don't need to read more.
+    if !already_read.windows(4).any(|w| w == b"\r\n\r\n") {
+        let mut chunk = [0u8; 1024];
+        let deadline = tokio::time::sleep(BOOTSTRAP_IO_TIMEOUT);
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                _ = &mut deadline => break,
+                res = client.read(&mut chunk) => match res {
+                    Ok(0) => break,
+                    Ok(_n) => {
+                        // We don't care about the content; just look
+                        // for the blank line terminator.
+                        if chunk.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+    }
+
+    let response = format!(
+        "HTTP/1.1 200 OK\r\n\
+         Access-Control-Allow-Origin: *\r\n\
+         Content-Type: text/plain\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\
+         \r\n\
+         {}",
+        id.len(),
+        id
+    );
+
+    tokio::time::timeout(BOOTSTRAP_IO_TIMEOUT, client.write_all(response.as_bytes()))
+        .await
+        .map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "bootstrap write timed out")
+        })??;
+    Ok(())
+}
+
+/// Run the public HTTP accept loop that fronts the iroh-relay. Each
+/// accepted connection is dispatched by [`dispatch_connection`]:
+/// requests for [`BOOTSTRAP_ID_PATH`] are answered locally, everything
+/// else is proxied to `upstream_addr`.
+///
+/// This loop runs forever — callers should `tokio::spawn` it.
+pub async fn run_proxy_listener(
+    listener: tokio::net::TcpListener,
+    upstream_addr: SocketAddr,
+    id: Arc<String>,
+    semaphore: Arc<Semaphore>,
+) {
+    loop {
+        let (stream, peer) = match listener.accept().await {
+            Ok(pair) => pair,
+            Err(e) => {
+                warn!(%e, "relay proxy accept failed");
+                continue;
+            }
+        };
+
+        let permit = match Arc::clone(&semaphore).try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                warn!(
+                    %peer,
+                    "relay proxy connection cap reached; dropping connection"
+                );
+                drop(stream);
+                continue;
+            }
+        };
+
+        let id = Arc::clone(&id);
+        tokio::spawn(async move {
+            if let Err(e) = dispatch_connection(stream, upstream_addr, id).await {
+                tracing::debug!(%e, %peer, "relay proxy connection error");
+            }
             drop(permit);
         });
     }

@@ -17,7 +17,7 @@ use tracing::info;
 use willow_identity::Identity;
 use willow_network::Network;
 use willow_relay::{
-    run_bootstrap_listener, topic_announce_listener, MAX_CONCURRENT_BOOTSTRAP_CONNECTIONS,
+    run_proxy_listener, topic_announce_listener, MAX_CONCURRENT_BOOTSTRAP_CONNECTIONS,
 };
 
 #[derive(Parser)]
@@ -60,8 +60,22 @@ async fn main() -> Result<()> {
 
     info!(id = %identity.endpoint_id().fmt_short(), "bootstrap node identity");
 
-    // ── iroh-relay server (plain HTTP, no TLS) ───────────────────────────
-    let relay_bind: SocketAddr = (Ipv4Addr::UNSPECIFIED, args.relay_port).into();
+    // ── Public listener (HTTP dispatch: /bootstrap-id + proxy) ───────────
+    // Bind the public-facing TCP port FIRST so `relay_port = 0` can pick
+    // an ephemeral port that we can then advertise. The iroh-relay is
+    // bound to a loopback ephemeral port below, and the proxy below
+    // forwards non-bootstrap traffic to it.
+    let public_bind: SocketAddr = (Ipv4Addr::UNSPECIFIED, args.relay_port).into();
+    let public_listener = tokio::net::TcpListener::bind(public_bind)
+        .await
+        .context("failed to bind public relay HTTP port")?;
+    let public_port = public_listener.local_addr()?.port();
+    info!(port = public_port, "public relay HTTP listener ready");
+
+    // ── iroh-relay server (loopback only, plain HTTP, no TLS) ────────────
+    // The iroh-relay is only reachable through the proxy above; binding
+    // to 127.0.0.1 prevents direct access from the network.
+    let relay_bind: SocketAddr = (Ipv4Addr::LOCALHOST, 0).into();
 
     let mut relay_server = Server::spawn(ServerConfig::<(), ()> {
         relay: Some(RelayConfig::<(), ()> {
@@ -77,21 +91,20 @@ async fn main() -> Result<()> {
     .await
     .context("failed to start iroh-relay server")?;
 
-    let relay_addr = relay_server
+    let upstream_relay_addr = relay_server
         .http_addr()
         .context("relay server has no HTTP address")?;
-    // The bootstrap node must connect to the relay via a loopback address
-    // (127.0.0.1), not the bind address (0.0.0.0). 0.0.0.0 is a valid bind
-    // address but not a valid destination to connect to.
-    let connect_addr: SocketAddr = if relay_addr.ip().is_unspecified() {
-        (std::net::Ipv4Addr::LOCALHOST, relay_addr.port()).into()
-    } else {
-        relay_addr
-    };
-    let relay_url: RelayUrl = format!("http://{connect_addr}")
+    // Advertise the PUBLIC port to bootstrap node and clients, not the
+    // loopback upstream port.
+    let advertised_addr: SocketAddr = (Ipv4Addr::LOCALHOST, public_port).into();
+    let relay_url: RelayUrl = format!("http://{advertised_addr}")
         .parse()
         .context("failed to parse relay URL")?;
-    info!(%relay_url, "iroh-relay server running");
+    info!(
+        %relay_url,
+        upstream = %upstream_relay_addr,
+        "iroh-relay server running"
+    );
 
     // ── Bootstrap gossip node ────────────────────────────────────────────
     let config = willow_network::iroh::Config {
@@ -116,24 +129,26 @@ async fn main() -> Result<()> {
 
     info!("bootstrap node subscribed to system topics");
 
-    // ── Bootstrap ID HTTP endpoint ──────────────────────────────────────
-    // Serve the bootstrap node's endpoint ID so web clients can fetch it.
+    // ── Public dispatch loop ────────────────────────────────────────────
+    // The public listener multiplexes two concerns on ONE port:
+    //   * `GET /bootstrap-id` → serves the bootstrap node's endpoint ID
+    //   * everything else     → proxied to the loopback iroh-relay
+    //
     // The accept loop applies per-connection I/O timeouts and is gated
     // by a semaphore so a connection-flood DoS cannot exhaust file
-    // descriptors. See `willow_relay::run_bootstrap_listener`.
+    // descriptors. See `willow_relay::run_proxy_listener`.
     let bootstrap_id = Arc::new(identity.endpoint_id().to_string());
-    let bootstrap_listener =
-        tokio::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, args.relay_port + 1))
-            .await
-            .context("failed to bind bootstrap-id HTTP port")?;
-    let bootstrap_port = bootstrap_listener.local_addr()?.port();
-    info!(port = bootstrap_port, "bootstrap-id endpoint listening");
-    let bootstrap_semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_BOOTSTRAP_CONNECTIONS));
-    tokio::spawn(run_bootstrap_listener(
-        bootstrap_listener,
+    let proxy_semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_BOOTSTRAP_CONNECTIONS));
+    tokio::spawn(run_proxy_listener(
+        public_listener,
+        upstream_relay_addr,
         Arc::clone(&bootstrap_id),
-        bootstrap_semaphore,
+        proxy_semaphore,
     ));
+    info!(
+        port = public_port,
+        "serving /bootstrap-id + iroh-relay proxy"
+    );
 
     // Spawn a task that listens for TopicAnnounce messages on _willow_server_ops
     // and dynamically subscribes to announced channel topics.
