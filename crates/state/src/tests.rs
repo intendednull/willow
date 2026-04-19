@@ -3150,7 +3150,7 @@ fn negative_vote_does_not_apply_proposal() {
         vec![prop_a3.hash],
         0,
     );
-    dag.insert(vote_a2_yes).unwrap();
+    dag.insert(vote_a2_yes.clone()).unwrap();
 
     let state = materialize(&dag);
     assert!(
@@ -3159,16 +3159,18 @@ fn negative_vote_does_not_apply_proposal() {
     );
     assert_eq!(state.admins.len(), 3);
 
-    // Add target member.
+    // Add target member (parented to enforce topo order).
     let target = Identity::generate();
-    do_emit(
-        &mut dag,
+    let grant_target_evt = dag.create_event(
         &owner,
         EventKind::GrantPermission {
             peer_id: target.endpoint_id(),
             permission: Permission::SendMessages,
         },
+        vec![vote_a2_yes.hash],
+        0,
     );
+    dag.insert(grant_target_evt.clone()).unwrap();
 
     // admin_2 (non-genesis) proposes to kick target. With 3 admins and
     // Majority threshold, majority > 1.5 requires at least 2 yes votes.
@@ -3181,7 +3183,7 @@ fn negative_vote_does_not_apply_proposal() {
                 peer_id: target.endpoint_id(),
             },
         },
-        vec![],
+        vec![grant_target_evt.hash],
         0,
     );
     dag.insert(kick_prop.clone()).unwrap();
@@ -3252,7 +3254,7 @@ fn no_vote_proposal_does_not_auto_apply_with_two_admins() {
 
     // Add a second admin (auto-applies while sole admin — 1 yes out of 1).
     let admin_2 = Identity::generate();
-    do_emit(
+    let grant_admin_evt = do_emit(
         &mut dag,
         &owner,
         EventKind::Propose {
@@ -3264,21 +3266,26 @@ fn no_vote_proposal_does_not_auto_apply_with_two_admins() {
     let state = materialize(&dag);
     assert_eq!(state.admins.len(), 2, "should now have 2 admins");
 
-    // Add a target member.
+    // Add a target member (parented on the admin grant so topo order is
+    // deterministic).
     let target = Identity::generate();
-    do_emit(
-        &mut dag,
+    let grant_target_evt = dag.create_event(
         &owner,
         EventKind::GrantPermission {
             peer_id: target.endpoint_id(),
             permission: Permission::SendMessages,
         },
+        vec![grant_admin_evt.hash],
+        0,
     );
+    dag.insert(grant_target_evt.clone()).unwrap();
 
     // admin_2 (non-genesis) proposes to kick target. With 2 admins and
     // Majority threshold, majority requires > 1, i.e. BOTH admins must vote yes.
     // Only the proposer's implicit yes counts (1/2) — must NOT auto-apply.
     // (Owner cannot be proposer: genesis author bypasses threshold.)
+    // Parent on the target grant so the kick proposal is ordered after
+    // admin_2's admin grant has been applied.
     let kick_prop = dag.create_event(
         &admin_2,
         EventKind::Propose {
@@ -3286,7 +3293,7 @@ fn no_vote_proposal_does_not_auto_apply_with_two_admins() {
                 peer_id: target.endpoint_id(),
             },
         },
-        vec![],
+        vec![grant_target_evt.hash],
         0,
     );
     dag.insert(kick_prop.clone()).unwrap();
