@@ -89,16 +89,15 @@ pub fn check_permission(
     }
 
     // Admin-only events.
-    match kind {
+    if matches!(
+        kind,
         EventKind::GrantPermission { .. }
-        | EventKind::RevokePermission { .. }
-        | EventKind::RenameServer { .. }
-        | EventKind::SetServerDescription { .. } => {
-            if !state.is_admin(author) {
-                return Err(format!("author '{}' is not an admin", author));
-            }
-        }
-        _ => {}
+            | EventKind::RevokePermission { .. }
+            | EventKind::RenameServer { .. }
+            | EventKind::SetServerDescription { .. }
+    ) && !state.is_admin(author)
+    {
+        return Err(format!("author '{}' is not an admin", author));
     }
 
     // Permission-gated events.
