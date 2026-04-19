@@ -5,7 +5,6 @@ use leptos::prelude::*;
 /// Shows an overlay with backdrop blur and a centered card. The confirm
 /// button turns red when `danger` is `true`. Pressing Escape closes the
 /// dialog via a keydown handler on the overlay.
-#[allow(dead_code)]
 #[component]
 pub fn ConfirmDialog(
     /// Whether the dialog is visible.

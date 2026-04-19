@@ -1,7 +1,9 @@
 # Reactive Client State — Domain Actor Decomposition
 
 **Date**: 2026-03-31
-**Status**: Draft
+**Status**: Draft. Note (2026-04-18): the Bevy app (`crates/app/`) has been
+retired and removed from the workspace; any references to `crates/app/` are
+historical only.
 
 ## Problem
 
