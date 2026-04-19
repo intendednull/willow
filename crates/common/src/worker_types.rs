@@ -22,6 +22,10 @@ pub enum WorkerRoleInfo {
         servers_loaded: u32,
         events_buffered: u32,
         max_events: u32,
+        /// Total events currently buffered in each server's `PendingBuffer`
+        /// waiting for chain predecessors. Useful for monitoring partition
+        /// / offline-peer backpressure.
+        pending_count: u32,
     },
     Storage {
         servers_tracked: u32,
@@ -184,6 +188,7 @@ mod tests {
             servers_loaded: 3,
             events_buffered: 500,
             max_events: 1000,
+            pending_count: 0,
         };
         let bytes = bincode::serialize(&info).unwrap();
         let decoded: WorkerRoleInfo = bincode::deserialize(&bytes).unwrap();
@@ -212,6 +217,7 @@ mod tests {
                 servers_loaded: 1,
                 events_buffered: 100,
                 max_events: 1000,
+                pending_count: 0,
             },
             servers: vec!["server-1".to_string(), "server-2".to_string()],
             timestamp: 1234567890,

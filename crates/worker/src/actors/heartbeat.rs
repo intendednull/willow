@@ -125,6 +125,7 @@ mod tests {
                 servers_loaded: 1,
                 events_buffered: 42,
                 max_events: 1000,
+                pending_count: 0,
             }
         }
         fn on_event(&mut self, _event: &willow_state::Event) {}

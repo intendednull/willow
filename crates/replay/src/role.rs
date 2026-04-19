@@ -9,13 +9,27 @@ use std::collections::{BTreeMap, HashMap};
 use tracing::warn;
 use willow_state::{
     apply_incremental, Event, EventDag, EventHash, EventKind, HeadsSummary, InsertError,
-    PendingBuffer, ServerState, Snapshot,
+    PendingBuffer, ServerState, Snapshot, DEFAULT_PENDING_MAX_AGE_MS, DEFAULT_PENDING_MAX_ENTRIES,
 };
 use willow_worker::{WorkerRequest, WorkerResponse, WorkerRole, WorkerRoleInfo};
 
 /// Maximum number of servers the replay node will track simultaneously.
 /// When exceeded, the least recently accessed server is evicted.
 const MAX_SERVERS: usize = 1000;
+
+/// Returns the current wall-clock time in milliseconds since the Unix epoch.
+///
+/// Replay is native-only (see `crates/replay/Cargo.toml`) so `SystemTime`
+/// is always available. If the system clock is set before UNIX_EPOCH (e.g.
+/// a misconfigured container), we fall back to 0 — age eviction will then
+/// become a no-op for any entry inserted while the clock is bad, which is
+/// strictly safer than panicking.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 /// Per-server state held by the replay node.
 struct ServerData {
@@ -36,12 +50,23 @@ struct ServerData {
 pub struct ReplayConfig {
     /// Max events per author before the oldest are compacted.
     pub max_events_per_author: usize,
+    /// Maximum number of pending events per `PendingBuffer` before
+    /// oldest-first capacity eviction kicks in. Defaults to
+    /// [`DEFAULT_PENDING_MAX_ENTRIES`].
+    pub pending_max_entries: usize,
+    /// Maximum age (ms) of a pending event before it is evicted. Defaults
+    /// to [`DEFAULT_PENDING_MAX_AGE_MS`] (1 hour). Entries inserted by
+    /// `try_insert` carry a timestamp via `buffer_for_prev_at`, so both
+    /// age and capacity eviction apply.
+    pub pending_max_age_ms: u64,
 }
 
 impl Default for ReplayConfig {
     fn default() -> Self {
         Self {
             max_events_per_author: 1000,
+            pending_max_entries: DEFAULT_PENDING_MAX_ENTRIES,
+            pending_max_age_ms: DEFAULT_PENDING_MAX_AGE_MS,
         }
     }
 }
@@ -67,6 +92,8 @@ impl ReplayRole {
     /// Ingest an event for a specific server.
     pub fn ingest_event(&mut self, server_id: &str, event: &Event) {
         let max_per_author = self.config.max_events_per_author;
+        let pending_max_entries = self.config.pending_max_entries;
+        let pending_max_age_ms = self.config.pending_max_age_ms;
         let author = event.author;
 
         // Evict least-recently-used server when at capacity and this is a new server.
@@ -97,7 +124,7 @@ impl ReplayRole {
                     // would evict all entries on each insert).
                     PendingBuffer::new()
                 } else {
-                    PendingBuffer::with_capacity(max_per_author * 10)
+                    PendingBuffer::with_limits(pending_max_entries, pending_max_age_ms)
                 };
                 ServerData {
                     dag: EventDag::new(),
@@ -109,13 +136,17 @@ impl ReplayRole {
             });
 
         data.last_access = access_counter;
-        Self::try_insert(data, event.clone());
+        Self::try_insert(data, event.clone(), now_ms());
     }
 
     /// Try to insert an event into the DAG. On chain gap, buffer it.
     /// On success, resolve any events that were waiting on this one.
     /// Uses an iterative queue to avoid stack overflow on deep chains.
-    fn try_insert(data: &mut ServerData, event: Event) {
+    ///
+    /// `now_ms` is the wall-clock time at which buffering began; it is
+    /// forwarded to [`PendingBuffer::buffer_for_prev_at`] so that stale
+    /// pending entries can be evicted on later inserts.
+    fn try_insert(data: &mut ServerData, event: Event, now_ms: u64) {
         let mut queue = vec![event];
         while let Some(current) = queue.pop() {
             let hash = current.hash;
@@ -134,7 +165,7 @@ impl ReplayRole {
                     queue.extend(resolved);
                 }
                 Err(InsertError::SeqGap { .. }) => {
-                    data.pending.buffer_for_prev(prev, current);
+                    data.pending.buffer_for_prev_at(prev, current, now_ms);
                 }
                 Err(InsertError::PrevMismatch {
                     author,
@@ -147,7 +178,7 @@ impl ReplayRole {
                     );
                 }
                 Err(InsertError::NotGenesis) => {
-                    data.pending.buffer_for_prev(prev, current);
+                    data.pending.buffer_for_prev_at(prev, current, now_ms);
                 }
                 Err(InsertError::Duplicate) => { /* already have it */ }
                 Err(InsertError::InvalidSignature) => {
@@ -181,6 +212,16 @@ impl ReplayRole {
             .map(|d| u32::try_from(d.dag.len()).unwrap_or(u32::MAX))
             .fold(0u32, |a, b| a.saturating_add(b))
     }
+
+    /// Total events currently waiting in every server's `PendingBuffer`
+    /// for a missing chain predecessor. Exposed to operators via
+    /// [`WorkerRoleInfo::Replay::pending_count`].
+    fn total_pending(&self) -> u32 {
+        self.servers
+            .values()
+            .map(|d| u32::try_from(d.pending.pending_count()).unwrap_or(u32::MAX))
+            .fold(0u32, |a, b| a.saturating_add(b))
+    }
 }
 
 impl WorkerRole for ReplayRole {
@@ -189,6 +230,7 @@ impl WorkerRole for ReplayRole {
             servers_loaded: self.servers.len() as u32,
             events_buffered: self.total_events_buffered(),
             max_events: self.config.max_events_per_author as u32,
+            pending_count: self.total_pending(),
         }
     }
 
@@ -335,10 +377,12 @@ mod tests {
                 servers_loaded,
                 events_buffered,
                 max_events,
+                pending_count,
             } => {
                 assert_eq!(servers_loaded, 0);
                 assert_eq!(events_buffered, 0);
                 assert_eq!(max_events, 1000);
+                assert_eq!(pending_count, 0);
             }
             _ => panic!("expected Replay"),
         }
@@ -348,6 +392,7 @@ mod tests {
     fn ingest_event_applies_and_buffers() {
         let mut role = ReplayRole::new(ReplayConfig {
             max_events_per_author: 100,
+            ..Default::default()
         });
         let (_, _) = setup_server(&mut role, "srv-1");
 
@@ -368,6 +413,7 @@ mod tests {
     fn sync_request_returns_events_since_empty_heads() {
         let mut role = ReplayRole::new(ReplayConfig {
             max_events_per_author: 100,
+            ..Default::default()
         });
         let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
 
@@ -410,6 +456,7 @@ mod tests {
     fn sync_request_returns_delta() {
         let mut role = ReplayRole::new(ReplayConfig {
             max_events_per_author: 100,
+            ..Default::default()
         });
         let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
 
@@ -461,6 +508,7 @@ mod tests {
     fn role_info_reflects_buffered_events() {
         let mut role = ReplayRole::new(ReplayConfig {
             max_events_per_author: 100,
+            ..Default::default()
         });
         let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
 
@@ -498,6 +546,7 @@ mod tests {
     fn multiple_servers_tracked_independently() {
         let mut role = ReplayRole::new(ReplayConfig {
             max_events_per_author: 100,
+            ..Default::default()
         });
         let (owner1, genesis1) = setup_server(&mut role, "srv-1");
         let (owner2, genesis2) = setup_server(&mut role, "srv-2");
@@ -617,6 +666,7 @@ mod tests {
     fn sync_fully_synced_peer_gets_empty_batch() {
         let mut role = ReplayRole::new(ReplayConfig {
             max_events_per_author: 100,
+            ..Default::default()
         });
         let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
 
@@ -658,6 +708,7 @@ mod tests {
     fn sync_new_peer_with_empty_heads_gets_full_batch() {
         let mut role = ReplayRole::new(ReplayConfig {
             max_events_per_author: 100,
+            ..Default::default()
         });
         let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
 
@@ -715,6 +766,7 @@ mod tests {
         // a comment below showing what the code will do once compaction lands.
         let mut role = ReplayRole::new(ReplayConfig {
             max_events_per_author: 100,
+            ..Default::default()
         });
         let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
 
@@ -796,6 +848,7 @@ mod tests {
     fn sync_with_multiple_authors_returns_correct_delta() {
         let mut role = ReplayRole::new(ReplayConfig {
             max_events_per_author: 100,
+            ..Default::default()
         });
         let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
 
@@ -868,6 +921,7 @@ mod tests {
     fn sync_peer_knows_no_authors_gets_everything() {
         let mut role = ReplayRole::new(ReplayConfig {
             max_events_per_author: 100,
+            ..Default::default()
         });
         let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
 
@@ -1005,6 +1059,7 @@ mod tests {
     fn server_count_bounded_by_max() {
         let mut role = ReplayRole::new(ReplayConfig {
             max_events_per_author: 100,
+            ..Default::default()
         });
         // Insert MAX_SERVERS + 10 unique servers.
         for i in 0..MAX_SERVERS + 10 {
@@ -1023,6 +1078,7 @@ mod tests {
     fn zero_max_events_does_not_discard_pending() {
         let mut role = ReplayRole::new(ReplayConfig {
             max_events_per_author: 0,
+            ..Default::default()
         });
         let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
 
@@ -1256,6 +1312,7 @@ mod tests {
     fn eviction_removes_least_recently_accessed() {
         let mut role = ReplayRole::new(ReplayConfig {
             max_events_per_author: 10,
+            ..Default::default()
         });
 
         // Fill up to MAX_SERVERS using background servers we don't care about.
@@ -1308,10 +1365,7 @@ mod tests {
         // last_access values are all lower than A's re-access. The true
         // LRU may be one of the background servers. We verify the invariant
         // that A (re-accessed) and D (just inserted) both survive.
-        assert!(
-            !role.servers.contains_key("srv-A") == false,
-            "srv-A must survive"
-        );
+        assert!(role.servers.contains_key("srv-A"), "srv-A must survive");
     }
 
     /// Stronger LRU test using only 3 named servers (no background noise),
@@ -1325,6 +1379,7 @@ mod tests {
     fn eviction_access_counter_ordering() {
         let mut role = ReplayRole::new(ReplayConfig {
             max_events_per_author: 10,
+            ..Default::default()
         });
 
         // Insert three named servers and record their access counters.
@@ -1363,5 +1418,86 @@ mod tests {
             lru_candidate, "srv-A",
             "srv-A must not be the LRU candidate after being re-accessed"
         );
+    }
+
+    // ── Issue #40: pending_count exposure in WorkerRoleInfo::Replay ────────
+
+    /// `WorkerRoleInfo::Replay::pending_count` should reflect the number of
+    /// events buffered in each server's pending buffer waiting for their
+    /// per-author chain predecessors.
+    #[test]
+    fn role_info_exposes_pending_count() {
+        let mut role = ReplayRole::new(ReplayConfig::default());
+        let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
+
+        // Build e2 and e3; insert e3 first so it gets buffered (SeqGap).
+        let e2 = make_message(&owner, 2, genesis_hash);
+        let e3 = make_message(&owner, 3, e2.hash);
+        role.ingest_event("srv-1", &e3);
+
+        // pending_count must expose the in-flight buffered event.
+        match role.role_info() {
+            WorkerRoleInfo::Replay { pending_count, .. } => {
+                assert_eq!(pending_count, 1, "expected one pending event before e2");
+            }
+            _ => panic!("expected Replay"),
+        }
+
+        // Now deliver e2 — should drain the buffer.
+        role.ingest_event("srv-1", &e2);
+        match role.role_info() {
+            WorkerRoleInfo::Replay { pending_count, .. } => {
+                assert_eq!(pending_count, 0, "pending_count should drop to zero");
+            }
+            _ => panic!("expected Replay"),
+        }
+    }
+
+    /// When the configured `pending_max_entries` is exceeded, the oldest
+    /// entries are evicted and `pending_count()` reflects the cap.
+    #[test]
+    fn pending_buffer_capacity_eviction() {
+        let max_entries = 8usize;
+        let mut role = ReplayRole::new(ReplayConfig {
+            max_events_per_author: 100,
+            pending_max_entries: max_entries,
+            pending_max_age_ms: 60 * 60 * 1000,
+        });
+        let (_owner, _genesis) = setup_server(&mut role, "srv-1");
+
+        // Deliver (max_entries + 5) events that can never resolve (random
+        // prev hashes pointing nowhere). Each one is buffered.
+        let stranger = Identity::generate();
+        for i in 0..(max_entries as u64 + 5) {
+            let mut hash_bytes = [0u8; 32];
+            hash_bytes[..8].copy_from_slice(&i.to_le_bytes());
+            let fake_prev = EventHash(hash_bytes);
+            // seq=2 is past genesis; prev is bogus → SeqGap → buffered.
+            let ev = Event::new(
+                &stranger,
+                2,
+                fake_prev,
+                vec![],
+                EventKind::SetProfile {
+                    display_name: format!("stranger{i}"),
+                },
+                0,
+            );
+            role.ingest_event("srv-1", &ev);
+        }
+
+        // Count must never exceed the cap.
+        assert!(
+            role.servers["srv-1"].pending.pending_count() <= max_entries,
+            "pending_count {} exceeded cap {}",
+            role.servers["srv-1"].pending.pending_count(),
+            max_entries,
+        );
+        match role.role_info() {
+            WorkerRoleInfo::Replay { pending_count, .. } => {
+                assert!(pending_count as usize <= max_entries);
+            }
+            _ => panic!("expected Replay"),
+        }
     }
 }

@@ -108,6 +108,7 @@ mod tests {
                 servers_loaded: 0,
                 events_buffered: 0,
                 max_events: 0,
+                pending_count: 0,
             }
         }
         fn on_event(&mut self, _event: &willow_state::Event) {}

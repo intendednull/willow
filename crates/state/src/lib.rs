@@ -26,5 +26,6 @@ pub use materialize::{apply_incremental, check_permission, materialize, ApplyRes
 pub use server::{PendingProposal, ServerState};
 pub use sync::{
     AuthorHead, AuthorRequest, ChainStatus, HeadsSummary, PendingBuffer, Snapshot, SyncMessage,
+    DEFAULT_PENDING_MAX_AGE_MS, DEFAULT_PENDING_MAX_ENTRIES,
 };
 pub use types::{Channel, ChannelKind, ChatMessage, Member, Profile, Role};
