@@ -5,13 +5,93 @@
 //! a participant grid with [`ParticipantTile`]s, and a frosted-glass control
 //! strip for mute, deafen, camera, screen share, and disconnect.
 
+use std::cell::RefCell;
+
 use leptos::prelude::*;
 use send_wrapper::SendWrapper;
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::JsValue;
 
 use crate::app::{VoiceManagerHandle, WebClientHandle};
 use crate::components::ParticipantTile;
 use crate::icons;
 use crate::state::{AppState, AppWriteSignals, CallLayout, VideoSource};
+
+/// Storage slot for the `getUserMedia` / `getDisplayMedia` promise and
+/// `track.onended` closures used by the camera and screen-share toggles.
+///
+/// The browser promise keeps a weak reference to the success / error
+/// closures only until it resolves; `track.onended` keeps a strong one
+/// for the lifetime of the track. Previously the component called
+/// [`Closure::forget`] on each of these, which leaked the closure into
+/// JS permanently — toggling screen share or camera repeatedly
+/// accumulated forgotten closures and DOM listeners.
+///
+/// Storing the closures here keeps them alive exactly long enough to
+/// fire, then drops them the next time the same slot is toggled or when
+/// the component unmounts. Dropping a [`Closure`] releases its JS
+/// reference as soon as its Rust value is dropped.
+#[derive(Default)]
+pub(crate) struct CallPageClosures {
+    /// Success callback for the camera `getUserMedia` promise.
+    camera_success: Option<Closure<dyn FnMut(JsValue)>>,
+    /// Error callback for the camera `getUserMedia` promise.
+    camera_error: Option<Closure<dyn FnMut(JsValue)>>,
+    /// Success callback for the screen-share `getDisplayMedia` promise.
+    screen_success: Option<Closure<dyn FnMut(JsValue)>>,
+    /// Error callback for the screen-share `getDisplayMedia` promise.
+    screen_error: Option<Closure<dyn FnMut(JsValue)>>,
+    /// `track.onended` handler installed on the active screen-share
+    /// video track so the UI can react when the user clicks the
+    /// browser's built-in "Stop sharing" button.
+    screen_ended: Option<Closure<dyn FnMut()>>,
+}
+
+impl CallPageClosures {
+    /// Install the camera promise callbacks, dropping any previously
+    /// installed ones so the count of live closures stays bounded.
+    pub(crate) fn set_camera(
+        &mut self,
+        on_success: Closure<dyn FnMut(JsValue)>,
+        on_error: Closure<dyn FnMut(JsValue)>,
+    ) {
+        self.camera_success = Some(on_success);
+        self.camera_error = Some(on_error);
+    }
+
+    /// Install the screen-share promise callbacks, dropping any
+    /// previously installed ones so the count of live closures stays
+    /// bounded.
+    pub(crate) fn set_screen(
+        &mut self,
+        on_success: Closure<dyn FnMut(JsValue)>,
+        on_error: Closure<dyn FnMut(JsValue)>,
+    ) {
+        self.screen_success = Some(on_success);
+        self.screen_error = Some(on_error);
+    }
+
+    /// Install the `track.onended` handler for the active screen-share
+    /// track, dropping any previous one.
+    pub(crate) fn set_screen_ended(&mut self, on_ended: Closure<dyn FnMut()>) {
+        self.screen_ended = Some(on_ended);
+    }
+
+    /// Drop every stored closure at once. Used on component cleanup.
+    pub(crate) fn clear(&mut self) {
+        self.camera_success = None;
+        self.camera_error = None;
+        self.screen_success = None;
+        self.screen_error = None;
+        self.screen_ended = None;
+    }
+}
+
+/// Reactive, `Send`-able slot holding the per-component
+/// [`CallPageClosures`]. Wrapped in `SendWrapper` because `Closure` is
+/// `!Send`, and in `RefCell` because we mutate it from multiple event
+/// handlers.
+pub(crate) type CallPageClosuresSlot = StoredValue<SendWrapper<RefCell<CallPageClosures>>>;
 
 /// Render a participant tile, optionally passing a video stream.
 ///
@@ -100,6 +180,15 @@ pub fn CallPage(
     .expect("set_interval failed");
     on_cleanup(move || timer_handle.clear());
 
+    // Media-API closures kept alive across toggles. Dropped on unmount
+    // (and replaced on every toggle) to avoid the permanent leak
+    // `Closure::forget` would cause. See `CallPageClosures` for details.
+    let closures: CallPageClosuresSlot =
+        StoredValue::new(SendWrapper::new(RefCell::new(CallPageClosures::default())));
+    on_cleanup(move || {
+        closures.update_value(|c| c.borrow_mut().clear());
+    });
+
     // Layout state.
     let layout = app_state.ui.call_layout;
 
@@ -143,24 +232,25 @@ pub fn CallPage(
 
         let vm2 = vm_camera.clone();
         let write2 = write;
-        let on_success =
-            wasm_bindgen::closure::Closure::once(move |stream: wasm_bindgen::JsValue| {
-                use wasm_bindgen::JsCast;
-                let stream: web_sys::MediaStream = stream.unchecked_into();
-                let stream_for_signal = SendWrapper::new(stream.clone());
-                vm2.borrow_mut().start_camera(stream);
-                write2.voice.set_video_source.set(Some(VideoSource::Camera));
-                write2
-                    .voice
-                    .set_local_video_stream
-                    .set(Some(stream_for_signal));
-            });
-        let on_error = wasm_bindgen::closure::Closure::once(move |_err: wasm_bindgen::JsValue| {
+        let on_success = Closure::once(move |stream: JsValue| {
+            use wasm_bindgen::JsCast;
+            let stream: web_sys::MediaStream = stream.unchecked_into();
+            let stream_for_signal = SendWrapper::new(stream.clone());
+            vm2.borrow_mut().start_camera(stream);
+            write2.voice.set_video_source.set(Some(VideoSource::Camera));
+            write2
+                .voice
+                .set_local_video_stream
+                .set(Some(stream_for_signal));
+        });
+        let on_error = Closure::once(move |_err: JsValue| {
             tracing::error!("Camera access denied");
         });
         drop(promise.then2(&on_success, &on_error));
-        on_success.forget();
-        on_error.forget();
+        // Keep the closures alive until the next toggle (or unmount).
+        // Replacing them here drops any previous ones, so repeated
+        // toggles do not accumulate leaked JS callbacks.
+        closures.update_value(|c| c.borrow_mut().set_camera(on_success, on_error));
     };
 
     // Screen share button click handler.
@@ -200,39 +290,42 @@ pub fn CallPage(
 
         let vm2 = vm_screen.clone();
         let write2 = write;
-        let on_success =
-            wasm_bindgen::closure::Closure::once(move |stream: wasm_bindgen::JsValue| {
-                use wasm_bindgen::JsCast;
-                let stream: web_sys::MediaStream = stream.unchecked_into();
-                let stream_for_signal = SendWrapper::new(stream.clone());
-                vm2.borrow_mut().start_screen_share(stream.clone());
-                write2.voice.set_video_source.set(Some(VideoSource::Screen));
-                write2
-                    .voice
-                    .set_local_video_stream
-                    .set(Some(stream_for_signal));
+        let closures_for_ended = closures;
+        let on_success = Closure::once(move |stream: JsValue| {
+            use wasm_bindgen::JsCast;
+            let stream: web_sys::MediaStream = stream.unchecked_into();
+            let stream_for_signal = SendWrapper::new(stream.clone());
+            vm2.borrow_mut().start_screen_share(stream.clone());
+            write2.voice.set_video_source.set(Some(VideoSource::Screen));
+            write2
+                .voice
+                .set_local_video_stream
+                .set(Some(stream_for_signal));
 
-                // Listen for the browser's "Stop sharing" chrome button.
-                let tracks = stream.get_video_tracks();
-                let track_val = tracks.get(0);
-                if !track_val.is_undefined() {
-                    let track: web_sys::MediaStreamTrack = track_val.unchecked_into();
-                    let vm_ended = vm2.clone();
-                    let on_ended = wasm_bindgen::closure::Closure::once(move || {
-                        vm_ended.borrow_mut().stop_video_share();
-                        write2.voice.set_local_video_stream.set(None);
-                        write2.voice.set_video_source.set(None);
-                    });
-                    track.set_onended(Some(on_ended.as_ref().unchecked_ref()));
-                    on_ended.forget();
-                }
-            });
-        let on_error = wasm_bindgen::closure::Closure::once(move |_err: wasm_bindgen::JsValue| {
+            // Listen for the browser's "Stop sharing" chrome button.
+            let tracks = stream.get_video_tracks();
+            let track_val = tracks.get(0);
+            if !track_val.is_undefined() {
+                let track: web_sys::MediaStreamTrack = track_val.unchecked_into();
+                let vm_ended = vm2.clone();
+                let on_ended = Closure::once(move || {
+                    vm_ended.borrow_mut().stop_video_share();
+                    write2.voice.set_local_video_stream.set(None);
+                    write2.voice.set_video_source.set(None);
+                });
+                track.set_onended(Some(on_ended.as_ref().unchecked_ref()));
+                // Store the handler so it lives as long as the track
+                // does and is dropped on the next toggle / unmount.
+                closures_for_ended.update_value(|c| c.borrow_mut().set_screen_ended(on_ended));
+            }
+        });
+        let on_error = Closure::once(move |_err: JsValue| {
             tracing::error!("Screen share denied or cancelled");
         });
         drop(promise.then2(&on_success, &on_error));
-        on_success.forget();
-        on_error.forget();
+        // Keep the promise callbacks alive until the next toggle or
+        // unmount — same rationale as the camera handler above.
+        closures.update_value(|c| c.borrow_mut().set_screen(on_success, on_error));
     };
 
     // Disconnect handler — also clear call page.
