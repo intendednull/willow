@@ -72,6 +72,17 @@ pub enum IdentityError {
         mode: u32,
     },
 
+    /// A signed [`UserProfile`] claimed a `peer_id` that did not match
+    /// the key that actually signed the envelope. Indicates an attempted
+    /// display-name spoof.
+    #[error("profile peer_id mismatch: signer {signer} does not match claimed peer_id {claimed}")]
+    PeerMismatch {
+        /// The peer ID the profile claimed to belong to.
+        claimed: EndpointId,
+        /// The peer ID that actually signed the envelope.
+        signer: EndpointId,
+    },
+
     /// An I/O or other error.
     #[error("{0}")]
     Other(String),
@@ -447,6 +458,46 @@ pub fn unpack<T: DeserializeOwned>(data: &[u8]) -> Result<(T, EndpointId), Ident
     Ok((payload, public_key))
 }
 
+// ───── Signed profile helpers ───────────────────────────────────────────────
+
+/// Sign a [`UserProfile`] for broadcast.
+///
+/// The profile is wrapped in an Ed25519-signed envelope via [`pack`]. Peers
+/// that receive the bytes must use [`unpack_profile`] to verify both the
+/// signature and that the signer's `EndpointId` matches the `peer_id` field
+/// inside the profile — otherwise a malicious peer could broadcast a profile
+/// claiming any `peer_id` and spoof that peer's display name.
+///
+/// # Errors
+///
+/// Returns [`IdentityError::Serde`] if serialization fails.
+pub fn pack_profile(profile: &UserProfile, identity: &Identity) -> Result<Vec<u8>, IdentityError> {
+    pack(profile, identity)
+}
+
+/// Verify a signed [`UserProfile`] envelope and confirm the signer matches
+/// the claimed `peer_id`.
+///
+/// Callers should always use this (rather than [`unpack`] directly) for
+/// profile broadcasts so spoofed `peer_id`s are rejected.
+///
+/// # Errors
+///
+/// - [`IdentityError::Serde`] if the bytes are malformed.
+/// - [`IdentityError::InvalidSignature`] if the signature doesn't verify.
+/// - [`IdentityError::PeerMismatch`] if the verified signer does not match
+///   `profile.peer_id`.
+pub fn unpack_profile(data: &[u8]) -> Result<UserProfile, IdentityError> {
+    let (profile, signer) = unpack::<UserProfile>(data)?;
+    if signer != profile.peer_id {
+        return Err(IdentityError::PeerMismatch {
+            claimed: profile.peer_id,
+            signer,
+        });
+    }
+    Ok(profile)
+}
+
 // ───── Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -740,6 +791,62 @@ mod tests {
         );
     }
 
+    /// Issue #145: a profile signed by its own peer must round-trip
+    /// through [`pack_profile`] / [`unpack_profile`] and return the
+    /// original profile.
+    #[test]
+    fn pack_and_unpack_profile_accepts_self_signed() {
+        let alice = Identity::generate();
+        let profile = UserProfile::new(alice.endpoint_id(), "Alice");
+
+        let data = pack_profile(&profile, &alice).unwrap();
+        let decoded = unpack_profile(&data).unwrap();
+
+        assert_eq!(decoded, profile);
+        assert_eq!(decoded.peer_id, alice.endpoint_id());
+        assert_eq!(decoded.display_name, "Alice");
+    }
+
+    /// Issue #145: a profile signed by a different key than the one it
+    /// claims to represent must be rejected with
+    /// [`IdentityError::PeerMismatch`]. Without this check, any peer
+    /// could broadcast a profile claiming another peer's `peer_id` and
+    /// spoof their display name.
+    #[test]
+    fn unpack_profile_rejects_spoofed_peer_id() {
+        let alice = Identity::generate();
+        let mallory = Identity::generate();
+        assert_ne!(alice.endpoint_id(), mallory.endpoint_id());
+
+        // Mallory builds a profile claiming to be Alice and signs it
+        // with his own key.
+        let spoof = UserProfile::new(alice.endpoint_id(), "Not Alice");
+        let data = pack_profile(&spoof, &mallory).unwrap();
+
+        let err = unpack_profile(&data).unwrap_err();
+        match err {
+            IdentityError::PeerMismatch { claimed, signer } => {
+                assert_eq!(claimed, alice.endpoint_id());
+                assert_eq!(signer, mallory.endpoint_id());
+            }
+            other => panic!("expected PeerMismatch, got {other:?}"),
+        }
+    }
+
+    /// Issue #145: tampered bytes fail signature verification before we
+    /// ever get to the peer_id check.
+    #[test]
+    fn unpack_profile_rejects_tampered_bytes() {
+        let alice = Identity::generate();
+        let profile = UserProfile::new(alice.endpoint_id(), "Alice");
+        let mut data = pack_profile(&profile, &alice).unwrap();
+        let len = data.len();
+        data[len - 2] ^= 0xFF;
+
+        let result = unpack_profile(&data);
+        assert!(result.is_err(), "tampered profile must not verify");
+    }
+
     /// A key file with fewer than 32 bytes causes `load_or_generate` to return
     /// an error rather than panic.
     #[test]
@@ -751,7 +858,7 @@ mod tests {
         let path = dir.path().join("truncated.key");
 
         // Write 16 bytes (half the expected 32-byte secret key) with secure perms.
-        std::fs::write(&path, &[0u8; 16]).unwrap();
+        std::fs::write(&path, [0u8; 16]).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
 
         let result = Identity::load_or_generate(&path);
