@@ -52,7 +52,18 @@ pub fn materialize(dag: &EventDag) -> ServerState {
 ///
 /// Precondition: all causal parents of `event` are already reflected
 /// in `state`. This is O(1) per event.
+///
+/// If the state was just deserialized from disk — recognized by a
+/// populated `messages` vector paired with an empty `message_index` —
+/// the index is transparently rebuilt once here. This prevents the
+/// silent no-op on `EditMessage`/`DeleteMessage`/`Reaction` that would
+/// otherwise happen because `message_index` is `#[serde(skip)]`.
 pub fn apply_incremental(state: &mut ServerState, event: &Event) -> ApplyResult {
+    // Lazy index rebuild for deserialized states. Triggers at most once per
+    // loaded state (subsequent calls observe a populated index and skip).
+    if !state.messages.is_empty() && state.message_index.len() != state.messages.len() {
+        state.rebuild_message_index();
+    }
     if !state.applied_events.insert(event.hash) {
         return ApplyResult::AlreadyApplied;
     }

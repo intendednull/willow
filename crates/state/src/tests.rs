@@ -3456,3 +3456,162 @@ fn stress_concurrent_channel_creates_count_is_stable() {
         "channel count must be identical across materializations of the same DAG"
     );
 }
+
+// ── Regression: message_index must survive round-trip serialization ────────
+
+/// `ServerState.message_index` is `#[serde(skip)]`, so it is empty after
+/// deserialize. Previously this caused Edit/Delete/Reaction events applied
+/// via `apply_incremental` on a deserialized state to silently no-op,
+/// producing data loss on persisted clients that didn't run a full
+/// `materialize()` first. This test guards against that regression.
+#[test]
+fn deserialized_state_accepts_edit_delete_reaction_via_apply_incremental() {
+    use crate::materialize::apply_incremental;
+
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    // Seed the DAG with a channel plus messages to edit, delete, and react to.
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: "ch-1".into(),
+            kind: crate::types::ChannelKind::Text,
+        },
+    );
+    let msg_edit = do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Message {
+            channel_id: "ch-1".into(),
+            body: "typo".into(),
+            reply_to: None,
+        },
+    );
+    let msg_delete = do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Message {
+            channel_id: "ch-1".into(),
+            body: "to delete".into(),
+            reply_to: None,
+        },
+    );
+    let msg_react = do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Message {
+            channel_id: "ch-1".into(),
+            body: "react to me".into(),
+            reply_to: None,
+        },
+    );
+
+    let state = materialize(&dag);
+
+    // Simulate persistence: round-trip through bincode.
+    let bytes = bincode::serialize(&state).expect("serialize ServerState");
+    let mut restored: crate::ServerState =
+        bincode::deserialize(&bytes).expect("deserialize ServerState");
+
+    // Sanity: message_index was skipped during serialization.
+    assert!(
+        restored.message_index.is_empty(),
+        "message_index is #[serde(skip)] — must be empty after deserialize"
+    );
+
+    // Craft follow-up mutations. These are "new" events that arrive after
+    // the state was loaded from disk, exactly like the apply_incremental
+    // flow in the client after load_server_state().
+    let edit = dag.create_event(
+        &admin,
+        EventKind::EditMessage {
+            message_id: msg_edit.hash,
+            new_body: "fixed".into(),
+        },
+        vec![],
+        1,
+    );
+    let delete = dag.create_event(
+        &admin,
+        EventKind::DeleteMessage {
+            message_id: msg_delete.hash,
+        },
+        vec![],
+        2,
+    );
+    let react = dag.create_event(
+        &admin,
+        EventKind::Reaction {
+            message_id: msg_react.hash,
+            emoji: "👍".into(),
+        },
+        vec![],
+        3,
+    );
+
+    // Apply to the deserialized state WITHOUT a full materialize() first.
+    // Before the fix, message_index is empty and these mutations silently
+    // no-op.
+    apply_incremental(&mut restored, &edit);
+    apply_incremental(&mut restored, &delete);
+    apply_incremental(&mut restored, &react);
+
+    let edited = restored
+        .messages
+        .iter()
+        .find(|m| m.id == msg_edit.hash)
+        .expect("edit target still present");
+    assert_eq!(edited.body, "fixed", "EditMessage must take effect");
+    assert!(edited.edited, "message must be flagged edited");
+
+    let deleted = restored
+        .messages
+        .iter()
+        .find(|m| m.id == msg_delete.hash)
+        .expect("delete target still present");
+    assert!(deleted.deleted, "DeleteMessage must take effect");
+    assert_eq!(deleted.body, "[message deleted]");
+
+    let reacted = restored
+        .messages
+        .iter()
+        .find(|m| m.id == msg_react.hash)
+        .expect("reaction target still present");
+    assert!(
+        reacted.reactions.contains_key("👍"),
+        "Reaction must take effect"
+    );
+}
+
+/// Directly exercises `rebuild_message_index` — after clearing the index by
+/// hand, calling the method should reconstruct the hash→position map.
+#[test]
+fn rebuild_message_index_restores_mapping() {
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    let msg = do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Message {
+            channel_id: "general".into(),
+            body: "hello".into(),
+            reply_to: None,
+        },
+    );
+    let mut state = materialize(&dag);
+    state.message_index.clear();
+    assert!(state.message_index.is_empty());
+
+    state.rebuild_message_index();
+
+    assert_eq!(
+        state.message_index.get(&msg.hash).copied(),
+        Some(0),
+        "rebuild_message_index must map each message's hash to its vec index",
+    );
+    assert_eq!(state.message_index.len(), state.messages.len());
+}
