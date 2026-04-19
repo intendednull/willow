@@ -88,7 +88,8 @@ mod tests {
         let dir = std::env::temp_dir().join("willow-auth-test");
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("test-token");
-        let token = resolve_token(&None, Some(path.to_str().unwrap())).unwrap();
+        let path_str = path.to_string_lossy().into_owned();
+        let token = resolve_token(&None, Some(&path_str)).unwrap();
         let read_back = std::fs::read_to_string(&path).unwrap();
         assert_eq!(token, read_back);
         let _ = std::fs::remove_file(&path);

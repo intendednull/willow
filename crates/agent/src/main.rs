@@ -112,7 +112,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Connect to network if relay specified.
     if let Some(ref relay_url) = cli.relay {
-        let relay: RelayUrl = relay_url.parse().expect("invalid relay URL");
+        let relay: RelayUrl = relay_url
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid relay URL {relay_url:?}: {e}"))?;
         let iroh_config = IrohConfig {
             secret_key: identity.secret_key().clone(),
             relay_url: Some(relay),
