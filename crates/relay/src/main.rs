@@ -4,6 +4,66 @@
 //! gossip node that subscribes to system topics so new peers can join
 //! the gossip mesh. Dynamically subscribes to channel topics announced
 //! by peers via [`TopicAnnounce`](willow_common::WireMessage::TopicAnnounce).
+//!
+//! ## Role: transport-layer only
+//!
+//! The relay is a **transparent transport layer**. It forwards gossip
+//! traffic and helps NATed peers discover each other, but it performs
+//! **no application-level validation**:
+//!
+//! - It does **not** verify Ed25519 signatures on relayed messages.
+//! - It does **not** apply or check the event-sourced state machine
+//!   (see `willow-state`). Chain integrity, parent-hash verification,
+//!   permission checks, dedup, and governance rules (roles, bans,
+//!   channel ACLs) are *not* enforced here.
+//! - It does **not** inspect, filter, or re-route messages based on
+//!   their semantic content — all payloads are opaque bytes to the relay.
+//!
+//! The only semantic work this binary does is:
+//!
+//! 1. Validating that `TopicAnnounce` strings are syntactically
+//!    well-formed (length + allowed character set) before subscribing
+//!    to them. This is a DoS guard, not a governance check.
+//! 2. Rate/cap limiting (max concurrent bootstrap connections, max
+//!    distinct topics) to protect the relay itself.
+//!
+//! All DAG-level validation — signature checking, parent-hash
+//! verification, permission enforcement, merge/replay correctness — is
+//! the responsibility of **each client**. Clients must never trust
+//! relayed bytes just because they arrived through the relay.
+//!
+//! ## Trust model
+//!
+//! From the DAG spec (see
+//! [`docs/specs/2026-04-01-per-author-merkle-dag-state-design.md`](../../../docs/specs/2026-04-01-per-author-merkle-dag-state-design.md))
+//! and `CLAUDE.md` "Trust Model":
+//!
+//! > The relay is a regular client — trusted only if explicitly granted
+//! > `SyncProvider` permission by the owner.
+//!
+//! Concretely:
+//!
+//! - The relay operator's identity (the bootstrap node's Ed25519 key)
+//!   has **no** implicit authority over any server. The owner of a
+//!   server must explicitly grant `SyncProvider` via a `GrantPermission`
+//!   event for the relay's peer ID to be considered an authoritative
+//!   sync source for that server.
+//! - Without such a grant, clients treat the relay like any other
+//!   untrusted peer: they accept forwarded bytes for DAG sync but
+//!   validate everything locally before applying it.
+//! - A hostile or compromised relay can drop, delay, or reorder
+//!   messages (availability impact) but cannot forge events, bypass
+//!   permissions, or corrupt state — those are prevented by
+//!   cryptographic signatures and deterministic state machine
+//!   validation at the client.
+//!
+//! ## Cross-references
+//!
+//! - Trust model summary: `CLAUDE.md` → "Trust Model".
+//! - DAG design + `SyncProvider` permission:
+//!   `docs/specs/2026-04-01-per-author-merkle-dag-state-design.md`.
+//! - State-authority checks enforced at clients:
+//!   `docs/specs/2026-04-12-state-authority-and-mutations.md`.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
