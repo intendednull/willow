@@ -457,6 +457,7 @@ mod tests {
                 servers_loaded: 1,
                 events_buffered: 0,
                 max_events: 1000,
+                pending_count: 0,
             },
             servers: vec![],
             timestamp: 0,
