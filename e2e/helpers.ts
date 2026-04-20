@@ -59,11 +59,12 @@ export async function createServer(page: Page, name: string, displayName?: strin
   await advancePastNameStep(page, displayName);
 
   // Create tab is selected by default — fill the grove name and click
-  // "Plant grove" to commit.
+  // the panel's continue button to commit. Scoped to .welcome-tab-panel
+  // to avoid matching step 1's continue button from earlier steps.
   await page
     .locator('.welcome-tab-panel input[placeholder="backyard"]')
     .fill(name);
-  await page.locator('button', { hasText: 'Plant grove' }).click();
+  await page.locator('.welcome-tab-panel button', { hasText: 'continue' }).click();
 
   // Wait for the app to load with the new server.
   await page.waitForSelector('.sidebar', { timeout: 10_000 });

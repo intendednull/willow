@@ -43,7 +43,7 @@ pub fn AddServerPanel(
     let on_create = move |_| {
         let name = server_name.get_untracked();
         if name.trim().is_empty() {
-            set_status_msg.set("Please enter a grove name.".to_string());
+            set_status_msg.set("Please name your grove".to_string());
             return;
         }
         let h = handle_create.clone();
@@ -137,7 +137,7 @@ pub fn AddServerPanel(
                     let on_create = on_create.clone();
                     view! {
                         <div class="welcome-option">
-                            <label>"Grove name"</label>
+                            <label>"Name your grove"</label>
                             <input
                                 type="text"
                                 placeholder="backyard"
@@ -145,7 +145,7 @@ pub fn AddServerPanel(
                                 on:input=move |ev| set_server_name.set(event_target_value(&ev))
                             />
                             <button class="btn btn-primary welcome-btn" on:click=on_create>
-                                "Plant grove"
+                                "continue"
                             </button>
                         </div>
                     }.into_any()
@@ -220,9 +220,11 @@ pub fn AddServerPanel(
                                         {move || copy_label.get()}
                                     </button>
                                 </div>
-                                <p class="welcome-hint welcome-hint--flow">
-                                    "Send your id to a grove owner — they send back an invite. Paste it below."
-                                </p>
+                                <ol class="welcome-join-steps">
+                                    <li>"Share your id with a grove owner."</li>
+                                    <li>"They send back an invite."</li>
+                                    <li>"Paste it below."</li>
+                                </ol>
                                 <label>"Invite code"</label>
                                 <textarea
                                     class="welcome-invite-input"
