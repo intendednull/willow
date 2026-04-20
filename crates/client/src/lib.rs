@@ -28,6 +28,7 @@ pub mod listeners;
 pub mod mutations;
 pub mod ops;
 pub mod persistence_actor;
+pub mod presence;
 pub mod state;
 pub mod state_actors;
 pub mod storage;
