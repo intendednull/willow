@@ -15,6 +15,7 @@ pub fn peer_color(peer_id: &str) -> String {
     format!("hsl({hue}, {sat}%, {lit}%)")
 }
 
+mod add_friend;
 mod add_server;
 mod bottom_sheet;
 mod call_page;
@@ -43,6 +44,7 @@ mod tab_bar;
 mod voice;
 mod welcome;
 
+pub use add_friend::*;
 pub use add_server::*;
 pub use bottom_sheet::*;
 pub use call_page::*;

@@ -466,6 +466,11 @@ pub fn App() -> impl IntoView {
 
     view! {
         <div id="app-root" class="density-balanced" data-accent="moss" data-platform=platform>
+            // Trust-verification live region (assertive) + root-mounted
+            // compare-fingerprints dialog. Both live above the shell so
+            // they survive any sub-route remount.
+            <div id="trust-live-region" class="sr-only" aria-live="assertive" aria-atomic="true"></div>
+            <crate::components::AddFriendDialog/>
             {move || {
                 // Join link takes priority over everything.
                 if join_token_signal.get().is_some() {

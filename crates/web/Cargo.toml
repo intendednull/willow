@@ -8,6 +8,7 @@ description = "Leptos web UI for the Willow P2P chat network"
 [dependencies]
 willow-actor = { path = "../actor" }
 willow-client = { path = "../client" }
+willow-crypto = { path = "../crypto" }
 willow-identity = { path = "../identity" }
 willow-network = { path = "../network" }
 willow-state = { path = "../state" }
@@ -46,6 +47,7 @@ futures = { workspace = true }
 gloo-timers = { version = "0.3", features = ["futures"] }
 serde = { workspace = true }
 serde_json = "1"
+blake3 = { workspace = true }
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
