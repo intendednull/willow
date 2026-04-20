@@ -31,8 +31,17 @@ fn parse_endpoint_ids(ids: &[String]) -> Result<Vec<EndpointId>, String> {
 }
 
 fn success_json(value: impl Serialize) -> Result<CallToolResult, ErrorData> {
-    let text = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
-    Ok(CallToolResult::success(vec![Content::text(text)]))
+    match serde_json::to_string(&value) {
+        Ok(text) => Ok(CallToolResult::success(vec![Content::text(text)])),
+        Err(e) => {
+            tracing::warn!(error = %e, "tool serialization failed");
+            let err_body = serde_json::json!({
+                "error": format!("tool serialization failed: {e}")
+            })
+            .to_string();
+            Ok(CallToolResult::error(vec![Content::text(err_body)]))
+        }
+    }
 }
 
 fn error_text(msg: impl Into<String>) -> Result<CallToolResult, ErrorData> {
@@ -595,8 +604,13 @@ impl<N: Network> WillowToolRouter<N> {
                 let p: AuthorizeWorkersParams = parse_args(&args)?;
                 let eids = parse_endpoint_ids(&p.worker_peer_ids)
                     .map_err(|e| ErrorData::invalid_params(e, None))?;
-                self.client.authorize_workers(&eids).await.ok();
-                success_json(serde_json::json!({"success": true}))
+                match self.client.authorize_workers(&eids).await {
+                    Ok(()) => success_json(serde_json::json!({"success": true})),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "authorize_workers failed");
+                        error_text(format!("authorize_workers failed: {e}"))
+                    }
+                }
             }
 
             // ── Identity ─────────────────────────────────────────────────
