@@ -1,42 +1,63 @@
 /* ── CSS Variables: Dark theme (default) ─────────────────────────── */
 
 :root, [data-theme="dark"] {
-    --bg-main: #1a1a1e;
-    --bg-sidebar: #15151a;
-    --bg-input: #2a2a30;
-    --bg-message-hover: #1e1e24;
-    --bg-server-rail: #111114;
-    --bg-elevated: #222228;
-    --text-primary: #e0e0e5;
-    --text-secondary: #b0b0b8;
-    --text-muted: #6a6a75;
-    --text-placeholder: #4a4a55;
-    --accent: #5865f2;
-    --accent-hover: #4752c4;
-    --accent-glow: rgba(88, 101, 242, 0.15);
-    --accent-subtle: rgba(88, 101, 242, 0.08);
-    --accent-green: #3ba55c;
-    --accent-green-hover: #2d8049;
-    --accent-green-glow: rgba(59, 165, 92, 0.15);
-    --danger: #ed4245;
-    --danger-hover: #c73538;
-    --danger-glow: rgba(237, 66, 69, 0.15);
-    --online: #3ba55c;
-    --unread: #f0b232;
-    --border: #2a2a30;
-    --border-subtle: #222228;
-    --scrollbar-thumb: #2a2a30;
-    --scrollbar-track: transparent;
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
-    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
-    --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.4);
-    --shadow-inset: inset 0 1px 3px rgba(0, 0, 0, 0.2);
-    --focus-ring: 0 0 0 2px var(--accent-glow), 0 0 0 1px var(--accent);
-    --overlay-bg: rgba(0, 0, 0, 0.6);
-    --backdrop-blur: blur(4px);
-    --transition-fast: 0.12s ease;
-    --transition-normal: 0.18s ease;
-    --transition-smooth: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    /* Every legacy token below aliases a foundation token from
+       foundation.css. This is a one-way migration step: components
+       keep their old names; the palette moves under them. */
+    --bg-main:           var(--bg-0);
+    --bg-sidebar:        var(--bg-1);
+    --bg-input:          var(--bg-2);
+    --bg-message-hover:  var(--bg-2);
+    --bg-server-rail:    var(--bg-0);
+    --bg-elevated:       var(--bg-1);
+
+    --text-primary:      var(--ink-1);
+    --text-secondary:    var(--ink-2);
+    --text-muted:        var(--ink-3);
+    --text-placeholder:  var(--ink-4);
+
+    --accent:            var(--moss-2);
+    --accent-hover:      var(--moss-3);
+    --accent-glow:       color-mix(in oklab, var(--moss-2) 18%, transparent);
+    --accent-subtle:     color-mix(in oklab, var(--moss-2) 8%,  transparent);
+
+    --accent-green:      var(--ok);
+    --accent-green-hover:color-mix(in oklab, var(--ok) 80%, black);
+    --accent-green-glow: color-mix(in oklab, var(--ok) 18%, transparent);
+
+    --danger:            var(--err);
+    --danger-hover:      color-mix(in oklab, var(--err) 80%, black);
+    --danger-glow:       color-mix(in oklab, var(--err) 18%, transparent);
+
+    --online:            var(--moss-2);
+    --unread:            var(--amber);
+
+    --border:            var(--line);
+    --border-subtle:     var(--line-soft);
+
+    --scrollbar-thumb:   var(--bg-3);
+    --scrollbar-track:   transparent;
+
+    --shadow-sm:         0 1px 2px rgba(0, 0, 0, 0.2);
+    --shadow-md:         0 4px 12px rgba(0, 0, 0, 0.3);
+    --shadow-lg:         0 8px 32px rgba(0, 0, 0, 0.4);
+    --shadow-inset:      inset 0 1px 3px rgba(0, 0, 0, 0.2);
+
+    /* Keep legacy focus-ring shape but re-seat on the foundation token. */
+    --focus-ring:        var(--focus-ring, 0 0 0 2px var(--moss-1), 0 0 0 3px rgba(106, 141, 94, 0.6));
+
+    --overlay-bg:        rgba(0, 0, 0, 0.6);
+    --backdrop-blur:     blur(4px);
+
+    --transition-fast:   var(--motion-fast);
+    --transition-normal: var(--motion);
+    --transition-smooth: var(--motion-slow) var(--motion-ease);
+}
+
+/* Legacy alias — IBM Plex Mono is no longer loaded; route to JetBrains Mono
+   until components migrate to --font-mono directly. */
+code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
+    font-family: var(--font-mono) !important;
 }
 
 /* ── CSS Variables: Light theme ──────────────────────────────────── */
