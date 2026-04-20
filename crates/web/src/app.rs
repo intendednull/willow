@@ -200,6 +200,11 @@ pub fn App() -> impl IntoView {
     // without knowing where it was constructed.
     crate::audio::provide_chime_player();
 
+    // Inject the Notifier — single dispatch point for toast / chime /
+    // push. The caller resolves the `muted` + `is_own` flags before
+    // dispatching so this service stays pure.
+    crate::notifications::provide_notifier();
+
     // Auto-clear loading after LOADING_TIMEOUT_MS even if no peer connects.
     {
         let w = write;

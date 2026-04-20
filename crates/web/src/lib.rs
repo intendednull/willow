@@ -14,6 +14,7 @@ pub mod event_processing;
 pub mod handlers;
 pub mod icons;
 pub mod keybindings;
+pub mod notifications;
 pub mod palette_recents;
 pub mod state;
 pub mod state_bridge;
