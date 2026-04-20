@@ -58,10 +58,14 @@ if [ ! -d "$ROOT/node_modules" ]; then
     (cd "$ROOT" && npm install)
 fi
 
-# Playwright browsers
-if ! npx playwright install --dry-run chromium 2>&1 | grep -q "already installed"; then
+# Playwright browsers. `--dry-run` prints the install location whether
+# or not the browser is present, so check the filesystem instead. Skip
+# `--with-deps` — it triggers a non-interactive sudo prompt that fails
+# in sandboxed dev shells; assume OS packages are already present or
+# install them once out-of-band.
+if ! ls "$HOME/.cache/ms-playwright" 2>/dev/null | grep -q '^chromium-'; then
     step "Installing Playwright Chromium..."
-    npx playwright install --with-deps chromium
+    npx playwright install chromium
 fi
 
 info "Tooling ready: trunk=$(trunk --version 2>/dev/null || echo missing), just=$(just --version 2>/dev/null || echo missing)"
