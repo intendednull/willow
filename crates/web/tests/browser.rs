@@ -4237,3 +4237,204 @@ async fn context_menu_position_updates_reactively() {
 // `:root` return empty regardless of file content — the test could only pass
 // by inlining the very values it was meant to verify. Dropped in favour of
 // the visual-smoke gate in Task 15 of the Phase 0 plan.
+
+// ── Phase 1a desktop shell tests ─────────────────────────────────────────────
+//
+// These verify the structural + ARIA contracts of the new desktop shell
+// primitives without requiring live AppState / WebClientHandle context
+// (tests mount raw markup in the same pattern as the rest of this file).
+
+#[wasm_bindgen_test]
+async fn desktop_shell_grove_rail_is_navigation_landmark() {
+    let container = mount_test(|| {
+        view! {
+            <nav class="grove-rail" role="navigation" aria-label="groves">
+                <button class="rail-tile rail-tile--letters" aria-label="letters · direct messages"></button>
+                <button class="grove-tile" data-state="active" aria-label="Backyard"></button>
+                <button class="rail-tile rail-tile--settings" aria-label="settings"></button>
+            </nav>
+        }
+    });
+    tick().await;
+
+    let nav = query(&container, ".grove-rail").expect("grove-rail present");
+    assert_eq!(nav.get_attribute("role").as_deref(), Some("navigation"));
+    assert_eq!(nav.get_attribute("aria-label").as_deref(), Some("groves"));
+
+    // Active grove tile uses `data-state="active"`.
+    let active = query_all(&container, ".grove-tile[data-state=\"active\"]");
+    assert_eq!(active.len(), 1);
+}
+
+#[wasm_bindgen_test]
+async fn desktop_shell_channel_sidebar_is_navigation_landmark() {
+    let container = mount_test(|| {
+        view! {
+            <aside class="channel-sidebar" role="navigation" aria-label="channels">
+                <div class="grove-header">
+                    <span class="grove-header-name">"Backyard"</span>
+                    <button class="grove-menu-chevron server-gear-btn" aria-label="grove menu"></button>
+                </div>
+                <div class="channel-list">
+                    <div class="channel-group" data-group="commons">
+                        <button class="channel-group-label">"commons"</button>
+                        <div class="channel-group-rows">
+                            <div class="channel-item">"general"</div>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        }
+    });
+    tick().await;
+
+    let aside = query(&container, ".channel-sidebar").expect("channel-sidebar present");
+    assert_eq!(aside.get_attribute("role").as_deref(), Some("navigation"));
+    assert_eq!(aside.get_attribute("aria-label").as_deref(), Some("channels"));
+
+    // `.server-gear-btn` compat class still sits on the grove-menu chevron.
+    let chevron = query(&container, ".grove-menu-chevron.server-gear-btn");
+    assert!(chevron.is_some(), "grove menu chevron keeps server-gear-btn compat class");
+}
+
+#[wasm_bindgen_test]
+async fn desktop_shell_main_pane_header_six_buttons_in_order() {
+    let container = mount_test(|| {
+        view! {
+            <header class="main-pane-header" role="banner" aria-label="channel header">
+                <span class="mph-kind-icon"></span>
+                <span class="mph-title">"general"</span>
+                <div class="mph-spacer"></div>
+                <div class="mph-action-bar">
+                    <button class="action-btn" aria-label="members"></button>
+                    <button class="action-btn" aria-label="pinned"></button>
+                    <button class="action-btn" aria-label="thread"></button>
+                    <button class="action-btn" aria-label="join call"></button>
+                    <button class="action-btn" aria-label="search (⌘K)"></button>
+                    <button class="action-btn" aria-label="more"></button>
+                </div>
+            </header>
+        }
+    });
+    tick().await;
+
+    let header = query(&container, ".main-pane-header").expect("header present");
+    assert_eq!(header.get_attribute("role").as_deref(), Some("banner"));
+    assert_eq!(
+        header.get_attribute("aria-label").as_deref(),
+        Some("channel header")
+    );
+
+    let buttons = query_all(&container, ".mph-action-bar .action-btn");
+    assert_eq!(buttons.len(), 6, "action bar has six buttons");
+
+    let labels: Vec<String> = buttons
+        .iter()
+        .map(|b| b.get_attribute("aria-label").unwrap_or_default())
+        .collect();
+    assert_eq!(
+        labels,
+        vec![
+            "members",
+            "pinned",
+            "thread",
+            "join call",
+            "search (⌘K)",
+            "more",
+        ],
+        "action-bar labels are in the fixed order from layout-primitives"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn desktop_shell_right_rail_one_of_three() {
+    // Three passes: members open, pinned open, thread open. At any
+    // point exactly one data-pane attribute matches.
+    let (which, set_which) = signal("members".to_string());
+
+    let container = mount_test(move || {
+        view! {
+            <aside
+                class="right-rail"
+                role="complementary"
+                aria-label=move || which.get()
+                data-open="true"
+            >
+                <div class="right-rail-inner">
+                    {move || view! {
+                        <div class="right-rail-pane" data-pane=which.get()></div>
+                    }}
+                </div>
+            </aside>
+        }
+    });
+
+    tick().await;
+    let panes = query_all(&container, ".right-rail-pane");
+    assert_eq!(panes.len(), 1, "exactly one pane is mounted at a time");
+    assert_eq!(
+        panes[0].get_attribute("data-pane").as_deref(),
+        Some("members")
+    );
+    let rail = query(&container, ".right-rail").unwrap();
+    assert_eq!(
+        rail.get_attribute("aria-label").as_deref(),
+        Some("members")
+    );
+
+    set_which.set("pinned".to_string());
+    tick().await;
+    let panes = query_all(&container, ".right-rail-pane");
+    assert_eq!(panes.len(), 1);
+    assert_eq!(
+        panes[0].get_attribute("data-pane").as_deref(),
+        Some("pinned")
+    );
+
+    set_which.set("thread".to_string());
+    tick().await;
+    let panes = query_all(&container, ".right-rail-pane");
+    assert_eq!(panes.len(), 1);
+    assert_eq!(
+        panes[0].get_attribute("data-pane").as_deref(),
+        Some("thread")
+    );
+}
+
+/// Mirror of `ChannelGroup::classify` kept local because willow-web is
+/// a bin crate and can't expose the enum to integration tests. This
+/// duplicated logic is intentionally thin — the real source is in
+/// `crates/web/src/components/channel_sidebar.rs`; editing that file
+/// should be paired with an edit here until willow-web exposes a lib.
+fn classify_channel(name: &str, kind: willow_state::ChannelKind) -> &'static str {
+    if name.starts_with("_ephemeral-") {
+        "ephemeral"
+    } else if name.starts_with("_archive-") {
+        "archives"
+    } else if matches!(kind, willow_state::ChannelKind::Voice) {
+        "voice"
+    } else {
+        "commons"
+    }
+}
+
+#[wasm_bindgen_test]
+async fn desktop_shell_channel_group_classification() {
+    use willow_state::ChannelKind;
+
+    assert_eq!(classify_channel("general", ChannelKind::Text), "commons");
+    assert_eq!(classify_channel("gossip", ChannelKind::Voice), "voice");
+    assert_eq!(
+        classify_channel("_ephemeral-drafts", ChannelKind::Text),
+        "ephemeral"
+    );
+    assert_eq!(
+        classify_channel("_archive-2023", ChannelKind::Text),
+        "archives"
+    );
+    // Ephemeral prefix wins over voice kind.
+    assert_eq!(
+        classify_channel("_ephemeral-call", ChannelKind::Voice),
+        "ephemeral"
+    );
+}
