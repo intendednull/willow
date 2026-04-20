@@ -517,6 +517,56 @@ pub fn App() -> impl IntoView {
                 let handle_vj_mobile = handle_for_voice_join.clone();
                 view! {
                     <>
+                    {move || {
+                        // Top-level overlays rendered outside the shell
+                        // split so they work on both mobile + desktop.
+                        if show_add_server.get() {
+                            let (add_name, set_add_name) = signal(String::new());
+                            Some(view! {
+                                <div class="top-overlay top-overlay--settings">
+                                    <div class="settings-panel">
+                                        <div class="server-settings-header">
+                                            <button class="btn btn-sm" on:click=move |_| write.ui.set_show_add_server.set(false)>
+                                                {icons::icon_arrow_left()} " Back"
+                                            </button>
+                                            <h2>"Add a Server"</h2>
+                                        </div>
+                                        <div class="welcome-name-row">
+                                            <label for="add-server-display-name">"Display name · optional"</label>
+                                            <input
+                                                id="add-server-display-name"
+                                                type="text"
+                                                placeholder="what peers should call you"
+                                                prop:value=move || add_name.get()
+                                                on:input=move |ev| set_add_name.set(event_target_value(&ev))
+                                            />
+                                        </div>
+                                        <AddServerPanel
+                                            on_done=move |_| {
+                                                refresh_stored.with_value(|f| f());
+                                                write.ui.set_show_add_server.set(false);
+                                            }
+                                            display_name=add_name
+                                        />
+                                    </div>
+                                </div>
+                            }.into_any())
+                        } else if show_settings.get() {
+                            let tab = app_state.ui.settings_tab.get_untracked();
+                            Some(view! {
+                                <div class="top-overlay top-overlay--settings">
+                                    <SettingsPanel
+                                        peer_id=peer_id
+                                        roles=Signal::from(_roles)
+                                        default_tab=tab
+                                        on_close=move |_| write.ui.set_show_settings.set(false)
+                                    />
+                                </div>
+                            }.into_any())
+                        } else {
+                            None
+                        }
+                    }}
                     <div class="shell-desktop" aria-hidden="false">
                     <div
                         class="app app-shell"
@@ -667,44 +717,7 @@ pub fn App() -> impl IntoView {
                         />
                         <div class="main-content">
                             {move || {
-                                if show_add_server.get() {
-                                    let (add_name, set_add_name) = signal(String::new());
-                                    view! {
-                                        <div class="settings-panel">
-                                            <div class="server-settings-header">
-                                                <button class="btn btn-sm" on:click=move |_| write.ui.set_show_add_server.set(false)>
-                                                    {icons::icon_arrow_left()} " Back"
-                                                </button>
-                                                <h2>"Add a Server"</h2>
-                                            </div>
-                                            <div class="welcome-name-row">
-                                                <label for="add-server-display-name">"Display name · optional"</label>
-                                                <input
-                                                    id="add-server-display-name"
-                                                    type="text"
-                                                    placeholder="what peers should call you"
-                                                    prop:value=move || add_name.get()
-                                                    on:input=move |ev| set_add_name.set(event_target_value(&ev))
-                                                />
-                                            </div>
-                                            <AddServerPanel
-                                                on_done=move |_| {
-                                                    refresh_stored.with_value(|f| f());
-                                                    write.ui.set_show_add_server.set(false);
-                                                }
-                                                display_name=add_name
-                                            />
-                                        </div>
-                                    }.into_any()
-                                } else if show_settings.get() {
-                                    let tab = app_state.ui.settings_tab.get_untracked();
-                                    view! { <SettingsPanel
-                                        peer_id=peer_id
-                                        roles=Signal::from(_roles)
-                                        default_tab=tab
-                                        on_close=move |_| write.ui.set_show_settings.set(false)
-                                    /> }.into_any()
-                                } else if show_call_page.get() {
+                                if show_call_page.get() {
                                     let on_mute_cp = on_mute.clone();
                                     let on_deafen_cp = on_deafen.clone();
                                     let on_disconnect_cp = on_disconnect.clone();

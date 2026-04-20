@@ -696,6 +696,24 @@
     }
 }
 
+/* ── Top-level overlay (settings / add-server) ──────────────────── */
+
+/* Shared container: covers the viewport above both shells so the
+ * same panel works on desktop and mobile without duplication. */
+.top-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    background: var(--bg-0);
+    overflow: auto;
+}
+
+.top-overlay--settings .settings-panel {
+    height: 100%;
+    min-height: 0;
+    overflow: auto;
+}
+
 /* ── Shell split (desktop vs mobile) ─────────────────────────────── */
 
 /* `.shell-desktop` uses `display: contents` so the existing

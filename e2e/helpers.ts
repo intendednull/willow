@@ -344,8 +344,18 @@ export async function closeMemberList(page: Page) {
 
 /** Opens the server settings panel (opens sidebar first on mobile). */
 export async function openServerSettings(page: Page) {
-  await openSidebar(page);
-  await page.locator('.server-gear-btn').click();
+  if (isMobile(page)) {
+    // Channel list is on the home tab; the gear lives in the sidebar
+    // header rendered inside `.mobile-home`. No drawer needed.
+    const backSlot = page.locator('.mobile-top-bar .top-slot-left .top-back');
+    while (await backSlot.isVisible().catch(() => false)) {
+      await page.locator('.mobile-top-bar .top-slot-left').click();
+      await page.waitForTimeout(300);
+    }
+    await page.locator('.mobile-tab-bar .tab[data-tab="home"]').click();
+    await page.waitForTimeout(200);
+  }
+  await page.locator(`${visibleShell(page)} .server-gear-btn`).first().click();
   await page.waitForTimeout(500);
 }
 
