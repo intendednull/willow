@@ -37,6 +37,8 @@ web-sys = { version = "0.3", features = [
     "Response", "Headers",
     "Storage",
     "CssStyleSheet", "CssRule", "CssRuleList", "StyleSheet", "StyleSheetList",
+    "HtmlAudioElement",
+    "ServiceWorkerContainer", "MessageEvent", "Event", "EventInit",
 ] }
 js-sys = "0.3"
 wasm-bindgen-futures = "0.4"

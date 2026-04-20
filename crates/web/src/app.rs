@@ -203,7 +203,57 @@ pub fn App() -> impl IntoView {
     // Inject the Notifier — single dispatch point for toast / chime /
     // push. The caller resolves the `muted` + `is_own` flags before
     // dispatching so this service stays pure.
-    crate::notifications::provide_notifier();
+    let notifier = crate::notifications::provide_notifier();
+
+    // Wire the service-worker bridge — the `willow-push` window event
+    // fires whenever the SW forwards a focused-client push payload.
+    // Reads the payload out of `window.__willowLastPush` (stashed by
+    // `main.rs::wire_service_worker_bridge`) and routes it through the
+    // Notifier.
+    {
+        use wasm_bindgen::closure::Closure;
+        use wasm_bindgen::JsCast;
+        let notifier = notifier.clone();
+        let closure = Closure::<dyn Fn(web_sys::Event)>::new(move |_ev: web_sys::Event| {
+            let Some(window) = web_sys::window() else {
+                return;
+            };
+            let payload = js_sys::Reflect::get(
+                &window,
+                &wasm_bindgen::JsValue::from_str("__willowLastPush"),
+            )
+            .ok();
+            let Some(payload) = payload else {
+                return;
+            };
+            let cat = js_sys::Reflect::get(&payload, &"cat".into())
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_else(|| "msg".to_string());
+            let cat_enum = match cat.as_str() {
+                "mention" => crate::notifications::Category::Mention,
+                "letter" => crate::notifications::Category::Letter,
+                "ephemeral-expiry" => crate::notifications::Category::EphemeralExpiry,
+                "whisper-invite" => crate::notifications::Category::WhisperInvite,
+                "handoff" => crate::notifications::Category::Handoff,
+                _ => crate::notifications::Category::Msg,
+            };
+            notifier.dispatch(crate::notifications::NotificationKind {
+                category: cat_enum,
+                surface: format!("push:{cat}"),
+                toast: crate::components::Toast::info("willow — 1 new message").build(),
+                is_own: false,
+                muted: false,
+            });
+        });
+        if let Some(window) = web_sys::window() {
+            let _ = window.add_event_listener_with_callback(
+                "willow-push",
+                closure.as_ref().unchecked_ref(),
+            );
+        }
+        closure.forget();
+    }
 
     // Auto-clear loading after LOADING_TIMEOUT_MS even if no peer connects.
     {
