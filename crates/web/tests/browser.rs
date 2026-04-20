@@ -4290,11 +4290,17 @@ async fn desktop_shell_channel_sidebar_is_navigation_landmark() {
 
     let aside = query(&container, ".channel-sidebar").expect("channel-sidebar present");
     assert_eq!(aside.get_attribute("role").as_deref(), Some("navigation"));
-    assert_eq!(aside.get_attribute("aria-label").as_deref(), Some("channels"));
+    assert_eq!(
+        aside.get_attribute("aria-label").as_deref(),
+        Some("channels")
+    );
 
     // `.server-gear-btn` compat class still sits on the grove-menu chevron.
     let chevron = query(&container, ".grove-menu-chevron.server-gear-btn");
-    assert!(chevron.is_some(), "grove menu chevron keeps server-gear-btn compat class");
+    assert!(
+        chevron.is_some(),
+        "grove menu chevron keeps server-gear-btn compat class"
+    );
 }
 
 #[wasm_bindgen_test]
@@ -4377,10 +4383,7 @@ async fn desktop_shell_right_rail_one_of_three() {
         Some("members")
     );
     let rail = query(&container, ".right-rail").unwrap();
-    assert_eq!(
-        rail.get_attribute("aria-label").as_deref(),
-        Some("members")
-    );
+    assert_eq!(rail.get_attribute("aria-label").as_deref(), Some("members"));
 
     set_which.set("pinned".to_string());
     tick().await;

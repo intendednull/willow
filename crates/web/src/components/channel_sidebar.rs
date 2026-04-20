@@ -64,12 +64,7 @@ impl ChannelGroup {
     }
 
     /// Render order used by ChannelSidebar.
-    pub const ORDER: [Self; 4] = [
-        Self::Commons,
-        Self::Voice,
-        Self::Ephemeral,
-        Self::Archives,
-    ];
+    pub const ORDER: [Self; 4] = [Self::Commons, Self::Voice, Self::Ephemeral, Self::Archives];
 }
 
 /// Channel sidebar — grove header + channel groups + me strip + footer.
@@ -347,7 +342,7 @@ pub fn ChannelSidebar(
                                                             group_copy,
                                                             current_channel,
                                                             unread,
-                                                            can_manage_channels.clone(),
+                                                            can_manage_channels,
                                                             ch_click.clone(),
                                                             on_voice.clone(),
                                                             set_pending_del_channel,
@@ -521,8 +516,8 @@ fn short_fingerprint(peer_id: &str) -> String {
         return String::new();
     }
     const WORDS: &[&str] = &[
-        "willow", "moss", "cedar", "bark", "lichen", "quiet", "ember", "amber",
-        "fern", "thistle", "dusk", "pine", "birch", "stone", "river", "rook",
+        "willow", "moss", "cedar", "bark", "lichen", "quiet", "ember", "amber", "fern", "thistle",
+        "dusk", "pine", "birch", "stone", "river", "rook",
     ];
     let bytes = peer_id.as_bytes();
     let a = WORDS[(bytes.first().copied().unwrap_or(0) as usize) % WORDS.len()];
@@ -540,7 +535,7 @@ fn render_channel_row(
     group: ChannelGroup,
     current_channel: ReadSignal<String>,
     unread: ReadSignal<HashMap<String, usize>>,
-    can_manage_channels: impl Fn() -> bool + Send + Clone + 'static,
+    can_manage_channels: impl Fn() -> bool + Send + Copy + 'static,
     on_channel_click: impl Fn(String) + Send + Clone + 'static,
     on_voice_join: impl Fn(String) + Send + Clone + 'static,
     set_pending_del_channel: WriteSignal<Option<String>>,
@@ -693,5 +688,6 @@ fn render_channel_row(
                 }
             </span>
         </div>
-    }.into_any()
+    }
+    .into_any()
 }

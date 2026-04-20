@@ -64,7 +64,9 @@ pub fn MainPaneHeader(
     let is_thread = Signal::derive(move || which.get() == RightRailWhich::Thread);
 
     let kind_icon_view = move || {
-        let k = kind.map(|s| s.get()).unwrap_or(willow_state::ChannelKind::Text);
+        let k = kind
+            .map(|s| s.get())
+            .unwrap_or(willow_state::ChannelKind::Text);
         let name = channel.get();
         if name.starts_with("_ephemeral-") {
             icons::icon_hourglass().into_any()
@@ -131,7 +133,6 @@ pub fn MainPaneHeader(
                     aria-label="thread"
                     aria-pressed=move || if is_thread.get() { "true" } else { "false" }
                     title="thread"
-                    disabled=move || !matches!(which.get(), RightRailWhich::Thread) && false
                     on:click=move |_| {
                         let next = if is_thread.get() { RightRailWhich::None } else { RightRailWhich::Thread };
                         on_set_which.run(next);

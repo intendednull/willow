@@ -75,7 +75,11 @@ pub fn GroveRail(
         let total = servers_for_kb.get_untracked().len();
         let ordered: Vec<RailFocus> = std::iter::once(RailFocus::Letters)
             .chain((0..total).map(RailFocus::Grove))
-            .chain([RailFocus::NewGrove, RailFocus::Discover, RailFocus::Settings])
+            .chain([
+                RailFocus::NewGrove,
+                RailFocus::Discover,
+                RailFocus::Settings,
+            ])
             .collect();
         let current_idx = ordered
             .iter()
@@ -116,7 +120,9 @@ pub fn GroveRail(
                 if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
                     let selector = match t {
                         RailFocus::Letters => ".grove-rail .rail-tile--letters".to_string(),
-                        RailFocus::Grove(i) => format!(".grove-rail .grove-tile[data-index=\"{i}\"]"),
+                        RailFocus::Grove(i) => {
+                            format!(".grove-rail .grove-tile[data-index=\"{i}\"]")
+                        }
                         RailFocus::NewGrove => ".grove-rail .rail-tile--new-grove".to_string(),
                         RailFocus::Discover => ".grove-rail .rail-tile--discover".to_string(),
                         RailFocus::Settings => ".grove-rail .rail-tile--settings".to_string(),
