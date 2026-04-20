@@ -15,6 +15,7 @@ import {
   deleteMessage,
   reactToMessage,
   openSidebar,
+  visibleShell,
 } from './helpers';
 
 test.describe('Multi-peer state synchronization', () => {
@@ -25,12 +26,12 @@ test.describe('Multi-peer state synchronization', () => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser);
     try {
       // Both peers should see the sidebar.
-      await expect(page1.locator('.sidebar')).toBeVisible();
-      await expect(page2.locator('.sidebar')).toBeVisible();
+      await expect(page1.locator(`${visibleShell(page1)} .channel-sidebar, ${visibleShell(page1)} .mobile-home`).first()).toBeVisible();
+      await expect(page2.locator(`${visibleShell(page2)} .channel-sidebar, ${visibleShell(page2)} .mobile-home`).first()).toBeVisible();
 
       // Both peers should see the general channel.
-      await expect(page1.locator('.channel-item', { hasText: 'general' })).toBeVisible();
-      await expect(page2.locator('.channel-item', { hasText: 'general' })).toBeVisible();
+      await expect(page1.locator(`${visibleShell(page1)} .channel-item`, { hasText: 'general' })).toBeVisible();
+      await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'general' })).toBeVisible();
     } finally {
       await ctx1.close();
       await ctx2.close();
@@ -82,11 +83,11 @@ test.describe('Multi-peer state synchronization', () => {
 
       // Peer 2 should see all 3 channels (open sidebar on mobile).
       await openSidebar(page2);
-      await expect(page2.locator('.channel-item', { hasText: 'general' }))
+      await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'general' }))
         .toBeVisible({ timeout: 30_000 });
-      await expect(page2.locator('.channel-item', { hasText: 'announcements' }))
+      await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'announcements' }))
         .toBeVisible({ timeout: 30_000 });
-      await expect(page2.locator('.channel-item', { hasText: 'random' }))
+      await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'random' }))
         .toBeVisible({ timeout: 30_000 });
     } finally {
       await ctx1.close();
@@ -102,7 +103,7 @@ test.describe('Multi-peer state synchronization', () => {
 
       // Bob should see the new channel (open sidebar on mobile).
       await openSidebar(page2);
-      await expect(page2.locator('.channel-item', { hasText: 'new-channel' }))
+      await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'new-channel' }))
         .toBeVisible({ timeout: 30_000 });
     } finally {
       await ctx1.close();
@@ -118,7 +119,7 @@ test.describe('Multi-peer state synchronization', () => {
 
       // Wait for Bob to see it (open sidebar on mobile).
       await openSidebar(page2);
-      await expect(page2.locator('.channel-item', { hasText: 'dev' }))
+      await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'dev' }))
         .toBeVisible({ timeout: 30_000 });
 
       // Both switch to the new channel.
@@ -228,7 +229,7 @@ test.describe('Multi-peer state synchronization', () => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser);
     try {
       // Peer 1 should see at least 2 members (may include relay).
-      const memberCount = await page1.locator('.member-item').count();
+      const memberCount = await page1.locator(`${visibleShell(page1)} .member-item`).count();
       expect(memberCount).toBeGreaterThanOrEqual(2);
     } finally {
       await ctx1.close();
@@ -240,7 +241,7 @@ test.describe('Multi-peer state synchronization', () => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser);
     try {
       // Alice starts typing.
-      const input = page1.locator('.input-area input, .input-area textarea').first();
+      const input = page1.locator(`${visibleShell(page1)} .input-area input, ${visibleShell(page1)} .input-area textarea`).first();
       await input.fill('typing...');
       await page1.waitForTimeout(500);
 
@@ -351,9 +352,9 @@ test.describe('Multi-peer state synchronization', () => {
 
       // Both should appear on Bob's side after gossip delivery.
       await openSidebar(page2);
-      await expect(page2.locator('.channel-item', { hasText: 'chan-a' }))
+      await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'chan-a' }))
         .toBeVisible({ timeout: 30_000 });
-      await expect(page2.locator('.channel-item', { hasText: 'chan-b' }))
+      await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'chan-b' }))
         .toBeVisible({ timeout: 30_000 });
     } finally {
       await ctx1.close();

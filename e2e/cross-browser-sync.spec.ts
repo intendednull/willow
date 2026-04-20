@@ -8,7 +8,7 @@ const desktopFirefoxContext = {
   viewport: { width: 1280, height: 720 },
   hasTouch: false,
 };
-import { freshStart, createServer, sendMessage, waitForMessage, waitForApp, getPeerId, openSidebar, joinViaInvite } from './helpers';
+import { freshStart, createServer, sendMessage, waitForMessage, waitForApp, getPeerId, openSidebar, joinViaInvite, visibleShell } from './helpers';
 
 /**
  * Cross-browser sync tests.
@@ -68,11 +68,11 @@ test.describe('Cross-browser peer sync', () => {
       await joinViaInvite(mobilePage, inviteCode);
 
       // Verify mobile sees the server — wait for DOM attachment first (gossip may lag).
-      await expect(mobilePage.locator('.channel-item', { hasText: 'general' }))
+      await expect(mobilePage.locator(`${visibleShell(mobilePage)} .channel-item`, { hasText: 'general' }))
         .toBeAttached({ timeout: 60_000 });
       // Now open the sidebar and confirm the item is visible.
       await openSidebar(mobilePage);
-      await expect(mobilePage.locator('.channel-item', { hasText: 'general' }))
+      await expect(mobilePage.locator(`${visibleShell(mobilePage)} .channel-item`, { hasText: 'general' }))
         .toBeVisible({ timeout: 5_000 });
 
       // Establish bidirectional gossip mesh: Chrome→Firefox is the reliable direction.
@@ -144,9 +144,9 @@ test.describe('Cross-browser peer sync', () => {
       await joinViaInvite(desktopPage, inviteCode);
 
       // Gossip sync after joining can be slow — wait for DOM attachment before visibility.
-      await expect(desktopPage.locator('.channel-item', { hasText: 'general' }))
+      await expect(desktopPage.locator(`${visibleShell(desktopPage)} .channel-item`, { hasText: 'general' }))
         .toBeAttached({ timeout: 60_000 });
-      await expect(desktopPage.locator('.channel-item', { hasText: 'general' }))
+      await expect(desktopPage.locator(`${visibleShell(desktopPage)} .channel-item`, { hasText: 'general' }))
         .toBeVisible({ timeout: 5_000 });
 
       // Mobile sends a message.

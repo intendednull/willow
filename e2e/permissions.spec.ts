@@ -28,7 +28,7 @@ test.describe('Permissions and trust', () => {
       await trustPeer(page1, 'Bob');
 
       // Trusted badge should appear on Bob's member entry.
-      await expect(page1.locator('.member-item', { hasText: 'Bob' }).locator('.trusted-badge'))
+      await expect(page1.locator(`${visibleShell(page1)} .member-item`, { hasText: 'Bob' }).locator('.trusted-badge'))
         .toBeVisible({ timeout: 10_000 });
     } finally {
       await ctx1.close();
@@ -63,7 +63,7 @@ test.describe('Permissions and trust', () => {
       await untrustPeer(page1, 'Bob');
 
       // Trusted badge should be hidden.
-      await expect(page1.locator('.member-item', { hasText: 'Bob' }).locator('.trusted-badge'))
+      await expect(page1.locator(`${visibleShell(page1)} .member-item`, { hasText: 'Bob' }).locator('.trusted-badge'))
         .toBeHidden({ timeout: 10_000 });
     } finally {
       await ctx1.close();
@@ -111,14 +111,14 @@ test.describe('Permissions and trust', () => {
     try {
       // Record initial member count (includes relay + peers).
       await page1.waitForTimeout(1000);
-      const initialCount = await page1.locator('.member-item').count();
+      const initialCount = await page1.locator(`${visibleShell(page1)} .member-item`).count();
       expect(initialCount).toBeGreaterThanOrEqual(2);
 
       // Alice kicks Bob.
       await kickPeer(page1, 'Bob');
 
       // Member count should drop by 1.
-      await expect(page1.locator('.member-item'))
+      await expect(page1.locator(`${visibleShell(page1)} .member-item`))
         .toHaveCount(initialCount - 1, { timeout: 30_000 });
     } finally {
       await ctx1.close();
@@ -172,7 +172,7 @@ test.describe('Permissions and trust', () => {
       await page1.locator('text=Back').click();
 
       // Sidebar / chat area should be visible again.
-      await expect(page1.locator('.sidebar')).toBeVisible({ timeout: 5000 });
+      await expect(page1.locator(`${visibleShell(page1)} .channel-sidebar, ${visibleShell(page1)} .mobile-home`).first()).toBeVisible({ timeout: 5000 });
     } finally {
       await ctx1.close();
       await ctx2.close();

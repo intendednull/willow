@@ -2,43 +2,55 @@ import { test, expect } from '@playwright/test';
 import {
   freshStart,
   createServer,
+  openMemberList,
   openServerSettings,
+  visibleShell,
 } from './helpers';
 
 test.describe('Worker nodes infrastructure', () => {
   test.setTimeout(60_000);
 
   test('member list renders with correct section structure', async ({ page }, testInfo) => {
-    // Member list is always visible on desktop; toggling differs on mobile.
-    test.skip(testInfo.project.name.startsWith('mobile'), 'member list always-visible on desktop only');
+    // Member list is the desktop right rail now; Phase 1a put it behind
+    // the members action button instead of always-visible.
+    test.skip(testInfo.project.name.startsWith('mobile'), 'member list ships through the mobile drawer in a later phase');
     await freshStart(page);
     await createServer(page, 'Section Test', 'Alice');
     await page.waitForTimeout(3000);
 
-    // On desktop, member list is always visible.
-    const memberList = page.locator('.member-list');
+    // Open the right-rail member list.
+    await openMemberList(page);
+
+    const memberList = page.locator(`${visibleShell(page)} .member-list`);
     await expect(memberList).toBeVisible();
 
-    // "Members" header should always be present.
-    await expect(page.locator('.member-list h3', { hasText: 'Members' }))
+    // Members heading (h3) still present per spec §Right rail.
+    await expect(page.locator(`${visibleShell(page)} .member-list h3`, { hasText: 'Members' }))
       .toBeVisible();
 
     // Owner should have Owner badge.
-    await expect(page.locator('.badge.owner-badge')).toBeVisible();
+    await expect(page.locator(`${visibleShell(page)} .badge.owner-badge`)).toBeVisible();
   });
 
-  test('relay connection is established after server creation', async ({ page }) => {
+  test('relay connection is established after server creation', async ({ page }, testInfo) => {
     await freshStart(page);
     await createServer(page, 'Relay Test', 'Alice');
 
     // Wait for relay connection to establish.
-    // The status bar should show "Connected" once the relay WebSocket is up.
-    await expect(page.locator('.connection-status', { hasText: /Connected/i }))
-      .toBeVisible({ timeout: 20_000 });
+    // App indicates reachability by rendering either the desktop net
+    // status footer or the mobile top bar once the client has a peer
+    // id and peer count signal. `:visible` scopes to the active shell.
+    await expect(
+      page.locator('.net-status-footer:visible, .mobile-top-bar:visible').first()
+    ).toBeVisible({ timeout: 20_000 });
 
-    // Alice should always be in the member list.
-    const members = page.locator('.member-item');
-    await expect(members).toHaveCount(1, { timeout: 5_000 });
+    // Alice should always be in the member list on desktop. Mobile
+    // defers peer member-rendering to a later phase.
+    if (!testInfo.project.name.startsWith('mobile')) {
+      await openMemberList(page);
+      const members = page.locator(`${visibleShell(page)} .member-item`);
+      await expect(members).toHaveCount(1, { timeout: 5_000 });
+    }
   });
 
   test('infrastructure section hidden when no workers have SyncProvider', async ({ page }, testInfo) => {

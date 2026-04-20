@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { freshStart, createServer, sendMessage, waitForMessage, waitForApp, openSidebar } from './helpers';
+import { freshStart, createServer, sendMessage, waitForMessage, waitForApp, openSidebar, visibleShell } from './helpers';
 
 test.describe('Join via shareable link', () => {
   // Skip on Firefox — clipboard permissions are not supported.
@@ -52,10 +52,10 @@ test.describe('Join via shareable link', () => {
     await pageB.waitForSelector('.sidebar, .app', { timeout: 30000 });
 
     // Verify B sees the server — wait for DOM attachment first (gossip may lag).
-    await expect(pageB.locator('.channel-item', { hasText: 'general' }))
+    await expect(pageB.locator(`${visibleShell(pageB)} .channel-item`, { hasText: 'general' }))
       .toBeAttached({ timeout: 30_000 });
     await openSidebar(pageB);
-    await expect(pageB.locator('.channel-item', { hasText: 'general' }))
+    await expect(pageB.locator(`${visibleShell(pageB)} .channel-item`, { hasText: 'general' }))
       .toBeVisible({ timeout: 5_000 });
 
     // A sends a message.
@@ -85,7 +85,7 @@ test.describe('Join via shareable link', () => {
       await page.locator('button', { hasText: 'Join grove' }).waitFor({ timeout: 3_000 });
       await page.locator('button', { hasText: 'Join grove' }).click();
       // The join should fail — no channel list should ever appear.
-      await expect(page.locator('.channel-item')).toBeHidden({ timeout: 10_000 });
+      await expect(page.locator(`${visibleShell(page)} .channel-item`)).toBeHidden({ timeout: 10_000 });
     } finally {
       await ctx.close();
     }
