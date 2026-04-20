@@ -376,3 +376,13 @@ pub fn icon_activity() -> impl IntoView {
         "icon-activity",
     )
 }
+
+/// Willow brand mark — three drooping fronds with leaf tips.
+/// Rendered with its own viewBox (48) and stroke width (1.5) to match the
+/// foundation iconography rules for brand surfaces.
+pub fn icon_willow_mark() -> impl IntoView {
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M24 6c-5 12-8 22-10 36"/><path d="M24 6c0 14 0 24 0 36"/><path d="M24 6c5 12 8 22 10 36"/><ellipse cx="14" cy="42" rx="3" ry="1.4" transform="rotate(-24 14 42)" fill="currentColor" stroke="none"/><ellipse cx="24" cy="44" rx="3" ry="1.4" fill="currentColor" stroke="none"/><ellipse cx="34" cy="42" rx="3" ry="1.4" transform="rotate(24 34 42)" fill="currentColor" stroke="none"/><circle cx="24" cy="6" r="1.4" fill="currentColor" stroke="none"/></svg>"#;
+    view! {
+        <span class="icon icon-willow-mark" inner_html=svg.to_string()></span>
+    }
+}

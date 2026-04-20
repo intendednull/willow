@@ -6,11 +6,21 @@ use send_wrapper::SendWrapper;
 use crate::app::WebClientHandle;
 use crate::icons;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AddServerTab {
+    Create,
+    Join,
+}
+
 /// Panel for creating a new server or joining an existing one via invite code.
-/// Shown when the user clicks the "+" button in the server rail.
+///
+/// Internally tabbed — only one flow is visible at a time. Used on the
+/// welcome screen and on the sidebar "+" add-server surface.
 #[component]
 pub fn AddServerPanel(on_done: impl Fn(()) + Send + Clone + 'static) -> impl IntoView {
     let handle = use_context::<WebClientHandle>().unwrap();
+
+    let (active_tab, set_active_tab) = signal(AddServerTab::Create);
 
     // Create server state.
     let (server_name, set_server_name) = signal(String::new());
@@ -26,7 +36,6 @@ pub fn AddServerPanel(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Int
     let app_state = use_context::<crate::state::AppState>().unwrap();
     set_join_profile_name.set(app_state.server.display_name.get_untracked());
 
-    // Create handler.
     let handle_create = handle.clone();
     let on_done_create = on_done.clone();
     let on_create = move |_| {
@@ -52,7 +61,6 @@ pub fn AddServerPanel(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Int
         });
     };
 
-    // Join step 1.
     let on_join_next = move |_: web_sys::MouseEvent| {
         let code = join_code.get_untracked();
         if code.trim().is_empty() {
@@ -64,12 +72,50 @@ pub fn AddServerPanel(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Int
         set_join_step.set(true);
     };
 
-    // Join step 2.
     let handle_join = SendWrapper::new(Rc::new(handle.clone()));
     let on_done_rc: SendWrapper<Rc<dyn Fn(())>> =
         SendWrapper::new(Rc::new(on_done) as Rc<dyn Fn(())>);
 
     view! {
+        <div class="welcome-tabs" role="tablist">
+            <button
+                type="button"
+                class=move || {
+                    if active_tab.get() == AddServerTab::Create {
+                        "welcome-tab-btn active"
+                    } else {
+                        "welcome-tab-btn"
+                    }
+                }
+                role="tab"
+                aria-selected=move || (active_tab.get() == AddServerTab::Create).to_string()
+                on:click=move |_| {
+                    set_status_msg.set(String::new());
+                    set_active_tab.set(AddServerTab::Create);
+                }
+            >
+                "Create"
+            </button>
+            <button
+                type="button"
+                class=move || {
+                    if active_tab.get() == AddServerTab::Join {
+                        "welcome-tab-btn active"
+                    } else {
+                        "welcome-tab-btn"
+                    }
+                }
+                role="tab"
+                aria-selected=move || (active_tab.get() == AddServerTab::Join).to_string()
+                on:click=move |_| {
+                    set_status_msg.set(String::new());
+                    set_active_tab.set(AddServerTab::Join);
+                }
+            >
+                "Join"
+            </button>
+        </div>
+
         {move || {
             let msg = status_msg.get();
             if msg.is_empty() {
@@ -79,30 +125,36 @@ pub fn AddServerPanel(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Int
             }
         }}
 
-        <div class="welcome-options" style="margin-top: 16px;">
-            <div class="welcome-option">
-                <h3>"Create a Server"</h3>
-                <label>"Server Name"</label>
-                <input
-                    type="text"
-                    placeholder="My Server"
-                    prop:value=move || server_name.get()
-                    on:input=move |ev| set_server_name.set(event_target_value(&ev))
-                />
-                <label>"Display Name (optional)"</label>
-                <input
-                    type="text"
-                    placeholder="Your name..."
-                    prop:value=move || create_display_name.get()
-                    on:input=move |ev| set_create_display_name.set(event_target_value(&ev))
-                />
-                <button class="btn btn-primary welcome-btn" on:click=on_create>
-                    "Create Server"
-                </button>
-            </div>
-            <div class="welcome-option">
-                <h3>"Join a Server"</h3>
-                {move || {
+        <div class="welcome-tab-panel">
+            {move || match active_tab.get() {
+                AddServerTab::Create => {
+                    let on_create = on_create.clone();
+                    view! {
+                        <div class="welcome-option">
+                            <p class="welcome-hint">
+                                "A grove is your own server — you decide who joins."
+                            </p>
+                            <label>"Grove name"</label>
+                            <input
+                                type="text"
+                                placeholder="backyard"
+                                prop:value=move || server_name.get()
+                                on:input=move |ev| set_server_name.set(event_target_value(&ev))
+                            />
+                            <label>"Display name · optional"</label>
+                            <input
+                                type="text"
+                                placeholder="what peers should call you"
+                                prop:value=move || create_display_name.get()
+                                on:input=move |ev| set_create_display_name.set(event_target_value(&ev))
+                            />
+                            <button class="btn btn-primary welcome-btn" on:click=on_create>
+                                "Plant grove"
+                            </button>
+                        </div>
+                    }.into_any()
+                }
+                AddServerTab::Join => {
                     if join_step.get() {
                         let hj = handle_join.clone();
                         let done_cb = on_done_rc.clone();
@@ -129,12 +181,12 @@ pub fn AddServerPanel(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Int
                             });
                         };
                         view! {
-                            <div>
-                                <label>"Display Name for this server"</label>
+                            <div class="welcome-option">
+                                <label>"Display name for this grove"</label>
                                 <p class="welcome-hint">"Pre-filled with your current name."</p>
                                 <input
                                     type="text"
-                                    placeholder="Your name..."
+                                    placeholder="your name…"
                                     prop:value=move || join_profile_name.get()
                                     on:input=move |ev| set_join_profile_name.set(event_target_value(&ev))
                                 />
@@ -143,29 +195,32 @@ pub fn AddServerPanel(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Int
                                         {icons::icon_arrow_left()} " Back"
                                     </button>
                                     <button class="btn btn-primary welcome-btn" on:click=confirm>
-                                        "Join Server"
+                                        "Join grove"
                                     </button>
                                 </div>
                             </div>
                         }.into_any()
                     } else {
                         view! {
-                            <div>
-                                <label>"Invite Code"</label>
+                            <div class="welcome-option">
+                                <p class="welcome-hint">
+                                    "Paste the letter of introduction you were sent."
+                                </p>
+                                <label>"Invite code"</label>
                                 <textarea
                                     class="welcome-invite-input"
-                                    placeholder="Paste invite code here..."
+                                    placeholder="paste willow://… here"
                                     prop:value=move || join_code.get()
                                     on:input=move |ev| set_join_code.set(event_target_value(&ev))
                                 ></textarea>
                                 <button class="btn btn-primary welcome-btn" on:click=on_join_next>
-                                    "Next " {icons::icon_arrow_right()}
+                                    "Open letter " {icons::icon_arrow_right()}
                                 </button>
                             </div>
                         }.into_any()
                     }
-                }}
-            </div>
+                }
+            }}
         </div>
     }
 }

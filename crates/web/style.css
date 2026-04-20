@@ -2446,6 +2446,14 @@ select:focus-visible {
         font-size: 24px;
     }
 
+    .welcome-card h1.willow-wordmark {
+        font-size: 38px;
+    }
+
+    .willow-mark-lg {
+        font-size: 44px;
+    }
+
     .welcome-card .tagline {
         font-size: 14px;
         margin-bottom: 24px;
@@ -2454,6 +2462,17 @@ select:focus-visible {
     .welcome-options {
         grid-template-columns: 1fr;
         gap: 16px;
+    }
+
+    .welcome-peer-compact {
+        flex-wrap: wrap;
+        border-radius: var(--radius);
+        justify-content: center;
+    }
+
+    .welcome-peer-compact .peer-id-text {
+        font-size: 10px;
+        word-break: break-all;
     }
 
     .welcome-option {
@@ -2577,6 +2596,14 @@ select:focus-visible {
 
     .welcome-card h1 {
         font-size: 22px;
+    }
+
+    .welcome-card h1.willow-wordmark {
+        font-size: 34px;
+    }
+
+    .willow-mark-lg {
+        font-size: 38px;
     }
 
     .welcome-option {
@@ -2861,6 +2888,152 @@ select:focus-visible {
     color: var(--text-secondary);
     word-break: break-all;
     user-select: all;
+}
+
+/* ── Welcome hero (brand mark + wordmark + tagline) ──────────────── */
+
+.welcome-hero {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 28px;
+    animation: willow-pop-in var(--motion-slow) var(--motion-ease);
+}
+
+.willow-mark-lg {
+    color: var(--willow);
+    font-size: 56px;
+    line-height: 1;
+    display: inline-flex;
+    filter: drop-shadow(0 4px 16px color-mix(in oklab, var(--willow) 40%, transparent));
+}
+
+.willow-wordmark {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 400;
+    font-size: 54px;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    color: var(--ink-0);
+    margin: 4px 0 0;
+    text-align: center;
+}
+
+/* Override legacy h1 rule inside welcome-card for wordmark only. */
+.welcome-card h1.willow-wordmark {
+    font-size: 54px;
+    font-weight: 400;
+    margin-bottom: 0;
+    letter-spacing: -0.02em;
+}
+
+/* ── Welcome compact peer-id row ──────────────────────────────────── */
+
+.welcome-peer-compact {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    margin: 0 auto 20px;
+    width: fit-content;
+    max-width: 100%;
+    transition: border-color var(--transition-normal);
+}
+
+.welcome-peer-compact:hover {
+    border-color: var(--accent);
+}
+
+.welcome-peer-compact__label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-3);
+    flex-shrink: 0;
+}
+
+.welcome-peer-compact .peer-id-text {
+    font-size: 11px;
+    color: var(--text-secondary);
+    user-select: all;
+    letter-spacing: 0.02em;
+}
+
+.welcome-peer-compact__copy {
+    padding: 2px 10px;
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: lowercase;
+}
+
+/* ── Welcome tabs (create / join) ─────────────────────────────────── */
+
+.welcome-tabs {
+    display: flex;
+    gap: 4px;
+    padding: 4px;
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    margin-bottom: 16px;
+}
+
+.welcome-tab-btn {
+    flex: 1;
+    padding: 10px 16px;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-s);
+    color: var(--ink-2);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    transition:
+        color var(--motion) var(--motion-ease),
+        background var(--motion-fast) var(--motion-ease);
+    -webkit-tap-highlight-color: transparent;
+}
+
+.welcome-tab-btn:hover:not(.active) {
+    color: var(--ink-1);
+    background: var(--bg-2);
+}
+
+.welcome-tab-btn.active {
+    background: var(--bg-3);
+    color: var(--ink-0);
+    box-shadow: var(--shadow-1);
+    position: relative;
+}
+
+.welcome-tab-btn.active::after {
+    content: "";
+    position: absolute;
+    left: 20%;
+    right: 20%;
+    bottom: 4px;
+    height: 2px;
+    background: var(--moss-2);
+    border-radius: 1px;
+}
+
+.welcome-tab-panel {
+    animation: willow-pop-in var(--motion) var(--motion-ease);
+}
+
+.welcome-tab-panel .welcome-option {
+    background: var(--bg-main);
+    border-radius: var(--radius);
+    padding: 24px;
+    border: 1px solid var(--border);
 }
 
 /* ── Pinned messages panel ─────────────────────────────────────── */
