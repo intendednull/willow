@@ -17,6 +17,7 @@ pub fn peer_color(peer_id: &str) -> String {
 
 mod add_server;
 mod call_page;
+mod channel_sidebar;
 mod chat;
 mod command_palette;
 mod confirm_dialog;
@@ -37,6 +38,7 @@ mod welcome;
 
 pub use add_server::*;
 pub use call_page::*;
+pub use channel_sidebar::*;
 pub use chat::*;
 pub use command_palette::*;
 pub use confirm_dialog::*;
