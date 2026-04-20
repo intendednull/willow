@@ -138,7 +138,9 @@ export async function sendMessage(page: Page, text: string) {
     .first();
   await input.fill(text);
   await input.press('Enter');
-  await page.waitForTimeout(300);
+  await page.locator(`${visibleShell(page)} .message .body`, { hasText: text })
+    .first()
+    .waitFor({ timeout: 10_000 });
 }
 
 /** Get all visible message bodies. */
@@ -183,7 +185,6 @@ export async function switchChannel(page: Page, channelName: string) {
     .locator(`${visibleShell(page)} .channel-item`, { hasText: channelName })
     .first()
     .click();
-  await page.waitForTimeout(300);
 }
 
 /** Wait for a specific message to appear in the visible shell. */
@@ -324,7 +325,6 @@ export async function openMemberList(page: Page) {
       .locator(`${visibleShell(page)} .right-rail[data-open="true"] .member-list`)
       .waitFor({ timeout: 3_000 })
       .catch(() => {});
-    await page.waitForTimeout(200);
   }
 }
 
@@ -337,7 +337,6 @@ export async function closeMemberList(page: Page) {
   const membersBtn = page.locator(`${visibleShell(page)} .action-btn[aria-label="members"]`);
   if (await membersBtn.count() > 0) {
     await membersBtn.first().click();
-    await page.waitForTimeout(200);
   }
 }
 
@@ -357,7 +356,8 @@ export async function openServerSettings(page: Page) {
     await page.waitForTimeout(200);
   }
   await page.locator(`${visibleShell(page)} .server-gear-btn`).first().click();
-  await page.waitForTimeout(500);
+  await page.locator('.settings-panel, .settings-overlay').first()
+    .waitFor({ timeout: 5_000 });
 }
 
 /** Generates an invite code for a given peer ID. Returns the invite code string. */
@@ -473,7 +473,8 @@ export async function createChannel(page: Page, name: string) {
   await page.waitForTimeout(200);
   await page.locator(`${scope} .channel-create-input input`).first().fill(name);
   await page.locator(`${scope} .channel-create-input input`).first().press('Enter');
-  await page.waitForTimeout(500);
+  await page.locator(`${visibleShell(page)} .channel-item`, { hasText: name })
+    .waitFor({ timeout: 10_000 });
 }
 
 // ── Message actions ───────────────────────────────────────────────────
