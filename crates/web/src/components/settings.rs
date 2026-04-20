@@ -41,6 +41,7 @@ pub fn SettingsPanel(
         SettingsTab::Server => "Server",
         SettingsTab::Roles => "Roles",
         SettingsTab::Presence => "Presence",
+        SettingsTab::Notifications => "Notifications",
     };
 
     // ── Profile tab handlers ─────────────────────────────────────────
@@ -136,6 +137,10 @@ pub fn SettingsPanel(
                     class=move || if active_tab.get() == SettingsTab::Presence { "tab-btn active" } else { "tab-btn" }
                     on:click=move |_| set_active_tab.set(SettingsTab::Presence)
                 >"Presence"</button>
+                <button
+                    class=move || if active_tab.get() == SettingsTab::Notifications { "tab-btn active" } else { "tab-btn" }
+                    on:click=move |_| set_active_tab.set(SettingsTab::Notifications)
+                >"Notifications"</button>
                 {
                     let owner_check = is_owner;
                     move || {
@@ -378,6 +383,24 @@ pub fn SettingsPanel(
                 </div>
             </div>
 
+            // Notifications tab content — phase 1f placeholder. The
+            // real settings-tweaks panel owns full per-category
+            // preferences; this slot only exposes the grove-mute
+            // toggle so the mute UI is reachable without the context
+            // menu.
+            <div
+                class="settings-tab-content"
+                style=move || {
+                    if active_tab.get() == SettingsTab::Notifications {
+                        ""
+                    } else {
+                        "display:none"
+                    }
+                }
+            >
+                <NotificationsTabPlaceholder />
+            </div>
+
             // Roles tab content.
             <div class="settings-tab-content" style=move || if active_tab.get() == SettingsTab::Roles { "" } else { "display:none" }>
                 <div class="settings-section role-section">
@@ -386,6 +409,51 @@ pub fn SettingsPanel(
                         roles=roles
                     />
                 </div>
+            </div>
+        </div>
+    }
+}
+
+/// Phase 1f placeholder for the Notifications settings tab. Exposes a
+/// single grove-mute toggle — full per-category preferences arrive
+/// in the settings-tweaks phase.
+#[component]
+fn NotificationsTabPlaceholder() -> impl IntoView {
+    let handle = use_context::<crate::app::WebClientHandle>().unwrap();
+
+    // The grove-mute pill is client-local — we don't reactively
+    // derive the current state in this placeholder because the
+    // event-state signal isn't threaded through AppState yet. The
+    // button is idempotent: repeated taps toggle; the authoritative
+    // state (materialized via MuteGrove events) remains in
+    // ServerState::mute_state.
+    let (local_muted, set_local_muted) = signal(false);
+
+    let toggle = {
+        let handle = handle.clone();
+        move |_| {
+            let target = !local_muted.get_untracked();
+            set_local_muted.set(target);
+            let h = handle.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = h.mutate_grove_mute(target).await;
+            });
+        }
+    };
+
+    view! {
+        <div class="settings-section">
+            <label>"notifications"</label>
+            <div class="settings-hint">
+                "full per-category preferences land in the next phase. this tab only exposes the grove-wide mute toggle."
+            </div>
+            <div class="settings-row">
+                <button
+                    class="btn"
+                    on:click=toggle
+                >
+                    {move || if local_muted.get() { "unmute grove" } else { "mute grove" }}
+                </button>
             </div>
         </div>
     }

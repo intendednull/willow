@@ -27,6 +27,8 @@ pub enum SettingsTab {
     Server,
     Roles,
     Presence,
+    /// Per-identity notification preferences (phase 1f placeholder).
+    Notifications,
 }
 
 /// Per-grove crypto-visibility tweak.

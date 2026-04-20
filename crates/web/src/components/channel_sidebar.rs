@@ -17,8 +17,8 @@ use leptos::prelude::*;
 
 use crate::app::WebClientHandle;
 use crate::components::{
-    ConfirmDialog, PeerStatusLabel, PresenceMenu, StatusDot, StatusDotBorder, StatusDotSize,
-    VoiceControls,
+    ConfirmDialog, ContextMenu, PeerStatusLabel, PresenceMenu, StatusDot, StatusDotBorder,
+    StatusDotSize, VoiceControls,
 };
 use crate::icons;
 
@@ -590,8 +590,25 @@ fn render_channel_row(
     let name_delete = name.clone();
     let name_title = name.clone();
     let name_render = name.clone();
+    let name_ctx = name.clone();
     let is_voice = matches!(group, ChannelGroup::Voice);
     let is_ephemeral = matches!(group, ChannelGroup::Ephemeral);
+
+    // Per-row context menu for mute / unmute.
+    let (show_menu, set_show_menu) = signal(false);
+    let (menu_x, set_menu_x) = signal(0.0f64);
+    let (menu_y, set_menu_y) = signal(0.0f64);
+    let handle_mute = use_context::<WebClientHandle>().unwrap();
+    // Resolve the current muted state reactively — reads
+    // UnreadStats.muted derived from ServerState::mute_state.
+    let name_for_muted = name.clone();
+    let is_muted = Signal::derive(move || {
+        unread
+            .get()
+            .get(&name_for_muted)
+            .map(|s| s.muted)
+            .unwrap_or(false)
+    });
 
     let on_text = on_channel_click.clone();
     let on_vc = on_voice_join.clone();
@@ -713,6 +730,7 @@ fn render_channel_row(
     };
 
     view! {
+        <>
         <div
             class=class_fn
             role="listitem"
@@ -724,6 +742,12 @@ fn render_channel_row(
                 } else {
                     on_text(name_click.clone());
                 }
+            }
+            on:contextmenu=move |ev: web_sys::MouseEvent| {
+                ev.prevent_default();
+                set_menu_x.set(ev.client_x() as f64);
+                set_menu_y.set(ev.client_y() as f64);
+                set_show_menu.set(true);
             }
         >
             <span class="channel-row-bar" aria-hidden="true"></span>
@@ -752,6 +776,34 @@ fn render_channel_row(
                 }
             </span>
         </div>
+        <ContextMenu
+            visible=show_menu
+            x=menu_x
+            y=menu_y
+            on_close=Callback::new(move |_| set_show_menu.set(false))
+        >
+            {
+                let name_for_mute = name_ctx.clone();
+                let handle = handle_mute.clone();
+                view! {
+                    <button
+                        class="context-menu-item"
+                        on:click=move |_| {
+                            set_show_menu.set(false);
+                            let channel = name_for_mute.clone();
+                            let h = handle.clone();
+                            let target = !is_muted.get_untracked();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                let _ = h.mutate_channel_mute(&channel, target).await;
+                            });
+                        }
+                    >
+                        {move || if is_muted.get() { "unmute channel" } else { "mute channel" }}
+                    </button>
+                }
+            }
+        </ContextMenu>
+        </>
     }
     .into_any()
 }
