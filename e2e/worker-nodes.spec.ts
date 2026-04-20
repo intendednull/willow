@@ -61,22 +61,28 @@ test.describe('Worker nodes infrastructure', () => {
     await freshStart(page);
     await createServer(page, 'CSS Test', 'Alice');
 
-    // Check that our CSS classes are defined (query computed styles).
+    // Check that our CSS classes are defined (query across all loaded
+    // stylesheets — foundation.css sits at index 0 after Phase 0).
     const hasWorkerStyles = await page.evaluate(() => {
-      const sheet = document.styleSheets[0];
-      if (!sheet) return false;
-      try {
-        const rules = Array.from(sheet.cssRules);
-        return rules.some(
-          (r) =>
-            r instanceof CSSStyleRule &&
-            (r.selectorText.includes('.worker-item') ||
-              r.selectorText.includes('.worker-icon') ||
-              r.selectorText.includes('.infra-header'))
-        );
-      } catch {
-        return false;
+      for (const sheet of Array.from(document.styleSheets)) {
+        try {
+          const rules = Array.from(sheet.cssRules);
+          if (
+            rules.some(
+              (r) =>
+                r instanceof CSSStyleRule &&
+                (r.selectorText.includes('.worker-item') ||
+                  r.selectorText.includes('.worker-icon') ||
+                  r.selectorText.includes('.infra-header'))
+            )
+          ) {
+            return true;
+          }
+        } catch {
+          // Cross-origin stylesheets throw on cssRules access — skip.
+        }
       }
+      return false;
     });
     expect(hasWorkerStyles).toBe(true);
   });

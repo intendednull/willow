@@ -79,7 +79,7 @@ test.describe('Join via shareable link', () => {
       await page.locator('.welcome-continue-btn').click();
       await page.locator('.welcome-tab-btn', { hasText: 'Join' }).click();
       await page.locator('.welcome-invite-input').fill('this-is-definitely-not-a-valid-invite-code');
-      await page.locator('button', { hasText: 'Open letter' }).click();
+      await page.locator('.welcome-tab-panel button', { hasText: 'continue' }).click();
       // Current behaviour: the confirmation step appears for any non-empty
       // input — server lookup is deferred to the actual join click.
       await page.locator('button', { hasText: 'Join grove' }).waitFor({ timeout: 3_000 });

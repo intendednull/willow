@@ -74,15 +74,18 @@ export async function createServer(page: Page, name: string, displayName?: strin
 /** Get the full peer ID from the welcome screen or settings. */
 export async function getPeerId(page: Page): Promise<string> {
   // Welcome screen: advance past step 1 (no name), then switch to the
-  // Join tab — the peer-id pill only lives inside the Join surface now.
+  // Join tab — the peer id lives inside the Join step list, hidden by
+  // default and revealed by the eye-toggle icon.
   if (await page.locator('.welcome-card').isVisible().catch(() => false)) {
     await advancePastNameStep(page);
     const joinTab = page.locator('.welcome-tab-btn', { hasText: 'Join' });
     if (await joinTab.isVisible().catch(() => false)) {
       await joinTab.click();
-      await page.locator('.welcome-peer-compact').waitFor({ timeout: 5_000 });
+      const revealBtn = page.locator('button[aria-label="show full peer id"]');
+      await revealBtn.waitFor({ timeout: 5_000 });
+      await revealBtn.click();
     }
-    const peerIdEl = page.locator('.peer-id-text').first();
+    const peerIdEl = page.locator('.welcome-join-steps__full-id').first();
     if (await peerIdEl.isVisible().catch(() => false)) {
       return (
         (await peerIdEl.getAttribute('data-full-id')) ||
@@ -281,7 +284,7 @@ export async function joinViaInvite(page: Page, inviteCode: string, displayName?
   await page.locator('.welcome-tab-btn', { hasText: 'Join' }).click();
   await page.locator('.welcome-invite-input').waitFor({ timeout: 5_000 });
   await page.locator('.welcome-invite-input').fill(inviteCode);
-  await page.locator('button', { hasText: 'Open letter' }).click();
+  await page.locator('.welcome-tab-panel button', { hasText: 'continue' }).click();
   // Wait for the confirmation step ("Join grove") to appear.
   await page.locator('button', { hasText: 'Join grove' }).waitFor({ timeout: 5_000 });
   await page.locator('button', { hasText: 'Join grove' }).click();
