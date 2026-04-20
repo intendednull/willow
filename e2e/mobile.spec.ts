@@ -36,7 +36,9 @@ test.describe('Mobile UX', () => {
     await page.locator('.mobile-home .channel-item').first().click();
     await page.waitForTimeout(400);
     await sendMessage(page, 'mobile message!');
-    await expect(page.locator('.message .body', { hasText: 'mobile message!' })).toBeVisible();
+    await expect(
+      page.locator('.shell-mobile .message .body', { hasText: 'mobile message!' }).first(),
+    ).toBeVisible();
   });
 
   // ── Tab bar ───────────────────────────────────────────────────────
@@ -119,15 +121,17 @@ test.describe('Mobile UX', () => {
     await createServer(page, 'Voice Mobile');
 
     // Channel creation lives in the inline sidebar on the home tab.
-    await page.locator('.channel-add-btn').click();
+    await page.locator('.shell-mobile .channel-add-btn').first().click();
     await page.waitForTimeout(300);
-    await page.locator('.type-btn', { hasText: 'Voice' }).click();
+    await page.locator('.shell-mobile .type-btn', { hasText: 'Voice' }).first().click();
     await page.waitForTimeout(100);
-    await page.locator('.channel-create-input input').fill('vc');
-    await page.locator('.channel-create-input input').press('Enter');
+    await page.locator('.shell-mobile .channel-create-input input').first().fill('vc');
+    await page.locator('.shell-mobile .channel-create-input input').first().press('Enter');
     await page.waitForTimeout(500);
 
-    await expect(page.locator('.channel-item', { hasText: 'vc' })).toBeVisible();
+    await expect(
+      page.locator('.shell-mobile .channel-item', { hasText: 'vc' }).first(),
+    ).toBeVisible();
   });
 
   // ── Bug #7: Input zoom prevention ─────────────────────────────────
@@ -138,7 +142,7 @@ test.describe('Mobile UX', () => {
     // Push into a channel so the composer mounts.
     await page.locator('.mobile-home .channel-item').first().click();
     await page.waitForTimeout(400);
-    const input = page.locator('.input-area input, .input-area textarea').first();
+    const input = page.locator('.shell-mobile .input-area input, .shell-mobile .input-area textarea').first();
     const fontSize = await input.evaluate(el => getComputedStyle(el).fontSize);
     expect(parseInt(fontSize)).toBeGreaterThanOrEqual(16);
   });
@@ -160,10 +164,14 @@ test.describe('Mobile UX', () => {
     await page.waitForTimeout(500);
 
     // Last message should be visible (auto-scrolled to bottom).
-    await expect(page.locator('.message .body', { hasText: 'Message 25' })).toBeVisible();
+    await expect(
+      page.locator('.shell-mobile .message .body', { hasText: 'Message 25' }).first(),
+    ).toBeVisible();
 
     // First message should NOT be visible (scrolled out of view).
-    await expect(page.locator('.message .body').filter({ hasText: /^Message 1$/ })).not.toBeInViewport();
+    await expect(
+      page.locator('.shell-mobile .message .body').filter({ hasText: /^Message 1$/ }).first(),
+    ).not.toBeInViewport();
   });
 
   test('can tap reaction on mobile', async ({ page }) => {
@@ -178,7 +186,7 @@ test.describe('Mobile UX', () => {
     await reactToMessage(page, 'react to me');
 
     // Reaction should be visible.
-    const reaction = page.locator('.reaction').first();
+    const reaction = page.locator('.shell-mobile .reaction').first();
     await expect(reaction).toBeVisible();
 
     // Tap the reaction (should toggle — this was bug #2).
@@ -187,7 +195,7 @@ test.describe('Mobile UX', () => {
 
     // Should still be visible (either incremented or decremented).
     // The key test: clicking didn't crash or get blocked.
-    await expect(page.locator('.message')).toBeVisible();
+    await expect(page.locator('.shell-mobile .message').first()).toBeVisible();
   });
 
   test('links in messages are tappable', async ({ page }) => {
@@ -199,7 +207,7 @@ test.describe('Mobile UX', () => {
     await page.waitForTimeout(500);
 
     // Link should be rendered.
-    const link = page.locator('a.message-link');
+    const link = page.locator('.shell-mobile a.message-link').first();
     await expect(link).toBeVisible();
 
     // Should have correct href.
@@ -227,7 +235,9 @@ test.describe('Mobile UX', () => {
     await page.waitForTimeout(500);
 
     // The last message should be visible (auto-scrolled).
-    await expect(page.locator('.message .body', { hasText: 'Msg 10' })).toBeVisible();
+    await expect(
+      page.locator('.shell-mobile .message .body', { hasText: 'Msg 10' }).first(),
+    ).toBeVisible();
   });
 
   // ── Bug #6: Long-press doesn't trigger on quick tap ───────────────
@@ -244,7 +254,7 @@ test.describe('Mobile UX', () => {
     await page.waitForTimeout(500);
 
     // Single tap (touchstart + touchend quickly).
-    const msg = page.locator('.message').first();
+    const msg = page.locator('.shell-mobile .message').first();
     await msg.tap();
 
     // Wait longer than the 500ms long-press threshold.
@@ -263,7 +273,7 @@ test.describe('Mobile UX', () => {
     await page.waitForTimeout(500);
 
     // Rapid taps on message.
-    const msg = page.locator('.message').first();
+    const msg = page.locator('.shell-mobile .message').first();
     await msg.tap();
     await page.waitForTimeout(100);
     await msg.tap();
@@ -293,6 +303,8 @@ test.describe('Mobile UX', () => {
     await page.locator('.mobile-home .channel-item').first().click();
     await page.waitForTimeout(400);
 
-    await expect(page.locator('.message .body', { hasText: 'survives refresh' })).toBeVisible();
+    await expect(
+      page.locator('.shell-mobile .message .body', { hasText: 'survives refresh' }).first(),
+    ).toBeVisible();
   });
 });

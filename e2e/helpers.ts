@@ -2,10 +2,13 @@ import { Page, Browser, BrowserContext, expect } from '@playwright/test';
 
 /** Wait for the WASM app to load (loading spinner disappears). */
 export async function waitForApp(page: Page) {
-  // Wait for the app to render (welcome screen, chat, or join page).
-  await page.waitForSelector('.welcome-screen, .app, .sidebar, .join-card', {
-    timeout: 30_000,
-  });
+  // Wait for the app to render (welcome screen, desktop shell, mobile
+  // shell, or join page). `:visible` filters out the hidden sibling
+  // shell on either side of the 720 px split.
+  await page.waitForSelector(
+    '.welcome-screen:visible, .shell-desktop .app:visible, .shell-mobile .mobile-top-bar:visible, .join-card:visible',
+    { timeout: 30_000 },
+  );
   // Give WASM a moment to stabilize.
   await page.waitForTimeout(1000);
 }
@@ -66,8 +69,18 @@ export async function createServer(page: Page, name: string, displayName?: strin
     .fill(name);
   await page.locator('.welcome-tab-panel button', { hasText: 'continue' }).click();
 
-  // Wait for the app to load with the new server.
-  await page.waitForSelector('.channel-sidebar, .sidebar', { timeout: 10_000 });
+  // Wait for the app to load with the new server. On mobile the
+  // visible shell is `.mobile-top-bar` + `.mobile-tab-bar`; on
+  // desktop it's `.main-pane-header`. Wait for the first signal
+  // that matches either path.
+  if (isMobile(page)) {
+    await page.waitForSelector('.mobile-top-bar', { state: 'visible', timeout: 10_000 });
+  } else {
+    await page.waitForSelector('.main-pane-header, .channel-sidebar', {
+      state: 'visible',
+      timeout: 10_000,
+    });
+  }
   await page.waitForTimeout(500);
 }
 
@@ -106,9 +119,25 @@ export async function getPeerId(page: Page): Promise<string> {
   );
 }
 
-/** Send a message in the current channel. */
+/** Send a message in the current channel. Scopes the locator to the
+ *  visible shell so it doesn't hit the hidden copy on the inactive
+ *  side of the desktop / mobile split. On mobile, automatically
+ *  pushes into the first channel if the composer is not mounted. */
 export async function sendMessage(page: Page, text: string) {
-  const input = page.locator('.input-area input, .input-area textarea').first();
+  const scope = isMobile(page) ? '.shell-mobile' : '.shell-desktop';
+  if (isMobile(page)) {
+    const inPush = await page
+      .locator('.shell-mobile .mobile-push--channel')
+      .isVisible()
+      .catch(() => false);
+    if (!inPush) {
+      await page.locator('.shell-mobile .mobile-home .channel-item').first().click();
+      await page.waitForTimeout(400);
+    }
+  }
+  const input = page
+    .locator(`${scope} .input-area input, ${scope} .input-area textarea`)
+    .first();
   await input.fill(text);
   await input.press('Enter');
   await page.waitForTimeout(300);
@@ -123,6 +152,13 @@ export async function getMessages(page: Page): Promise<string[]> {
     texts.push((await bodies.nth(i).textContent()) || '');
   }
   return texts;
+}
+
+/** Scope selector prefix for the currently-visible shell. Use to
+ *  disambiguate elements that are mounted in both shells (the
+ *  inactive one is hidden via `display: none`). */
+export function visibleShell(page: Page): string {
+  return isMobile(page) ? '.shell-mobile' : '.shell-desktop';
 }
 
 /** Click a channel by name. On mobile this routes through the home
@@ -149,14 +185,23 @@ export async function switchChannel(page: Page, channelName: string) {
   await page.waitForTimeout(300);
 }
 
-/** Wait for a specific message to appear. */
+/** Wait for a specific message to appear in the visible shell. */
 export async function waitForMessage(page: Page, text: string, timeout = 20_000) {
-  await page.locator('.message .body', { hasText: text }).waitFor({ timeout });
+  const scope = visibleShell(page);
+  await page
+    .locator(`${scope} .message .body`, { hasText: text })
+    .first()
+    .waitFor({ timeout });
 }
 
-/** Simulate a long-press on an element to open the mobile action sheet. */
+/** Simulate a long-press on an element to open the mobile action sheet.
+ *  Prefixes the selector with the visible-shell scope so a raw `.message`
+ *  picks the mobile copy, not the hidden desktop one. */
 export async function longPress(page: Page, selector: string, durationMs = 600) {
-  const el = page.locator(selector).first();
+  const scoped = isMobile(page) && !selector.startsWith('.shell-')
+    ? `${visibleShell(page)} ${selector}`
+    : selector;
+  const el = page.locator(scoped).first();
   const box = await el.boundingBox();
   if (!box) throw new Error(`Element not found: ${selector}`);
 
@@ -330,7 +375,14 @@ export async function joinViaInvite(page: Page, inviteCode: string, displayName?
   // Wait for the confirmation step ("Join grove") to appear.
   await page.locator('button', { hasText: 'Join grove' }).waitFor({ timeout: 5_000 });
   await page.locator('button', { hasText: 'Join grove' }).click();
-  await page.waitForSelector('.channel-sidebar, .sidebar', { timeout: 20_000 });
+  if (isMobile(page)) {
+    await page.waitForSelector('.mobile-top-bar', { state: 'visible', timeout: 20_000 });
+  } else {
+    await page.waitForSelector('.main-pane-header, .channel-sidebar', {
+      state: 'visible',
+      timeout: 20_000,
+    });
+  }
   await page.waitForTimeout(3000);
 }
 

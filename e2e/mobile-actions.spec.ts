@@ -77,7 +77,7 @@ test.describe('Mobile action sheet', () => {
     await page.locator('.sheet-item', { hasText: 'Reply' }).click();
     await page.waitForTimeout(500);
 
-    await expect(page.locator('.reply-bar')).toBeVisible();
+    await expect(page.locator('.shell-mobile .reply-bar').first()).toBeVisible();
   });
 
   test('react from sheet adds reaction', async ({ page }) => {
@@ -92,7 +92,7 @@ test.describe('Mobile action sheet', () => {
     await page.locator('.sheet-emoji-row button').first().click();
     await page.waitForTimeout(500);
 
-    await expect(page.locator('.reaction')).toBeVisible();
+    await expect(page.locator('.shell-mobile .reaction').first()).toBeVisible();
   });
 
   test('swipe down dismisses action sheet', async ({ page }) => {
@@ -144,12 +144,12 @@ test.describe('Mobile action sheet', () => {
     await page.waitForTimeout(500);
 
     // Hover the message (simulated) — the .message-actions should stay hidden on mobile.
-    const msg = page.locator('.message').first();
+    const msg = page.locator('.shell-mobile .message').first();
     await msg.hover();
     await page.waitForTimeout(300);
 
-    await expect(page.locator('.action-trigger')).toBeHidden();
-    await expect(page.locator('.message-actions')).toBeHidden();
+    await expect(page.locator('.shell-mobile .action-trigger').first()).toBeHidden();
+    await expect(page.locator('.shell-mobile .message-actions').first()).toBeHidden();
   });
 
   test('quick tap does NOT open sheet', async ({ page }) => {
@@ -159,7 +159,7 @@ test.describe('Mobile action sheet', () => {
     await page.waitForTimeout(500);
 
     // Quick tap via evaluate (touchstart + immediate touchend).
-    const msg = page.locator('.message').first();
+    const msg = page.locator('.shell-mobile .message').first();
     const box = await msg.boundingBox();
     if (!box) throw new Error('no msg');
     const x = box.x + box.width / 2;
