@@ -584,3 +584,22 @@ a { color: inherit; }
   background: var(--bg-2);
   color: var(--ink-0);
 }
+
+.presence-override-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.presence-override-row .presence-menu__item {
+  width: auto;
+  min-height: 44px;
+  padding: 8px 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-soft);
+}
+.presence-override-row .presence-menu__item.active {
+  background: var(--bg-3);
+  border-color: var(--moss-2);
+  color: var(--ink-0);
+}

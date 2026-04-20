@@ -1,7 +1,8 @@
 use leptos::prelude::*;
+use willow_client::presence::{PresenceOverride, PresenceState};
 
 use crate::app::WebClientHandle;
-use crate::components::RoleManager;
+use crate::components::{RoleManager, StatusDot, StatusDotBorder, StatusDotSize};
 use crate::icons;
 use crate::state::{AppState, SettingsTab};
 use crate::util::copy_to_clipboard;
@@ -39,6 +40,7 @@ pub fn SettingsPanel(
         SettingsTab::Profile => "Profile",
         SettingsTab::Server => "Server",
         SettingsTab::Roles => "Roles",
+        SettingsTab::Presence => "Presence",
     };
 
     // ── Profile tab handlers ─────────────────────────────────────────
@@ -130,6 +132,10 @@ pub fn SettingsPanel(
                     class=move || if active_tab.get() == SettingsTab::Server { "tab-btn active" } else { "tab-btn" }
                     on:click=move |_| set_active_tab.set(SettingsTab::Server)
                 >"Server"</button>
+                <button
+                    class=move || if active_tab.get() == SettingsTab::Presence { "tab-btn active" } else { "tab-btn" }
+                    on:click=move |_| set_active_tab.set(SettingsTab::Presence)
+                >"Presence"</button>
                 {
                     let owner_check = is_owner;
                     move || {
@@ -316,6 +322,58 @@ pub fn SettingsPanel(
                     <div class="peer-id-display">
                         <code class="peer-id-text" data-full-id=move || peer_id.get()>{move || { let id = peer_id.get(); id.get(..10).unwrap_or(&id).to_string() }}</code>
                         <button class="btn btn-sm" on:click=on_copy_peer_id_server>"Copy"</button>
+                    </div>
+                </div>
+            </div>
+
+            // Presence tab content (phase 1e stub).
+            <div class="settings-tab-content" style=move || if active_tab.get() == SettingsTab::Presence { "" } else { "display:none" }>
+                <div class="settings-section">
+                    <h3>"Self presence"</h3>
+                    <p class="settings-hint">
+                        "Override the auto-derived state others see. Auto returns to the real state. Browser close resets to auto."
+                    </p>
+                    <div class="presence-override-row">
+                        {
+                            let handle_presence = handle.clone();
+                            let current_override = app_state.presence.self_override;
+                            let entries: Vec<(PresenceOverride, &'static str, PresenceState)> = vec![
+                                (PresenceOverride::Auto, "auto", PresenceState::Here),
+                                (PresenceOverride::Away, "away", PresenceState::Away),
+                                (PresenceOverride::Gone, "gone", PresenceState::Gone),
+                                (PresenceOverride::Invisible, "invisible", PresenceState::Invisible),
+                            ];
+                            entries.into_iter().map(|(ov, label, preview)| {
+                                let h = handle_presence.clone();
+                                let is_active = Signal::derive(move || current_override.get() == ov);
+                                view! {
+                                    <button
+                                        class=move || {
+                                            if is_active.get() {
+                                                "presence-menu__item active".to_string()
+                                            } else {
+                                                "presence-menu__item".to_string()
+                                            }
+                                        }
+                                        aria-pressed=move || if is_active.get() { "true" } else { "false" }
+                                        on:click=move |_| {
+                                            let h = h.clone();
+                                            wasm_bindgen_futures::spawn_local(async move {
+                                                h.set_self_presence(ov).await;
+                                            });
+                                        }
+                                    >
+                                        <StatusDot
+                                            state=Signal::derive(move || preview)
+                                            size=StatusDotSize::MeStrip
+                                            border=StatusDotBorder::Bg1
+                                            ambient=false
+                                        />
+                                        <span>{label}</span>
+                                    </button>
+                                }
+                            }).collect::<Vec<_>>()
+                        }
                     </div>
                 </div>
             </div>

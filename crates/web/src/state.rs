@@ -26,6 +26,7 @@ pub enum SettingsTab {
     Profile,
     Server,
     Roles,
+    Presence,
 }
 
 /// Per-grove crypto-visibility tweak.
