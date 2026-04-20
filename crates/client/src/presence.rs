@@ -32,8 +32,11 @@ pub const DEFAULT_GONE_TICKS: Tick = 172_800;
 ///
 /// See §State catalog in the spec. Shapes, colours, icons and copy are
 /// assigned at the *atom* layer; this enum is pure data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum PresenceState {
+    /// Haven't observed the peer yet — default; acts as the bottom element.
+    #[default]
+    Unknown,
     /// Peer reachable + heartbeat fresh.
     Here,
     /// Peer reachable but idle (no heartbeat for ≥ idle threshold).
@@ -48,8 +51,6 @@ pub enum PresenceState {
     Gone,
     /// Peer is invisible to us (mutual hide).
     Invisible,
-    /// Haven't observed the peer yet — used before any inputs arrive.
-    Unknown,
 }
 
 impl PresenceState {

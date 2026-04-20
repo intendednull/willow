@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use willow_identity::EndpointId;
 
+use crate::presence::{derive_peer_presence, derive_self_presence, PresenceInputs, PresenceState};
 use crate::state::DisplayMessage;
 use crate::state_actors::*;
 
@@ -83,6 +84,22 @@ pub struct ConnectionView {
     pub typing_peers: Vec<(EndpointId, String)>,
 }
 
+/// Derived presence snapshot — per-peer [`PresenceState`] plus the
+/// local user's self-state.
+///
+/// Recomputed by the presence derived actor whenever any of its source
+/// actors ([`PresenceMeta`], [`ChatMeta`], [`VoiceState`]) change. The
+/// `PartialEq` derive keeps downstream signals quiet across identical
+/// frames.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PresenceView {
+    /// Per-peer presence state (peers currently in ChatMeta::peers or
+    /// ever seen via last_seen map).
+    pub per_peer: HashMap<EndpointId, PresenceState>,
+    /// Local user's presence state (respects self-override).
+    pub self_state: PresenceState,
+}
+
 // ───── Layer 3: Grouped views ───────────────────────────────────────────
 
 /// Chat-related views grouped for terminal composition.
@@ -131,6 +148,7 @@ pub struct ClientViewHandle {
     pub unread: willow_actor::state::StateRef<UnreadView>,
     pub roles: willow_actor::state::StateRef<RolesView>,
     pub connection: willow_actor::state::StateRef<ConnectionView>,
+    pub presence: willow_actor::state::StateRef<PresenceView>,
 
     // Layer 1 — raw source state
     pub event_state: willow_actor::state::StateRef<willow_state::ServerState>,
@@ -139,6 +157,7 @@ pub struct ClientViewHandle {
     pub profiles: willow_actor::state::StateRef<ProfileState>,
     pub network: willow_actor::state::StateRef<NetworkMeta>,
     pub voice: willow_actor::state::StateRef<VoiceState>,
+    pub presence_meta: willow_actor::state::StateRef<PresenceMeta>,
 }
 
 impl Clone for ClientViewHandle {
@@ -151,12 +170,14 @@ impl Clone for ClientViewHandle {
             unread: self.unread.clone(),
             roles: self.roles.clone(),
             connection: self.connection.clone(),
+            presence: self.presence.clone(),
             event_state: self.event_state.clone(),
             server_registry: self.server_registry.clone(),
             chat_meta: self.chat_meta.clone(),
             profiles: self.profiles.clone(),
             network: self.network.clone(),
             voice: self.voice.clone(),
+            presence_meta: self.presence_meta.clone(),
         }
     }
 }
@@ -316,6 +337,75 @@ pub fn compute_roles_view(events: &Arc<willow_state::ServerState>) -> RolesView 
         .collect();
     roles.sort_by(|a, b| a.name.cmp(&b.name));
     RolesView { roles }
+}
+
+/// Compute the presence view from source actors.
+///
+/// Inputs:
+///   - `presence_meta` — tick counter, last-seen map, queue depth,
+///     whisper/invisibility sets, self-override, thresholds.
+///   - `chat` — online peer list (proxy for network reachability).
+///   - `voice` — per-channel participant sets (any non-empty set means
+///     the peer is in a call).
+///   - `local_peer_id` — used to compute self-state and to exclude self
+///     from the per-peer map.
+pub fn compute_presence_view(
+    presence_meta: &Arc<PresenceMeta>,
+    chat: &Arc<ChatMeta>,
+    voice: &Arc<VoiceState>,
+    local_peer_id: EndpointId,
+) -> PresenceView {
+    let reachable: std::collections::HashSet<EndpointId> = chat.peers.iter().copied().collect();
+    let in_call: std::collections::HashSet<EndpointId> = voice
+        .participants
+        .values()
+        .flat_map(|set| set.iter().copied())
+        .collect();
+
+    // Build a union of peer IDs across all inputs so we emit a state for
+    // every peer we've heard of, not just ones currently reachable.
+    let mut peer_ids: std::collections::HashSet<EndpointId> = std::collections::HashSet::new();
+    peer_ids.extend(reachable.iter().copied());
+    peer_ids.extend(presence_meta.last_seen.keys().copied());
+    peer_ids.extend(presence_meta.queue_depth.keys().copied());
+    peer_ids.extend(presence_meta.whispering_with.iter().copied());
+    peer_ids.extend(in_call.iter().copied());
+    peer_ids.remove(&local_peer_id);
+
+    let mut per_peer = HashMap::with_capacity(peer_ids.len());
+    for pid in peer_ids {
+        let inputs = PresenceInputs {
+            now: presence_meta.now,
+            last_seen: presence_meta.last_seen.get(&pid).copied().unwrap_or(0),
+            reachable: reachable.contains(&pid),
+            in_call: in_call.contains(&pid) && !presence_meta.whispering_with.contains(&pid),
+            whispering: presence_meta.whispering_with.contains(&pid),
+            queue_depth: presence_meta.queue_depth.get(&pid).copied().unwrap_or(0),
+            invisible_to_me: presence_meta.invisible_to_me.contains(&pid),
+            idle_ticks: presence_meta.idle_ticks,
+            gone_ticks: presence_meta.gone_ticks,
+        };
+        per_peer.insert(pid, derive_peer_presence(&inputs));
+    }
+
+    // Self is always reachable if we have a connected network; approx
+    // by checking whether self appears in our own chat.peers list or the
+    // chat meta is non-empty. In phase 1e we just use `true` for now —
+    // the override takes precedence anyway.
+    let self_reachable = true;
+    let self_in_call = voice.active_channel.is_some();
+    let self_whispering = false; // stub; real signal in whisper-mode phase.
+    let self_state = derive_self_presence(
+        presence_meta.self_override,
+        self_reachable,
+        self_in_call,
+        self_whispering,
+    );
+
+    PresenceView {
+        per_peer,
+        self_state,
+    }
 }
 
 /// Compute connection view.

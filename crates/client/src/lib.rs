@@ -342,6 +342,68 @@ impl<N: willow_network::Network> ClientHandle<N> {
             None => PeerTrust::Unknown,
         }
     }
+
+    // ── Presence (phase 1e) ──────────────────────────────────────────
+
+    /// Set the local user's self-presence override. Sticky per device;
+    /// resets to [`PresenceOverride::Auto`] on page reload.
+    pub async fn set_self_presence(&self, override_: presence::PresenceOverride) {
+        willow_actor::state::mutate(&self.presence_meta_addr, move |pm| {
+            pm.self_override = override_;
+        })
+        .await;
+    }
+
+    /// Read a peer's current derived [`PresenceState`](presence::PresenceState).
+    ///
+    /// Returns [`PresenceState::Unknown`] if the peer has never been
+    /// observed via heartbeat / reachability / voice / whisper signals.
+    pub async fn observe_peer_presence(
+        &self,
+        peer_id: willow_identity::EndpointId,
+    ) -> presence::PresenceState {
+        let view = self.view_handle.presence.get().await;
+        view.per_peer
+            .get(&peer_id)
+            .copied()
+            .unwrap_or(presence::PresenceState::Unknown)
+    }
+
+    /// Stub: set the whisper session status for a peer. Real wiring
+    /// lands in the whisper-mode phase.
+    #[doc(hidden)]
+    pub async fn _set_whispering_with(
+        &self,
+        peer_id: willow_identity::EndpointId,
+        active: bool,
+    ) {
+        willow_actor::state::mutate(&self.presence_meta_addr, move |pm| {
+            if active {
+                pm.whispering_with.insert(peer_id);
+            } else {
+                pm.whispering_with.remove(&peer_id);
+            }
+        })
+        .await;
+    }
+
+    /// Stub: set the queued-outbound depth for a peer. Real wiring
+    /// lands in the sync-queue phase.
+    #[doc(hidden)]
+    pub async fn _set_queue_depth(
+        &self,
+        peer_id: willow_identity::EndpointId,
+        depth: u32,
+    ) {
+        willow_actor::state::mutate(&self.presence_meta_addr, move |pm| {
+            if depth == 0 {
+                pm.queue_depth.remove(&peer_id);
+            } else {
+                pm.queue_depth.insert(peer_id, depth);
+            }
+        })
+        .await;
+    }
 }
 
 /// Platform-appropriate "now in epoch milliseconds". Uses
@@ -561,6 +623,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let profile_ref = willow_actor::state::StateRef::from(&profile_state_addr);
         let network_ref = willow_actor::state::StateRef::from(&network_meta_addr);
         let voice_ref = willow_actor::state::StateRef::from(&voice_state_addr);
+        let presence_meta_ref = willow_actor::state::StateRef::from(&presence_meta_addr);
 
         // Spawn Layer 2 derived view actors.
         let local_pid = identity_clone.endpoint_id();
@@ -597,6 +660,16 @@ impl<N: willow_network::Network> ClientHandle<N> {
             &system.handle(),
             (network_ref.clone(), chat_ref.clone()),
             |(net, chat)| views::compute_connection_view(net, chat),
+        );
+        let local_pid3 = identity_clone.endpoint_id();
+        let presence_view = willow_actor::derived(
+            &system.handle(),
+            (
+                presence_meta_ref.clone(),
+                chat_ref.clone(),
+                voice_ref.clone(),
+            ),
+            move |(pm, chat, voice)| views::compute_presence_view(pm, chat, voice, local_pid3),
         );
 
         // Spawn Layer 3 grouped view actors.
@@ -649,12 +722,14 @@ impl<N: willow_network::Network> ClientHandle<N> {
             unread: unread_view,
             roles: roles_view,
             connection: connection_view,
+            presence: presence_view,
             event_state: event_ref,
             server_registry: registry_ref,
             chat_meta: chat_ref,
             profiles: profile_ref,
             network: network_ref,
             voice: voice_ref,
+            presence_meta: presence_meta_ref,
         };
 
         let mutation_handle = mutations::ClientMutations {
@@ -870,6 +945,7 @@ pub fn test_client() -> (
     let profile_ref = willow_actor::state::StateRef::from(&profile_state_addr);
     let network_ref = willow_actor::state::StateRef::from(&network_meta_addr);
     let voice_ref = willow_actor::state::StateRef::from(&voice_state_addr);
+    let presence_meta_ref = willow_actor::state::StateRef::from(&presence_meta_addr);
     let sh = sys.handle();
 
     let local_pid = identity_clone.endpoint_id();
@@ -902,6 +978,16 @@ pub fn test_client() -> (
         &sh,
         (network_ref.clone(), chat_ref.clone()),
         |(net, chat)| views::compute_connection_view(net, chat),
+    );
+    let local_pid3 = identity_clone.endpoint_id();
+    let presence_view = willow_actor::derived(
+        &sh,
+        (
+            presence_meta_ref.clone(),
+            chat_ref.clone(),
+            voice_ref.clone(),
+        ),
+        move |(pm, chat, voice)| views::compute_presence_view(pm, chat, voice, local_pid3),
     );
     let chat_views = willow_actor::derived(
         &sh,
@@ -950,12 +1036,14 @@ pub fn test_client() -> (
         unread: unread_view,
         roles: roles_view,
         connection: connection_view,
+        presence: presence_view,
         event_state: event_ref,
         server_registry: registry_ref,
         chat_meta: chat_ref,
         profiles: profile_ref,
         network: network_ref,
         voice: voice_ref,
+        presence_meta: presence_meta_ref,
     };
     let mutation_handle = mutations::ClientMutations {
         event_state: event_state_addr.clone(),
@@ -1587,6 +1675,40 @@ mod tests {
                 );
             })
             .await;
+    }
+
+    /// Presence round-trip: set Away on self-override, observe Away from
+    /// the derived presence view. Browser close (state reset) is not
+    /// covered here — the actor state is per-process.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn presence_self_override_round_trip() {
+        let (client, _rx) = test_client();
+        // Default is Auto → Here (reachable, no activity, no heartbeat stale).
+        let before = client.view_handle.presence.get().await;
+        assert_eq!(before.self_state, presence::PresenceState::Here);
+
+        client
+            .set_self_presence(presence::PresenceOverride::Away)
+            .await;
+        // Give the derived view a tick to recompute.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let after = client.view_handle.presence.get().await;
+        assert_eq!(after.self_state, presence::PresenceState::Away);
+    }
+
+    /// Peers that have been marked reachable default to `Here` — zero
+    /// queue, zero last_seen, zero now ⇒ elapsed 0 < idle_ticks.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn presence_reachable_peer_defaults_to_here() {
+        let (client, _rx) = test_client();
+        let bob = willow_identity::Identity::generate().endpoint_id();
+
+        client.mutations().peer_connected(bob).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let state = client.observe_peer_presence(bob).await;
+        assert_eq!(state, presence::PresenceState::Here);
     }
 
     /// Regression test for issue #114: switching `join_links` to
