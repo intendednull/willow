@@ -181,7 +181,10 @@ export async function switchChannel(page: Page, channelName: string) {
     await page.waitForTimeout(400);
     return;
   }
-  await page.locator('.channel-item', { hasText: channelName }).click();
+  await page
+    .locator(`${visibleShell(page)} .channel-item`, { hasText: channelName })
+    .first()
+    .click();
   await page.waitForTimeout(300);
 }
 
@@ -316,10 +319,11 @@ export async function openMemberList(page: Page) {
     }
   }
 
-  const membersBtn = page.locator('.action-btn[aria-label="members"]');
+  const membersBtn = page.locator(`${visibleShell(page)} .action-btn[aria-label="members"]`);
   if (await membersBtn.count() > 0) {
     await membersBtn.first().click();
-    await page.locator('.right-rail[data-open="true"] .member-list')
+    await page
+      .locator(`${visibleShell(page)} .right-rail[data-open="true"] .member-list`)
       .waitFor({ timeout: 3_000 })
       .catch(() => {});
     await page.waitForTimeout(200);
@@ -328,15 +332,14 @@ export async function openMemberList(page: Page) {
 
 /** Closes the member list panel by toggling the same button. */
 export async function closeMemberList(page: Page) {
-  const openPane = page.locator('.right-rail[data-open="true"] .member-list');
+  const openPane = page.locator(`${visibleShell(page)} .right-rail[data-open="true"] .member-list`);
   const isOpen = await openPane.isVisible().catch(() => false);
   if (!isOpen) return;
 
-  const desktopBtn = page.locator('.action-btn[aria-label="members"]');
-  if (await desktopBtn.count() > 0) {
-    await desktopBtn.first().click();
+  const membersBtn = page.locator(`${visibleShell(page)} .action-btn[aria-label="members"]`);
+  if (await membersBtn.count() > 0) {
+    await membersBtn.first().click();
     await page.waitForTimeout(200);
-    return;
   }
 }
 
@@ -423,10 +426,14 @@ export async function setupTwoPeers(
   await joinViaInvite(page2, inviteCode, peer2Name);
 
   // Wait for display name sync: peer2's name should appear in peer1's member list.
-  if (peer2Name) {
+  // Only do this on desktop — Phase 1b's mobile shell does not yet
+  // surface the member list, and the display-name sync completes
+  // just as reliably via gossip events consumed by other helpers.
+  if (peer2Name && !isMobile(page1)) {
     await openMemberList(page1);
     try {
-      await page1.locator('.member-item', { hasText: peer2Name })
+      await page1
+        .locator('.member-item', { hasText: peer2Name })
         .waitFor({ timeout: 20_000 });
     } catch {
       // Display name sync may be slow; proceed anyway — but warn so failures
@@ -434,6 +441,9 @@ export async function setupTwoPeers(
       console.warn('[setupTwoPeers] peer2 display name did not sync in time — P2P may be slow');
     }
     await closeMemberList(page1);
+  } else if (peer2Name) {
+    // On mobile, just sleep a bit to let gossip propagate.
+    await page1.waitForTimeout(1500);
   }
 
   return { ctx1, ctx2, page1, page2 };
@@ -454,10 +464,11 @@ export async function createChannel(page: Page, name: string) {
     await page.locator('.mobile-tab-bar .tab[data-tab="home"]').click();
     await page.waitForTimeout(200);
   }
-  await page.locator('.channel-add-btn').click();
+  const scope = visibleShell(page);
+  await page.locator(`${scope} .channel-add-btn`).first().click();
   await page.waitForTimeout(200);
-  await page.locator('.channel-create-input input').fill(name);
-  await page.locator('.channel-create-input input').press('Enter');
+  await page.locator(`${scope} .channel-create-input input`).first().fill(name);
+  await page.locator(`${scope} .channel-create-input input`).first().press('Enter');
   await page.waitForTimeout(500);
 }
 

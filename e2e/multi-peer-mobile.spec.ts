@@ -46,7 +46,7 @@ test.describe('Multi-peer mobile', () => {
       // Wait for the channel event to reach Bob (attached to DOM means synced,
       // regardless of scroll position). Use a generous timeout since gossip
       // establishment can be slow when the relay is handling previous teardown.
-      await expect(page2.locator('.channel-item', { hasText: 'mobile-news' }))
+      await expect(page2.locator('.shell-mobile .channel-item', { hasText: 'mobile-news' }).first())
         .toBeAttached({ timeout: 60_000 });
 
       // It is rendered on the mobile home tab.
@@ -87,7 +87,7 @@ test.describe('Multi-peer mobile', () => {
       await page2.waitForTimeout(500);
 
       // Wait for the channel to appear in Bob's DOM (synced via gossip).
-      await expect(page2.locator('.channel-item', { hasText: 'mobile-dev' }))
+      await expect(page2.locator('.shell-mobile .channel-item', { hasText: 'mobile-dev' }).first())
         .toBeAttached({ timeout: 60_000 });
 
       // Alice switches to the new channel and sends a message.
