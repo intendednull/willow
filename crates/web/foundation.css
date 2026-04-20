@@ -585,6 +585,15 @@ a { color: inherit; }
   color: var(--ink-0);
 }
 
+/* Call-tile presence corner — spec places the dot bottom-right of the
+ * video feed / avatar; mirror the trust-corner position. */
+.tile-presence-corner {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  z-index: 2;
+}
+
 .presence-override-row {
   display: flex;
   flex-wrap: wrap;

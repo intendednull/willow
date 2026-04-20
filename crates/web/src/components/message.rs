@@ -455,13 +455,28 @@ pub fn MessageView(
             })}
             {if show_header {
                 let author_pid = message.author_peer_id.to_string();
+                let author_pid_for_presence = author_pid.clone();
+                let presence_state = Signal::derive(move || {
+                    use leptos::context::use_context;
+                    use_context::<crate::state::AppState>()
+                        .and_then(|a| a.presence.per_peer.get().get(&author_pid_for_presence).copied())
+                        .unwrap_or(willow_client::presence::PresenceState::Here)
+                });
                 Some(view! {
                     <div class="meta">
                         <span class="author" style=format!("color: {author_color}")>{author}</span>
                         <super::TrustBadge
-                            peer_id=author_pid
+                            peer_id=author_pid.clone()
                             size=super::TrustBadgeSize::Disk12
                         />
+                        <span class="author-presence" title=move || presence_state.get().label()>
+                            <super::StatusDot
+                                state=presence_state
+                                size=super::StatusDotSize::Author
+                                border=super::StatusDotBorder::Bg0
+                                ambient=false
+                            />
+                        </span>
                         <span class="timestamp">{timestamp}</span>
                         {if show_edited {
                             Some(view! { <span class="edited">"(edited)"</span> })
