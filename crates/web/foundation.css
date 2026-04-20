@@ -214,3 +214,67 @@ textarea:focus-visible,
   outline: none;
   box-shadow: var(--focus-ring);
 }
+
+/* ── States: empty / loading / error / skeleton ─────────────────── */
+
+/* Empty state shell. Components fill their own copy; this just
+   spaces the two-line pattern (italic Fraunces + Plex Sans hint). */
+.state-empty {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 6px;
+  padding: 32px 24px;
+  color: var(--ink-1);
+  font-family: var(--font-ui);
+}
+.state-empty__headline {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 17px;
+  color: var(--ink-1);
+}
+.state-empty__hint {
+  font-size: 13px;
+  color: var(--ink-3);
+  max-width: 36ch;
+  text-align: center;
+}
+
+/* Skeleton block — structural preview of content-about-to-render.
+   Uses shimmer keyframe. Reduced-motion path auto disables. */
+.state-skeleton {
+  background:
+    linear-gradient(90deg,
+      var(--bg-2) 0%,
+      var(--bg-3) 40%,
+      var(--bg-2) 80%);
+  background-size: 400px 100%;
+  background-repeat: no-repeat;
+  animation: shimmer 1.6s linear infinite;
+  border-radius: var(--radius-s);
+  min-height: 12px;
+}
+
+/* Inline loading hint (use where a skeleton would be visually noisy). */
+.state-loading-inline {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-style: italic;
+  color: var(--ink-3);
+}
+.state-loading-inline::after {
+  content: '…';
+}
+
+/* Error card — small, scoped, carries a recovery action. */
+.state-error {
+  display: inline-flex; align-items: flex-start; gap: 10px;
+  padding: 12px 14px;
+  background: color-mix(in oklab, var(--err) 12%, var(--bg-1));
+  border: 1px solid color-mix(in oklab, var(--err) 40%, var(--line));
+  border-radius: var(--radius);
+  color: var(--ink-1);
+  font-family: var(--font-ui);
+  font-size: 13px;
+}
+.state-error__icon { color: var(--err); flex: none; }
