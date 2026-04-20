@@ -124,3 +124,156 @@
         transition: opacity var(--motion) linear;
     }
 }
+
+/* ── Grove rail ──────────────────────────────────────────────────── */
+
+.grove-rail {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 68px;
+    height: 100vh;
+    background: var(--bg-0);
+    border-right: 1px solid var(--line-soft);
+    padding: 0;
+    gap: 0;
+}
+
+.grove-rail-top-spacer {
+    height: 4px;
+    flex: none;
+}
+
+.grove-rail-divider {
+    width: 28px;
+    height: 1px;
+    background: var(--line);
+    margin: 6px 0;
+    flex: none;
+}
+
+.grove-rail-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0;
+}
+
+.grove-rail-spacer {
+    flex: 1 1 auto;
+    min-height: 12px;
+}
+
+/* Shared tile anatomy (rail tiles + grove tiles) */
+.rail-tile,
+.grove-tile {
+    appearance: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: none;
+    background: var(--bg-2);
+    color: var(--ink-1);
+    cursor: pointer;
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 500;
+    font-size: 17px;
+    border-radius: 22px;
+    transition:
+        border-radius var(--motion) var(--motion-ease),
+        background var(--motion) var(--motion-ease),
+        color var(--motion) var(--motion-ease);
+    position: relative;
+    flex: none;
+}
+
+.rail-tile .icon,
+.rail-tile svg {
+    font-size: 20px;
+    line-height: 1;
+}
+
+.rail-tile--settings {
+    margin-bottom: 6px;
+}
+
+/* Grove tile visual states — spec §Grove tile anatomy. */
+.grove-tile[data-state="idle"] {
+    background: var(--bg-2);
+    color: var(--ink-1);
+    border-radius: 22px;
+}
+.grove-tile[data-state="idle"]:hover,
+.rail-tile[data-state="idle"]:hover {
+    background: var(--moss-2);
+    color: #14130f;
+    border-radius: 14px;
+}
+.grove-tile[data-state="active"],
+.grove-tile:focus-visible[data-state="active"] {
+    background: var(--moss-2);
+    color: #14130f;
+    border-radius: 12px;
+}
+.grove-tile[data-state="active"]::before {
+    content: "";
+    position: absolute;
+    left: -12px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 3px;
+    height: 22px;
+    background: var(--ink-0);
+    border-radius: 0 2px 2px 0;
+}
+
+/* With-unread state — idle surface plus short pebble on the left edge.
+ * CSS in place; data binding (per-grove unread aggregate) lands when
+ * ServerState exposes it. */
+.grove-tile[data-state="with-unread"] {
+    background: var(--bg-2);
+    color: var(--ink-1);
+    border-radius: 22px;
+}
+.grove-tile[data-state="with-unread"]::before {
+    content: "";
+    position: absolute;
+    left: -12px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 3px;
+    height: 8px;
+    background: var(--ink-0);
+    border-radius: 0 2px 2px 0;
+}
+
+.grove-tile-glyph {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 500;
+    font-size: 17px;
+    line-height: 1;
+}
+
+.rail-tile--discover[data-state="active"] {
+    background: var(--amber);
+    color: #14130f;
+    border-radius: 12px;
+}
+
+/* Reduced-motion: drop radius animation; colour swap only. */
+@media (prefers-reduced-motion: reduce) {
+    .rail-tile,
+    .grove-tile {
+        transition: background var(--motion) linear, color var(--motion) linear;
+    }
+}

@@ -6,8 +6,8 @@ use send_wrapper::SendWrapper;
 use willow_client::{ClientConfig, ClientEvent, ClientHandle, DisplayMessage, VoiceSignalPayload};
 
 use crate::components::{
-    AddServerPanel, CallPage, ChannelHeader, ChatInput, CommandPalette, FileShareButton, JoinPage,
-    MemberList, MessageList, PinnedPanel, ServerList, SettingsPanel, Sidebar, WelcomeScreen,
+    AddServerPanel, CallPage, ChannelHeader, ChatInput, CommandPalette, FileShareButton, GroveRail,
+    JoinPage, MemberList, MessageList, PinnedPanel, SettingsPanel, Sidebar, WelcomeScreen,
 };
 use crate::event_processing::process_event_batch;
 use crate::handlers;
@@ -490,7 +490,7 @@ pub fn App() -> impl IntoView {
                             if show_members.get() || show_pinned.get() { "true" } else { "false" }
                         }
                     >
-                        <ServerList
+                        <GroveRail
                             servers=app_state.server.servers
                             active_server_id=app_state.server.active_server_id
                             on_server_click=srv_click
@@ -501,6 +501,12 @@ pub fn App() -> impl IntoView {
                             }
                             on_open_settings=Callback::new(move |_| {
                                 write.ui.set_settings_tab.set(SettingsTab::Server);
+                                write.ui.set_show_settings.set(true);
+                                write.ui.set_show_add_server.set(false);
+                                write.ui.set_show_sidebar.set(false);
+                            })
+                            on_settings_tile_click=Callback::new(move |_| {
+                                write.ui.set_settings_tab.set(SettingsTab::Profile);
                                 write.ui.set_show_settings.set(true);
                                 write.ui.set_show_add_server.set(false);
                                 write.ui.set_show_sidebar.set(false);
