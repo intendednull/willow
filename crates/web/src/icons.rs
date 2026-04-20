@@ -289,6 +289,16 @@ pub fn icon_copy() -> impl IntoView {
     )
 }
 
+/// Eye / reveal icon.
+pub fn icon_eye() -> impl IntoView {
+    icon(
+        &format!(
+            r#"<svg {SVG_ATTRS}><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>"#
+        ),
+        "icon-eye",
+    )
+}
+
 /// Monitor / screen icon (rectangle with stand).
 pub fn icon_monitor() -> impl IntoView {
     icon(

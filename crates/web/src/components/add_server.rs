@@ -26,8 +26,8 @@ pub fn AddServerPanel(
 ) -> impl IntoView {
     let handle = use_context::<WebClientHandle>().unwrap();
     let peer_id = handle.peer_id();
-    let peer_id_short = peer_id.get(..10).unwrap_or(&peer_id).to_string();
     let (copy_label, set_copy_label) = signal("copy");
+    let (show_pid, set_show_pid) = signal(false);
 
     let (active_tab, set_active_tab) = signal(AddServerTab::Create);
 
@@ -197,33 +197,62 @@ pub fn AddServerPanel(
                         }.into_any()
                     } else {
                         let pid_full = peer_id.clone();
-                        let pid_short = peer_id_short.clone();
+                        let pid_full_copy = pid_full.clone();
+                        let pid_full_reveal = pid_full.clone();
                         view! {
                             <div class="welcome-option">
-                                <div class="welcome-peer-compact" title="your peer id">
-                                    <span class="welcome-peer-compact__label">"your id"</span>
-                                    <code class="peer-id-text" data-full-id={pid_full.clone()}>{pid_short}</code>
-                                    <button
-                                        class="btn btn-sm welcome-peer-compact__copy"
-                                        on:click={
-                                            let pid = pid_full;
-                                            move |_| {
-                                                copy_to_clipboard(&pid);
-                                                set_copy_label.set("copied");
-                                                set_timeout(
-                                                    move || set_copy_label.set("copy"),
-                                                    std::time::Duration::from_secs(2),
-                                                );
-                                            }
-                                        }
-                                    >
-                                        {move || copy_label.get()}
-                                    </button>
-                                </div>
                                 <ol class="welcome-join-steps">
-                                    <li>"Share your id with a grove owner."</li>
-                                    <li>"They send back an invite."</li>
-                                    <li>"Paste it below."</li>
+                                    <li class="welcome-join-steps__share">
+                                        <span class="welcome-join-steps__text">
+                                            "Share your id with a grove steward"
+                                        </span>
+                                        <div class="welcome-join-steps__controls">
+                                            <button
+                                                type="button"
+                                                class="welcome-join-icon-btn"
+                                                aria-label="copy your peer id"
+                                                title={move || copy_label.get().to_string()}
+                                                on:click={
+                                                    let pid = pid_full_copy.clone();
+                                                    move |_| {
+                                                        copy_to_clipboard(&pid);
+                                                        set_copy_label.set("copied");
+                                                        set_timeout(
+                                                            move || set_copy_label.set("copy"),
+                                                            std::time::Duration::from_secs(2),
+                                                        );
+                                                    }
+                                                }
+                                            >
+                                                {icons::icon_copy()}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                class=move || {
+                                                    if show_pid.get() {
+                                                        "welcome-join-icon-btn active"
+                                                    } else {
+                                                        "welcome-join-icon-btn"
+                                                    }
+                                                }
+                                                aria-label="show full peer id"
+                                                aria-pressed=move || show_pid.get().to_string()
+                                                on:click=move |_| set_show_pid.update(|v| *v = !*v)
+                                            >
+                                                {icons::icon_eye()}
+                                            </button>
+                                        </div>
+                                        {move || show_pid.get().then(|| view! {
+                                            <code
+                                                class="peer-id-text welcome-join-steps__full-id"
+                                                data-full-id={pid_full_reveal.clone()}
+                                            >
+                                                {pid_full_reveal.clone()}
+                                            </code>
+                                        })}
+                                    </li>
+                                    <li>"They send back a grove invite"</li>
+                                    <li>"Paste the invite code below"</li>
                                 </ol>
                                 <label>"Invite code"</label>
                                 <textarea
@@ -233,7 +262,7 @@ pub fn AddServerPanel(
                                     on:input=move |ev| set_join_code.set(event_target_value(&ev))
                                 ></textarea>
                                 <button class="btn btn-primary welcome-btn" on:click=on_join_next>
-                                    "Open letter " {icons::icon_arrow_right()}
+                                    "continue"
                                 </button>
                             </div>
                         }.into_any()

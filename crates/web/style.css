@@ -3108,6 +3108,71 @@ select:focus-visible {
     justify-content: center;
 }
 
+/* Share step — inline controls to the right of the text. */
+.welcome-join-steps__share {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.welcome-join-steps__text {
+    flex: 1;
+    min-width: 0;
+}
+
+.welcome-join-steps__controls {
+    display: inline-flex;
+    gap: 4px;
+}
+
+.welcome-join-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-s);
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    color: var(--ink-2);
+    font-size: 14px;
+    cursor: pointer;
+    transition:
+        background var(--motion-fast) var(--motion-ease),
+        color var(--motion-fast) var(--motion-ease),
+        border-color var(--motion-fast) var(--motion-ease);
+}
+
+.welcome-join-icon-btn:hover {
+    background: var(--bg-3);
+    color: var(--ink-0);
+    border-color: var(--moss-2);
+}
+
+.welcome-join-icon-btn.active {
+    background: var(--moss-0);
+    color: var(--moss-3);
+    border-color: var(--moss-2);
+}
+
+/* Revealed full peer id under the share step. */
+.welcome-join-steps__full-id {
+    display: block;
+    flex-basis: 100%;
+    margin-top: 6px;
+    padding: 8px 10px;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-s);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-1);
+    word-break: break-all;
+    user-select: all;
+    animation: willow-pop-in var(--motion) var(--motion-ease);
+}
+
 /* ── Welcome compact peer-id row ──────────────────────────────────── */
 
 .welcome-peer-compact {
