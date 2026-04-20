@@ -4583,15 +4583,22 @@ async fn mobile_shell_tab_bar_badge_renders_when_positive() {
     tick().await;
 
     assert!(
-        query(&container, ".tab[data-tab=\"home\"] .tab-badge").is_none(),
+        query(&container, ".tab[data-tab=\"home\"] .unread-badge").is_none(),
         "no badge when count is zero"
     );
 
     set_badges.set(vec![("home".to_string(), 3)]);
     tick().await;
 
-    let badge = query(&container, ".tab[data-tab=\"home\"] .tab-badge").unwrap();
-    assert_eq!(text(&badge), "3");
+    // Phase 1f: the tab-bar renders UnreadBadge. The active tab gets
+    // a pill (count visible); unfocused tabs get a 6x6 dot. `home`
+    // is the active tab in this test.
+    let badge = query(&container, ".tab[data-tab=\"home\"] .unread-badge").unwrap();
+    let count_span = badge
+        .query_selector(".unread-badge__count")
+        .unwrap()
+        .expect("count span");
+    assert_eq!(text(&count_span), "3");
 }
 
 // ── Phase 1c — palette + a11y (spec: layout-primitives.md) ──────────────────
