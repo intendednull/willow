@@ -38,6 +38,7 @@ mod message;
 pub(crate) mod mobile_shell;
 pub(crate) mod palette_actions;
 mod participant_tile;
+mod peer_status_label;
 mod pinned;
 mod right_rail;
 mod roles;
@@ -73,6 +74,7 @@ pub use mobile_shell::MobileShell;
 #[allow(unused_imports)]
 pub use mobile_shell::{MobilePush, MobileTab};
 pub use participant_tile::*;
+pub use peer_status_label::*;
 pub use pinned::*;
 pub use right_rail::*;
 pub use roles::*;
