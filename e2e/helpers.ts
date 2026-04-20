@@ -67,19 +67,26 @@ export async function createServer(page: Page, name: string, displayName?: strin
     .fill(name);
   await page.locator('.welcome-tab-panel button', { hasText: 'continue' }).click();
 
-  // Wait for the app to load with the new server. On mobile the
-  // visible shell is `.mobile-top-bar` + `.mobile-tab-bar`; on
-  // desktop it's `.main-pane-header`. Wait for the first signal
-  // that matches either path.
+  // Wait for the app to load with the new server. On mobile we then
+  // push into the first channel (`general`) so subsequent helpers
+  // (`sendMessage`, `openMemberList`, etc.) find the composer +
+  // right-rail surfaces — mobile home only shows the channel list.
   if (isMobile(page)) {
     await page.waitForSelector('.mobile-top-bar', { state: 'visible', timeout: 10_000 });
+    // Tap general to push the channel surface (which carries the
+    // composer, message list, and main-pane-header action bar).
+    const generalRow = page
+      .locator(`${visibleShell(page)} .mobile-home .channel-item`, { hasText: 'general' });
+    if (await generalRow.count() > 0) {
+      await generalRow.first().click();
+      await page.waitForSelector('.mobile-push--channel', { timeout: 10_000 });
+    }
   } else {
     await page.waitForSelector('.main-pane-header, .channel-sidebar', {
       state: 'visible',
       timeout: 10_000,
     });
   }
-  await page.waitForTimeout(500);
 }
 
 /** Get the full peer ID from the welcome screen or settings. */

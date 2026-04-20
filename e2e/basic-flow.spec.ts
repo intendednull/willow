@@ -8,15 +8,20 @@ test.describe('Basic app flow', () => {
     await expect(page.locator('h1')).toContainText('What do we call you?');
   });
 
-  test('can create a server from welcome screen', async ({ page }) => {
+  test('can create a server from welcome screen', async ({ page }, testInfo) => {
     await freshStart(page);
     await createServer(page, 'Test Server', 'Alice');
 
-    // Should now see the sidebar with server name.
-    await expect(page.locator(`${visibleShell(page)} .sidebar-header, ${visibleShell(page)} .mobile-top-bar`).first()).toContainText('Test Server');
-
-    // Should have a general channel.
-    await expect(page.locator(`${visibleShell(page)} .channel-item`).first()).toContainText('general');
+    // Desktop: server name renders in `.sidebar-header`. Mobile:
+    // createServer pushes into the channel so the top bar shows the
+    // channel name — check the chrome around the chat for "general"
+    // which proves the server loaded in either shell.
+    if (testInfo.project.name.startsWith('mobile')) {
+      await expect(page.locator('.mobile-top-bar .top-title')).toContainText('general');
+    } else {
+      await expect(page.locator(`${visibleShell(page)} .sidebar-header`)).toContainText('Test Server');
+      await expect(page.locator(`${visibleShell(page)} .channel-item`).first()).toContainText('general');
+    }
   });
 
   test('can send and see own message', async ({ page }) => {
@@ -29,12 +34,16 @@ test.describe('Basic app flow', () => {
     expect(msgs).toContain('Hello world!');
   });
 
-  test('can create a new text channel', async ({ page }) => {
+  test('can create a new text channel', async ({ page }, testInfo) => {
     await freshStart(page);
     await createServer(page, 'Channel Test');
 
-    // Open sidebar on mobile (no-op on desktop).
-    await openSidebar(page);
+    // On mobile createServer pushes into the channel chat — pop back
+    // so the channel-add-btn in `.mobile-home` is reachable.
+    if (testInfo.project.name.startsWith('mobile')) {
+      await page.locator('.mobile-top-bar .top-slot-left').click();
+      await page.locator(`${visibleShell(page)} .mobile-home`).waitFor({ timeout: 5_000 });
+    }
 
     // Click the + button.
     await page.locator(`${visibleShell(page)} .channel-add-btn`).click();
@@ -49,12 +58,15 @@ test.describe('Basic app flow', () => {
     await expect(page.locator(`${visibleShell(page)} .channel-item`, { hasText: 'random' })).toBeVisible();
   });
 
-  test('can create a voice channel', async ({ page }) => {
+  test('can create a voice channel', async ({ page }, testInfo) => {
     await freshStart(page);
     await createServer(page, 'Voice Test');
 
-    // Open sidebar on mobile (no-op on desktop).
-    await openSidebar(page);
+    // Pop back to mobile-home for the channel-add surface.
+    if (testInfo.project.name.startsWith('mobile')) {
+      await page.locator('.mobile-top-bar .top-slot-left').click();
+      await page.locator(`${visibleShell(page)} .mobile-home`).waitFor({ timeout: 5_000 });
+    }
 
     // Click +.
     await page.locator(`${visibleShell(page)} .channel-add-btn`).click();
@@ -75,7 +87,7 @@ test.describe('Basic app flow', () => {
     await expect(voiceChannel.locator('.icon-volume, .icon-volume-1')).toBeVisible();
   });
 
-  test('messages persist after refresh', async ({ page }) => {
+  test('messages persist after refresh', async ({ page }, testInfo) => {
     await freshStart(page);
     await createServer(page, 'Persist Test');
 
@@ -86,6 +98,14 @@ test.describe('Basic app flow', () => {
     // Reload.
     await page.reload();
     await waitForApp(page);
+    // Mobile reload lands on `.mobile-home`; re-enter general channel
+    // so the message list is mounted again.
+    if (testInfo.project.name.startsWith('mobile')) {
+      await page.locator(`${visibleShell(page)} .mobile-home .channel-item`, { hasText: 'general' })
+        .first()
+        .click();
+      await page.locator('.mobile-push--channel').waitFor({ timeout: 10_000 });
+    }
 
     // Message should still be there (auto-waits up to 10s).
     await expect(
@@ -95,7 +115,7 @@ test.describe('Basic app flow', () => {
     expect(msgs2).toContain('persistent message');
   });
 
-  test('reactions persist after refresh', async ({ page }) => {
+  test('reactions persist after refresh', async ({ page }, testInfo) => {
     await freshStart(page);
     await createServer(page, 'React Persist');
 
@@ -110,6 +130,12 @@ test.describe('Basic app flow', () => {
     // Reload.
     await page.reload();
     await waitForApp(page);
+    if (testInfo.project.name.startsWith('mobile')) {
+      await page.locator(`${visibleShell(page)} .mobile-home .channel-item`, { hasText: 'general' })
+        .first()
+        .click();
+      await page.locator('.mobile-push--channel').waitFor({ timeout: 10_000 });
+    }
 
     // Reaction should persist (auto-waits for re-render).
     await expect(page.locator(`${visibleShell(page)} .reaction`).first()).toBeVisible({ timeout: 10_000 });
