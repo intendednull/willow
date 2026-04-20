@@ -49,7 +49,7 @@
 
 use willow_identity::EndpointId;
 
-use crate::sas_wordlist::{SAS_WORDS, SAS_WORDLIST_LEN};
+use crate::sas_wordlist::{SAS_WORDLIST_LEN, SAS_WORDS};
 
 /// Domain-separation tag. Any change to this constant breaks cross-
 /// version SAS compatibility; bump the suffix if the derivation changes.
@@ -75,11 +75,7 @@ pub enum SasError {
 ///
 /// Symmetric in `(a, b)`: `sas_words(k, a, b)` == `sas_words(k, b, a)`.
 /// Deterministic and pure — safe to call from any thread and from WASM.
-pub fn sas_words(
-    session_key: &[u8],
-    a: &EndpointId,
-    b: &EndpointId,
-) -> [String; SAS_WORD_COUNT] {
+pub fn sas_words(session_key: &[u8], a: &EndpointId, b: &EndpointId) -> [String; SAS_WORD_COUNT] {
     let a_bytes = *a.as_bytes();
     let b_bytes = *b.as_bytes();
 
@@ -249,8 +245,12 @@ mod tests {
             0x12, 0x11, 0x10, 0x0f, 0x0e, 0x0d, 0x0c, 0x0b, 0x0a, 0x09, 0x08, 0x07, 0x06, 0x05,
             0x04, 0x03, 0x02, 0x01,
         ];
-        let a = Identity::from_bytes(&a_seed).expect("valid seed").endpoint_id();
-        let b = Identity::from_bytes(&b_seed).expect("valid seed").endpoint_id();
+        let a = Identity::from_bytes(&a_seed)
+            .expect("valid seed")
+            .endpoint_id();
+        let b = Identity::from_bytes(&b_seed)
+            .expect("valid seed")
+            .endpoint_id();
         let session_key = [0x5Au8; 32];
 
         let got = sas_words(&session_key, &a, &b);

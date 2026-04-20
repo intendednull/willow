@@ -5040,10 +5040,7 @@ mod trust_verification {
         assert_eq!(sas_copy::NO_MATCH_CTA, "they don't match");
         assert_eq!(sas_copy::UNSURE_CTA, "not sure");
         assert_eq!(sas_copy::LABEL_YOU, "your fingerprint — read this aloud");
-        assert_eq!(
-            sas_copy::LABEL_PEER,
-            "their fingerprint — do these match?"
-        );
+        assert_eq!(sas_copy::LABEL_PEER, "their fingerprint — do these match?");
         assert_eq!(sas_copy::BADGE_VERIFIED, "verified peer");
         assert_eq!(
             sas_copy::BADGE_UNVERIFIED,

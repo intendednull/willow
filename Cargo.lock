@@ -5979,6 +5979,7 @@ name = "willow-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "bytes",
  "dirs",
  "futures",
@@ -6019,6 +6020,7 @@ dependencies = [
 name = "willow-crypto"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "chacha20poly1305",
  "curve25519-dalek 4.1.3",
  "getrandom 0.2.17",
@@ -6172,6 +6174,7 @@ dependencies = [
 name = "willow-web"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "console_error_panic_hook",
  "futures",
  "gloo-timers",
@@ -6188,6 +6191,7 @@ dependencies = [
  "web-sys",
  "willow-actor",
  "willow-client",
+ "willow-crypto",
  "willow-identity",
  "willow-network",
  "willow-state",

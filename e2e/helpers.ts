@@ -565,6 +565,54 @@ export async function untrustPeer(page: Page, peerName: string) {
   await closeMemberList(page);
 }
 
+/** Open the compare-fingerprints dialog by clicking the trust badge
+ *  next to a peer name in the member list.
+ */
+export async function openCompareFingerprints(page: Page, peerName: string) {
+  await openMemberList(page);
+  const member = page.locator(`${visibleShell(page)} .member-item`, { hasText: peerName });
+  await member.waitFor({ timeout: 10_000 });
+  await member.locator('.trust-badge').click();
+  await page
+    .locator('.add-friend__card[role="dialog"]')
+    .waitFor({ timeout: 5_000 });
+}
+
+/** Click "they match" in the compare-fingerprints dialog. */
+export async function markFingerprintsMatch(page: Page) {
+  await page
+    .locator('.add-friend__cta-primary', { hasText: 'they match' })
+    .click();
+  // Confirm screen appears.
+  await page
+    .locator('.add-friend__confirm-title', { hasText: 'verified.' })
+    .waitFor({ timeout: 5_000 });
+}
+
+/** Click "they don't match" in the compare-fingerprints dialog. */
+export async function markFingerprintsMismatch(page: Page) {
+  await page
+    .locator('.add-friend__cta-secondary', { hasText: "they don't match" })
+    .click();
+  await page
+    .locator('.add-friend__confirm-title', { hasText: 'marked not verified.' })
+    .waitFor({ timeout: 5_000 });
+}
+
+/** Long-press a peer avatar by name in the member list (mobile only). */
+export async function longPressAvatar(page: Page, peerName: string) {
+  await openMemberList(page);
+  const member = page.locator(`${visibleShell(page)} .member-item`, { hasText: peerName });
+  await member.waitFor({ timeout: 10_000 });
+  const target = member.locator('.long-press-avatar, .status-dot').first();
+  const box = await target.boundingBox();
+  if (!box) throw new Error('avatar not measurable');
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.waitForTimeout(500);
+  await page.mouse.up();
+}
+
 /** Kicks a peer by name from the member list. */
 export async function kickPeer(page: Page, peerName: string) {
   await openMemberList(page);

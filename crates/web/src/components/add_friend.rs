@@ -76,11 +76,8 @@ pub(crate) fn announce(msg: &str) {
         region_clone.set_text_content(Some(&msg));
     });
     if let Some(win) = web_sys::window() {
-        win.set_timeout_with_callback_and_timeout_and_arguments_0(
-            cb.as_ref().unchecked_ref(),
-            20,
-        )
-        .ok();
+        win.set_timeout_with_callback_and_timeout_and_arguments_0(cb.as_ref().unchecked_ref(), 20)
+            .ok();
     }
     cb.forget();
 }

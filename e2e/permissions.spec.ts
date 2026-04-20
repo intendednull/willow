@@ -9,6 +9,12 @@ import {
   openServerSettings,
   openMemberList,
   closeMemberList,
+  openCompareFingerprints,
+  markFingerprintsMatch,
+  markFingerprintsMismatch,
+  longPressAvatar,
+  visibleShell,
+  isMobile,
 } from './helpers';
 
 test.describe('Permissions and trust', () => {
@@ -200,8 +206,69 @@ test.describe('Permissions and trust', () => {
       await page2.waitForTimeout(1000);
 
       // Bob should NOT have any trust/kick/untrust action buttons.
-      const actionButtons = page2.locator('.member-actions button');
+      const actionButtons = page2.locator(`${visibleShell(page2)} .member-actions button`);
       await expect(actionButtons).toHaveCount(0, { timeout: 5000 });
+    } finally {
+      await ctx1.close();
+      await ctx2.close();
+    }
+  });
+
+  // ── Phase 1d — trust verification (SAS compare) ──────────────────────
+  //
+  // Spec: docs/specs/2026-04-19-ui-design/trust-verification.md
+  // Plan: docs/plans/2026-04-20-ui-phase-1d-trust-verification.md
+
+  test('compare match flips the trust badge to verified', async ({ browser }, testInfo) => {
+    test.skip(testInfo.project.name.startsWith('mobile'), 'desktop-chrome path');
+    const { ctx1, ctx2, page1 } = await setupTwoPeers(browser, 'Verify', 'Alice', 'Bob');
+    try {
+      await openCompareFingerprints(page1, 'Bob');
+      await markFingerprintsMatch(page1);
+
+      // `done` closes the sheet; the badge on Bob's row switches to verified.
+      await page1.locator('.add-friend__cta-primary', { hasText: 'done' }).click();
+      const bobRow = page1.locator(`${visibleShell(page1)} .member-item`, { hasText: 'Bob' });
+      await expect(bobRow.locator('.trust-badge--verified'))
+        .toBeVisible({ timeout: 5_000 });
+    } finally {
+      await ctx1.close();
+      await ctx2.close();
+    }
+  });
+
+  test('compare mismatch keeps peer unverified but messaging still works', async ({
+    browser,
+  }, testInfo) => {
+    test.skip(testInfo.project.name.startsWith('mobile'), 'desktop-chrome path');
+    const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Mismatch', 'Alice', 'Bob');
+    try {
+      await openCompareFingerprints(page1, 'Bob');
+      await markFingerprintsMismatch(page1);
+      // Close the dialog via the `close` secondary action.
+      await page1.locator('.add-friend__cta-secondary', { hasText: 'close' }).click();
+
+      // Bob's row keeps the unverified/downgrade treatment.
+      const bobRow = page1.locator(`${visibleShell(page1)} .member-item`, { hasText: 'Bob' });
+      await expect(bobRow.locator('.trust-badge--unverified, .trust-badge--downgrade'))
+        .toBeVisible({ timeout: 5_000 });
+
+      // Messaging is unaffected.
+      await sendMessage(page2, 'mismatch still talks');
+      await waitForMessage(page1, 'mismatch still talks', 30_000);
+    } finally {
+      await ctx1.close();
+      await ctx2.close();
+    }
+  });
+
+  test('mobile long-press opens the compare sheet', async ({ browser }, testInfo) => {
+    test.skip(!testInfo.project.name.startsWith('mobile'), 'mobile-chrome path');
+    const { ctx1, ctx2, page1 } = await setupTwoPeers(browser, 'LongPress', 'Alice', 'Bob');
+    try {
+      await longPressAvatar(page1, 'Bob');
+      await expect(page1.locator('.add-friend__card[role="dialog"]'))
+        .toBeVisible({ timeout: 10_000 });
     } finally {
       await ctx1.close();
       await ctx2.close();
