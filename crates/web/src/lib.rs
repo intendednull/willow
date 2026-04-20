@@ -16,5 +16,6 @@ pub mod keybindings;
 pub mod palette_recents;
 pub mod state;
 pub mod state_bridge;
+pub mod trust_store;
 pub mod util;
 pub mod voice;
