@@ -628,6 +628,7 @@ pub fn App() -> impl IntoView {
                         <div class="main-content">
                             {move || {
                                 if show_add_server.get() {
+                                    let (add_name, set_add_name) = signal(String::new());
                                     view! {
                                         <div class="settings-panel">
                                             <div class="server-settings-header">
@@ -636,11 +637,22 @@ pub fn App() -> impl IntoView {
                                                 </button>
                                                 <h2>"Add a Server"</h2>
                                             </div>
+                                            <div class="welcome-name-row">
+                                                <label for="add-server-display-name">"Display name · optional"</label>
+                                                <input
+                                                    id="add-server-display-name"
+                                                    type="text"
+                                                    placeholder="what peers should call you"
+                                                    prop:value=move || add_name.get()
+                                                    on:input=move |ev| set_add_name.set(event_target_value(&ev))
+                                                />
+                                            </div>
                                             <AddServerPanel
                                                 on_done=move |_| {
                                                     refresh_stored.with_value(|f| f());
                                                     write.ui.set_show_add_server.set(false);
                                                 }
+                                                display_name=add_name
                                             />
                                         </div>
                                     }.into_any()

@@ -2623,11 +2623,13 @@ select:focus-visible {
 
 .welcome-screen {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
     min-height: 100vh;
     min-height: 100dvh;
-    padding: 20px;
+    padding: 40px 20px;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
     /* Animated subtle radial gradient background */
     background:
         radial-gradient(ellipse at 20% 50%, var(--accent-glow) 0%, transparent 50%),
@@ -2927,6 +2929,62 @@ select:focus-visible {
     font-weight: 400;
     margin-bottom: 0;
     letter-spacing: -0.02em;
+}
+
+.welcome-greeting {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 16px;
+    color: var(--moss-3);
+    margin: 2px 0 0;
+    text-align: center;
+    animation: willow-pop-in var(--motion) var(--motion-ease);
+}
+
+/* ── Welcome shared display-name row (above tabs) ─────────────────── */
+
+.welcome-name-row {
+    margin-bottom: 16px;
+}
+
+.welcome-name-row label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.welcome-name-row input {
+    width: 100%;
+    padding: 10px 14px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-s);
+    color: var(--text-primary);
+    font-size: 14px;
+    outline: none;
+    font-family: inherit;
+    transition:
+        border-color var(--transition-normal),
+        box-shadow var(--transition-normal);
+}
+
+.welcome-name-row input:focus {
+    border-color: var(--accent);
+    box-shadow: var(--focus-ring);
+}
+
+.welcome-name-row input::placeholder {
+    color: var(--text-placeholder);
+}
+
+/* Secondary copy inside the join flow (peer-id instructions). */
+.welcome-hint--flow {
+    margin: 12px 0 12px;
+    line-height: 1.5;
 }
 
 /* ── Welcome compact peer-id row ──────────────────────────────────── */

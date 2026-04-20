@@ -5,6 +5,7 @@ use send_wrapper::SendWrapper;
 
 use crate::app::WebClientHandle;
 use crate::icons;
+use crate::util::copy_to_clipboard;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AddServerTab {
@@ -14,39 +15,40 @@ enum AddServerTab {
 
 /// Panel for creating a new server or joining an existing one via invite code.
 ///
-/// Internally tabbed — only one flow is visible at a time. Used on the
-/// welcome screen and on the sidebar "+" add-server surface.
+/// Tabbed Create / Join flows. The Join tab exposes the local peer id so the
+/// user can share it with an existing grove owner to receive an invite. A
+/// single `display_name` signal is supplied by the caller so the same value
+/// applies to whichever path the user takes.
 #[component]
-pub fn AddServerPanel(on_done: impl Fn(()) + Send + Clone + 'static) -> impl IntoView {
+pub fn AddServerPanel(
+    on_done: impl Fn(()) + Send + Clone + 'static,
+    display_name: ReadSignal<String>,
+) -> impl IntoView {
     let handle = use_context::<WebClientHandle>().unwrap();
+    let peer_id = handle.peer_id();
+    let peer_id_short = peer_id.get(..10).unwrap_or(&peer_id).to_string();
+    let (copy_label, set_copy_label) = signal("copy");
 
     let (active_tab, set_active_tab) = signal(AddServerTab::Create);
 
-    // Create server state.
     let (server_name, set_server_name) = signal(String::new());
-    let (create_display_name, set_create_display_name) = signal(String::new());
     let (status_msg, set_status_msg) = signal(String::new());
 
-    // Join server state.
     let (join_code, set_join_code) = signal(String::new());
     let (join_step, set_join_step) = signal(false);
-    let (join_profile_name, set_join_profile_name) = signal(String::new());
     let (validated_code, set_validated_code) = signal(String::new());
-
-    let app_state = use_context::<crate::state::AppState>().unwrap();
-    set_join_profile_name.set(app_state.server.display_name.get_untracked());
 
     let handle_create = handle.clone();
     let on_done_create = on_done.clone();
     let on_create = move |_| {
         let name = server_name.get_untracked();
         if name.trim().is_empty() {
-            set_status_msg.set("Please enter a server name.".to_string());
+            set_status_msg.set("Please enter a grove name.".to_string());
             return;
         }
         let h = handle_create.clone();
         let n = name.trim().to_string();
-        let dn = create_display_name.get_untracked();
+        let dn = display_name.get_untracked();
         let done_cb = on_done_create.clone();
         wasm_bindgen_futures::spawn_local(async move {
             match h.create_server(&n).await {
@@ -131,22 +133,12 @@ pub fn AddServerPanel(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Int
                     let on_create = on_create.clone();
                     view! {
                         <div class="welcome-option">
-                            <p class="welcome-hint">
-                                "A grove is your own server — you decide who joins."
-                            </p>
                             <label>"Grove name"</label>
                             <input
                                 type="text"
                                 placeholder="backyard"
                                 prop:value=move || server_name.get()
                                 on:input=move |ev| set_server_name.set(event_target_value(&ev))
-                            />
-                            <label>"Display name · optional"</label>
-                            <input
-                                type="text"
-                                placeholder="what peers should call you"
-                                prop:value=move || create_display_name.get()
-                                on:input=move |ev| set_create_display_name.set(event_target_value(&ev))
                             />
                             <button class="btn btn-primary welcome-btn" on:click=on_create>
                                 "Plant grove"
@@ -162,7 +154,7 @@ pub fn AddServerPanel(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Int
                             let code = validated_code.get_untracked();
                             let h = hj.clone();
                             let done = done_cb.clone();
-                            let name = join_profile_name.get_untracked();
+                            let name = display_name.get_untracked();
                             wasm_bindgen_futures::spawn_local(async move {
                                 match h.accept_invite(&code).await {
                                     Ok(()) => {
@@ -182,14 +174,9 @@ pub fn AddServerPanel(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Int
                         };
                         view! {
                             <div class="welcome-option">
-                                <label>"Display name for this grove"</label>
-                                <p class="welcome-hint">"Pre-filled with your current name."</p>
-                                <input
-                                    type="text"
-                                    placeholder="your name…"
-                                    prop:value=move || join_profile_name.get()
-                                    on:input=move |ev| set_join_profile_name.set(event_target_value(&ev))
-                                />
+                                <p class="welcome-hint">
+                                    "Ready to join — confirm and you're in."
+                                </p>
                                 <div class="join-profile-buttons">
                                     <button class="btn btn-sm" on:click=move |_| set_join_step.set(false)>
                                         {icons::icon_arrow_left()} " Back"
@@ -201,10 +188,32 @@ pub fn AddServerPanel(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Int
                             </div>
                         }.into_any()
                     } else {
+                        let pid_full = peer_id.clone();
+                        let pid_short = peer_id_short.clone();
                         view! {
                             <div class="welcome-option">
-                                <p class="welcome-hint">
-                                    "Paste the letter of introduction you were sent."
+                                <div class="welcome-peer-compact" title="your peer id">
+                                    <span class="welcome-peer-compact__label">"your id"</span>
+                                    <code class="peer-id-text" data-full-id={pid_full.clone()}>{pid_short}</code>
+                                    <button
+                                        class="btn btn-sm welcome-peer-compact__copy"
+                                        on:click={
+                                            let pid = pid_full;
+                                            move |_| {
+                                                copy_to_clipboard(&pid);
+                                                set_copy_label.set("copied");
+                                                set_timeout(
+                                                    move || set_copy_label.set("copy"),
+                                                    std::time::Duration::from_secs(2),
+                                                );
+                                            }
+                                        }
+                                    >
+                                        {move || copy_label.get()}
+                                    </button>
+                                </div>
+                                <p class="welcome-hint welcome-hint--flow">
+                                    "Send your id to a grove owner — they send back an invite. Paste it below."
                                 </p>
                                 <label>"Invite code"</label>
                                 <textarea
