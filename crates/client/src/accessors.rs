@@ -139,7 +139,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
 
     pub async fn unread_counts(&self) -> HashMap<String, usize> {
         let registry = willow_actor::state::get(&self.server_registry_addr).await;
-        views::compute_unread_view(&registry).counts
+        let events = willow_actor::state::get(&self.event_state_addr).await;
+        views::compute_unread_view(&registry, &events, self.identity.endpoint_id()).counts()
     }
 
     /// Check if a peer is an admin.

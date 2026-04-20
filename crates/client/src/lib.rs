@@ -642,9 +642,12 @@ impl<N: willow_network::Network> ClientHandle<N> {
             (event_ref.clone(), registry_ref.clone()),
             |(es, reg)| views::compute_channels_view(es, reg),
         );
-        let unread_view = willow_actor::derived(&system.handle(), registry_ref.clone(), |reg| {
-            views::compute_unread_view(reg)
-        });
+        let local_pid_unread = identity_clone.endpoint_id();
+        let unread_view = willow_actor::derived(
+            &system.handle(),
+            (registry_ref.clone(), event_ref.clone()),
+            move |(reg, es)| views::compute_unread_view(reg, es, local_pid_unread),
+        );
         let roles_view = willow_actor::derived(&system.handle(), event_ref.clone(), |es| {
             views::compute_roles_view(es)
         });
@@ -962,9 +965,12 @@ pub fn test_client() -> (
         (event_ref.clone(), registry_ref.clone()),
         |(es, reg)| views::compute_channels_view(es, reg),
     );
-    let unread_view = willow_actor::derived(&sh, registry_ref.clone(), |reg| {
-        views::compute_unread_view(reg)
-    });
+    let local_pid_unread = identity_clone.endpoint_id();
+    let unread_view = willow_actor::derived(
+        &sh,
+        (registry_ref.clone(), event_ref.clone()),
+        move |(reg, es)| views::compute_unread_view(reg, es, local_pid_unread),
+    );
     let roles_view = willow_actor::derived(&sh, event_ref.clone(), views::compute_roles_view);
     let connection_view = willow_actor::derived(
         &sh,

@@ -56,10 +56,91 @@ pub struct MemberInfo {
     pub is_online: bool,
 }
 
-/// Unread badge counts per channel name.
+/// Identifier for a surface that can carry unread state.
+///
+/// Phase 1f introduces per-surface `UnreadStats` keyed by `SurfaceId`.
+/// Only `Channel` is populated today — `Letter` and `Grove` are defined
+/// for forward compatibility with the letters and aggregate-grove
+/// surfaces in later phases.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SurfaceId {
+    /// A named channel inside the active server.
+    Channel(String),
+    /// A 1:1 letter with the given peer.
+    Letter(EndpointId),
+    /// Aggregate unread for an entire grove (server id).
+    Grove(String),
+}
+
+/// Per-surface unread stats. Drives the badge priority pipeline —
+/// whisper > mentioned > announce-only > muted > default.
+///
+/// `count` tracks real unread event volume; the flags are independent
+/// signals the UI layers in (e.g. a muted channel still increments
+/// `count` so the user sees *something is here*).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UnreadStats {
+    /// Raw unread count. Capped only at render-time (`99+`).
+    pub count: u32,
+    /// Latest unread mentions the local peer.
+    pub mentioned: bool,
+    /// Surface is a whisper-marked letter.
+    pub whisper: bool,
+    /// Every unread event in this surface is governance / announce-only.
+    pub announce_only: bool,
+    /// Surface is currently muted (channel / grove / letter scope).
+    pub muted: bool,
+}
+
+/// Unread badge counts per surface.
+///
+/// The legacy `counts: HashMap<String, usize>` channel-name map is
+/// preserved via the `counts()` back-compat shim so phase 1a..1e
+/// callers keep compiling. New callers read `stats` directly.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UnreadView {
-    pub counts: HashMap<String, usize>,
+    /// Full per-surface stats. Primary source from phase 1f onward.
+    pub stats: HashMap<SurfaceId, UnreadStats>,
+}
+
+impl UnreadView {
+    /// Back-compat channel-name-keyed count map.
+    ///
+    /// Projects `stats` down to `{channel_name -> count}` for legacy
+    /// consumers. New code should read `stats` and `UnreadStats`
+    /// variants directly.
+    pub fn counts(&self) -> HashMap<String, usize> {
+        self.stats
+            .iter()
+            .filter_map(|(id, s)| match id {
+                SurfaceId::Channel(name) => Some((name.clone(), s.count as usize)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Aggregate unread for a whole server (sum of channel stats,
+    /// highest-priority variant wins).
+    ///
+    /// Phase 1f places this on `UnreadView` so `server_list` / grove
+    /// tiles can render a single pill per grove with the strongest
+    /// variant present.
+    pub fn for_server(&self, _server_id: &str) -> UnreadStats {
+        // All channels in the active-server registry are included today
+        // because the registry only tracks one active server at a time.
+        // A multi-grove world will key by `_server_id` directly.
+        let mut out = UnreadStats::default();
+        for (id, s) in &self.stats {
+            if matches!(id, SurfaceId::Channel(_)) {
+                out.count = out.count.saturating_add(s.count);
+                out.mentioned |= s.mentioned;
+                out.whisper |= s.whisper;
+                out.announce_only |= s.announce_only;
+                out.muted |= s.muted;
+            }
+        }
+        out
+    }
 }
 
 /// Role definitions with permissions.
@@ -311,17 +392,35 @@ pub fn compute_channels_view(
     ChannelsView { channels: names }
 }
 
-/// Compute unread counts.
-pub fn compute_unread_view(registry: &Arc<ServerRegistry>) -> UnreadView {
-    let mut counts = HashMap::new();
+/// Compute unread stats per surface.
+///
+/// Phase 1f: consumes the active server's `unread` topic map plus the
+/// event-sourced `mute_state` to build per-channel `UnreadStats`.
+/// `mentioned` is stubbed as `false` until the last-500-message
+/// substring pass lands — the render pipeline already handles the
+/// variant, so turning it on is a single-line change.
+pub fn compute_unread_view(
+    registry: &Arc<ServerRegistry>,
+    event_state: &Arc<willow_state::ServerState>,
+    local_peer_id: EndpointId,
+) -> UnreadView {
+    let _ = (event_state, local_peer_id); // Used once task 2 adds mute_state.
+    let mut stats: HashMap<SurfaceId, UnreadStats> = HashMap::new();
     if let Some(entry) = registry.active() {
         for (topic, count) in &entry.unread {
             if let Some(name) = entry.name_for_topic(topic) {
-                counts.insert(name.to_string(), *count);
+                let s = UnreadStats {
+                    count: *count as u32,
+                    mentioned: false,
+                    whisper: false,
+                    announce_only: false,
+                    muted: false,
+                };
+                stats.insert(SurfaceId::Channel(name.to_string()), s);
             }
         }
     }
-    UnreadView { counts }
+    UnreadView { stats }
 }
 
 /// Compute roles view.
