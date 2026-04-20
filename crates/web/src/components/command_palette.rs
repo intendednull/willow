@@ -81,13 +81,13 @@ fn parse_input(raw: &str) -> (PaletteScope, String, bool) {
 }
 
 fn matches_scope(scope: PaletteScope, group: ResultGroup) -> bool {
-    match (scope, group) {
-        (PaletteScope::Mixed, _) => true,
-        (PaletteScope::Channels, ResultGroup::Channels) => true,
-        (PaletteScope::Peers, ResultGroup::People) => true,
-        (PaletteScope::Actions, ResultGroup::Actions) => true,
-        _ => false,
-    }
+    matches!(
+        (scope, group),
+        (PaletteScope::Mixed, _)
+            | (PaletteScope::Channels, ResultGroup::Channels)
+            | (PaletteScope::Peers, ResultGroup::People)
+            | (PaletteScope::Actions, ResultGroup::Actions)
+    )
 }
 
 fn scope_label(scope: PaletteScope) -> &'static str {
@@ -289,9 +289,7 @@ pub fn CommandPalette(
 
         // People.
         if matches_scope(scope, ResultGroup::People) {
-            for (i, (pid, name, _online)) in
-                app_state.network.peers.get().into_iter().enumerate()
-            {
+            for (i, (pid, name, _online)) in app_state.network.peers.get().into_iter().enumerate() {
                 if matches(&name) || matches(&pid) {
                     out.push(PaletteRow {
                         group: ResultGroup::People,
@@ -337,7 +335,10 @@ pub fn CommandPalette(
 
     let active_row_id = Memo::new(move |_| {
         let idx = selected_index.get();
-        rows.get().get(idx).map(|r| r.id.clone()).unwrap_or_default()
+        rows.get()
+            .get(idx)
+            .map(|r| r.id.clone())
+            .unwrap_or_default()
     });
 
     // Activate dispatch closure. Wrapped in `SendWrapper<Rc<...>>` so
@@ -345,55 +346,56 @@ pub fn CommandPalette(
     // (keydown, render_rows, render_recents) without moving — the
     // wrapper makes the !Send Rc Send-qualified for Leptos' Render
     // bound on single-threaded WASM.
-    let dispatch_activate: send_wrapper::SendWrapper<std::rc::Rc<dyn Fn(&PaletteRow)>> =
+    type DispatchFn = dyn Fn(&PaletteRow);
+    let dispatch_activate: send_wrapper::SendWrapper<std::rc::Rc<DispatchFn>> =
         send_wrapper::SendWrapper::new(std::rc::Rc::new({
-        let ctx = ctx_for_run.clone();
-        move |row: &PaletteRow| {
-            // Persist to recents.
-            let recent = match &row.activate {
-                PaletteActivate::OpenChannel(id) => Some(Recent {
-                    kind: "channel".into(),
-                    id: id.clone(),
-                    label: row.label.clone(),
-                }),
-                PaletteActivate::SwitchGrove(id) => Some(Recent {
-                    kind: "grove".into(),
-                    id: id.clone(),
-                    label: row.label.clone(),
-                }),
-                PaletteActivate::OpenProfile(id) => Some(Recent {
-                    kind: "peer".into(),
-                    id: id.clone(),
-                    label: row.label.clone(),
-                }),
-                PaletteActivate::RunAction(id) => Some(Recent {
-                    kind: "action".into(),
-                    id: (*id).to_string(),
-                    label: row.label.clone(),
-                }),
-                PaletteActivate::Search(_, _) => None,
-            };
-            if let Some(r) = recent {
-                palette_recents::push(r);
-            }
+            let ctx = ctx_for_run.clone();
+            move |row: &PaletteRow| {
+                // Persist to recents.
+                let recent = match &row.activate {
+                    PaletteActivate::OpenChannel(id) => Some(Recent {
+                        kind: "channel".into(),
+                        id: id.clone(),
+                        label: row.label.clone(),
+                    }),
+                    PaletteActivate::SwitchGrove(id) => Some(Recent {
+                        kind: "grove".into(),
+                        id: id.clone(),
+                        label: row.label.clone(),
+                    }),
+                    PaletteActivate::OpenProfile(id) => Some(Recent {
+                        kind: "peer".into(),
+                        id: id.clone(),
+                        label: row.label.clone(),
+                    }),
+                    PaletteActivate::RunAction(id) => Some(Recent {
+                        kind: "action".into(),
+                        id: (*id).to_string(),
+                        label: row.label.clone(),
+                    }),
+                    PaletteActivate::Search(_, _) => None,
+                };
+                if let Some(r) = recent {
+                    palette_recents::push(r);
+                }
 
-            // Dispatch.
-            match &row.activate {
-                PaletteActivate::OpenChannel(id) => on_switch_channel.run(id.clone()),
-                PaletteActivate::SwitchGrove(id) => on_switch_server.run(id.clone()),
-                PaletteActivate::OpenProfile(_) => on_open_members.run(()),
-                PaletteActivate::RunAction(id) => palette_actions::run(id, &ctx),
-                PaletteActivate::Search(_scope, q) => {
-                    if let Some(cb) = on_search {
-                        cb.run(q.clone());
-                    } else {
-                        tracing::info!(%q, "palette search handoff (v1 stub)");
+                // Dispatch.
+                match &row.activate {
+                    PaletteActivate::OpenChannel(id) => on_switch_channel.run(id.clone()),
+                    PaletteActivate::SwitchGrove(id) => on_switch_server.run(id.clone()),
+                    PaletteActivate::OpenProfile(_) => on_open_members.run(()),
+                    PaletteActivate::RunAction(id) => palette_actions::run(id, &ctx),
+                    PaletteActivate::Search(_scope, q) => {
+                        if let Some(cb) = on_search {
+                            cb.run(q.clone());
+                        } else {
+                            tracing::info!(%q, "palette search handoff (v1 stub)");
+                        }
                     }
                 }
+                on_close.run(());
             }
-            on_close.run(());
-        }
-    }));
+        }));
 
     let dispatch_for_keydown = dispatch_activate.clone();
     let on_keydown = move |ev: web_sys::KeyboardEvent| {
@@ -473,10 +475,7 @@ pub fn CommandPalette(
                 let rows_views: Vec<_> = group_rows_list
                     .into_iter()
                     .map(|row| {
-                        let flat_idx = all_rows
-                            .iter()
-                            .position(|r| r.id == row.id)
-                            .unwrap_or(0);
+                        let flat_idx = all_rows.iter().position(|r| r.id == row.id).unwrap_or(0);
                         let selected = flat_idx == sel;
                         let row_activate = row.clone();
                         let row_for_mouse = flat_idx;
@@ -684,10 +683,7 @@ mod parse_input_tests {
     #[test]
     fn scope_matches() {
         assert!(matches_scope(PaletteScope::Mixed, ResultGroup::Channels));
-        assert!(matches_scope(
-            PaletteScope::Channels,
-            ResultGroup::Channels
-        ));
+        assert!(matches_scope(PaletteScope::Channels, ResultGroup::Channels));
         assert!(!matches_scope(PaletteScope::Channels, ResultGroup::People));
         assert!(matches_scope(PaletteScope::Peers, ResultGroup::People));
         assert!(matches_scope(PaletteScope::Actions, ResultGroup::Actions));

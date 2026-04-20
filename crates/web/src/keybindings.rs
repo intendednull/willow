@@ -11,15 +11,15 @@
 //! global listener inside any reactive scope.
 
 use leptos::prelude::*;
-use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
+use wasm_bindgen::JsCast;
 
 use crate::state::{AppState, AppWriteSignals};
 
 /// Install the global keydown listener. Call once during app bootstrap.
 pub fn install(state: AppState, write: AppWriteSignals) {
-    let closure = Closure::<dyn Fn(web_sys::KeyboardEvent)>::new(
-        move |ev: web_sys::KeyboardEvent| {
+    let closure =
+        Closure::<dyn Fn(web_sys::KeyboardEvent)>::new(move |ev: web_sys::KeyboardEvent| {
             let is_ctrl = ev.ctrl_key() || ev.meta_key();
             match ev.key().as_str() {
                 "k" | "K" if is_ctrl => {
@@ -41,8 +41,7 @@ pub fn install(state: AppState, write: AppWriteSignals) {
                 }
                 _ => {}
             }
-        },
-    );
+        });
     if let Some(w) = web_sys::window() {
         let _ = w.add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref());
     }

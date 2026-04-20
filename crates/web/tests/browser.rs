@@ -4712,8 +4712,8 @@ async fn phase_1c_search_button_has_keyshortcut() {
     });
     tick().await;
 
-    let btn = query(&container, "button[aria-label=\"search (⌘K)\"]")
-        .expect("search button present");
+    let btn =
+        query(&container, "button[aria-label=\"search (⌘K)\"]").expect("search button present");
     let attr = btn.get_attribute("aria-keyshortcuts").unwrap_or_default();
     assert!(
         attr.contains("Control+K") && attr.contains("Meta+K"),
@@ -4753,7 +4753,10 @@ async fn phase_1c_landmark_channel_header() {
         }
     });
     tick().await;
-    let banner = query(&container, "header[role=\"banner\"][aria-label=\"channel header\"]");
+    let banner = query(
+        &container,
+        "header[role=\"banner\"][aria-label=\"channel header\"]",
+    );
     assert!(banner.is_some(), "channel header banner landmark present");
 }
 
@@ -4778,7 +4781,10 @@ async fn phase_1c_landmark_members() {
     });
     tick().await;
     let aside = query(&container, "aside[aria-label=\"members\"]");
-    assert!(aside.is_some(), "member list complementary landmark present");
+    assert!(
+        aside.is_some(),
+        "member list complementary landmark present"
+    );
 }
 
 #[wasm_bindgen_test]
@@ -4790,7 +4796,10 @@ async fn phase_1c_landmark_pinned() {
     });
     tick().await;
     let aside = query(&container, "aside[aria-label=\"pinned\"]");
-    assert!(aside.is_some(), "pinned panel complementary landmark present");
+    assert!(
+        aside.is_some(),
+        "pinned panel complementary landmark present"
+    );
 }
 
 #[wasm_bindgen_test]
@@ -4883,8 +4892,8 @@ async fn phase_1c_grove_active_has_aria_current() {
         }
     });
     tick().await;
-    let tile = query(&container, ".grove-tile[data-state=\"active\"]")
-        .expect("active tile present");
+    let tile =
+        query(&container, ".grove-tile[data-state=\"active\"]").expect("active tile present");
     assert_eq!(
         tile.get_attribute("aria-current").as_deref(),
         Some("page"),
