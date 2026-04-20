@@ -278,3 +278,17 @@ textarea:focus-visible,
   font-size: 13px;
 }
 .state-error__icon { color: var(--err); flex: none; }
+
+/* ── Universal reset ─────────────────────────────────────────────── */
+* { box-sizing: border-box; }
+
+/* Inherit on form controls so type stacks are consistent. */
+button, input, textarea, select {
+  font: inherit;
+  color: inherit;
+}
+button { background: none; border: none; padding: 0; cursor: pointer; }
+a { color: inherit; }
+
+/* Exclamation marks are prohibited in copy per foundation §Copy voice —
+   no enforcement in CSS, but noted here for lint tooling. */
