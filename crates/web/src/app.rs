@@ -196,6 +196,10 @@ pub fn App() -> impl IntoView {
 
     provide_context(voice_manager.clone());
 
+    // Initialize the chime player so any caller can `use_chime_player()`
+    // without knowing where it was constructed.
+    crate::audio::provide_chime_player();
+
     // Auto-clear loading after LOADING_TIMEOUT_MS even if no peer connects.
     {
         let w = write;

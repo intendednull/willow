@@ -8,6 +8,7 @@
 #![allow(dead_code)]
 
 pub mod app;
+pub mod audio;
 pub mod components;
 pub mod event_processing;
 pub mod handlers;
