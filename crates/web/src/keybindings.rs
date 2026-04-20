@@ -26,8 +26,21 @@ pub fn install(state: AppState, write: AppWriteSignals) {
                     ev.prevent_default();
                     write.ui.set_show_palette.update(|v| *v = !*v);
                 }
+                // Ctrl+Alt+N — move focus to the newest toast. Plain
+                // Ctrl+N / Cmd+N is reserved by the browser, so the
+                // chord ships with Alt included per the spec keymap.
+                "n" | "N" if is_ctrl && ev.alt_key() => {
+                    if focus_newest_toast() {
+                        ev.prevent_default();
+                    }
+                }
                 "Escape" => {
-                    if close_top_of_stack(state, write) {
+                    // Toast dismiss takes priority over the modal
+                    // close-stack — a focused toast is the most
+                    // immediate surface.
+                    if dismiss_focused_toast() {
+                        ev.prevent_default();
+                    } else if close_top_of_stack(state, write) {
                         ev.prevent_default();
                     }
                 }
@@ -62,6 +75,52 @@ fn close_top_of_stack(state: AppState, write: AppWriteSignals) -> bool {
     if state.ui.show_palette.get_untracked() {
         write.ui.set_show_palette.set(false);
         return true;
+    }
+    false
+}
+
+/// Move DOM focus to the newest toast in the stack. Returns `true`
+/// when a toast was present to focus.
+fn focus_newest_toast() -> bool {
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return false;
+    };
+    // `.toast` elements render in insertion order inside
+    // `.toast-stack`. The last child is the most recent push.
+    let Ok(Some(nodes)) = doc.query_selector_all(".toast-stack .toast").map(Some) else {
+        return false;
+    };
+    let last = nodes.length().checked_sub(1).and_then(|i| nodes.item(i));
+    let Some(node) = last else {
+        return false;
+    };
+    let Ok(el) = node.dyn_into::<web_sys::HtmlElement>() else {
+        return false;
+    };
+    el.focus().ok();
+    true
+}
+
+/// Dismiss the focused toast — walk up from document.activeElement
+/// looking for `.toast` ancestor; if found, click its close `x`.
+/// Sticky toasts still dismiss (the close `x` is the escape hatch).
+fn dismiss_focused_toast() -> bool {
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return false;
+    };
+    let Some(active) = doc.active_element() else {
+        return false;
+    };
+    // Is the active element itself a toast or inside one?
+    let toast_el = active.closest(".toast").ok().flatten();
+    let Some(toast) = toast_el else {
+        return false;
+    };
+    if let Ok(Some(close_btn)) = toast.query_selector(".toast-close") {
+        if let Ok(btn) = close_btn.dyn_into::<web_sys::HtmlElement>() {
+            btn.click();
+            return true;
+        }
     }
     false
 }
