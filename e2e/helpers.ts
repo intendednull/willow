@@ -223,34 +223,46 @@ export async function closeSidebar(page: Page) {
   }
 }
 
-/** Opens the member list panel. On desktop (>900px) it's always visible — no-op. */
+/** Opens the member list in the right rail. On desktop clicks the
+ *  main-pane-header members action button; on mobile the legacy
+ *  toggle is out until Phase 1b restores the mobile shell. */
 export async function openMemberList(page: Page) {
-  // On desktop the member list is always visible (display: contents); no toggle needed.
-  if ((page.viewportSize()?.width ?? 1024) > 900) return;
+  // Already-open short-circuit — right-rail uses data-open on the aside.
+  const openPane = page.locator('.right-rail[data-open="true"] .member-list');
+  if (await openPane.isVisible().catch(() => false)) return;
 
-  const panel = page.locator('.member-list-wrapper.open');
-  if (await panel.isVisible().catch(() => false)) return; // Already open
-  await page.locator('.mobile-members-toggle').click();
-  await page.waitForTimeout(500);
+  // Desktop: click the action-bar members toggle. The button becomes
+  // active on click, which opens the right rail.
+  const desktopBtn = page.locator('.action-btn[aria-label="members"]');
+  if (await desktopBtn.count() > 0) {
+    await desktopBtn.first().click();
+    await page.locator('.right-rail[data-open="true"] .member-list')
+      .waitFor({ timeout: 3_000 })
+      .catch(() => {});
+    await page.waitForTimeout(200);
+    return;
+  }
+
+  // Mobile fallback (legacy selectors, pre-1b): retained for stragglers.
+  const mobileBtn = page.locator('.mobile-members-toggle');
+  if (await mobileBtn.count() > 0) {
+    await mobileBtn.click();
+    await page.waitForTimeout(500);
+  }
 }
 
-/** Closes the member list panel. On desktop (>900px) it's always visible — no-op. */
+/** Closes the member list panel by toggling the same button. */
 export async function closeMemberList(page: Page) {
-  // On desktop the member list is always visible; nothing to close.
-  if ((page.viewportSize()?.width ?? 1024) > 900) return;
-
-  // Check if the member list overlay is currently open.
-  const overlay = page.locator('.members-overlay.open');
-  const isOpen = await overlay.isVisible().catch(() => false);
+  const openPane = page.locator('.right-rail[data-open="true"] .member-list');
+  const isOpen = await openPane.isVisible().catch(() => false);
   if (!isOpen) return;
 
-  // dispatchEvent bypasses Playwright's hit-test: the member-list-wrapper
-  // (z-index 10) sits above the overlay (z-index 9) at any click point,
-  // which makes a normal .click() retry until timeout.
-  await overlay.dispatchEvent('click');
-  // Wait for the overlay to disappear.
-  await overlay.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => {});
-  await page.waitForTimeout(200);
+  const desktopBtn = page.locator('.action-btn[aria-label="members"]');
+  if (await desktopBtn.count() > 0) {
+    await desktopBtn.first().click();
+    await page.waitForTimeout(200);
+    return;
+  }
 }
 
 // ── Invite flow ───────────────────────────────────────────────────────

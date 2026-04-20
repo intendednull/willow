@@ -847,3 +847,52 @@
 .action-btn .icon {
     font-size: 17px;
 }
+
+/* ── Right rail ──────────────────────────────────────────────────── */
+
+.right-rail-inner {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+.right-rail-pane {
+    flex: 1 1 auto;
+    min-height: 0;
+    opacity: 1;
+    transition: opacity var(--motion-fast) var(--motion-ease);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.right-rail-pane > * {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.right-rail[data-open="false"] .right-rail-pane {
+    opacity: 0;
+}
+
+.right-rail-pane--empty {
+    display: none;
+}
+
+.thread-stub {
+    padding: 48px 24px;
+}
+
+/* Member-list + pinned panel empty-state copy tweaks under right rail. */
+.right-rail-pane[data-pane="members"] .member-list {
+    height: 100%;
+    overflow-y: auto;
+}
+
+.right-rail-pane[data-pane="pinned"] .pinned-panel {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+

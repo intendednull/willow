@@ -7,8 +7,8 @@ use willow_client::{ClientConfig, ClientEvent, ClientHandle, DisplayMessage, Voi
 
 use crate::components::{
     AddServerPanel, CallPage, ChannelSidebar, ChatInput, CommandPalette, FileShareButton,
-    GroveRail, JoinPage, MainPaneHeader, MemberList, MessageList, PinnedPanel, RightRailWhich,
-    SettingsPanel, WelcomeScreen,
+    GroveRail, JoinPage, MainPaneHeader, MessageList, RightRail, RightRailWhich, SettingsPanel,
+    WelcomeScreen,
 };
 use crate::event_processing::process_event_batch;
 use crate::handlers;
@@ -722,25 +722,6 @@ pub fn App() -> impl IntoView {
                                                 on_set_which=on_set_which
                                                 on_search_click=Callback::new(move |_| write.ui.set_show_palette.set(true))
                                             />
-                                            {move || {
-                                                if show_pinned.get() {
-                                                    Some(view! {
-                                                        <PinnedPanel
-                                                            messages=pinned_messages
-                                                            on_jump=move |msg_id: String| {
-                                                                js_sys::eval(&format!(
-                                                                    "document.getElementById('msg-{}')?.scrollIntoView({{behavior:'smooth',block:'center'}})",
-                                                                    msg_id.replace('\'', "")
-                                                                )).ok();
-                                                                write.ui.set_show_pinned.set(false);
-                                                            }
-                                                            on_close=move |_| write.ui.set_show_pinned.set(false)
-                                                        />
-                                                    })
-                                                } else {
-                                                    None
-                                                }
-                                            }}
                                             <MessageList
                                                 messages=messages
                                                 loading=Signal::from(loading)
@@ -798,16 +779,35 @@ pub fn App() -> impl IntoView {
                                 }
                             }}
                         </div>
-                        <div
-                            class=move || if show_members.get() { "members-overlay open" } else { "members-overlay" }
-                            on:click=move |_| write.ui.set_show_members.set(false)
-                        />
-                        <div class=move || if show_members.get() { "member-list-wrapper open" } else { "member-list-wrapper" }>
-                            <MemberList
-                                peers=app_state.network.peers
-                                peer_id=peer_id
-                            />
-                        </div>
+                        {
+                            // Right rail — one of members / pinned / thread.
+                            let rail_which = Signal::derive(move || {
+                                if show_members.get() { RightRailWhich::Members }
+                                else if show_pinned.get() { RightRailWhich::Pinned }
+                                else { RightRailWhich::None }
+                            });
+                            let on_rail_close = Callback::new(move |_: ()| {
+                                write.ui.set_show_members.set(false);
+                                write.ui.set_show_pinned.set(false);
+                            });
+                            let on_pinned_jump = Callback::new(move |msg_id: String| {
+                                js_sys::eval(&format!(
+                                    "document.getElementById('msg-{}')?.scrollIntoView({{behavior:'smooth',block:'center'}})",
+                                    msg_id.replace('\'', "")
+                                )).ok();
+                                write.ui.set_show_pinned.set(false);
+                            });
+                            view! {
+                                <RightRail
+                                    which=rail_which
+                                    on_close=on_rail_close
+                                    peers=app_state.network.peers
+                                    peer_id=peer_id
+                                    pinned_messages=pinned_messages
+                                    on_pinned_jump=on_pinned_jump
+                                />
+                            }
+                        }
                         {move || {
                             if show_palette.get() {
                                 let ch_click_palette = ch_click_for_palette.clone();
