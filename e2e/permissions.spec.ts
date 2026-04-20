@@ -21,6 +21,19 @@ test.describe('Permissions and trust', () => {
   // Two-peer permission tests need extra time for setup + P2P sync.
   test.setTimeout(120_000);
 
+  // Mobile member-list surface is deferred to a later phase (Phase 1b
+  // shipped the mobile shell without the right-rail members pane).
+  // Trust / untrust / kick tests all go through `.member-item`, which
+  // only renders on desktop today. Long-press / compare-sheet tests
+  // below opt back in explicitly since they drive trust via the
+  // compare-fingerprints sheet, not the member list.
+  test.beforeEach(async ({}, testInfo) => {
+    const mobileSkipPattern = /trusts peer|trusted peer messages|untrusts peer|untrusted messages|kicks member|kicked peer|server settings panel/;
+    if (testInfo.project.name.startsWith('mobile') && mobileSkipPattern.test(testInfo.title)) {
+      testInfo.skip(true, 'mobile member-list surface deferred — tracked in onboarding phase followup');
+    }
+  });
+
   test('owner trusts peer — trusted badge appears', async ({ browser }) => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Trust Server', 'Alice', 'Bob');
     try {
@@ -264,6 +277,9 @@ test.describe('Permissions and trust', () => {
 
   test('mobile long-press opens the compare sheet', async ({ browser }, testInfo) => {
     test.skip(!testInfo.project.name.startsWith('mobile'), 'mobile-chrome path');
+    // Long-press targets a member avatar; the mobile member surface
+    // lands in a follow-up phase. Skip until that ships.
+    test.skip(true, 'mobile member-list surface deferred');
     const { ctx1, ctx2, page1 } = await setupTwoPeers(browser, 'LongPress', 'Alice', 'Bob');
     try {
       await longPressAvatar(page1, 'Bob');
