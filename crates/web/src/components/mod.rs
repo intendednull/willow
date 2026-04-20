@@ -50,6 +50,7 @@ mod status_dot;
 mod tab_bar;
 mod toast;
 mod trust_badge;
+mod unread_badge;
 mod voice;
 mod welcome;
 
@@ -90,5 +91,6 @@ pub use status_dot::*;
 pub use tab_bar::*;
 pub use toast::*;
 pub use trust_badge::*;
+pub use unread_badge::*;
 pub use voice::*;
 pub use welcome::*;
