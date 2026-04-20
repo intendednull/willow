@@ -571,18 +571,27 @@ a { color: inherit; }
 .presence-menu-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  min-height: 44px;
-  padding: 4px 6px;
+  gap: 2px;
+  padding: 2px 4px;
   background: transparent;
   color: var(--ink-2);
   border-radius: var(--radius-s);
+  font-size: 11px;
   cursor: pointer;
 }
 .presence-menu-trigger:hover,
 .presence-menu-trigger:focus-visible {
   background: var(--bg-2);
   color: var(--ink-0);
+}
+/* Mobile touch target — meet the 44×44 contract only on touch viewports. */
+@media (max-width: 720px) {
+  .presence-menu-trigger {
+    min-height: 44px;
+    padding: 4px 8px;
+    gap: 4px;
+    font-size: 12px;
+  }
 }
 
 /* Call-tile presence corner — spec places the dot bottom-right of the
