@@ -207,6 +207,11 @@ pub fn AddServerPanel(
                                             "Share your id with a grove steward"
                                         </span>
                                         <div class="welcome-join-steps__controls">
+                                            {move || (copy_label.get() == "copied").then(|| view! {
+                                                <span class="welcome-join-copied" aria-live="polite">
+                                                    "copied " {icons::icon_check()}
+                                                </span>
+                                            })}
                                             <button
                                                 type="button"
                                                 class="welcome-join-icon-btn"

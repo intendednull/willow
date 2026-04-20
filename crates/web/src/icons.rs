@@ -289,6 +289,14 @@ pub fn icon_copy() -> impl IntoView {
     )
 }
 
+/// Check / confirmation icon.
+pub fn icon_check() -> impl IntoView {
+    icon(
+        &format!(r#"<svg {SVG_ATTRS}><polyline points="20 6 9 17 4 12"/></svg>"#),
+        "icon-check",
+    )
+}
+
 /// Eye / reveal icon.
 pub fn icon_eye() -> impl IntoView {
     icon(
