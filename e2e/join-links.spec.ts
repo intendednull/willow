@@ -17,10 +17,14 @@ test.describe('Join via shareable link', () => {
 
     // Generate join link from settings.
     await openSidebar(pageA);
-    await pageA.locator('.server-gear-btn').click();
-    await pageA.waitForTimeout(500);
+    await pageA.locator(`${visibleShell(pageA)} .server-gear-btn`).first().click();
+    // Settings panel appears.
+    await pageA.locator('.settings-panel, .settings-overlay').first()
+      .waitFor({ timeout: 5_000 });
     await pageA.locator('button', { hasText: 'Create Invite Link' }).click();
-    await pageA.waitForTimeout(500);
+    // Wait for the "Copied!" tooltip — confirms the clipboard has been populated.
+    await pageA.locator('.copied-tooltip', { hasText: 'Copied!' })
+      .waitFor({ timeout: 5_000 });
 
     // The link was copied to clipboard — read it.
     const clipboardUrl = await pageA.evaluate(() => navigator.clipboard.readText());

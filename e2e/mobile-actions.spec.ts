@@ -10,7 +10,6 @@ test.describe('Mobile action sheet', () => {
     await freshStart(page);
     await createServer(page, 'LongPress Open');
     await sendMessage(page, 'press and hold');
-    await page.waitForTimeout(500);
 
     await longPress(page, '.message');
 
@@ -21,13 +20,12 @@ test.describe('Mobile action sheet', () => {
     await freshStart(page);
     await createServer(page, 'StayOpen');
     await sendMessage(page, 'stay open');
-    // Wait for any initial sync/refresh to settle.
-    await page.waitForTimeout(2000);
 
     await longPress(page, '.message');
     await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeVisible({ timeout: 3000 });
 
-    // Wait 2 seconds — sheet should still be open.
+    // Wait 2 seconds — sheet should still be open. Intentional time
+    // delta to verify persistence across animation idle.
     await page.waitForTimeout(2000);
     await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeVisible();
   });
@@ -36,13 +34,11 @@ test.describe('Mobile action sheet', () => {
     await freshStart(page);
     await createServer(page, 'CancelSheet');
     await sendMessage(page, 'cancel me');
-    await page.waitForTimeout(500);
 
     await longPress(page, '.message');
     await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeVisible({ timeout: 3000 });
 
     await page.locator('.shell-mobile .mobile-action-sheet.open .sheet-cancel').first().click();
-    await page.waitForTimeout(300);
 
     await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeHidden();
   });
@@ -51,7 +47,6 @@ test.describe('Mobile action sheet', () => {
     await freshStart(page);
     await createServer(page, 'OverlayClose');
     await sendMessage(page, 'overlay close');
-    await page.waitForTimeout(2000);
 
     await longPress(page, '.message');
     await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeVisible({ timeout: 3000 });
@@ -60,7 +55,6 @@ test.describe('Mobile action sheet', () => {
     // hit-test check which fails because the server rail sits above z-index 99
     // at the top-left of the viewport.
     await page.locator('.shell-mobile .mobile-action-sheet-overlay.open').first().dispatchEvent('click');
-    await page.waitForTimeout(500);
 
     await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeHidden();
   });
@@ -69,13 +63,11 @@ test.describe('Mobile action sheet', () => {
     await freshStart(page);
     await createServer(page, 'SheetReply');
     await sendMessage(page, 'reply to this');
-    await page.waitForTimeout(500);
 
     await longPress(page, '.message');
     await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeVisible({ timeout: 3000 });
 
     await page.locator('.shell-mobile .mobile-action-sheet.open .sheet-item', { hasText: 'Reply' }).click();
-    await page.waitForTimeout(500);
 
     await expect(page.locator('.shell-mobile .reply-bar').first()).toBeVisible();
   });
@@ -84,13 +76,11 @@ test.describe('Mobile action sheet', () => {
     await freshStart(page);
     await createServer(page, 'SheetReact');
     await sendMessage(page, 'react from sheet');
-    await page.waitForTimeout(500);
 
     await longPress(page, '.message');
     await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeVisible({ timeout: 3000 });
 
     await page.locator('.shell-mobile .mobile-action-sheet.open .sheet-emoji-row button').first().click();
-    await page.waitForTimeout(500);
 
     await expect(page.locator('.shell-mobile .reaction').first()).toBeVisible();
   });
@@ -99,7 +89,6 @@ test.describe('Mobile action sheet', () => {
     await freshStart(page);
     await createServer(page, 'SwipeDown');
     await sendMessage(page, 'swipe to dismiss');
-    await page.waitForTimeout(500);
 
     await longPress(page, '.message');
     await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeVisible({ timeout: 3000 });
@@ -133,7 +122,6 @@ test.describe('Mobile action sheet', () => {
       }));
     }, { startX, startY, endY });
 
-    await page.waitForTimeout(500);
     await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeHidden();
   });
 
@@ -141,12 +129,10 @@ test.describe('Mobile action sheet', () => {
     await freshStart(page);
     await createServer(page, 'NoTrigger');
     await sendMessage(page, 'no dots');
-    await page.waitForTimeout(500);
 
     // Hover the message (simulated) — the .message-actions should stay hidden on mobile.
     const msg = page.locator('.shell-mobile .message').first();
     await msg.hover();
-    await page.waitForTimeout(300);
 
     await expect(page.locator('.shell-mobile .action-trigger').first()).toBeHidden();
     await expect(page.locator('.shell-mobile .message-actions').first()).toBeHidden();
@@ -156,7 +142,6 @@ test.describe('Mobile action sheet', () => {
     await freshStart(page);
     await createServer(page, 'QuickTap2');
     await sendMessage(page, 'quick tap');
-    await page.waitForTimeout(500);
 
     // Quick tap via evaluate (touchstart + immediate touchend).
     const msg = page.locator('.shell-mobile .message').first();
@@ -174,6 +159,7 @@ test.describe('Mobile action sheet', () => {
       target.dispatchEvent(new TouchEvent('touchend', { bubbles: true, cancelable: true, touches: [], targetTouches: [], changedTouches: [touch] }));
     }, { x, y });
 
+    // Wait past the 500ms long-press threshold — intentional.
     await page.waitForTimeout(700);
     await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeHidden();
   });

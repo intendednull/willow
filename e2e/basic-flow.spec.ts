@@ -38,13 +38,12 @@ test.describe('Basic app flow', () => {
 
     // Click the + button.
     await page.locator(`${visibleShell(page)} .channel-add-btn`).click();
-    await page.waitForTimeout(200);
 
     // Type channel name and press Enter.
     const input = page.locator(`${visibleShell(page)} .channel-create-input input`);
+    await input.waitFor({ timeout: 5_000 });
     await input.fill('random');
     await input.press('Enter');
-    await page.waitForTimeout(500);
 
     // Should see the new channel.
     await expect(page.locator(`${visibleShell(page)} .channel-item`, { hasText: 'random' })).toBeVisible();
@@ -59,17 +58,15 @@ test.describe('Basic app flow', () => {
 
     // Click +.
     await page.locator(`${visibleShell(page)} .channel-add-btn`).click();
-    await page.waitForTimeout(200);
 
     // Click Voice toggle.
     await page.locator(`${visibleShell(page)} .type-btn`, { hasText: 'Voice' }).click();
-    await page.waitForTimeout(100);
 
     // Type name and submit.
     const input = page.locator(`${visibleShell(page)} .channel-create-input input`);
+    await input.waitFor({ timeout: 5_000 });
     await input.fill('voice-chat');
     await input.press('Enter');
-    await page.waitForTimeout(500);
 
     // Should see the voice channel with speaker icon.
     const voiceChannel = page.locator(`${visibleShell(page)} .channel-item`, { hasText: 'voice-chat' });
@@ -89,9 +86,11 @@ test.describe('Basic app flow', () => {
     // Reload.
     await page.reload();
     await waitForApp(page);
-    await page.waitForTimeout(1000);
 
-    // Message should still be there.
+    // Message should still be there (auto-waits up to 10s).
+    await expect(
+      page.locator(`${visibleShell(page)} .message .body`, { hasText: 'persistent message' }).first(),
+    ).toBeVisible({ timeout: 10_000 });
     const msgs2 = await getMessages(page);
     expect(msgs2).toContain('persistent message');
   });
@@ -101,7 +100,6 @@ test.describe('Basic app flow', () => {
     await createServer(page, 'React Persist');
 
     await sendMessage(page, 'react to me');
-    await page.waitForTimeout(500);
 
     // React to the message (handles both desktop and mobile).
     await reactToMessage(page, 'react to me');
@@ -112,9 +110,8 @@ test.describe('Basic app flow', () => {
     // Reload.
     await page.reload();
     await waitForApp(page);
-    await page.waitForTimeout(1000);
 
-    // Reaction should persist.
-    await expect(page.locator(`${visibleShell(page)} .reaction`).first()).toBeVisible();
+    // Reaction should persist (auto-waits for re-render).
+    await expect(page.locator(`${visibleShell(page)} .reaction`).first()).toBeVisible({ timeout: 10_000 });
   });
 });

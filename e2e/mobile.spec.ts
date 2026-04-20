@@ -34,7 +34,7 @@ test.describe('Mobile UX', () => {
     await createServer(page, 'Mobile Chat');
     // Mobile: tap the first channel to push into the chat view.
     await page.locator('.mobile-home .channel-item').first().click();
-    await page.waitForTimeout(400);
+    await page.locator('.mobile-push--channel').waitFor({ timeout: 5_000 });
     await sendMessage(page, 'mobile message!');
     await expect(
       page.locator('.shell-mobile .message .body', { hasText: 'mobile message!' }).first(),
@@ -64,8 +64,6 @@ test.describe('Mobile UX', () => {
 
     // Tap a channel to push into chat — tab bar hides.
     await page.locator('.mobile-home .channel-item').first().click();
-    await page.waitForTimeout(400);
-
     await expect(page.locator('.mobile-tab-bar')).toHaveAttribute('data-visible', 'false');
   });
 
@@ -74,12 +72,10 @@ test.describe('Mobile UX', () => {
     await createServer(page, 'TabReturn');
 
     await page.locator('.mobile-home .channel-item').first().click();
-    await page.waitForTimeout(400);
     await expect(page.locator('.mobile-tab-bar')).toHaveAttribute('data-visible', 'false');
 
     // Tap the back chevron (top-slot-left on a pushed screen).
     await page.locator('.mobile-top-bar .top-slot-left').click();
-    await page.waitForTimeout(400);
     await expect(page.locator('.mobile-tab-bar')).toHaveAttribute('data-visible', 'true');
   });
 
@@ -97,7 +93,6 @@ test.describe('Mobile UX', () => {
     await createServer(page, 'DrawerOpen');
 
     await page.locator('.mobile-top-bar .top-slot-left').click();
-    await page.waitForTimeout(400);
     await expect(page.locator('.grove-drawer.open')).toBeVisible();
   });
 
@@ -106,11 +101,9 @@ test.describe('Mobile UX', () => {
     await createServer(page, 'DrawerClose');
 
     await page.locator('.mobile-top-bar .top-slot-left').click();
-    await page.waitForTimeout(400);
     await expect(page.locator('.grove-drawer.open')).toBeVisible();
 
     await page.locator('.grove-drawer-backdrop').dispatchEvent('click');
-    await page.waitForTimeout(400);
     await expect(page.locator('.grove-drawer.open')).toBeHidden();
   });
 
@@ -122,12 +115,11 @@ test.describe('Mobile UX', () => {
 
     // Channel creation lives in the inline sidebar on the home tab.
     await page.locator('.shell-mobile .channel-add-btn').first().click();
-    await page.waitForTimeout(300);
     await page.locator('.shell-mobile .type-btn', { hasText: 'Voice' }).first().click();
-    await page.waitForTimeout(100);
-    await page.locator('.shell-mobile .channel-create-input input').first().fill('vc');
-    await page.locator('.shell-mobile .channel-create-input input').first().press('Enter');
-    await page.waitForTimeout(500);
+    const input = page.locator('.shell-mobile .channel-create-input input').first();
+    await input.waitFor({ timeout: 5_000 });
+    await input.fill('vc');
+    await input.press('Enter');
 
     await expect(
       page.locator('.shell-mobile .channel-item', { hasText: 'vc' }).first(),
@@ -141,8 +133,8 @@ test.describe('Mobile UX', () => {
     await createServer(page, 'Zoom Test');
     // Push into a channel so the composer mounts.
     await page.locator('.mobile-home .channel-item').first().click();
-    await page.waitForTimeout(400);
     const input = page.locator('.shell-mobile .input-area input, .shell-mobile .input-area textarea').first();
+    await input.waitFor({ timeout: 5_000 });
     const fontSize = await input.evaluate(el => getComputedStyle(el).fontSize);
     expect(parseInt(fontSize)).toBeGreaterThanOrEqual(16);
   });
@@ -155,13 +147,12 @@ test.describe('Mobile UX', () => {
 
     // Push into a channel before sending messages.
     await page.locator('.mobile-home .channel-item').first().click();
-    await page.waitForTimeout(400);
+    await page.locator('.mobile-push--channel').waitFor({ timeout: 5_000 });
 
     // Send enough messages to overflow.
     for (let i = 0; i < 25; i++) {
       await sendMessage(page, `Message ${i + 1}`);
     }
-    await page.waitForTimeout(500);
 
     // Last message should be visible (auto-scrolled to bottom).
     await expect(
@@ -178,9 +169,7 @@ test.describe('Mobile UX', () => {
     await freshStart(page);
     await createServer(page, 'Tap React');
     await page.locator('.mobile-home .channel-item').first().click();
-    await page.waitForTimeout(400);
     await sendMessage(page, 'react to me');
-    await page.waitForTimeout(500);
 
     // Add a reaction (handles both desktop and mobile).
     await reactToMessage(page, 'react to me');
@@ -191,7 +180,6 @@ test.describe('Mobile UX', () => {
 
     // Tap the reaction (should toggle — this was bug #2).
     await reaction.click();
-    await page.waitForTimeout(300);
 
     // Should still be visible (either incremented or decremented).
     // The key test: clicking didn't crash or get blocked.
@@ -202,9 +190,7 @@ test.describe('Mobile UX', () => {
     await freshStart(page);
     await createServer(page, 'Link Tap');
     await page.locator('.mobile-home .channel-item').first().click();
-    await page.waitForTimeout(400);
     await sendMessage(page, 'visit https://example.com please');
-    await page.waitForTimeout(500);
 
     // Link should be rendered.
     const link = page.locator('.shell-mobile a.message-link').first();
@@ -226,13 +212,12 @@ test.describe('Mobile UX', () => {
     await createServer(page, 'AutoScroll');
 
     await page.locator('.mobile-home .channel-item').first().click();
-    await page.waitForTimeout(400);
+    await page.locator('.mobile-push--channel').waitFor({ timeout: 5_000 });
 
     // Send several messages.
     for (let i = 0; i < 10; i++) {
       await sendMessage(page, `Msg ${i + 1}`);
     }
-    await page.waitForTimeout(500);
 
     // The last message should be visible (auto-scrolled).
     await expect(
@@ -249,15 +234,13 @@ test.describe('Mobile UX', () => {
     await freshStart(page);
     await createServer(page, 'TapWait');
     await page.locator('.mobile-home .channel-item').first().click();
-    await page.waitForTimeout(400);
     await sendMessage(page, 'just tap me');
-    await page.waitForTimeout(500);
 
     // Single tap (touchstart + touchend quickly).
     const msg = page.locator('.shell-mobile .message').first();
     await msg.tap();
 
-    // Wait longer than the 500ms long-press threshold.
+    // Wait longer than the 500ms long-press threshold — intentional sleep.
     await page.waitForTimeout(1000);
 
     // Action sheet should NOT have opened from a quick tap.
@@ -268,11 +251,10 @@ test.describe('Mobile UX', () => {
     await freshStart(page);
     await createServer(page, 'MultiTap');
     await page.locator('.mobile-home .channel-item').first().click();
-    await page.waitForTimeout(400);
     await sendMessage(page, 'tap tap tap');
-    await page.waitForTimeout(500);
 
-    // Rapid taps on message.
+    // Rapid taps on message — intentional spacing to exercise the
+    // quick-tap gesture vs. 500ms long-press threshold.
     const msg = page.locator('.shell-mobile .message').first();
     await msg.tap();
     await page.waitForTimeout(100);
@@ -291,20 +273,16 @@ test.describe('Mobile UX', () => {
     await freshStart(page);
     await createServer(page, 'Mobile Persist');
     await page.locator('.mobile-home .channel-item').first().click();
-    await page.waitForTimeout(400);
     await sendMessage(page, 'survives refresh');
-    await page.waitForTimeout(500);
 
     await page.reload();
     await waitForApp(page);
-    await page.waitForTimeout(1000);
 
     // After reload, navigate back into the channel.
     await page.locator('.mobile-home .channel-item').first().click();
-    await page.waitForTimeout(400);
 
     await expect(
       page.locator('.shell-mobile .message .body', { hasText: 'survives refresh' }).first(),
-    ).toBeVisible();
+    ).toBeVisible({ timeout: 10_000 });
   });
 });

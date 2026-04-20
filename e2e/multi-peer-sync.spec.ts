@@ -215,15 +215,15 @@ test.describe('Multi-peer state synchronization', () => {
       // Both refresh.
       await page1.reload();
       await waitForApp(page1);
-      await page1.waitForTimeout(1000);
 
       await page2.reload();
       await waitForApp(page2);
-      await page2.waitForTimeout(1000);
 
-      // Both should still see the message.
-      await expect(page1.locator('.message .body', { hasText: 'persistent msg' })).toBeVisible();
-      await expect(page2.locator('.message .body', { hasText: 'persistent msg' })).toBeVisible();
+      // Both should still see the message (auto-wait covers re-render).
+      await expect(page1.locator('.message .body', { hasText: 'persistent msg' }))
+        .toBeVisible({ timeout: 10_000 });
+      await expect(page2.locator('.message .body', { hasText: 'persistent msg' }))
+        .toBeVisible({ timeout: 10_000 });
     } finally {
       await ctx1.close();
       await ctx2.close();
