@@ -8,7 +8,7 @@ use willow_client::{ClientConfig, ClientEvent, ClientHandle, DisplayMessage, Voi
 use crate::components::{
     AddServerPanel, CallPage, ChannelSidebar, ChatInput, CommandPalette, FileShareButton,
     GroveRail, JoinPage, MainPaneHeader, MessageList, MobileShell, RightRail, RightRailWhich,
-    SettingsPanel, WelcomeScreen,
+    SettingsPanel, ToastStackView, WelcomeScreen,
 };
 use crate::event_processing::process_event_batch;
 use crate::handlers;
@@ -476,6 +476,7 @@ pub fn App() -> impl IntoView {
             // they survive any sub-route remount.
             <div id="trust-live-region" class="sr-only" aria-live="assertive" aria-atomic="true"></div>
             <crate::components::AddFriendDialog/>
+            <ToastStackView/>
             {move || {
                 // Join link takes priority over everything.
                 if join_token_signal.get().is_some() {
