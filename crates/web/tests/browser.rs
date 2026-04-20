@@ -4441,3 +4441,155 @@ async fn desktop_shell_channel_group_classification() {
         "ephemeral"
     );
 }
+
+// ── Mobile shell tests ─────────────────────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn mobile_shell_tab_bar_renders_four_tabs() {
+    use willow_web::components::{MobileTab, TabBar};
+
+    let (_active, set_active) = signal(MobileTab::Home);
+    let (_badges, _set_badges) = signal::<Vec<(String, usize)>>(vec![]);
+    let (_visible, _set_visible) = signal(true);
+
+    let active_sig = leptos::prelude::Signal::derive(move || _active.get());
+    let badges_sig = leptos::prelude::Signal::derive(move || _badges.get());
+    let visible_sig = leptos::prelude::Signal::derive(move || _visible.get());
+
+    let container = mount_test(move || {
+        view! {
+            <TabBar
+                active=active_sig
+                badges=badges_sig
+                visible=visible_sig
+                on_tab_change=leptos::prelude::Callback::new(move |t: MobileTab| set_active.set(t))
+            />
+        }
+    });
+    tick().await;
+
+    let tabs = query_all(&container, ".mobile-tab-bar .tab");
+    assert_eq!(tabs.len(), 4, "tab bar should render exactly four tabs");
+
+    let nav = query(&container, ".mobile-tab-bar").unwrap();
+    assert_eq!(
+        nav.get_attribute("aria-label").as_deref(),
+        Some("primary"),
+        "tab bar should declare aria-label=\"primary\""
+    );
+}
+
+#[wasm_bindgen_test]
+async fn mobile_shell_tab_bar_active_class_tracks_signal() {
+    use willow_web::components::{MobileTab, TabBar};
+
+    let (active, set_active) = signal(MobileTab::Home);
+    let (_badges, _set_badges) = signal::<Vec<(String, usize)>>(vec![]);
+    let (_visible, _set_visible) = signal(true);
+
+    let active_sig = leptos::prelude::Signal::derive(move || active.get());
+    let badges_sig = leptos::prelude::Signal::derive(move || _badges.get());
+    let visible_sig = leptos::prelude::Signal::derive(move || _visible.get());
+
+    let container = mount_test(move || {
+        view! {
+            <TabBar
+                active=active_sig
+                badges=badges_sig
+                visible=visible_sig
+                on_tab_change=leptos::prelude::Callback::new(move |t: MobileTab| set_active.set(t))
+            />
+        }
+    });
+    tick().await;
+
+    let home = query(&container, ".tab[data-tab=\"home\"]").unwrap();
+    assert!(
+        home.class_list().contains("tab-active"),
+        "home tab starts active"
+    );
+
+    set_active.set(MobileTab::Letters);
+    tick().await;
+
+    let home = query(&container, ".tab[data-tab=\"home\"]").unwrap();
+    let letters = query(&container, ".tab[data-tab=\"letters\"]").unwrap();
+    assert!(
+        !home.class_list().contains("tab-active"),
+        "home is no longer active"
+    );
+    assert!(
+        letters.class_list().contains("tab-active"),
+        "letters became active"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn mobile_shell_tab_bar_hidden_when_visible_is_false() {
+    use willow_web::components::{MobileTab, TabBar};
+
+    let (active, _) = signal(MobileTab::Home);
+    let (_badges, _) = signal::<Vec<(String, usize)>>(vec![]);
+    let (visible, set_visible) = signal(true);
+
+    let active_sig = leptos::prelude::Signal::derive(move || active.get());
+    let badges_sig = leptos::prelude::Signal::derive(move || _badges.get());
+    let visible_sig = leptos::prelude::Signal::derive(move || visible.get());
+
+    let container = mount_test(move || {
+        view! {
+            <TabBar
+                active=active_sig
+                badges=badges_sig
+                visible=visible_sig
+                on_tab_change=leptos::prelude::Callback::new(move |_: MobileTab| ())
+            />
+        }
+    });
+    tick().await;
+
+    let nav = query(&container, ".mobile-tab-bar").unwrap();
+    assert_eq!(nav.get_attribute("data-visible").as_deref(), Some("true"));
+
+    set_visible.set(false);
+    tick().await;
+
+    let nav = query(&container, ".mobile-tab-bar").unwrap();
+    assert_eq!(nav.get_attribute("data-visible").as_deref(), Some("false"));
+}
+
+#[wasm_bindgen_test]
+async fn mobile_shell_tab_bar_badge_renders_when_positive() {
+    use willow_web::components::{MobileTab, TabBar};
+
+    let (active, _) = signal(MobileTab::Home);
+    let (badges, set_badges) = signal::<Vec<(String, usize)>>(vec![]);
+    let (visible, _) = signal(true);
+
+    let active_sig = leptos::prelude::Signal::derive(move || active.get());
+    let badges_sig = leptos::prelude::Signal::derive(move || badges.get());
+    let visible_sig = leptos::prelude::Signal::derive(move || visible.get());
+
+    let container = mount_test(move || {
+        view! {
+            <TabBar
+                active=active_sig
+                badges=badges_sig
+                visible=visible_sig
+                on_tab_change=leptos::prelude::Callback::new(move |_: MobileTab| ())
+            />
+        }
+    });
+    tick().await;
+
+    assert!(
+        query(&container, ".tab[data-tab=\"home\"] .tab-badge").is_none(),
+        "no badge when count is zero"
+    );
+
+    set_badges.set(vec![("home".to_string(), 3)]);
+    tick().await;
+
+    let badge = query(&container, ".tab[data-tab=\"home\"] .tab-badge").unwrap();
+    assert_eq!(text(&badge), "3");
+}

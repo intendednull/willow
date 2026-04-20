@@ -1,5 +1,12 @@
 import { test, expect } from '@playwright/test';
-import { freshStart, createServer, sendMessage, waitForApp, reactToMessage } from './helpers';
+import {
+  freshStart,
+  createServer,
+  sendMessage,
+  waitForApp,
+  reactToMessage,
+  switchTab,
+} from './helpers';
 
 // Mobile tests only run with mobile viewport.
 test.describe('Mobile UX', () => {
@@ -17,55 +24,92 @@ test.describe('Mobile UX', () => {
   test('can create server on mobile', async ({ page }) => {
     await freshStart(page);
     await createServer(page, 'Mobile Server', 'MobileUser');
-    await expect(page.locator('.channel-header')).toBeVisible();
+    // New mobile shell renders the top bar and tab bar after join.
+    await expect(page.locator('.mobile-top-bar')).toBeVisible();
+    await expect(page.locator('.mobile-tab-bar')).toBeVisible();
   });
 
   test('can send message on mobile', async ({ page }) => {
     await freshStart(page);
     await createServer(page, 'Mobile Chat');
+    // Mobile: tap the first channel to push into the chat view.
+    await page.locator('.mobile-home .channel-item').first().click();
+    await page.waitForTimeout(400);
     await sendMessage(page, 'mobile message!');
     await expect(page.locator('.message .body', { hasText: 'mobile message!' })).toBeVisible();
   });
 
-  // ── Navigation ────────────────────────────────────────────────────
+  // ── Tab bar ───────────────────────────────────────────────────────
 
-  test('hamburger menu visible on mobile', async ({ page }) => {
+  test('tab bar renders four primary tabs with aria-label="primary"', async ({ page }) => {
     await freshStart(page);
-    await createServer(page, 'Hamburger Test');
-    await expect(page.locator('.mobile-nav-toggle')).toBeVisible();
+    await createServer(page, 'TabBar Test');
+
+    const tabBar = page.locator('.mobile-tab-bar');
+    await expect(tabBar).toBeVisible();
+    await expect(tabBar).toHaveAttribute('aria-label', 'primary');
+
+    const tabs = page.locator('.mobile-tab-bar .tab');
+    await expect(tabs).toHaveCount(4);
   });
 
-  test('members toggle visible on mobile', async ({ page }) => {
+  test('tab bar hides on pushed screens (channel chat)', async ({ page }) => {
     await freshStart(page);
-    await createServer(page, 'Members Test');
-    await expect(page.locator('.mobile-members-toggle')).toBeVisible();
+    await createServer(page, 'TabHide Test');
+
+    // Primary route: tab bar visible.
+    await expect(page.locator('.mobile-tab-bar')).toHaveAttribute('data-visible', 'true');
+
+    // Tap a channel to push into chat — tab bar hides.
+    await page.locator('.mobile-home .channel-item').first().click();
+    await page.waitForTimeout(400);
+
+    await expect(page.locator('.mobile-tab-bar')).toHaveAttribute('data-visible', 'false');
   });
 
-  // ── Bug #9: Member list accessible on mobile ──────────────────────
-
-  test('member list opens via toggle button', async ({ page }) => {
+  test('tab bar returns on back', async ({ page }) => {
     await freshStart(page);
-    await createServer(page, 'Member List Mobile');
+    await createServer(page, 'TabReturn');
 
-    await page.locator('.mobile-members-toggle').click();
-    await page.waitForTimeout(500);
+    await page.locator('.mobile-home .channel-item').first().click();
+    await page.waitForTimeout(400);
+    await expect(page.locator('.mobile-tab-bar')).toHaveAttribute('data-visible', 'false');
 
-    // Member list wrapper should be visible.
-    await expect(page.locator('.member-list-wrapper.open')).toBeVisible({ timeout: 3000 });
+    // Tap the back chevron (top-slot-left on a pushed screen).
+    await page.locator('.mobile-top-bar .top-slot-left').click();
+    await page.waitForTimeout(400);
+    await expect(page.locator('.mobile-tab-bar')).toHaveAttribute('data-visible', 'true');
   });
 
-  // ── Bug #10: Sidebar overlay dismisses ────────────────────────────
-
-  test('sidebar opens and overlay dismisses it', async ({ page }) => {
+  test('switchTab helper lands on letters empty state', async ({ page }) => {
     await freshStart(page);
-    await createServer(page, 'Sidebar Dismiss');
+    await createServer(page, 'LettersTab');
+    await switchTab(page, 'letters');
+    await expect(page.locator('.mobile-tab-empty')).toBeVisible();
+  });
 
-    // Open sidebar.
-    await page.locator('.mobile-nav-toggle').click();
-    await page.waitForTimeout(500);
+  // ── Grove drawer ──────────────────────────────────────────────────
 
-    // Sidebar should be open.
-    await expect(page.locator('.sidebar.open')).toBeVisible({ timeout: 3000 });
+  test('drawer opens when the top-bar grove glyph is tapped', async ({ page }) => {
+    await freshStart(page);
+    await createServer(page, 'DrawerOpen');
+
+    await page.locator('.mobile-top-bar .top-slot-left').click();
+    await page.waitForTimeout(400);
+    await expect(page.locator('.grove-drawer.open')).toBeVisible();
+  });
+
+  test('drawer closes on backdrop tap', async ({ page }) => {
+    await freshStart(page);
+    await createServer(page, 'DrawerClose');
+
+    await page.locator('.mobile-top-bar .top-slot-left').click();
+    await page.waitForTimeout(400);
+    await expect(page.locator('.grove-drawer.open')).toBeVisible();
+
+    await page.locator('.grove-drawer-backdrop').dispatchEvent('click');
+    await page.waitForTimeout(400);
+    await expect(page.locator('.grove-drawer.open')).toBeHidden();
   });
 
   // ── Channel creation ──────────────────────────────────────────────
@@ -74,8 +118,7 @@ test.describe('Mobile UX', () => {
     await freshStart(page);
     await createServer(page, 'Voice Mobile');
 
-    await page.locator('.mobile-nav-toggle').click();
-    await page.waitForTimeout(500);
+    // Channel creation lives in the inline sidebar on the home tab.
     await page.locator('.channel-add-btn').click();
     await page.waitForTimeout(300);
     await page.locator('.type-btn', { hasText: 'Voice' }).click();
@@ -92,6 +135,9 @@ test.describe('Mobile UX', () => {
   test('message input font size >= 16px (prevents iOS zoom)', async ({ page }) => {
     await freshStart(page);
     await createServer(page, 'Zoom Test');
+    // Push into a channel so the composer mounts.
+    await page.locator('.mobile-home .channel-item').first().click();
+    await page.waitForTimeout(400);
     const input = page.locator('.input-area input, .input-area textarea').first();
     const fontSize = await input.evaluate(el => getComputedStyle(el).fontSize);
     expect(parseInt(fontSize)).toBeGreaterThanOrEqual(16);
@@ -102,6 +148,10 @@ test.describe('Mobile UX', () => {
   test('message list is scrollable on mobile', async ({ page }) => {
     await freshStart(page);
     await createServer(page, 'Scroll Test');
+
+    // Push into a channel before sending messages.
+    await page.locator('.mobile-home .channel-item').first().click();
+    await page.waitForTimeout(400);
 
     // Send enough messages to overflow.
     for (let i = 0; i < 25; i++) {
@@ -119,6 +169,8 @@ test.describe('Mobile UX', () => {
   test('can tap reaction on mobile', async ({ page }) => {
     await freshStart(page);
     await createServer(page, 'Tap React');
+    await page.locator('.mobile-home .channel-item').first().click();
+    await page.waitForTimeout(400);
     await sendMessage(page, 'react to me');
     await page.waitForTimeout(500);
 
@@ -141,6 +193,8 @@ test.describe('Mobile UX', () => {
   test('links in messages are tappable', async ({ page }) => {
     await freshStart(page);
     await createServer(page, 'Link Tap');
+    await page.locator('.mobile-home .channel-item').first().click();
+    await page.waitForTimeout(400);
     await sendMessage(page, 'visit https://example.com please');
     await page.waitForTimeout(500);
 
@@ -163,6 +217,9 @@ test.describe('Mobile UX', () => {
     await freshStart(page);
     await createServer(page, 'AutoScroll');
 
+    await page.locator('.mobile-home .channel-item').first().click();
+    await page.waitForTimeout(400);
+
     // Send several messages.
     for (let i = 0; i < 10; i++) {
       await sendMessage(page, `Msg ${i + 1}`);
@@ -181,6 +238,8 @@ test.describe('Mobile UX', () => {
   test('single tap then wait does NOT open action sheet', async ({ page }) => {
     await freshStart(page);
     await createServer(page, 'TapWait');
+    await page.locator('.mobile-home .channel-item').first().click();
+    await page.waitForTimeout(400);
     await sendMessage(page, 'just tap me');
     await page.waitForTimeout(500);
 
@@ -198,6 +257,8 @@ test.describe('Mobile UX', () => {
   test('multiple quick taps do NOT open action sheet', async ({ page }) => {
     await freshStart(page);
     await createServer(page, 'MultiTap');
+    await page.locator('.mobile-home .channel-item').first().click();
+    await page.waitForTimeout(400);
     await sendMessage(page, 'tap tap tap');
     await page.waitForTimeout(500);
 
@@ -214,22 +275,23 @@ test.describe('Mobile UX', () => {
     await expect(page.locator('.mobile-action-sheet.open')).toBeHidden();
   });
 
-  // ── Bug #13: No always-visible dropdown on mobile ─────────────────
-  // NOTE: "action trigger button hidden on mobile" is covered with stronger
-  // assertions (checks both .action-trigger and .message-actions) in
-  // mobile-actions.spec.ts.
-
   // ── Persistence on mobile ─────────────────────────────────────────
 
   test('messages persist after mobile refresh', async ({ page }) => {
     await freshStart(page);
     await createServer(page, 'Mobile Persist');
+    await page.locator('.mobile-home .channel-item').first().click();
+    await page.waitForTimeout(400);
     await sendMessage(page, 'survives refresh');
     await page.waitForTimeout(500);
 
     await page.reload();
     await waitForApp(page);
     await page.waitForTimeout(1000);
+
+    // After reload, navigate back into the channel.
+    await page.locator('.mobile-home .channel-item').first().click();
+    await page.waitForTimeout(400);
 
     await expect(page.locator('.message .body', { hasText: 'survives refresh' })).toBeVisible();
   });

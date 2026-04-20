@@ -1,13 +1,4 @@
-mod app;
-mod components;
-mod event_processing;
-mod handlers;
-#[allow(dead_code)]
-pub(crate) mod icons;
-mod state;
-pub mod state_bridge;
-pub(crate) mod util;
-pub mod voice;
+use willow_web::app;
 
 fn main() {
     console_error_panic_hook::set_once();

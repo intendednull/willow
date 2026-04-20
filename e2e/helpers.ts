@@ -125,9 +125,26 @@ export async function getMessages(page: Page): Promise<string[]> {
   return texts;
 }
 
-/** Click a channel in the sidebar (opens sidebar first on mobile). */
+/** Click a channel by name. On mobile this routes through the home
+ *  tab — pop any pushed screen first so the channel list is visible,
+ *  then tap the row (which pushes the chat view). */
 export async function switchChannel(page: Page, channelName: string) {
-  await openSidebar(page); // no-op on desktop, opens sidebar on mobile
+  if (isMobile(page)) {
+    // Pop back to home if we are currently on a pushed screen.
+    const backSlot = page.locator('.mobile-top-bar .top-slot-left .top-back');
+    while (await backSlot.isVisible().catch(() => false)) {
+      await page.locator('.mobile-top-bar .top-slot-left').click();
+      await page.waitForTimeout(300);
+    }
+    // Make sure we are on the home tab.
+    await page.locator('.mobile-tab-bar .tab[data-tab="home"]').click();
+    await page.waitForTimeout(200);
+    await page
+      .locator('.mobile-home .channel-item', { hasText: channelName })
+      .click();
+    await page.waitForTimeout(400);
+    return;
+  }
   await page.locator('.channel-item', { hasText: channelName }).click();
   await page.waitForTimeout(300);
 }
@@ -200,54 +217,67 @@ export function isMobile(page: Page): boolean {
   return (page.viewportSize()?.width ?? 1024) < 768;
 }
 
-/** Opens the sidebar on mobile (no-op on desktop). Idempotent — won't close if already open. */
+/** Opens the grove drawer on mobile (no-op on desktop). Idempotent —
+ *  won't close it if it's already open. The mobile shell top bar has
+ *  a grove-glyph tile on the left that opens the drawer on the home
+ *  route; on pushed screens the left slot is a back chevron.
+ */
 export async function openSidebar(page: Page) {
   if (!isMobile(page)) return;
-  // Check if already open to avoid double-toggling it closed.
-  const alreadyOpen = await page.locator('.sidebar.open').isVisible().catch(() => false);
+  const alreadyOpen = await page.locator('.grove-drawer.open').isVisible().catch(() => false);
   if (alreadyOpen) return;
-  await page.locator('.mobile-nav-toggle').click();
+  await page.locator('.mobile-top-bar .top-slot-left').click();
   await page.waitForTimeout(500);
 }
 
-/** Closes the sidebar on mobile by tapping the overlay (no-op on desktop). */
+/** Closes the grove drawer on mobile by tapping the backdrop. No-op
+ *  on desktop or when the drawer is already closed. */
 export async function closeSidebar(page: Page) {
   if (!isMobile(page)) return;
-  const overlay = page.locator('.sidebar-overlay.open');
-  if (await overlay.isVisible().catch(() => false)) {
-    // dispatchEvent bypasses Playwright's hit-test: the sidebar (z-index 10)
-    // sits above the overlay (z-index 9) at the center click point, which
-    // makes a normal .click() retry until timeout.
-    await overlay.dispatchEvent('click');
-    await page.waitForTimeout(300);
-  }
+  const drawerOpen = await page.locator('.grove-drawer.open').isVisible().catch(() => false);
+  if (!drawerOpen) return;
+  // Backdrop covers the full viewport; dispatch bypasses Playwright's
+  // hit-test which rightly warns about overlapping layers.
+  await page.locator('.grove-drawer-backdrop').dispatchEvent('click');
+  await page.waitForTimeout(300);
+}
+
+/** Switch to a given mobile primary tab (home / letters / discover / you).
+ *  No-op on desktop. */
+export async function switchTab(
+  page: Page,
+  tabId: 'home' | 'letters' | 'discover' | 'you',
+) {
+  if (!isMobile(page)) return;
+  await page.locator(`.mobile-tab-bar .tab[data-tab="${tabId}"]`).click();
+  await page.waitForTimeout(200);
 }
 
 /** Opens the member list in the right rail. On desktop clicks the
- *  main-pane-header members action button; on mobile the legacy
- *  toggle is out until Phase 1b restores the mobile shell. */
+ *  main-pane-header members action button; on mobile this routes
+ *  into the chat push where the header lives. */
 export async function openMemberList(page: Page) {
   // Already-open short-circuit — right-rail uses data-open on the aside.
   const openPane = page.locator('.right-rail[data-open="true"] .member-list');
   if (await openPane.isVisible().catch(() => false)) return;
 
-  // Desktop: click the action-bar members toggle. The button becomes
-  // active on click, which opens the right rail.
-  const desktopBtn = page.locator('.action-btn[aria-label="members"]');
-  if (await desktopBtn.count() > 0) {
-    await desktopBtn.first().click();
+  // On mobile the main-pane-header lives inside the channel push —
+  // tap a channel to surface it first.
+  if (isMobile(page)) {
+    const inPush = await page.locator('.mobile-push--channel').isVisible().catch(() => false);
+    if (!inPush) {
+      await page.locator('.mobile-home .channel-item').first().click();
+      await page.waitForTimeout(400);
+    }
+  }
+
+  const membersBtn = page.locator('.action-btn[aria-label="members"]');
+  if (await membersBtn.count() > 0) {
+    await membersBtn.first().click();
     await page.locator('.right-rail[data-open="true"] .member-list')
       .waitFor({ timeout: 3_000 })
       .catch(() => {});
     await page.waitForTimeout(200);
-    return;
-  }
-
-  // Mobile fallback (legacy selectors, pre-1b): retained for stragglers.
-  const mobileBtn = page.locator('.mobile-members-toggle');
-  if (await mobileBtn.count() > 0) {
-    await mobileBtn.click();
-    await page.waitForTimeout(500);
   }
 }
 
@@ -349,15 +379,24 @@ export async function setupTwoPeers(
 
 // ── Channel helpers ───────────────────────────────────────────────────
 
-/** Creates a new text channel (opens sidebar on mobile). */
+/** Creates a new text channel. On mobile the channel list is the
+ *  home tab — no drawer needed to reach `.channel-add-btn`. */
 export async function createChannel(page: Page, name: string) {
-  await openSidebar(page);
+  if (isMobile(page)) {
+    // Pop any pushed screen so the home tab is visible.
+    const backSlot = page.locator('.mobile-top-bar .top-slot-left .top-back');
+    while (await backSlot.isVisible().catch(() => false)) {
+      await page.locator('.mobile-top-bar .top-slot-left').click();
+      await page.waitForTimeout(300);
+    }
+    await page.locator('.mobile-tab-bar .tab[data-tab="home"]').click();
+    await page.waitForTimeout(200);
+  }
   await page.locator('.channel-add-btn').click();
   await page.waitForTimeout(200);
   await page.locator('.channel-create-input input').fill(name);
   await page.locator('.channel-create-input input').press('Enter');
   await page.waitForTimeout(500);
-  await closeSidebar(page);
 }
 
 // ── Message actions ───────────────────────────────────────────────────
