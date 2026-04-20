@@ -1,0 +1,126 @@
+/* components.css — willow UI Phase 1 component shell
+ *
+ * Source spec: docs/specs/2026-04-19-ui-design/layout-primitives.md
+ * Loaded AFTER style.css so component selectors win legacy token
+ * aliases. All values reference foundation tokens from foundation.css
+ * — NO raw hex, no new palette.
+ */
+
+/* ── App shell grid ──────────────────────────────────────────────── */
+
+/* Desktop three-pane shell: grove-rail / channel-sidebar / main / right-rail.
+ * Widths follow the spec: 68 / 232 / flex / 280. The right rail collapses
+ * to 0 width when no pane is active (`data-open="false"`) so the main pane
+ * expands to the viewport edge.
+ *
+ * The wrapper also targets legacy children (`.server-rail`, `.sidebar`)
+ * for a smooth migration: rows 1/2 host old OR new rail, row 3 hosts
+ * old OR new channel sidebar. This keeps the pre-rename app rendering
+ * correctly while Task 1 lands.
+ */
+.app-shell {
+    display: grid;
+    grid-template-columns: 68px 232px 1fr 0;
+    grid-template-rows: 1fr;
+    height: 100vh;
+    width: 100vw;
+    background: var(--bg-0);
+    overflow: hidden;
+}
+
+.app-shell[data-rail-open="true"] {
+    grid-template-columns: 68px 232px 1fr 280px;
+}
+
+/* Right-rail slot is the fourth column; transforms during open. */
+.app-shell > .right-rail {
+    grid-column: 4;
+    grid-row: 1;
+    background: var(--bg-1);
+    border-left: 1px solid var(--line-soft);
+    overflow: hidden;
+    width: 280px;
+    transform: translateX(100%);
+    opacity: 0;
+    pointer-events: none;
+    transition:
+        transform var(--motion) var(--motion-ease),
+        opacity var(--motion) var(--motion-ease);
+}
+
+.app-shell[data-rail-open="true"] > .right-rail {
+    transform: translateX(0);
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* Legacy rail + sidebar live in the grid too, so they keep
+ * rendering while Phase 1 tasks swap components in one at a time. */
+.app-shell > .server-rail,
+.app-shell > .grove-rail {
+    grid-column: 1;
+    grid-row: 1;
+}
+
+.app-shell > .sidebar,
+.app-shell > .channel-sidebar {
+    grid-column: 2;
+    grid-row: 1;
+}
+
+.app-shell > .main-content,
+.app-shell > .main-pane {
+    grid-column: 3;
+    grid-row: 1;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* Narrow-desktop overlay: <960 px the right rail overlays the main
+ * pane rather than stealing grid space. */
+@media (max-width: 960px) {
+    .app-shell {
+        grid-template-columns: 68px 232px 1fr 0;
+    }
+    .app-shell[data-rail-open="true"] {
+        grid-template-columns: 68px 232px 1fr 0;
+    }
+    .app-shell[data-rail-open="true"] > .right-rail {
+        position: absolute;
+        top: 0;
+        right: 0;
+        height: 100vh;
+        z-index: 20;
+        box-shadow: var(--shadow-2);
+    }
+    .app-shell[data-rail-open="true"]::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.4);
+        z-index: 19;
+        pointer-events: auto;
+    }
+}
+
+/* Narrow-desktop sidebar collapse: <840 px. 60 px glyph-only column
+ * for the channel sidebar; the grove rail keeps 68 px. */
+@media (max-width: 840px) {
+    .app-shell,
+    .app-shell[data-rail-open="true"] {
+        grid-template-columns: 68px 60px 1fr 0;
+    }
+    .app-shell > .channel-sidebar,
+    .app-shell > .sidebar {
+        overflow: hidden;
+    }
+}
+
+/* Reduced motion: opacity-only rail transitions. */
+@media (prefers-reduced-motion: reduce) {
+    .app-shell > .right-rail {
+        transform: none;
+        transition: opacity var(--motion) linear;
+    }
+}

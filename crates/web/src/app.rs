@@ -484,7 +484,12 @@ pub fn App() -> impl IntoView {
                 let vm_v = vm_for_view.clone();
                 let pin = on_pin.clone();
                 view! {
-                    <div class="app">
+                    <div
+                        class="app app-shell"
+                        data-rail-open=move || {
+                            if show_members.get() || show_pinned.get() { "true" } else { "false" }
+                        }
+                    >
                         <ServerList
                             servers=app_state.server.servers
                             active_server_id=app_state.server.active_server_id
