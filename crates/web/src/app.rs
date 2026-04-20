@@ -452,21 +452,22 @@ pub fn App() -> impl IntoView {
     let join_token_signal = app_state.ui.join_token;
 
     view! {
-        {move || {
-            // Join link takes priority over everything.
-            if join_token_signal.get().is_some() {
-                return view! { <JoinPage /> }.into_any();
-            }
+        <div id="app-root" class="density-balanced" data-accent="moss">
+            {move || {
+                // Join link takes priority over everything.
+                if join_token_signal.get().is_some() {
+                    return view! { <JoinPage /> }.into_any();
+                }
 
-            let srv = servers.get();
-            if srv.is_empty() {
-                let on_done = on_welcome_done;
-                view! {
-                    <WelcomeScreen
-                        on_done=on_done
-                    />
-                }.into_any()
-            } else {
+                let srv = servers.get();
+                if srv.is_empty() {
+                    let on_done = on_welcome_done;
+                    view! {
+                        <WelcomeScreen
+                            on_done=on_done
+                        />
+                    }.into_any()
+                } else {
                 let ch_click = on_channel_click.clone();
                 let srv_click = on_server_click.clone();
                 let ch_click_for_palette = on_channel_click.clone();
@@ -807,6 +808,7 @@ pub fn App() -> impl IntoView {
                 }.into_any()
             }
         }}
+        </div>
     }
 }
 
