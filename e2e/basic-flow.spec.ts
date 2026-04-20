@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { freshStart, createServer, sendMessage, getMessages, waitForApp, waitForMessage, openSidebar, reactToMessage } from './helpers';
+import { freshStart, createServer, sendMessage, getMessages, waitForApp, waitForMessage, openSidebar, reactToMessage, visibleShell } from './helpers';
 
 test.describe('Basic app flow', () => {
   test('welcome screen shows on fresh start', async ({ page }) => {
@@ -13,10 +13,10 @@ test.describe('Basic app flow', () => {
     await createServer(page, 'Test Server', 'Alice');
 
     // Should now see the sidebar with server name.
-    await expect(page.locator('.sidebar-header')).toContainText('Test Server');
+    await expect(page.locator(`${visibleShell(page)} .sidebar-header, ${visibleShell(page)} .mobile-top-bar`).first()).toContainText('Test Server');
 
     // Should have a general channel.
-    await expect(page.locator('.channel-item')).toContainText('general');
+    await expect(page.locator(`${visibleShell(page)} .channel-item`).first()).toContainText('general');
   });
 
   test('can send and see own message', async ({ page }) => {
@@ -37,17 +37,17 @@ test.describe('Basic app flow', () => {
     await openSidebar(page);
 
     // Click the + button.
-    await page.locator('.channel-add-btn').click();
+    await page.locator(`${visibleShell(page)} .channel-add-btn`).click();
     await page.waitForTimeout(200);
 
     // Type channel name and press Enter.
-    const input = page.locator('.channel-create-input input');
+    const input = page.locator(`${visibleShell(page)} .channel-create-input input`);
     await input.fill('random');
     await input.press('Enter');
     await page.waitForTimeout(500);
 
     // Should see the new channel.
-    await expect(page.locator('.channel-item', { hasText: 'random' })).toBeVisible();
+    await expect(page.locator(`${visibleShell(page)} .channel-item`, { hasText: 'random' })).toBeVisible();
   });
 
   test('can create a voice channel', async ({ page }) => {
@@ -58,21 +58,21 @@ test.describe('Basic app flow', () => {
     await openSidebar(page);
 
     // Click +.
-    await page.locator('.channel-add-btn').click();
+    await page.locator(`${visibleShell(page)} .channel-add-btn`).click();
     await page.waitForTimeout(200);
 
     // Click Voice toggle.
-    await page.locator('.type-btn', { hasText: 'Voice' }).click();
+    await page.locator(`${visibleShell(page)} .type-btn`, { hasText: 'Voice' }).click();
     await page.waitForTimeout(100);
 
     // Type name and submit.
-    const input = page.locator('.channel-create-input input');
+    const input = page.locator(`${visibleShell(page)} .channel-create-input input`);
     await input.fill('voice-chat');
     await input.press('Enter');
     await page.waitForTimeout(500);
 
     // Should see the voice channel with speaker icon.
-    const voiceChannel = page.locator('.channel-item', { hasText: 'voice-chat' });
+    const voiceChannel = page.locator(`${visibleShell(page)} .channel-item`, { hasText: 'voice-chat' });
     await expect(voiceChannel).toBeVisible();
     // Voice channels show a volume SVG icon prefix.
     await expect(voiceChannel.locator('.icon-volume, .icon-volume-1')).toBeVisible();
@@ -107,7 +107,7 @@ test.describe('Basic app flow', () => {
     await reactToMessage(page, 'react to me');
 
     // Should see reaction.
-    await expect(page.locator('.reaction')).toBeVisible();
+    await expect(page.locator(`${visibleShell(page)} .reaction`).first()).toBeVisible();
 
     // Reload.
     await page.reload();
@@ -115,6 +115,6 @@ test.describe('Basic app flow', () => {
     await page.waitForTimeout(1000);
 
     // Reaction should persist.
-    await expect(page.locator('.reaction')).toBeVisible();
+    await expect(page.locator(`${visibleShell(page)} .reaction`).first()).toBeVisible();
   });
 });
