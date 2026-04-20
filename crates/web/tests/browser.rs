@@ -34,6 +34,65 @@ where
     container.unchecked_into()
 }
 
+/// Which shell a browser test wants to force-mount under.
+///
+/// Phase 1b mounts both `.shell-desktop` and `.shell-mobile` in the DOM
+/// and uses a viewport media query to pick one. The headless wasm-pack
+/// harness can't reliably drive that media query, so tests use
+/// [`mount_test_with_shell`] to pin the choice via a `data-shell`
+/// attribute on `<html>`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum TestShell {
+    Desktop,
+    Mobile,
+}
+
+/// Force-mount the app under a specific shell by adding
+/// `data-shell="desktop"` or `data-shell="mobile"` to the `<html>`
+/// root before the component renders. `components.css` gates
+/// `.shell-desktop` / `.shell-mobile` visibility on that attribute
+/// when present (falls back to the viewport media query when the
+/// attribute is absent).
+#[allow(dead_code)]
+pub fn mount_test_with_shell<F, V>(shell: TestShell, view: F) -> web_sys::HtmlElement
+where
+    F: FnOnce() -> V + 'static,
+    V: IntoView + 'static,
+{
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let root = doc.document_element().unwrap();
+    root.set_attribute(
+        "data-shell",
+        match shell {
+            TestShell::Desktop => "desktop",
+            TestShell::Mobile => "mobile",
+        },
+    )
+    .unwrap();
+    ensure_components_css_loaded(&doc);
+    mount_test(view)
+}
+
+/// Inject `components.css` into the test document once per page load so
+/// shell-visibility rules (which gate off `data-shell` on `<html>`)
+/// actually take effect under wasm-pack's bare test harness. The harness
+/// does not pull in the app's CSS via `index.html`; without this, every
+/// element keeps its UA-default `display` and the shell override cannot
+/// be observed.
+#[allow(dead_code)]
+fn ensure_components_css_loaded(doc: &web_sys::Document) {
+    const STYLE_ID: &str = "willow-test-components-css";
+    if doc.get_element_by_id(STYLE_ID).is_some() {
+        return;
+    }
+    let style = doc.create_element("style").unwrap();
+    style.set_id(STYLE_ID);
+    style.set_text_content(Some(include_str!("../components.css")));
+    let head = doc.head().expect("document has <head>");
+    head.append_child(&style).unwrap();
+}
+
 /// Wait for reactive effects to flush.
 async fn tick() {
     gloo_timers::future::TimeoutFuture::new(0).await;
@@ -98,6 +157,80 @@ fn simulate_click(el: &web_sys::Element) {
         .unwrap()
         .dispatch_event(&event)
         .unwrap();
+}
+
+// ── Shell-harness smoke tests ───────────────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn mount_with_shell_desktop_hides_mobile() {
+    let container = mount_test_with_shell(TestShell::Desktop, || {
+        view! {
+            <div>
+                <div class="shell-desktop">"desktop"</div>
+                <div class="shell-mobile">"mobile"</div>
+            </div>
+        }
+    });
+    tick().await;
+    let desktop = container.query_selector(".shell-desktop").unwrap().unwrap();
+    let mobile = container.query_selector(".shell-mobile").unwrap().unwrap();
+    let window = web_sys::window().unwrap();
+    let desktop_display = window
+        .get_computed_style(&desktop)
+        .unwrap()
+        .unwrap()
+        .get_property_value("display")
+        .unwrap();
+    let mobile_display = window
+        .get_computed_style(&mobile)
+        .unwrap()
+        .unwrap()
+        .get_property_value("display")
+        .unwrap();
+    assert_ne!(
+        desktop_display, "none",
+        "desktop shell must be visible when data-shell=desktop"
+    );
+    assert_eq!(
+        mobile_display, "none",
+        "mobile shell must be hidden when data-shell=desktop"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn mount_with_shell_mobile_hides_desktop() {
+    let container = mount_test_with_shell(TestShell::Mobile, || {
+        view! {
+            <div>
+                <div class="shell-desktop">"desktop"</div>
+                <div class="shell-mobile">"mobile"</div>
+            </div>
+        }
+    });
+    tick().await;
+    let desktop = container.query_selector(".shell-desktop").unwrap().unwrap();
+    let mobile = container.query_selector(".shell-mobile").unwrap().unwrap();
+    let window = web_sys::window().unwrap();
+    let desktop_display = window
+        .get_computed_style(&desktop)
+        .unwrap()
+        .unwrap()
+        .get_property_value("display")
+        .unwrap();
+    let mobile_display = window
+        .get_computed_style(&mobile)
+        .unwrap()
+        .unwrap()
+        .get_property_value("display")
+        .unwrap();
+    assert_eq!(
+        desktop_display, "none",
+        "desktop shell must be hidden when data-shell=mobile"
+    );
+    assert_ne!(
+        mobile_display, "none",
+        "mobile shell must be visible when data-shell=mobile"
+    );
 }
 
 // ── Signal & Reactivity Tests ───────────────────────────────────────────────
