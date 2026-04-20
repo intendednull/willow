@@ -243,20 +243,17 @@ pub fn App() -> impl IntoView {
                                 }
                             }
                         });
-                        let _ = window
-                            .set_timeout_with_callback_and_timeout_and_arguments_0(
-                                clear.unchecked_ref(),
-                                1000,
-                            );
+                        let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                            clear.unchecked_ref(),
+                            1000,
+                        );
                     }
                 }
             }
         });
         if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-            let _ = doc.add_event_listener_with_callback(
-                "visibilitychange",
-                cb.as_ref().unchecked_ref(),
-            );
+            let _ = doc
+                .add_event_listener_with_callback("visibilitychange", cb.as_ref().unchecked_ref());
         }
         cb.forget();
     }
@@ -303,10 +300,8 @@ pub fn App() -> impl IntoView {
             });
         });
         if let Some(window) = web_sys::window() {
-            let _ = window.add_event_listener_with_callback(
-                "willow-push",
-                closure.as_ref().unchecked_ref(),
-            );
+            let _ = window
+                .add_event_listener_with_callback("willow-push", closure.as_ref().unchecked_ref());
         }
         closure.forget();
     }

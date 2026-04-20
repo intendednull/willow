@@ -276,8 +276,8 @@ mod tests {
     use willow_identity::Identity;
 
     #[test]
-    fn all_27_event_types_listed() {
-        assert_eq!(EVENT_TYPE_NAMES.len(), 27);
+    fn all_28_event_types_listed() {
+        assert_eq!(EVENT_TYPE_NAMES.len(), 28);
     }
 
     #[test]

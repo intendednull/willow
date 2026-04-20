@@ -5364,9 +5364,7 @@ mod presence_atom {
 mod notifications {
     use super::*;
     use willow_client::views::UnreadStats;
-    use willow_web::components::{
-        Severity, Toast, ToastStack, ToastStackView, UnreadBadge,
-    };
+    use willow_web::components::{Severity, Toast, ToastStack, ToastStackView, UnreadBadge};
 
     /// The `UnreadBadge` atom renders `99+` for counts above 99 and
     /// composes the accessible label via `describe`.
@@ -5496,7 +5494,11 @@ mod notifications {
             .query_selector(".toast-title")
             .unwrap()
             .expect("title");
-        assert_eq!(text(&title), "3 new", "latest wins — body is the most recent");
+        assert_eq!(
+            text(&title),
+            "3 new",
+            "latest wins — body is the most recent"
+        );
     }
 
     /// A 4th arrival past the visible cap produces an overflow

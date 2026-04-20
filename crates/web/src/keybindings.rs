@@ -38,9 +38,7 @@ pub fn install(state: AppState, write: AppWriteSignals) {
                     // Toast dismiss takes priority over the modal
                     // close-stack — a focused toast is the most
                     // immediate surface.
-                    if dismiss_focused_toast() {
-                        ev.prevent_default();
-                    } else if close_top_of_stack(state, write) {
+                    if dismiss_focused_toast() || close_top_of_stack(state, write) {
                         ev.prevent_default();
                     }
                 }
