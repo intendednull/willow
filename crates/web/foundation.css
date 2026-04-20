@@ -302,6 +302,27 @@ a { color: inherit; }
   :root { --shell: mobile; }
 }
 
+/* ── Colour-independent cues (audit contract) ───────────────────────
+ * Every coloured-only state in the shell pairs colour with a shape,
+ * icon, or word so the UI stays legible under accent swaps and for
+ * users who cannot distinguish hue. Contract enforced by the Phase 1c
+ * a11y sweep; changing any cue below must also update the partner.
+ *
+ *   - Active grove tile:    3×22 px ink-0 bar to the left of the tile
+ *     (components.css `.grove-tile[data-state="active"]::before`).
+ *     Paired with --moss-2 fill + aria-current="page".
+ *   - Unread grove tile:    8 px ink-0 pebble (same ::before, shorter).
+ *     Paired with --bg-2 surface.
+ *   - Active channel row:   --bg-3 surface + --ink-0 text.
+ *     Paired with 3×16 bar on the row bar (existing markup slot).
+ *   - Unread channel row:   3×16 px ink-0 bar + numeric unread-pill.
+ *     Word cue is the pill count itself; reader-only equivalent.
+ *   - Offline net status:   pulse-dot--offline (no pulse) + --ink-4
+ *     dot + the word "queued · waiting for peers" rendered inline.
+ *   - Active header button: --bg-3 surface + --ink-0 icon.
+ *     Paired with aria-pressed="true" (consumed by screen readers).
+ */
+
 /* ── Command palette ─────────────────────────────────────────────── */
 .palette-backdrop {
   position: fixed; inset: 0;
