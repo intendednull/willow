@@ -32,7 +32,7 @@ pub fn MemberList(
     let handle_for_items = handle.clone();
 
     view! {
-        <div class="member-list">
+        <aside class="member-list" role="complementary" aria-label="members">
             // ── Infrastructure (worker nodes) ──────────────────────
             {
                 move || {
@@ -265,6 +265,6 @@ pub fn MemberList(
                     set_show_kick_confirm.set(false);
                 })
             />
-        </div>
+        </aside>
     }
 }

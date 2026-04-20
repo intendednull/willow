@@ -244,12 +244,16 @@ pub fn GroveRail(
                             }
                         };
 
+                        let id_active_aria = id_active.clone();
                         view! {
                             <button
                                 class="grove-tile server-icon"
                                 data-index=idx.to_string()
                                 data-state=move || {
                                     if active_server_id.get() == id_active { "active" } else { "idle" }
+                                }
+                                aria-current=move || {
+                                    if active_server_id.get() == id_active_aria { "page" } else { "false" }
                                 }
                                 title=name_for_title
                                 aria-label=name.clone()

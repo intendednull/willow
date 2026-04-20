@@ -166,6 +166,7 @@ pub fn MainPaneHeader(
                 <button
                     class="action-btn"
                     aria-label="search (⌘K)"
+                    aria-keyshortcuts="Control+K Meta+K"
                     title="search (⌘K)"
                     on:click=move |_| on_search_click.run(())
                 >

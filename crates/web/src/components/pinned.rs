@@ -33,7 +33,7 @@ pub fn PinnedPanel(
     on_close: impl Fn(()) + Send + Clone + 'static,
 ) -> impl IntoView {
     view! {
-        <div class="pinned-panel">
+        <aside class="pinned-panel" role="complementary" aria-label="pinned">
             <div class="pinned-header">
                 <h3>"Pinned Messages"</h3>
                 <button class="btn btn-sm" on:click=move |_| on_close(())>{icons::icon_x()}</button>
@@ -75,6 +75,6 @@ pub fn PinnedPanel(
                     }
                 }}
             </div>
-        </div>
+        </aside>
     }
 }

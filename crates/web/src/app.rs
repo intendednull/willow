@@ -743,8 +743,13 @@ pub fn App() -> impl IntoView {
                                         write.ui.set_show_members.set(matches!(next, RightRailWhich::Members));
                                         write.ui.set_show_pinned.set(matches!(next, RightRailWhich::Pinned));
                                     });
+                                    let chat_channel = current_channel;
                                     view! {
-                                        <div class="chat-container main-pane">
+                                        <main
+                                            class="chat-container main-pane"
+                                            role="main"
+                                            aria-label=move || chat_channel.get()
+                                        >
                                             <MainPaneHeader
                                                 channel=current_channel
                                                 which=which_signal
@@ -819,7 +824,7 @@ pub fn App() -> impl IntoView {
                                                     on_typing=on_typing_cb
                                                 />
                                             </div>
-                                        </div>
+                                        </main>
                                     }.into_any()
                                 }
                             }}
