@@ -48,7 +48,7 @@ pub fn WelcomeScreen(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Into
                                 {icons::icon_willow_mark()}
                             </div>
                             <h1 class="welcome-name-heading">
-                                "display name"
+                                "What do we call you?"
                             </h1>
                             <input
                                 class="welcome-name-input"

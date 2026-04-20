@@ -2623,11 +2623,11 @@ select:focus-visible {
 
 .welcome-screen {
     display: flex;
-    align-items: flex-start;
+    align-items: safe center;
     justify-content: center;
     min-height: 100vh;
     min-height: 100dvh;
-    padding: 40px 20px;
+    padding: 48px 20px;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     /* Animated subtle radial gradient background */
@@ -2898,9 +2898,17 @@ select:focus-visible {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     margin-bottom: 28px;
     animation: willow-pop-in var(--motion-slow) var(--motion-ease);
+}
+
+.welcome-hero .tagline {
+    margin: 0;
+}
+
+.welcome-hero .welcome-greeting {
+    margin-top: 14px;
 }
 
 .willow-mark-lg {
@@ -2951,57 +2959,48 @@ select:focus-visible {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 14px;
-    padding: 16px 0;
+    gap: 0;
+    padding: 8px 0;
+    max-width: 380px;
+    margin: 0 auto;
 }
 
 .willow-mark--small {
-    font-size: 44px;
-    margin-bottom: 4px;
+    font-size: 52px;
+    margin-bottom: 18px;
 }
 
 .welcome-name-heading {
     font-family: var(--font-display);
     font-style: italic;
     font-weight: 400;
-    font-size: 32px;
-    line-height: 1.15;
-    letter-spacing: -0.01em;
+    font-size: 36px;
+    line-height: 1.1;
+    letter-spacing: -0.015em;
     color: var(--ink-0);
-    margin: 0;
+    margin: 0 0 28px;
     text-align: center;
-    max-width: 460px;
 }
 
 /* Override legacy welcome-card h1 rule. */
 .welcome-card h1.welcome-name-heading {
-    font-size: 32px;
+    font-size: 36px;
     font-weight: 400;
-    margin-bottom: 0;
-}
-
-.welcome-name-sub {
-    font-family: var(--font-ui);
-    font-size: 13px;
-    color: var(--ink-3);
-    margin: -6px 0 6px;
-    text-align: center;
-    max-width: 360px;
-    line-height: 1.5;
+    margin: 0 0 28px;
 }
 
 .welcome-name-input {
     width: 100%;
-    max-width: 420px;
-    padding: 14px 18px;
+    padding: 15px 20px;
     background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     color: var(--ink-0);
     font-family: var(--font-ui);
-    font-size: 17px;
+    font-size: 16px;
     text-align: center;
     outline: none;
+    margin-bottom: 14px;
     transition:
         border-color var(--transition-normal),
         box-shadow var(--transition-normal);
@@ -3019,8 +3018,9 @@ select:focus-visible {
 
 .welcome-continue-btn {
     width: 100%;
-    max-width: 420px;
-    margin-top: 4px;
+    padding: 13px 20px;
+    font-size: 15px;
+    letter-spacing: 0.02em;
 }
 
 /* ── Welcome shared display-name row (above tabs) ─────────────────── */
