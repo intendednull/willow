@@ -553,8 +553,15 @@ where
     }
 }
 
-// Gesture-binder is defined inline so task 8 can fill the body —
-// task 2 only needs the stub so MobileShell compiles.
+// Gesture-binder wires window-level pointer listeners so the
+// mobile shell can respond to edge-swipe / back-swipe / drawer-
+// close gestures without every child component opting in.
+//
+// Thresholds (spec §Mobile gestures):
+//   - Edge-swipe open drawer: pointerdown x ≤ 20, pointerup dx > 60.
+//   - Swipe-left close drawer: dx < -60 while drawer is open.
+//   - Back-swipe: same edge-swipe when push stack is non-empty.
+//   - Sheet-dismiss: lives in `bottom_sheet.rs`.
 #[component]
 fn GestureBinder(
     drawer_open: Signal<bool>,
@@ -563,13 +570,73 @@ fn GestureBinder(
     on_drawer_open: Callback<()>,
     on_drawer_close: Callback<()>,
 ) -> impl IntoView {
-    // Task 8 replaces this stub with real gesture wiring.
-    let _ = (
-        drawer_open,
-        push_stack,
-        on_back,
-        on_drawer_open,
-        on_drawer_close,
-    );
+    use wasm_bindgen::JsCast;
+
+    // Track pointer start position in StoredValues so the window
+    // callbacks can read + write without borrowing.
+    let start_x = StoredValue::new(0.0f64);
+    let start_y = StoredValue::new(0.0f64);
+    let is_tracking = StoredValue::new(false);
+
+    // pointerdown: record start coords + arm tracking if the touch
+    // starts on the left edge (≤ 20 px) or the drawer is already
+    // open (so a left-swipe anywhere closes it).
+    {
+        let down = wasm_bindgen::closure::Closure::<dyn Fn(web_sys::PointerEvent)>::new(
+            move |ev: web_sys::PointerEvent| {
+                let x = ev.client_x() as f64;
+                let y = ev.client_y() as f64;
+                start_x.set_value(x);
+                start_y.set_value(y);
+                is_tracking.set_value(x <= 20.0 || drawer_open.get_untracked());
+            },
+        );
+        if let Some(window) = web_sys::window() {
+            window
+                .add_event_listener_with_callback("pointerdown", down.as_ref().unchecked_ref())
+                .ok();
+        }
+        down.forget();
+    }
+
+    // pointerup: classify the gesture against dx/dy and fire.
+    {
+        let up = wasm_bindgen::closure::Closure::<dyn Fn(web_sys::PointerEvent)>::new(
+            move |ev: web_sys::PointerEvent| {
+                if !is_tracking.get_value() {
+                    return;
+                }
+                is_tracking.set_value(false);
+
+                let dx = ev.client_x() as f64 - start_x.get_value();
+                let dy = ev.client_y() as f64 - start_y.get_value();
+                // Ignore mostly-vertical swipes so taps / scrolls
+                // don't fire horizontal gestures.
+                if dy.abs() > dx.abs() {
+                    return;
+                }
+
+                let drawer = drawer_open.get_untracked();
+                let has_push = !push_stack.get_untracked().is_empty();
+
+                if dx > 60.0 {
+                    if has_push {
+                        on_back.run(());
+                    } else if !drawer {
+                        on_drawer_open.run(());
+                    }
+                } else if dx < -60.0 && drawer {
+                    on_drawer_close.run(());
+                }
+            },
+        );
+        if let Some(window) = web_sys::window() {
+            window
+                .add_event_listener_with_callback("pointerup", up.as_ref().unchecked_ref())
+                .ok();
+        }
+        up.forget();
+    }
+
     view! { <span class="mobile-gesture-binder" aria-hidden="true"></span> }
 }
