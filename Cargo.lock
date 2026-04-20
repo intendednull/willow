@@ -6178,6 +6178,8 @@ dependencies = [
  "js-sys",
  "leptos",
  "send_wrapper",
+ "serde",
+ "serde_json",
  "tracing",
  "tracing-wasm",
  "wasm-bindgen",

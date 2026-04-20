@@ -34,6 +34,8 @@ web-sys = { version = "0.3", features = [
     "AnalyserNode", "MediaStreamAudioSourceNode",
     "RtcSignalingState", "RtcRtpTransceiver",
     "Response", "Headers",
+    "Storage",
+    "CssStyleSheet", "CssRule", "CssRuleList", "StyleSheet", "StyleSheetList",
 ] }
 js-sys = "0.3"
 wasm-bindgen-futures = "0.4"
@@ -42,6 +44,8 @@ tracing-wasm = "0.2"
 send_wrapper = "0.6"
 futures = { workspace = true }
 gloo-timers = { version = "0.3", features = ["futures"] }
+serde = { workspace = true }
+serde_json = "1"
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"

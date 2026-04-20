@@ -21,6 +21,7 @@ mod call_page;
 mod channel_sidebar;
 mod chat;
 mod command_palette;
+pub(crate) mod palette_actions;
 mod confirm_dialog;
 mod context_menu;
 mod file_share;
