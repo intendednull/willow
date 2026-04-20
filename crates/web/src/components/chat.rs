@@ -96,8 +96,38 @@ pub fn MessageList(
 
     let on_msg_click = on_message_click;
 
+    // Surface downgrade banners for any downgraded peer visible in this
+    // chat view. The peer-letter / DM view is the eventual home for
+    // this banner per spec; until that surface exists we render the
+    // first downgraded peer at the top of the message list so the
+    // user never loses sight of a key-rotation warning.
+    let downgraded_target = {
+        use willow_client::trust::PeerTrust;
+        let app_state = use_context::<crate::state::AppState>();
+        leptos::prelude::Memo::new(move |_| {
+            app_state.and_then(|s| {
+                s.trust.trust_map.get().iter().find_map(|(pid, trust)| {
+                    if matches!(trust, PeerTrust::DowngradedFromVerified { .. }) {
+                        Some(pid.clone())
+                    } else {
+                        None
+                    }
+                })
+            })
+        })
+    };
+
     view! {
         <div class="message-list-container">
+            {move || {
+                downgraded_target.get().map(|pid| {
+                    view! {
+                        <crate::components::DowngradeBanner
+                            peer_id=Signal::derive(move || pid.clone())
+                        />
+                    }
+                })
+            }}
             <div class="message-list" node_ref=list_ref on:scroll=on_scroll>
                 {move || {
                     let msgs = messages.get();
