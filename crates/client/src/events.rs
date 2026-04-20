@@ -5,6 +5,15 @@
 
 use willow_identity::EndpointId;
 
+/// Scope of a mute toggle for `ClientEvent::MuteChanged`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MuteScope {
+    /// The entire active grove was muted / unmuted.
+    Grove,
+    /// A single channel (by channel_id) was muted / unmuted.
+    Channel(String),
+}
+
 /// Events emitted by the client when state changes.
 #[derive(Debug, Clone)]
 pub enum ClientEvent {
@@ -103,6 +112,14 @@ pub enum ClientEvent {
     /// A join-via-link request was denied.
     JoinLinkDenied {
         reason: String,
+    },
+    /// Local identity's per-surface mute state changed. Emitted after
+    /// `mutate_channel_mute` / `mutate_grove_mute` succeed so the
+    /// Notifier can refresh its gating table and the UI can flip the
+    /// badge variant.
+    MuteChanged {
+        scope: MuteScope,
+        muted: bool,
     },
 }
 

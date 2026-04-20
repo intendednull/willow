@@ -545,6 +545,44 @@ impl<N: willow_network::Network> ClientMutations<N> {
         self.broadcast_event(&event);
         Ok(())
     }
+
+    /// Mute or unmute a channel for the local identity only.
+    ///
+    /// Not admin-gated — every member can silence their own
+    /// notifications. Emits a `ClientEvent::MuteChanged` so the UI can
+    /// update the pill outline and the Notifier can bypass the surface.
+    pub async fn mutate_channel_mute(&self, channel: &str, muted: bool) -> anyhow::Result<()> {
+        let channel_id = self.resolve_channel_id(channel).await?;
+        let event = self
+            .build_event(EventKind::MuteChannel {
+                channel_id: channel_id.clone(),
+                muted,
+            })
+            .await?;
+        self.apply_event(&event).await;
+        self.broadcast_event(&event);
+        self.event_broker
+            .do_send(Publish(ClientEvent::MuteChanged {
+                scope: crate::events::MuteScope::Channel(channel_id),
+                muted,
+            }))
+            .ok();
+        Ok(())
+    }
+
+    /// Mute or unmute the entire grove for the local identity only.
+    pub async fn mutate_grove_mute(&self, muted: bool) -> anyhow::Result<()> {
+        let event = self.build_event(EventKind::MuteGrove { muted }).await?;
+        self.apply_event(&event).await;
+        self.broadcast_event(&event);
+        self.event_broker
+            .do_send(Publish(ClientEvent::MuteChanged {
+                scope: crate::events::MuteScope::Grove,
+                muted,
+            }))
+            .ok();
+        Ok(())
+    }
 }
 
 // ───── Voice mutations ───────────────────────────────────────────────────
@@ -819,6 +857,18 @@ pub(crate) fn derive_client_events(event: &willow_state::Event) -> Vec<ClientEve
                 message_id: message_id.to_string(),
                 emoji: emoji.clone(),
                 author: event.author,
+            });
+        }
+        EventKind::MuteChannel { channel_id, muted } => {
+            out.push(ClientEvent::MuteChanged {
+                scope: crate::events::MuteScope::Channel(channel_id.clone()),
+                muted: *muted,
+            });
+        }
+        EventKind::MuteGrove { muted } => {
+            out.push(ClientEvent::MuteChanged {
+                scope: crate::events::MuteScope::Grove,
+                muted: *muted,
             });
         }
         _ => {}
