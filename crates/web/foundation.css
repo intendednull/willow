@@ -659,6 +659,20 @@ a { color: inherit; }
 }
 .toast--warn { border-color: #7a5a2e; }
 .toast--err { border-color: #8c3b32; }
+.toast-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  margin-top: 2px;
+  color: var(--ink-2);
+}
+.toast-icon svg { width: 14px; height: 14px; stroke-width: 1.5; }
+.toast--success .toast-icon { color: #6a8d5e; }
+.toast--warn .toast-icon { color: #c99b55; }
+.toast--err .toast-icon { color: #c9554a; }
 .toast-body {
   flex: 1;
   display: flex;

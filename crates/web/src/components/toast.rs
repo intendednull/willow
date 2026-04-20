@@ -25,6 +25,8 @@ use leptos::prelude::*;
 use send_wrapper::SendWrapper;
 use wasm_bindgen::JsCast;
 
+use crate::icons;
+
 /// Severity of a toast — drives icon + border + aria-live routing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Severity {
@@ -56,6 +58,16 @@ impl Severity {
             Severity::Success => "success",
             Severity::Warn => "warn",
             Severity::Err => "err",
+        }
+    }
+
+    /// Built-in icon for this severity. `Info` has no icon per spec.
+    pub fn icon_view(self) -> Option<leptos::tachys::view::any_view::AnyView> {
+        match self {
+            Severity::Info => None,
+            Severity::Success => Some(icons::icon_check().into_any()),
+            Severity::Warn => Some(icons::icon_hourglass().into_any()),
+            Severity::Err => Some(icons::icon_x().into_any()),
         }
     }
 }
@@ -346,6 +358,7 @@ pub fn ToastStackView() -> impl IntoView {
                     let title = toast.title.clone();
                     let body = toast.body.clone();
                     let action = toast.action.clone();
+                    let icon = toast.severity.icon_view();
                     view! {
                         <div
                             class=class
@@ -355,6 +368,7 @@ pub fn ToastStackView() -> impl IntoView {
                             on:mouseenter=move |_| stack_for_hover.pause(id)
                             on:mouseleave=move |_| stack_for_leave.resume(id)
                         >
+                            {icon.map(|i| view! { <span class="toast-icon" aria-hidden="true">{i}</span> })}
                             <div class="toast-body">
                                 <div class="toast-title">{title}</div>
                                 {body.map(|b| view! { <div class="toast-desc">{b}</div> })}
