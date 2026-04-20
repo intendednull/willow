@@ -11,7 +11,7 @@ use willow_identity::EndpointId;
 
 use crate::event::{Permission, ProposedAction, VoteThreshold};
 use crate::hash::EventHash;
-use crate::types::{Channel, ChatMessage, Member, Profile, Role};
+use crate::types::{Channel, ChatMessage, Member, MuteState, Profile, Role};
 
 /// A proposal awaiting admin votes.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -53,6 +53,12 @@ pub struct ServerState {
     /// Encrypted channel key material: channel ID → (recipient → encrypted key).
     /// Each recipient gets their own encrypted copy of the channel key.
     pub channel_keys: BTreeMap<String, BTreeMap<EndpointId, Vec<u8>>>,
+    /// Per-identity mute state (phase 1f). Each entry is the *author's
+    /// own* notification preference — never advertised to peers. Absent
+    /// means default (no mute). Defaulted via `#[serde(default)]` so
+    /// pre-1f serialized states load cleanly.
+    #[serde(default)]
+    pub mute_state: BTreeMap<EndpointId, MuteState>,
 
     // -- Governance state --
     /// The peer who created the server (author of the genesis event).
@@ -129,6 +135,7 @@ impl ServerState {
             profiles: BTreeMap::new(),
             description: String::new(),
             channel_keys: BTreeMap::new(),
+            mute_state: BTreeMap::new(),
             pending_proposals: BTreeMap::new(),
             applied_events: BTreeSet::new(),
             message_index: HashMap::new(),

@@ -93,3 +93,20 @@ pub struct Profile {
     /// Display name.
     pub display_name: String,
 }
+
+/// Per-identity mute state for one grove.
+///
+/// Stored on `ServerState::mute_state` keyed by `EndpointId`. Muting
+/// silences the author's own notifications only — it is never
+/// advertised to peers, so there is no authority check in
+/// `apply_event` for `MuteChannel` / `MuteGrove`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MuteState {
+    /// Explicitly-muted channel IDs. Membership in this set means
+    /// "suppress notifications for this channel."
+    pub channels: std::collections::HashSet<String>,
+    /// True if the entire grove is muted (supersedes per-channel
+    /// entries). A muted grove still emits unread counts so the
+    /// badge layer can render the outlined muted pill.
+    pub grove_muted: bool,
+}

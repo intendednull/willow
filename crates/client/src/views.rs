@@ -404,17 +404,32 @@ pub fn compute_unread_view(
     event_state: &Arc<willow_state::ServerState>,
     local_peer_id: EndpointId,
 ) -> UnreadView {
-    let _ = (event_state, local_peer_id); // Used once task 2 adds mute_state.
     let mut stats: HashMap<SurfaceId, UnreadStats> = HashMap::new();
+    let mute = event_state.mute_state.get(&local_peer_id).cloned();
     if let Some(entry) = registry.active() {
         for (topic, count) in &entry.unread {
             if let Some(name) = entry.name_for_topic(topic) {
+                let channel_id = event_state
+                    .channels
+                    .values()
+                    .find(|c| c.name == name)
+                    .map(|c| c.id.clone());
+                let muted = mute
+                    .as_ref()
+                    .map(|m| {
+                        m.grove_muted
+                            || channel_id
+                                .as_ref()
+                                .map(|id| m.channels.contains(id))
+                                .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
                 let s = UnreadStats {
                     count: *count as u32,
                     mentioned: false,
                     whisper: false,
                     announce_only: false,
-                    muted: false,
+                    muted,
                 };
                 stats.insert(SurfaceId::Channel(name.to_string()), s);
             }
