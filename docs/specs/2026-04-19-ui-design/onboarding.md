@@ -34,6 +34,78 @@ of only two surfaces allowed to use it.
 scheme (`letters-dms.md`); the discover directory (`discover.md`). This spec
 stitches those capabilities into a single first-run flow.
 
+## Shipped state — `design/ui-target-ux` (as of 2026-04-20)
+
+A condensed two-step variant ships ahead of the full six-step flow
+described below. It is the target for early adopters until SAS ceremony,
+crest picker, and recovery land. Treat the full spec as the destination
+and this section as the current waypoint.
+
+**Files:** `crates/web/src/components/welcome.rs`,
+`crates/web/src/components/add_server.rs`, `crates/web/style.css` (hero,
+tabs, step list, peer-id controls), `crates/web/src/icons.rs`
+(`icon_willow_mark`, `icon_eye`, `icon_check`).
+
+### Step 1 — name
+
+Full-viewport hero centred on `--bg-0` gradient. Willow mark SVG above a
+Fraunces italic wordmark; `encrypted p2p chat` tagline in `--ink-2`.
+Below: heading `what do we call you?` (display L italic), a single
+optional text input (`enter your name (optional)`), and a `continue`
+button. Empty submissions persist as `anonymous` downstream. Enter
+advances.
+
+### Step 2 — action (tabbed)
+
+Same hero, with `hi, <name>` (or `hi, anonymous`) greeting under the
+tagline. A two-tab strip — `Create` / `Join` — drives an internal panel.
+Tabs use `--bg-3` active fill with a moss-2 underline; only one panel is
+visible at a time.
+
+- **Create tab.** Label `name your grove`, placeholder `backyard`,
+  `continue` button. On submit: create the server and set display name,
+  then enter chat.
+- **Join tab.** Ordered list, three items:
+  1. `Share your id with a grove steward` — inline copy icon button and
+     eye-toggle reveal button. Copy flashes a moss `copied ✓` pill to the
+     left of the copy button for 2 s. Eye toggle reveals the full peer id
+     as a monospace `<code>` block directly under the list item.
+  2. `They send back a grove invite`.
+  3. `Paste the invite code below`.
+  A textarea (placeholder `paste willow://… here`) + `continue` button
+  validate the code is non-empty and advance to a confirmation step.
+  Confirmation shows `ready to join — confirm and you're in.` with
+  `Back` and `Join grove` buttons. Success sets the display name on the
+  joined grove and drops the user into chat; failure re-renders the
+  paste step with an `Invalid invite code: …` status.
+
+### Terminology shipped
+
+- **grove** — community / server (matches parent spec).
+- **grove steward** — grove owner (admin-equivalent user who hands out
+  invites).
+- **grove invite** — invite string / code. The URL form uses `willow://`
+  scheme.
+
+The `letter of introduction` copy from the parent spec is **not**
+surfaced yet; it will land when the full step-4 pair flow ships.
+
+### Gap vs full spec
+
+- No recovery branch (`i already have willow`).
+- No crest, pronouns, or accent picker — identity is display name only.
+- No SAS fingerprint step (`add a friend`).
+- No separate pair step — Join is the only peer-pairing path and has no
+  SAS ceremony yet. Verification lands with `trust-verification.md`.
+- No tour step.
+- No `leafFall` motion yet; only the `copied ✓` pill animation and tab
+  underline transition are present.
+
+The plan that shipped the foundation tokens is
+`docs/plans/2026-04-19-ui-phase-0-foundation.md`; the commits that
+shipped this welcome subset sit on the `design/ui-target-ux` branch
+after the Phase 0 tasks.
+
 ## Flow overview
 
 A six-step linear flow with a recovery branch off step 1.

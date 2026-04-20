@@ -943,6 +943,7 @@ Paste the URL into the task tracker and wait for review. Do **not** begin Phase 
 
 ## Post-phase notes for later phases
 
+- A two-step welcome screen (name → tabbed create/join) shipped on top of Phase 0 on the `design/ui-target-ux` branch after Phase 0 closed. It is a subset of `docs/specs/2026-04-19-ui-design/onboarding.md` — see the `Shipped state — design/ui-target-ux` section at the top of that spec for the shipped scope, terminology, and gap vs the full six-step flow. When Phase 5 (onboarding) begins, read that section first; the full onboarding flow layers on top of what is already in `welcome.rs` / `add_server.rs`.
 - Phase 2 work will migrate component CSS (sidebar, chat, settings, etc.) from `--bg-main` / `--accent` names to the foundation tokens directly, then delete the legacy alias block added in Task 13.
 - The `[data-theme="light"]` block in `style.css` remains hardcoded. Rework in a dedicated "light theme" phase; not tracked here.
 - Typography in components still uses hardcoded font-family strings in many selectors inside `style.css`. Phase 2 sweeps these to `var(--font-ui)` / `var(--font-display)` / `var(--font-mono)`.
