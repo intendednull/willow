@@ -147,6 +147,11 @@ pub fn App() -> impl IntoView {
         trust_store,
     } = state::create_signals();
 
+    // Thread the trust store into the client so shims persist + read
+    // from the same localStorage-backed source the UI subscribes to.
+    let handle_inner = (*handle).clone().with_trust_store(trust_store.clone());
+    let handle: WebClientHandle = SendWrapper::new(handle_inner);
+
     // Provide context so child components can access the handle and state.
     provide_context(handle.clone());
     provide_context(app_state);

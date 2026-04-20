@@ -47,6 +47,9 @@ mod voice;
 pub use event_receiver::EventReceiver;
 pub use events::ClientEvent;
 pub use ops::{pack_wire, unpack_wire, VoiceSignalPayload, WireMessage};
+pub use trust::{
+    ComparePreview, InMemoryTrustStore, PeerTrust, TrustStore, TrustStoreHandle, UnverifiedReason,
+};
 
 /// Errors returned by client API entry points.
 ///
@@ -218,6 +221,13 @@ pub struct ClientHandle<N: willow_network::Network> {
     pub(crate) view_handle: views::ClientViewHandle,
     /// Typed mutation interface — write state via domain actors.
     pub(crate) mutation_handle: mutations::ClientMutations<N>,
+
+    // ── Local trust store (Phase 1d) ────────────────────────────────────
+    /// Per-device verified / unverified beliefs for each peer. Never
+    /// gossiped. `None` until the caller injects a store via
+    /// [`with_trust_store`](Self::with_trust_store). The UI layer
+    /// injects a `WebTrustStore` at boot.
+    pub(crate) trust_store: Option<TrustStoreHandle>,
 }
 
 impl<N: willow_network::Network> Clone for ClientHandle<N> {
@@ -241,6 +251,7 @@ impl<N: willow_network::Network> Clone for ClientHandle<N> {
             dag_addr: self.dag_addr.clone(),
             view_handle: self.view_handle.clone(),
             mutation_handle: self.mutation_handle.clone(),
+            trust_store: self.trust_store.clone(),
         }
     }
 }
@@ -254,6 +265,95 @@ impl<N: willow_network::Network> ClientHandle<N> {
     /// Access the typed mutation interface.
     pub fn mutations(&self) -> &mutations::ClientMutations<N> {
         &self.mutation_handle
+    }
+
+    /// Inject a local [`TrustStoreHandle`]. The UI does this at boot
+    /// with a `WebTrustStore` so the [`verify_peer`](Self::verify_peer)
+    /// family of methods has a persistence layer. Without a store,
+    /// those methods are no-ops.
+    pub fn with_trust_store(mut self, store: TrustStoreHandle) -> Self {
+        self.trust_store = Some(store);
+        self
+    }
+
+    /// Return the currently attached trust store, if any.
+    pub fn trust_store(&self) -> Option<&TrustStoreHandle> {
+        self.trust_store.as_ref()
+    }
+
+    /// Mark a peer as verified, pinning its current Ed25519 key.
+    /// No-op if no trust store is attached.
+    pub fn verify_peer(&self, peer_id: &str) {
+        let Some(store) = self.trust_store.as_ref() else {
+            return;
+        };
+        let Ok(remote) = peer_id.parse::<willow_identity::EndpointId>() else {
+            return;
+        };
+        store.set(
+            peer_id,
+            PeerTrust::Verified {
+                at_ms: now_ms(),
+                pinned_key: *remote.as_bytes(),
+            },
+        );
+    }
+
+    /// Mark a peer as unverified for a given reason. No-op if no trust
+    /// store is attached.
+    pub fn mark_unverified(&self, peer_id: &str, reason: UnverifiedReason) {
+        if let Some(store) = self.trust_store.as_ref() {
+            store.set(peer_id, PeerTrust::Unverified { reason });
+        }
+    }
+
+    /// Open the `add a friend` compare-fingerprints flow for `peer_id`.
+    ///
+    /// This returns a [`ComparePreview`] so callers can render the
+    /// fingerprint grids without re-hashing. The UI layer also bumps
+    /// its own `trust.compare_target` signal to mount the dialog.
+    pub fn begin_compare(&self, peer_id: &str) -> Option<ComparePreview> {
+        let remote = peer_id.parse::<willow_identity::EndpointId>().ok()?;
+        let local = self.identity.endpoint_id();
+        // Bootstrap session-seed: blake3(DS_TAG || local || remote). Swap
+        // to the real per-DM key when the backend wires it up.
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(willow_crypto::SAS_DS_TAG);
+        hasher.update(local.as_bytes());
+        hasher.update(remote.as_bytes());
+        let seed = hasher.finalize();
+        let you = willow_crypto::sas_words(seed.as_bytes(), &local, &remote);
+        // Under the bootstrap derivation both sides compute the same
+        // words; diverge once a real per-DM key exists.
+        let them = you.clone();
+        Some(ComparePreview { you, them })
+    }
+
+    /// Current belief for a peer. [`PeerTrust::Unknown`] when no trust
+    /// store is attached or the peer has not been seen.
+    pub fn trust_state(&self, peer_id: &str) -> PeerTrust {
+        match self.trust_store.as_ref() {
+            Some(store) => store.get(peer_id),
+            None => PeerTrust::Unknown,
+        }
+    }
+}
+
+/// Platform-appropriate "now in epoch milliseconds". Uses
+/// `SystemTime::now()` on native and `js_sys::Date::now()` on wasm so
+/// the same code path writes timestamps from either target.
+fn now_ms() -> i64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now() as i64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
     }
 }
 
@@ -584,6 +684,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             dag_addr: dag_addr.clone(),
             view_handle,
             mutation_handle,
+            trust_store: None,
         };
 
         let event_loop = ClientEventLoop { _system: system };
@@ -882,6 +983,7 @@ pub fn test_client() -> (
         dag_addr: dag_addr.clone(),
         view_handle,
         mutation_handle,
+        trust_store: None,
     };
 
     (client, event_broker)

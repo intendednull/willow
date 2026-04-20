@@ -19,6 +19,7 @@ willow-state = { path = "../state" }
 willow-common = { path = "../common" }
 
 anyhow = { workspace = true }
+blake3 = { workspace = true }
 bytes = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
