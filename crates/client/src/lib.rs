@@ -203,6 +203,9 @@ pub struct ClientHandle<N: willow_network::Network> {
     /// Voice call state.
     pub(crate) voice_state_addr:
         willow_actor::Addr<willow_actor::StateActor<state_actors::VoiceState>>,
+    /// Presence meta (tick counter, last-seen, queue depth, self-override).
+    pub(crate) presence_meta_addr:
+        willow_actor::Addr<willow_actor::StateActor<state_actors::PresenceMeta>>,
     /// Persistence actor (owns rusqlite).
     pub(crate) persistence_addr: willow_actor::Addr<persistence_actor::PersistenceActor>,
     /// Whether persistence to disk is enabled.
@@ -245,6 +248,7 @@ impl<N: willow_network::Network> Clone for ClientHandle<N> {
             profile_state_addr: self.profile_state_addr.clone(),
             network_meta_addr: self.network_meta_addr.clone(),
             voice_state_addr: self.voice_state_addr.clone(),
+            presence_meta_addr: self.presence_meta_addr.clone(),
             persistence_addr: self.persistence_addr.clone(),
             persistence_enabled: self.persistence_enabled,
             join_links: Arc::clone(&self.join_links),
@@ -523,6 +527,9 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let voice_state_addr = system.spawn(willow_actor::StateActor::new(
             state_actors::VoiceState::default(),
         ));
+        let presence_meta_addr = system.spawn(willow_actor::StateActor::new(
+            state_actors::PresenceMeta::default(),
+        ));
         let persistence_enabled = config.persistence;
         let persistence_addr = system.spawn(persistence_actor::PersistenceActor::new(
             persistence_enabled,
@@ -678,6 +685,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             profile_state_addr,
             network_meta_addr,
             voice_state_addr,
+            presence_meta_addr,
             persistence_addr,
             persistence_enabled,
             join_links,
@@ -841,6 +849,9 @@ pub fn test_client() -> (
     let voice_state_addr = sys.spawn(willow_actor::StateActor::new(
         state_actors::VoiceState::default(),
     ));
+    let presence_meta_addr = sys.spawn(willow_actor::StateActor::new(
+        state_actors::PresenceMeta::default(),
+    ));
     let persistence_addr = sys.spawn(persistence_actor::PersistenceActor::new(false));
     let event_broker = sys.spawn(willow_actor::Broker::<ClientEvent>::new());
     let dag_addr = sys.spawn(willow_actor::StateActor::new(dag_state));
@@ -977,6 +988,7 @@ pub fn test_client() -> (
         profile_state_addr,
         network_meta_addr,
         voice_state_addr,
+        presence_meta_addr,
         persistence_addr,
         persistence_enabled: false,
         join_links,
