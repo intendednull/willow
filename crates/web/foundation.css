@@ -181,3 +181,36 @@ body {
   --moss-0: #3a1a10; --moss-1: #6e3722; --moss-2: #b5644a;
   --moss-3: #d98a68; --moss-4: #f2b89e; --willow: #d48a6a;
 }
+
+/* ── Scrollbar (Firefox + WebKit) ───────────────────────────────── */
+.scroll {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg-3) transparent;
+}
+.scroll::-webkit-scrollbar       { width: 8px; }
+.scroll::-webkit-scrollbar-thumb { background: var(--bg-3); border-radius: 4px; }
+.scroll::-webkit-scrollbar-track { background: transparent; }
+
+@media (max-width: 720px) {
+  .scroll::-webkit-scrollbar { width: 6px; }
+}
+
+.noscroll::-webkit-scrollbar { width: 0; height: 0; }
+.noscroll                    { scrollbar-width: none; }
+
+/* ── Selection ──────────────────────────────────────────────────── */
+::selection { background: var(--moss-1); color: var(--ink-0); }
+
+/* ── Focus-visible (accessibility baseline) ─────────────────────── */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Composer + message bodies never trap focus. */
+textarea:focus-visible,
+[contenteditable]:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
