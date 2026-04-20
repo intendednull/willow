@@ -150,3 +150,34 @@ body {
 #app-root.density-cozy    { --msg-pad: 10px 24px; } /* breathing room */
 #app-root.density-balanced{ --msg-pad:  8px 24px; }
 #app-root.density-dense   { --msg-pad:  4px 24px; } /* power-user scroll */
+
+/* ── Accent variants — overwrite --moss-*, --willow only ───────────── */
+
+[data-accent="moss"] {
+  --moss-0: #2a3a28; --moss-1: #425c3d; --moss-2: #6a8d5e;
+  --moss-3: #93b582; --moss-4: #c3d8b2; --willow: #b8c67a;
+}
+[data-accent="willow"] {
+  --moss-0: #353b22; --moss-1: #5a663a; --moss-2: #a7b86a;
+  --moss-3: #c1d18a; --moss-4: #e4ecb8; --willow: #b8c67a;
+}
+[data-accent="amber"] {
+  --moss-0: #3a2c18; --moss-1: #7a5a2e; --moss-2: #c99b55;
+  --moss-3: #e0b57a; --moss-4: #f2d8a8; --willow: #c99b55;
+}
+[data-accent="dusk"] {
+  --moss-0: #2d2438; --moss-1: #5a4a72; --moss-2: #a88fc9;
+  --moss-3: #c2adda; --moss-4: #e0d4ef; --willow: #c2adda;
+}
+[data-accent="cedar"] {
+  --moss-0: #2e1e10; --moss-1: #5e3e20; --moss-2: #a47848;
+  --moss-3: #c99b55; --moss-4: #e6c08a; --willow: #d0a878;
+}
+[data-accent="lichen"] {
+  --moss-0: #18302a; --moss-1: #2e5b4c; --moss-2: #5a9580;
+  --moss-3: #86c1ae; --moss-4: #b8dccc; --willow: #89b6a5;
+}
+[data-accent="ember"] {
+  --moss-0: #3a1a10; --moss-1: #6e3722; --moss-2: #b5644a;
+  --moss-3: #d98a68; --moss-4: #f2b89e; --willow: #d48a6a;
+}
