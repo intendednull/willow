@@ -197,28 +197,12 @@ pub fn App() -> impl IntoView {
         );
     }
 
-    // Register Ctrl+K / Cmd+K for command palette.
-    {
-        use wasm_bindgen::JsCast;
-        let write_for_palette = write;
-        let closure = wasm_bindgen::closure::Closure::<dyn Fn(web_sys::KeyboardEvent)>::new(
-            move |ev: web_sys::KeyboardEvent| {
-                if (ev.ctrl_key() || ev.meta_key()) && ev.key() == "k" {
-                    ev.prevent_default();
-                    write_for_palette.ui.set_show_palette.update(|v| *v = !*v);
-                }
-            },
-        );
-        if let Some(window) = web_sys::window() {
-            window
-                .add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref())
-                .ok();
-        }
-        closure.forget();
-    }
-
     // Wire derived signals that auto-update from state actor changes.
     crate::state::wire_derived_signals(&handle, handle.actor_system(), &write);
+
+    // Install global keybindings (palette toggle, Esc close-stack,
+    // Alt+↑ / Alt+↓ grove switch).
+    crate::keybindings::install(app_state, write);
 
     // Detect join link from URL fragment.
     {
