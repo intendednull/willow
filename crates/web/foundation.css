@@ -1,0 +1,13 @@
+/* foundation.css — willow UI foundation tokens
+ *
+ * Source spec: docs/specs/2026-04-19-ui-design/foundation.md
+ * Parent:      docs/specs/2026-04-19-ui-design/README.md
+ *
+ * This file is the single source of truth for willow's design primitives:
+ * palette, typography, iconography rules, motion, density, accent variants,
+ * states, scrollbars, selection, and focus. It is loaded BEFORE style.css;
+ * style.css remaps its legacy tokens to reference the foundation below.
+ *
+ * Nothing in this file touches component selectors. Components keep their
+ * own stylesheets; they consume foundation tokens by name.
+ */
