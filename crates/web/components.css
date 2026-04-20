@@ -257,7 +257,7 @@
 }
 
 .grove-tile-glyph {
-    font-family: var(--font-display);
+    font-family: var(--font-display), system-ui, sans-serif;
     font-style: italic;
     font-weight: 500;
     font-size: 17px;
@@ -316,7 +316,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-family: var(--font-display);
+    font-family: var(--font-display), system-ui, sans-serif;
     font-style: italic;
     font-weight: 500;
     font-size: 14px;
@@ -654,7 +654,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-family: var(--font-display);
+    font-family: var(--font-display), system-ui, sans-serif;
     font-style: italic;
     font-weight: 500;
     font-size: 14px;
