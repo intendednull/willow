@@ -5194,10 +5194,7 @@ mod presence_atom {
         });
         tick().await;
         let icon = query(&container, ".status-dot__glyph .icon-hourglass-sm");
-        assert!(
-            icon.is_some(),
-            "queued must render icon-hourglass-sm glyph",
-        );
+        assert!(icon.is_some(), "queued must render icon-hourglass-sm glyph",);
     }
 
     #[wasm_bindgen_test]
@@ -5211,8 +5208,7 @@ mod presence_atom {
             }
         });
         tick().await;
-        let count = query(&container, ".peer-status-label__count")
-            .expect("__count span missing");
+        let count = query(&container, ".peer-status-label__count").expect("__count span missing");
         assert_eq!(text(&count), "5");
         // Above 99 caps to 99+.
         let container = mount_test(|| {
@@ -5333,11 +5329,7 @@ mod presence_atom {
             ".presence-pulse { animation: presencePulse 1200ms ease-in-out infinite; } \
              @media (prefers-reduced-motion: reduce) { .presence-pulse { animation: none; } }",
         ));
-        document
-            .head()
-            .unwrap()
-            .append_child(&style)
-            .unwrap();
+        document.head().unwrap().append_child(&style).unwrap();
 
         let container = mount_test(|| {
             view! {
@@ -5363,4 +5355,3 @@ mod presence_atom {
         );
     }
 }
-

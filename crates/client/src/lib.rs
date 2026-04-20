@@ -372,11 +372,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
     /// Stub: set the whisper session status for a peer. Real wiring
     /// lands in the whisper-mode phase.
     #[doc(hidden)]
-    pub async fn _set_whispering_with(
-        &self,
-        peer_id: willow_identity::EndpointId,
-        active: bool,
-    ) {
+    pub async fn _set_whispering_with(&self, peer_id: willow_identity::EndpointId, active: bool) {
         willow_actor::state::mutate(&self.presence_meta_addr, move |pm| {
             if active {
                 pm.whispering_with.insert(peer_id);
@@ -390,11 +386,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
     /// Stub: set the queued-outbound depth for a peer. Real wiring
     /// lands in the sync-queue phase.
     #[doc(hidden)]
-    pub async fn _set_queue_depth(
-        &self,
-        peer_id: willow_identity::EndpointId,
-        depth: u32,
-    ) {
+    pub async fn _set_queue_depth(&self, peer_id: willow_identity::EndpointId, depth: u32) {
         willow_actor::state::mutate(&self.presence_meta_addr, move |pm| {
             if depth == 0 {
                 pm.queue_depth.remove(&peer_id);
@@ -1744,13 +1736,14 @@ mod tests {
 
         // Advance past gone_ticks (=5) — tick 6 to guarantee we cross it.
         for _ in 0..6 {
-            connect::tick_once_for_test(&client.presence_meta_addr, &client.chat_meta_addr)
-                .await;
+            connect::tick_once_for_test(&client.presence_meta_addr, &client.chat_meta_addr).await;
         }
         // Let the derived view settle after the mutation burst.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let pm = willow_actor::state::get(&client.presence_meta_addr).await;
-        let elapsed = pm.now.saturating_sub(pm.last_seen.get(&bob).copied().unwrap_or(0));
+        let elapsed = pm
+            .now
+            .saturating_sub(pm.last_seen.get(&bob).copied().unwrap_or(0));
         let after = client.observe_peer_presence(bob).await;
         assert_eq!(
             after,

@@ -10,9 +10,7 @@ use willow_network::TopicHandle as _;
 /// On native we use `tokio::spawn`; on wasm we use
 /// `wasm_bindgen_futures::spawn_local` with `gloo-timers` for sleep.
 fn spawn_presence_tick(
-    presence_meta_addr: willow_actor::Addr<
-        willow_actor::StateActor<state_actors::PresenceMeta>,
-    >,
+    presence_meta_addr: willow_actor::Addr<willow_actor::StateActor<state_actors::PresenceMeta>>,
     chat_meta_addr: willow_actor::Addr<willow_actor::StateActor<state_actors::ChatMeta>>,
 ) {
     #[cfg(not(target_arch = "wasm32"))]
@@ -42,18 +40,14 @@ fn spawn_presence_tick(
 /// it directly without spawning a timer task.
 #[cfg(any(test, feature = "test-utils"))]
 pub async fn tick_once_for_test(
-    presence_meta_addr: &willow_actor::Addr<
-        willow_actor::StateActor<state_actors::PresenceMeta>,
-    >,
+    presence_meta_addr: &willow_actor::Addr<willow_actor::StateActor<state_actors::PresenceMeta>>,
     chat_meta_addr: &willow_actor::Addr<willow_actor::StateActor<state_actors::ChatMeta>>,
 ) {
     tick_once(presence_meta_addr, chat_meta_addr).await;
 }
 
 async fn tick_once(
-    presence_meta_addr: &willow_actor::Addr<
-        willow_actor::StateActor<state_actors::PresenceMeta>,
-    >,
+    presence_meta_addr: &willow_actor::Addr<willow_actor::StateActor<state_actors::PresenceMeta>>,
     chat_meta_addr: &willow_actor::Addr<willow_actor::StateActor<state_actors::ChatMeta>>,
 ) {
     let reachable = willow_actor::state::select(chat_meta_addr, |c| c.peers.clone()).await;
@@ -251,10 +245,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         // while reachable. When a peer drops out of `chat_meta.peers`
         // their last_seen stays frozen so elapsed = now - last_seen
         // climbs past the idle / gone thresholds in due course.
-        spawn_presence_tick(
-            self.presence_meta_addr.clone(),
-            self.chat_meta_addr.clone(),
-        );
+        spawn_presence_tick(self.presence_meta_addr.clone(), self.chat_meta_addr.clone());
 
         self.broadcast_profile_via_network();
         // Also announce via SERVER_OPS_TOPIC for peers that have a sync path

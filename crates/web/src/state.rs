@@ -675,10 +675,7 @@ pub fn wire_derived_signals<N: willow_network::Network>(
             .collect::<HashMap<String, willow_client::presence::PresenceState>>()
     });
     leptos::prelude::Effect::new(move || {
-        write
-            .presence
-            .set_per_peer
-            .set(presence_per_peer_sig.get())
+        write.presence.set_per_peer.set(presence_per_peer_sig.get())
     });
 
     let presence_self_sig = derived_signal(&views.presence, system, |pv| pv.self_state);
@@ -686,8 +683,7 @@ pub fn wire_derived_signals<N: willow_network::Network>(
         write.presence.set_self_state.set(presence_self_sig.get())
     });
 
-    let presence_override_sig =
-        derived_signal(&views.presence_meta, system, |pm| pm.self_override);
+    let presence_override_sig = derived_signal(&views.presence_meta, system, |pm| pm.self_override);
     leptos::prelude::Effect::new(move || {
         write
             .presence
