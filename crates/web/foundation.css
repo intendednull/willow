@@ -292,3 +292,12 @@ a { color: inherit; }
 
 /* Exclamation marks are prohibited in copy per foundation §Copy voice —
    no enforcement in CSS, but noted here for lint tooling. */
+
+/* ── Shell toggle custom property ────────────────────────────────── */
+/* Single source of truth for desktop / mobile shell selection.
+ * Consumed by `.shell-desktop` / `.shell-mobile` in components.css.
+ * Breakpoint is 720 px (spec §Window / viewport breakpoints). */
+:root { --shell: desktop; }
+@media (max-width: 720px) {
+  :root { --shell: mobile; }
+}

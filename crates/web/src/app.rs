@@ -26,6 +26,25 @@ fn init_theme() {
     .ok();
 }
 
+/// One-shot user-agent sniff to tag the app root with
+/// `data-platform="ios|android|web"`. The tab-bar styling branches on
+/// this attribute (iOS blur vs Android pill). Per plan: sniff once at
+/// boot, no reactive re-detection.
+fn detect_platform() -> &'static str {
+    let ua = web_sys::window()
+        .and_then(|w| w.navigator().user_agent().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if ua.contains("iphone") || ua.contains("ipad") || ua.contains("ipod") {
+        "ios"
+    } else if ua.contains("android") {
+        "android"
+    } else {
+        "web"
+    }
+}
+
 #[allow(dead_code)]
 pub fn toggle_theme() {
     js_sys::eval(
@@ -454,8 +473,10 @@ pub fn App() -> impl IntoView {
 
     let join_token_signal = app_state.ui.join_token;
 
+    let platform = detect_platform();
+
     view! {
-        <div id="app-root" class="density-balanced" data-accent="moss">
+        <div id="app-root" class="density-balanced" data-accent="moss" data-platform=platform>
             {move || {
                 // Join link takes priority over everything.
                 if join_token_signal.get().is_some() {
@@ -487,6 +508,8 @@ pub fn App() -> impl IntoView {
                 let vm_v = vm_for_view.clone();
                 let pin = on_pin.clone();
                 view! {
+                    <>
+                    <div class="shell-desktop" aria-hidden="false">
                     <div
                         class="app app-shell"
                         data-rail-open=move || {
@@ -851,6 +874,11 @@ pub fn App() -> impl IntoView {
                             }
                         }}
                     </div>
+                    </div>
+                    <div class="shell-mobile" aria-hidden="false">
+                        // Task 2 mounts <MobileShell> here.
+                    </div>
+                    </>
                 }.into_any()
             }
         }}

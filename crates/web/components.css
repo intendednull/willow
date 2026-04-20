@@ -6,6 +6,41 @@
  * — NO raw hex, no new palette.
  */
 
+/* ── Shell split (desktop vs mobile) ─────────────────────────────── */
+
+/* `.shell-desktop` uses `display: contents` so the existing
+ * `.app-shell` grid keeps controlling its own layout. It is just a
+ * grouping wrapper whose only job is to toggle visibility against
+ * `.shell-mobile`. */
+.shell-desktop {
+    display: contents;
+}
+
+/* `.shell-mobile` is a flex column that occupies the whole viewport
+ * when active. Safe-area insets absorb the notched chrome on iOS /
+ * Android. */
+.shell-mobile {
+    display: none;
+    flex-direction: column;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+    background: var(--bg-0);
+    overflow: hidden;
+    padding-top: env(safe-area-inset-top);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+}
+
+@media (max-width: 720px) {
+    .shell-desktop {
+        display: none;
+    }
+    .shell-mobile {
+        display: flex;
+    }
+}
+
 /* ── App shell grid ──────────────────────────────────────────────── */
 
 /* Desktop three-pane shell: grove-rail / channel-sidebar / main / right-rail.
