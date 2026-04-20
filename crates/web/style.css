@@ -2941,6 +2941,88 @@ select:focus-visible {
     animation: willow-pop-in var(--motion) var(--motion-ease);
 }
 
+/* ── Welcome step 1 (display name first) ─────────────────────────── */
+
+.welcome-step {
+    animation: willow-pop-in var(--motion-slow) var(--motion-ease);
+}
+
+.welcome-step--name {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    padding: 16px 0;
+}
+
+.willow-mark--small {
+    font-size: 44px;
+    margin-bottom: 4px;
+}
+
+.welcome-name-heading {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 400;
+    font-size: 32px;
+    line-height: 1.15;
+    letter-spacing: -0.01em;
+    color: var(--ink-0);
+    margin: 0;
+    text-align: center;
+    max-width: 460px;
+}
+
+/* Override legacy welcome-card h1 rule. */
+.welcome-card h1.welcome-name-heading {
+    font-size: 32px;
+    font-weight: 400;
+    margin-bottom: 0;
+}
+
+.welcome-name-sub {
+    font-family: var(--font-ui);
+    font-size: 13px;
+    color: var(--ink-3);
+    margin: -6px 0 6px;
+    text-align: center;
+    max-width: 360px;
+    line-height: 1.5;
+}
+
+.welcome-name-input {
+    width: 100%;
+    max-width: 420px;
+    padding: 14px 18px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--ink-0);
+    font-family: var(--font-ui);
+    font-size: 17px;
+    text-align: center;
+    outline: none;
+    transition:
+        border-color var(--transition-normal),
+        box-shadow var(--transition-normal);
+}
+
+.welcome-name-input:focus {
+    border-color: var(--accent);
+    box-shadow: var(--focus-ring);
+}
+
+.welcome-name-input::placeholder {
+    color: var(--text-placeholder);
+    font-style: italic;
+}
+
+.welcome-continue-btn {
+    width: 100%;
+    max-width: 420px;
+    margin-top: 4px;
+}
+
 /* ── Welcome shared display-name row (above tabs) ─────────────────── */
 
 .welcome-name-row {
