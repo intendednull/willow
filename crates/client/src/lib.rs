@@ -39,7 +39,7 @@ pub mod worker_cache;
 
 mod accessors;
 mod actions;
-mod connect;
+pub mod connect;
 mod joining;
 mod servers;
 mod voice;
@@ -1709,6 +1709,59 @@ mod tests {
 
         let state = client.observe_peer_presence(bob).await;
         assert_eq!(state, presence::PresenceState::Here);
+    }
+
+    /// A queued peer that stays unreachable past the gone threshold
+    /// flips from `Queued` → `Gone` on the next tick. Drives the
+    /// tick-once helper manually to avoid waiting real seconds.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn presence_queued_then_gone_after_threshold() {
+        let (client, _rx) = test_client();
+        let bob = willow_identity::Identity::generate().endpoint_id();
+
+        // Start with bob reachable + a short gone threshold so we don't
+        // have to advance the clock 172_800 ticks.
+        client.mutations().peer_connected(bob).await;
+        willow_actor::state::mutate(&client.presence_meta_addr, |pm| {
+            pm.gone_ticks = 5;
+            pm.idle_ticks = 3;
+        })
+        .await;
+        client._set_queue_depth(bob, 2).await;
+
+        // Advance one tick while reachable — last_seen stays fresh.
+        connect::tick_once_for_test(&client.presence_meta_addr, &client.chat_meta_addr).await;
+        // Drop bob offline and advance a few ticks.
+        client.mutations().peer_disconnected(bob).await;
+        // Allow the derived view to recompute.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // queue > 0 + reachable = false ⇒ Queued before gone threshold.
+        let before = client.observe_peer_presence(bob).await;
+        assert!(
+            matches!(before, presence::PresenceState::Queued(_)),
+            "expected Queued, got {before:?}",
+        );
+
+        // Advance past gone_ticks (=5) — tick 6 to guarantee we cross it.
+        for _ in 0..6 {
+            connect::tick_once_for_test(&client.presence_meta_addr, &client.chat_meta_addr)
+                .await;
+        }
+        // Let the derived view settle after the mutation burst.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let pm = willow_actor::state::get(&client.presence_meta_addr).await;
+        let elapsed = pm.now.saturating_sub(pm.last_seen.get(&bob).copied().unwrap_or(0));
+        let after = client.observe_peer_presence(bob).await;
+        assert_eq!(
+            after,
+            presence::PresenceState::Gone,
+            "after crossing gone_ticks the state must flip to Gone \
+             (now={}, last_seen={:?}, elapsed={}, gone_ticks={})",
+            pm.now,
+            pm.last_seen.get(&bob),
+            elapsed,
+            pm.gone_ticks,
+        );
     }
 
     /// Regression test for issue #114: switching `join_links` to
