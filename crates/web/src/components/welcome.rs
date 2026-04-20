@@ -48,16 +48,13 @@ pub fn WelcomeScreen(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Into
                                 {icons::icon_willow_mark()}
                             </div>
                             <h1 class="welcome-name-heading">
-                                "what should peers call you?"
+                                "display name"
                             </h1>
-                            <p class="welcome-name-sub">
-                                "optional — you can skip and use your peer id instead."
-                            </p>
                             <input
                                 class="welcome-name-input"
                                 type="text"
                                 autofocus
-                                placeholder="display name"
+                                placeholder="enter your name (optional)"
                                 prop:value=move || display_name.get()
                                 on:input=move |ev| set_display_name.set(event_target_value(&ev))
                                 on:keydown=on_continue_key
