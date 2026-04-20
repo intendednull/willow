@@ -4271,6 +4271,20 @@ select:focus-visible {
     z-index: 2;
 }
 
+/* Holder pill slot in the channel header. */
+.mph-holder {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    margin-right: 10px;
+}
+.mph-holder-popover {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 40;
+}
+
 /* Live region is visually hidden but must preserve announcement layout. */
 #trust-live-region { position: absolute; }
 
