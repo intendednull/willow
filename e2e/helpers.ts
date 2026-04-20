@@ -9,8 +9,6 @@ export async function waitForApp(page: Page) {
     '.welcome-screen:visible, .shell-desktop .app:visible, .shell-mobile .mobile-top-bar:visible, .join-card:visible',
     { timeout: 30_000 },
   );
-  // Give WASM a moment to stabilize.
-  await page.waitForTimeout(1000);
 }
 
 /** Clear all Willow localStorage keys and IndexedDB databases, then reload. */
@@ -396,7 +394,13 @@ export async function joinViaInvite(page: Page, inviteCode: string, displayName?
       timeout: 20_000,
     });
   }
-  await page.waitForTimeout(3000);
+  // Deterministic post-join settle: wait for the sidebar + first channel
+  // to materialise. Covers both shells.
+  await page.locator(`${visibleShell(page)} .channel-sidebar, ${visibleShell(page)} .mobile-home`)
+    .first()
+    .waitFor({ timeout: 20_000 });
+  await page.locator(`${visibleShell(page)} .channel-item`).first()
+    .waitFor({ timeout: 20_000 });
 }
 
 /** Sets up two peers: peer1 creates a server, peer2 joins via invite. */
