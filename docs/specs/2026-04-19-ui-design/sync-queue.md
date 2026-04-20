@@ -2,7 +2,7 @@
 
 **Parent:** [README.md](README.md)
 **Status:** draft
-**Dependencies:** [`foundation.md`](foundation.md), [`layout-primitives.md`](layout-primitives.md), [`messaging.md`](messaging.md), [`letters-dms.md`](letters-dms.md)
+**Dependencies:** [`foundation.md`](foundation.md), [`layout-primitives.md`](layout-primitives.md), [`message-row.md`](message-row.md), [`letters-dms.md`](letters-dms.md)
 
 ## Purpose
 

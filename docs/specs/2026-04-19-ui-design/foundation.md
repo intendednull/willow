@@ -302,6 +302,81 @@ do not trap focus.
 See parent (`README.md`) for the top-level glossary. Child specs may *add*
 terms but may not redefine existing ones.
 
+## States (empty, loading, error, skeleton)
+
+Every surface will render four extra states beyond "populated". Child
+specs own their copy, but the visual pattern and the contract live here
+so drift can't set in.
+
+### Empty
+
+For collections with no items. Use an italic Fraunces primary line and
+a small muted Plex Sans follow-up. Never show an icon for an empty
+state unless it is the only way to convey the concept (the sync-queue
+welcome banner is one of the few licensed exceptions).
+
+Shape:
+```
+{italic Fraunces headline, --ink-1, 17 px}
+{Plex Sans hint, --ink-3, 13 px, max one line}
+{optional primary action, only if the user has one clear next step}
+```
+
+Examples (owning spec):
+- channel with no messages → "this channel is quiet. say hi?" (message-row.md)
+- no letters → "no letters yet — send the first" (letters-dms.md)
+- no pinned fragment → "no pinned fragment" (profile-card.md)
+
+### Loading
+
+- **Content loading (skeleton)** — use the `shimmer` keyframe defined
+  under §Motion. Skeleton blocks are `--bg-2` with a 200 ms delayed
+  start so that fast networks never flash. Max three rows of skeleton
+  per surface — don't mimic dozens of rows.
+- **Inline / streamed** — show a short mono italic `loading…` in
+  `--ink-3` when replacing the whole surface would be disruptive.
+- **Indeterminate progress** — a thin 2 px bar in `--moss-2` at the top
+  of the surface, sliding from left to right with `willowPulse`-style
+  opacity (not a spinner).
+
+Reduced-motion path: static `--bg-2` blocks; no shimmer, no slide.
+
+### Error
+
+- Use the `--err` token for both fill and icon. Icon is always present
+  (colour is never the only signifier).
+- Structure: a small card or toast, never a full-pane error unless the
+  whole surface is unreachable.
+- Copy rules (carry forward the copy-voice §):
+  - Never punish; never imply the user broke anything.
+  - Offer the recovery action inline, not in a dialog.
+  - "couldn't reach peer · will retry" beats "Error 502".
+- Unreachable surface pattern (worst case):
+  ```
+  {italic Fraunces: "this room is quiet right now"}
+  {Plex Sans --ink-3: "we can't reach peers for this grove. willow will keep trying."}
+  {button: "retry"}  {button-link: "report"}
+  ```
+
+### Skeleton vs placeholder
+
+"Skeleton" means a structural preview of the same layout about to
+render. "Placeholder" means a neutral copy hint (usually italic, no
+shimmer) shown while the user *has nothing yet*. Use skeleton for
+"loading what exists"; use placeholder for "populate this to see
+content".
+
+### Per-state acceptance
+
+Each child spec ships all four states before it can move out of draft:
+- empty (listed)
+- loading (skeleton + reduced-motion path)
+- error (token, copy, recovery action)
+- skeleton (or a note "not applicable — this surface has no list")
+
+Children do not need to restate the above shapes; they only provide
+their own copy.
+
 ## Accessibility baseline
 
 - Contrast ratios meet WCAG AA on default theme. All body text combinations

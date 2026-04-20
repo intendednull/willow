@@ -69,6 +69,8 @@ See `foundation.md` for full definitions.
   for ambient ephemeral warning; `willow-pop-in` for toasts and popovers.
 - **Density:** `cozy`, `balanced` (default), `dense` — changes message vertical
   rhythm only.
+- **States:** empty, loading (shimmer skeleton or mono `loading…`), error
+  (token + icon + recovery action), skeleton. Defined in `foundation.md` §States.
 
 ## Terminology map
 
@@ -94,39 +96,61 @@ refactor. Each child spec lists the exact copy strings it owns.
 | offline queue      | sync queue               | |
 | device transfer    | handoff                  | verb: *move this call* |
 | verified (SAS)     | verified peer            | inverse: *unverified — compare fingerprints* |
+| presence           | here / away / whispering / in a call / queued / gone | see `presence.md` |
 
-## Child spec index
+## Spec inventory
 
-Each child spec is a self-contained unit that can be planned and implemented
-on its own. The parent spec (this file) is the integration contract: anything
-a child needs from another child is declared explicitly as a dependency in its
-header.
+Two classes of document live in this folder:
+
+- **UX specs** — the behavioural / visual / copy source of truth for a
+  specific surface or atom. Each has its own dependency header and drives
+  one implementation plan.
+- **Reference docs** — cross-cutting artefacts derived from the specs.
+  They do not drive plans; they exist to prevent drift and keep the spec
+  set coherent.
+
+### UX specs
 
 | # | Spec | Purpose |
 |---|------|---------|
-| 1 | [`foundation.md`](foundation.md) | Palette, typography, iconography, motion, density, accent variants, copy voice, accessibility baseline. Everything else depends on this. |
-| 2 | [`layout-primitives.md`](layout-primitives.md) | Desktop three-pane + mobile bottom-tab chrome. Grove rail, channel sidebar, main pane, thread/members right rail, mobile tab bar, swipe drawer, bottom sheets. |
-| 3 | [`messaging.md`](messaging.md) | Message rendering, mentions, reactions, pins, code blocks, inline files, hover toolbar (desktop), long-press action sheet (mobile), edit/delete/reply, composer, typing. |
-| 4 | [`thread-pane.md`](thread-pane.md) | Thread parent card, reply list, sealed-participants footer, composer. Right-rail on desktop, full-screen on mobile. |
-| 5 | [`profile-card.md`](profile-card.md) | Enriched profile: pronouns, nickname, bio, tagline, crest pattern, pinned fragment, shared groves, elsewhere. Desktop popover, mobile bottom sheet. Self vs peer variants. |
-| 6 | [`trust-verification.md`](trust-verification.md) | SAS 6-word fingerprint grid, verified / unverified / pending-verify badges, "compare fingerprints" flow, long-press SAS on mobile, holder counts per channel. |
-| 7 | [`whisper-mode.md`](whisper-mode.md) | Whisper pill inside calls, whisper-marked letters, whisper-marked messages, whisper status on profile, activation + teardown UX. |
-| 8 | [`ephemeral-channels.md`](ephemeral-channels.md) | Timer surfacing, expiration warnings, "keys burned" copy, lock-screen-style timer on mobile, creation + extension flow. |
-| 9 | [`sync-queue.md`](sync-queue.md) | Offline indicator, per-peer queue count, per-message queue note, pull-down-to-reveal on mobile, dedicated sync-queue screen. |
-| 10 | [`device-handoff.md`](device-handoff.md) | "Move this call" popover, device list, re-seal messaging, handoff confirmation, desktop popover vs mobile sheet. |
-| 11 | [`call-experience.md`](call-experience.md) | Grove call layout, grid / focus / spotlight, screen-share canvas, speaking stats, controls strip, whisper + handoff integration points. |
-| 12 | [`letters-dms.md`](letters-dms.md) | Peer letters + group letters list, verified / unverified / pending markers, whisper / queued markers, open thread, composition surface. |
-| 13 | [`discover.md`](discover.md) | Grove discovery directory, cards, join flow. |
-| 14 | [`governance.md`](governance.md) | Governance, manage (roles / invites / files), event log. Owner/admin surfaces. |
-| 15 | [`onboarding.md`](onboarding.md) | Identity creation, crest + pronouns, fingerprint intro, first-grove flow, first-SAS ceremony. |
-| 16 | [`settings-tweaks.md`](settings-tweaks.md) | Account settings + Tweaks panel (accent swap, density, crypto visibility, wordmark toggle). |
+| 1 | [`foundation.md`](foundation.md) | Palette, typography, iconography, motion, density, states, accent variants, copy voice, accessibility baseline. Everything else depends on this. |
+| 2 | [`layout-primitives.md`](layout-primitives.md) | Desktop three-pane + mobile bottom-tab chrome. Grove rail, channel sidebar, main pane, right rail, mobile tab bar, swipe drawer, bottom sheets, command palette. |
+| 3 | [`trust-verification.md`](trust-verification.md) | SAS 6-word fingerprint grid, verified / unverified / pending-verify badges, `add a friend` compare flow, long-press SAS on mobile, holder counts per channel. |
+| 4 | [`presence.md`](presence.md) | Canonical presence state catalog + `StatusDot` + `PeerStatusLabel` atoms + self-presence overrides. |
+| 5 | [`notifications.md`](notifications.md) | In-app toast stack, unread badge rendering, OS push content contract, sound, per-surface mute overrides. |
+| 6 | [`local-search.md`](local-search.md) | On-device encrypted-at-rest search index + scope ladder + `/`, `⌘F`, palette entry points. |
+| 7 | [`message-row.md`](message-row.md) | Message rendering, author grouping, day separators, mentions, inline code, pin indicator, queue notes, whisper-marked row, hover toolbar container, long-press action-sheet container, swipe gestures. |
+| 8 | [`composer.md`](composer.md) | Textarea autosize, attach / emoji / send buttons, reply preview, edit mode, keybindings, mention autocomplete, typing indicator, placeholder copy per channel kind. |
+| 9 | [`reactions-pins.md`](reactions-pins.md) | Reactions strip, reactor tooltip, emoji picker, pin action + permission gate, pinned panel contents. |
+| 10 | [`files-inline.md`](files-inline.md) | File card, inline image, voice note, upload dialog, drag-and-drop, paste-to-upload. |
+| 11 | [`thread-pane.md`](thread-pane.md) | Thread parent card, reply list, sealed-participants footer, thread composer. Right-rail on desktop, full-screen on mobile. |
+| 12 | [`profile-card.md`](profile-card.md) | Enriched profile: pronouns, nickname, bio, tagline, crest pattern, pinned fragment, shared groves, elsewhere. Desktop popover, mobile bottom sheet. |
+| 13 | [`ephemeral-channels.md`](ephemeral-channels.md) | Timer surfacing, expiration warnings, "keys burned" copy, lock-screen-style timer on mobile, creation + extension flow. |
+| 14 | [`sync-queue.md`](sync-queue.md) | Offline indicator, per-peer queue count, per-message queue note, pull-down-to-reveal on mobile, dedicated sync-queue screen. |
+| 15 | [`call-experience.md`](call-experience.md) | Grove / grid / focus layouts, participant tile, screen-share canvas, speaking stats, controls strip. |
+| 16 | [`whisper-mode.md`](whisper-mode.md) | Whisper pill inside calls, whisper-marked letters, whisper-marked messages, whisper status on profile, activation + teardown UX. |
+| 17 | [`device-handoff.md`](device-handoff.md) | `move this call` popover, device list, re-seal messaging, handoff confirmation, desktop popover vs mobile sheet. |
+| 18 | [`letters-dms.md`](letters-dms.md) | Peer letters + group letters list, verified / unverified / pending markers, whisper / queued markers, thread, composition. |
+| 19 | [`discover.md`](discover.md) | Grove discovery directory, cards, join flow. |
+| 20 | [`governance.md`](governance.md) | Governance, manage (roles / invites / files), event log. Owner/admin surfaces. |
+| 21 | [`onboarding.md`](onboarding.md) | Identity creation, crest + pronouns, `add a friend` intro, first-grove flow, first-SAS ceremony. |
+| 22 | [`settings-tweaks.md`](settings-tweaks.md) | Account settings + Tweaks panel (accent swap, density, crypto visibility, wordmark toggle). |
+
+### Reference docs
+
+| Doc | Purpose |
+|-----|---------|
+| [`flows.md`](flows.md) | 15 canonical user journeys stitched across specs. Surfaces hand-off gaps between specs. |
+| [`security-posture.md`](security-posture.md) | Threat model, trust boundaries, UX invariants, red-line prohibitions. Vetoes future spec changes that violate security properties. |
+| [`data-deps-rollup.md`](data-deps-rollup.md) | Aggregated view of every new `willow-state` event, signal, storage shape, and protocol the UX demands. Consult before writing plans. |
+| [`audit.md`](audit.md) | Fresh-agent audit of specs vs reference bundle (2026-04-19). Historical record of gaps found + fixed. |
 
 ## Dependency graph
 
-Each child declares its dependencies in its own header. Below is the full
-DAG assembled from those declarations. Edges read "requires" (a → b means
-"a requires b to be defined and agreed first"). The graph is acyclic; a
-valid implementation order is any topological sort.
+Every spec declares its own dependencies in its header. The tier table below
+is the full DAG assembled from those declarations. Edges read "requires":
+`a → b` means `a` needs `b` defined and agreed first. The graph is acyclic.
+Reference docs have no tier — they stand outside the implementation order.
 
 ### Tier table
 
@@ -135,49 +159,93 @@ valid implementation order is any topological sort.
 | 0 | `foundation.md` | — |
 | 1 | `layout-primitives.md` | foundation |
 | 1 | `trust-verification.md` | foundation |
-| 2 | `messaging.md` | layout-primitives |
-| 2 | `profile-card.md` | layout-primitives, trust-verification |
-| 2 | `ephemeral-channels.md` | layout-primitives |
-| 2 | `sync-queue.md` | layout-primitives, messaging |
-| 3 | `thread-pane.md` | messaging |
-| 3 | `call-experience.md` | layout-primitives, messaging |
-| 3 | `letters-dms.md` | messaging, profile-card, trust-verification, sync-queue |
-| 3 | `governance.md` | layout-primitives, profile-card, trust-verification |
-| 4 | `whisper-mode.md` | call-experience, letters-dms, messaging, trust-verification |
+| 1 | `presence.md` | foundation, layout-primitives |
+| 1 | `notifications.md` | foundation, layout-primitives |
+| 2 | `message-row.md` | foundation, layout-primitives |
+| 2 | `profile-card.md` | foundation, layout-primitives, trust-verification |
+| 2 | `ephemeral-channels.md` | foundation, layout-primitives |
+| 2 | `sync-queue.md` | foundation, layout-primitives, message-row |
+| 2 | `local-search.md` | foundation, layout-primitives |
+| 3 | `composer.md` | foundation, layout-primitives, message-row |
+| 3 | `reactions-pins.md` | foundation, layout-primitives, message-row |
+| 3 | `files-inline.md` | foundation, layout-primitives, message-row, composer |
+| 3 | `thread-pane.md` | foundation, layout-primitives, message-row, composer |
+| 3 | `call-experience.md` | foundation, layout-primitives, message-row, composer |
+| 3 | `letters-dms.md` | foundation, layout-primitives, message-row, composer, profile-card, trust-verification, sync-queue, local-search |
+| 3 | `governance.md` | foundation, layout-primitives, profile-card, trust-verification |
+| 4 | `whisper-mode.md` | call-experience, letters-dms, message-row, trust-verification |
 | 4 | `device-handoff.md` | call-experience |
 | 4 | `discover.md` | layout-primitives, letters-dms, governance, trust-verification |
 | 5 | `onboarding.md` | trust-verification, profile-card, letters-dms, discover |
-| 5 | `settings-tweaks.md` | layout-primitives, profile-card, trust-verification, device-handoff, whisper-mode |
+| 5 | `settings-tweaks.md` | layout-primitives, profile-card, trust-verification, device-handoff, whisper-mode, presence, notifications, local-search |
 
-### ASCII DAG
+### Critical path
 
-```
-foundation
-  ├─ layout-primitives
-  │   ├─ messaging
-  │   │   ├─ thread-pane
-  │   │   ├─ sync-queue  (also uses layout-primitives directly)
-  │   │   ├─ call-experience
-  │   │   │   ├─ whisper-mode  (also uses letters-dms, messaging, trust-verification)
-  │   │   │   └─ device-handoff
-  │   │   └─ letters-dms  (also uses profile-card, trust-verification, sync-queue)
-  │   │       └─ discover  (also uses governance, trust-verification)
-  │   ├─ ephemeral-channels
-  │   ├─ profile-card  (also uses trust-verification)
-  │   └─ governance  (also uses profile-card, trust-verification)
-  └─ trust-verification
-      └─ onboarding  (also uses profile-card, letters-dms, discover)
-      └─ settings-tweaks  (also uses layout-primitives, profile-card,
-                              device-handoff, whisper-mode)
-```
+The DAG has wide parallelism in the middle tiers but narrow critical paths
+at the ends. Schedule around the long chain, not the wide ones.
 
-`foundation.md` is the only root. `trust-verification.md` sits next to
-layout-primitives at tier 1 because it exposes atoms (SAS grid + badge)
-that later specs render directly — `profile-card.md` renders the badge;
-it does not define it. Visual composition (a whisper-pill appearing in
-the call header) is not the same as spec dependency: `call-experience.md`
-exposes the header slot, `whisper-mode.md` owns the pill that goes into
-it.
+- **Longest chain (5 hops):** foundation → layout-primitives → message-row →
+  letters-dms → discover → onboarding. This is the rate-limiter for the
+  fresh-install journey.
+- **Tier-1 atoms are load-bearing.** `trust-verification.md`, `presence.md`,
+  and `notifications.md` show up in every peer-facing surface. Slipping any
+  of the three slips every feature spec that consumes it.
+- **message-row is the single tallest dependency** — thread-pane, composer,
+  reactions-pins, files-inline, call-experience, letters-dms, sync-queue,
+  and whisper-mode all sit above it.
+- **Leaf specs** (onboarding, settings-tweaks, discover) ship last because
+  they integrate every atom. Plans for leaves are larger and riskier than
+  plans for atoms; budget accordingly.
+
+## Implementation phases
+
+Plans are written one phase at a time, on request, and reviewed between
+phases. No phase is allowed to start before its predecessor has shipped.
+
+| Phase | Specs |
+|-------|-------|
+| 0 · foundation shell | `foundation.md` |
+| 1 · shell + tier-1 atoms | `layout-primitives.md`, `trust-verification.md`, `presence.md`, `notifications.md` |
+| 2 · content primitives + data atoms | `message-row.md`, `profile-card.md`, `ephemeral-channels.md`, `sync-queue.md`, `local-search.md` |
+| 3 · feature surfaces | `composer.md`, `reactions-pins.md`, `files-inline.md`, `thread-pane.md`, `call-experience.md`, `letters-dms.md`, `governance.md` |
+| 4 · cross-cutting novel mechanics | `whisper-mode.md`, `device-handoff.md`, `discover.md` |
+| 5 · entry + prefs | `onboarding.md`, `settings-tweaks.md` |
+
+## Status ladder
+
+Every spec + every plan goes through this ladder. Status is recorded in
+the document's front-matter.
+
+| Status | Meaning | Gate |
+|--------|---------|------|
+| `draft` | Initial state | author satisfied |
+| `reviewed` | A second human has read it end-to-end | reviewer sign-off |
+| `approved` | Locked; plan can be written from it | reviewer + maintainer sign-off |
+| `implementing` | Plan is running against this spec | plan PR open |
+| `shipped` | Plan merged to main | merge commit |
+| `deprecated` | Replaced by a successor doc | successor link in front-matter |
+
+Security-critical specs (see `security-posture.md`) require **two** human
+reviewers before moving past `draft`.
+
+## Test strategy
+
+Every child spec adds (or updates) a `## Tests to add` section before moving
+to `approved`. The section must list, where applicable:
+
+- **Browser tests** (`crates/web/tests/browser.rs`) — component assertions,
+  signal flips, DOM queries.
+- **Playwright E2E** (`e2e/*.spec.ts`) — cross-peer or mobile-only flows.
+- **State machine tests** (`crates/state/src/tests.rs`) — if the spec names
+  new events, permissions, or merges.
+- **Client tests** (`crates/client/src/lib.rs`) — if the spec adds or
+  changes `ClientHandle` methods.
+- **Accessibility automation** — axe rules to run in browser tests;
+  manual-only checks flagged for review.
+
+The lowest tier at which a feature can be tested is the right tier. Prefer
+state tests over client tests, client tests over browser tests, browser
+tests over Playwright E2E.
 
 ## Copy voice
 
@@ -190,6 +258,8 @@ it.
   *failed*. The queue waits patiently.
 - Placeholder / empty-state copy has a voice. "no letters yet — send the
   first" beats "no items".
+- `not a server — held between us` is load-bearing grove vocabulary; keep it
+  where space allows (foundation §Copy voice owns this rule).
 
 ## Motion
 
@@ -214,25 +284,26 @@ it.
 - Keyboard path exists for every interaction. Mobile long-press has a
   keyboard-accessible equivalent (Enter opens menu).
 
-## Review
+## Review process
 
-When every child is committed, dispatch a fresh audit agent that compares the
-set of specs against the reference bundle at
-`docs/reference-designs/2026-04-19-willow-design-bundle.tar.gz` and reports:
+Every spec set goes through this process before plans land:
 
-- Screens in the bundle not covered by any child
-- Novel mechanics in the bundle not covered by any child
-- Copy strings that drift from the bundle
-- Internal contradictions between children
-- Anything in a child that invents UX not grounded in the bundle
-
-Audit output goes to `docs/specs/2026-04-19-ui-design/audit.md` and is
-reviewed before implementation plans are written.
+1. Each child spec is written to `draft`.
+2. A fresh audit agent compares the set against the reference bundle and
+   writes `audit.md`. First pass: 2026-04-19 (committed).
+3. Blocker + major findings are addressed before any plan starts.
+4. Each child moves to `reviewed` after a second human reads it end-to-end.
+5. Security-critical specs need a second reviewer sign-off to reach
+   `approved`.
+6. Plans are written one phase at a time (see §Implementation phases) and
+   reviewed before the next phase begins.
 
 ## After spec approval
 
-1. Human review of every child (or batch review if dependencies hold).
-2. Per-child implementation plans under `docs/plans/` using the
-   writing-plans skill.
-3. Plans are merged independently — a child spec + its plan can ship without
-   waiting for siblings, as long as dependencies are respected.
+1. Phase-scoped implementation plan under `docs/plans/YYYY-MM-DD-ui-phase-N-<slug>.md`
+   using the writing-plans skill.
+2. Each plan is reviewed before implementation begins.
+3. Implementation ships as small PRs — one per spec or tight cluster
+   within a phase.
+4. Phase gate check (visual + functional + test sign-off) before moving
+   to the next phase.

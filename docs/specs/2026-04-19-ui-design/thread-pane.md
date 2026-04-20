@@ -1,7 +1,7 @@
 # Thread pane — sealed replies under a parent message
 
 **Parent:** [README.md](README.md)
-**Dependencies:** [`foundation.md`](foundation.md), [`layout-primitives.md`](layout-primitives.md), [`messaging.md`](messaging.md)
+**Dependencies:** [`foundation.md`](foundation.md), [`layout-primitives.md`](layout-primitives.md), [`message-row.md`](message-row.md), [`composer.md`](composer.md)
 **Status:** draft
 
 ## Purpose
@@ -147,8 +147,8 @@ but interactions on the card go through the card's own affordances.
   in Fraunces italic (13 px, `--ink-0`) + timestamp in body-S
   (`11px`, `--ink-3`).
 - Body: `body S` size (`13 px / 400`, `line-height 1.5`, `--ink-1`).
-  Uses the same `MessageBody` primitive as `messaging.md` (mentions,
-  code, inline files render identically).
+  Uses the same `MessageBody` primitive as `message-row.md` and
+  `files-inline.md` (mentions, code, inline files render identically).
 
 ### Pinned indicator
 
@@ -172,7 +172,7 @@ tappable and the chevron is always visible.
 ## Reply list
 
 The reply list uses the same `MessageView` primitives described in
-`messaging.md`, with the following thread-specific overrides:
+`message-row.md`, with the following thread-specific overrides:
 
 - **Density:** always one step denser than the current channel density
   mode. `balanced` channel → dense replies; `cozy` → balanced;
@@ -183,9 +183,9 @@ The reply list uses the same `MessageView` primitives described in
   vertical padding between grouped replies (vs 2 px in the main
   channel).
 - Reactions, hover toolbar, per-reply edit/delete/react/pin behave
-  identically to `messaging.md`. Pinning inside a thread pins the
-  reply *within the thread only*; it does not surface as a channel
-  pin.
+  identically to `message-row.md` and `reactions-pins.md`. Pinning
+  inside a thread pins the reply *within the thread only*; it does
+  not surface as a channel pin.
 - Reply-to-a-reply is **not** supported in v1; the reply composer
   targets the thread root.
 - URLs, mentions, inline files, and images render identically to
@@ -241,7 +241,7 @@ desktop and mobile and always visible.
 ## Composer
 
 The thread composer follows the same rules as the channel composer
-(`messaging.md`) with these adjustments:
+(`composer.md`) with these adjustments:
 
 - **Placeholder:** `reply to thread…` (quoted verbatim from the
   reference bundle's `THREAD_COPY.composePlaceholder`, with the
@@ -253,7 +253,7 @@ The thread composer follows the same rules as the channel composer
 - Attach button works identically (opens the attachment sheet).
 - Enter sends; Shift+Enter inserts newline.
 - Slash-commands are not available in threads in v1.
-- Typing indicators (if shipped in `messaging.md`) display below the
+- Typing indicators (if shipped in `composer.md`) display below the
   composer in the same style as the channel composer but scoped to
   thread participants.
 
@@ -296,7 +296,7 @@ directly under its body: thread icon + `<N> replies` + `last reply
 When unread replies exist, a pill appears on the stub: `--moss-1`
 fill, `--ink-0` foreground, `meta` type, copy `N new`. Clears when
 the pane is open and the list has been scrolled to bottom for
-≥ 500 ms (same heuristic as `messaging.md`).
+≥ 500 ms (same heuristic as `message-row.md`).
 
 ### Leave
 

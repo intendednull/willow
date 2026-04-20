@@ -131,7 +131,7 @@ signals — Discover is a catalogue, not a presence surface.
 
 Activating *preview* opens a popover (desktop) or bottom sheet
 (mobile): grove name (Fraunces italic, display S), one or two pinned
-messages rendered read-only using `messaging.md` styling (author name
+messages rendered read-only using `message-row.md` styling (author name
 + timestamp, no reactions, reply, or thread entry), and a footer —
 *this is a preview. nothing here is sealed to you yet.* Preview
 renders only the owner-published preview bundle (see Data

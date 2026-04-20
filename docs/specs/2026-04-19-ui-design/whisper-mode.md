@@ -7,7 +7,7 @@
 [`layout-primitives.md`](layout-primitives.md),
 [`call-experience.md`](call-experience.md),
 [`letters-dms.md`](letters-dms.md),
-[`messaging.md`](messaging.md),
+[`message-row.md`](message-row.md),
 [`trust-verification.md`](trust-verification.md)
 
 ## Purpose
@@ -38,7 +38,7 @@ In scope:
 - the **whisper controls** popover (desktop) / bottom sheet (mobile),
 - whisper-marked **letter rows** in the letters list,
 - whisper-marked **messages** inside a letter or thread (hand-off
-  from `messaging.md` which defers whisper rendering to here),
+  from `message-row.md` which defers whisper rendering to here),
 - **presence + profile status** "whispering",
 - **activation flow** inside a call and at letter creation,
 - **teardown flow** (leave whisper, last-whisperer leaves),
@@ -210,9 +210,9 @@ Mid-letter whisper start in an already-running letter is **not
 supported in v1**. The lock menu shows `seal with whisper key` as
 disabled with the hint `whisper at letter start only`.
 
-## Whisper-marked message — hand-off from `messaging.md`
+## Whisper-marked message — hand-off from `message-row.md`
 
-`messaging.md` defers the full whisper-message rendering to this file.
+`message-row.md` defers the full whisper-message rendering to this file.
 The rules below are the canonical description of how a whisper-marked
 message renders.
 

@@ -2,7 +2,7 @@
 
 **Parent:** [README.md](README.md)
 **Status:** draft
-**Dependencies:** [`foundation.md`](foundation.md), [`layout-primitives.md`](layout-primitives.md), [`messaging.md`](messaging.md), [`trust-verification.md`](trust-verification.md), [`whisper-mode.md`](whisper-mode.md), [`sync-queue.md`](sync-queue.md), [`profile-card.md`](profile-card.md)
+**Dependencies:** [`foundation.md`](foundation.md), [`layout-primitives.md`](layout-primitives.md), [`message-row.md`](message-row.md), [`composer.md`](composer.md), [`trust-verification.md`](trust-verification.md), [`whisper-mode.md`](whisper-mode.md), [`sync-queue.md`](sync-queue.md), [`profile-card.md`](profile-card.md), [`local-search.md`](local-search.md)
 
 ## Purpose
 
@@ -17,7 +17,9 @@ a throwaway message. The UX reinforces the tempo: display serifs,
 soft timestamps, patient offline behaviour, no typing-indicator
 urgency. A letter is slow by default.
 
-Message rendering inside a letter delegates to `messaging.md`; trust
+Message rendering inside a letter delegates to `message-row.md` and
+`composer.md` (and to `reactions-pins.md` / `files-inline.md` for
+reactions and attachments); trust
 badges delegate to `trust-verification.md`; whisper marking delegates
 to `whisper-mode.md`; queue markers delegate to `sync-queue.md`;
 tapping a peer opens the profile card per `profile-card.md`.
@@ -34,7 +36,8 @@ tapping a peer opens the profile card per `profile-card.md`.
 - Mobile navigation, desktop keyboard shortcuts.
 - Empty states, edge cases, accessibility, exact copy.
 
-Out of scope: message primitives (`messaging.md`), SAS compare flow
+Out of scope: message primitives (`message-row.md`, `composer.md`,
+`reactions-pins.md`, `files-inline.md`), SAS compare flow
 (`trust-verification.md`), whisper activation (`whisper-mode.md`),
 sync-queue inspector (`sync-queue.md`), profile cards
 (`profile-card.md`).
@@ -222,9 +225,10 @@ Tapping the strip or pressing Enter toggles the expanded view.
 
 ### Message flow
 
-Delegates to `messaging.md` for author grouping, hover toolbar,
-long-press sheet, reactions, edits, replies, code, files. Letter-
-specific additions:
+Delegates to `message-row.md` for author grouping, hover toolbar,
+long-press sheet, and code; to `reactions-pins.md` for reactions; to
+`composer.md` for edits and replies; and to `files-inline.md` for
+files. Letter-specific additions:
 
 - **Meeting-card header** (optional, top of scroll): when the two
   peers have completed SAS, render a centered card with
@@ -244,7 +248,7 @@ bubbles `--bg-2` with `--ink-1`; both carry `--line` borders and
 
 ### Composer
 
-Delegates to `messaging.md`. Letters-specific placeholder:
+Delegates to `composer.md`. Letters-specific placeholder:
 `write to {peer.name}…` (1:1) or `write to {group.name}…` (group).
 Whisper-marked letters tint the composer violet (`--whisper` at 8 %
 alpha, `--whisper` border); see `whisper-mode.md`.
@@ -367,88 +371,33 @@ messages and is never opt-out — it's a sync-layer property.
 
 ## Search
 
-A single search field at the top of the letters list filters the
-combined sections.
+Letters consumes [`local-search.md`](local-search.md) with scope
+`this letter` (default when a thread is focused) and `all letters`
+(default on the letters list, and the escalation from `this letter`).
+Behaviour, index, query language, streaming, and privacy footer are
+all owned there; this spec owns only the letter-specific placeholder,
+no-match copy, and the shortcut cues listed below.
 
-- **Name / handle**: case-insensitive substring match against
-  display name, handle, nickname (1:1) or group name.
-- **Last-message content**: substring match against locally cached
-  preview text. Local-first; no peer or server query. Evicted
-  messages are not searchable. Global full-message search is
-  tracked separately.
-- **Order**: sections stay in the same order; within a section
-  rows preserve most-recent-first.
-- **Empty match**: the list region renders a centered Fraunces
-  italic meta `no letters match "{q}"` in `--ink-3`, query
-  escaped.
-- **Clearing**: inline "x" inside the input clears; `Esc` clears
-  and returns focus to the first row.
+- **Keyboard cues.** `/` on the letters list focuses the shared search
+  input with scope defaulted to `all letters`. `⌘F` / `Ctrl+F` inside
+  an open letter focuses the same input with scope narrowed to
+  `this letter`. `Esc` clears a non-empty query and a second `Esc`
+  returns focus to the first row of the list. `⌘K` / `Ctrl+K` stays
+  reserved for the command palette (see `layout-primitives.md`).
+- **Placeholder** (owned here): `search letters` on the letters list,
+  `search this letter` when scoped to an open letter.
+- **No match** (owned here): the list region renders a centered
+  Fraunces italic meta `no letters match "{q}"` in `--ink-3`, query
+  escaped. This replaces the generic `nothing matches "{q}" in
+  {scope}` copy from `local-search.md` when the active scope is
+  `this letter` or `all letters` and the results surface renders inside
+  the letters pane.
+- **Clearing.** Inline "x" inside the input clears; `Esc` clears and
+  returns focus to the first row per the keyboard cues above.
 
-## Search (local-first)
-
-The letters surface owns Willow's local-first search. The index is
-built on-device from messages that are already decrypted and
-encrypted-at-rest in the local store — the query never leaves the
-device, and no peer or relay is contacted to resolve it.
-
-### Scope
-
-A scope toggle sits beside the search input. Three values:
-
-| Value | Indexes |
-|-------|---------|
-| `this letter` | Only the currently-open letter (shown when a thread is in focus; desktop keyboard shortcut `⌘F` enters this mode automatically). |
-| `all letters` | Default on the letters list; every peer- and group-letter cache the device holds. |
-| `all groves + letters` | Widest search: every grove channel plus every letter on this device. |
-
-Scope selection persists per device.
-
-### Desktop keyboard
-
-- `/` focuses the letters search input from anywhere in the letters
-  surface and sets scope to `all letters`.
-- `⌘F` / `Ctrl+F` focuses search inside an open letter and sets scope
-  to `this letter`.
-- `Esc` clears the query when non-empty; a second `Esc` blurs.
-- `⌘K` / `Ctrl+K` remains reserved for the command palette (see
-  `layout-primitives.md`); it is not a search alias.
-
-### Mobile
-
-The search field is not persistent on the letters list top bar.
-A pull-down gesture (≥ 44 px drag with `scrollTop ≤ 0`) reveals a
-persistent search bar that stays pinned while the user scrolls.
-Tapping `cancel` or pulling the bar back up hides it. Inside an open
-letter, the top-bar overflow menu exposes `search this letter`, which
-opens the same search primitive scoped to `this letter`.
-
-### Copy
-
-| Context | String |
-|---------|--------|
-| Placeholder (list) | `search letters` |
-| Placeholder (scoped to one letter) | `search this letter` |
-| Placeholder (widest) | `search groves + letters` |
-| Empty match | `nothing matches "{q}"` |
-| Loading / first-indexing | `indexing… (local only)` |
-| Privacy hint under the input | `search runs on this device only. queries never leave your device.` |
-
-All strings are lowercase per `foundation.md`. The privacy hint renders
-as `hint`-size `--ink-3` text and is shown on first use plus any time
-the scope changes to `all groves + letters`.
-
-### Behaviour
-
-- Matches are substring and case-insensitive. The matched span is
-  rendered in `--amber` inside otherwise-unchanged row previews; no
-  separate "snippet" view in v1.
-- Results preserve section order (peer letters → group letters →
-  channels, if scope includes them).
-- The index is built lazily on first search; subsequent searches reuse
-  it. The loading copy is shown only while the initial index is warm.
-- Evicted messages (beyond the local cache horizon) cannot be found;
-  this is a known limit of local-first and is documented in the Tweaks
-  cache-size control (see `settings-tweaks.md`).
+All other behaviour — index construction, horizon, operators,
+streaming, rebuild action, and privacy copy — defers to
+[`local-search.md`](local-search.md).
 
 ## Mobile navigation
 
@@ -497,7 +446,7 @@ When the thread view has focus:
 | `Cmd/Ctrl-Shift-P`| Open profile card (1:1 only) |
 | `Cmd/Ctrl-Enter`  | Submit composer (messaging binding) |
 
-Other bindings delegate to `messaging.md`.
+Other bindings delegate to `message-row.md` and `composer.md`.
 
 ## Empty states
 

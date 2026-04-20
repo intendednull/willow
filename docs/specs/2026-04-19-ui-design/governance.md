@@ -32,7 +32,8 @@ single scroll container on mobile.
 - The member-side "what am I allowed to do here?" view lives in
   `profile-card.md`; not redefined here.
 - File management lives here because files are grove-wide;
-  per-message attachments and pins stay in `messaging.md`.
+  per-message attachments stay in `files-inline.md` and pins stay in
+  `reactions-pins.md`.
 - The event log surfaces *that* events happened — not bodies. Content
   lives in the chat view.
 
@@ -172,7 +173,7 @@ Icon colour by kind: `GrantPermission` → `--moss-3`,
 changes → `--amber`. Subject bold body; meta typography; fingerprint
 mono S `--ink-3`. Row click filters the event log to that event.
 Sticky Fraunces-italic day headers use the "— today —" pattern from
-`messaging.md`. Empty feed: "no authority changes in the last 30
+`message-row.md`. Empty feed: "no authority changes in the last 30
 days. a steady grove."
 
 ### Mobile layout (< 640 px)
@@ -392,7 +393,7 @@ Kind colours:
 | `SetProfile`                                      | `--ink-2`     |
 
 Day grouping uses the sticky Fraunces-italic day separators from
-`messaging.md`.
+`message-row.md`.
 
 **Expand-to-raw-payload.** Click or Enter on a focused row expands it
 to a mono JSON preview of the full `Event` struct (`hash`, `author`,

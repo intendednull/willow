@@ -2,7 +2,7 @@
 
 **Parent:** [README.md](README.md)
 **Status:** draft
-**Dependencies:** [`foundation.md`](foundation.md), [`layout-primitives.md`](layout-primitives.md), [`whisper-mode.md`](whisper-mode.md), [`device-handoff.md`](device-handoff.md), [`messaging.md`](messaging.md)
+**Dependencies:** [`foundation.md`](foundation.md), [`layout-primitives.md`](layout-primitives.md), [`whisper-mode.md`](whisper-mode.md), [`device-handoff.md`](device-handoff.md), [`message-row.md`](message-row.md), [`composer.md`](composer.md)
 
 ## Purpose
 
@@ -31,7 +31,7 @@ until a user asks for detail.
 - Call header (grove · channel · whisper pill · sealed chip · close).
 - Mobile adaptations — full-screen, auto-hiding controls, bottom
   sheets. Swipe-to-minimize deferred to v2.
-- In-call chat side panel / bottom sheet (inherits [`messaging.md`](messaging.md)).
+- In-call chat side panel / bottom sheet (inherits [`message-row.md`](message-row.md) and [`composer.md`](composer.md)).
 - Edge cases: empty call, poor connection, auto-reconnect, permission
   denial.
 - Accessibility contract for the grid, controls, and shortcuts.
@@ -376,7 +376,7 @@ Window toggle (last 5 min / this call) deferred to v2.
 
 ## In-call chat panel
 
-Inherits [`messaging.md`](messaging.md) wholesale; no novel copy.
+Inherits [`message-row.md`](message-row.md) and [`composer.md`](composer.md) wholesale; no novel copy.
 
 - Desktop: right-side overlay, 360 px wide, slides in over tiles
   (tiles do not resize), 180 ms. `--bg-1`, `--line` left border.

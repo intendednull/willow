@@ -3,7 +3,8 @@
 **Parent:** [README.md](README.md)
 **Status:** draft
 **Dependencies:** [`foundation.md`](foundation.md)
-**Consumed by:** `messaging.md`, `thread-pane.md`, `call-experience.md`,
+**Consumed by:** `message-row.md`, `composer.md`, `reactions-pins.md`,
+`files-inline.md`, `thread-pane.md`, `call-experience.md`,
 `letters-dms.md`, `ephemeral-channels.md`, `sync-queue.md`, `governance.md`
 
 ## Purpose
@@ -34,7 +35,10 @@ surface recedes until the user asks for it.
 
 **Out of scope (owned elsewhere)**
 
-- Message rendering, hover toolbar, action-sheet contents (`messaging.md`).
+- Message rendering, hover toolbar containers, action-sheet containers (`message-row.md`).
+- Composer, reply preview bar, edit bar, typing indicator (`composer.md`).
+- Reactions strip, emoji picker, pinned panel contents (`reactions-pins.md`).
+- File cards, inline images, voice notes, upload dialog (`files-inline.md`).
 - Thread parent card, reply list (`thread-pane.md`).
 - Profile popover / sheet internals (`profile-card.md`).
 - Command palette content (this spec only reserves the ⌘K search button).
@@ -233,8 +237,8 @@ chip.
 
 Opening any closes the others. Rail slides in from right via
 transform-only over 180 ms (`--motion`); pointer events re-enabled at
-animation end. Internals owned by `profile-card.md`, `messaging.md`,
-and `thread-pane.md` respectively.
+animation end. Internals owned by `profile-card.md`,
+`reactions-pins.md`, and `thread-pane.md` respectively.
 
 The members rail borrows the member-row primitives (avatar + italic
 display name + steward tag + status + queued-count meta) defined in
@@ -384,7 +388,7 @@ Variants this spec ships:
 | swipe-right from left edge | pushed screen | back |
 | swipe-left inside drawer | drawer open | close drawer |
 | swipe-down on sheet handle | sheet open | dismiss |
-| long-press on message | channel chat | open action sheet (`messaging.md`) |
+| long-press on message | channel chat | open action sheet (`message-row.md`) |
 | pull-down on message list | scroll top, threshold 64 px | reveal sync queue row (`sync-queue.md`). Layout guarantees only the scroll container contract: the list is a scroll region whose `scrollTop <= 0` and overscroll drag are measurable by child code. |
 
 All gestures degrade under `prefers-reduced-motion`: transforms collapse
@@ -563,6 +567,115 @@ button in v1. ⌘K command palette is the escape hatch.
 `ui-sans-serif` inside `--font-ui`. Mentions in channel names are
 disallowed at event level (enforced by `governance.md`).
 
+## Command palette
+
+The command palette is a cross-surface jump + action surface. It belongs
+to this spec rather than a standalone file because it is fundamentally
+part of the shell chrome — the same input that jumps between channels
+also reaches every action and hands search off to `local-search.md`.
+
+### Entry
+
+- Desktop keybind: `⌘K` on macOS, `Ctrl-K` elsewhere.
+- Desktop click: the `search (⌘K)` button reserved in the main-pane
+  header (see §Main pane header) and in the mobile top bar right slot.
+- Mobile: tap the search button in the top bar; optional swipe-down
+  gesture from the top edge is reserved for v2.
+
+### Anatomy
+
+- Centered overlay; `z-index` above all panes but below toasts.
+- Max width `560px`; top-third vertically placed on desktop; full-width
+  sliding from top on mobile (with `--radius-l` bottom corners).
+- Container: `--bg-1` background, `1px solid --line`, `--radius-l`,
+  `--shadow-2`. Motion: `willow-pop-in` at `--motion` (180 ms).
+- Structure: search input (top, 48 px), results list (scrollable),
+  footer hint strip (bottom, `--ink-3`, small).
+- Backdrop: 40 % `--bg-0` with `backdrop-filter: blur(4px)`.
+
+### Input
+
+- Placeholder: `jump or search…`
+- Modifier prefixes:
+  - `#` — scope to channels (any grove)
+  - `@` — scope to peers and letters-by-peer
+  - `>` — scope to actions
+  - (empty prefix) — mixed: channels + letters + groves + people + actions, plus a `search` entry that delegates to `local-search.md`
+- Quote a phrase to force literal: `"reading list"`.
+- `Esc` clears if non-empty, else closes.
+- `↑ / ↓` move selection, `Enter` activates.
+
+### Result groups
+
+Results render grouped by kind with small group labels (meta style).
+Each row is a single focusable element announcing its kind and label.
+
+| Group | Row anatomy | Activate |
+|-------|-------------|----------|
+| Channels | `#` icon + channel name + grove meta in `--ink-3` | open channel |
+| Letters | avatar(s) + name + last-message snippet in `--ink-3` | open letter thread |
+| Groves | glyph + name + member count | switch to grove |
+| People | avatar + display name + handle | open profile card |
+| Actions | icon + label (see table below) | run action |
+| Search | magnifier + `search "{q}" in {scope}` | hand off to `local-search.md` with the scope ladder |
+
+### Actions catalog (v1)
+
+| Action | Label | Notes |
+|--------|-------|-------|
+| tweaks | `open tweaks` | opens `settings-tweaks.md` tweaks panel |
+| settings | `open settings` | opens `settings-tweaks.md` settings modal |
+| new channel | `new channel…` | gated on ManageChannels |
+| new letter | `write a letter…` | always available |
+| create grove | `new grove…` | always available |
+| sync queue | `open sync queue` | opens `sync-queue.md` screen |
+| move this call | `move this call` | only when a call is active (delegates to `device-handoff.md`) |
+| toggle theme | `toggle light / dark` | deferred until light theme ships |
+| sign out | `sign out` | confirm-dialog guarded |
+
+Actions are feature-flagged so the catalog grows as surfaces land.
+
+### Recents
+
+When the input is empty and the user has used the palette before, show
+up to 8 recents (any group). Recents are local-only, toggleable in
+`settings-tweaks.md` privacy (`remember palette recents`, default on).
+
+### Empty / loading / error states
+
+| State | Body |
+|-------|------|
+| empty + no recents | `jump or search across willow — try #channel, @peer, > for actions` |
+| empty + has recents | recent list |
+| no matches | `nothing matches '{q}' — try > for actions or /search` |
+| search running | `searching… (local only)` (live region) |
+| error | `search indexer is rebuilding — try again in a moment` |
+
+### Copy (exact)
+
+- Placeholder: `jump or search…`
+- Empty hint: `jump or search across willow — try #channel, @peer, > for actions`
+- No-match: `nothing matches '{q}' — try > for actions or /search`
+- Search running: `searching… (local only)`
+- Error: `search indexer is rebuilding — try again in a moment`
+- Footer hint strip: `↑↓ move · ⏎ open · esc close`
+
+### Accessibility
+
+- Role `dialog` with aria-label `command palette`; focus trapped inside.
+- Input → results list is a `combobox` pattern with `listbox` results
+  (`aria-activedescendant` tracks selection).
+- Each result row has a concrete name + kind announced via screen reader.
+- Motion-reduced: no scale animation; opacity only.
+
+### Data dependencies
+
+- Channels / groves / letters / people enumerated from existing state
+  signals (no new events).
+- Action catalog is static, gated by permission signals already in use.
+- Search delegates to `local-search.md` — palette contributes scope
+  but does not own the index.
+
 ## Accessibility
 
 ### Focus order
@@ -570,7 +683,7 @@ disallowed at event level (enforced by `governance.md`).
 Desktop: grove rail (composite, arrow keys between tiles) → channel
 sidebar (grove chevron → channel list composite → me strip mic →
 deafen) → main pane (message list → composer, composer is owned by
-`messaging.md`) → right rail (close button → content) → overlay chrome
+`composer.md`) → right rail (close button → content) → overlay chrome
 (focus-trapped). Mobile: top bar (back / menu → right slot) → body →
 tab bar (roving index).
 
@@ -641,7 +754,7 @@ Every state pairs colour with a shape or icon:
 - [ ] Swipe-right from the left edge opens the drawer on home only;
       everywhere else it navigates back.
 - [ ] Long-press on a message opens an action sheet via this spec's
-      contract (internals in `messaging.md`).
+      contract (internals in `message-row.md`).
 - [ ] Pull-down on the mobile home scroll container overscrolls
       measurably past the 64 px threshold without triggering any
       layout-owned action.

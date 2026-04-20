@@ -326,7 +326,8 @@ Selecting writes a class on `#app-root`: `density-cozy`,
 > subtle · default · explicit
 
 Stored in localStorage as `tweaks.cryptoVisibility`. Read by
-`trust-verification.md`, `whisper-mode.md`, and `messaging.md` to decide
+`trust-verification.md`, `whisper-mode.md`, `message-row.md`, and
+`composer.md` to decide
 whether to render holder counts, key-rotation banners, SAS nudges, and
 "sealed to N" footers. This spec does not describe *what* those surfaces
 look like — only the persisted preference key.

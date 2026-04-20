@@ -3,7 +3,7 @@
 **Parent:** [README.md](README.md)
 **Dependencies:** [`foundation.md`](foundation.md), [`layout-primitives.md`](layout-primitives.md), [`trust-verification.md`](trust-verification.md)
 **Status:** draft
-**Consumed by:** [`letters-dms.md`](letters-dms.md), [`messaging.md`](messaging.md), [`settings-tweaks.md`](settings-tweaks.md)
+**Consumed by:** [`letters-dms.md`](letters-dms.md), [`message-row.md`](message-row.md), [`settings-tweaks.md`](settings-tweaks.md)
 
 **Ownership direction.** The badge visuals and the SAS grid come from
 [`trust-verification.md`](trust-verification.md). This spec owns the
