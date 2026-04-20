@@ -261,7 +261,7 @@ test.describe('Mobile UX', () => {
     await page.waitForTimeout(1000);
 
     // Action sheet should NOT have opened from a quick tap.
-    await expect(page.locator('.mobile-action-sheet.open')).toBeHidden();
+    await expect(page.locator('.shell-mobile .mobile-action-sheet.open')).toHaveCount(0);
   });
 
   test('multiple quick taps do NOT open action sheet', async ({ page }) => {
@@ -282,7 +282,7 @@ test.describe('Mobile UX', () => {
     await page.waitForTimeout(600);
 
     // Action sheet should NOT be visible.
-    await expect(page.locator('.mobile-action-sheet.open')).toBeHidden();
+    await expect(page.locator('.shell-mobile .mobile-action-sheet.open')).toHaveCount(0);
   });
 
   // ── Persistence on mobile ─────────────────────────────────────────

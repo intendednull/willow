@@ -14,7 +14,7 @@ test.describe('Mobile action sheet', () => {
 
     await longPress(page, '.message');
 
-    await expect(page.locator('.mobile-action-sheet.open')).toBeVisible({ timeout: 3000 });
+    await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeVisible({ timeout: 3000 });
   });
 
   test('action sheet stays open over time', async ({ page }) => {
@@ -25,11 +25,11 @@ test.describe('Mobile action sheet', () => {
     await page.waitForTimeout(2000);
 
     await longPress(page, '.message');
-    await expect(page.locator('.mobile-action-sheet.open')).toBeVisible({ timeout: 3000 });
+    await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeVisible({ timeout: 3000 });
 
     // Wait 2 seconds — sheet should still be open.
     await page.waitForTimeout(2000);
-    await expect(page.locator('.mobile-action-sheet.open')).toBeVisible();
+    await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeVisible();
   });
 
   test('cancel closes action sheet', async ({ page }) => {
@@ -39,12 +39,12 @@ test.describe('Mobile action sheet', () => {
     await page.waitForTimeout(500);
 
     await longPress(page, '.message');
-    await expect(page.locator('.mobile-action-sheet.open')).toBeVisible({ timeout: 3000 });
+    await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeVisible({ timeout: 3000 });
 
-    await page.locator('.sheet-cancel').click();
+    await page.locator('.shell-mobile .mobile-action-sheet.open .sheet-cancel').first().click();
     await page.waitForTimeout(300);
 
-    await expect(page.locator('.mobile-action-sheet.open')).toBeHidden();
+    await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeHidden();
   });
 
   test('overlay tap closes action sheet', async ({ page }) => {
@@ -54,15 +54,15 @@ test.describe('Mobile action sheet', () => {
     await page.waitForTimeout(2000);
 
     await longPress(page, '.message');
-    await expect(page.locator('.mobile-action-sheet.open')).toBeVisible({ timeout: 3000 });
+    await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeVisible({ timeout: 3000 });
 
     // Dispatch a click event directly on the overlay — bypasses Playwright's
     // hit-test check which fails because the server rail sits above z-index 99
     // at the top-left of the viewport.
-    await page.locator('.mobile-action-sheet-overlay.open').dispatchEvent('click');
+    await page.locator('.shell-mobile .mobile-action-sheet-overlay.open').first().dispatchEvent('click');
     await page.waitForTimeout(500);
 
-    await expect(page.locator('.mobile-action-sheet.open')).toBeHidden();
+    await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeHidden();
   });
 
   test('reply from sheet shows reply bar', async ({ page }) => {
@@ -72,9 +72,9 @@ test.describe('Mobile action sheet', () => {
     await page.waitForTimeout(500);
 
     await longPress(page, '.message');
-    await expect(page.locator('.mobile-action-sheet.open')).toBeVisible({ timeout: 3000 });
+    await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeVisible({ timeout: 3000 });
 
-    await page.locator('.sheet-item', { hasText: 'Reply' }).click();
+    await page.locator('.shell-mobile .mobile-action-sheet.open .sheet-item', { hasText: 'Reply' }).click();
     await page.waitForTimeout(500);
 
     await expect(page.locator('.shell-mobile .reply-bar').first()).toBeVisible();
@@ -87,9 +87,9 @@ test.describe('Mobile action sheet', () => {
     await page.waitForTimeout(500);
 
     await longPress(page, '.message');
-    await expect(page.locator('.mobile-action-sheet.open')).toBeVisible({ timeout: 3000 });
+    await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeVisible({ timeout: 3000 });
 
-    await page.locator('.sheet-emoji-row button').first().click();
+    await page.locator('.shell-mobile .mobile-action-sheet.open .sheet-emoji-row button').first().click();
     await page.waitForTimeout(500);
 
     await expect(page.locator('.shell-mobile .reaction').first()).toBeVisible();
@@ -102,10 +102,10 @@ test.describe('Mobile action sheet', () => {
     await page.waitForTimeout(500);
 
     await longPress(page, '.message');
-    await expect(page.locator('.mobile-action-sheet.open')).toBeVisible({ timeout: 3000 });
+    await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeVisible({ timeout: 3000 });
 
     // Simulate a downward swipe on the action sheet.
-    const sheet = page.locator('.mobile-action-sheet.open');
+    const sheet = page.locator('.shell-mobile .mobile-action-sheet.open').first();
     const box = await sheet.boundingBox();
     if (!box) throw new Error('sheet not found');
 
@@ -134,7 +134,7 @@ test.describe('Mobile action sheet', () => {
     }, { startX, startY, endY });
 
     await page.waitForTimeout(500);
-    await expect(page.locator('.mobile-action-sheet.open')).toBeHidden();
+    await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeHidden();
   });
 
   test('action trigger (three-dot menu) is hidden on mobile', async ({ page }) => {
@@ -175,6 +175,6 @@ test.describe('Mobile action sheet', () => {
     }, { x, y });
 
     await page.waitForTimeout(700);
-    await expect(page.locator('.mobile-action-sheet.open')).toBeHidden();
+    await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeHidden();
   });
 });

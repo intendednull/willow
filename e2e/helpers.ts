@@ -455,15 +455,17 @@ export async function createChannel(page: Page, name: string) {
 
 /** Performs a named action on a message (desktop: hover+dropdown, mobile: long-press+sheet). */
 export async function messageAction(page: Page, messageText: string, actionName: string) {
-  const msg = page.locator('.message', { hasText: messageText }).last();
-
   if (isMobile(page)) {
     // Mobile: long-press to open action sheet.
     await longPress(page, `.message:has-text("${messageText}")`);
-    await page.locator('.mobile-action-sheet.open').waitFor({ timeout: 3000 });
-    await page.locator('.sheet-item', { hasText: actionName }).click();
+    await page.locator('.shell-mobile .mobile-action-sheet.open').first()
+      .waitFor({ timeout: 3000 });
+    await page
+      .locator('.shell-mobile .mobile-action-sheet.open .sheet-item', { hasText: actionName })
+      .click();
     await page.waitForTimeout(300);
   } else {
+    const msg = page.locator('.shell-desktop .message', { hasText: messageText }).last();
     // Desktop: hover to reveal action trigger, click dropdown item.
     await msg.hover();
     await page.waitForTimeout(200);
@@ -495,14 +497,15 @@ export async function deleteMessage(page: Page, text: string) {
 
 /** Reacts to a message with an emoji (desktop or mobile). */
 export async function reactToMessage(page: Page, messageText: string, emojiIndex = 0) {
-  const msg = page.locator('.message', { hasText: messageText }).last();
-
   if (isMobile(page)) {
     await longPress(page, `.message:has-text("${messageText}")`);
-    await page.locator('.mobile-action-sheet.open').waitFor({ timeout: 3000 });
-    await page.locator('.sheet-emoji-row button').nth(emojiIndex).click();
+    await page.locator('.shell-mobile .mobile-action-sheet.open').first()
+      .waitFor({ timeout: 3000 });
+    await page.locator('.shell-mobile .mobile-action-sheet.open .sheet-emoji-row button')
+      .nth(emojiIndex).click();
     await page.waitForTimeout(500);
   } else {
+    const msg = page.locator('.shell-desktop .message', { hasText: messageText }).last();
     await msg.hover();
     await page.waitForTimeout(200);
     await msg.locator('.action-trigger').click();

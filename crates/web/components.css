@@ -415,6 +415,19 @@
     background: var(--bg-1);
 }
 
+/* Composer input: >= 16 px so iOS Safari doesn't auto-zoom on focus. */
+.mobile-push--channel .input-area input,
+.mobile-push--channel .input-area textarea {
+    font-size: 16px;
+}
+
+/* On mobile the per-message hover action bar is replaced by the
+   long-press action sheet — hide the always-visible dropdown trigger. */
+.shell-mobile .message-actions,
+.shell-mobile .action-trigger {
+    display: none !important;
+}
+
 /* ── Grove drawer (mobile, home route) ───────────────────────────── */
 
 .grove-drawer-root {
