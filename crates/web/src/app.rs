@@ -7,8 +7,8 @@ use willow_client::{ClientConfig, ClientEvent, ClientHandle, DisplayMessage, Voi
 
 use crate::components::{
     AddServerPanel, CallPage, ChannelSidebar, ChatInput, CommandPalette, FileShareButton,
-    GroveRail, JoinPage, MainPaneHeader, MessageList, RightRail, RightRailWhich, SettingsPanel,
-    WelcomeScreen,
+    GroveRail, JoinPage, MainPaneHeader, MessageList, MobileShell, RightRail, RightRailWhich,
+    SettingsPanel, WelcomeScreen,
 };
 use crate::event_processing::process_event_batch;
 use crate::handlers;
@@ -507,6 +507,14 @@ pub fn App() -> impl IntoView {
                 let handle_ty = handle_for_typing.clone();
                 let vm_v = vm_for_view.clone();
                 let pin = on_pin.clone();
+                let pin_mobile = on_pin.clone();
+                let ch_click_mobile = on_channel_click.clone();
+                let srv_click_mobile = on_server_click.clone();
+                let send_mobile = on_send.clone();
+                let edit_send_mobile = on_edit_send.clone();
+                let del_msg_mobile = on_delete_msg.clone();
+                let react_mobile = on_react.clone();
+                let handle_vj_mobile = handle_for_voice_join.clone();
                 view! {
                     <>
                     <div class="shell-desktop" aria-hidden="false">
@@ -876,7 +884,24 @@ pub fn App() -> impl IntoView {
                     </div>
                     </div>
                     <div class="shell-mobile" aria-hidden="false">
-                        // Task 2 mounts <MobileShell> here.
+                        <MobileShell
+                            on_send=send_mobile
+                            on_edit_send=edit_send_mobile
+                            on_delete_msg=del_msg_mobile
+                            on_react=react_mobile
+                            on_channel_click=ch_click_mobile
+                            on_server_click=srv_click_mobile
+                            on_voice_join={
+                                let h = handle_vj_mobile.clone();
+                                move |ch_name: String| {
+                                    let h = h.clone();
+                                    wasm_bindgen_futures::spawn_local(async move {
+                                        h.join_voice(&ch_name).await;
+                                    });
+                                }
+                            }
+                            on_pin=pin_mobile
+                        />
                     </div>
                     </>
                 }.into_any()
