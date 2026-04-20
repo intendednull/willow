@@ -205,6 +205,62 @@ pub fn App() -> impl IntoView {
     // dispatching so this service stays pure.
     let notifier = crate::notifications::provide_notifier();
 
+    // document.title prefix — "(N) willow" while hidden, bare "willow"
+    // 1 s after the tab becomes visible. Driven by an Effect on the
+    // unread-stats signal + a visibilitychange listener that kicks a
+    // deferred clear.
+    {
+        use wasm_bindgen::closure::Closure;
+        use wasm_bindgen::JsCast;
+        let write_for_vis = write;
+        let _ = write_for_vis;
+        let unread_stats = app_state.server.unread_stats;
+        leptos::prelude::Effect::new(move |_prev: Option<()>| {
+            let total: u32 = unread_stats.get().values().map(|s| s.count).sum();
+            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                let hidden = doc.hidden();
+                let title = if hidden && total > 0 {
+                    format!("({total}) willow")
+                } else {
+                    "willow".to_string()
+                };
+                doc.set_title(&title);
+            }
+        });
+        // On visibility change to visible, wait 1 s then strip the
+        // prefix. Doing it here (not inside the Effect) avoids
+        // re-running on every unread-stat update while the tab is
+        // hidden.
+        let cb = Closure::<dyn Fn(web_sys::Event)>::new(move |_| {
+            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                if !doc.hidden() {
+                    // Delay stripping so a quick focus doesn't snap.
+                    if let Some(window) = web_sys::window() {
+                        let clear = Closure::once_into_js(move || {
+                            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                                if !doc.hidden() {
+                                    doc.set_title("willow");
+                                }
+                            }
+                        });
+                        let _ = window
+                            .set_timeout_with_callback_and_timeout_and_arguments_0(
+                                clear.unchecked_ref(),
+                                1000,
+                            );
+                    }
+                }
+            }
+        });
+        if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+            let _ = doc.add_event_listener_with_callback(
+                "visibilitychange",
+                cb.as_ref().unchecked_ref(),
+            );
+        }
+        cb.forget();
+    }
+
     // Wire the service-worker bridge — the `willow-push` window event
     // fires whenever the SW forwards a focused-client push payload.
     // Reads the payload out of `window.__willowLastPush` (stashed by
