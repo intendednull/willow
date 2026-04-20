@@ -5711,3 +5711,440 @@ mod notifications {
         assert_eq!(text(&title), "remove");
     }
 }
+
+// ── Basic-flow smoke tests (migrated from e2e/basic-flow.spec.ts) ───────────
+//
+// These mount the whole willow-web `<App />` in headless WASM and drive the
+// single-client onboarding + first-channel flows via DOM events. Historically
+// these ran as Playwright specs; moving them to wasm-pack keeps the fast
+// feedback loop on unit-test infrastructure and frees the e2e suite to focus
+// on multi-peer + mobile-gesture behaviour only a real browser can simulate.
+#[cfg(test)]
+mod basic_flow {
+    use super::*;
+    use willow_web::app::App;
+
+    /// Clear persisted identity + event stores so each basic-flow test
+    /// starts from a genuine fresh-start. The Playwright version does the
+    /// same thing via page.evaluate; the wasm-pack harness runs inside a
+    /// single page so we clear state manually. willow-client's WASM
+    /// storage backend keys everything through localStorage, so that is
+    /// all we need to wipe here.
+    async fn clear_persistence() {
+        let window = web_sys::window().expect("window");
+        if let Ok(Some(storage)) = window.local_storage() {
+            let _ = storage.clear();
+        }
+        // Give the reactive runtime a beat.
+        tick().await;
+    }
+
+    /// Inject the full web-app CSS bundle so shell visibility rules +
+    /// component layout classes resolve in the headless harness. We use
+    /// the `components.css` bundle that `ensure_components_css_loaded`
+    /// already knows how to inject; the dedup id guards against double
+    /// insertion across tests in the same page.
+    fn ensure_app_css() {
+        let doc = web_sys::window().unwrap().document().unwrap();
+        ensure_components_css_loaded(&doc);
+    }
+
+    /// Poll up to `timeout_ms` for `selector` to exist under `container`.
+    /// Returns `true` if the element was found in time.
+    async fn wait_for(container: &web_sys::HtmlElement, selector: &str, timeout_ms: u32) -> bool {
+        let step_ms: u32 = 40;
+        let mut waited: u32 = 0;
+        while waited < timeout_ms {
+            if container.query_selector(selector).unwrap().is_some() {
+                return true;
+            }
+            gloo_timers::future::TimeoutFuture::new(step_ms).await;
+            waited += step_ms;
+        }
+        false
+    }
+
+    /// Click the first element matching `selector` by dispatching a
+    /// bubbling MouseEvent. Returns `true` if the element existed.
+    fn click_selector(container: &web_sys::HtmlElement, selector: &str) -> bool {
+        match container.query_selector(selector).unwrap() {
+            Some(el) => {
+                let event = web_sys::MouseEvent::new("click").unwrap();
+                el.dyn_ref::<web_sys::EventTarget>()
+                    .unwrap()
+                    .dispatch_event(&event)
+                    .unwrap();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Set `value` on an `<input>` / `<textarea>` matching `selector`
+    /// and dispatch a bubbling input event so Leptos `on:input` fires.
+    fn fill_selector(container: &web_sys::HtmlElement, selector: &str, value: &str) -> bool {
+        let Some(el) = container.query_selector(selector).unwrap() else {
+            return false;
+        };
+        if let Some(input) = el.dyn_ref::<web_sys::HtmlInputElement>() {
+            input.set_value(value);
+        } else if let Some(ta) = el.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+            ta.set_value(value);
+        } else {
+            return false;
+        }
+        let ev = web_sys::InputEvent::new("input").unwrap();
+        el.dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&ev)
+            .unwrap();
+        true
+    }
+
+    /// Dispatch a bubbling KeyboardEvent of the given `key` onto the
+    /// first match of `selector`. Mirrors Playwright's `press(key)`.
+    fn press_key(container: &web_sys::HtmlElement, selector: &str, key: &str) -> bool {
+        let Some(el) = container.query_selector(selector).unwrap() else {
+            return false;
+        };
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_key(key);
+        let ev =
+            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        el.dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&ev)
+            .unwrap();
+        true
+    }
+
+    /// Text content of the first element matching `selector`.
+    fn query_text(container: &web_sys::HtmlElement, selector: &str) -> Option<String> {
+        container
+            .query_selector(selector)
+            .unwrap()
+            .map(|el| el.text_content().unwrap_or_default())
+    }
+
+    /// Text content of every element matching `selector`.
+    fn query_all_text(container: &web_sys::HtmlElement, selector: &str) -> Vec<String> {
+        query_all(container, selector)
+            .iter()
+            .map(|el| el.text_content().unwrap_or_default())
+            .collect()
+    }
+
+    /// Mount the full willow-web `<App />` under the desktop shell with
+    /// persistence pre-cleared. Returns the container element so tests
+    /// can drive DOM events against it.
+    async fn mount_app_fresh() -> web_sys::HtmlElement {
+        clear_persistence().await;
+        ensure_app_css();
+        let container = mount_test_with_shell(TestShell::Desktop, || view! { <App /> });
+        // Let the app boot (network attempt fails quickly since the
+        // relay URL is unreachable in the headless harness; the UI
+        // still renders independently of that).
+        tick().await;
+        container
+    }
+
+    /// Walk the welcome flow's step-1 name input and click continue.
+    async fn advance_past_name_step(container: &web_sys::HtmlElement, display_name: &str) {
+        assert!(
+            wait_for(container, ".welcome-name-input", 5_000).await,
+            "welcome step-1 name input did not render"
+        );
+        fill_selector(container, ".welcome-name-input", display_name);
+        tick().await;
+        click_selector(container, ".welcome-continue-btn");
+        tick().await;
+        assert!(
+            wait_for(container, ".welcome-tabs", 5_000).await,
+            "welcome tabs did not render after continue"
+        );
+    }
+
+    /// Create a server from the welcome screen with `name` + optional
+    /// display name. Drives step 1 → step 2 → tab-panel continue.
+    async fn create_server_flow(
+        container: &web_sys::HtmlElement,
+        server_name: &str,
+        display_name: &str,
+    ) {
+        advance_past_name_step(container, display_name).await;
+        // The Create tab is selected by default.
+        assert!(
+            wait_for(
+                container,
+                ".welcome-tab-panel input[placeholder=\"backyard\"]",
+                5_000
+            )
+            .await
+        );
+        fill_selector(
+            container,
+            ".welcome-tab-panel input[placeholder=\"backyard\"]",
+            server_name,
+        );
+        tick().await;
+        click_selector(container, ".welcome-tab-panel .welcome-btn");
+        // Wait for the desktop shell to show the sidebar header.
+        let ok = wait_for(container, ".sidebar-header", 10_000).await;
+        assert!(ok, "sidebar-header did not render after server creation");
+    }
+
+    // ── 1. welcome screen shows on fresh start ──────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn welcome_screen_shows_on_fresh_start() {
+        let container = mount_app_fresh().await;
+        assert!(
+            wait_for(&container, ".welcome-card", 5_000).await,
+            "welcome card should be visible on fresh start"
+        );
+        let heading = query_text(&container, "h1").unwrap_or_default();
+        assert!(
+            heading.contains("What do we call you?"),
+            "welcome heading expected, got: {heading:?}"
+        );
+    }
+
+    // ── 2. can create a server from welcome screen ──────────────────────
+
+    #[wasm_bindgen_test]
+    async fn can_create_server_from_welcome_screen() {
+        let container = mount_app_fresh().await;
+        create_server_flow(&container, "Test Server", "Alice").await;
+        let header = query_text(&container, ".sidebar-header").unwrap_or_default();
+        assert!(
+            header.contains("Test Server"),
+            "sidebar-header should contain server name, got: {header:?}"
+        );
+        let channels = query_all_text(&container, ".channel-item");
+        assert!(
+            channels.iter().any(|c| c.contains("general")),
+            "general channel should render after server creation, got: {channels:?}"
+        );
+    }
+
+    // ── 3. can send and see own message ─────────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn can_send_and_see_own_message() {
+        let container = mount_app_fresh().await;
+        create_server_flow(&container, "Chat Test", "Alice").await;
+        // Wait for the composer to mount.
+        let composer = ".shell-desktop .input-area input, .shell-desktop .input-area textarea";
+        assert!(
+            wait_for(&container, composer, 10_000).await,
+            "composer input should mount after entering channel"
+        );
+        fill_selector(&container, composer, "Hello world!");
+        tick().await;
+        press_key(&container, composer, "Enter");
+        // Wait for message to appear in the list.
+        let ok = wait_for(&container, ".shell-desktop .message .body", 10_000).await;
+        assert!(ok, "sent message did not render");
+        let bodies = query_all_text(&container, ".shell-desktop .message .body");
+        assert!(
+            bodies.iter().any(|b| b.contains("Hello world!")),
+            "own message should appear in the list, got: {bodies:?}"
+        );
+    }
+
+    // ── 4. can create a new text channel ────────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn can_create_new_text_channel() {
+        let container = mount_app_fresh().await;
+        create_server_flow(&container, "Channel Test", "Alice").await;
+        assert!(wait_for(&container, ".shell-desktop .channel-add-btn", 5_000).await);
+        click_selector(&container, ".shell-desktop .channel-add-btn");
+        let input_sel = ".shell-desktop .channel-create-input input";
+        assert!(
+            wait_for(&container, input_sel, 5_000).await,
+            "channel-create-input did not appear"
+        );
+        fill_selector(&container, input_sel, "random");
+        press_key(&container, input_sel, "Enter");
+        // Poll for the new channel row.
+        let mut found = false;
+        for _ in 0..250 {
+            let items = query_all_text(&container, ".shell-desktop .channel-item");
+            if items.iter().any(|c| c.contains("random")) {
+                found = true;
+                break;
+            }
+            gloo_timers::future::TimeoutFuture::new(40).await;
+        }
+        assert!(found, "new 'random' channel did not appear in the sidebar");
+    }
+
+    // ── 5. can create a voice channel ───────────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn can_create_voice_channel() {
+        let container = mount_app_fresh().await;
+        create_server_flow(&container, "Voice Test", "Alice").await;
+        assert!(wait_for(&container, ".shell-desktop .channel-add-btn", 5_000).await);
+        click_selector(&container, ".shell-desktop .channel-add-btn");
+        // Wait for type-toggle buttons, then click "Voice".
+        assert!(wait_for(&container, ".shell-desktop .type-btn", 5_000).await);
+        let buttons = query_all(&container, ".shell-desktop .type-btn");
+        let voice_btn = buttons
+            .iter()
+            .find(|b| b.text_content().unwrap_or_default().contains("Voice"))
+            .expect("voice type toggle should exist");
+        // The Voice toggle listens on `mousedown`, not `click` (so
+        // pointer-drag UIs don't steal focus). Dispatch both to keep
+        // this helper robust to future changes.
+        let mousedown = web_sys::MouseEvent::new("mousedown").unwrap();
+        voice_btn
+            .dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&mousedown)
+            .unwrap();
+        simulate_click(voice_btn);
+        tick().await;
+        let input_sel = ".shell-desktop .channel-create-input input";
+        assert!(wait_for(&container, input_sel, 5_000).await);
+        fill_selector(&container, input_sel, "voice-chat");
+        press_key(&container, input_sel, "Enter");
+        // Poll for the new voice channel.
+        let mut voice_el: Option<web_sys::Element> = None;
+        for _ in 0..250 {
+            let items = query_all(&container, ".shell-desktop .channel-item");
+            voice_el = items
+                .into_iter()
+                .find(|el| el.text_content().unwrap_or_default().contains("voice-chat"));
+            if voice_el.is_some() {
+                break;
+            }
+            gloo_timers::future::TimeoutFuture::new(40).await;
+        }
+        let voice_el = voice_el.expect("voice-chat channel row did not appear");
+        // Voice channels render a volume icon prefix.
+        assert!(
+            voice_el
+                .query_selector(".icon-volume, .icon-volume-1")
+                .unwrap()
+                .is_some(),
+            "voice channel row should render a volume icon"
+        );
+    }
+
+    // ── 6. messages persist across a remount ────────────────────────────
+
+    // `page.reload()` in Playwright drops + restarts everything; the
+    // wasm-pack harness has no "reload" — we approximate the assertion
+    // by reading the persisted event store back into a fresh `App`
+    // mount. The identity + event stream live in IndexedDB so the
+    // second mount should rehydrate them.
+    #[wasm_bindgen_test]
+    async fn messages_persist_after_remount() {
+        let container = mount_app_fresh().await;
+        create_server_flow(&container, "Persist Test", "Alice").await;
+        let composer = ".shell-desktop .input-area input, .shell-desktop .input-area textarea";
+        assert!(wait_for(&container, composer, 10_000).await);
+        fill_selector(&container, composer, "persistent message");
+        tick().await;
+        press_key(&container, composer, "Enter");
+        assert!(
+            wait_for(&container, ".shell-desktop .message .body", 10_000).await,
+            "message did not render before reload"
+        );
+
+        // Simulate reload: mount a second <App /> — it shares the same
+        // origin's IndexedDB + localStorage so it should rehydrate.
+        ensure_app_css();
+        let container2 = mount_test_with_shell(TestShell::Desktop, || view! { <App /> });
+        // Poll up to 15 s for the rehydrated message to appear.
+        let mut found = false;
+        for _ in 0..375 {
+            let bodies = query_all_text(&container2, ".shell-desktop .message .body");
+            if bodies.iter().any(|b| b.contains("persistent message")) {
+                found = true;
+                break;
+            }
+            gloo_timers::future::TimeoutFuture::new(40).await;
+        }
+        assert!(found, "persistent message did not survive remount");
+    }
+
+    // ── 7. reactions persist across a remount ───────────────────────────
+
+    // Reactions are set via the message-action dropdown (desktop flow):
+    // hover to reveal `.action-trigger`, click it, click "React", then
+    // click the first emoji in the picker. Headless WASM has no "hover"
+    // so we dispatch the click directly — the trigger exists in the DOM
+    // regardless of hover state; the hover rule only toggles opacity.
+    #[wasm_bindgen_test]
+    async fn reactions_persist_after_remount() {
+        let container = mount_app_fresh().await;
+        create_server_flow(&container, "React Persist", "Alice").await;
+        let composer = ".shell-desktop .input-area input, .shell-desktop .input-area textarea";
+        assert!(wait_for(&container, composer, 10_000).await);
+        fill_selector(&container, composer, "react to me");
+        tick().await;
+        press_key(&container, composer, "Enter");
+        assert!(wait_for(&container, ".shell-desktop .message .body", 10_000).await);
+
+        // Open the dropdown + pick the first emoji.
+        assert!(
+            wait_for(&container, ".shell-desktop .message .action-trigger", 5_000).await,
+            "message action-trigger did not mount"
+        );
+        click_selector(&container, ".shell-desktop .message .action-trigger");
+        tick().await;
+        let react_btn_sel = ".shell-desktop .dropdown-item";
+        // Find the dropdown item whose text is "React".
+        let mut react_el: Option<web_sys::Element> = None;
+        for _ in 0..125 {
+            let items = query_all(&container, react_btn_sel);
+            react_el = items
+                .into_iter()
+                .find(|el| el.text_content().unwrap_or_default().contains("React"));
+            if react_el.is_some() {
+                break;
+            }
+            gloo_timers::future::TimeoutFuture::new(40).await;
+        }
+        let react_el = react_el.expect("React dropdown item did not appear");
+        simulate_click(&react_el);
+        tick().await;
+        assert!(
+            wait_for(
+                &container,
+                ".shell-desktop .dropdown-emoji-row button",
+                5_000
+            )
+            .await,
+            "emoji picker did not open"
+        );
+        let emojis = query_all(&container, ".shell-desktop .dropdown-emoji-row button");
+        simulate_click(&emojis[0]);
+        tick().await;
+        assert!(
+            wait_for(&container, ".shell-desktop .reaction", 10_000).await,
+            "reaction did not render after picking emoji"
+        );
+
+        // Remount to simulate reload. Reactions are part of the event
+        // log so they must replay.
+        ensure_app_css();
+        let container2 = mount_test_with_shell(TestShell::Desktop, || view! { <App /> });
+        let mut found = false;
+        for _ in 0..375 {
+            if container2
+                .query_selector(".shell-desktop .reaction")
+                .unwrap()
+                .is_some()
+            {
+                found = true;
+                break;
+            }
+            gloo_timers::future::TimeoutFuture::new(40).await;
+        }
+        assert!(found, "reaction did not persist across remount");
+    }
+}
