@@ -1,7 +1,10 @@
 use leptos::prelude::*;
+use willow_client::presence::PresenceState;
 
 use crate::app::WebClientHandle;
-use crate::components::{ConfirmDialog, TrustBadge, TrustBadgeSize};
+use crate::components::{
+    ConfirmDialog, StatusDot, StatusDotBorder, StatusDotSize, TrustBadge, TrustBadgeSize,
+};
 use crate::icons;
 use crate::state::AppState;
 
@@ -137,11 +140,51 @@ pub fn MemberList(
                     let pid_untrust = pid.clone();
                     let pid_kick = pid.clone();
                     let pid_self = pid.clone();
+                    let pid_dot = pid.clone();
+                    let pid_tooltip = pid.clone();
                     let handle_trust = handle_for_items.clone();
                     let handle_untrust = handle_for_items.clone();
+                    // Presence state for this peer — derived from AppState
+                    // presence map. Falls back to Here/Gone depending on
+                    // reachability so reloading the app before the tick
+                    // driver fires never shows a stale dot.
+                    let presence_state = Signal::derive(move || {
+                        app_state
+                            .presence
+                            .per_peer
+                            .get()
+                            .get(&pid_dot)
+                            .copied()
+                            .unwrap_or(if is_online {
+                                PresenceState::Here
+                            } else {
+                                PresenceState::Gone
+                            })
+                    });
+                    let tooltip_label = Signal::derive(move || {
+                        app_state
+                            .presence
+                            .per_peer
+                            .get()
+                            .get(&pid_tooltip)
+                            .copied()
+                            .unwrap_or(if is_online {
+                                PresenceState::Here
+                            } else {
+                                PresenceState::Gone
+                            })
+                            .label()
+                    });
                     view! {
                         <div class="member-item">
-                            <div class={if is_online { "status-dot" } else { "status-dot offline" }}></div>
+                            <span class="member-status" title=tooltip_label>
+                                <StatusDot
+                                    state=presence_state
+                                    size=StatusDotSize::Rail
+                                    border=StatusDotBorder::Bg1
+                                    ambient=true
+                                />
+                            </span>
                             <span class="member-name" style=format!("color: {}", super::peer_color(&pid))>
                                 {name}
                                 <span class="member-peer-id">{

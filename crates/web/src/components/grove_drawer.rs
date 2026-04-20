@@ -12,7 +12,9 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
+use crate::components::{PeerStatusLabel, StatusDot, StatusDotBorder, StatusDotSize};
 use crate::icons;
+use crate::state::AppState;
 
 /// Left-edge drawer overlaying the current screen.
 #[allow(clippy::too_many_arguments)]
@@ -170,16 +172,36 @@ pub fn GroveDrawer(
                         })}
                     </div>
                     <footer class="drawer-me-strip">
-                        <div class="drawer-me-avatar" aria-hidden="true">
+                        <div class="drawer-me-avatar" aria-hidden="true" style="position: relative">
                             {move || display_name.get()
                                 .chars()
                                 .next()
                                 .map(|c| c.to_ascii_uppercase().to_string())
                                 .unwrap_or_else(|| "·".to_string())}
+                            {
+                                // Optional — self-state pulled from AppState
+                                // when the context is available. Not mandatory
+                                // in test / storybook contexts.
+                                use_context::<AppState>().map(|app_state| view! {
+                                    <StatusDot
+                                        state=app_state.presence.self_state
+                                        size=StatusDotSize::MeStrip
+                                        border=StatusDotBorder::Bg1
+                                        ambient=true
+                                    />
+                                })
+                            }
                         </div>
                         <div class="drawer-me-col">
                             <div class="drawer-me-name">"you"</div>
-                            <div class="drawer-me-sub">"willow · mobile"</div>
+                            <div class="drawer-me-sub">
+                                {use_context::<AppState>().map(|app_state| view! {
+                                    <PeerStatusLabel
+                                        state=app_state.presence.self_state
+                                        show_dot=false
+                                    />
+                                })}
+                            </div>
                         </div>
                         {move || on_open_settings.map(|cb| view! {
                             <button

@@ -76,6 +76,19 @@ pub struct AppState {
     pub ui: UiState,
     pub voice: VoiceState,
     pub trust: TrustState,
+    pub presence: PresenceUiState,
+}
+
+/// Reactive presence bucket. `per_peer` maps a peer's string id to the
+/// derived [`willow_client::presence::PresenceState`]. `self_state`
+/// carries the local user's own label (respects the override). Both
+/// are reactive — UI surfaces subscribe directly without needing to
+/// round-trip through the client handle.
+#[derive(Clone, Copy)]
+pub struct PresenceUiState {
+    pub per_peer: ReadSignal<HashMap<String, willow_client::presence::PresenceState>>,
+    pub self_state: ReadSignal<willow_client::presence::PresenceState>,
+    pub self_override: ReadSignal<willow_client::presence::PresenceOverride>,
 }
 
 /// Reactive trust bucket. The `trust_map` signal mirrors the
@@ -179,6 +192,14 @@ pub struct AppWriteSignals {
     pub ui: UiWriteSignals,
     pub voice: VoiceWriteSignals,
     pub trust: TrustWriteSignals,
+    pub presence: PresenceWriteSignals,
+}
+
+#[derive(Clone, Copy)]
+pub struct PresenceWriteSignals {
+    pub set_per_peer: WriteSignal<HashMap<String, willow_client::presence::PresenceState>>,
+    pub set_self_state: WriteSignal<willow_client::presence::PresenceState>,
+    pub set_self_override: WriteSignal<willow_client::presence::PresenceOverride>,
 }
 
 #[derive(Clone, Copy)]
@@ -362,6 +383,14 @@ pub fn create_signals() -> InitialSignals {
     let (compare_target, set_compare_target) = signal(Option::<String>::None);
     let (crypto_visibility, set_crypto_visibility) = signal(CryptoVisibility::default());
 
+    // Presence signals (phase 1e)
+    let (presence_per_peer, set_presence_per_peer) =
+        signal(HashMap::<String, willow_client::presence::PresenceState>::new());
+    let (presence_self_state, set_presence_self_state) =
+        signal(willow_client::presence::PresenceState::Here);
+    let (presence_self_override, set_presence_self_override) =
+        signal(willow_client::presence::PresenceOverride::Auto);
+
     let app_state = AppState {
         chat: ChatState {
             messages,
@@ -421,6 +450,11 @@ pub fn create_signals() -> InitialSignals {
             version: trust_version,
             compare_target,
             crypto_visibility,
+        },
+        presence: PresenceUiState {
+            per_peer: presence_per_peer,
+            self_state: presence_self_state,
+            self_override: presence_self_override,
         },
     };
 
@@ -483,6 +517,11 @@ pub fn create_signals() -> InitialSignals {
             set_version: set_trust_version,
             set_compare_target,
             set_crypto_visibility,
+        },
+        presence: PresenceWriteSignals {
+            set_per_peer: set_presence_per_peer,
+            set_self_state: set_presence_self_state,
+            set_self_override: set_presence_self_override,
         },
     };
 
@@ -626,4 +665,32 @@ pub fn wire_derived_signals<N: willow_network::Network>(
 
     let messages_sig = derived_signal(&views.messages, system, |mv| mv.messages.clone());
     leptos::prelude::Effect::new(move || write.chat.set_messages.set(messages_sig.get()));
+
+    // ── Presence derived signals (phase 1e) ──────────────────────────
+    let presence_per_peer_sig = derived_signal(&views.presence, system, |pv| {
+        pv.per_peer
+            .iter()
+            .map(|(pid, st)| (pid.to_string(), *st))
+            .collect::<HashMap<String, willow_client::presence::PresenceState>>()
+    });
+    leptos::prelude::Effect::new(move || {
+        write
+            .presence
+            .set_per_peer
+            .set(presence_per_peer_sig.get())
+    });
+
+    let presence_self_sig = derived_signal(&views.presence, system, |pv| pv.self_state);
+    leptos::prelude::Effect::new(move || {
+        write.presence.set_self_state.set(presence_self_sig.get())
+    });
+
+    let presence_override_sig =
+        derived_signal(&views.presence_meta, system, |pm| pm.self_override);
+    leptos::prelude::Effect::new(move || {
+        write
+            .presence
+            .set_self_override
+            .set(presence_override_sig.get())
+    });
 }

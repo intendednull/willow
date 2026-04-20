@@ -16,7 +16,10 @@ use std::collections::HashMap;
 use leptos::prelude::*;
 
 use crate::app::WebClientHandle;
-use crate::components::{ConfirmDialog, VoiceControls};
+use crate::components::{
+    ConfirmDialog, PeerStatusLabel, PresenceMenu, StatusDot, StatusDotBorder, StatusDotSize,
+    VoiceControls,
+};
 use crate::icons;
 
 /// Canonical channel groups — four labels in this render order when
@@ -153,6 +156,10 @@ pub fn ChannelSidebar(
 
     // Collapsed groups (persisted locally — defaults to all expanded).
     let (collapsed, set_collapsed) = signal(std::collections::HashSet::<&'static str>::new());
+
+    // Presence menu open/close + self-state signal.
+    let (presence_menu_open, set_presence_menu_open) = signal(false);
+    let self_presence = app_state.presence.self_state;
 
     view! {
         <aside
@@ -365,6 +372,7 @@ pub fn ChannelSidebar(
             // ── Me strip ───────────────────────────────────────────
             <div
                 class="me-strip"
+                style="position: relative"
                 on:click=move |_| on_settings_click(())
             >
                 <div class="me-avatar">
@@ -375,16 +383,12 @@ pub fn ChannelSidebar(
                                 .to_uppercase().to_string()
                         }}
                     </div>
-                    <span
-                        class=move || {
-                            let status = connection_status.get();
-                            match status.as_str() {
-                                "connected" => "status-dot connected",
-                                "connecting" | "reconnecting" => "status-dot connecting",
-                                _ => "status-dot disconnected",
-                            }
-                        }
-                    ></span>
+                    <StatusDot
+                        state=self_presence
+                        size=StatusDotSize::MeStrip
+                        border=StatusDotBorder::Bg1
+                        ambient=true
+                    />
                 </div>
                 <div class="me-identity">
                     <span class="me-display-name">
@@ -409,7 +413,35 @@ pub fn ChannelSidebar(
                     <span class="me-fingerprint">
                         {move || short_fingerprint(&peer_id.get())}
                     </span>
+                    <button
+                        class="presence-menu-trigger"
+                        aria-haspopup="menu"
+                        aria-live="polite"
+                        aria-label=move || format!(
+                            "change your status · currently {}",
+                            self_presence.get().label()
+                        )
+                        on:click=move |ev: web_sys::MouseEvent| {
+                            ev.stop_propagation();
+                            set_presence_menu_open.update(|v| *v = !*v);
+                        }
+                    >
+                        <PeerStatusLabel state=self_presence show_dot=false/>
+                        {icons::icon_chevron_down()}
+                    </button>
                 </div>
+                {move || {
+                    if presence_menu_open.get() {
+                        Some(view! {
+                            <PresenceMenu
+                                open=presence_menu_open
+                                on_close=Callback::new(move |_| set_presence_menu_open.set(false))
+                            />
+                        })
+                    } else {
+                        None
+                    }
+                }}
                 <div class="me-actions" on:click=move |ev: web_sys::MouseEvent| ev.stop_propagation()>
                     {move || {
                         let muted = voice_muted.map(|s| s.get()).unwrap_or(false);
