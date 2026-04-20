@@ -6,9 +6,9 @@ use send_wrapper::SendWrapper;
 use willow_client::{ClientConfig, ClientEvent, ClientHandle, DisplayMessage, VoiceSignalPayload};
 
 use crate::components::{
-    AddServerPanel, CallPage, ChannelHeader, ChannelSidebar, ChatInput, CommandPalette,
-    FileShareButton, GroveRail, JoinPage, MemberList, MessageList, PinnedPanel, SettingsPanel,
-    WelcomeScreen,
+    AddServerPanel, CallPage, ChannelSidebar, ChatInput, CommandPalette, FileShareButton,
+    GroveRail, JoinPage, MainPaneHeader, MemberList, MessageList, PinnedPanel, RightRailWhich,
+    SettingsPanel, WelcomeScreen,
 };
 use crate::event_processing::process_event_batch;
 use crate::handlers;
@@ -703,14 +703,23 @@ pub fn App() -> impl IntoView {
                                             pin_handler(msg);
                                         })
                                     };
+                                    // Derive one-of-three right-rail state from existing UI signals.
+                                    let which_signal = Signal::derive(move || {
+                                        if show_members.get() { RightRailWhich::Members }
+                                        else if show_pinned.get() { RightRailWhich::Pinned }
+                                        else { RightRailWhich::None }
+                                    });
+                                    let on_set_which = Callback::new(move |next: RightRailWhich| {
+                                        // Exactly one rail pane at a time.
+                                        write.ui.set_show_members.set(matches!(next, RightRailWhich::Members));
+                                        write.ui.set_show_pinned.set(matches!(next, RightRailWhich::Pinned));
+                                    });
                                     view! {
-                                        <div class="chat-container">
-                                            <ChannelHeader
+                                        <div class="chat-container main-pane">
+                                            <MainPaneHeader
                                                 channel=current_channel
-                                                peer_count=peer_count
-                                                on_menu_click=move |_| write.ui.set_show_sidebar.update(|v| *v = !*v)
-                                                on_members_click=move |_| write.ui.set_show_members.update(|v| *v = !*v)
-                                                on_pinned_click=Callback::new(move |_| write.ui.set_show_pinned.update(|v| *v = !*v))
+                                                which=which_signal
+                                                on_set_which=on_set_which
                                                 on_search_click=Callback::new(move |_| write.ui.set_show_palette.set(true))
                                             />
                                             {move || {
