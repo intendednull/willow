@@ -69,26 +69,27 @@ pub fn TabBar(
                         </span>
                         <span class="tab-label">{label}</span>
                         {move || {
+                            // Phase 1f: unfocused tabs show a 6x6 moss
+                            // dot via UnreadBadge (chrome is space
+                            // constrained). Focused/active tab replaces
+                            // the dot with a pill — number-bearing.
                             let count = badges_for_tab
                                 .get()
                                 .into_iter()
                                 .find(|(k, _)| k == id)
                                 .map(|(_, v)| v)
                                 .unwrap_or(0);
-                            if count > 0 {
-                                let text = if count > 99 {
-                                    "99+".to_string()
-                                } else {
-                                    count.to_string()
-                                };
-                                Some(view! {
-                                    <span class="tab-badge" aria-label=format!("{count} unread")>
-                                        {text}
-                                    </span>
-                                })
-                            } else {
-                                None
+                            if count == 0 {
+                                return None;
                             }
+                            let stats = Signal::derive(move || willow_client::views::UnreadStats {
+                                count: count as u32,
+                                ..Default::default()
+                            });
+                            let is_active = active_for_class.get() == tab;
+                            Some(view! {
+                                <crate::components::UnreadBadge stats=stats dot=!is_active/>
+                            })
                         }}
                     </button>
                 }

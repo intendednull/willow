@@ -279,16 +279,13 @@ impl ToastStack {
             return;
         };
         let this = self.clone();
-        let cb =
-            wasm_bindgen::closure::Closure::once_into_js(move || {
-                this.dismiss(id);
-            });
-        if let Ok(handle) = window
-            .set_timeout_with_callback_and_timeout_and_arguments_0(
-                cb.unchecked_ref(),
-                TOAST_AUTO_DISMISS_MS,
-            )
-        {
+        let cb = wasm_bindgen::closure::Closure::once_into_js(move || {
+            this.dismiss(id);
+        });
+        if let Ok(handle) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+            cb.unchecked_ref(),
+            TOAST_AUTO_DISMISS_MS,
+        ) {
             self.timers.borrow_mut().insert(id, handle);
         }
     }

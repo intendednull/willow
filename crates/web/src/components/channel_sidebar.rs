@@ -77,7 +77,7 @@ pub fn ChannelSidebar(
     channels: ReadSignal<Vec<String>>,
     current_channel: ReadSignal<String>,
     open: ReadSignal<bool>,
-    unread: ReadSignal<HashMap<String, usize>>,
+    unread: ReadSignal<HashMap<String, willow_client::views::UnreadStats>>,
     connection_status: ReadSignal<String>,
     peer_count: ReadSignal<usize>,
     server_name: ReadSignal<String>,
@@ -579,7 +579,7 @@ fn render_channel_row(
     name: String,
     group: ChannelGroup,
     current_channel: ReadSignal<String>,
-    unread: ReadSignal<HashMap<String, usize>>,
+    unread: ReadSignal<HashMap<String, willow_client::views::UnreadStats>>,
     can_manage_channels: impl Fn() -> bool + Send + Copy + 'static,
     on_channel_click: impl Fn(String) + Send + Clone + 'static,
     on_voice_join: impl Fn(String) + Send + Clone + 'static,
@@ -650,7 +650,7 @@ fn render_channel_row(
         if active {
             cls.push_str(" channel-item--current active");
         }
-        let cnt = unread.get().get(&class_name).copied().unwrap_or(0);
+        let cnt = unread.get().get(&class_name).map(|s| s.count).unwrap_or(0);
         if !active && cnt > 0 {
             cls.push_str(" channel-item--unread");
         }
@@ -660,6 +660,7 @@ fn render_channel_row(
     // Trailing-slot closure — owns its own name clone.
     let trailing_name = name.clone();
     let trailing_fn = move || {
+        use crate::components::UnreadBadge;
         if is_voice {
             let n = listeners();
             if n > 0 {
@@ -678,18 +679,36 @@ fn render_channel_row(
         } else if is_ephemeral {
             Some(view! { <span class="ephemeral-timer">"--h --m"</span> }.into_any())
         } else {
-            let cnt = unread.get().get(&trailing_name).copied().unwrap_or(0);
-            let active = current_channel.get() == trailing_name;
-            if !active && cnt > 0 {
-                let display = if cnt > 99 {
-                    "99+".to_string()
-                } else {
-                    cnt.to_string()
-                };
-                Some(view! { <span class="unread-pill unread-badge">{display}</span> }.into_any())
-            } else {
-                None
-            }
+            let trailing_name_inner = trailing_name.clone();
+            let stats_signal: Signal<willow_client::views::UnreadStats> =
+                Signal::derive(move || {
+                    unread
+                        .get()
+                        .get(&trailing_name_inner)
+                        .cloned()
+                        .unwrap_or_default()
+                });
+            let trailing_name_render = trailing_name.clone();
+            let active_signal =
+                Signal::derive(move || current_channel.get() == trailing_name_render);
+            // Hide the badge when the channel is active (no unread on
+            // the surface you're reading) or when the count is zero
+            // AND the surface isn't muted (muted surfaces with zero
+            // still collapse — there's nothing to say).
+            Some(
+                view! {
+                    {move || {
+                        let s = stats_signal.get();
+                        let active = active_signal.get();
+                        if active || s.count == 0 {
+                            None
+                        } else {
+                            Some(view! { <UnreadBadge stats=stats_signal/> })
+                        }
+                    }}
+                }
+                .into_any(),
+            )
         }
     };
 

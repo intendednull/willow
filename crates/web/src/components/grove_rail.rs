@@ -44,6 +44,13 @@ pub fn GroveRail(
     /// Called when the user activates the settings tile (pinned bottom).
     #[prop(optional, into)]
     on_settings_tile_click: Option<Callback<()>>,
+    /// Per-server aggregate unread stats. Missing entries default to
+    /// zero. Phase 1f only populates the active grove — multi-grove
+    /// support arrives when the sidebar phase lands.
+    #[prop(optional, into)]
+    grove_stats: Option<
+        Signal<std::collections::HashMap<String, willow_client::views::UnreadStats>>,
+    >,
 ) -> impl IntoView {
     let handle = use_context::<WebClientHandle>().unwrap();
 
@@ -274,6 +281,27 @@ pub fn GroveRail(
                                 on:touchmove=on_touchmove
                             >
                                 <span class="grove-tile-glyph">{initial}</span>
+                                {
+                                    let id_for_badge = id.clone();
+                                    move || {
+                                        let gs = grove_stats?;
+                                        let id_inner = id_for_badge.clone();
+                                        let stats = gs.get().get(&id_inner).cloned()?;
+                                        if stats.count == 0 {
+                                            return None;
+                                        }
+                                        let id_sig = id_for_badge.clone();
+                                        let sig: Signal<willow_client::views::UnreadStats> =
+                                            Signal::derive(move || {
+                                                gs.get().get(&id_sig).cloned().unwrap_or_default()
+                                            });
+                                        Some(view! {
+                                            <span class="grove-tile-badge">
+                                                <crate::components::UnreadBadge stats=sig/>
+                                            </span>
+                                        })
+                                    }
+                                }
                             </button>
                         }
                     }

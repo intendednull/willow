@@ -816,3 +816,11 @@ a { color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   .unread-badge { transition: none; }
 }
+.grove-tile-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  z-index: 1;
+  pointer-events: none;
+}
+.grove-tile { position: relative; }

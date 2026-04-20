@@ -577,6 +577,29 @@ pub fn App() -> impl IntoView {
                         <GroveRail
                             servers=app_state.server.servers
                             active_server_id=app_state.server.active_server_id
+                            grove_stats=Signal::derive(move || {
+                                // Aggregate per-grove stats from the
+                                // channel stats map. Only the active
+                                // grove is populated (the registry
+                                // tracks one active server at a time).
+                                let stats = app_state.server.unread_stats.get();
+                                let active = app_state.server.active_server_id.get();
+                                let mut agg = willow_client::views::UnreadStats::default();
+                                for s in stats.values() {
+                                    agg.count = agg.count.saturating_add(s.count);
+                                    agg.mentioned |= s.mentioned;
+                                    agg.whisper |= s.whisper;
+                                    agg.announce_only |= s.announce_only;
+                                    agg.muted |= s.muted;
+                                }
+                                if active.is_empty() {
+                                    std::collections::HashMap::new()
+                                } else {
+                                    let mut out = std::collections::HashMap::new();
+                                    out.insert(active, agg);
+                                    out
+                                }
+                            })
                             on_server_click=srv_click
                             on_add_server_click=move |_| {
                                 write.ui.set_show_add_server.update(|v| *v = !*v);
@@ -600,7 +623,7 @@ pub fn App() -> impl IntoView {
                             channels=app_state.chat.channels
                             current_channel=current_channel
                             open=show_sidebar
-                            unread=app_state.server.unread
+                            unread=app_state.server.unread_stats
                             connection_status=app_state.network.connection_status
                             peer_count=peer_count
                             server_name=app_state.server.active_server_name

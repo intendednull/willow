@@ -140,6 +140,10 @@ pub struct ServerState {
     pub active_server_id: ReadSignal<String>,
     pub active_server_name: ReadSignal<String>,
     pub unread: ReadSignal<HashMap<String, usize>>,
+    /// Per-surface unread stats (phase 1f) — drives the badge priority
+    /// pipeline. Keyed by channel name for `SurfaceId::Channel`; other
+    /// variants are stubbed empty until their phases land.
+    pub unread_stats: ReadSignal<HashMap<String, willow_client::views::UnreadStats>>,
     pub roles: ReadSignal<Vec<(String, String, Vec<String>)>>,
     pub display_name: ReadSignal<String>,
     pub server_owner: ReadSignal<String>,
@@ -240,6 +244,7 @@ pub struct ServerWriteSignals {
     pub set_active_server_id: WriteSignal<String>,
     pub set_active_server_name: WriteSignal<String>,
     pub set_unread: WriteSignal<HashMap<String, usize>>,
+    pub set_unread_stats: WriteSignal<HashMap<String, willow_client::views::UnreadStats>>,
     pub set_roles: WriteSignal<Vec<(String, String, Vec<String>)>>,
     pub set_display_name: WriteSignal<String>,
     pub set_server_owner: WriteSignal<String>,
@@ -337,6 +342,8 @@ pub fn create_signals() -> InitialSignals {
     let (active_server_id, set_active_server_id) = signal(String::new());
     let (active_server_name, set_active_server_name) = signal(String::new());
     let (unread, set_unread) = signal(HashMap::<String, usize>::new());
+    let (unread_stats, set_unread_stats) =
+        signal(HashMap::<String, willow_client::views::UnreadStats>::new());
     let (roles, set_roles) = signal(Vec::<(String, String, Vec<String>)>::new());
     let (display_name, set_display_name) = signal(String::new());
     let (server_owner, set_server_owner) = signal(String::new());
@@ -415,6 +422,7 @@ pub fn create_signals() -> InitialSignals {
             active_server_id,
             active_server_name,
             unread,
+            unread_stats,
             roles,
             display_name,
             server_owner,
@@ -482,6 +490,7 @@ pub fn create_signals() -> InitialSignals {
             set_active_server_id,
             set_active_server_name,
             set_unread,
+            set_unread_stats,
             set_roles,
             set_display_name,
             set_server_owner,
@@ -581,6 +590,24 @@ pub fn wire_derived_signals<N: willow_network::Network>(
         reg.active().map(|e| e.unread.clone()).unwrap_or_default()
     });
     leptos::prelude::Effect::new(move || write.server.set_unread.set(unread.get()));
+
+    // Per-surface UnreadStats signal — projects `UnreadView.stats`
+    // down to `{channel_name -> stats}` so the UI can render the
+    // badge atom without knowing about `SurfaceId`.
+    let unread_stats_signal = derived_signal(&views.unread, system, |uv| {
+        uv.stats
+            .iter()
+            .filter_map(|(surface, stats)| match surface {
+                willow_client::views::SurfaceId::Channel(name) => {
+                    Some((name.clone(), stats.clone()))
+                }
+                _ => None,
+            })
+            .collect::<HashMap<String, willow_client::views::UnreadStats>>()
+    });
+    leptos::prelude::Effect::new(move || {
+        write.server.set_unread_stats.set(unread_stats_signal.get())
+    });
 
     let pid_str = handle.peer_id();
     let peer_id = derived_signal(&views.network, system, move |_| pid_str.clone());

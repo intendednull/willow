@@ -1839,15 +1839,9 @@ mod tests {
         assert!(seen, "expected MuteChanged event after mutate_channel_mute");
 
         // The channel's UnreadStats.muted flag should now be true.
-        let registry =
-            willow_actor::state::get(&client.server_registry_addr).await;
-        let events =
-            willow_actor::state::get(&client.event_state_addr).await;
-        let view = views::compute_unread_view(
-            &registry,
-            &events,
-            client.identity.endpoint_id(),
-        );
+        let registry = willow_actor::state::get(&client.server_registry_addr).await;
+        let events = willow_actor::state::get(&client.event_state_addr).await;
+        let view = views::compute_unread_view(&registry, &events, client.identity.endpoint_id());
         // The channel may have zero unread, but the muted flag is
         // derived from mute_state independently — look up the
         // ServerState directly.
@@ -1891,8 +1885,7 @@ mod tests {
         .unwrap_or(false);
         assert!(seen, "expected MuteChanged event after mutate_grove_mute");
 
-        let events =
-            willow_actor::state::get(&client.event_state_addr).await;
+        let events = willow_actor::state::get(&client.event_state_addr).await;
         let entry = events
             .mute_state
             .get(&client.identity.endpoint_id())
@@ -1911,8 +1904,7 @@ mod tests {
         client.mutate_channel_mute("noisy", true).await.unwrap();
         client.mutate_channel_mute("noisy", false).await.unwrap();
 
-        let events =
-            willow_actor::state::get(&client.event_state_addr).await;
+        let events = willow_actor::state::get(&client.event_state_addr).await;
         let ch_id = events
             .channels
             .values()

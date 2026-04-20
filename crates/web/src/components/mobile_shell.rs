@@ -429,7 +429,7 @@ where
                                             channels=app_state.chat.channels
                                             current_channel=current_channel
                                             open=show_sidebar
-                                            unread=app_state.server.unread
+                                            unread=app_state.server.unread_stats
                                             connection_status=app_state.network.connection_status
                                             peer_count=peer_count
                                             server_name=active_server_name
