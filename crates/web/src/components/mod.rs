@@ -76,6 +76,7 @@ pub use pinned::*;
 pub use right_rail::*;
 pub use roles::*;
 pub use sas::*;
+pub use sas::sas_copy;
 pub use settings::*;
 pub use tab_bar::*;
 pub use trust_badge::*;

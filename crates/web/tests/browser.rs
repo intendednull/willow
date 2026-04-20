@@ -4900,3 +4900,226 @@ async fn phase_1c_grove_active_has_aria_current() {
         "active grove tile declares aria-current=page"
     );
 }
+
+// ── Phase 1d — Trust verification tests ────────────────────────────────────
+//
+// Spec: docs/specs/2026-04-19-ui-design/trust-verification.md
+// Plan: docs/plans/2026-04-20-ui-phase-1d-trust-verification.md
+
+mod trust_verification {
+    use super::*;
+    use willow_web::components::{
+        sas_copy, FingerprintGrid, FingerprintLabel, FingerprintLabelWhich, FingerprintSize,
+        FingerprintVariant,
+    };
+
+    fn sample_words() -> [String; 6] {
+        [
+            "copper".to_string(),
+            "reed".to_string(),
+            "glade".to_string(),
+            "slate".to_string(),
+            "moth".to_string(),
+            "willow".to_string(),
+        ]
+    }
+
+    #[wasm_bindgen_test]
+    async fn fingerprint_grid_renders_six_numbered_cells() {
+        let words = sample_words();
+        let container = mount_test(move || {
+            view! {
+                <FingerprintGrid
+                    words=Signal::derive(move || words.clone())
+                    size=FingerprintSize::Md
+                    variant=FingerprintVariant::Peer
+                />
+            }
+        });
+        tick().await;
+
+        let cells = query_all(&container, ".sas-cell");
+        assert_eq!(cells.len(), 6, "grid must render exactly 6 cells");
+
+        // Every cell carries `aria-label="word {n}, {word}"` with 1-indexed n.
+        for (idx, cell) in cells.iter().enumerate() {
+            let label = cell
+                .get_attribute("aria-label")
+                .expect("cell missing aria-label");
+            assert!(
+                label.starts_with(&format!("word {}, ", idx + 1)),
+                "cell {} aria-label should start with 'word {}, ', got {label:?}",
+                idx,
+                idx + 1
+            );
+        }
+
+        let grid = query(&container, ".sas-grid").expect("grid element");
+        assert_eq!(grid.get_attribute("role").as_deref(), Some("table"));
+    }
+
+    #[wasm_bindgen_test]
+    async fn fingerprint_grid_variants_apply_state_classes() {
+        for variant in [
+            FingerprintVariant::You,
+            FingerprintVariant::Peer,
+            FingerprintVariant::Matched,
+            FingerprintVariant::Mismatch,
+        ] {
+            let v = variant;
+            let words = sample_words();
+            let container = mount_test(move || {
+                view! {
+                    <FingerprintGrid
+                        words=Signal::derive(move || words.clone())
+                        size=FingerprintSize::Sm
+                        variant=v
+                    />
+                }
+            });
+            tick().await;
+
+            let expected_class = match variant {
+                FingerprintVariant::You => "sas-grid--you",
+                FingerprintVariant::Peer => "sas-grid--peer",
+                FingerprintVariant::Matched => "sas-grid--matched",
+                FingerprintVariant::Mismatch => "sas-grid--mismatch",
+            };
+            let grid = query(&container, &format!(".sas-grid.{expected_class}"));
+            assert!(
+                grid.is_some(),
+                "grid for variant {expected_class} not found"
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    async fn fingerprint_label_renders_spec_copy() {
+        let container_you = mount_test(|| {
+            view! {
+                <FingerprintLabel
+                    which=FingerprintLabelWhich::You
+                    size=FingerprintSize::Md
+                />
+            }
+        });
+        tick().await;
+        let label = query(&container_you, ".sas-label__text").expect("you label");
+        assert_eq!(text(&label), sas_copy::LABEL_YOU);
+
+        let container_peer = mount_test(|| {
+            view! {
+                <FingerprintLabel
+                    which=FingerprintLabelWhich::Peer
+                    size=FingerprintSize::Md
+                />
+            }
+        });
+        tick().await;
+        let label = query(&container_peer, ".sas-label__text").expect("peer label");
+        assert_eq!(text(&label), sas_copy::LABEL_PEER);
+    }
+
+    /// Copy-lint: every security-critical string from the spec Copy
+    /// table appears verbatim in the sas_copy module. Drift between
+    /// spec and code caught at CI time.
+    #[wasm_bindgen_test]
+    async fn copy_table_is_byte_exact() {
+        assert_eq!(sas_copy::TITLE, "add a friend");
+        assert_eq!(
+            sas_copy::INTRO,
+            "compare six words on two screens. if they match, no one can impersonate either of you in this conversation, ever."
+        );
+        assert_eq!(
+            sas_copy::REASSURANCE,
+            "these six words come from your shared key. if someone tried to sit between you, at least one word would be different. verification gets stronger with repetition."
+        );
+        assert_eq!(sas_copy::YOU_META, "just now · keys created");
+        assert_eq!(sas_copy::PEER_META, "arrived via nearby share");
+        assert_eq!(sas_copy::MATCH_CTA, "they match");
+        assert_eq!(sas_copy::NO_MATCH_CTA, "they don't match");
+        assert_eq!(sas_copy::UNSURE_CTA, "not sure");
+        assert_eq!(sas_copy::LABEL_YOU, "your fingerprint — read this aloud");
+        assert_eq!(
+            sas_copy::LABEL_PEER,
+            "their fingerprint — do these match?"
+        );
+        assert_eq!(sas_copy::BADGE_VERIFIED, "verified peer");
+        assert_eq!(
+            sas_copy::BADGE_UNVERIFIED,
+            "unverified — compare fingerprints before you trust this peer"
+        );
+        assert_eq!(sas_copy::BADGE_PENDING, "verification pending");
+        assert_eq!(sas_copy::BADGE_PENDING_CHIP, "compare →");
+        assert_eq!(sas_copy::BADGE_NEW_PEER, "new peer");
+        assert_eq!(sas_copy::CONFIRM_MATCH_TITLE, "verified.");
+        assert_eq!(
+            sas_copy::CONFIRM_MATCH_BODY,
+            "verified peer — this cannot be silently downgraded by an attacker. their key is pinned; if it ever changes you'll be asked to verify again."
+        );
+        assert_eq!(sas_copy::CONFIRM_MISMATCH_TITLE, "marked not verified.");
+        assert_eq!(
+            sas_copy::CONFIRM_MISMATCH_BODY,
+            "marked not-verified — we will keep this peer unverified until you compare again. you can still send messages, but whisper and device handoff stay closed until the fingerprints match."
+        );
+        assert_eq!(sas_copy::DOWNGRADE_TITLE, "keys changed — verify again");
+        assert_eq!(
+            sas_copy::DOWNGRADE_BODY,
+            "this peer's key rotated or a fingerprint check failed. whisper and device handoff are paused until you compare again."
+        );
+        assert_eq!(sas_copy::DOWNGRADE_CTA, "compare now");
+        assert_eq!(sas_copy::DOWNGRADE_DISMISS, "dismiss for now");
+        assert_eq!(sas_copy::HOLDER_PILL, "{n} holders");
+        assert_eq!(sas_copy::HOLDER_TITLE, "who can read this channel");
+        assert_eq!(sas_copy::HOLDER_SELF_FOOTER, "you · holder since {t}");
+    }
+
+    #[wasm_bindgen_test]
+    async fn holder_pill_visibility_respects_crypto_visibility() {
+        use willow_web::components::holder_pill_visible;
+        use willow_web::state::CryptoVisibility;
+        assert!(!holder_pill_visible(CryptoVisibility::Subtle, 5, 5));
+        assert!(holder_pill_visible(CryptoVisibility::Subtle, 4, 5));
+        assert!(holder_pill_visible(CryptoVisibility::Default, 5, 5));
+        assert!(holder_pill_visible(CryptoVisibility::Explicit, 5, 5));
+    }
+
+    #[wasm_bindgen_test]
+    async fn long_press_avatar_fires_on_enter_keyboard() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use willow_web::components::LongPressAvatar;
+
+        let fired = Arc::new(AtomicBool::new(false));
+        let fired_for_cb = Arc::clone(&fired);
+        let container = mount_test(move || {
+            let fired_for_cb = Arc::clone(&fired_for_cb);
+            view! {
+                <LongPressAvatar
+                    on_trigger=Callback::new(move |_| fired_for_cb.store(true, Ordering::SeqCst))
+                    label="compare fingerprints"
+                >
+                    <span class="avatar-glyph">"A"</span>
+                </LongPressAvatar>
+            }
+        });
+        tick().await;
+
+        let wrapper = query(&container, ".long-press-avatar").expect("avatar wrapper");
+        // Dispatch Enter keydown.
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_key("Enter");
+        let event =
+            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        wrapper
+            .dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&event)
+            .unwrap();
+        tick().await;
+        assert!(
+            fired.load(Ordering::SeqCst),
+            "Enter on focused LongPressAvatar must fire on_trigger"
+        );
+    }
+}

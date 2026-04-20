@@ -105,38 +105,42 @@ pub fn MainPaneHeader(
 
             {
                 // Holder pill — flush-right, just before the action toolbar.
-                // Respects the per-grove crypto_visibility setting.
+                // Respects the per-grove crypto_visibility setting. The
+                // pill self-hides when the AppState context isn't mounted
+                // (e.g. isolated component tests) so the header stays
+                // portable.
                 use crate::components::{
                     holder_count_for_active_channel, holder_pill_visible, HolderList, HolderPill,
                 };
                 use crate::state::AppState;
-                let app_state = use_context::<AppState>().expect("AppState in context");
-                let count = holder_count_for_active_channel(&app_state);
-                let member_count = Signal::derive(move || app_state.network.peers.get().len());
-                let visibility = app_state.trust.crypto_visibility;
-                let open = RwSignal::new(false);
-                let holders = crate::components::holders_for_active_channel(&app_state);
-                let local_pid = app_state.network.peer_id;
-                view! {
-                    {move || {
-                        if holder_pill_visible(visibility.get(), count.get(), member_count.get()) {
-                            Some(view! {
-                                <div class="mph-holder">
-                                    <HolderPill count=count open=open/>
-                                    {move || if open.get() {
-                                        Some(view! {
-                                            <div class="mph-holder-popover">
-                                                <HolderList holders=holders local_pid=local_pid/>
-                                            </div>
-                                        })
-                                    } else { None }}
-                                </div>
-                            })
-                        } else {
-                            None
-                        }
-                    }}
-                }
+                use_context::<AppState>().map(|app_state| {
+                    let count = holder_count_for_active_channel(&app_state);
+                    let member_count = Signal::derive(move || app_state.network.peers.get().len());
+                    let visibility = app_state.trust.crypto_visibility;
+                    let open = RwSignal::new(false);
+                    let holders = crate::components::holders_for_active_channel(&app_state);
+                    let local_pid = app_state.network.peer_id;
+                    view! {
+                        {move || {
+                            if holder_pill_visible(visibility.get(), count.get(), member_count.get()) {
+                                Some(view! {
+                                    <div class="mph-holder">
+                                        <HolderPill count=count open=open/>
+                                        {move || if open.get() {
+                                            Some(view! {
+                                                <div class="mph-holder-popover">
+                                                    <HolderList holders=holders local_pid=local_pid/>
+                                                </div>
+                                            })
+                                        } else { None }}
+                                    </div>
+                                })
+                            } else {
+                                None
+                            }
+                        }}
+                    }
+                })
             }
 
             <div class="mph-action-bar" role="toolbar" aria-label="channel actions">
