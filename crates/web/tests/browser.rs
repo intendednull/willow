@@ -5355,3 +5355,217 @@ mod presence_atom {
         );
     }
 }
+
+// ── Phase 1f — Notifications tests ─────────────────────────────────────────
+//
+// Spec: docs/specs/2026-04-19-ui-design/notifications.md
+// Plan: docs/plans/2026-04-20-ui-phase-1f-notifications.md
+
+mod notifications {
+    use super::*;
+    use willow_client::views::UnreadStats;
+    use willow_web::components::{
+        Severity, Toast, ToastStack, ToastStackView, UnreadBadge,
+    };
+
+    /// The `UnreadBadge` atom renders `99+` for counts above 99 and
+    /// composes the accessible label via `describe`.
+    #[wasm_bindgen_test]
+    async fn unread_badge_99_plus_and_aria_label() {
+        let stats = Signal::derive(|| UnreadStats {
+            count: 150,
+            ..Default::default()
+        });
+        let container = mount_test(move || {
+            view! { <UnreadBadge stats=stats/> }
+        });
+        tick().await;
+        let badge = query(&container, ".unread-badge").expect("badge renders");
+        let count_span = badge
+            .query_selector(".unread-badge__count")
+            .unwrap()
+            .expect("count span");
+        assert_eq!(text(&count_span), "99+");
+        let label = badge.get_attribute("aria-label").unwrap_or_default();
+        assert!(
+            label.starts_with("99+ unread"),
+            "aria-label must start with count. got: {label}"
+        );
+    }
+
+    /// A mentioned surface renders the `@` prefix glyph and gets the
+    /// `unread-badge--mentioned` modifier.
+    #[wasm_bindgen_test]
+    async fn unread_badge_mentioned_variant() {
+        let stats = Signal::derive(|| UnreadStats {
+            count: 3,
+            mentioned: true,
+            ..Default::default()
+        });
+        let container = mount_test(move || {
+            view! { <UnreadBadge stats=stats/> }
+        });
+        tick().await;
+        let badge = query(&container, ".unread-badge").expect("badge renders");
+        assert!(badge.class_name().contains("unread-badge--mentioned"));
+        let at = badge
+            .query_selector(".unread-badge__at")
+            .unwrap()
+            .expect("@ glyph present");
+        assert_eq!(text(&at), "@");
+    }
+
+    /// The muted variant renders outlined (ink-3 border) and the
+    /// aria-label says so.
+    #[wasm_bindgen_test]
+    async fn unread_badge_muted_variant_aria() {
+        let stats = Signal::derive(|| UnreadStats {
+            count: 5,
+            muted: true,
+            ..Default::default()
+        });
+        let container = mount_test(move || {
+            view! { <UnreadBadge stats=stats/> }
+        });
+        tick().await;
+        let badge = query(&container, ".unread-badge").expect("badge renders");
+        assert!(badge.class_name().contains("unread-badge--muted"));
+        let label = badge.get_attribute("aria-label").unwrap_or_default();
+        assert!(
+            label.contains("muted"),
+            "muted aria-label must contain 'muted'. got: {label}"
+        );
+    }
+
+    /// A polite info toast declares `role="status"`; a warn toast
+    /// declares `role="alert"`. Aria-live routing flows from severity.
+    #[wasm_bindgen_test]
+    async fn toast_polite_and_alert_roles() {
+        let stack = ToastStack::new();
+        let stack_for_mount = stack.clone();
+        let container = mount_test(move || {
+            provide_context(stack_for_mount.clone());
+            view! { <ToastStackView/> }
+        });
+        stack.push(Toast::info("hello").build());
+        stack.push(Toast::warn("urgent").build());
+        tick().await;
+        let toasts = query_all(&container, ".toast");
+        assert_eq!(toasts.len(), 2, "both toasts should render");
+        // Info role=status, warn role=alert. Order may be render-order;
+        // check both independently.
+        let roles: Vec<String> = toasts
+            .iter()
+            .map(|t| t.get_attribute("role").unwrap_or_default())
+            .collect();
+        assert!(
+            roles.iter().any(|r| r == "status"),
+            "info toast must declare role=status"
+        );
+        assert!(
+            roles.iter().any(|r| r == "alert"),
+            "warn toast must declare role=alert"
+        );
+        // Severity::aria_role must match the DOM role for both
+        // severities — regression guard against divergence.
+        assert_eq!(Severity::Info.aria_role(), "status");
+        assert_eq!(Severity::Warn.aria_role(), "alert");
+    }
+
+    /// A dedup_key push replaces the prior toast in place — the stack
+    /// still contains exactly one entry with that key.
+    #[wasm_bindgen_test]
+    async fn toast_dedup_key_replaces_in_place() {
+        let stack = ToastStack::new();
+        let stack_for_mount = stack.clone();
+        let container = mount_test(move || {
+            provide_context(stack_for_mount.clone());
+            view! { <ToastStackView/> }
+        });
+        stack.push(Toast::info("1 new").dedup("channel:general").build());
+        stack.push(Toast::info("2 new").dedup("channel:general").build());
+        stack.push(Toast::info("3 new").dedup("channel:general").build());
+        tick().await;
+        let toasts = query_all(&container, ".toast");
+        assert_eq!(
+            toasts.len(),
+            1,
+            "three coalesced pushes with same dedup_key must collapse to one toast"
+        );
+        let title = toasts[0]
+            .query_selector(".toast-title")
+            .unwrap()
+            .expect("title");
+        assert_eq!(text(&title), "3 new", "latest wins — body is the most recent");
+    }
+
+    /// A 4th arrival past the visible cap produces an overflow
+    /// "{n} more" pill. The stack renders 3 toasts + the pill.
+    #[wasm_bindgen_test]
+    async fn toast_overflow_pill_beyond_three() {
+        let stack = ToastStack::new();
+        let stack_for_mount = stack.clone();
+        let container = mount_test(move || {
+            provide_context(stack_for_mount.clone());
+            view! { <ToastStackView/> }
+        });
+        stack.push(Toast::info("a").build());
+        stack.push(Toast::info("b").build());
+        stack.push(Toast::info("c").build());
+        stack.push(Toast::info("d").build());
+        stack.push(Toast::info("e").build());
+        tick().await;
+        let toasts = query_all(&container, ".toast");
+        assert_eq!(toasts.len(), 3, "max 3 toasts render inline");
+        let pill = query(&container, ".toast-overflow-pill").expect("overflow pill");
+        assert_eq!(text(&pill), "2 more");
+    }
+
+    /// The portal root's aria-live is polite so the live region
+    /// announces additions without preempting other speech.
+    #[wasm_bindgen_test]
+    async fn toast_stack_has_aria_live_polite() {
+        let stack = ToastStack::new();
+        let stack_for_mount = stack.clone();
+        let container = mount_test(move || {
+            provide_context(stack_for_mount.clone());
+            view! { <ToastStackView/> }
+        });
+        tick().await;
+        let root = query(&container, ".toast-stack").expect("stack root");
+        assert_eq!(
+            root.get_attribute("aria-live").as_deref(),
+            Some("polite"),
+            "toast-stack must default to polite live region"
+        );
+        assert_eq!(
+            root.get_attribute("aria-relevant").as_deref(),
+            Some("additions"),
+        );
+    }
+
+    /// Actionless non-sticky toasts auto-dismiss. Stacking + dismissing
+    /// is covered above; this test verifies the id-keyed dismiss API.
+    #[wasm_bindgen_test]
+    async fn toast_dismiss_removes_from_stack() {
+        let stack = ToastStack::new();
+        let stack_for_mount = stack.clone();
+        let container = mount_test(move || {
+            provide_context(stack_for_mount.clone());
+            view! { <ToastStackView/> }
+        });
+        let id_a = stack.push(Toast::info("keep").build());
+        let _id_b = stack.push(Toast::info("remove").build());
+        tick().await;
+        assert_eq!(query_all(&container, ".toast").len(), 2);
+        stack.dismiss(id_a);
+        tick().await;
+        let remaining = query_all(&container, ".toast");
+        assert_eq!(remaining.len(), 1, "dismiss(id) removes the toast by id");
+        let title = remaining[0]
+            .query_selector(".toast-title")
+            .unwrap()
+            .expect("title");
+        assert_eq!(text(&title), "remove");
+    }
+}
