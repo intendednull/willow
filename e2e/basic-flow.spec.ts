@@ -75,7 +75,7 @@ test.describe('Basic app flow', () => {
     const voiceChannel = page.locator('.channel-item', { hasText: 'voice-chat' });
     await expect(voiceChannel).toBeVisible();
     // Voice channels show a volume SVG icon prefix.
-    await expect(voiceChannel.locator('.icon-volume')).toBeVisible();
+    await expect(voiceChannel.locator('.icon-volume, .icon-volume-1')).toBeVisible();
   });
 
   test('messages persist after refresh', async ({ page }) => {

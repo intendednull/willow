@@ -6,8 +6,9 @@ use send_wrapper::SendWrapper;
 use willow_client::{ClientConfig, ClientEvent, ClientHandle, DisplayMessage, VoiceSignalPayload};
 
 use crate::components::{
-    AddServerPanel, CallPage, ChannelHeader, ChatInput, CommandPalette, FileShareButton, GroveRail,
-    JoinPage, MemberList, MessageList, PinnedPanel, SettingsPanel, Sidebar, WelcomeScreen,
+    AddServerPanel, CallPage, ChannelHeader, ChannelSidebar, ChatInput, CommandPalette,
+    FileShareButton, GroveRail, JoinPage, MemberList, MessageList, PinnedPanel, SettingsPanel,
+    WelcomeScreen,
 };
 use crate::event_processing::process_event_batch;
 use crate::handlers;
@@ -25,6 +26,7 @@ fn init_theme() {
     .ok();
 }
 
+#[allow(dead_code)]
 pub fn toggle_theme() {
     js_sys::eval(
         r#"var h=document.documentElement;var c=h.getAttribute('data-theme')||'dark';var n=c==='dark'?'light':'dark';h.setAttribute('data-theme',n);localStorage.setItem('willow-theme',n);"#,
@@ -512,12 +514,7 @@ pub fn App() -> impl IntoView {
                                 write.ui.set_show_sidebar.set(false);
                             })
                         />
-                        // Overlay to close sidebar on mobile tap
-                        <div
-                            class=move || if show_sidebar.get() { "sidebar-overlay open" } else { "sidebar-overlay" }
-                            on:click=move |_| write.ui.set_show_sidebar.set(false)
-                        />
-                        <Sidebar
+                        <ChannelSidebar
                             channels=app_state.chat.channels
                             current_channel=current_channel
                             open=show_sidebar

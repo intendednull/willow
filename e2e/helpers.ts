@@ -67,7 +67,7 @@ export async function createServer(page: Page, name: string, displayName?: strin
   await page.locator('.welcome-tab-panel button', { hasText: 'continue' }).click();
 
   // Wait for the app to load with the new server.
-  await page.waitForSelector('.sidebar', { timeout: 10_000 });
+  await page.waitForSelector('.channel-sidebar, .sidebar', { timeout: 10_000 });
   await page.waitForTimeout(500);
 }
 
@@ -288,7 +288,7 @@ export async function joinViaInvite(page: Page, inviteCode: string, displayName?
   // Wait for the confirmation step ("Join grove") to appear.
   await page.locator('button', { hasText: 'Join grove' }).waitFor({ timeout: 5_000 });
   await page.locator('button', { hasText: 'Join grove' }).click();
-  await page.waitForSelector('.sidebar', { timeout: 20_000 });
+  await page.waitForSelector('.channel-sidebar, .sidebar', { timeout: 20_000 });
   await page.waitForTimeout(3000);
 }
 

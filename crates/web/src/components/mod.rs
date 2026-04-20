@@ -32,7 +32,6 @@ mod participant_tile;
 mod pinned;
 mod roles;
 mod settings;
-mod sidebar;
 mod voice;
 mod welcome;
 
@@ -53,6 +52,5 @@ pub use participant_tile::*;
 pub use pinned::*;
 pub use roles::*;
 pub use settings::*;
-pub use sidebar::*;
 pub use voice::*;
 pub use welcome::*;
