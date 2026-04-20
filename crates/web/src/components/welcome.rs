@@ -28,16 +28,6 @@ pub fn WelcomeScreen(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Into
         }
     };
 
-    let greeting = move || {
-        let n = display_name.get();
-        let trimmed = n.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(format!("hi, {trimmed}"))
-        }
-    };
-
     view! {
         <div class="welcome-screen">
             <div class="welcome-card">
@@ -67,22 +57,28 @@ pub fn WelcomeScreen(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Into
                             </button>
                         </div>
                     }.into_any(),
-                    WelcomeStep::Action => view! {
-                        <div class="welcome-step welcome-step--action">
-                            <div class="welcome-hero">
-                                <div class="willow-mark-lg">{icons::icon_willow_mark()}</div>
-                                <h1 class="willow-wordmark">"willow"</h1>
-                                <p class="tagline">"encrypted p2p chat"</p>
-                                {move || greeting().map(|g| view! {
-                                    <p class="welcome-greeting">{g}</p>
-                                })}
+                    WelcomeStep::Action => {
+                        let greeting = move || {
+                            let n = display_name.get();
+                            let trimmed = n.trim();
+                            let name = if trimmed.is_empty() { "anonymous" } else { trimmed };
+                            format!("hi, {name}")
+                        };
+                        view! {
+                            <div class="welcome-step welcome-step--action">
+                                <div class="welcome-hero">
+                                    <div class="willow-mark-lg">{icons::icon_willow_mark()}</div>
+                                    <h1 class="willow-wordmark">"willow"</h1>
+                                    <p class="tagline">"encrypted p2p chat"</p>
+                                    <p class="welcome-greeting">{greeting}</p>
+                                </div>
+                                <AddServerPanel
+                                    on_done=on_done.clone()
+                                    display_name=display_name
+                                />
                             </div>
-                            <AddServerPanel
-                                on_done=on_done.clone()
-                                display_name=display_name
-                            />
-                        </div>
-                    }.into_any(),
+                        }.into_any()
+                    },
                 }}
             </div>
         </div>

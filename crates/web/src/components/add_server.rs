@@ -48,14 +48,18 @@ pub fn AddServerPanel(
         }
         let h = handle_create.clone();
         let n = name.trim().to_string();
-        let dn = display_name.get_untracked();
+        let dn_raw = display_name.get_untracked();
+        let dn_trimmed = dn_raw.trim();
+        let dn = if dn_trimmed.is_empty() {
+            "anonymous".to_string()
+        } else {
+            dn_trimmed.to_string()
+        };
         let done_cb = on_done_create.clone();
         wasm_bindgen_futures::spawn_local(async move {
             match h.create_server(&n).await {
                 Ok(_) => {
-                    if !dn.trim().is_empty() {
-                        h.set_server_display_name(dn.trim()).await.ok();
-                    }
+                    h.set_server_display_name(&dn).await.ok();
                     done_cb(());
                 }
                 Err(e) => set_status_msg.set(format!("Error: {e}")),
@@ -154,13 +158,17 @@ pub fn AddServerPanel(
                             let code = validated_code.get_untracked();
                             let h = hj.clone();
                             let done = done_cb.clone();
-                            let name = display_name.get_untracked();
+                            let raw = display_name.get_untracked();
+                            let trimmed = raw.trim();
+                            let name = if trimmed.is_empty() {
+                                "anonymous".to_string()
+                            } else {
+                                trimmed.to_string()
+                            };
                             wasm_bindgen_futures::spawn_local(async move {
                                 match h.accept_invite(&code).await {
                                     Ok(()) => {
-                                        if !name.trim().is_empty() {
-                                            h.set_server_display_name(name.trim()).await.ok();
-                                        }
+                                        h.set_server_display_name(&name).await.ok();
                                         set_join_code.set(String::new());
                                         set_join_step.set(false);
                                         (done)(());
