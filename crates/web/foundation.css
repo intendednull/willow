@@ -33,4 +33,24 @@
   --ink-3: #7a7463;         /* muted / hint */
   --ink-4: #504b3f;         /* disabled / divider-as-text */
   --ink-on-accent: #14130f; /* ink on filled moss / amber / err buttons */
+
+  /* ── Accent ladder (moss, default) ───────────────────────────── */
+  --moss-0: #2a3a28;        /* deep accent surface */
+  --moss-1: #425c3d;        /* selection highlight, active pill bg */
+  --moss-2: #6a8d5e;        /* primary interactive */
+  --moss-3: #93b582;        /* hover / focus variant of primary */
+  --moss-4: #c3d8b2;        /* fg on deep accent (icon on fill) */
+  --willow: #b8c67a;        /* wordmark, own-avatar tint */
+
+  /* ── Bark (amber warmth) ─────────────────────────────────────── */
+  --amber:      #c99b55;    /* warm accent (queued, warn-not-error) */
+  --amber-soft: #7a5a2e;    /* deep amber for borders, tag bg */
+
+  /* ── Whisper (private side-channel) ──────────────────────────── */
+  --whisper: #a88fc9;       /* violet — only for whisper surfaces */
+
+  /* ── Semantic ─────────────────────────────────────────────────── */
+  --ok:   #8fb36a;
+  --warn: #d6a54a;
+  --err:  #c97a5a;
 }
