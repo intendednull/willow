@@ -4263,6 +4263,14 @@ select:focus-visible {
 .downgrade-banner__body  { color: var(--ink-1); font-size: 14px; line-height: 1.5; }
 .downgrade-banner__actions { display: flex; gap: 8px; flex-shrink: 0; }
 
+/* Participant tile corner placement. */
+.tile-trust-corner {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    z-index: 2;
+}
+
 /* Live region is visually hidden but must preserve announcement layout. */
 #trust-live-region { position: absolute; }
 

@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 
 use crate::app::WebClientHandle;
-use crate::components::ConfirmDialog;
+use crate::components::{ConfirmDialog, TrustBadge, TrustBadgeSize};
 use crate::icons;
 use crate::state::AppState;
 
@@ -149,6 +149,7 @@ pub fn MemberList(
                                     format!(" ({short})")
                                 }</span>
                             </span>
+                            <TrustBadge peer_id=pid.clone() size=TrustBadgeSize::Disk12/>
                             {
                                 let pb = pid_badge.clone();
                                 move || {

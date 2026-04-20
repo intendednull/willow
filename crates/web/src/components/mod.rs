@@ -42,6 +42,7 @@ mod roles;
 mod sas;
 mod settings;
 mod tab_bar;
+mod trust_badge;
 mod voice;
 mod welcome;
 
@@ -73,5 +74,6 @@ pub use roles::*;
 pub use sas::*;
 pub use settings::*;
 pub use tab_bar::*;
+pub use trust_badge::*;
 pub use voice::*;
 pub use welcome::*;

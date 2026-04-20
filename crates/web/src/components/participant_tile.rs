@@ -144,6 +144,13 @@ pub fn ParticipantTile(
             <div class="tile-name">
                 <span>{display_name}</span>
             </div>
+            <div class="tile-trust-corner">
+                <super::TrustBadge
+                    peer_id=peer_id.clone()
+                    size=super::TrustBadgeSize::Disk12
+                    context=super::TrustBadgeContext::TileCorner
+                />
+            </div>
             {if is_muted {
                 Some(view! {
                     <div class="tile-muted-badge">

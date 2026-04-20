@@ -454,9 +454,14 @@ pub fn MessageView(
                 }
             })}
             {if show_header {
+                let author_pid = message.author_peer_id.to_string();
                 Some(view! {
                     <div class="meta">
                         <span class="author" style=format!("color: {author_color}")>{author}</span>
+                        <super::TrustBadge
+                            peer_id=author_pid
+                            size=super::TrustBadgeSize::Disk12
+                        />
                         <span class="timestamp">{timestamp}</span>
                         {if show_edited {
                             Some(view! { <span class="edited">"(edited)"</span> })

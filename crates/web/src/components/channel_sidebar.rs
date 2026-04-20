@@ -392,6 +392,19 @@ pub fn ChannelSidebar(
                             let name = app_state.server.display_name.get();
                             if name.is_empty() { "you".to_string() } else { name }
                         }}
+                        {move || {
+                            let pid = peer_id.get();
+                            if pid.is_empty() {
+                                None
+                            } else {
+                                Some(view! {
+                                    <super::TrustBadge
+                                        peer_id=pid
+                                        size=super::TrustBadgeSize::Disk12
+                                    />
+                                })
+                            }
+                        }}
                     </span>
                     <span class="me-fingerprint">
                         {move || short_fingerprint(&peer_id.get())}
