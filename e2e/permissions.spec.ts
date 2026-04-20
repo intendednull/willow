@@ -17,6 +17,11 @@ import {
   isMobile,
 } from './helpers';
 
+// Shared relay + gossip mesh — keep tests inside this file sequential
+// so they don't stampede the relay while `fullyParallel: true` runs
+// different spec files concurrently.
+test.describe.configure({ mode: 'serial' });
+
 test.describe('Permissions and trust', () => {
   // Two-peer permission tests need extra time for setup + P2P sync.
   test.setTimeout(120_000);
