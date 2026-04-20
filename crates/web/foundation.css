@@ -13,3 +13,24 @@
  */
 
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* ── Background (deep bark → lit panel) ─────────────────────────── */
+:root {
+  --bg-0: #14130f;          /* page background, deepest */
+  --bg-1: #1b1a15;          /* primary panel (sidebar, thread, popover) */
+  --bg-2: #22211b;          /* raised surface (card, code, input) */
+  --bg-3: #2a2822;          /* hover on --bg-1 */
+  --bg-4: #34322a;          /* active / pressed */
+
+  /* ── Line (separators, borders) ──────────────────────────────── */
+  --line:      #34322a;
+  --line-soft: #22211b;
+
+  /* ── Ink (text contrast ladder) ──────────────────────────────── */
+  --ink-0: #f1ede2;         /* highest contrast: display, focused read */
+  --ink-1: #d9d3c2;         /* body default */
+  --ink-2: #a8a290;         /* secondary / meta */
+  --ink-3: #7a7463;         /* muted / hint */
+  --ink-4: #504b3f;         /* disabled / divider-as-text */
+  --ink-on-accent: #14130f; /* ink on filled moss / amber / err buttons */
+}
