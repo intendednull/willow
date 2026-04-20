@@ -442,6 +442,7 @@ pub fn App() -> impl IntoView {
     let replying_to = app_state.chat.replying_to;
     let editing = app_state.chat.editing;
     let channel_views = app_state.chat.channel_views;
+    let channels_signal = app_state.chat.channels;
     let show_palette = app_state.ui.show_palette;
     let show_call_page = app_state.ui.show_call_page;
 
@@ -722,6 +723,22 @@ pub fn App() -> impl IntoView {
                                                 on_set_which=on_set_which
                                                 on_search_click=Callback::new(move |_| write.ui.set_show_palette.set(true))
                                             />
+                                            {move || {
+                                                if channels_signal.get().is_empty() {
+                                                    Some(view! {
+                                                        <div class="main-pane-empty state-empty">
+                                                            <div class="state-empty__headline main-pane-empty__headline">
+                                                                "this grove is quiet. say hi?"
+                                                            </div>
+                                                            <div class="state-empty__hint">
+                                                                "add a channel from the grove menu."
+                                                            </div>
+                                                        </div>
+                                                    })
+                                                } else {
+                                                    None
+                                                }
+                                            }}
                                             <MessageList
                                                 messages=messages
                                                 loading=Signal::from(loading)

@@ -848,6 +848,24 @@
     font-size: 17px;
 }
 
+/* ── Desktop empty states ────────────────────────────────────────── */
+
+.main-pane-empty {
+    padding: 64px 24px 24px;
+    text-align: center;
+}
+.main-pane-empty__headline {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 22px;
+    color: var(--ink-2);
+}
+
+.member-list-empty {
+    padding: 48px 16px 16px;
+    text-align: center;
+}
+
 /* ── Right rail ──────────────────────────────────────────────────── */
 
 .right-rail-inner {

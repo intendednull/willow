@@ -228,7 +228,12 @@ pub fn MemberList(
                         || *pid == owner_str
                 }).count();
                 if non_worker_count == 0 {
-                    Some(view! { <div class="empty-state" style="font-size: 12px;">"No peers connected"</div> })
+                    Some(view! {
+                        <div class="state-empty member-list-empty">
+                            <div class="state-empty__headline">"just you so far"</div>
+                            <div class="state-empty__hint">"invite someone"</div>
+                        </div>
+                    })
                 } else {
                     None
                 }
