@@ -1,6 +1,3 @@
-/* ── Typography: IBM Plex Sans + Mono ─────────────────────────────── */
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
-
 /* ── CSS Variables: Dark theme (default) ─────────────────────────── */
 
 :root, [data-theme="dark"] {
