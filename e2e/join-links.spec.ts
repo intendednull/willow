@@ -75,12 +75,15 @@ test.describe('Join via shareable link', () => {
     const page = await ctx.newPage();
     try {
       await freshStart(page);
+      // Walk past the name step and switch to the Join tab.
+      await page.locator('.welcome-continue-btn').click();
+      await page.locator('.welcome-tab-btn', { hasText: 'Join' }).click();
       await page.locator('.welcome-invite-input').fill('this-is-definitely-not-a-valid-invite-code');
-      await page.locator('button', { hasText: 'Next' }).click();
-      // Current behaviour: Next shows the join form for any non-empty input
-      // (server lookup is deferred to the join step).
-      await page.locator('button', { hasText: 'Join Server' }).waitFor({ timeout: 3_000 });
-      await page.locator('button', { hasText: 'Join Server' }).click();
+      await page.locator('button', { hasText: 'Open letter' }).click();
+      // Current behaviour: the confirmation step appears for any non-empty
+      // input — server lookup is deferred to the actual join click.
+      await page.locator('button', { hasText: 'Join grove' }).waitFor({ timeout: 3_000 });
+      await page.locator('button', { hasText: 'Join grove' }).click();
       // The join should fail — no channel list should ever appear.
       await expect(page.locator('.channel-item')).toBeHidden({ timeout: 10_000 });
     } finally {

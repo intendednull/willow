@@ -39,23 +39,31 @@ export async function freshStart(page: Page) {
   await waitForApp(page);
 }
 
+/** Walk the two-step welcome flow's name step.
+ *  Fills the optional display name and clicks continue to reveal the
+ *  Create / Join tabs. No-op if already past step 1.
+ */
+async function advancePastNameStep(page: Page, displayName?: string) {
+  const nameInput = page.locator('.welcome-name-input');
+  if (await nameInput.isVisible().catch(() => false)) {
+    if (displayName) await nameInput.fill(displayName);
+    await page.locator('.welcome-continue-btn').click();
+    // Wait for the tab panel to render.
+    await page.locator('.welcome-tabs').waitFor({ timeout: 5_000 });
+  }
+}
+
 /** Create a server from the welcome screen. Returns the server name. */
 export async function createServer(page: Page, name: string, displayName?: string) {
-  // Should be on welcome screen.
   await expect(page.locator('.welcome-card')).toBeVisible();
+  await advancePastNameStep(page, displayName);
 
-  // Fill server name.
-  const serverInput = page.locator('.welcome-option').first().locator('input').first();
-  await serverInput.fill(name);
-
-  // Optional display name.
-  if (displayName) {
-    const dnInput = page.locator('.welcome-option').first().locator('input').nth(1);
-    await dnInput.fill(displayName);
-  }
-
-  // Click Create Server.
-  await page.locator('.welcome-option').first().locator('button.btn-primary').click();
+  // Create tab is selected by default — fill the grove name and click
+  // "Plant grove" to commit.
+  await page
+    .locator('.welcome-tab-panel input[placeholder="backyard"]')
+    .fill(name);
+  await page.locator('button', { hasText: 'Plant grove' }).click();
 
   // Wait for the app to load with the new server.
   await page.waitForSelector('.sidebar', { timeout: 10_000 });
@@ -64,16 +72,34 @@ export async function createServer(page: Page, name: string, displayName?: strin
 
 /** Get the full peer ID from the welcome screen or settings. */
 export async function getPeerId(page: Page): Promise<string> {
-  // Check welcome screen first.
-  const peerIdEl = page.locator('.peer-id-text').first();
-  if (await peerIdEl.isVisible()) {
-    return (await peerIdEl.getAttribute('data-full-id')) || (await peerIdEl.textContent()) || '';
+  // Welcome screen: advance past step 1 (no name), then switch to the
+  // Join tab — the peer-id pill only lives inside the Join surface now.
+  if (await page.locator('.welcome-card').isVisible().catch(() => false)) {
+    await advancePastNameStep(page);
+    const joinTab = page.locator('.welcome-tab-btn', { hasText: 'Join' });
+    if (await joinTab.isVisible().catch(() => false)) {
+      await joinTab.click();
+      await page.locator('.welcome-peer-compact').waitFor({ timeout: 5_000 });
+    }
+    const peerIdEl = page.locator('.peer-id-text').first();
+    if (await peerIdEl.isVisible().catch(() => false)) {
+      return (
+        (await peerIdEl.getAttribute('data-full-id')) ||
+        (await peerIdEl.textContent()) ||
+        ''
+      );
+    }
   }
-  // Try settings.
+
+  // Fallback: read it from settings.
   await page.locator('text=Settings').click();
   await page.waitForTimeout(300);
   const settingsPeerId = page.locator('.peer-id-text').first();
-  return (await settingsPeerId.getAttribute('data-full-id')) || (await settingsPeerId.textContent()) || '';
+  return (
+    (await settingsPeerId.getAttribute('data-full-id')) ||
+    (await settingsPeerId.textContent()) ||
+    ''
+  );
 }
 
 /** Send a message in the current channel. */
@@ -244,23 +270,20 @@ export async function generateInvite(page: Page, recipientPeerId: string): Promi
   return inviteCode;
 }
 
-/** Joins a server via invite code from the welcome screen. */
+/** Joins a server via invite code from the welcome screen.
+ *  The welcome flow asks for the display name up-front on step 1 (before
+ *  the Create / Join tabs), so displayName is consumed there.
+ */
 export async function joinViaInvite(page: Page, inviteCode: string, displayName?: string) {
+  await advancePastNameStep(page, displayName);
+  // Switch to the Join tab.
+  await page.locator('.welcome-tab-btn', { hasText: 'Join' }).click();
+  await page.locator('.welcome-invite-input').waitFor({ timeout: 5_000 });
   await page.locator('.welcome-invite-input').fill(inviteCode);
-  await page.locator('button', { hasText: 'Next' }).click();
-  // Wait for the join confirmation form to appear.
-  await page.locator('button', { hasText: 'Join Server' }).waitFor({ timeout: 5_000 });
-  if (displayName) {
-    // Target the JOIN form's display name input specifically —
-    // the create-server section has an identical placeholder, so we
-    // scope to the join form using its unique "welcome-hint" class.
-    const dnInput = page.locator('.welcome-hint ~ input[placeholder*="name" i]').first();
-    if (await dnInput.isVisible()) {
-      await dnInput.fill(displayName);
-      await page.waitForTimeout(200);
-    }
-  }
-  await page.locator('button', { hasText: 'Join Server' }).click();
+  await page.locator('button', { hasText: 'Open letter' }).click();
+  // Wait for the confirmation step ("Join grove") to appear.
+  await page.locator('button', { hasText: 'Join grove' }).waitFor({ timeout: 5_000 });
+  await page.locator('button', { hasText: 'Join grove' }).click();
   await page.waitForSelector('.sidebar', { timeout: 20_000 });
   await page.waitForTimeout(3000);
 }

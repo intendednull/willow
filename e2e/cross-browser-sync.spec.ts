@@ -8,7 +8,7 @@ const desktopFirefoxContext = {
   viewport: { width: 1280, height: 720 },
   hasTouch: false,
 };
-import { freshStart, createServer, sendMessage, waitForMessage, waitForApp, getPeerId, openSidebar } from './helpers';
+import { freshStart, createServer, sendMessage, waitForMessage, waitForApp, getPeerId, openSidebar, joinViaInvite } from './helpers';
 
 /**
  * Cross-browser sync tests.
@@ -65,11 +65,7 @@ test.describe('Cross-browser peer sync', () => {
       await desktopPage.waitForTimeout(500);
 
       // Mobile Chrome: join via invite.
-      await mobilePage.locator('.welcome-invite-input').fill(inviteCode);
-      await mobilePage.locator('button', { hasText: 'Next' }).click();
-      await mobilePage.waitForTimeout(500);
-      await mobilePage.locator('button', { hasText: 'Join Server' }).click();
-      await mobilePage.waitForSelector('.sidebar, .app', { timeout: 20_000 });
+      await joinViaInvite(mobilePage, inviteCode);
 
       // Verify mobile sees the server — wait for DOM attachment first (gossip may lag).
       await expect(mobilePage.locator('.channel-item', { hasText: 'general' }))
@@ -145,11 +141,7 @@ test.describe('Cross-browser peer sync', () => {
       await mobilePage.waitForTimeout(500);
 
       // Desktop Firefox: join via invite.
-      await desktopPage.locator('.welcome-invite-input').fill(inviteCode);
-      await desktopPage.locator('button', { hasText: 'Next' }).click();
-      await desktopPage.waitForTimeout(500);
-      await desktopPage.locator('button', { hasText: 'Join Server' }).click();
-      await desktopPage.waitForSelector('.sidebar', { timeout: 20_000 });
+      await joinViaInvite(desktopPage, inviteCode);
 
       // Gossip sync after joining can be slow — wait for DOM attachment before visibility.
       await expect(desktopPage.locator('.channel-item', { hasText: 'general' }))

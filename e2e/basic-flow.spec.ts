@@ -5,7 +5,7 @@ test.describe('Basic app flow', () => {
   test('welcome screen shows on fresh start', async ({ page }) => {
     await freshStart(page);
     await expect(page.locator('.welcome-card')).toBeVisible();
-    await expect(page.locator('h1')).toContainText('Welcome to Willow');
+    await expect(page.locator('h1')).toContainText('What do we call you?');
   });
 
   test('can create a server from welcome screen', async ({ page }) => {
