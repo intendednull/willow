@@ -31,6 +31,7 @@ pub mod persistence_actor;
 pub mod state;
 pub mod state_actors;
 pub mod storage;
+pub mod trust;
 pub mod util;
 pub mod views;
 pub mod worker_cache;
