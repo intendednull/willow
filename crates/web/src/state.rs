@@ -1,7 +1,11 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use leptos::prelude::*;
+use willow_client::trust::{PeerTrust, TrustStoreHandle};
 use willow_client::DisplayMessage;
+
+use crate::trust_store::WebTrustStore;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum VideoSource {
@@ -23,6 +27,28 @@ pub enum SettingsTab {
     Server,
     Roles,
 }
+
+/// Per-grove crypto-visibility tweak.
+///
+/// See `docs/specs/2026-04-19-ui-design/trust-verification.md` §Per-grove
+/// crypto-visibility setting. Controls how prominently the channel-key
+/// holder pill and related metadata surface in the channel header.
+#[derive(Clone, Copy, PartialEq, Default, Debug)]
+pub enum CryptoVisibility {
+    /// Holder pill visible only when the holder count is *less than*
+    /// the grove's member count.
+    Subtle,
+    /// Holder pill always visible. Default.
+    #[default]
+    Default,
+    /// Holder pill visible plus a one-line crypto strip below the header.
+    Explicit,
+}
+
+/// Feature flag: is the `not sure` CTA wired in the compare dialog? Per
+/// the implementation plan's ambiguity decisions this ships **off** in
+/// Phase 1d and the slot is reserved for a future change.
+pub const V1_ALLOW_UNSURE_CTA: bool = false;
 
 /// Per-channel UI state. Extensible for future needs (drafts, scroll pos).
 #[derive(Clone, Default, PartialEq)]
@@ -49,6 +75,28 @@ pub struct AppState {
     pub server: ServerState,
     pub ui: UiState,
     pub voice: VoiceState,
+    pub trust: TrustState,
+}
+
+/// Reactive trust bucket. The `trust_map` signal mirrors the
+/// [`TrustStoreHandle`] snapshot and rebuilds on every `set` via the
+/// version token. `compare_target` drives the root-mounted
+/// `<AddFriendDialog>`: `None` closed, `Some(peer_id)` open for the
+/// given peer (including the self-peer, which renders a single card).
+#[derive(Clone, Copy)]
+pub struct TrustState {
+    /// Map of peer-id → current trust belief.
+    pub trust_map: ReadSignal<HashMap<String, PeerTrust>>,
+    /// Incrementing token — bumps when the underlying
+    /// [`TrustStoreHandle`] mutates. UIs don't read this directly, but
+    /// it exists as a debug handle for tests.
+    pub version: ReadSignal<u64>,
+    /// When `Some`, the compare-fingerprints dialog is open for that
+    /// peer. `None` closes it.
+    pub compare_target: ReadSignal<Option<String>>,
+    /// Per-grove crypto-visibility mode. Drives holder-pill + crypto
+    /// strip rendering.
+    pub crypto_visibility: ReadSignal<CryptoVisibility>,
 }
 
 #[derive(Clone, Copy)]
@@ -130,6 +178,15 @@ pub struct AppWriteSignals {
     pub server: ServerWriteSignals,
     pub ui: UiWriteSignals,
     pub voice: VoiceWriteSignals,
+    pub trust: TrustWriteSignals,
+}
+
+#[derive(Clone, Copy)]
+pub struct TrustWriteSignals {
+    pub set_trust_map: WriteSignal<HashMap<String, PeerTrust>>,
+    pub set_version: WriteSignal<u64>,
+    pub set_compare_target: WriteSignal<Option<String>>,
+    pub set_crypto_visibility: WriteSignal<CryptoVisibility>,
 }
 
 #[derive(Clone, Copy)]
@@ -219,12 +276,23 @@ impl VoiceWriteSignals {
     }
 }
 
-/// Create all signal pairs and return the read/write halves.
+/// Bundle returned from [`create_signals`] — read/write halves of every
+/// reactive signal plus the trust-store handle the app boots with.
+pub struct InitialSignals {
+    pub app_state: AppState,
+    pub write: AppWriteSignals,
+    /// The authoritative trust store. Cloned into [`ClientHandle::with_trust_store`]
+    /// and into the effect that syncs `trust_map` on every mutation.
+    pub trust_store: TrustStoreHandle,
+}
+
+/// Create all signal pairs, load the trust store, and return the
+/// [`InitialSignals`] bundle.
 ///
 /// Signals that reflect `SharedState` are created via `derived_signal()` when
 /// a state actor is available; otherwise they fall back to regular signals
 /// that are updated via `refresh_all_signals()`.
-pub fn create_signals() -> (AppState, AppWriteSignals) {
+pub fn create_signals() -> InitialSignals {
     // Chat signals
     let (messages, set_messages) = signal(Vec::<DisplayMessage>::new());
     let (current_channel, set_current_channel) = signal(String::from("general"));
@@ -284,6 +352,16 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
     let (local_video_stream, set_local_video_stream) =
         signal(Option::<send_wrapper::SendWrapper<web_sys::MediaStream>>::None);
 
+    // Trust: boot the localStorage-backed store and seed signals from
+    // its snapshot. The root `<App>` wires an Effect that copies every
+    // version bump back into `trust_map`.
+    let trust_store: TrustStoreHandle = Arc::new(WebTrustStore::load());
+    let initial_trust: HashMap<String, PeerTrust> = trust_store.snapshot().into_iter().collect();
+    let (trust_map, set_trust_map) = signal(initial_trust);
+    let (trust_version, set_trust_version) = signal(trust_store.version());
+    let (compare_target, set_compare_target) = signal(Option::<String>::None);
+    let (crypto_visibility, set_crypto_visibility) = signal(CryptoVisibility::default());
+
     let app_state = AppState {
         chat: ChatState {
             messages,
@@ -337,6 +415,12 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
             speaking_peers,
             remote_video_streams,
             local_video_stream,
+        },
+        trust: TrustState {
+            trust_map,
+            version: trust_version,
+            compare_target,
+            crypto_visibility,
         },
     };
 
@@ -394,9 +478,19 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
             set_remote_video_streams,
             set_local_video_stream,
         },
+        trust: TrustWriteSignals {
+            set_trust_map,
+            set_version: set_trust_version,
+            set_compare_target,
+            set_crypto_visibility,
+        },
     };
 
-    (app_state, write_signals)
+    InitialSignals {
+        app_state,
+        write: write_signals,
+        trust_store,
+    }
 }
 
 /// Wire up derived signals that auto-update from the state actor.

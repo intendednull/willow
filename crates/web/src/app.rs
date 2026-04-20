@@ -140,13 +140,18 @@ pub fn App() -> impl IntoView {
     // Create the client (connection happens async below).
     let handle = new_client();
 
-    // Create all signals.
-    let (app_state, write) = state::create_signals();
+    // Create all signals + boot the local trust store.
+    let state::InitialSignals {
+        app_state,
+        write,
+        trust_store,
+    } = state::create_signals();
 
     // Provide context so child components can access the handle and state.
     provide_context(handle.clone());
     provide_context(app_state);
     provide_context(write);
+    provide_context(trust_store.clone());
 
     // Create the VoiceManager.
     let local_peer_id = handle.peer_id();
