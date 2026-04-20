@@ -398,3 +398,189 @@ a { color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   .palette-backdrop, .palette-root { animation: none; }
 }
+
+/* ── Presence atoms (StatusDot + PeerStatusLabel) ──────────────────
+ * Spec: docs/specs/2026-04-19-ui-design/presence.md
+ *
+ * StatusDot ships in six sizes (profile/row/rail/me-strip/author/call-
+ * tile) and two border tokens (bg-0 for main-pane surfaces, bg-1 for
+ * panels). Colour comes from --moss-2 (here), --ink-3 (away), --whisper
+ * (whispering), --amber (queued), --ink-4 (gone). Ring variant for
+ * `in a call`. Invisible renders nothing — the component short-circuits
+ * before reaching the DOM.
+ */
+
+.status-dot {
+  display: inline-block;
+  border-radius: 50%;
+  background: var(--ink-4);
+  border-width: 2px;
+  border-style: solid;
+  border-color: var(--bg-1);
+  transition: background-color var(--motion) var(--motion-ease);
+  flex: none;
+  line-height: 1;
+}
+
+.status-dot[data-border="bg0"] { border-color: var(--bg-0); }
+.status-dot[data-border="bg1"] { border-color: var(--bg-1); }
+
+/* Sizes. 2 px border is included in the overall footprint. */
+.status-dot--profile   { width: 13px; height: 13px; border-width: 3px; }
+.status-dot--row       { width: 9px;  height: 9px;  }
+.status-dot--rail      { width: 10px; height: 10px; }
+.status-dot--me-strip  { width: 8px;  height: 8px;  }
+.status-dot--author    { width: 9px;  height: 9px;  }
+.status-dot--call-tile { width: 14px; height: 14px; }
+
+/* State colours — filled variants. */
+.status-dot--here       { background: var(--moss-2); }
+.status-dot--away       { background: var(--ink-3);  }
+.status-dot--whispering { background: var(--whisper);}
+.status-dot--queued     { background: var(--amber);  }
+.status-dot--gone       { background: var(--ink-4);  }
+
+/* Ring variant — `in a call`. Hollow circle, 2 px stroke. */
+.status-dot--in-a-call {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--moss-2);
+}
+
+/* Glyph slot (ear / hourglass on small sizes). */
+.status-dot__glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%; height: 100%;
+  color: var(--ink-on-accent);
+  font-size: 7px;
+  line-height: 1;
+}
+.status-dot--profile .status-dot__glyph   { font-size: 9px; }
+.status-dot--call-tile .status-dot__glyph { font-size: 10px; }
+
+/* Ambient pulse — here / whispering only. Reduced-motion override
+ * above collapses the keyframe to a steady opacity. */
+.presence-pulse {
+  animation: presencePulse var(--motion-ambient) ease-in-out infinite;
+}
+.status-dot--whispering.presence-pulse {
+  animation: presenceWhisperPulse var(--motion-ambient) ease-in-out infinite;
+}
+
+@keyframes presencePulse {
+  0%, 100% { opacity: 0.7; transform: scale(0.95); }
+  50%      { opacity: 1.0; transform: scale(1.05); }
+}
+@keyframes presenceWhisperPulse {
+  0%, 100% { opacity: 0.85; transform: scale(0.97); }
+  50%      { opacity: 1.0;  transform: scale(1.03); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Freeze pulse — steady opacity, no transform. */
+  @keyframes presencePulse { 0%, 100% { opacity: 1; transform: none; } }
+  @keyframes presenceWhisperPulse { 0%, 100% { opacity: 1; transform: none; } }
+  .presence-pulse { animation: none; }
+}
+
+/* Accent swap guard — presence dots never recolour under [data-accent="ember"]
+ * et al. The colours are semantic tokens outside the moss ladder. */
+[data-accent] .status-dot--here       { background: var(--moss-2); }
+[data-accent] .status-dot--in-a-call  { box-shadow: inset 0 0 0 2px var(--moss-2); }
+
+/* ── PeerStatusLabel ────────────────────────────────────────────────
+ * Composition: [icon] [dot] <text>. Typography: --font-ui, 13 px, 400.
+ * Mono 12 px amber for the queued count.
+ */
+
+.peer-status-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 400 13px var(--font-ui);
+  color: var(--ink-2);
+}
+
+.peer-status-label__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+.peer-status-label__dot { flex: none; }
+
+.peer-status-label__text { color: var(--ink-2); }
+
+.peer-status-label__count {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--amber);
+  margin-left: 4px;
+}
+
+.peer-status-label--whispering .peer-status-label__text { color: var(--whisper); }
+.peer-status-label--in-a-call  .peer-status-label__text { color: var(--ink-1); }
+.peer-status-label--queued     .peer-status-label__text { color: var(--amber); }
+.peer-status-label--gone       .peer-status-label__text { color: var(--ink-3); }
+
+/* ── Presence menu (me-strip self override) ────────────────────────── */
+
+.presence-menu {
+  position: absolute;
+  bottom: 56px;
+  left: 8px;
+  width: 180px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-2);
+  padding: 6px;
+  z-index: 500;
+  animation: willow-pop-in var(--motion) var(--motion-ease);
+}
+
+.presence-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  color: var(--ink-1);
+  font: 400 13.5px var(--font-ui);
+  cursor: pointer;
+  border-radius: var(--radius-s);
+  text-align: left;
+}
+
+.presence-menu__item:hover,
+.presence-menu__item:focus-visible {
+  background: var(--bg-2);
+  color: var(--ink-0);
+}
+
+.presence-menu__item[aria-checked="true"] {
+  background: var(--bg-3);
+  color: var(--ink-0);
+}
+
+.presence-menu__item .status-dot { pointer-events: none; }
+
+.presence-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 44px;
+  padding: 4px 6px;
+  background: transparent;
+  color: var(--ink-2);
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+.presence-menu-trigger:hover,
+.presence-menu-trigger:focus-visible {
+  background: var(--bg-2);
+  color: var(--ink-0);
+}

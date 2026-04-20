@@ -518,6 +518,26 @@ pub fn icon_volume_1() -> impl IntoView {
     )
 }
 
+/// Ear glyph (11×11 stroke 1.5) — presence label prefix for `whispering`.
+///
+/// See `docs/specs/2026-04-19-ui-design/presence.md` §PeerStatusLabel.
+pub fn icon_ear() -> impl IntoView {
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8.5a6.5 6.5 0 1 1 13 0c0 6-6 4-6 8.5a3 3 0 1 1-6 0"/><path d="M9 12a3 3 0 1 1 5-2.2"/></svg>"#;
+    view! {
+        <span class="icon icon-ear" inner_html=svg.to_string()></span>
+    }
+}
+
+/// Small hourglass glyph (11×11 stroke 1.5) — presence label prefix for
+/// `queued · N`. Uses its own rendering to differ from the full-size
+/// icon_hourglass used in ephemeral channel chrome.
+pub fn icon_hourglass_sm() -> impl IntoView {
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/></svg>"#;
+    view! {
+        <span class="icon icon-hourglass-sm" inner_html=svg.to_string()></span>
+    }
+}
+
 /// Willow brand mark — three drooping fronds with leaf tips.
 /// Rendered with its own viewBox (48) and stroke width (1.5) to match the
 /// foundation iconography rules for brand surfaces.
