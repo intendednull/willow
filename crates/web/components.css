@@ -268,6 +268,78 @@
     box-sizing: border-box;
 }
 
+/* ── Mobile full-screen pushes ───────────────────────────────────── */
+
+.mobile-push {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--bg-0);
+    animation: mobile-push-in var(--motion-slow) var(--motion-ease) both;
+    z-index: 2;
+}
+
+@keyframes mobile-push-in {
+    from {
+        transform: translateX(100%);
+    }
+    to {
+        transform: translateX(0);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .mobile-push {
+        animation: mobile-push-fade var(--motion-slow) linear both;
+    }
+    @keyframes mobile-push-fade {
+        from {
+            opacity: 0;
+        }
+        to {
+            opacity: 1;
+        }
+    }
+}
+
+/* Channel push: mount MainPaneHeader + MessageList + ChatInput in a
+   flex column so the list flexes between header and composer. */
+.mobile-push--channel {
+    display: flex;
+    flex-direction: column;
+}
+
+.mobile-push--channel .main-pane-header {
+    flex: none;
+}
+
+.mobile-push--channel .message-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.mobile-push--channel .typing-indicator {
+    flex: none;
+    padding: 2px 12px;
+    font-size: 11px;
+    color: var(--ink-3);
+    min-height: 18px;
+}
+
+.mobile-push--channel .input-row {
+    flex: none;
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    padding: 8px 10px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--line-soft);
+    background: var(--bg-1);
+}
+
 /* ── Grove drawer (mobile, home route) ───────────────────────────── */
 
 .grove-drawer-root {
