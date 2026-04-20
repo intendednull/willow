@@ -300,6 +300,28 @@ pub fn icon_check() -> impl IntoView {
     )
 }
 
+/// Shield icon — used by the trust-verification badges and downgrade
+/// banner. Spec reference: `docs/specs/2026-04-19-ui-design/trust-verification.md`.
+pub fn icon_shield() -> impl IntoView {
+    icon(
+        &format!(
+            r#"<svg {SVG_ATTRS}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>"#
+        ),
+        "icon-shield",
+    )
+}
+
+/// Key icon — used by the holder pill + related crypto visibility
+/// surfaces.
+pub fn icon_key() -> impl IntoView {
+    icon(
+        &format!(
+            r#"<svg {SVG_ATTRS}><circle cx="7.5" cy="15.5" r="5.5"/><path d="M21 2l-9.6 9.6"/><path d="M15.5 7.5l3 3L22 7l-3-3"/></svg>"#
+        ),
+        "icon-key",
+    )
+}
+
 /// Eye / reveal icon.
 pub fn icon_eye() -> impl IntoView {
     icon(
