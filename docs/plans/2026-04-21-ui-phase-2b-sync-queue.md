@@ -94,7 +94,7 @@ Extract the queue-note transition table into a pure, unit-testable module so `vi
 
 **Files:** new `crates/client/src/queue.rs`, modify `crates/client/src/lib.rs` (mod + re-exports).
 
-- [ ] **Step 1.1 — Define types.** In `queue.rs`:
+- [x] **Step 1.1 — Define types.** In `queue.rs`:
 
   ```rust
   use std::collections::VecDeque;
@@ -126,7 +126,7 @@ Extract the queue-note transition table into a pure, unit-testable module so `vi
   }
   ```
 
-- [ ] **Step 1.2 — `derive_pending`.** Pure fn:
+- [x] **Step 1.2 — `derive_pending`.** Pure fn:
 
   ```rust
   use willow_messaging::store::DeliveryState;
@@ -145,7 +145,7 @@ Extract the queue-note transition table into a pure, unit-testable module so `vi
   }
   ```
 
-- [ ] **Step 1.3 — `derive_late_arrival`.** Peer-offline-near(author, ts, 30_000) predicate backed by presence history:
+- [x] **Step 1.3 — `derive_late_arrival`.** Peer-offline-near(author, ts, 30_000) predicate backed by presence history:
 
   ```rust
   pub fn derive_late_arrival(
@@ -166,7 +166,7 @@ Extract the queue-note transition table into a pure, unit-testable module so `vi
   }
   ```
 
-- [ ] **Step 1.4 — Unit tests.** In `queue.rs` `#[cfg(test)]`:
+- [x] **Step 1.4 — Unit tests.** In `queue.rs` `#[cfg(test)]`:
 
   ```rust
   #[test]
@@ -208,9 +208,9 @@ Extract the queue-note transition table into a pure, unit-testable module so `vi
 
   Plus: empty-history case, history with other-peer only, hlc-regression case (inbound-older-than-outbound still returns elapsed-absolute), QueueSummary roundtrip serialize, RelayStatus default.
 
-- [ ] **Step 1.5 — `just check`** — fmt + clippy + tests clean.
+- [x] **Step 1.5 — `just check`** — fmt + clippy + tests clean.
 
-- [ ] **Step 1.6 — Commit** — `ui(phase-2b): add pure queue primitives + derivation helpers`.
+- [x] **Step 1.6 — Commit** — `ui(phase-2b): add pure queue primitives + derivation helpers`.
 
 ### 2. `DeliveryState` trait extension on `willow-messaging`
 
