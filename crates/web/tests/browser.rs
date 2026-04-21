@@ -7458,6 +7458,42 @@ mod phase_2a_message_row {
     }
 
     #[wasm_bindgen_test]
+    async fn mention_pill_title_carries_full_label() {
+        // Spec §Edge cases: handles > 32 chars truncate to `first 28 + …`
+        // with the full handle in `title`. The caller passes the full,
+        // pre-truncation handle via `full_label`; the pill's `title`
+        // attribute must carry that string verbatim so the user can
+        // hover to see what was originally typed.
+        let long = "a".repeat(40);
+        let truncated: String = format!("{}…", "a".repeat(28));
+        let full_for_view = long.clone();
+        let truncated_for_view = truncated.clone();
+        let container = mount_test(move || {
+            view! {
+                <MentionPill
+                    label=truncated_for_view.clone()
+                    full_label=full_for_view.clone()
+                    is_self=false
+                />
+            }
+        });
+        tick().await;
+
+        let pill = query(&container, ".mention-pill")
+            .expect("MentionPill must render a .mention-pill element");
+        assert_eq!(
+            pill.get_attribute("title").as_deref(),
+            Some(long.as_str()),
+            "pill `title` must carry the full untruncated handle"
+        );
+        assert_eq!(
+            text(&pill),
+            format!("@{truncated}"),
+            "visible text must be `@` + truncated label"
+        );
+    }
+
+    #[wasm_bindgen_test]
     async fn message_body_renders_mention_pill() {
         // Body contains `@you` — the parser resolves it against the
         // local peer (seeded through AppState), so `MessageView` must

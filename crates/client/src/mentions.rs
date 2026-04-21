@@ -28,8 +28,14 @@ pub enum Segment {
     /// A resolved `@mention`.
     Mention {
         /// What the pill renders (the original captured handle text,
-        /// truncated to 28 chars + `…` if longer than 32).
+        /// truncated to 28 chars + `…` if longer than 32; overridden
+        /// to `"you"` for self-mentions per spec §Mentions).
         label: String,
+        /// Full, pre-truncation, pre-self-override handle as captured
+        /// from the message body. Used for the `title` attribute on
+        /// the rendered pill so hovering a truncated or re-labelled
+        /// mention still reveals the full handle.
+        full_label: String,
         /// `None` for `@you` when the local peer has no peer id, or
         /// unresolved mentions (not emitted — these become `Text`).
         /// Always `Some(_)` in practice when we emit `Mention`.
@@ -102,9 +108,17 @@ pub fn parse_mentions(body: &str, peers: &[PeerRef], local_peer: &EndpointId) ->
             if full_token_start > cursor {
                 segments.push(Segment::Text(body[cursor..full_token_start].to_string()));
             }
-            let label = truncate_label(raw_handle);
+            // Spec §Mentions: self-mentions always render as `@you`,
+            // regardless of whether the captured handle matched via
+            // exact handle, first segment, or display-name resolution.
+            // `full_label` preserves the original capture for the
+            // `title` attribute so the user still sees what was typed.
+            let full_label = raw_handle.to_string();
+            let display_base = if is_self { "you" } else { raw_handle };
+            let label = truncate_label(display_base);
             segments.push(Segment::Mention {
                 label,
+                full_label,
                 peer_id: Some(peer_id),
                 is_self,
             });
@@ -237,12 +251,64 @@ mod tests {
                 peer_id,
                 is_self,
                 label,
+                full_label,
             } => {
                 assert_eq!(peer_id.as_ref(), Some(&local));
                 assert!(is_self);
                 assert_eq!(label, "you");
+                assert_eq!(full_label, "you");
             }
             _ => panic!("expected mention segment, got {:?}", segs[1]),
+        }
+    }
+
+    #[test]
+    fn self_mention_label_is_you() {
+        // Spec §Mentions: a handle that resolves to the local peer
+        // must render as `@you`, regardless of how it was typed.
+        let mira = peer("mira.forest.1", "Mira");
+        let local = mira.peer_id;
+        let segs = parse_mentions("@mira.forest.1", std::slice::from_ref(&mira), &local);
+        assert_eq!(segs.len(), 1);
+        match &segs[0] {
+            Segment::Mention {
+                label,
+                full_label,
+                is_self,
+                peer_id,
+            } => {
+                assert!(is_self, "handle that matches local peer must be is_self");
+                assert_eq!(label, "you", "self-mention label must be `you`");
+                assert_eq!(
+                    full_label, "mira.forest.1",
+                    "full_label must preserve original capture"
+                );
+                assert_eq!(peer_id.as_ref(), Some(&local));
+            }
+            other => panic!("expected mention segment, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn self_mention_via_first_segment_label_is_you() {
+        // Same rule applies when the self-mention resolves through the
+        // first-handle-segment or display-name path, not just exact.
+        let mira = peer("mira.forest.1", "Mira");
+        let local = mira.peer_id;
+        let segs = parse_mentions("@mira", std::slice::from_ref(&mira), &local);
+        assert_eq!(segs.len(), 1);
+        match &segs[0] {
+            Segment::Mention {
+                label,
+                full_label,
+                is_self,
+                ..
+            } => {
+                assert!(is_self);
+                assert_eq!(label, "you");
+                assert_eq!(full_label, "mira");
+            }
+            other => panic!("expected mention segment, got {other:?}"),
         }
     }
 
@@ -269,11 +335,20 @@ mod tests {
         let segs = parse_mentions(&body, std::slice::from_ref(&peer_ref), &local);
         assert_eq!(segs.len(), 1);
         match &segs[0] {
-            Segment::Mention { label, peer_id, .. } => {
+            Segment::Mention {
+                label,
+                full_label,
+                peer_id,
+                ..
+            } => {
                 // Kept 28 chars + one `…`.
                 let mut expected: String = "a".repeat(TRUNCATE_KEEP);
                 expected.push('…');
                 assert_eq!(label, &expected, "label must truncate to 28 chars + …");
+                assert_eq!(
+                    full_label, &long,
+                    "full_label must preserve the untruncated handle"
+                );
                 assert_eq!(peer_id.as_ref(), Some(&peer_ref.peer_id));
             }
             other => panic!("expected Mention, got {other:?}"),

@@ -21,9 +21,16 @@ use leptos::prelude::*;
 #[component]
 pub fn MentionPill(
     /// The mention label, already truncated by `parse_mentions` if
-    /// the source handle was longer than 32 characters. Rendered
-    /// preceded by a literal `@`.
+    /// the source handle was longer than 32 characters, and rewritten
+    /// to `"you"` for self-mentions. Rendered preceded by a literal `@`.
     label: String,
+    /// The full, pre-truncation, pre-self-override handle. Emitted as
+    /// the pill's `title` attribute so hovering a truncated or
+    /// re-labelled mention still reveals the original handle (spec
+    /// §Edge cases). Defaults to `label` when the caller doesn't have
+    /// a separate full handle (e.g. standalone `MentionPill` usage).
+    #[prop(optional, into)]
+    full_label: Option<String>,
     /// Whether this mention refers to the local peer.
     is_self: bool,
 ) -> impl IntoView {
@@ -32,10 +39,11 @@ pub fn MentionPill(
     } else {
         "mention-pill"
     };
-    let aria = format!("mention {label}");
+    let title = full_label.unwrap_or_else(|| label.clone());
+    let aria = format!("mention {title}");
     // TODO(profile-card.md): open the profile popover on click.
     view! {
-        <button class=class aria-label=aria type="button">
+        <button class=class aria-label=aria title=title type="button">
             "@"{label}
         </button>
     }

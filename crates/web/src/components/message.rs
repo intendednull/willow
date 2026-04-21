@@ -549,9 +549,9 @@ pub fn MessageView(
                     <div class=body_class>
                         {mention_segments.into_iter().map(|seg| {
                             match seg {
-                                willow_client::mentions::Segment::Mention { label, is_self, .. } => {
+                                willow_client::mentions::Segment::Mention { label, full_label, is_self, .. } => {
                                     view! {
-                                        <super::MentionPill label=label is_self=is_self />
+                                        <super::MentionPill label=label full_label=full_label is_self=is_self />
                                     }.into_any()
                                 }
                                 willow_client::mentions::Segment::Text(t) => {
