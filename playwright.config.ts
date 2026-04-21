@@ -7,13 +7,16 @@ const BASE_URL = process.env.WILLOW_TEST_URL || 'http://127.0.0.1:8080';
 export default defineConfig({
   testDir: './e2e',
   timeout: 60_000,
-  retries: 1,
-  // Two workers: each spec file gets its own browser contexts and each test
-  // calls freshStart() which clears localStorage + IndexedDB, so tests are
-  // self-contained. Parallelism is capped at 2 rather than the default
-  // (cpuCount/2) to limit P2P connection churn on the shared relay server
-  // during CI; raise further if the relay is stable under load.
-  workers: 2,
+  retries: Number(process.env.PLAYWRIGHT_RETRIES ?? 1),
+  // Per-file + intra-file parallelism. Multi-peer specs opt out via
+  // `test.describe.configure({ mode: 'serial' })` inside each file
+  // so tests inside a relay-heavy file still stay sequential while
+  // different files run concurrently.
+  fullyParallel: process.env.PLAYWRIGHT_FULLY_PARALLEL !== '0',
+  // Four workers: each launches isolated browser contexts; each test
+  // calls `freshStart()` so tests are self-contained. Override with
+  // `PLAYWRIGHT_WORKERS` if the relay flakes under load.
+  workers: Number(process.env.PLAYWRIGHT_WORKERS ?? 4),
   use: {
     baseURL: BASE_URL,
     headless: true,

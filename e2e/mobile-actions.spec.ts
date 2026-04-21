@@ -1,6 +1,13 @@
 import { test, expect } from '@playwright/test';
 import { freshStart, createServer, sendMessage, longPress } from './helpers';
 
+// Mobile action-sheet behaviour. Non-gesture sheet behaviour (cancel,
+// overlay tap, reply, react, three-dot hidden, quick-tap no-op) has
+// migrated to wasm-pack (`crates/web/tests/browser.rs` `mod
+// mobile_actions`). The tests that remain here depend on a real
+// browser's TouchEvent timing model (500 ms long-press threshold, swipe
+// velocity thresholds) — the headless wasm-pack harness can't model
+// those reliably.
 test.describe('Mobile action sheet', () => {
   test.beforeEach(({}, testInfo) => {
     test.skip(!testInfo.project.name.startsWith('mobile'), 'mobile only');
@@ -10,96 +17,16 @@ test.describe('Mobile action sheet', () => {
     await freshStart(page);
     await createServer(page, 'LongPress Open');
     await sendMessage(page, 'press and hold');
-    await page.waitForTimeout(500);
 
     await longPress(page, '.message');
 
     await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeVisible({ timeout: 3000 });
-  });
-
-  test('action sheet stays open over time', async ({ page }) => {
-    await freshStart(page);
-    await createServer(page, 'StayOpen');
-    await sendMessage(page, 'stay open');
-    // Wait for any initial sync/refresh to settle.
-    await page.waitForTimeout(2000);
-
-    await longPress(page, '.message');
-    await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeVisible({ timeout: 3000 });
-
-    // Wait 2 seconds — sheet should still be open.
-    await page.waitForTimeout(2000);
-    await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeVisible();
-  });
-
-  test('cancel closes action sheet', async ({ page }) => {
-    await freshStart(page);
-    await createServer(page, 'CancelSheet');
-    await sendMessage(page, 'cancel me');
-    await page.waitForTimeout(500);
-
-    await longPress(page, '.message');
-    await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeVisible({ timeout: 3000 });
-
-    await page.locator('.shell-mobile .mobile-action-sheet.open .sheet-cancel').first().click();
-    await page.waitForTimeout(300);
-
-    await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeHidden();
-  });
-
-  test('overlay tap closes action sheet', async ({ page }) => {
-    await freshStart(page);
-    await createServer(page, 'OverlayClose');
-    await sendMessage(page, 'overlay close');
-    await page.waitForTimeout(2000);
-
-    await longPress(page, '.message');
-    await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeVisible({ timeout: 3000 });
-
-    // Dispatch a click event directly on the overlay — bypasses Playwright's
-    // hit-test check which fails because the server rail sits above z-index 99
-    // at the top-left of the viewport.
-    await page.locator('.shell-mobile .mobile-action-sheet-overlay.open').first().dispatchEvent('click');
-    await page.waitForTimeout(500);
-
-    await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeHidden();
-  });
-
-  test('reply from sheet shows reply bar', async ({ page }) => {
-    await freshStart(page);
-    await createServer(page, 'SheetReply');
-    await sendMessage(page, 'reply to this');
-    await page.waitForTimeout(500);
-
-    await longPress(page, '.message');
-    await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeVisible({ timeout: 3000 });
-
-    await page.locator('.shell-mobile .mobile-action-sheet.open .sheet-item', { hasText: 'Reply' }).click();
-    await page.waitForTimeout(500);
-
-    await expect(page.locator('.shell-mobile .reply-bar').first()).toBeVisible();
-  });
-
-  test('react from sheet adds reaction', async ({ page }) => {
-    await freshStart(page);
-    await createServer(page, 'SheetReact');
-    await sendMessage(page, 'react from sheet');
-    await page.waitForTimeout(500);
-
-    await longPress(page, '.message');
-    await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeVisible({ timeout: 3000 });
-
-    await page.locator('.shell-mobile .mobile-action-sheet.open .sheet-emoji-row button').first().click();
-    await page.waitForTimeout(500);
-
-    await expect(page.locator('.shell-mobile .reaction').first()).toBeVisible();
   });
 
   test('swipe down dismisses action sheet', async ({ page }) => {
     await freshStart(page);
     await createServer(page, 'SwipeDown');
     await sendMessage(page, 'swipe to dismiss');
-    await page.waitForTimeout(500);
 
     await longPress(page, '.message');
     await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeVisible({ timeout: 3000 });
@@ -133,48 +60,6 @@ test.describe('Mobile action sheet', () => {
       }));
     }, { startX, startY, endY });
 
-    await page.waitForTimeout(500);
-    await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeHidden();
-  });
-
-  test('action trigger (three-dot menu) is hidden on mobile', async ({ page }) => {
-    await freshStart(page);
-    await createServer(page, 'NoTrigger');
-    await sendMessage(page, 'no dots');
-    await page.waitForTimeout(500);
-
-    // Hover the message (simulated) — the .message-actions should stay hidden on mobile.
-    const msg = page.locator('.shell-mobile .message').first();
-    await msg.hover();
-    await page.waitForTimeout(300);
-
-    await expect(page.locator('.shell-mobile .action-trigger').first()).toBeHidden();
-    await expect(page.locator('.shell-mobile .message-actions').first()).toBeHidden();
-  });
-
-  test('quick tap does NOT open sheet', async ({ page }) => {
-    await freshStart(page);
-    await createServer(page, 'QuickTap2');
-    await sendMessage(page, 'quick tap');
-    await page.waitForTimeout(500);
-
-    // Quick tap via evaluate (touchstart + immediate touchend).
-    const msg = page.locator('.shell-mobile .message').first();
-    const box = await msg.boundingBox();
-    if (!box) throw new Error('no msg');
-    const x = box.x + box.width / 2;
-    const y = box.y + box.height / 2;
-
-    await page.evaluate(({ x, y }) => {
-      const target = document.elementFromPoint(x, y);
-      if (!target) return;
-      const touch = new Touch({ identifier: 1, target, clientX: x, clientY: y, pageX: x, pageY: y });
-      target.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, cancelable: true, touches: [touch], targetTouches: [touch], changedTouches: [touch] }));
-      // Immediate touchend.
-      target.dispatchEvent(new TouchEvent('touchend', { bubbles: true, cancelable: true, touches: [], targetTouches: [], changedTouches: [touch] }));
-    }, { x, y });
-
-    await page.waitForTimeout(700);
     await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeHidden();
   });
 });

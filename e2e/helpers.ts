@@ -9,8 +9,6 @@ export async function waitForApp(page: Page) {
     '.welcome-screen:visible, .shell-desktop .app:visible, .shell-mobile .mobile-top-bar:visible, .join-card:visible',
     { timeout: 30_000 },
   );
-  // Give WASM a moment to stabilize.
-  await page.waitForTimeout(1000);
 }
 
 /** Clear all Willow localStorage keys and IndexedDB databases, then reload. */
@@ -69,19 +67,26 @@ export async function createServer(page: Page, name: string, displayName?: strin
     .fill(name);
   await page.locator('.welcome-tab-panel button', { hasText: 'continue' }).click();
 
-  // Wait for the app to load with the new server. On mobile the
-  // visible shell is `.mobile-top-bar` + `.mobile-tab-bar`; on
-  // desktop it's `.main-pane-header`. Wait for the first signal
-  // that matches either path.
+  // Wait for the app to load with the new server. On mobile we then
+  // push into the first channel (`general`) so subsequent helpers
+  // (`sendMessage`, `openMemberList`, etc.) find the composer +
+  // right-rail surfaces — mobile home only shows the channel list.
   if (isMobile(page)) {
     await page.waitForSelector('.mobile-top-bar', { state: 'visible', timeout: 10_000 });
+    // Tap general to push the channel surface (which carries the
+    // composer, message list, and main-pane-header action bar).
+    const generalRow = page
+      .locator(`${visibleShell(page)} .mobile-home .channel-item`, { hasText: 'general' });
+    if (await generalRow.count() > 0) {
+      await generalRow.first().click();
+      await page.waitForSelector('.mobile-push--channel', { timeout: 10_000 });
+    }
   } else {
     await page.waitForSelector('.main-pane-header, .channel-sidebar', {
       state: 'visible',
       timeout: 10_000,
     });
   }
-  await page.waitForTimeout(500);
 }
 
 /** Get the full peer ID from the welcome screen or settings. */
@@ -140,7 +145,9 @@ export async function sendMessage(page: Page, text: string) {
     .first();
   await input.fill(text);
   await input.press('Enter');
-  await page.waitForTimeout(300);
+  await page.locator(`${visibleShell(page)} .message .body`, { hasText: text })
+    .first()
+    .waitFor({ timeout: 10_000 });
 }
 
 /** Get all visible message bodies. */
@@ -185,7 +192,6 @@ export async function switchChannel(page: Page, channelName: string) {
     .locator(`${visibleShell(page)} .channel-item`, { hasText: channelName })
     .first()
     .click();
-  await page.waitForTimeout(300);
 }
 
 /** Wait for a specific message to appear in the visible shell. */
@@ -326,7 +332,6 @@ export async function openMemberList(page: Page) {
       .locator(`${visibleShell(page)} .right-rail[data-open="true"] .member-list`)
       .waitFor({ timeout: 3_000 })
       .catch(() => {});
-    await page.waitForTimeout(200);
   }
 }
 
@@ -339,7 +344,6 @@ export async function closeMemberList(page: Page) {
   const membersBtn = page.locator(`${visibleShell(page)} .action-btn[aria-label="members"]`);
   if (await membersBtn.count() > 0) {
     await membersBtn.first().click();
-    await page.waitForTimeout(200);
   }
 }
 
@@ -359,7 +363,8 @@ export async function openServerSettings(page: Page) {
     await page.waitForTimeout(200);
   }
   await page.locator(`${visibleShell(page)} .server-gear-btn`).first().click();
-  await page.waitForTimeout(500);
+  await page.locator('.settings-panel, .settings-overlay').first()
+    .waitFor({ timeout: 5_000 });
 }
 
 /** Generates an invite code for a given peer ID. Returns the invite code string. */
@@ -396,7 +401,13 @@ export async function joinViaInvite(page: Page, inviteCode: string, displayName?
       timeout: 20_000,
     });
   }
-  await page.waitForTimeout(3000);
+  // Deterministic post-join settle: wait for the sidebar + first channel
+  // to materialise. Covers both shells.
+  await page.locator(`${visibleShell(page)} .channel-sidebar, ${visibleShell(page)} .mobile-home`)
+    .first()
+    .waitFor({ timeout: 20_000 });
+  await page.locator(`${visibleShell(page)} .channel-item`).first()
+    .waitFor({ timeout: 20_000 });
 }
 
 /** Sets up two peers: peer1 creates a server, peer2 joins via invite. */
@@ -469,7 +480,8 @@ export async function createChannel(page: Page, name: string) {
   await page.waitForTimeout(200);
   await page.locator(`${scope} .channel-create-input input`).first().fill(name);
   await page.locator(`${scope} .channel-create-input input`).first().press('Enter');
-  await page.waitForTimeout(500);
+  await page.locator(`${visibleShell(page)} .channel-item`, { hasText: name })
+    .waitFor({ timeout: 10_000 });
 }
 
 // ── Message actions ───────────────────────────────────────────────────

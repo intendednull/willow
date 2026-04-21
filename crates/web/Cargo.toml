@@ -36,7 +36,7 @@ web-sys = { version = "0.3", features = [
     "RtcSignalingState", "RtcRtpTransceiver",
     "Response", "Headers",
     "Storage",
-    "CssStyleSheet", "CssRule", "CssRuleList", "StyleSheet", "StyleSheetList",
+    "CssStyleSheet", "CssStyleRule", "CssRule", "CssRuleList", "StyleSheet", "StyleSheetList",
     "HtmlAudioElement",
     "ServiceWorkerContainer", "MessageEvent", "Event", "EventInit",
 ] }

@@ -749,6 +749,14 @@
     }
 }
 
+/* Test-harness override: let a browser test force either shell via
+ * the `data-shell` attribute on <html>, bypassing the viewport media
+ * query. */
+html[data-shell="desktop"] .shell-desktop { display: contents; }
+html[data-shell="desktop"] .shell-mobile  { display: none; }
+html[data-shell="mobile"]  .shell-desktop { display: none; }
+html[data-shell="mobile"]  .shell-mobile  { display: flex; }
+
 /* ── App shell grid ──────────────────────────────────────────────── */
 
 /* Desktop three-pane shell: grove-rail / channel-sidebar / main / right-rail.

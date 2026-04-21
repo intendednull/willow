@@ -81,6 +81,17 @@ test-e2e-full:
 test-e2e-ui:
     npx playwright test --project=desktop-chrome --project=mobile-chrome
 
+# Full-suite gate: lint + Rust + wasm-pack browser + Playwright, in
+# order, fail-fast. This is the single command a PR must go green on.
+check-all:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just fmt
+    just clippy
+    just test
+    just test-browser
+    just test-e2e-ui
+
 # Run Playwright E2E tests on all browsers
 test-e2e-ui-all:
     npx playwright test

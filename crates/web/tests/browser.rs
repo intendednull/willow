@@ -34,6 +34,65 @@ where
     container.unchecked_into()
 }
 
+/// Which shell a browser test wants to force-mount under.
+///
+/// Phase 1b mounts both `.shell-desktop` and `.shell-mobile` in the DOM
+/// and uses a viewport media query to pick one. The headless wasm-pack
+/// harness can't reliably drive that media query, so tests use
+/// [`mount_test_with_shell`] to pin the choice via a `data-shell`
+/// attribute on `<html>`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum TestShell {
+    Desktop,
+    Mobile,
+}
+
+/// Force-mount the app under a specific shell by adding
+/// `data-shell="desktop"` or `data-shell="mobile"` to the `<html>`
+/// root before the component renders. `components.css` gates
+/// `.shell-desktop` / `.shell-mobile` visibility on that attribute
+/// when present (falls back to the viewport media query when the
+/// attribute is absent).
+#[allow(dead_code)]
+pub fn mount_test_with_shell<F, V>(shell: TestShell, view: F) -> web_sys::HtmlElement
+where
+    F: FnOnce() -> V + 'static,
+    V: IntoView + 'static,
+{
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let root = doc.document_element().unwrap();
+    root.set_attribute(
+        "data-shell",
+        match shell {
+            TestShell::Desktop => "desktop",
+            TestShell::Mobile => "mobile",
+        },
+    )
+    .unwrap();
+    ensure_components_css_loaded(&doc);
+    mount_test(view)
+}
+
+/// Inject `components.css` into the test document once per page load so
+/// shell-visibility rules (which gate off `data-shell` on `<html>`)
+/// actually take effect under wasm-pack's bare test harness. The harness
+/// does not pull in the app's CSS via `index.html`; without this, every
+/// element keeps its UA-default `display` and the shell override cannot
+/// be observed.
+#[allow(dead_code)]
+fn ensure_components_css_loaded(doc: &web_sys::Document) {
+    const STYLE_ID: &str = "willow-test-components-css";
+    if doc.get_element_by_id(STYLE_ID).is_some() {
+        return;
+    }
+    let style = doc.create_element("style").unwrap();
+    style.set_id(STYLE_ID);
+    style.set_text_content(Some(include_str!("../components.css")));
+    let head = doc.head().expect("document has <head>");
+    head.append_child(&style).unwrap();
+}
+
 /// Wait for reactive effects to flush.
 async fn tick() {
     gloo_timers::future::TimeoutFuture::new(0).await;
@@ -98,6 +157,80 @@ fn simulate_click(el: &web_sys::Element) {
         .unwrap()
         .dispatch_event(&event)
         .unwrap();
+}
+
+// ── Shell-harness smoke tests ───────────────────────────────────────────────
+
+#[wasm_bindgen_test]
+async fn mount_with_shell_desktop_hides_mobile() {
+    let container = mount_test_with_shell(TestShell::Desktop, || {
+        view! {
+            <div>
+                <div class="shell-desktop">"desktop"</div>
+                <div class="shell-mobile">"mobile"</div>
+            </div>
+        }
+    });
+    tick().await;
+    let desktop = container.query_selector(".shell-desktop").unwrap().unwrap();
+    let mobile = container.query_selector(".shell-mobile").unwrap().unwrap();
+    let window = web_sys::window().unwrap();
+    let desktop_display = window
+        .get_computed_style(&desktop)
+        .unwrap()
+        .unwrap()
+        .get_property_value("display")
+        .unwrap();
+    let mobile_display = window
+        .get_computed_style(&mobile)
+        .unwrap()
+        .unwrap()
+        .get_property_value("display")
+        .unwrap();
+    assert_ne!(
+        desktop_display, "none",
+        "desktop shell must be visible when data-shell=desktop"
+    );
+    assert_eq!(
+        mobile_display, "none",
+        "mobile shell must be hidden when data-shell=desktop"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn mount_with_shell_mobile_hides_desktop() {
+    let container = mount_test_with_shell(TestShell::Mobile, || {
+        view! {
+            <div>
+                <div class="shell-desktop">"desktop"</div>
+                <div class="shell-mobile">"mobile"</div>
+            </div>
+        }
+    });
+    tick().await;
+    let desktop = container.query_selector(".shell-desktop").unwrap().unwrap();
+    let mobile = container.query_selector(".shell-mobile").unwrap().unwrap();
+    let window = web_sys::window().unwrap();
+    let desktop_display = window
+        .get_computed_style(&desktop)
+        .unwrap()
+        .unwrap()
+        .get_property_value("display")
+        .unwrap();
+    let mobile_display = window
+        .get_computed_style(&mobile)
+        .unwrap()
+        .unwrap()
+        .get_property_value("display")
+        .unwrap();
+    assert_eq!(
+        desktop_display, "none",
+        "desktop shell must be hidden when data-shell=mobile"
+    );
+    assert_ne!(
+        mobile_display, "none",
+        "mobile shell must be visible when data-shell=mobile"
+    );
 }
 
 // ── Signal & Reactivity Tests ───────────────────────────────────────────────
@@ -5576,5 +5709,1385 @@ mod notifications {
             .unwrap()
             .expect("title");
         assert_eq!(text(&title), "remove");
+    }
+}
+
+// ── Basic-flow smoke tests (migrated from e2e/basic-flow.spec.ts) ───────────
+//
+// These mount the whole willow-web `<App />` in headless WASM and drive the
+// single-client onboarding + first-channel flows via DOM events. Historically
+// these ran as Playwright specs; moving them to wasm-pack keeps the fast
+// feedback loop on unit-test infrastructure and frees the e2e suite to focus
+// on multi-peer + mobile-gesture behaviour only a real browser can simulate.
+
+/// Shared helpers for flow-level tests (`basic_flow`, `mobile_ux`,
+/// `mobile_actions`). Each group used to carry its own copies of
+/// `click_selector` / `fill_selector` / etc.; they are hoisted here so
+/// new modules can reuse them without duplication.
+#[allow(dead_code)]
+mod test_support {
+    use super::*;
+    use willow_web::app::App;
+
+    /// Clear persisted identity + event stores so each flow-level test
+    /// starts from a genuine fresh-start. The Playwright version does
+    /// the same thing via page.evaluate; the wasm-pack harness runs
+    /// inside a single page so we clear state manually. willow-client's
+    /// WASM storage backend keys everything through localStorage, so
+    /// that is all we need to wipe here.
+    pub async fn clear_persistence() {
+        let window = web_sys::window().expect("window");
+        if let Ok(Some(storage)) = window.local_storage() {
+            let _ = storage.clear();
+        }
+        // Give the reactive runtime a beat.
+        tick().await;
+    }
+
+    /// Inject the full web-app CSS bundle so shell visibility rules +
+    /// component layout classes resolve in the headless harness. We use
+    /// the `components.css` bundle that `ensure_components_css_loaded`
+    /// already knows how to inject; the dedup id guards against double
+    /// insertion across tests in the same page.
+    pub fn ensure_app_css() {
+        let doc = web_sys::window().unwrap().document().unwrap();
+        ensure_components_css_loaded(&doc);
+    }
+
+    /// Poll up to `timeout_ms` for `selector` to exist under `container`.
+    /// Returns `true` if the element was found in time.
+    pub async fn wait_for(
+        container: &web_sys::HtmlElement,
+        selector: &str,
+        timeout_ms: u32,
+    ) -> bool {
+        let step_ms: u32 = 40;
+        let mut waited: u32 = 0;
+        while waited < timeout_ms {
+            if container.query_selector(selector).unwrap().is_some() {
+                return true;
+            }
+            gloo_timers::future::TimeoutFuture::new(step_ms).await;
+            waited += step_ms;
+        }
+        false
+    }
+
+    /// Click the first element matching `selector` by dispatching a
+    /// bubbling MouseEvent. Returns `true` if the element existed.
+    pub fn click_selector(container: &web_sys::HtmlElement, selector: &str) -> bool {
+        match container.query_selector(selector).unwrap() {
+            Some(el) => {
+                let event = web_sys::MouseEvent::new("click").unwrap();
+                el.dyn_ref::<web_sys::EventTarget>()
+                    .unwrap()
+                    .dispatch_event(&event)
+                    .unwrap();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Set `value` on an `<input>` / `<textarea>` matching `selector`
+    /// and dispatch a bubbling input event so Leptos `on:input` fires.
+    pub fn fill_selector(container: &web_sys::HtmlElement, selector: &str, value: &str) -> bool {
+        let Some(el) = container.query_selector(selector).unwrap() else {
+            return false;
+        };
+        if let Some(input) = el.dyn_ref::<web_sys::HtmlInputElement>() {
+            input.set_value(value);
+        } else if let Some(ta) = el.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+            ta.set_value(value);
+        } else {
+            return false;
+        }
+        let ev = web_sys::InputEvent::new("input").unwrap();
+        el.dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&ev)
+            .unwrap();
+        true
+    }
+
+    /// Dispatch a bubbling KeyboardEvent of the given `key` onto the
+    /// first match of `selector`. Mirrors Playwright's `press(key)`.
+    pub fn press_key(container: &web_sys::HtmlElement, selector: &str, key: &str) -> bool {
+        let Some(el) = container.query_selector(selector).unwrap() else {
+            return false;
+        };
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_key(key);
+        let ev =
+            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        el.dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&ev)
+            .unwrap();
+        true
+    }
+
+    /// Text content of the first element matching `selector`.
+    pub fn query_text(container: &web_sys::HtmlElement, selector: &str) -> Option<String> {
+        container
+            .query_selector(selector)
+            .unwrap()
+            .map(|el| el.text_content().unwrap_or_default())
+    }
+
+    /// Text content of every element matching `selector`.
+    pub fn query_all_text(container: &web_sys::HtmlElement, selector: &str) -> Vec<String> {
+        query_all(container, selector)
+            .iter()
+            .map(|el| el.text_content().unwrap_or_default())
+            .collect()
+    }
+
+    /// Mount the full willow-web `<App />` under the requested shell
+    /// with persistence pre-cleared. Returns the container element so
+    /// tests can drive DOM events against it.
+    pub async fn mount_app_fresh(shell: TestShell) -> web_sys::HtmlElement {
+        clear_persistence().await;
+        ensure_app_css();
+        let container = mount_test_with_shell(shell, || view! { <App /> });
+        // Let the app boot (network attempt fails quickly since the
+        // relay URL is unreachable in the headless harness; the UI
+        // still renders independently of that).
+        tick().await;
+        container
+    }
+}
+
+mod basic_flow {
+    use super::test_support::*;
+    use super::*;
+    use willow_web::app::App;
+
+    /// Walk the welcome flow's step-1 name input and click continue.
+    async fn advance_past_name_step(container: &web_sys::HtmlElement, display_name: &str) {
+        assert!(
+            wait_for(container, ".welcome-name-input", 5_000).await,
+            "welcome step-1 name input did not render"
+        );
+        fill_selector(container, ".welcome-name-input", display_name);
+        tick().await;
+        click_selector(container, ".welcome-continue-btn");
+        tick().await;
+        assert!(
+            wait_for(container, ".welcome-tabs", 5_000).await,
+            "welcome tabs did not render after continue"
+        );
+    }
+
+    /// Create a server from the welcome screen with `name` + optional
+    /// display name. Drives step 1 → step 2 → tab-panel continue.
+    async fn create_server_flow(
+        container: &web_sys::HtmlElement,
+        server_name: &str,
+        display_name: &str,
+    ) {
+        advance_past_name_step(container, display_name).await;
+        // The Create tab is selected by default.
+        assert!(
+            wait_for(
+                container,
+                ".welcome-tab-panel input[placeholder=\"backyard\"]",
+                5_000
+            )
+            .await
+        );
+        fill_selector(
+            container,
+            ".welcome-tab-panel input[placeholder=\"backyard\"]",
+            server_name,
+        );
+        tick().await;
+        click_selector(container, ".welcome-tab-panel .welcome-btn");
+        // Wait for the desktop shell to show the sidebar header.
+        let ok = wait_for(container, ".sidebar-header", 10_000).await;
+        assert!(ok, "sidebar-header did not render after server creation");
+    }
+
+    // ── 1. welcome screen shows on fresh start ──────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn welcome_screen_shows_on_fresh_start() {
+        let container = mount_app_fresh(TestShell::Desktop).await;
+        assert!(
+            wait_for(&container, ".welcome-card", 5_000).await,
+            "welcome card should be visible on fresh start"
+        );
+        let heading = query_text(&container, "h1").unwrap_or_default();
+        assert!(
+            heading.contains("What do we call you?"),
+            "welcome heading expected, got: {heading:?}"
+        );
+    }
+
+    // ── 2. can create a server from welcome screen ──────────────────────
+
+    #[wasm_bindgen_test]
+    async fn can_create_server_from_welcome_screen() {
+        let container = mount_app_fresh(TestShell::Desktop).await;
+        create_server_flow(&container, "Test Server", "Alice").await;
+        let header = query_text(&container, ".sidebar-header").unwrap_or_default();
+        assert!(
+            header.contains("Test Server"),
+            "sidebar-header should contain server name, got: {header:?}"
+        );
+        let channels = query_all_text(&container, ".channel-item");
+        assert!(
+            channels.iter().any(|c| c.contains("general")),
+            "general channel should render after server creation, got: {channels:?}"
+        );
+    }
+
+    // ── 3. can send and see own message ─────────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn can_send_and_see_own_message() {
+        let container = mount_app_fresh(TestShell::Desktop).await;
+        create_server_flow(&container, "Chat Test", "Alice").await;
+        // Wait for the composer to mount.
+        let composer = ".shell-desktop .input-area input, .shell-desktop .input-area textarea";
+        assert!(
+            wait_for(&container, composer, 10_000).await,
+            "composer input should mount after entering channel"
+        );
+        fill_selector(&container, composer, "Hello world!");
+        tick().await;
+        press_key(&container, composer, "Enter");
+        // Wait for message to appear in the list.
+        let ok = wait_for(&container, ".shell-desktop .message .body", 10_000).await;
+        assert!(ok, "sent message did not render");
+        let bodies = query_all_text(&container, ".shell-desktop .message .body");
+        assert!(
+            bodies.iter().any(|b| b.contains("Hello world!")),
+            "own message should appear in the list, got: {bodies:?}"
+        );
+    }
+
+    // ── 4. can create a new text channel ────────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn can_create_new_text_channel() {
+        let container = mount_app_fresh(TestShell::Desktop).await;
+        create_server_flow(&container, "Channel Test", "Alice").await;
+        assert!(wait_for(&container, ".shell-desktop .channel-add-btn", 5_000).await);
+        click_selector(&container, ".shell-desktop .channel-add-btn");
+        let input_sel = ".shell-desktop .channel-create-input input";
+        assert!(
+            wait_for(&container, input_sel, 5_000).await,
+            "channel-create-input did not appear"
+        );
+        fill_selector(&container, input_sel, "random");
+        press_key(&container, input_sel, "Enter");
+        // Poll for the new channel row.
+        let mut found = false;
+        for _ in 0..250 {
+            let items = query_all_text(&container, ".shell-desktop .channel-item");
+            if items.iter().any(|c| c.contains("random")) {
+                found = true;
+                break;
+            }
+            gloo_timers::future::TimeoutFuture::new(40).await;
+        }
+        assert!(found, "new 'random' channel did not appear in the sidebar");
+    }
+
+    // ── 5. can create a voice channel ───────────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn can_create_voice_channel() {
+        let container = mount_app_fresh(TestShell::Desktop).await;
+        create_server_flow(&container, "Voice Test", "Alice").await;
+        assert!(wait_for(&container, ".shell-desktop .channel-add-btn", 5_000).await);
+        click_selector(&container, ".shell-desktop .channel-add-btn");
+        // Wait for type-toggle buttons, then click "Voice".
+        assert!(wait_for(&container, ".shell-desktop .type-btn", 5_000).await);
+        let buttons = query_all(&container, ".shell-desktop .type-btn");
+        let voice_btn = buttons
+            .iter()
+            .find(|b| b.text_content().unwrap_or_default().contains("Voice"))
+            .expect("voice type toggle should exist");
+        // The Voice toggle listens on `mousedown`, not `click` (so
+        // pointer-drag UIs don't steal focus). Dispatch both to keep
+        // this helper robust to future changes.
+        let mousedown = web_sys::MouseEvent::new("mousedown").unwrap();
+        voice_btn
+            .dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&mousedown)
+            .unwrap();
+        simulate_click(voice_btn);
+        tick().await;
+        let input_sel = ".shell-desktop .channel-create-input input";
+        assert!(wait_for(&container, input_sel, 5_000).await);
+        fill_selector(&container, input_sel, "voice-chat");
+        press_key(&container, input_sel, "Enter");
+        // Poll for the new voice channel.
+        let mut voice_el: Option<web_sys::Element> = None;
+        for _ in 0..250 {
+            let items = query_all(&container, ".shell-desktop .channel-item");
+            voice_el = items
+                .into_iter()
+                .find(|el| el.text_content().unwrap_or_default().contains("voice-chat"));
+            if voice_el.is_some() {
+                break;
+            }
+            gloo_timers::future::TimeoutFuture::new(40).await;
+        }
+        let voice_el = voice_el.expect("voice-chat channel row did not appear");
+        // Voice channels render a volume icon prefix.
+        assert!(
+            voice_el
+                .query_selector(".icon-volume, .icon-volume-1")
+                .unwrap()
+                .is_some(),
+            "voice channel row should render a volume icon"
+        );
+    }
+
+    // ── 6. messages persist across a remount ────────────────────────────
+
+    // `page.reload()` in Playwright drops + restarts everything; the
+    // wasm-pack harness has no "reload" — we approximate the assertion
+    // by reading the persisted event store back into a fresh `App`
+    // mount. The identity + event stream live in IndexedDB so the
+    // second mount should rehydrate them.
+    #[wasm_bindgen_test]
+    async fn messages_persist_after_remount() {
+        let container = mount_app_fresh(TestShell::Desktop).await;
+        create_server_flow(&container, "Persist Test", "Alice").await;
+        let composer = ".shell-desktop .input-area input, .shell-desktop .input-area textarea";
+        assert!(wait_for(&container, composer, 10_000).await);
+        fill_selector(&container, composer, "persistent message");
+        tick().await;
+        press_key(&container, composer, "Enter");
+        assert!(
+            wait_for(&container, ".shell-desktop .message .body", 10_000).await,
+            "message did not render before reload"
+        );
+
+        // Simulate reload: mount a second <App /> — it shares the same
+        // origin's IndexedDB + localStorage so it should rehydrate.
+        ensure_app_css();
+        let container2 = mount_test_with_shell(TestShell::Desktop, || view! { <App /> });
+        // Poll up to 15 s for the rehydrated message to appear.
+        let mut found = false;
+        for _ in 0..375 {
+            let bodies = query_all_text(&container2, ".shell-desktop .message .body");
+            if bodies.iter().any(|b| b.contains("persistent message")) {
+                found = true;
+                break;
+            }
+            gloo_timers::future::TimeoutFuture::new(40).await;
+        }
+        assert!(found, "persistent message did not survive remount");
+    }
+
+    // ── 7. reactions persist across a remount ───────────────────────────
+
+    // Reactions are set via the message-action dropdown (desktop flow):
+    // hover to reveal `.action-trigger`, click it, click "React", then
+    // click the first emoji in the picker. Headless WASM has no "hover"
+    // so we dispatch the click directly — the trigger exists in the DOM
+    // regardless of hover state; the hover rule only toggles opacity.
+    #[wasm_bindgen_test]
+    async fn reactions_persist_after_remount() {
+        let container = mount_app_fresh(TestShell::Desktop).await;
+        create_server_flow(&container, "React Persist", "Alice").await;
+        let composer = ".shell-desktop .input-area input, .shell-desktop .input-area textarea";
+        assert!(wait_for(&container, composer, 10_000).await);
+        fill_selector(&container, composer, "react to me");
+        tick().await;
+        press_key(&container, composer, "Enter");
+        assert!(wait_for(&container, ".shell-desktop .message .body", 10_000).await);
+
+        // Open the dropdown + pick the first emoji.
+        assert!(
+            wait_for(&container, ".shell-desktop .message .action-trigger", 5_000).await,
+            "message action-trigger did not mount"
+        );
+        click_selector(&container, ".shell-desktop .message .action-trigger");
+        tick().await;
+        let react_btn_sel = ".shell-desktop .dropdown-item";
+        // Find the dropdown item whose text is "React".
+        let mut react_el: Option<web_sys::Element> = None;
+        for _ in 0..125 {
+            let items = query_all(&container, react_btn_sel);
+            react_el = items
+                .into_iter()
+                .find(|el| el.text_content().unwrap_or_default().contains("React"));
+            if react_el.is_some() {
+                break;
+            }
+            gloo_timers::future::TimeoutFuture::new(40).await;
+        }
+        let react_el = react_el.expect("React dropdown item did not appear");
+        simulate_click(&react_el);
+        tick().await;
+        assert!(
+            wait_for(
+                &container,
+                ".shell-desktop .dropdown-emoji-row button",
+                5_000
+            )
+            .await,
+            "emoji picker did not open"
+        );
+        let emojis = query_all(&container, ".shell-desktop .dropdown-emoji-row button");
+        simulate_click(&emojis[0]);
+        tick().await;
+        assert!(
+            wait_for(&container, ".shell-desktop .reaction", 10_000).await,
+            "reaction did not render after picking emoji"
+        );
+
+        // Remount to simulate reload. Reactions are part of the event
+        // log so they must replay.
+        ensure_app_css();
+        let container2 = mount_test_with_shell(TestShell::Desktop, || view! { <App /> });
+        let mut found = false;
+        for _ in 0..375 {
+            if container2
+                .query_selector(".shell-desktop .reaction")
+                .unwrap()
+                .is_some()
+            {
+                found = true;
+                break;
+            }
+            gloo_timers::future::TimeoutFuture::new(40).await;
+        }
+        assert!(found, "reaction did not persist across remount");
+    }
+}
+
+// ── Mobile UX (migrated from e2e/mobile.spec.ts) ────────────────────────────
+//
+// Non-gesture mobile tests that drive the `MobileShell` via the same DOM
+// event harness as `basic_flow`. Gesture + real-touch tests (long-press
+// open-sheet, swipe-down dismiss, reaction tap, auto-scroll, link
+// rendering) stay in Playwright where the browser engine honours real
+// TouchEvent timing and multi-shell visibility.
+
+mod mobile_ux {
+    use super::test_support::*;
+    use super::*;
+    use willow_web::app::App;
+
+    /// Walk the welcome flow's step-1 name input and click continue.
+    /// The welcome screen sits outside the shell split, so it looks the
+    /// same for both shells.
+    async fn advance_past_name_step(container: &web_sys::HtmlElement, display_name: &str) {
+        assert!(
+            wait_for(container, ".welcome-name-input", 5_000).await,
+            "welcome step-1 name input did not render"
+        );
+        fill_selector(container, ".welcome-name-input", display_name);
+        tick().await;
+        click_selector(container, ".welcome-continue-btn");
+        tick().await;
+        assert!(
+            wait_for(container, ".welcome-tabs", 5_000).await,
+            "welcome tabs did not render after continue"
+        );
+    }
+
+    /// Create a server from the welcome screen. Waits for the mobile
+    /// top bar + tab bar instead of the desktop sidebar header.
+    async fn create_server_mobile(
+        container: &web_sys::HtmlElement,
+        server_name: &str,
+        display_name: &str,
+    ) {
+        advance_past_name_step(container, display_name).await;
+        assert!(
+            wait_for(
+                container,
+                ".welcome-tab-panel input[placeholder=\"backyard\"]",
+                5_000,
+            )
+            .await
+        );
+        fill_selector(
+            container,
+            ".welcome-tab-panel input[placeholder=\"backyard\"]",
+            server_name,
+        );
+        tick().await;
+        click_selector(container, ".welcome-tab-panel .welcome-btn");
+        assert!(
+            wait_for(container, ".shell-mobile .mobile-top-bar", 10_000).await,
+            "mobile top-bar did not render after server creation"
+        );
+        assert!(
+            wait_for(container, ".shell-mobile .mobile-tab-bar", 10_000).await,
+            "mobile tab-bar did not render after server creation"
+        );
+    }
+
+    /// Push into the first channel on the mobile home tab. The shell
+    /// renders `.mobile-push--channel` when the stack is non-empty.
+    async fn push_into_first_channel(container: &web_sys::HtmlElement) {
+        assert!(
+            wait_for(container, ".shell-mobile .mobile-home .channel-item", 5_000).await,
+            "mobile home channel-item did not render"
+        );
+        click_selector(container, ".shell-mobile .mobile-home .channel-item");
+        assert!(
+            wait_for(container, ".mobile-push--channel", 5_000).await,
+            "channel push layer did not render"
+        );
+    }
+
+    /// Send a message from the mobile channel composer. Assumes the
+    /// caller has already pushed into a channel.
+    async fn send_message_mobile(container: &web_sys::HtmlElement, body: &str) {
+        let composer = ".shell-mobile .input-area input, .shell-mobile .input-area textarea";
+        assert!(
+            wait_for(container, composer, 10_000).await,
+            "mobile composer did not mount"
+        );
+        fill_selector(container, composer, body);
+        tick().await;
+        press_key(container, composer, "Enter");
+    }
+
+    // ── Basic rendering ───────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn app_renders_on_mobile_viewport() {
+        let container = mount_app_fresh(TestShell::Mobile).await;
+        assert!(
+            wait_for(&container, ".welcome-card", 5_000).await,
+            "welcome card should render on fresh start"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn can_create_server_on_mobile() {
+        let container = mount_app_fresh(TestShell::Mobile).await;
+        create_server_mobile(&container, "Mobile Server", "MobileUser").await;
+        assert!(query(&container, ".shell-mobile .mobile-top-bar").is_some());
+        assert!(query(&container, ".shell-mobile .mobile-tab-bar").is_some());
+    }
+
+    #[wasm_bindgen_test]
+    async fn can_send_message_on_mobile() {
+        let container = mount_app_fresh(TestShell::Mobile).await;
+        create_server_mobile(&container, "Mobile Chat", "Alice").await;
+        push_into_first_channel(&container).await;
+        send_message_mobile(&container, "mobile message!").await;
+        assert!(
+            wait_for(&container, ".shell-mobile .message .body", 10_000).await,
+            "message body did not render"
+        );
+        let bodies = query_all_text(&container, ".shell-mobile .message .body");
+        assert!(
+            bodies.iter().any(|b| b.contains("mobile message!")),
+            "sent message should render, got: {bodies:?}"
+        );
+    }
+
+    // ── Tab bar ───────────────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn tab_bar_renders_four_primary_tabs_with_aria_label_primary() {
+        let container = mount_app_fresh(TestShell::Mobile).await;
+        create_server_mobile(&container, "TabBar Test", "Alice").await;
+        let tab_bar = query(&container, ".shell-mobile .mobile-tab-bar").expect("tab-bar");
+        assert_eq!(
+            tab_bar.get_attribute("aria-label").as_deref(),
+            Some("primary"),
+        );
+        let tabs = query_all(&container, ".shell-mobile .mobile-tab-bar .tab");
+        assert_eq!(tabs.len(), 4, "expected 4 primary tabs, got {}", tabs.len());
+    }
+
+    #[wasm_bindgen_test]
+    async fn tab_bar_hides_on_pushed_screens() {
+        let container = mount_app_fresh(TestShell::Mobile).await;
+        create_server_mobile(&container, "TabHide Test", "Alice").await;
+        let tab_bar_el = query(&container, ".shell-mobile .mobile-tab-bar").unwrap();
+        assert_eq!(
+            tab_bar_el.get_attribute("data-visible").as_deref(),
+            Some("true"),
+            "tab bar should be visible on primary route",
+        );
+        push_into_first_channel(&container).await;
+        tick().await;
+        let tab_bar_el = query(&container, ".shell-mobile .mobile-tab-bar").unwrap();
+        assert_eq!(
+            tab_bar_el.get_attribute("data-visible").as_deref(),
+            Some("false"),
+            "tab bar should hide once a channel is pushed",
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn tab_bar_returns_on_back() {
+        let container = mount_app_fresh(TestShell::Mobile).await;
+        create_server_mobile(&container, "TabReturn", "Alice").await;
+        push_into_first_channel(&container).await;
+        tick().await;
+        let tab_bar_el = query(&container, ".shell-mobile .mobile-tab-bar").unwrap();
+        assert_eq!(
+            tab_bar_el.get_attribute("data-visible").as_deref(),
+            Some("false"),
+        );
+        // Tap the back chevron: on a pushed screen `top-slot-left` is
+        // the back arrow.
+        click_selector(&container, ".shell-mobile .mobile-top-bar .top-slot-left");
+        tick().await;
+        let mut visible_again = false;
+        for _ in 0..100 {
+            let el = query(&container, ".shell-mobile .mobile-tab-bar").unwrap();
+            if el.get_attribute("data-visible").as_deref() == Some("true") {
+                visible_again = true;
+                break;
+            }
+            gloo_timers::future::TimeoutFuture::new(40).await;
+        }
+        assert!(visible_again, "tab bar did not return after back tap");
+    }
+
+    #[wasm_bindgen_test]
+    async fn switch_tab_lands_on_letters_empty_state() {
+        let container = mount_app_fresh(TestShell::Mobile).await;
+        create_server_mobile(&container, "LettersTab", "Alice").await;
+        let tabs = query_all(&container, ".shell-mobile .mobile-tab-bar .tab");
+        let letters = tabs
+            .iter()
+            .find(|t| t.get_attribute("data-tab").as_deref() == Some("letters"))
+            .expect("letters tab should exist");
+        simulate_click(letters);
+        tick().await;
+        assert!(
+            wait_for(&container, ".shell-mobile .mobile-tab-empty", 5_000).await,
+            "letters empty-state did not render"
+        );
+    }
+
+    // ── Grove drawer ──────────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn drawer_opens_when_top_bar_grove_glyph_is_tapped() {
+        let container = mount_app_fresh(TestShell::Mobile).await;
+        create_server_mobile(&container, "DrawerOpen", "Alice").await;
+        click_selector(&container, ".shell-mobile .mobile-top-bar .top-slot-left");
+        assert!(
+            wait_for(&container, ".grove-drawer.open", 5_000).await,
+            "grove-drawer did not open after tapping top-bar glyph"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn drawer_closes_on_backdrop_tap() {
+        let container = mount_app_fresh(TestShell::Mobile).await;
+        create_server_mobile(&container, "DrawerClose", "Alice").await;
+        click_selector(&container, ".shell-mobile .mobile-top-bar .top-slot-left");
+        assert!(wait_for(&container, ".grove-drawer.open", 5_000).await);
+        click_selector(&container, ".grove-drawer-backdrop");
+        let mut closed = false;
+        for _ in 0..125 {
+            if query(&container, ".grove-drawer.open").is_none() {
+                closed = true;
+                break;
+            }
+            gloo_timers::future::TimeoutFuture::new(40).await;
+        }
+        assert!(closed, "grove-drawer did not close after backdrop tap");
+    }
+
+    // ── Channel creation ──────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn voice_channel_creation_works_on_mobile() {
+        let container = mount_app_fresh(TestShell::Mobile).await;
+        create_server_mobile(&container, "Voice Mobile", "Alice").await;
+        assert!(wait_for(&container, ".shell-mobile .channel-add-btn", 5_000).await);
+        click_selector(&container, ".shell-mobile .channel-add-btn");
+        assert!(wait_for(&container, ".shell-mobile .type-btn", 5_000).await);
+        let buttons = query_all(&container, ".shell-mobile .type-btn");
+        let voice_btn = buttons
+            .iter()
+            .find(|b| b.text_content().unwrap_or_default().contains("Voice"))
+            .expect("Voice toggle should exist");
+        // Voice toggle listens on mousedown as well as click (see desktop).
+        let mousedown = web_sys::MouseEvent::new("mousedown").unwrap();
+        voice_btn
+            .dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&mousedown)
+            .unwrap();
+        simulate_click(voice_btn);
+        tick().await;
+        let input_sel = ".shell-mobile .channel-create-input input";
+        assert!(wait_for(&container, input_sel, 5_000).await);
+        fill_selector(&container, input_sel, "vc");
+        press_key(&container, input_sel, "Enter");
+        let mut found = false;
+        for _ in 0..250 {
+            let items = query_all_text(&container, ".shell-mobile .channel-item");
+            if items.iter().any(|c| c.contains("vc")) {
+                found = true;
+                break;
+            }
+            gloo_timers::future::TimeoutFuture::new(40).await;
+        }
+        assert!(found, "new voice channel row did not appear");
+    }
+
+    // ── Input zoom prevention (Bug #7) ────────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn message_input_font_size_at_least_16px() {
+        let container = mount_app_fresh(TestShell::Mobile).await;
+        create_server_mobile(&container, "Zoom Test", "Alice").await;
+        push_into_first_channel(&container).await;
+        let composer_sel = ".shell-mobile .input-area input, .shell-mobile .input-area textarea";
+        assert!(wait_for(&container, composer_sel, 5_000).await);
+        let composer = query(&container, composer_sel).unwrap();
+        let window = web_sys::window().unwrap();
+        let style = window.get_computed_style(&composer).unwrap().unwrap();
+        let fs = style.get_property_value("font-size").unwrap_or_default();
+        let px: f64 = fs.trim_end_matches("px").parse().unwrap_or(0.0);
+        assert!(
+            px >= 16.0,
+            "composer font-size should be >= 16px to prevent iOS zoom, got {fs:?}",
+        );
+    }
+
+    // ── Scrolling (Bug #1,2,3,4) ──────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn message_list_is_scrollable_on_mobile() {
+        let container = mount_app_fresh(TestShell::Mobile).await;
+        create_server_mobile(&container, "Scroll Test", "Alice").await;
+        push_into_first_channel(&container).await;
+        for i in 0..25 {
+            send_message_mobile(&container, &format!("Message {}", i + 1)).await;
+            tick().await;
+        }
+        // Last message should render.
+        let mut last_present = false;
+        for _ in 0..250 {
+            let bodies = query_all_text(&container, ".shell-mobile .message .body");
+            if bodies.iter().any(|b| b.contains("Message 25")) {
+                last_present = true;
+                break;
+            }
+            gloo_timers::future::TimeoutFuture::new(40).await;
+        }
+        assert!(last_present, "Message 25 did not render");
+        let bodies = query_all_text(&container, ".shell-mobile .message .body");
+        let count = bodies
+            .iter()
+            .filter(|b| b.trim_start().starts_with("Message "))
+            .count();
+        assert!(
+            count >= 25,
+            "expected ≥ 25 messages in the list, got {count}",
+        );
+    }
+
+    // ── Persistence ───────────────────────────────────────────────────
+
+    // `page.reload()` in Playwright drops + restarts everything. The
+    // wasm-pack harness has no reload; we approximate by remounting a
+    // second `<App />` — same origin → same IndexedDB/localStorage.
+    #[wasm_bindgen_test]
+    async fn messages_persist_after_mobile_remount() {
+        let container = mount_app_fresh(TestShell::Mobile).await;
+        create_server_mobile(&container, "Mobile Persist", "Alice").await;
+        push_into_first_channel(&container).await;
+        send_message_mobile(&container, "survives refresh").await;
+        assert!(
+            wait_for(&container, ".shell-mobile .message .body", 10_000).await,
+            "message did not render before remount"
+        );
+
+        ensure_app_css();
+        let container2 = mount_test_with_shell(TestShell::Mobile, || view! { <App /> });
+        assert!(
+            wait_for(
+                &container2,
+                ".shell-mobile .mobile-home .channel-item",
+                15_000
+            )
+            .await,
+            "home channel-item did not rehydrate"
+        );
+        click_selector(&container2, ".shell-mobile .mobile-home .channel-item");
+        let mut found = false;
+        for _ in 0..375 {
+            let bodies = query_all_text(&container2, ".shell-mobile .message .body");
+            if bodies.iter().any(|b| b.contains("survives refresh")) {
+                found = true;
+                break;
+            }
+            gloo_timers::future::TimeoutFuture::new(40).await;
+        }
+        assert!(found, "persisted message did not survive remount");
+    }
+}
+
+// ── Mobile action sheet (migrated from e2e/mobile-actions.spec.ts) ──────────
+//
+// These tests open the sheet via the Message component's internal
+// long-press path (dispatch `touchstart` + wait for the 500 ms
+// setTimeout) and then assert sheet behaviour. The real swipe-down-to-
+// dismiss + the raw-TouchEvent quick-tap test stay in Playwright because
+// they require its real-touch timing model to be meaningful.
+
+mod mobile_actions {
+    use super::test_support::*;
+    use super::*;
+    use wasm_bindgen::JsCast;
+
+    /// Walk to a state where a message exists on the mobile channel
+    /// push view: welcome → create server → push channel → send msg.
+    async fn setup_with_message(container: &web_sys::HtmlElement, server: &str, body: &str) {
+        assert!(wait_for(container, ".welcome-name-input", 5_000).await);
+        fill_selector(container, ".welcome-name-input", "Alice");
+        tick().await;
+        click_selector(container, ".welcome-continue-btn");
+        tick().await;
+        assert!(
+            wait_for(
+                container,
+                ".welcome-tab-panel input[placeholder=\"backyard\"]",
+                5_000,
+            )
+            .await
+        );
+        fill_selector(
+            container,
+            ".welcome-tab-panel input[placeholder=\"backyard\"]",
+            server,
+        );
+        tick().await;
+        click_selector(container, ".welcome-tab-panel .welcome-btn");
+        assert!(wait_for(container, ".shell-mobile .mobile-top-bar", 10_000).await);
+        assert!(wait_for(container, ".shell-mobile .mobile-home .channel-item", 5_000).await);
+        click_selector(container, ".shell-mobile .mobile-home .channel-item");
+        assert!(wait_for(container, ".mobile-push--channel", 5_000).await);
+        let composer = ".shell-mobile .input-area input, .shell-mobile .input-area textarea";
+        assert!(wait_for(container, composer, 10_000).await);
+        fill_selector(container, composer, body);
+        tick().await;
+        press_key(container, composer, "Enter");
+        assert!(
+            wait_for(container, ".shell-mobile .message .body", 10_000).await,
+            "message body did not render"
+        );
+    }
+
+    /// Dispatch a bubbling `touchstart` on the first message, then
+    /// wait past the 500 ms long-press threshold for the sheet to open.
+    /// A plain `Event` (not `TouchEvent`) is fine — the Message handler
+    /// only reads `ev.target().closest(..)`.
+    async fn open_sheet_via_long_press(container: &web_sys::HtmlElement) {
+        let msg = query(container, ".shell-mobile .message").expect(".shell-mobile .message");
+        let init = web_sys::EventInit::new();
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        let ev = web_sys::Event::new_with_event_init_dict("touchstart", &init).unwrap();
+        msg.dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&ev)
+            .unwrap();
+        // Wait past the 500 ms long-press threshold inside Message.
+        gloo_timers::future::TimeoutFuture::new(650).await;
+        let mut opened = false;
+        for _ in 0..125 {
+            if query(container, ".shell-mobile .mobile-action-sheet.open").is_some() {
+                opened = true;
+                break;
+            }
+            gloo_timers::future::TimeoutFuture::new(40).await;
+        }
+        assert!(opened, "mobile action sheet did not open after long-press");
+    }
+
+    // ── Sheet stays open over time ────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn action_sheet_stays_open_over_time() {
+        let container = mount_app_fresh(TestShell::Mobile).await;
+        setup_with_message(&container, "StayOpen", "stay open").await;
+        open_sheet_via_long_press(&container).await;
+        gloo_timers::future::TimeoutFuture::new(2_000).await;
+        assert!(
+            query(&container, ".shell-mobile .mobile-action-sheet.open").is_some(),
+            "sheet closed unexpectedly after 2 seconds"
+        );
+    }
+
+    // ── Cancel closes the sheet ───────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn cancel_closes_action_sheet() {
+        let container = mount_app_fresh(TestShell::Mobile).await;
+        setup_with_message(&container, "CancelSheet", "cancel me").await;
+        open_sheet_via_long_press(&container).await;
+        click_selector(
+            &container,
+            ".shell-mobile .mobile-action-sheet.open .sheet-cancel",
+        );
+        let mut closed = false;
+        for _ in 0..125 {
+            if query(&container, ".shell-mobile .mobile-action-sheet.open").is_none() {
+                closed = true;
+                break;
+            }
+            gloo_timers::future::TimeoutFuture::new(40).await;
+        }
+        assert!(closed, "sheet did not close after Cancel tap");
+    }
+
+    // ── Overlay tap closes the sheet ──────────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn overlay_tap_closes_action_sheet() {
+        let container = mount_app_fresh(TestShell::Mobile).await;
+        setup_with_message(&container, "OverlayClose", "overlay close").await;
+        open_sheet_via_long_press(&container).await;
+        click_selector(
+            &container,
+            ".shell-mobile .mobile-action-sheet-overlay.open",
+        );
+        let mut closed = false;
+        for _ in 0..125 {
+            if query(&container, ".shell-mobile .mobile-action-sheet.open").is_none() {
+                closed = true;
+                break;
+            }
+            gloo_timers::future::TimeoutFuture::new(40).await;
+        }
+        assert!(closed, "sheet did not close after overlay tap");
+    }
+
+    // ── Reply from sheet shows reply bar ──────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn reply_from_sheet_shows_reply_bar() {
+        let container = mount_app_fresh(TestShell::Mobile).await;
+        setup_with_message(&container, "SheetReply", "reply to this").await;
+        open_sheet_via_long_press(&container).await;
+        let items = query_all(
+            &container,
+            ".shell-mobile .mobile-action-sheet.open .sheet-item",
+        );
+        let reply = items
+            .iter()
+            .find(|el| el.text_content().unwrap_or_default().contains("Reply"))
+            .expect("Reply sheet-item should exist");
+        simulate_click(reply);
+        tick().await;
+        assert!(
+            wait_for(&container, ".shell-mobile .reply-bar", 5_000).await,
+            "reply-bar did not appear after tapping Reply"
+        );
+    }
+
+    // ── React from sheet adds a reaction ──────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn react_from_sheet_adds_reaction() {
+        let container = mount_app_fresh(TestShell::Mobile).await;
+        setup_with_message(&container, "SheetReact", "react from sheet").await;
+        open_sheet_via_long_press(&container).await;
+        assert!(
+            wait_for(
+                &container,
+                ".shell-mobile .mobile-action-sheet.open .sheet-emoji-row button",
+                5_000,
+            )
+            .await,
+            "sheet-emoji-row did not render"
+        );
+        let emoji_buttons = query_all(
+            &container,
+            ".shell-mobile .mobile-action-sheet.open .sheet-emoji-row button",
+        );
+        simulate_click(&emoji_buttons[0]);
+        tick().await;
+        assert!(
+            wait_for(&container, ".shell-mobile .reaction", 10_000).await,
+            "reaction did not render after picking emoji in sheet"
+        );
+    }
+
+    // ── Three-dot trigger hidden on mobile ────────────────────────────
+
+    // `.action-trigger` + `.message-actions` render on both shells;
+    // `components.css` hides them on `.shell-mobile` because mobile uses
+    // long-press → action sheet instead.
+    #[wasm_bindgen_test]
+    async fn action_trigger_is_hidden_on_mobile() {
+        let container = mount_app_fresh(TestShell::Mobile).await;
+        setup_with_message(&container, "NoTrigger", "no dots").await;
+        let trigger = query(&container, ".shell-mobile .action-trigger")
+            .expect(".action-trigger exists in DOM");
+        let actions = query(&container, ".shell-mobile .message-actions")
+            .expect(".message-actions exists in DOM");
+        let window = web_sys::window().unwrap();
+        let trig_disp = window
+            .get_computed_style(&trigger)
+            .unwrap()
+            .unwrap()
+            .get_property_value("display")
+            .unwrap_or_default();
+        let actions_disp = window
+            .get_computed_style(&actions)
+            .unwrap()
+            .unwrap()
+            .get_property_value("display")
+            .unwrap_or_default();
+        assert_eq!(
+            trig_disp, "none",
+            ".action-trigger should be display:none on mobile"
+        );
+        assert_eq!(
+            actions_disp, "none",
+            ".message-actions should be display:none on mobile"
+        );
+    }
+
+    // ── Quick tap does NOT open the sheet ─────────────────────────────
+
+    // touchstart arms the 500 ms setTimeout; touchend clears it. Wait
+    // past the threshold and confirm the sheet never surfaced.
+    #[wasm_bindgen_test]
+    async fn quick_tap_does_not_open_sheet() {
+        let container = mount_app_fresh(TestShell::Mobile).await;
+        setup_with_message(&container, "QuickTap2", "quick tap").await;
+        let msg = query(&container, ".shell-mobile .message").expect(".message");
+        let init = web_sys::EventInit::new();
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        let start = web_sys::Event::new_with_event_init_dict("touchstart", &init).unwrap();
+        msg.dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&start)
+            .unwrap();
+        let end = web_sys::Event::new_with_event_init_dict("touchend", &init).unwrap();
+        msg.dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&end)
+            .unwrap();
+        gloo_timers::future::TimeoutFuture::new(700).await;
+        assert!(
+            query(&container, ".shell-mobile .mobile-action-sheet.open").is_none(),
+            "action sheet opened from a quick tap"
+        );
+    }
+}
+
+// ── Worker-nodes CSS + member-list structure ────────────────────────────────
+//
+// Migrated from `e2e/worker-nodes.spec.ts`. Three pure-DOM / pure-CSS
+// assertions that don't need a real relay: the owner-only member-list
+// section, the absence of the Infrastructure section when no peer has
+// SyncProvider, and a stylesheet scan that confirms the worker-node
+// classes are defined. The real-relay `relay connection is established`
+// test stays in Playwright — it asserts transport-level behaviour.
+
+mod worker_nodes_css {
+    use super::test_support::*;
+    use super::*;
+    use wasm_bindgen::JsCast;
+    use willow_web::app::App;
+
+    /// Drive the welcome flow: fill the display-name step, click
+    /// continue, then fill + submit the create-server tab. Mirrors
+    /// `basic_flow::create_server_flow` but kept module-local so this
+    /// file doesn't have to re-export private helpers across modules.
+    async fn create_server_flow(
+        container: &web_sys::HtmlElement,
+        server_name: &str,
+        display_name: &str,
+    ) {
+        assert!(
+            wait_for(container, ".welcome-name-input", 5_000).await,
+            "welcome step-1 name input did not render"
+        );
+        fill_selector(container, ".welcome-name-input", display_name);
+        tick().await;
+        click_selector(container, ".welcome-continue-btn");
+        tick().await;
+        assert!(
+            wait_for(container, ".welcome-tabs", 5_000).await,
+            "welcome tabs did not render after continue"
+        );
+        assert!(
+            wait_for(
+                container,
+                ".welcome-tab-panel input[placeholder=\"backyard\"]",
+                5_000
+            )
+            .await
+        );
+        fill_selector(
+            container,
+            ".welcome-tab-panel input[placeholder=\"backyard\"]",
+            server_name,
+        );
+        tick().await;
+        click_selector(container, ".welcome-tab-panel .welcome-btn");
+        assert!(
+            wait_for(container, ".sidebar-header", 10_000).await,
+            "sidebar-header did not render after server creation"
+        );
+    }
+
+    /// Click the main-pane header's `members` action button to open the
+    /// right-rail member list, then wait for the `.member-list` node to
+    /// mount inside the desktop shell.
+    async fn open_member_rail(container: &web_sys::HtmlElement) {
+        let sel = ".shell-desktop .mph-action-bar .action-btn[aria-label=\"members\"]";
+        assert!(
+            wait_for(container, sel, 5_000).await,
+            "members action button did not mount"
+        );
+        click_selector(container, sel);
+        tick().await;
+        assert!(
+            wait_for(container, ".shell-desktop .member-list", 5_000).await,
+            ".member-list did not mount after clicking members"
+        );
+    }
+
+    // ── 1. Member list renders with correct section structure ───────────
+
+    #[wasm_bindgen_test]
+    async fn member_list_renders_with_correct_section_structure() {
+        let container = mount_app_fresh(TestShell::Desktop).await;
+        create_server_flow(&container, "Section Test", "Alice").await;
+        open_member_rail(&container).await;
+
+        // Members heading.
+        let heading = query_text(&container, ".shell-desktop .member-list h3").unwrap_or_default();
+        assert!(
+            heading.contains("Members"),
+            "member-list h3 should read 'Members', got: {heading:?}"
+        );
+
+        // Owner badge for the creator.
+        assert!(
+            wait_for(&container, ".shell-desktop .badge.owner-badge", 5_000).await,
+            "owner-badge should be visible for the server creator"
+        );
+
+        // Exactly one member row — the local creator. No peers connect
+        // in the wasm-pack harness so this is deterministic.
+        let items = query_all(&container, ".shell-desktop .member-list .member-item");
+        assert_eq!(
+            items.len(),
+            1,
+            "expected exactly one member row, got {}",
+            items.len()
+        );
+    }
+
+    // ── 2. Infrastructure section hidden when no workers present ────────
+
+    #[wasm_bindgen_test]
+    async fn infrastructure_section_hidden_without_sync_providers() {
+        let container = mount_app_fresh(TestShell::Desktop).await;
+        create_server_flow(&container, "No Workers", "Alice").await;
+        open_member_rail(&container).await;
+
+        // `.infra-header` only renders when at least one peer has
+        // SyncProvider permission. The wasm-pack harness has no peers
+        // at all, so neither the header nor any worker rows should be
+        // in the DOM.
+        assert!(
+            query(&container, ".shell-desktop .infra-header").is_none(),
+            ".infra-header should be absent when no workers have SyncProvider"
+        );
+        let workers = query_all(&container, ".shell-desktop .worker-item");
+        assert_eq!(
+            workers.len(),
+            0,
+            "expected 0 .worker-item rows, got {}",
+            workers.len()
+        );
+    }
+
+    /// Inject the legacy `style.css` bundle once per page. Worker-node
+    /// classes live there (not in `components.css`), so we need a
+    /// separate hook to get them onto `document.styleSheets` for the
+    /// CSS-rule scan. Dedupes via an id guard.
+    fn ensure_style_css_loaded() {
+        const STYLE_ID: &str = "willow-test-style-css";
+        let doc = web_sys::window().unwrap().document().unwrap();
+        if doc.get_element_by_id(STYLE_ID).is_some() {
+            return;
+        }
+        let style = doc.create_element("style").unwrap();
+        style.set_id(STYLE_ID);
+        style.set_text_content(Some(include_str!("../style.css")));
+        let head = doc.head().expect("document has <head>");
+        head.append_child(&style).unwrap();
+    }
+
+    // ── 3. Worker-node CSS classes are defined in the stylesheet ────────
+
+    // Worker-node styles live in `style.css`; inject that bundle, then
+    // walk `document.styleSheets`, collect the selector text of every
+    // `CSSStyleRule`, and assert the three worker-node classes resolve.
+    #[wasm_bindgen_test]
+    async fn worker_item_css_classes_exist_in_stylesheet() {
+        // Ensure both stylesheet bundles are loaded. `components.css`
+        // is injected via `ensure_app_css`; `style.css` is injected
+        // separately because it's not part of the test harness default.
+        ensure_app_css();
+        ensure_style_css_loaded();
+
+        let document = web_sys::window().unwrap().document().unwrap();
+        let sheets = document.style_sheets();
+
+        let mut saw_worker_item = false;
+        let mut saw_worker_icon = false;
+        let mut saw_infra_header = false;
+
+        for i in 0..sheets.length() {
+            let Some(sheet) = sheets.item(i) else {
+                continue;
+            };
+            let Ok(css_sheet) = sheet.dyn_into::<web_sys::CssStyleSheet>() else {
+                continue;
+            };
+            // cross-origin stylesheets throw on cssRules access — skip.
+            let Ok(rules) = css_sheet.css_rules() else {
+                continue;
+            };
+            for j in 0..rules.length() {
+                let Some(rule) = rules.item(j) else {
+                    continue;
+                };
+                let Ok(style_rule) = rule.dyn_into::<web_sys::CssStyleRule>() else {
+                    continue;
+                };
+                let selector = style_rule.selector_text();
+                if selector.contains(".worker-item") {
+                    saw_worker_item = true;
+                }
+                if selector.contains(".worker-icon") {
+                    saw_worker_icon = true;
+                }
+                if selector.contains(".infra-header") {
+                    saw_infra_header = true;
+                }
+            }
+        }
+
+        assert!(
+            saw_worker_item,
+            ".worker-item selector missing from stylesheet"
+        );
+        assert!(
+            saw_worker_icon,
+            ".worker-icon selector missing from stylesheet"
+        );
+        assert!(
+            saw_infra_header,
+            ".infra-header selector missing from stylesheet"
+        );
+    }
+}
+
+// ── Trust badge DOM (migrated from e2e/permissions.spec.ts) ─────────
+//
+// `e2e/permissions.spec.ts` previously asserted that the trusted /
+// unverified badge appears or hides on a peer's member-item row after
+// the owner clicks Trust / Untrust. The DOM half of that assertion —
+// "given trust state X, the badge renders class Y" — is a component
+// contract that only needs a real Leptos DOM, not real P2P. The
+// Rust-side transition `Unknown → Verified → Unverified` moved to
+// `crates/client/src/tests/trust_flow.rs`.
+mod trust_badge_dom {
+    use super::*;
+    use willow_client::trust::{PeerTrust, UnverifiedReason};
+    use willow_web::components::{TrustBadge, TrustBadgeSize};
+    use willow_web::state::{create_signals, InitialSignals};
+
+    /// Mount a `<TrustBadge>` for `peer_id` with `AppState` + write
+    /// context seeded so `app_state.trust.trust_map` resolves `peer_id`
+    /// to `initial`. Returns the container for query assertions.
+    fn mount_badge_with_trust(peer_id: &str, initial: PeerTrust) -> web_sys::HtmlElement {
+        let peer_id_owned = peer_id.to_string();
+        mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+
+            // Seed the reactive trust map before the badge mounts so the
+            // `Memo` it subscribes to resolves to `initial` on first read.
+            let mut seeded = std::collections::HashMap::new();
+            seeded.insert(peer_id_owned.clone(), initial.clone());
+            write.trust.set_trust_map.set(seeded);
+
+            provide_context(app_state);
+            provide_context(write);
+
+            view! {
+                <TrustBadge
+                    peer_id=peer_id_owned.clone()
+                    size=TrustBadgeSize::Disk14
+                />
+            }
+        })
+    }
+
+    #[wasm_bindgen_test]
+    async fn verified_peer_renders_trust_badge_verified_class() {
+        let container = mount_badge_with_trust(
+            "peer-verified-fixture",
+            PeerTrust::Verified {
+                at_ms: 0,
+                pinned_key: [1u8; 32],
+            },
+        );
+        tick().await;
+
+        let badge = query(&container, ".trust-badge.trust-badge--verified")
+            .expect("verified peer must render .trust-badge--verified");
+        assert_eq!(
+            badge.get_attribute("data-trust-state").as_deref(),
+            Some("verified"),
+            "data-trust-state must be 'verified' for a Verified peer"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn unverified_peer_renders_trust_badge_unverified_class() {
+        let container = mount_badge_with_trust(
+            "peer-unverified-fixture",
+            PeerTrust::Unverified {
+                reason: UnverifiedReason::SasMismatch,
+            },
+        );
+        tick().await;
+
+        let badge = query(&container, ".trust-badge.trust-badge--unverified")
+            .expect("unverified peer must render .trust-badge--unverified");
+        assert_eq!(
+            badge.get_attribute("data-trust-state").as_deref(),
+            Some("unverified"),
+            "data-trust-state must be 'unverified' for an Unverified peer"
+        );
+        // Verified class must NOT be present — guards against the badge
+        // picking the wrong arm of the trust match.
+        assert!(
+            query(&container, ".trust-badge--verified").is_none(),
+            "unverified peer must not render the .trust-badge--verified class"
+        );
     }
 }
