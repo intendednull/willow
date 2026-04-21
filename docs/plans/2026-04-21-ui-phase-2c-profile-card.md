@@ -972,7 +972,7 @@ Scaffold the `crates/web/src/profile/` submodule. No components yet — just the
 
 **Files:** new `crates/web/src/profile/mod.rs`, new `crates/web/src/profile/bus.rs`, new `crates/web/src/profile/controller.rs`, new `crates/web/src/profile/nickname_store.rs`, new `crates/web/src/profile/copy.rs`, modify `crates/web/src/lib.rs`.
 
-- [ ] **Step 5.1 — Module registration.** New `crates/web/src/profile/mod.rs`:
+- [x] **Step 5.1 — Module registration.** New `crates/web/src/profile/mod.rs`:
 
   ```rust
   //! Profile-card wiring: event bus, controller, nickname store, copy.
@@ -991,7 +991,7 @@ Scaffold the `crates/web/src/profile/` submodule. No components yet — just the
 
   In `crates/web/src/lib.rs`, add `pub mod profile;` near the other `pub mod` declarations.
 
-- [ ] **Step 5.2 — Copy module.** New `crates/web/src/profile/copy.rs`:
+- [x] **Step 5.2 — Copy module.** New `crates/web/src/profile/copy.rs`:
 
   ```rust
   //! Exact strings from `profile-card.md` §Copy.
@@ -1024,7 +1024,7 @@ Scaffold the `crates/web/src/profile/` submodule. No components yet — just the
   pub const EMPTY_PINNED: &str = "no pinned fragment";
   ```
 
-- [ ] **Step 5.3 — Event bus.** New `crates/web/src/profile/bus.rs`:
+- [x] **Step 5.3 — Event bus.** New `crates/web/src/profile/bus.rs`:
 
   ```rust
   //! Window-level CustomEvent bus for opening / closing the profile card.
@@ -1068,7 +1068,7 @@ Scaffold the `crates/web/src/profile/` submodule. No components yet — just the
   }
   ```
 
-- [ ] **Step 5.4 — Controller.** New `crates/web/src/profile/controller.rs`:
+- [x] **Step 5.4 — Controller.** New `crates/web/src/profile/controller.rs`:
 
   ```rust
   //! Global controller signal for the profile card.
@@ -1191,7 +1191,7 @@ Scaffold the `crates/web/src/profile/` submodule. No components yet — just the
   }
   ```
 
-- [ ] **Step 5.5 — WebNicknameStore impl.** New `crates/web/src/profile/nickname_store.rs`:
+- [x] **Step 5.5 — WebNicknameStore impl.** New `crates/web/src/profile/nickname_store.rs`:
 
   ```rust
   //! localStorage-backed [`NicknameStore`].
@@ -1276,7 +1276,7 @@ Scaffold the `crates/web/src/profile/` submodule. No components yet — just the
   }
   ```
 
-- [ ] **Step 5.6 — App state slot.** In `crates/web/src/state.rs` add the `ProfileUiState` bucket:
+- [x] **Step 5.6 — App state slot.** In `crates/web/src/state.rs` add the `ProfileUiState` bucket:
 
   ```rust
   #[derive(Clone, Copy)]
@@ -1288,7 +1288,7 @@ Scaffold the `crates/web/src/profile/` submodule. No components yet — just the
 
   Wire a new pair in `create_signals` (beside `presence`), attach it to `AppState`, and add a `ProfileWriteSignals` bucket mirroring the pattern. Also initialise a `WebNicknameStore` arc and return it on `InitialSignals`.
 
-- [ ] **Step 5.7 — `just check-wasm`.**
+- [x] **Step 5.7 — `just check-wasm`.**
 
   ```bash
   just check-wasm
@@ -1296,7 +1296,7 @@ Scaffold the `crates/web/src/profile/` submodule. No components yet — just the
 
   Expected: clean. No warnings.
 
-- [ ] **Step 5.8 — Commit.**
+- [x] **Step 5.8 — Commit.**
 
   ```bash
   git add crates/web/src/profile/ crates/web/src/state.rs crates/web/src/lib.rs
@@ -1309,7 +1309,7 @@ Add `render_crest(pattern, color, peer_id)` producing deterministic `<svg>` for 
 
 **Files:** new `crates/web/src/profile/crest.rs`, modify `crates/web/src/profile/mod.rs`.
 
-- [ ] **Step 6.1 — Crest module.** New `crates/web/src/profile/crest.rs`:
+- [x] **Step 6.1 — Crest module.** New `crates/web/src/profile/crest.rs`:
 
   ```rust
   //! Procedural crest banner SVGs.
@@ -1458,11 +1458,11 @@ Add `render_crest(pattern, color, peer_id)` producing deterministic `<svg>` for 
   }
   ```
 
-- [ ] **Step 6.2 — Register in module.** Extend `crates/web/src/profile/mod.rs` with `pub mod crest; pub use crest::CrestBanner;`.
+- [x] **Step 6.2 — Register in module.** Extend `crates/web/src/profile/mod.rs` with `pub mod crest; pub use crest::CrestBanner;`.
 
-- [ ] **Step 6.3 — Add `blake3` workspace dep.** If `crates/web/Cargo.toml` doesn't already carry `blake3`, add `blake3 = { workspace = true }`. (The trust-verification phase added blake3 to `willow-crypto`; the web crate may need its own line.)
+- [x] **Step 6.3 — Add `blake3` workspace dep.** If `crates/web/Cargo.toml` doesn't already carry `blake3`, add `blake3 = { workspace = true }`. (The trust-verification phase added blake3 to `willow-crypto`; the web crate may need its own line.)
 
-- [ ] **Step 6.4 — `just check-wasm`.**
+- [x] **Step 6.4 — `just check-wasm`.**
 
   ```bash
   just check-wasm
@@ -1470,7 +1470,7 @@ Add `render_crest(pattern, color, peer_id)` producing deterministic `<svg>` for 
 
   Expected: clean.
 
-- [ ] **Step 6.5 — Commit.**
+- [x] **Step 6.5 — Commit.**
 
   ```bash
   git add crates/web/src/profile/ crates/web/Cargo.toml
