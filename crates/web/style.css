@@ -4884,3 +4884,130 @@ select:focus-visible {
         animation: shimmer 1.6s linear infinite;
     }
 }
+
+/* ── Phase 2e · Local search ─────────────────────────────────────── */
+
+.search-surface {
+    position: fixed;
+    inset: 0;
+    background: var(--bg-1);
+    display: flex;
+    flex-direction: column;
+    z-index: 900;
+    animation: willow-pop-in var(--motion, 220ms) var(--motion-ease, ease-out);
+}
+
+.search-form {
+    padding: 16px 20px 12px;
+    border-bottom: 1px solid var(--line-soft);
+    position: sticky;
+    top: 0;
+    background: var(--bg-1);
+    z-index: 2;
+}
+
+.search-input {
+    width: 100%;
+    height: 44px;
+    padding: 0 14px;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-m);
+    color: var(--ink-0);
+    font: 15px var(--font-ui);
+    outline: none;
+    transition: opacity 120ms ease-out;
+}
+
+.search-input:focus-visible {
+    box-shadow: var(--focus-ring);
+}
+
+.search-input::placeholder {
+    color: var(--ink-3);
+}
+
+.search-input.is-debouncing {
+    opacity: 0.85;
+}
+
+.scope-chip-wrap {
+    position: relative;
+    display: inline-block;
+    margin: 8px 20px 4px;
+}
+
+.scope-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-s);
+    color: var(--moss-3);
+    font: 11px / 1 var(--font-mono);
+    letter-spacing: 0.5px;
+    cursor: pointer;
+}
+
+.scope-chip:focus-visible {
+    box-shadow: var(--focus-ring);
+    outline: none;
+}
+
+.scope-chip-chevron {
+    display: inline-flex;
+    transition: transform 120ms;
+}
+
+.scope-chip[aria-expanded="true"] .scope-chip-chevron {
+    transform: rotate(180deg);
+}
+
+.scope-chip-popover {
+    position: absolute;
+    left: 0;
+    top: calc(100% + 6px);
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-m);
+    box-shadow: var(--shadow-2);
+    padding: 4px;
+    min-width: 180px;
+    z-index: 10;
+}
+
+.scope-chip-popover-option {
+    display: flex;
+    width: 100%;
+    padding: 8px 12px;
+    background: transparent;
+    border: none;
+    color: var(--ink-2);
+    font: 13px var(--font-ui);
+    text-align: left;
+    cursor: pointer;
+}
+
+.scope-chip-popover-option[aria-selected="true"] {
+    color: var(--moss-3);
+}
+
+.scope-chip-popover-option:disabled {
+    color: var(--ink-4);
+    cursor: not-allowed;
+}
+
+.scope-chip-popover-option:hover:not(:disabled) {
+    background: var(--bg-2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .search-surface {
+        animation: none;
+    }
+    .scope-chip-chevron {
+        transition: none;
+    }
+}
