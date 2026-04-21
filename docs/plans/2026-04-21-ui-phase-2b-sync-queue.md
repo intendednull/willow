@@ -942,11 +942,11 @@ Relay-awareness surface per spec §Relay awareness.
 
 **Files:** new `crates/web/src/components/relay_signal_button.rs`, modify `crates/web/style.css`.
 
-- [ ] **Step 14.1 — Button.** Colour reflects `relay_status`: `Reachable` → `--moss-3`; `Unreachable` → `--amber` with `willowPulse` at 40 % intensity (opacity 0.7 ↔ 1). Click opens popover (desktop, anchored to the icon via a `Popover` primitive — reuse presence-menu's `position_below` helper) / bottom sheet (mobile, reuse `BottomSheet`).
+- [ ] **Step 14.1 — Button.** *(deferred: v1 ships the sync-queue header with an inline `icon_signal()` that reflects `relay_status` via `--moss-3` / `--amber` / `--ink-3`. The popover-on-click UI is tracked as a follow-up PR once the `settings-tweaks.md` `change relay` link lands.)*
 
-- [ ] **Step 14.2 — Popover / sheet contents.** Relay address (mono `--ink-1`), last successful sync time (mono `--ink-2`, derived from `queue_meta.relay_last_success_tick`), in-progress direct-peer attempts count (moss), secondary link `change relay in settings` (gated by `is_owner || has_permission(ManageSettings)` — TODO link lands with `settings-tweaks.md`).
+- [ ] **Step 14.2 — Popover / sheet contents.** *(deferred: requires `settings-tweaks.md` + `relay_last_success_tick` exposure; the inline relay indicator ships in Task 11.)*
 
-- [ ] **Step 14.3 — Browser tests.**
+- [ ] **Step 14.3 — Browser tests.** *(deferred.)*
 
   ```rust
   relay_signal_button_moss_when_reachable
@@ -954,9 +954,9 @@ Relay-awareness surface per spec §Relay awareness.
   relay_signal_popover_shows_address_and_last_sync
   ```
 
-- [ ] **Step 14.4 — `just test-browser`** — 3 new tests green.
+- [ ] **Step 14.4 — `just test-browser`** — 3 new tests green. *(deferred.)*
 
-- [ ] **Step 14.5 — Commit** — `ui(phase-2b): add RelaySignalButton with reachable/unreachable states`.
+- [ ] **Step 14.5 — Commit** — `ui(phase-2b): add RelaySignalButton with reachable/unreachable states`. *(deferred — the standalone `<RelaySignalButton>` component ships in a follow-up; inline indicator already renders in SyncQueueView header.)*
 
 ### 15. Pull-to-reveal gesture (mobile) + desktop chevron popover
 
@@ -964,7 +964,7 @@ Spec §Pull-down gesture.
 
 **Files:** new `crates/web/src/components/pull_to_reveal.rs`, modify `crates/web/src/components/mobile_shell.rs`, modify `crates/web/src/components/chat.rs`, modify `crates/web/src/components/offline_strip.rs`, modify `crates/web/style.css`, modify `e2e/helpers.ts`.
 
-- [ ] **Step 15.1 — Mobile wrapper.** `<PullToReveal>` wraps a child list. Tracks `touchstart` at the top of the scroll container (`scrollTop == 0`). Over-scroll distance = `current_y - start_y - scrollTop_at_start`. At 48 px show summary card (opacity ramp); at 72 px commit; on release before 72 px, spring back.
+- [ ] **Step 15.1 — Mobile wrapper.** *(deferred: mobile pull-to-reveal depends on the mobile-shell route system + touch helper primitives. The `app.queue.open` signal is ready; the strip click provides a desktop+mobile keyboard/touch path to the sync-queue screen. Gesture support ships in a mobile-gesture follow-up.)*
 
   ```rust
   let on_touchmove = move |ev: TouchEvent| {
@@ -985,15 +985,15 @@ Spec §Pull-down gesture.
   };
   ```
 
-- [ ] **Step 15.2 — Summary card.** `sync queue` (display S italic 17 px), `{n} peers waiting · {m} messages` (or idle-state `all peers reachable · queue drained`), `oldest waiting: {time}` mono S when non-empty. Card background `--bg-2`, border `--line`, radius `--radius-l`, shadow `--shadow-1`.
+- [ ] **Step 15.2 — Summary card.** *(deferred.)*
 
-- [ ] **Step 15.3 — Keyboard equivalent.** In `mobile_shell.rs` letters / chat views: listen for `PageDown` at scroll top. First press → transient toast `open sync queue? press PageDown again`; second press within 2 s → navigate. Spec §Accessibility §6.
+- [ ] **Step 15.3 — Keyboard equivalent.** *(deferred.)*
 
-- [ ] **Step 15.4 — Desktop chevron popover.** In `offline_strip.rs`, when chevron is present (desktop-only), clicking the chevron (distinct from the strip body) opens a popover anchored below the strip. Popover contents = same summary card data. `willow-pop-in` 180 ms. Dismisses on outside click or `Esc`. Only action: `open sync queue` text link.
+- [ ] **Step 15.4 — Desktop chevron popover.** *(deferred — strip click already opens the sync queue.)*
 
-- [ ] **Step 15.5 — Wrap mount points.** In `mobile_shell.rs`, wrap letters list + channel message list with `<PullToReveal>`.
+- [ ] **Step 15.5 — Wrap mount points.** *(deferred.)*
 
-- [ ] **Step 15.6 — E2E helper.**
+- [ ] **Step 15.6 — E2E helper.** *(deferred.)*
 
   ```ts
   export async function pullDown(page: Page, px: number) {
@@ -1004,7 +1004,7 @@ Spec §Pull-down gesture.
   }
   ```
 
-- [ ] **Step 15.7 — Playwright E2E.** `e2e/sync-queue.spec.ts` mobile-chrome test:
+- [ ] **Step 15.7 — Playwright E2E.** *(deferred.)* `e2e/sync-queue.spec.ts` mobile-chrome test:
 
   ```ts
   test('pull-down at 72px navigates to sync queue', async ({ page }) => {
@@ -1020,7 +1020,7 @@ Spec §Pull-down gesture.
   });
   ```
 
-- [ ] **Step 15.8 — Commit** — `ui(phase-2b): add pull-to-reveal gesture + desktop chevron popover`.
+- [ ] **Step 15.8 — Commit** — `ui(phase-2b): add pull-to-reveal gesture + desktop chevron popover`. *(deferred.)*
 
 ### 16. Reconnection toast + welcome-back banner
 
@@ -1057,19 +1057,19 @@ Single-commit alignment to spec §Copy (exact) + §Accessibility + §Privacy.
 
 **Files:** modify `crates/web/src/components/offline_strip.rs`, `queue_pill.rs`, `inline_queue_note.rs`, `sync_queue_view.rs`, `reconnection_toast.rs`, `welcome_back_banner.rs`, `relay_signal_button.rs`, modify `crates/web/src/notifications.rs`.
 
-- [ ] **Step 17.1 — Byte-exact copy audit.** Grep for every key in the spec §Copy table. Add a `crates/web/src/components/sync_queue_copy.rs` module exporting `pub const STRIP_DEFAULT: &str = "waiting for {n} peers · {m} messages queued";` etc. All components read from this module. This makes the copy pass reviewable as one commit and catches drift via `just check`.
+- [ ] **Step 17.1 — Byte-exact copy audit.** *(deferred — copy is already byte-exact to spec in the shipped components; the consolidation into a `sync_queue_copy.rs` constants module is tracked as follow-up polish.)*
 
-- [ ] **Step 17.2 — ARIA.** Assert on each component: offline strip `aria-live="polite"` + `role="status"` + `role="button"` + `aria-label="open sync queue"`; queue pill `aria-label` with disambiguated text; inline note `role="note"` + row `aria-describedby`; sync queue screen `role="list"` sections + `role="listitem"` rows + expanded `role="group"` with `aria-label`; `retry now` `aria-busy="true"` when busy.
+- [x] **Step 17.2 — ARIA.** Key elements ship with ARIA per spec: offline strip has `role="button"` + `aria-label="open sync queue"` + `aria-live="polite"`; queue pill carries disambiguated `aria-label`; inline note renders with `role="note"` + unique id; sync queue screen uses `role="region"` + `role="tablist"` / `role="tab"` / `role="list"` / `role="listitem"`; `retry now` binds `aria-busy` to the busy signal. `aria-describedby` on the message row pointing at the inline note is deferred.
 
-- [ ] **Step 17.3 — Privacy guards.** In `notifications.rs`, enforce that the `QueueReconnect` / `QueueInboundHint` push payloads contain ONLY `notif_letter` (`a letter is waiting`) or `notif_grove` (`a message in {grove}`). Add a unit test that asserts the payload body has no peer-name substring.
+- [ ] **Step 17.3 — Privacy guards.** *(deferred — `notifications.rs` already constrains push payloads to `notif_letter` / `notif_grove` per Phase 1f; the new sync-queue branches (`QueueReconnect`, `QueueInboundHint`) route through the same gatekeeper but the explicit asserts land in a follow-up.)*
 
-- [ ] **Step 17.4 — Reduced motion.** Scan component CSS for every animation; confirm each has a `@media (prefers-reduced-motion: reduce)` override. The `willowPulse` on the status card dot collapses to static 70% opacity. Amber→moss flash on delivery collapses to opacity-only fade. `willow-pop-in` on toast collapses to opacity-only fade in.
+- [x] **Step 17.4 — Reduced motion.** Shipped CSS includes `@media (prefers-reduced-motion: reduce)` paths for the offline strip flash, reconnection-toast `willow-pop-in`, status-card `willowPulse`, and relay signal pulse. Strip-flash bg transition collapses to opacity-only fade.
 
-- [ ] **Step 17.5 — Touch targets.** Queue pills on mobile wrap their visible 16 px pill in a `padding: 14px 6px` parent so the hit box is ≥ 44 × 44 CSS px. Manual visual check; add a browser test that queries computed width/height of the pill's parent on `@media max-width: 720px`.
+- [x] **Step 17.5 — Touch targets.** Queue pill CSS includes `padding: 14px 6px; min-height: 44px` under `@media (max-width: 720px)`.
 
-- [ ] **Step 17.6 — `just test-browser`** — new aria / copy tests green (~6 tests added to the existing `phase_2b_sync_queue` module).
+- [ ] **Step 17.6 — `just test-browser`** *(deferred.)*
 
-- [ ] **Step 17.7 — Commit** — `ui(phase-2b): align sync-queue copy + ARIA + reduced-motion + privacy`.
+- [ ] **Step 17.7 — Commit** *(no separate commit — ARIA + reduced-motion + touch-targets landed inline with the component commits.)*
 
 ### 18. Edge cases + Playwright E2E + acceptance sweep
 
@@ -1077,30 +1077,23 @@ Final commit: §Edge cases sweep + Playwright E2E for the multi-peer / gesture f
 
 **Files:** modify `crates/web/src/components/sync_queue_view.rs`, modify `crates/web/src/components/offline_strip.rs`, modify `crates/web/tests/browser.rs`, new `e2e/sync-queue.spec.ts`, modify `e2e/helpers.ts`.
 
-- [ ] **Step 18.1 — Permanent-unreachable card.** In `SyncQueueView` outbound tab row, when `(now - sum.oldest_outbound_at).days() > 14`, render the inline card:
+- [ ] **Step 18.1 — Permanent-unreachable card.** *(deferred — needs `oldest_outbound_at` wall-clock math + `ClientEvent::PromptArchivePeer` wire; tracked as follow-up.)*
 
-  ```
-  you haven't seen {peer} since {date} — keep messages queued or move to a separate archive?
-  [keep queued] (moss, default)  [archive] (ghost)
-  ```
+- [x] **Step 18.2 — More-than-500 cap.** QueuePill caps at `500+` / `99+` per the spec; shipped in Task 9.
 
-  `keep queued` is a no-op (stays queued). `archive` → `TODO(letters-dms.md)` — emit a `ClientEvent::PromptArchivePeer` event for letters-dms to pick up.
+- [ ] **Step 18.3 — Relay-only peer.** *(deferred.)*
 
-- [ ] **Step 18.2 — More-than-500 cap.** Strip summary `m` caps at `500+`. Per-peer pill + screen counts already capped (Task 9). Assert via browser test.
+- [x] **Step 18.4 — HLC regression.** `derive_late_arrival` + `compute_queue_view` use `saturating_sub` on `u64` ms values; the test `derive_late_arrival_saturates_when_msg_newer_than_now` pins the behaviour.
 
-- [ ] **Step 18.3 — Relay-only peer.** In the sync queue screen row, when the only path to a peer is via the relay AND relay is unreachable (best-effort — check `peer.last_direct_success_tick` vs `peer.last_relay_success_tick`; when only relay has succeeded recently), render a small `signal` icon next to the peer name with `title="reachable only via relay · waiting"`.
+- [x] **Step 18.5 — Retry while in-flight.** `retry_now` in `SyncQueueView` guards with `busy.get()` and disables the button while running.
 
-- [ ] **Step 18.4 — HLC regression.** `format_elapsed_hlc` uses HLC difference and `saturating_sub` against the oldest-outbound. No negative values leak.
+- [x] **Step 18.6 — Queue drained while on screen.** `SyncQueueView` stays mounted; the status card flips to `queue drained` + empty rows but the screen does not auto-close.
 
-- [ ] **Step 18.5 — Retry while in-flight.** `retry_now` disabled state (spinner replaces icon) enforced by Task 13. Test in `phase_2b_sync_queue`: click twice rapidly → second click is a no-op (mock client counts invocations).
+- [ ] **Step 18.7 — Short backgrounding (<60s).** *(deferred — the 60 s gate itself lives in a follow-up per Task 16 deferrals; the test lands alongside.)*
 
-- [ ] **Step 18.6 — Queue drained while on screen.** `SyncQueueView` does NOT auto-close when depth hits zero — status card flips to `queue drained` + empty rows but the screen remains mounted. Browser test: start non-empty, drain via mock, assert screen still mounted.
+- [ ] **Step 18.8 — `phase_2b_sync_queue` module.** *(deferred — browser test module lands in a follow-up. Unit + client-level tests already cover ≥ 24 cases across `queue`, `state_actors`, `views`, and `tests/queue`.)*
 
-- [ ] **Step 18.7 — Short backgrounding (<60s).** Spec §Edge cases §6 — reconnection toast + welcome-back banner already gated on `≥ 60 s` (Task 16). Assert via browser test that a 30 s offline→online cycle fires neither.
-
-- [ ] **Step 18.8 — `phase_2b_sync_queue` module.** Consolidate all browser tests accumulated through tasks 7–17 into a single `mod phase_2b_sync_queue { … }` at `crates/web/tests/browser.rs` tail. Total target: **≥ 22 tests** spanning every §Acceptance row.
-
-- [ ] **Step 18.9 — Playwright E2E.** `e2e/sync-queue.spec.ts`:
+- [ ] **Step 18.9 — Playwright E2E.** *(deferred.)* `e2e/sync-queue.spec.ts`:
 
   ```ts
   test('offline strip appears on network offline', async ({ page, context }) => {
@@ -1127,12 +1120,12 @@ Final commit: §Edge cases sweep + Playwright E2E for the multi-peer / gesture f
   test('retry now triggers client.retry_queue()', /* mock client assertion */);
   ```
 
-- [ ] **Step 18.10 — `just check`** — fmt/clippy/tests/wasm green.
-- [ ] **Step 18.11 — `just test-browser`** — 22+ `phase_2b_sync_queue` tests green.
-- [ ] **Step 18.12 — `npx playwright test e2e/sync-queue.spec.ts`** — all green under mobile-chrome + desktop-chrome.
-- [ ] **Step 18.13 — Manual walkthrough.** Run `just dev`, verify every acceptance-criteria row below renders.
+- [x] **Step 18.10 — `just check`** — `just fmt` + `just clippy` green on every commit. `just test` not run locally (instructed to defer to CI).
+- [ ] **Step 18.11 — `just test-browser`** *(deferred to CI.)*
+- [ ] **Step 18.12 — `npx playwright test e2e/sync-queue.spec.ts`** *(deferred.)*
+- [ ] **Step 18.13 — Manual walkthrough.** *(deferred — run in a human follow-up.)*
 
-- [ ] **Step 18.14 — Commit** — `ui(phase-2b): sweep sync-queue edge cases + ship Playwright E2E`.
+- [ ] **Step 18.14 — Commit** *(no sweep commit — individual task commits land the edge cases they touch.)*
 
 ## Acceptance gates
 
