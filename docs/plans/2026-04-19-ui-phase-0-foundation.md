@@ -55,7 +55,7 @@ Each gate is a concrete check. Don't move to the next task if the current gate f
 - Create: `crates/web/foundation.css`
 - Modify: `crates/web/index.html`
 
-- [ ] **Step 1.1 — Write the file with a comment header only.**
+- [x] **Step 1.1 — Write the file with a comment header only.**
 
 Create `crates/web/foundation.css` with:
 
@@ -75,7 +75,7 @@ Create `crates/web/foundation.css` with:
  */
 ```
 
-- [ ] **Step 1.2 — Add the Trunk link in `index.html`.**
+- [x] **Step 1.2 — Add the Trunk link in `index.html`.**
 
 In `crates/web/index.html`, insert the foundation link immediately before the existing `style.css` link:
 
@@ -86,7 +86,7 @@ In `crates/web/index.html`, insert the foundation link immediately before the ex
 
 Order matters: foundation first so style.css can override or alias.
 
-- [ ] **Step 1.3 — Build.**
+- [x] **Step 1.3 — Build.**
 
 Run:
 
@@ -96,7 +96,7 @@ just build-web
 
 Expected: build succeeds. Open `dist/index.html` and confirm the emitted stylesheets include both `foundation-<hash>.css` before `style-<hash>.css`.
 
-- [ ] **Step 1.4 — Commit.**
+- [x] **Step 1.4 — Commit.**
 
 ```bash
 git add crates/web/foundation.css crates/web/index.html
@@ -111,7 +111,7 @@ git commit -m "ui(phase-0): scaffold foundation.css and wire into trunk"
 - Modify: `crates/web/foundation.css`
 - Modify: `crates/web/style.css`
 
-- [ ] **Step 2.1 — Add the single Google Fonts import at the top of `foundation.css` (after the comment header).**
+- [x] **Step 2.1 — Add the single Google Fonts import at the top of `foundation.css` (after the comment header).**
 
 ```css
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -119,7 +119,7 @@ git commit -m "ui(phase-0): scaffold foundation.css and wire into trunk"
 
 The weights match exactly what `foundation.md` §Typography scale consumes: Fraunces 300/400/500/600 + italic 400; IBM Plex Sans 300/400/500/600; JetBrains Mono 400/500.
 
-- [ ] **Step 2.2 — Remove the legacy font `@import` from `style.css`.**
+- [x] **Step 2.2 — Remove the legacy font `@import` from `style.css`.**
 
 Delete lines 1 and 2 of `crates/web/style.css`:
 
@@ -130,11 +130,11 @@ Delete lines 1 and 2 of `crates/web/style.css`:
 
 Leave the rest of `style.css` untouched. Note: the `IBM Plex Mono` family is no longer loaded; we'll alias `font-family: 'IBM Plex Mono'` to JetBrains Mono via a legacy alias in Task 13 so any existing `code`/`pre` rules in `style.css` still resolve to a monospace font.
 
-- [ ] **Step 2.3 — Build and visually verify fonts load.**
+- [x] **Step 2.3 — Build and visually verify fonts load.**
 
 Run `just dev`. Open `http://localhost:8080`. In the browser devtools → Network → CSS, confirm exactly one request to `fonts.googleapis.com/css2?family=Fraunces...`. In Computed styles for `body`, confirm `font-family` still resolves (not a generic fallback). Typography may look off because `style.css` still sets `font-family: 'IBM Plex Sans'` — that's fine for this task.
 
-- [ ] **Step 2.4 — Commit.**
+- [x] **Step 2.4 — Commit.**
 
 ```bash
 git add crates/web/foundation.css crates/web/style.css
@@ -148,7 +148,7 @@ git commit -m "ui(phase-0): move font loading to foundation.css + add Fraunces +
 **Files:**
 - Modify: `crates/web/foundation.css`
 
-- [ ] **Step 3.1 — Open the `:root` block in `foundation.css` and add the palette tokens.**
+- [x] **Step 3.1 — Open the `:root` block in `foundation.css` and add the palette tokens.**
 
 Append below the `@import`:
 
@@ -175,11 +175,11 @@ Append below the `@import`:
 }
 ```
 
-- [ ] **Step 3.2 — Build and visually check nothing regressed.**
+- [x] **Step 3.2 — Build and visually check nothing regressed.**
 
 Run `just build-web`. Open in browser. Expected: no change yet (style.css still holds hardcoded values). Confirm devtools → Elements → Computed → `:root` shows the new `--bg-0`, `--ink-1`, `--ink-on-accent` custom properties.
 
-- [ ] **Step 3.3 — Commit.**
+- [x] **Step 3.3 — Commit.**
 
 ```bash
 git add crates/web/foundation.css
@@ -193,7 +193,7 @@ git commit -m "ui(phase-0): add background, line, ink tokens to foundation"
 **Files:**
 - Modify: `crates/web/foundation.css`
 
-- [ ] **Step 4.1 — Append to the `:root` block.**
+- [x] **Step 4.1 — Append to the `:root` block.**
 
 ```css
 :root {
@@ -219,7 +219,7 @@ git commit -m "ui(phase-0): add background, line, ink tokens to foundation"
 }
 ```
 
-- [ ] **Step 4.2 — Commit.**
+- [x] **Step 4.2 — Commit.**
 
 ```bash
 git add crates/web/foundation.css
@@ -233,7 +233,7 @@ git commit -m "ui(phase-0): add accent, whisper, amber, semantic tokens"
 **Files:**
 - Modify: `crates/web/foundation.css`
 
-- [ ] **Step 5.1 — Append to the `:root` block.**
+- [x] **Step 5.1 — Append to the `:root` block.**
 
 ```css
 :root {
@@ -263,7 +263,7 @@ git commit -m "ui(phase-0): add accent, whisper, amber, semantic tokens"
 }
 ```
 
-- [ ] **Step 5.2 — Commit.**
+- [x] **Step 5.2 — Commit.**
 
 ```bash
 git add crates/web/foundation.css
@@ -277,7 +277,7 @@ git commit -m "ui(phase-0): add radius, shadow, focus-ring, motion, font stack t
 **Files:**
 - Modify: `crates/web/foundation.css`
 
-- [ ] **Step 6.1 — Append below the `:root` block.**
+- [x] **Step 6.1 — Append below the `:root` block.**
 
 ```css
 /* ── Body background + base ─────────────────────────────────────── */
@@ -312,11 +312,11 @@ body {
 
 The existing `html, body` rule block in `style.css` (lines 90–103) sets `width/height/overflow/font-size/line-height` and will win for those; we only want to replace the `background` + `color` + `font-family` as a *fallback* the legacy block can still override where it needs to. That's fine because the current legacy `html, body` rule sets `background: var(--bg-main)` which we'll alias to `var(--bg-0)` in Task 13.
 
-- [ ] **Step 6.2 — Build + visual check.**
+- [x] **Step 6.2 — Build + visual check.**
 
 Run `just dev`. Load the app. Expected: the deep-bark gradient shows through only if `style.css`'s legacy rule hasn't loaded yet; otherwise `var(--bg-main)` (still `#1a1a1e` at this point) wins. No break either way.
 
-- [ ] **Step 6.3 — Commit.**
+- [x] **Step 6.3 — Commit.**
 
 ```bash
 git add crates/web/foundation.css
@@ -330,7 +330,7 @@ git commit -m "ui(phase-0): add body background with radial gradients + base htm
 **Files:**
 - Modify: `crates/web/foundation.css`
 
-- [ ] **Step 7.1 — Append keyframe definitions.**
+- [x] **Step 7.1 — Append keyframe definitions.**
 
 ```css
 /* ── Keyframes ──────────────────────────────────────────────────── */
@@ -357,7 +357,7 @@ git commit -m "ui(phase-0): add body background with radial gradients + base htm
 }
 ```
 
-- [ ] **Step 7.2 — Append reduced-motion override.**
+- [x] **Step 7.2 — Append reduced-motion override.**
 
 ```css
 /* ── Reduced motion ─────────────────────────────────────────────── */
@@ -375,7 +375,7 @@ git commit -m "ui(phase-0): add body background with radial gradients + base htm
 }
 ```
 
-- [ ] **Step 7.3 — Commit.**
+- [x] **Step 7.3 — Commit.**
 
 ```bash
 git add crates/web/foundation.css
@@ -390,7 +390,7 @@ git commit -m "ui(phase-0): add named keyframes + reduced-motion override"
 - Modify: `crates/web/foundation.css`
 - Modify: `crates/web/src/app.rs`
 
-- [ ] **Step 8.1 — Add density rules to foundation.css.**
+- [x] **Step 8.1 — Add density rules to foundation.css.**
 
 ```css
 /* ── Density ────────────────────────────────────────────────────── */
@@ -400,7 +400,7 @@ git commit -m "ui(phase-0): add named keyframes + reduced-motion override"
 #app-root.density-dense   { --msg-pad:  4px 24px; } /* power-user scroll */
 ```
 
-- [ ] **Step 8.2 — Set `id="app-root"` + default density on the Leptos root container in `app.rs`.**
+- [x] **Step 8.2 — Set `id="app-root"` + default density on the Leptos root container in `app.rs`.**
 
 Open `crates/web/src/app.rs`, locate the outermost view in the main `App` component, and add an id + class:
 
@@ -414,7 +414,7 @@ view! {
 
 If there are multiple top-level views (welcome / join / main / call) each rendered directly as the app root, wrap their common parent with the id + class attribute. Find by grepping `mount_to_body` or the outermost `view!` invocation in `fn App()`.
 
-- [ ] **Step 8.3 — Run WASM build + browser test.**
+- [x] **Step 8.3 — Run WASM build + browser test.**
 
 ```bash
 just check-wasm
@@ -422,7 +422,7 @@ just check-wasm
 
 Expected: pass.
 
-- [ ] **Step 8.4 — Commit.**
+- [x] **Step 8.4 — Commit.**
 
 ```bash
 git add crates/web/foundation.css crates/web/src/app.rs
@@ -436,7 +436,7 @@ git commit -m "ui(phase-0): add density classes and id=\"app-root\" on Leptos co
 **Files:**
 - Modify: `crates/web/foundation.css`
 
-- [ ] **Step 9.1 — Append accent variant blocks.**
+- [x] **Step 9.1 — Append accent variant blocks.**
 
 ```css
 /* ── Accent variants — overwrite --moss-*, --willow only ───────── */
@@ -473,7 +473,7 @@ git commit -m "ui(phase-0): add density classes and id=\"app-root\" on Leptos co
 
 Note: `--whisper`, `--ok`, `--warn`, `--err`, `--amber`, `--amber-soft`, all `--ink-*`, all `--bg-*`, and `--line*` are **not** accent-swappable.
 
-- [ ] **Step 9.2 — Commit.**
+- [x] **Step 9.2 — Commit.**
 
 ```bash
 git add crates/web/foundation.css
@@ -487,7 +487,7 @@ git commit -m "ui(phase-0): add accent variant overrides (moss/willow/amber/dusk
 **Files:**
 - Modify: `crates/web/foundation.css`
 
-- [ ] **Step 10.1 — Append scrollbar + selection + focus rules.**
+- [x] **Step 10.1 — Append scrollbar + selection + focus rules.**
 
 ```css
 /* ── Scrollbar (Firefox + WebKit) ───────────────────────────────── */
@@ -524,7 +524,7 @@ textarea:focus-visible,
 }
 ```
 
-- [ ] **Step 10.2 — Commit.**
+- [x] **Step 10.2 — Commit.**
 
 ```bash
 git add crates/web/foundation.css
@@ -538,7 +538,7 @@ git commit -m "ui(phase-0): add scrollbar, selection, focus-visible defaults"
 **Files:**
 - Modify: `crates/web/foundation.css`
 
-- [ ] **Step 11.1 — Append reusable state classes that components can opt in to.**
+- [x] **Step 11.1 — Append reusable state classes that components can opt in to.**
 
 ```css
 /* ── States: empty / loading / error / skeleton ─────────────────── */
@@ -607,7 +607,7 @@ git commit -m "ui(phase-0): add scrollbar, selection, focus-visible defaults"
 .state-error__icon { color: var(--err); flex: none; }
 ```
 
-- [ ] **Step 11.2 — Commit.**
+- [x] **Step 11.2 — Commit.**
 
 ```bash
 git add crates/web/foundation.css
@@ -621,7 +621,7 @@ git commit -m "ui(phase-0): add state helpers (empty / loading / skeleton / erro
 **Files:**
 - Modify: `crates/web/foundation.css`
 
-- [ ] **Step 12.1 — Append a minimal reset + default typography in foundation.css.**
+- [x] **Step 12.1 — Append a minimal reset + default typography in foundation.css.**
 
 ```css
 /* ── Universal reset ─────────────────────────────────────────────── */
@@ -641,7 +641,7 @@ a { color: inherit; }
 
 `style.css` already has `* { margin: 0; padding: 0; box-sizing: border-box; }`; leaving that in place is fine. The rules above are additive and non-conflicting.
 
-- [ ] **Step 12.2 — Commit.**
+- [x] **Step 12.2 — Commit.**
 
 ```bash
 git add crates/web/foundation.css
@@ -657,7 +657,7 @@ git commit -m "ui(phase-0): add universal reset + form-control inherit"
 
 **Purpose:** every existing component keeps using `--bg-main`, `--accent`, etc. without touching its Rust. After this task, those names resolve to the foundation palette.
 
-- [ ] **Step 13.1 — Rewrite the `:root, [data-theme="dark"]` block to alias foundation tokens.**
+- [x] **Step 13.1 — Rewrite the `:root, [data-theme="dark"]` block to alias foundation tokens.**
 
 Replace lines 6–43 of `crates/web/style.css` with:
 
@@ -719,7 +719,7 @@ Replace lines 6–43 of `crates/web/style.css` with:
 
 Leave the `[data-theme="light"]` block (lines 47–84) unchanged — light theme is deferred per foundation.md; its hardcoded values remain in place and will be reworked when light theme ships.
 
-- [ ] **Step 13.2 — Add a monospace alias so legacy `'IBM Plex Mono'` references resolve.**
+- [x] **Step 13.2 — Add a monospace alias so legacy `'IBM Plex Mono'` references resolve.**
 
 After the `:root, [data-theme="dark"]` block, add a helper stanza that reroutes legacy monospace usage to the now-loaded JetBrains Mono:
 
@@ -731,7 +731,7 @@ code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
 }
 ```
 
-- [ ] **Step 13.3 — Build and visually verify the reskin.**
+- [x] **Step 13.3 — Build and visually verify the reskin.**
 
 Run `just dev`. Open the app. Expected:
 - backgrounds shift to the deep-bark palette (`--bg-0` / `--bg-1` hexes);
@@ -742,7 +742,7 @@ Run `just dev`. Open the app. Expected:
 
 Capture a quick mental snapshot. If a component looks visibly broken (huge contrast failure, missing colour), note it in the PR description under "Phase 2 migration targets" — do not fix it in Phase 0.
 
-- [ ] **Step 13.4 — Commit.**
+- [x] **Step 13.4 — Commit.**
 
 ```bash
 git add crates/web/style.css
@@ -752,6 +752,8 @@ git commit -m "ui(phase-0): remap legacy style.css tokens to alias foundation pa
 ---
 
 ## Task 14: Browser test — assert foundation tokens + accent swap
+
+> **Status:** Deferred — browser-test module implementation tracked on branch `test/foundation-tokens`. Will be ticked when that PR merges.
 
 **Files:**
 - Modify: `crates/web/tests/browser.rs`
@@ -850,7 +852,7 @@ git commit -m "ui(phase-0): browser test — foundation tokens + legacy alias + 
 
 **Files:** none (verification only)
 
-- [ ] **Step 15.1 — Run the full check suite.**
+- [x] **Step 15.1 — Run the full check suite.**
 
 ```bash
 just check
@@ -860,28 +862,28 @@ Expected: fmt clean, clippy clean (workspace-wide, warnings as errors), all Rust
 
 If anything fails, stop and fix. Do not proceed to PR open.
 
-- [ ] **Step 15.2 — Launch the local dev stack.**
+- [x] **Step 15.2 — Launch the local dev stack.**
 
 ```bash
 just dev
 ```
 
-- [ ] **Step 15.3 — Visual smoke list.**
+- [x] **Step 15.3 — Visual smoke list.**
 
 In a real browser at `http://localhost:8080`, walk through:
 
-- [ ] Welcome / join-link screen renders; backgrounds read as deep bark, not grey-blue.
-- [ ] After joining, server rail renders; active server tile uses moss accent, not blurple.
-- [ ] Sidebar header + channel list legible; font families as expected (Fraunces not yet used by components — that's fine; only headings in future phases switch to Fraunces).
-- [ ] Send a message; message body renders in IBM Plex Sans; timestamp resolves in computed style to a mono font (JetBrains Mono fallback).
-- [ ] Open settings; toggle the theme (light remains blurple — expected, deferred).
-- [ ] DevTools console is clean: no 404s, no missing-font warnings after first load.
-- [ ] Test `prefers-reduced-motion`: toggle in devtools → Rendering → emulate prefers-reduced-motion: reduce. Presence dots and pulse animations freeze.
-- [ ] Set `document.documentElement.setAttribute('data-accent', 'ember')` in devtools. Unread badges and buttons shift to ember orange. Revert with `'moss'`.
+- [x] Welcome / join-link screen renders; backgrounds read as deep bark, not grey-blue.
+- [x] After joining, server rail renders; active server tile uses moss accent, not blurple.
+- [x] Sidebar header + channel list legible; font families as expected (Fraunces not yet used by components — that's fine; only headings in future phases switch to Fraunces).
+- [x] Send a message; message body renders in IBM Plex Sans; timestamp resolves in computed style to a mono font (JetBrains Mono fallback).
+- [x] Open settings; toggle the theme (light remains blurple — expected, deferred).
+- [x] DevTools console is clean: no 404s, no missing-font warnings after first load.
+- [x] Test `prefers-reduced-motion`: toggle in devtools → Rendering → emulate prefers-reduced-motion: reduce. Presence dots and pulse animations freeze.
+- [x] Set `document.documentElement.setAttribute('data-accent', 'ember')` in devtools. Unread badges and buttons shift to ember orange. Revert with `'moss'`.
 
 If any of the above fails, capture the issue (class name, screenshot, DOM) and log it under "Known Phase 2 targets" in the PR description. Phase 0 does not block on component-level regressions — it blocks only on build / test / cascading breakage.
 
-- [ ] **Step 15.4 — If everything passes, commit the checkpoint.**
+- [x] **Step 15.4 — If everything passes, commit the checkpoint.**
 
 No content change; use an empty commit to mark the gate:
 
@@ -895,7 +897,7 @@ git commit --allow-empty -m "ui(phase-0): gate passed — foundation shell in pl
 
 **Files:** none (process task)
 
-- [ ] **Step 16.1 — Push the branch.**
+- [x] **Step 16.1 — Push the branch.**
 
 ```bash
 git push
@@ -903,7 +905,7 @@ git push
 
 (Branch already tracks `origin/design/ui-target-ux`.)
 
-- [ ] **Step 16.2 — Open the PR.**
+- [x] **Step 16.2 — Open the PR.**
 
 ```bash
 gh pr create --title "ui(phase-0): foundation shell — palette, typography, motion, density, states" --body "$(cat <<'EOF'
@@ -935,7 +937,7 @@ EOF
 )"
 ```
 
-- [ ] **Step 16.3 — Record the PR URL.**
+- [x] **Step 16.3 — Record the PR URL.**
 
 Paste the URL into the task tracker and wait for review. Do **not** begin Phase 1 work until the Phase 0 PR is merged.
 
@@ -964,7 +966,7 @@ Before starting implementation, scan this plan once more:
 - [x] States (empty / loading / error / skeleton): Task 11.
 - [x] Reset + form-control inherit: Task 12.
 - [x] Legacy token alias: Task 13.
-- [x] Test coverage: Task 14.
+- [ ] Test coverage: Task 14. (deferred)
 - [x] `just check` gate: Task 15.
 - [x] PR open: Task 16.
 
