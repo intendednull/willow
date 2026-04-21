@@ -7398,4 +7398,120 @@ mod phase_2a_message_row {
             "Same-day messages must share a single lead-in separator"
         );
     }
+
+    // ── Mention pill (Task 3) ──────────────────────────────────────────────
+    //
+    // Pill anatomy owned by `docs/specs/2026-04-19-ui-design/message-row.md`
+    // §Mentions: moss-tinted pill for peer mentions, amber for `@you`
+    // or a mention that resolves to the local peer.
+
+    use willow_web::components::MentionPill;
+
+    #[wasm_bindgen_test]
+    async fn mention_pill_peer_variant_renders() {
+        let container = mount_test(|| {
+            view! { <MentionPill label="mira".to_string() is_self=false /> }
+        });
+        tick().await;
+
+        let pill = query(&container, ".mention-pill")
+            .expect("MentionPill must render a .mention-pill element");
+        assert!(
+            !pill.class_list().contains("mention-pill--self"),
+            "peer variant must not carry .mention-pill--self"
+        );
+        assert_eq!(text(&pill), "@mira", "pill text is `@` + label");
+    }
+
+    #[wasm_bindgen_test]
+    async fn mention_pill_self_variant_renders() {
+        let container = mount_test(|| {
+            view! { <MentionPill label="you".to_string() is_self=true /> }
+        });
+        tick().await;
+
+        let pill =
+            query(&container, ".mention-pill").expect("MentionPill must render .mention-pill");
+        assert!(
+            pill.class_list().contains("mention-pill"),
+            "self pill must still carry the base .mention-pill class"
+        );
+        assert!(
+            pill.class_list().contains("mention-pill--self"),
+            "self pill must carry .mention-pill--self"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn mention_pill_has_aria_label() {
+        let container = mount_test(|| {
+            view! { <MentionPill label="mira".to_string() is_self=false /> }
+        });
+        tick().await;
+
+        let pill = query(&container, ".mention-pill").expect(".mention-pill must render");
+        assert_eq!(
+            pill.get_attribute("aria-label").as_deref(),
+            Some("mention mira"),
+            "pill aria-label must be `mention {{label}}`"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn message_body_renders_mention_pill() {
+        // Body contains `@you` — the parser resolves it against the
+        // local peer (seeded through AppState), so `MessageView` must
+        // render a `.mention-pill` inline inside the body.
+        //
+        // Full multi-peer plumbing (channel peers into `MessageView`)
+        // lands in Phase 2a Task 4 — for now the self alias is the
+        // one stable path that works without peer context.
+        use willow_client::DisplayMessage;
+        use willow_web::components::MessageView;
+        use willow_web::state::{create_signals, InitialSignals};
+
+        let msg = DisplayMessage {
+            body: "hey @you".to_string(),
+            ..make_msg("Mira", "hey @you", FIXTURE_TS_MS)
+        };
+        let local_id = willow_identity::Identity::generate().endpoint_id();
+        let local_id_str = local_id.to_string();
+
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            // Seed the local peer id so `parse_mentions` can resolve
+            // `@you`. Without this the parser has no anchor for the
+            // self alias and the mention stays plain text.
+            write.network.set_peer_id.set(local_id_str.clone());
+            provide_context(app_state);
+            provide_context(write);
+            view! {
+                <MessageView message=msg.clone() />
+            }
+        });
+        tick().await;
+
+        let pills = query_all(&container, ".mention-pill");
+        assert_eq!(
+            pills.len(),
+            1,
+            "body `hey @you` must render exactly one .mention-pill"
+        );
+        assert!(
+            pills[0].class_list().contains("mention-pill--self"),
+            "@you must resolve to the self variant"
+        );
+        assert_eq!(text(&pills[0]), "@you", "pill text must be `@you`");
+        // Surrounding text still renders as its own node(s).
+        let body_el = query(&container, ".body").expect(".body must render");
+        assert!(
+            text(&body_el).contains("hey"),
+            "body text before the mention must still render; got {:?}",
+            text(&body_el)
+        );
+    }
 }

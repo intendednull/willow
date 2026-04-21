@@ -4360,3 +4360,27 @@ select:focus-visible {
 @media (max-width: 720px) {
     .day-separator { padding: 16px 16px 8px; }
 }
+
+/* ── Mention pill (phase 2a task 3) ─────────────────────────────────
+   Rendered inline inside `.message .body` by `parse_mentions`. Peer
+   variant uses moss colour-mix; self variant uses amber. Foundation
+   tokens only (`--moss-1/2/3`, `--amber`, `--amber-soft`, `--bg-2`,
+   `--radius-s`) — see `foundation.css`. */
+.mention-pill {
+    display: inline-flex;
+    align-items: baseline;
+    padding: 1px 6px;
+    border-radius: var(--radius-s, 5px);
+    font: inherit;
+    font-weight: 500;
+    cursor: pointer;
+    background: color-mix(in oklab, var(--moss-2) 22%, var(--bg-2));
+    color: var(--moss-3);
+    border: 1px solid var(--moss-1);
+    vertical-align: baseline;
+}
+.mention-pill--self {
+    background: color-mix(in oklab, var(--amber) 28%, var(--bg-2));
+    color: var(--amber);
+    border-color: var(--amber-soft);
+}

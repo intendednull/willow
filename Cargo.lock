@@ -5986,6 +5986,7 @@ dependencies = [
  "gloo-timers",
  "js-sys",
  "parking_lot",
+ "regex",
  "rusqlite",
  "serde",
  "tempfile",

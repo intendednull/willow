@@ -514,18 +514,61 @@ pub fn MessageView(
                     view! { <FileCard filename=filename data=data /> }.into_any()
                 }
             } else {
-                let (segments, images) = extract_urls(&body);
+                // Segment pipeline: mentions → urls.
+                //
+                // Task 4 will populate `peers` + `local_peer` from a
+                // proper AppState-driven channel-peer context. For now
+                // we stub `peers: &[]` and parse `local_peer` out of
+                // the already-exposed `network.peer_id` signal so
+                // `@you` still resolves on the parser path.
+                // TODO(phase-2a-task-4): thread real channel peers.
+                use leptos::context::use_context;
+                let local_peer_str = use_context::<crate::state::AppState>()
+                    .map(|a| a.network.peer_id.get_untracked())
+                    .unwrap_or_default();
+                let local_peer: Option<willow_identity::EndpointId> =
+                    local_peer_str.parse().ok();
+                let peers_vec: Vec<willow_client::mentions::PeerRef> = Vec::new();
+                let mention_segments = if let Some(ref lp) = local_peer {
+                    willow_client::mentions::parse_mentions(&body, &peers_vec, lp)
+                } else {
+                    // No local peer available (test / pre-init); fall
+                    // through with a single text segment so the URL
+                    // stage still runs over the full body.
+                    vec![willow_client::mentions::Segment::Text(body.clone())]
+                };
+                let mut images: Vec<String> = Vec::new();
+                for seg in &mention_segments {
+                    if let willow_client::mentions::Segment::Text(t) = seg {
+                        let (_, urls) = extract_urls(t);
+                        images.extend(urls);
+                    }
+                }
                 let has_images = !images.is_empty();
                 view! {
                     <div class=body_class>
-                        {segments.into_iter().map(|(text, is_url)| {
-                            if is_url {
-                                let display = text.clone();
-                                view! {
-                                    <a href=text target="_blank" rel="noopener noreferrer" class="message-link">{display}</a>
-                                }.into_any()
-                            } else {
-                                view! { <span>{text}</span> }.into_any()
+                        {mention_segments.into_iter().map(|seg| {
+                            match seg {
+                                willow_client::mentions::Segment::Mention { label, is_self, .. } => {
+                                    view! {
+                                        <super::MentionPill label=label is_self=is_self />
+                                    }.into_any()
+                                }
+                                willow_client::mentions::Segment::Text(t) => {
+                                    let (url_segments, _) = extract_urls(&t);
+                                    view! {
+                                        {url_segments.into_iter().map(|(text, is_url)| {
+                                            if is_url {
+                                                let display = text.clone();
+                                                view! {
+                                                    <a href=text target="_blank" rel="noopener noreferrer" class="message-link">{display}</a>
+                                                }.into_any()
+                                            } else {
+                                                view! { <span>{text}</span> }.into_any()
+                                            }
+                                        }).collect::<Vec<_>>()}
+                                    }.into_any()
+                                }
                             }
                         }).collect::<Vec<_>>()}
                     </div>

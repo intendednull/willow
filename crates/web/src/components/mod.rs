@@ -75,7 +75,7 @@ pub use long_press::*;
 pub use main_pane_header::*;
 pub use member_list::*;
 pub use message::*;
-pub use message_row::{day_bucket, DayBucket, DaySeparator};
+pub use message_row::{day_bucket, DayBucket, DaySeparator, MentionPill};
 pub use mobile_shell::MobileShell;
 #[allow(unused_imports)]
 pub use mobile_shell::{MobilePush, MobileTab};
