@@ -301,6 +301,10 @@ pub struct MemNetwork {
     hub: Arc<MemHub>,
     blobs: MemBlobStore,
     subscriptions: Mutex<Vec<TopicId>>,
+    /// Configurable relay status stub for sync-queue tests.
+    relay_status: Mutex<RelayStatus>,
+    /// Configurable device-online stub for sync-queue tests.
+    device_online: Mutex<bool>,
 }
 
 impl MemNetwork {
@@ -313,6 +317,8 @@ impl MemNetwork {
             hub: Arc::clone(hub),
             blobs: MemBlobStore::new(),
             subscriptions: Mutex::new(Vec::new()),
+            relay_status: Mutex::new(RelayStatus::NotConfigured),
+            device_online: Mutex::new(true),
         }
     }
 
@@ -324,12 +330,24 @@ impl MemNetwork {
             hub: Arc::clone(hub),
             blobs: MemBlobStore::new(),
             subscriptions: Mutex::new(Vec::new()),
+            relay_status: Mutex::new(RelayStatus::NotConfigured),
+            device_online: Mutex::new(true),
         }
     }
 
     /// Access the identity used by this network.
     pub fn identity(&self) -> &Identity {
         &self.identity
+    }
+
+    /// Override the stubbed `relay_status` for deterministic tests.
+    pub fn set_relay_status(&self, status: RelayStatus) {
+        *self.relay_status.lock().unwrap() = status;
+    }
+
+    /// Override the stubbed `device_online` for deterministic tests.
+    pub fn set_device_online(&self, online: bool) {
+        *self.device_online.lock().unwrap() = online;
     }
 }
 
@@ -383,6 +401,14 @@ impl Network for MemNetwork {
 
     fn blobs(&self) -> &dyn BlobStore {
         &self.blobs
+    }
+
+    fn relay_status(&self) -> RelayStatus {
+        *self.relay_status.lock().unwrap()
+    }
+
+    fn device_online(&self) -> bool {
+        *self.device_online.lock().unwrap()
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -546,6 +572,34 @@ mod tests {
         let hub = MemHub::new();
         let net = MemNetwork::new(&hub);
         assert_eq!(net.id(), net.identity().endpoint_id());
+    }
+
+    #[tokio::test]
+    async fn relay_status_default_is_not_configured() {
+        let hub = MemHub::new();
+        let net = MemNetwork::new(&hub);
+        assert_eq!(net.relay_status(), RelayStatus::NotConfigured);
+    }
+
+    #[tokio::test]
+    async fn relay_status_set_and_read() {
+        let hub = MemHub::new();
+        let net = MemNetwork::new(&hub);
+        net.set_relay_status(RelayStatus::Reachable);
+        assert_eq!(net.relay_status(), RelayStatus::Reachable);
+        net.set_relay_status(RelayStatus::Unreachable);
+        assert_eq!(net.relay_status(), RelayStatus::Unreachable);
+    }
+
+    #[tokio::test]
+    async fn device_online_default_true_and_toggle() {
+        let hub = MemHub::new();
+        let net = MemNetwork::new(&hub);
+        assert!(net.device_online());
+        net.set_device_online(false);
+        assert!(!net.device_online());
+        net.set_device_online(true);
+        assert!(net.device_online());
     }
 
     #[tokio::test]

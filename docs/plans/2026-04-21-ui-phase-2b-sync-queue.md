@@ -273,7 +273,7 @@ Give the queue actor a real read channel for relay + device state. No new protoc
 
 **Files:** modify `crates/network/src/traits.rs`, modify `crates/network/src/iroh.rs`, modify `crates/network/src/mem.rs`.
 
-- [ ] **Step 3.1 — Trait extension.**
+- [x] **Step 3.1 — Trait extension.**
 
   ```rust
   pub trait Network: Send + Sync {
@@ -290,7 +290,7 @@ Give the queue actor a real read channel for relay + device state. No new protoc
   pub enum RelayStatus { Reachable, Unreachable, NotConfigured }
   ```
 
-- [ ] **Step 3.2 — `IrohNetwork` impl.** Poll iroh's relay session last-success timestamp. `< 30s` → `Reachable`; else `Unreachable`; no relay configured → `NotConfigured`. `device_online` = iroh endpoint's `is_online()` equivalent — if that doesn't exist, fall back to `window.navigator.onLine` on wasm via a wasm-bindgen cfg'd helper.
+- [x] **Step 3.2 — `IrohNetwork` impl.** Poll iroh's relay session last-success timestamp. `< 30s` → `Reachable`; else `Unreachable`; no relay configured → `NotConfigured`. `device_online` = iroh endpoint's `is_online()` equivalent — if that doesn't exist, fall back to `window.navigator.onLine` on wasm via a wasm-bindgen cfg'd helper. *(Implemented via a boot-time online snapshot + 30 s window; live-probe deferred per Open Questions §4.)*
 
   ```rust
   fn relay_status(&self) -> RelayStatus {
@@ -303,13 +303,13 @@ Give the queue actor a real read channel for relay + device state. No new protoc
   }
   ```
 
-- [ ] **Step 3.3 — `MemNetwork` impl.** Expose `set_relay_status(&self, status: RelayStatus)` + `set_device_online(&self, online: bool)` for deterministic tests. Defaults return `NotConfigured` + `true`.
+- [x] **Step 3.3 — `MemNetwork` impl.** Expose `set_relay_status(&self, status: RelayStatus)` + `set_device_online(&self, online: bool)` for deterministic tests. Defaults return `NotConfigured` + `true`.
 
-- [ ] **Step 3.4 — Tests.** `crates/network/src/mem.rs` `#[cfg(test)]` — set + read roundtrip.
+- [x] **Step 3.4 — Tests.** `crates/network/src/mem.rs` `#[cfg(test)]` — set + read roundtrip.
 
-- [ ] **Step 3.5 — `just check`** — clean.
+- [x] **Step 3.5 — `just check`** — clean.
 
-- [ ] **Step 3.6 — Commit** — `ui(phase-2b): expose relay_status + device_online on Network trait`.
+- [x] **Step 3.6 — Commit** — `ui(phase-2b): expose relay_status + device_online on Network trait`.
 
 ### 4. `QueueMeta` actor in `willow-client`
 
