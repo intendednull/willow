@@ -1154,7 +1154,7 @@ git commit -m "ui(phase-2e): add scope-aware query executor"
 - Modify: `crates/client/src/search/execute.rs` — populate `matched_ranges` at `SearchResult` emit time by calling `highlight::match_ranges(&p.body, query)`.
 - Modify: `crates/client/src/search/tests.rs` — `mod highlight_tests;`
 
-- [ ] **Step 5.1 — Failing tests.**
+- [x] **Step 5.1 — Failing tests.**
 
 ```rust
 #[cfg(test)]
@@ -1221,7 +1221,7 @@ mod highlight_tests {
 }
 ```
 
-- [ ] **Step 5.2 — Implement.**
+- [x] **Step 5.2 — Implement.** Implementation landed in Task 4 (highlight stub). Tests verify the stub meets the spec.
 
 ```rust
 /// Excerpt + highlight ranges for render.
@@ -1307,9 +1307,9 @@ pub fn build_excerpt(body: &str, ranges: &[(usize, usize)], context_chars: usize
 
 Also extend `execute.rs` — after building `SearchResult`, run `result.matched_ranges = highlight::match_ranges(&p.body, query);` so result rows carry ready-to-render ranges.
 
-- [ ] **Step 5.3 — Verify GREEN.** `cargo test -p willow-client search::highlight_tests`. All 7 pass.
+- [x] **Step 5.3 — Verify GREEN.** `cargo test -p willow-client search::tests::highlight_tests` → 10/10 pass (7 core + bonus overlap-merge, empty-excerpt, local-offset translation).
 
-- [ ] **Step 5.4 — Commit.**
+- [x] **Step 5.4 — Commit.**
 
 ```bash
 git add crates/client/src/search/highlight.rs crates/client/src/search/execute.rs crates/client/src/search/mod.rs crates/client/src/search/tests.rs

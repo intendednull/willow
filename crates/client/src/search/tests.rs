@@ -1,6 +1,107 @@
 //! Unit tests for the search module. One sub-module per file — see
 //! each sub-module's doc for the behaviour it covers.
 
+mod highlight_tests {
+    use super::super::highlight::*;
+    use super::super::query::*;
+
+    #[test]
+    fn no_tokens_yields_no_ranges() {
+        let q = parse_query("");
+        let ranges = match_ranges("hello world", &q);
+        assert!(ranges.is_empty());
+    }
+
+    #[test]
+    fn single_token_range() {
+        let q = parse_query("world");
+        let ranges = match_ranges("hello world", &q);
+        assert_eq!(ranges, vec![(6, 11)]);
+    }
+
+    #[test]
+    fn multiple_token_ranges() {
+        let q = parse_query("hello world");
+        let ranges = match_ranges("hello world", &q);
+        assert_eq!(ranges, vec![(0, 5), (6, 11)]);
+    }
+
+    #[test]
+    fn phrase_range() {
+        let q = parse_query(r#""two words""#);
+        let ranges = match_ranges("and two words here", &q);
+        assert_eq!(ranges, vec![(4, 13)]);
+    }
+
+    #[test]
+    fn case_insensitive_match() {
+        let q = parse_query("HELLO");
+        let ranges = match_ranges("Hello World", &q);
+        assert_eq!(ranges, vec![(0, 5)]);
+    }
+
+    #[test]
+    fn overlapping_ranges_merge() {
+        // Token "hello" overlaps the phrase "hello world" starting at
+        // offset 0; `merge_overlaps` must collapse them.
+        let mut q = parse_query("hello");
+        q.phrases.push("hello world".into());
+        let ranges = match_ranges("hello world", &q);
+        assert_eq!(ranges, vec![(0, 11)]);
+    }
+
+    #[test]
+    fn excerpt_centres_on_first_match() {
+        let body = "a b c d e f g match h i j k l m n o p q r s";
+        let q = parse_query("match");
+        let ranges = match_ranges(body, &q);
+        let excerpt = build_excerpt(body, &ranges, 10);
+        assert!(excerpt.text.contains("match"));
+    }
+
+    #[test]
+    fn excerpt_trims_on_both_sides_when_truncated() {
+        let mut body = "x".repeat(200);
+        body.insert_str(100, " match ");
+        let q = parse_query("match");
+        let ranges = match_ranges(&body, &q);
+        let excerpt = build_excerpt(&body, &ranges, 20);
+        assert!(
+            excerpt.text.starts_with('…'),
+            "excerpt should start with ellipsis: {}",
+            excerpt.text
+        );
+        assert!(
+            excerpt.text.ends_with('…'),
+            "excerpt should end with ellipsis: {}",
+            excerpt.text
+        );
+    }
+
+    #[test]
+    fn excerpt_empty_when_no_ranges() {
+        let q = parse_query("");
+        let ranges = match_ranges("hello", &q);
+        assert!(ranges.is_empty());
+        let excerpt = build_excerpt("hello", &ranges, 60);
+        assert_eq!(excerpt.text, "hello");
+        assert!(excerpt.ranges.is_empty());
+    }
+
+    #[test]
+    fn excerpt_ranges_translated_to_local_offsets() {
+        // Body = "..." + "match" at a known offset. Excerpt ranges
+        // must point to "match" inside the excerpt text.
+        let body = "start ".to_string() + "match" + " end";
+        let q = parse_query("match");
+        let ranges = match_ranges(&body, &q);
+        let excerpt = build_excerpt(&body, &ranges, 60);
+        assert_eq!(excerpt.ranges.len(), 1);
+        let (a, b) = excerpt.ranges[0];
+        assert_eq!(&excerpt.text[a..b], "match");
+    }
+}
+
 mod execute_tests {
     use super::super::execute::*;
     use super::super::index::*;
