@@ -27,6 +27,7 @@ pub mod invite;
 pub mod listeners;
 pub mod mentions;
 pub mod mutations;
+pub mod nickname;
 pub mod ops;
 pub mod persistence_actor;
 pub mod presence;
@@ -57,6 +58,7 @@ mod tests_multi_peer_sync;
 pub use event_receiver::EventReceiver;
 pub use events::ClientEvent;
 pub use mentions::mentions_me;
+pub use nickname::{MemNicknameStore, NicknameStore, NicknameStoreHandle, NICKNAME_CAP};
 pub use ops::{pack_wire, unpack_wire, VoiceSignalPayload, WireMessage};
 pub use trust::{
     ComparePreview, InMemoryTrustStore, PeerTrust, TrustStore, TrustStoreHandle, UnverifiedReason,

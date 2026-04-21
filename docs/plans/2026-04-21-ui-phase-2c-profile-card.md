@@ -508,7 +508,7 @@ Add a dependency-injected, local-only nickname store to the client crate. Matche
 
 **Files:** new `crates/client/src/nickname.rs`, modify `crates/client/src/lib.rs`, modify `crates/client/src/tests/mod.rs` (create if missing).
 
-- [ ] **Step 3.1 — Define trait + handle + in-memory impl.** New `crates/client/src/nickname.rs`:
+- [x] **Step 3.1 — Define trait + handle + in-memory impl.** New `crates/client/src/nickname.rs`:
 
   ```rust
   //! Local-only peer nicknames.
@@ -629,14 +629,14 @@ Add a dependency-injected, local-only nickname store to the client crate. Matche
   }
   ```
 
-- [ ] **Step 3.2 — Re-export from `lib.rs`.** In `crates/client/src/lib.rs`:
+- [x] **Step 3.2 — Re-export from `lib.rs`.** In `crates/client/src/lib.rs`:
 
   ```rust
   pub mod nickname;
   pub use nickname::{MemNicknameStore, NicknameStore, NicknameStoreHandle, NICKNAME_CAP};
   ```
 
-- [ ] **Step 3.3 — Run client tests.**
+- [x] **Step 3.3 — Run client tests.**
 
   ```bash
   cargo test -p willow-client nickname
@@ -644,7 +644,7 @@ Add a dependency-injected, local-only nickname store to the client crate. Matche
 
   Expected: 4 new tests green.
 
-- [ ] **Step 3.4 — Commit.**
+- [x] **Step 3.4 — Commit.**
 
   ```bash
   git add crates/client/src/nickname.rs crates/client/src/lib.rs
