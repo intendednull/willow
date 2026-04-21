@@ -686,7 +686,7 @@ Reusable amber pill for letter rows + member rows.
 
 - [x] **Step 9.2 — Tooltip / popover.** Desktop: native `title` attribute duplicated on `aria-label` (matches spec). Mobile: long-press → inline popover using existing `BottomSheet` primitive. Defer full native tooltip component to a follow-up; `title` attribute + `aria-label` satisfy the spec's accessibility requirement.
 
-- [ ] **Step 9.3 — Integrate into `member_list.rs`.** Mount `<QueuePill peer_id/>` after the member display name, right-aligned. CSS `.member-row` — `justify-content: space-between`. *(Deferred to Task 17 sweep — pill component ships in this commit; the member-list mount-point happens in the copy/ARIA sweep.)*
+- [x] **Step 9.3 — Integrate into `member_list.rs`.** Mount `<QueuePill peer_id/>` after the member display name, right-aligned. CSS `.member-row` — `justify-content: space-between`.
 
 - [x] **Step 9.4 — Letters integration deferred.** `letters-dms.md` hasn't shipped; add `TODO(letters-dms.md)` comment at the expected mount site (search `// Phase 2b · QueuePill mount` in `letters.rs` when it lands). No code change in this commit for letters.
 
@@ -755,7 +755,7 @@ Replaces the Phase 2a always-None badge-only render with the full three-state no
 
 - [x] **Step 10.2 — CSS.** `.inline-note` — Fraunces italic body-S, 4 px top margin, flush-left with body gutter (38 px from avatar column). Colour: `--ink-3` for queued/inbound-held, `--ink-2` for just-delivered. Icon matches text colour.
 
-- [ ] **Step 10.3 — Wire into `MessageView`.** In `message.rs`, the existing `.queued-badge` stays in `.meta`. Add an `<InlineQueueNote>` child below the body. Derive `InlineState` from `queue_note`: *(Deferred — `InlineQueueNote` component ships here; `message.rs` already renders `.queue-note-inline` plain text in the Phase 2a path, and the tri-state upgrade lands in Task 17 copy/ARIA sweep.)*
+- [x] **Step 10.3 — Wire into `MessageView`.** In `message.rs`, the existing `.queued-badge` stays in `.meta`. Add an `<InlineQueueNote>` child below the body. Derive `InlineState` from `queue_note`. *(The `just-delivered` transient state is deferred — component accepts the variant but the `Effect::new` + 30 s timer that detects the Pending → None diff lands with Task 17.)*
 
   ```rust
   let inline = match (message.queue_note, just_delivered.get()) {
@@ -770,7 +770,7 @@ Replaces the Phase 2a always-None badge-only render with the full three-state no
 
 - [ ] **Step 10.4 — ARIA.** Add `aria-describedby=format!("qn-{msg_id}")` on `<article>` when the note is rendered. Note itself is `role="note"`, non-interactive, no tab stop. *(Deferred to Task 17 sweep.)*
 
-- [ ] **Step 10.5 — Delete the legacy Phase 2a `" queued · will send on reconnect"` string inside `.meta`.** The new component owns the inline copy. Verify the badge stays (badge + note coexist per spec — badge in meta, note below body). *(Deferred to Task 17 sweep.)*
+- [x] **Step 10.5 — Delete the legacy Phase 2a `" queued · will send on reconnect"` string inside `.meta`.** The new component owns the inline copy. Verify the badge stays (badge + note coexist per spec — badge in meta, note below body).
 
 - [ ] **Step 10.6 — Browser tests.** 6 tests: *(Deferred to Task 18 consolidation.)*
 

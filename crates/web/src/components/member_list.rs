@@ -298,13 +298,33 @@ pub fn MemberList(
                                 />
                             </span>
                             <span class="member-name" style=format!("color: {}", super::peer_color(&pid))>
-                                {name}
+                                {name.clone()}
                                 <span class="member-peer-id">{
                                     let short = if pid.len() > 8 { format!("{}...", &pid[..8]) } else { pid.clone() };
                                     format!(" ({short})")
                                 }</span>
                             </span>
                             <TrustBadge peer_id=pid.clone() size=TrustBadgeSize::Disk12/>
+                            {
+                                // Phase 2b — per-peer queue pill. Suppresses
+                                // itself when the peer has no queued
+                                // outbound / inbound traffic, so mounting
+                                // it here unconditionally is zero-cost for
+                                // idle rows.
+                                let pid_for_pill = pid.clone();
+                                let name_for_pill = name.clone();
+                                move || {
+                                    parse_eid(&pid_for_pill).map(|eid| {
+                                        let name = name_for_pill.clone();
+                                        view! {
+                                            <crate::components::QueuePill
+                                                peer_id=Signal::derive(move || eid)
+                                                display_name=Signal::derive(move || name.clone())
+                                            />
+                                        }
+                                    })
+                                }
+                            }
                             {
                                 let pb = pid_badge.clone();
                                 move || {
