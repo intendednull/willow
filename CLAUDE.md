@@ -9,11 +9,15 @@ networking, Leptos for the web UI, and Ed25519 cryptography for identity.
 
 ```
 docs/
-├── plans/       — Implementation plans for features
-└── specs/       — Design specs and technical specifications
+├── plans/              — Implementation plans for features
+├── specs/              — Design specs and technical specifications
+├── superpowers/        — Active-work specs + plans (current convention)
+├── reference-designs/  — Exploratory UI / design references
+└── reports/            — Ad-hoc audit and investigation reports
 crates/
 ├── state/       — Pure event-sourced state machine, zero I/O (willow-state)
 ├── client/      — UI-agnostic client library wrapping state + networking (willow-client)
+├── common/      — Shared wire-protocol types used by client + workers (willow-common)
 ├── transport/   — Binary serialization & protocol framing (willow-transport)
 ├── identity/    — Ed25519 identity, message signing, profiles (willow-identity)
 ├── messaging/   — Chat messages, HLC ordering, message store (willow-messaging)
@@ -25,15 +29,13 @@ crates/
 │       ├── iroh.rs     — IrohNetwork production implementation
 │       ├── mem.rs      — MemNetwork test double (test-utils feature)
 │       └── topics.rs   — TopicId registry (blake3 hashing)
+├── actor/       — Lightweight dual-target actor framework (willow-actor)
+├── worker/      — Shared WorkerRole trait + actor runtime (willow-worker)
+├── replay/      — Bounded-memory state-sync worker binary (willow-replay)
+├── storage/     — Archival SQLite-backed history worker binary (willow-storage)
 ├── relay/       — Relay server for bridging TCP and WebSocket peers (willow-relay)
+├── agent/       — MCP server exposing ClientHandle to AI agents (willow-agent)
 └── web/         — Leptos web UI application (willow-web)
-
-Note: the Bevy desktop app (`crates/app`) has been removed. It may be
-re-added later but is not part of the current workspace.
-
-docs/superpowers/
-├── specs/   — Design specs for new features and architecture changes
-└── plans/   — Implementation plans referencing the specs
 ```
 
 ## Build & Test
@@ -48,15 +50,24 @@ just test-all       # run ALL tests including browser
 just test-state     # test the pure state machine
 just test-client    # test the client library
 just test-relay     # test relay history sync
+just test-workers   # test worker + replay + storage + common
+just test-agent     # test agent library (MCP server)
+just test-agent-e2e # multi-peer E2E via agent harness
 just test-crate X   # test a specific crate
 just check-wasm     # verify WASM compilation
+just check-all      # fmt + clippy + test + wasm-pack browser + Playwright (PR gate)
 just build-web      # build Leptos web app (crates/web via trunk)
 just serve-web      # serve Leptos web app locally
 just build-relay    # build relay server (release)
+just build-workers  # build replay + storage binaries (release)
+just build-agent    # build agent binary
+just agent -- ARGS  # run agent MCP server
 just relay          # run the relay server
 just dev            # start full local dev stack (relay + workers + web)
 just dev-quick      # same as dev, but skip cargo build
 just dev-clean      # remove .dev/ (keys, logs, storage DB)
+just docker-up      # start full stack via docker compose
+just docker-down    # stop docker stack
 ```
 
 **All code must pass `just check` (fmt + clippy + test + WASM) with zero
@@ -271,6 +282,11 @@ willow-web → willow-client  → willow-state
            → willow-crypto  → willow-identity → willow-transport
            → willow-messaging → willow-identity
                               (defines SealedContent used by willow-crypto)
+
+willow-replay  → willow-worker → willow-actor
+willow-storage → willow-worker → willow-actor
+willow-agent   → willow-client
+willow-client  → willow-common (shared wire types)
 ```
 
 ### Async Model
