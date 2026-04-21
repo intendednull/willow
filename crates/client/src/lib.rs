@@ -48,6 +48,10 @@ mod voice;
 #[path = "tests/trust_flow.rs"]
 mod tests_trust_flow;
 
+#[cfg(test)]
+#[path = "tests/multi_peer_sync.rs"]
+mod tests_multi_peer_sync;
+
 // Re-export key types at crate root for convenience.
 pub use event_receiver::EventReceiver;
 pub use events::ClientEvent;
