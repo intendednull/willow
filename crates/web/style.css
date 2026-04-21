@@ -755,7 +755,7 @@ select:focus-visible {
 
 /* First message in a group gets extra top rounding */
 .message:not(.grouped) {
-    margin-top: 8px;
+    margin-top: 4px;
     border-radius: 6px 6px 4px 4px;
 }
 
@@ -4504,11 +4504,13 @@ select:focus-visible {
  * MessageView where the avatar column would be; CSS hides it off-hover
  * so it only surfaces when the user targets the row. */
 .message .run-hover-ts {
-    display: inline-block;
-    width: 0;
-    overflow: hidden;
+    position: absolute;
+    left: 4px;
+    top: 50%;
+    transform: translateY(-50%);
     font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
     font-size: 10px;
+    line-height: 1;
     color: var(--ink-3);
     opacity: 0;
     transition: opacity var(--transition-fast);
@@ -4516,7 +4518,6 @@ select:focus-visible {
     user-select: none;
 }
 .message.grouped:hover .run-hover-ts {
-    width: auto;
     opacity: 1;
 }
 @media (prefers-reduced-motion: reduce) {
