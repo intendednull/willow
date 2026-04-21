@@ -3,100 +3,42 @@ import {
   sendMessage,
   waitForMessage,
   setupTwoPeers,
-  trustPeer,
-  untrustPeer,
   kickPeer,
   openServerSettings,
-  openMemberList,
-  closeMemberList,
+  openCompareFingerprints,
+  markFingerprintsMatch,
+  markFingerprintsMismatch,
+  longPressAvatar,
+  visibleShell,
 } from './helpers';
+
+// Shared relay + gossip mesh — keep tests inside this file sequential
+// so they don't stampede the relay while `fullyParallel: true` runs
+// different spec files concurrently.
+test.describe.configure({ mode: 'serial' });
 
 test.describe('Permissions and trust', () => {
   // Two-peer permission tests need extra time for setup + P2P sync.
   test.setTimeout(120_000);
 
-  test('owner trusts peer — trusted badge appears', async ({ browser }) => {
-    const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Trust Server', 'Alice', 'Bob');
-    try {
-      // Alice trusts Bob.
-      await trustPeer(page1, 'Bob');
-
-      // Trusted badge should appear on Bob's member entry.
-      await expect(page1.locator('.member-item', { hasText: 'Bob' }).locator('.trusted-badge'))
-        .toBeVisible({ timeout: 10_000 });
-    } finally {
-      await ctx1.close();
-      await ctx2.close();
-    }
-  });
-
-  test('trusted peer messages are visible', async ({ browser }) => {
-    const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Trusted Msg', 'Alice', 'Bob');
-    try {
-      // Alice trusts Bob.
-      await trustPeer(page1, 'Bob');
-      await page1.waitForTimeout(1000);
-
-      // Bob sends a message.
-      await sendMessage(page2, 'trusted message');
-
-      // Alice should see it.
-      await waitForMessage(page1, 'trusted message', 30_000);
-    } finally {
-      await ctx1.close();
-      await ctx2.close();
-    }
-  });
-
-  test('owner untrusts peer — trusted badge hidden', async ({ browser }) => {
-    const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Untrust Server', 'Alice', 'Bob');
-    try {
-      // Alice trusts then untrusts Bob.
-      await trustPeer(page1, 'Bob');
-      await page1.waitForTimeout(1000);
-      await untrustPeer(page1, 'Bob');
-
-      // Trusted badge should be hidden.
-      await expect(page1.locator('.member-item', { hasText: 'Bob' }).locator('.trusted-badge'))
-        .toBeHidden({ timeout: 10_000 });
-    } finally {
-      await ctx1.close();
-      await ctx2.close();
-    }
-  });
-
-  test('untrusted messages rejected after untrust', async ({ browser }) => {
-    const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Reject Msg', 'Alice', 'Bob');
-    try {
-      // Trust Bob first and verify messaging works (establishes delivery baseline).
-      await trustPeer(page1, 'Bob');
-      await page1.waitForTimeout(1000);
-
-      await sendMessage(page2, 'before untrust');
-      await waitForMessage(page1, 'before untrust', 30_000);
-
-      // Now untrust Bob.
-      await untrustPeer(page1, 'Bob');
-      await page1.waitForTimeout(1000);
-
-      // Bob sends a message that should NOT arrive on Alice's side.
-      await sendMessage(page2, 'after untrust secret');
-
-      // Sentinel: Alice sends a message from her own side. Since Alice is the
-      // owner, her own message always appears locally immediately. We wait for
-      // it to confirm enough real time has elapsed for P2P delivery to have
-      // occurred if it were going to — without this we'd just be racing a
-      // fixed timeout against an unknown network delay.
-      await sendMessage(page1, 'alice sentinel');
-      await waitForMessage(page1, 'alice sentinel', 10_000);
-
-      // Now we have proof that local rendering is working and time has passed.
-      // Assert that the rejected message never arrived.
-      await expect(page1.locator('.message .body', { hasText: 'after untrust secret' }))
-        .not.toBeVisible({ timeout: 5000 });
-    } finally {
-      await ctx1.close();
-      await ctx2.close();
+  // Mobile member-list surface is deferred to a later phase (Phase 1b
+  // shipped the mobile shell without the right-rail members pane).
+  // Kick tests go through `.member-item`, which only renders on desktop
+  // today. Long-press / compare-sheet tests below opt back in explicitly
+  // since they drive trust via the compare-fingerprints sheet, not the
+  // member list.
+  //
+  // Trust / untrust tests that used to live here (Unknown → Verified
+  // and badge-render contracts) moved to:
+  //   - Rust: `crates/client/src/tests/trust_flow.rs` (transitions +
+  //     two-peer `MemNetwork` revoke-SendMessages rejection).
+  //   - wasm-pack DOM: `crates/web/tests/browser.rs`
+  //     (`trust_badge_dom` — `.trust-badge--verified` / `--unverified`).
+  // Only the real-multi-peer behaviours stay in Playwright.
+  test.beforeEach(async ({}, testInfo) => {
+    const mobileSkipPattern = /kicks member|kicked peer|server settings panel/;
+    if (testInfo.project.name.startsWith('mobile') && mobileSkipPattern.test(testInfo.title)) {
+      testInfo.skip(true, 'mobile member-list surface deferred — tracked in onboarding phase followup');
     }
   });
 
@@ -105,14 +47,14 @@ test.describe('Permissions and trust', () => {
     try {
       // Record initial member count (includes relay + peers).
       await page1.waitForTimeout(1000);
-      const initialCount = await page1.locator('.member-item').count();
+      const initialCount = await page1.locator(`${visibleShell(page1)} .member-item`).count();
       expect(initialCount).toBeGreaterThanOrEqual(2);
 
       // Alice kicks Bob.
       await kickPeer(page1, 'Bob');
 
       // Member count should drop by 1.
-      await expect(page1.locator('.member-item'))
+      await expect(page1.locator(`${visibleShell(page1)} .member-item`))
         .toHaveCount(initialCount - 1, { timeout: 30_000 });
     } finally {
       await ctx1.close();
@@ -166,7 +108,7 @@ test.describe('Permissions and trust', () => {
       await page1.locator('text=Back').click();
 
       // Sidebar / chat area should be visible again.
-      await expect(page1.locator('.sidebar')).toBeVisible({ timeout: 5000 });
+      await expect(page1.locator(`${visibleShell(page1)} .channel-sidebar, ${visibleShell(page1)} .mobile-home`).first()).toBeVisible({ timeout: 5000 });
     } finally {
       await ctx1.close();
       await ctx2.close();
@@ -200,8 +142,72 @@ test.describe('Permissions and trust', () => {
       await page2.waitForTimeout(1000);
 
       // Bob should NOT have any trust/kick/untrust action buttons.
-      const actionButtons = page2.locator('.member-actions button');
+      const actionButtons = page2.locator(`${visibleShell(page2)} .member-actions button`);
       await expect(actionButtons).toHaveCount(0, { timeout: 5000 });
+    } finally {
+      await ctx1.close();
+      await ctx2.close();
+    }
+  });
+
+  // ── Phase 1d — trust verification (SAS compare) ──────────────────────
+  //
+  // Spec: docs/specs/2026-04-19-ui-design/trust-verification.md
+  // Plan: docs/plans/2026-04-20-ui-phase-1d-trust-verification.md
+
+  test('compare match flips the trust badge to verified', async ({ browser }, testInfo) => {
+    test.skip(testInfo.project.name.startsWith('mobile'), 'desktop-chrome path');
+    const { ctx1, ctx2, page1 } = await setupTwoPeers(browser, 'Verify', 'Alice', 'Bob');
+    try {
+      await openCompareFingerprints(page1, 'Bob');
+      await markFingerprintsMatch(page1);
+
+      // `done` closes the sheet; the badge on Bob's row switches to verified.
+      await page1.locator('.add-friend__cta-primary', { hasText: 'done' }).click();
+      const bobRow = page1.locator(`${visibleShell(page1)} .member-item`, { hasText: 'Bob' });
+      await expect(bobRow.locator('.trust-badge--verified'))
+        .toBeVisible({ timeout: 5_000 });
+    } finally {
+      await ctx1.close();
+      await ctx2.close();
+    }
+  });
+
+  test('compare mismatch keeps peer unverified but messaging still works', async ({
+    browser,
+  }, testInfo) => {
+    test.skip(testInfo.project.name.startsWith('mobile'), 'desktop-chrome path');
+    const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Mismatch', 'Alice', 'Bob');
+    try {
+      await openCompareFingerprints(page1, 'Bob');
+      await markFingerprintsMismatch(page1);
+      // Close the dialog via the `close` secondary action.
+      await page1.locator('.add-friend__cta-secondary', { hasText: 'close' }).click();
+
+      // Bob's row keeps the unverified/downgrade treatment.
+      const bobRow = page1.locator(`${visibleShell(page1)} .member-item`, { hasText: 'Bob' });
+      await expect(bobRow.locator('.trust-badge--unverified, .trust-badge--downgrade'))
+        .toBeVisible({ timeout: 5_000 });
+
+      // Messaging is unaffected.
+      await sendMessage(page2, 'mismatch still talks');
+      await waitForMessage(page1, 'mismatch still talks', 30_000);
+    } finally {
+      await ctx1.close();
+      await ctx2.close();
+    }
+  });
+
+  test('mobile long-press opens the compare sheet', async ({ browser }, testInfo) => {
+    test.skip(!testInfo.project.name.startsWith('mobile'), 'mobile-chrome path');
+    // Long-press targets a member avatar; the mobile member surface
+    // lands in a follow-up phase. Skip until that ships.
+    test.skip(true, 'mobile member-list surface deferred');
+    const { ctx1, ctx2, page1 } = await setupTwoPeers(browser, 'LongPress', 'Alice', 'Bob');
+    try {
+      await longPressAvatar(page1, 'Bob');
+      await expect(page1.locator('.add-friend__card[role="dialog"]'))
+        .toBeVisible({ timeout: 10_000 });
     } finally {
       await ctx1.close();
       await ctx2.close();

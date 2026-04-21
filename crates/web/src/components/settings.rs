@@ -1,7 +1,8 @@
 use leptos::prelude::*;
+use willow_client::presence::{PresenceOverride, PresenceState};
 
 use crate::app::WebClientHandle;
-use crate::components::RoleManager;
+use crate::components::{RoleManager, StatusDot, StatusDotBorder, StatusDotSize};
 use crate::icons;
 use crate::state::{AppState, SettingsTab};
 use crate::util::copy_to_clipboard;
@@ -39,6 +40,8 @@ pub fn SettingsPanel(
         SettingsTab::Profile => "Profile",
         SettingsTab::Server => "Server",
         SettingsTab::Roles => "Roles",
+        SettingsTab::Presence => "Presence",
+        SettingsTab::Notifications => "Notifications",
     };
 
     // ── Profile tab handlers ─────────────────────────────────────────
@@ -130,6 +133,14 @@ pub fn SettingsPanel(
                     class=move || if active_tab.get() == SettingsTab::Server { "tab-btn active" } else { "tab-btn" }
                     on:click=move |_| set_active_tab.set(SettingsTab::Server)
                 >"Server"</button>
+                <button
+                    class=move || if active_tab.get() == SettingsTab::Presence { "tab-btn active" } else { "tab-btn" }
+                    on:click=move |_| set_active_tab.set(SettingsTab::Presence)
+                >"Presence"</button>
+                <button
+                    class=move || if active_tab.get() == SettingsTab::Notifications { "tab-btn active" } else { "tab-btn" }
+                    on:click=move |_| set_active_tab.set(SettingsTab::Notifications)
+                >"Notifications"</button>
                 {
                     let owner_check = is_owner;
                     move || {
@@ -320,6 +331,76 @@ pub fn SettingsPanel(
                 </div>
             </div>
 
+            // Presence tab content (phase 1e stub).
+            <div class="settings-tab-content" style=move || if active_tab.get() == SettingsTab::Presence { "" } else { "display:none" }>
+                <div class="settings-section">
+                    <h3>"Self presence"</h3>
+                    <p class="settings-hint">
+                        "Override the auto-derived state others see. Auto returns to the real state. Browser close resets to auto."
+                    </p>
+                    <div class="presence-override-row">
+                        {
+                            let handle_presence = handle.clone();
+                            let current_override = app_state.presence.self_override;
+                            let entries: Vec<(PresenceOverride, &'static str, PresenceState)> = vec![
+                                (PresenceOverride::Auto, "auto", PresenceState::Here),
+                                (PresenceOverride::Away, "away", PresenceState::Away),
+                                (PresenceOverride::Gone, "gone", PresenceState::Gone),
+                                (PresenceOverride::Invisible, "invisible", PresenceState::Invisible),
+                            ];
+                            entries.into_iter().map(|(ov, label, preview)| {
+                                let h = handle_presence.clone();
+                                let is_active = Signal::derive(move || current_override.get() == ov);
+                                view! {
+                                    <button
+                                        class=move || {
+                                            if is_active.get() {
+                                                "presence-menu__item active".to_string()
+                                            } else {
+                                                "presence-menu__item".to_string()
+                                            }
+                                        }
+                                        aria-pressed=move || if is_active.get() { "true" } else { "false" }
+                                        on:click=move |_| {
+                                            let h = h.clone();
+                                            wasm_bindgen_futures::spawn_local(async move {
+                                                h.set_self_presence(ov).await;
+                                            });
+                                        }
+                                    >
+                                        <StatusDot
+                                            state=Signal::derive(move || preview)
+                                            size=StatusDotSize::MeStrip
+                                            border=StatusDotBorder::Bg1
+                                            ambient=false
+                                        />
+                                        <span>{label}</span>
+                                    </button>
+                                }
+                            }).collect::<Vec<_>>()
+                        }
+                    </div>
+                </div>
+            </div>
+
+            // Notifications tab content — phase 1f placeholder. The
+            // real settings-tweaks panel owns full per-category
+            // preferences; this slot only exposes the grove-mute
+            // toggle so the mute UI is reachable without the context
+            // menu.
+            <div
+                class="settings-tab-content"
+                style=move || {
+                    if active_tab.get() == SettingsTab::Notifications {
+                        ""
+                    } else {
+                        "display:none"
+                    }
+                }
+            >
+                <NotificationsTabPlaceholder />
+            </div>
+
             // Roles tab content.
             <div class="settings-tab-content" style=move || if active_tab.get() == SettingsTab::Roles { "" } else { "display:none" }>
                 <div class="settings-section role-section">
@@ -328,6 +409,51 @@ pub fn SettingsPanel(
                         roles=roles
                     />
                 </div>
+            </div>
+        </div>
+    }
+}
+
+/// Phase 1f placeholder for the Notifications settings tab. Exposes a
+/// single grove-mute toggle — full per-category preferences arrive
+/// in the settings-tweaks phase.
+#[component]
+fn NotificationsTabPlaceholder() -> impl IntoView {
+    let handle = use_context::<crate::app::WebClientHandle>().unwrap();
+
+    // The grove-mute pill is client-local — we don't reactively
+    // derive the current state in this placeholder because the
+    // event-state signal isn't threaded through AppState yet. The
+    // button is idempotent: repeated taps toggle; the authoritative
+    // state (materialized via MuteGrove events) remains in
+    // ServerState::mute_state.
+    let (local_muted, set_local_muted) = signal(false);
+
+    let toggle = {
+        let handle = handle.clone();
+        move |_| {
+            let target = !local_muted.get_untracked();
+            set_local_muted.set(target);
+            let h = handle.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = h.mutate_grove_mute(target).await;
+            });
+        }
+    };
+
+    view! {
+        <div class="settings-section">
+            <label>"notifications"</label>
+            <div class="settings-hint">
+                "full per-category preferences land in the next phase. this tab only exposes the grove-wide mute toggle."
+            </div>
+            <div class="settings-row">
+                <button
+                    class="btn"
+                    on:click=toggle
+                >
+                    {move || if local_muted.get() { "unmute grove" } else { "mute grove" }}
+                </button>
             </div>
         </div>
     }

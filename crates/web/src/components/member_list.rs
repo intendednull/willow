@@ -1,7 +1,10 @@
 use leptos::prelude::*;
+use willow_client::presence::PresenceState;
 
 use crate::app::WebClientHandle;
-use crate::components::ConfirmDialog;
+use crate::components::{
+    ConfirmDialog, StatusDot, StatusDotBorder, StatusDotSize, TrustBadge, TrustBadgeSize,
+};
 use crate::icons;
 use crate::state::AppState;
 
@@ -20,6 +23,9 @@ fn parse_eid(s: &str) -> Option<willow_identity::EndpointId> {
 pub fn MemberList(
     peers: ReadSignal<Vec<(String, String, bool)>>,
     peer_id: ReadSignal<String>,
+    /// Called when the user clicks the rail collapse button.
+    #[prop(optional, into)]
+    on_close: Option<Callback<()>>,
 ) -> impl IntoView {
     let handle = use_context::<WebClientHandle>().unwrap();
     let app_state = use_context::<AppState>().unwrap();
@@ -31,9 +37,77 @@ pub fn MemberList(
 
     let handle_for_items = handle.clone();
 
+    let connection_status = app_state.network.connection_status;
+    let peer_count = app_state.network.peer_count;
+
     view! {
-        <div class="member-list">
-            // ── Infrastructure (worker nodes) ──────────────────────
+        <aside class="member-list" role="complementary" aria-label="members">
+            <button
+                class="rail-close-btn"
+                title="close"
+                aria-label="close rail"
+                on:click=move |_| {
+                    if let Some(cb) = on_close { cb.run(()); }
+                }
+            >
+                "×"
+            </button>
+            // ── Network (collapsed by default) ─────────────────────
+            <details class="rail-section rail-section--net">
+                <summary class="rail-section__header">
+                    <span class="rail-section__title">"Network"</span>
+                    <span class=move || {
+                        if connection_status.get() == "connected" {
+                            "rail-section__chip rail-section__chip--ok"
+                        } else {
+                            "rail-section__chip rail-section__chip--warn"
+                        }
+                    }>
+                        {move || {
+                            let n = peer_count.get();
+                            if connection_status.get() != "connected" {
+                                "queued".to_string()
+                            } else if n == 1 {
+                                "1 peer".to_string()
+                            } else {
+                                format!("{n} peers")
+                            }
+                        }}
+                    </span>
+                </summary>
+                <div class="rail-section__body net-detail">
+                    <div class="net-detail-row">
+                        <span class="net-detail-label">"connection"</span>
+                        <span class=move || {
+                            if connection_status.get() == "connected" {
+                                "net-detail-value net-detail-value--ok"
+                            } else {
+                                "net-detail-value net-detail-value--warn"
+                            }
+                        }>
+                            {move || connection_status.get()}
+                        </span>
+                    </div>
+                    <div class="net-detail-row">
+                        <span class="net-detail-label">"peers"</span>
+                        <span class="net-detail-value">
+                            {move || peer_count.get().to_string()}
+                        </span>
+                    </div>
+                    <div class="net-detail-row">
+                        <span class="net-detail-label">"relay"</span>
+                        <span class="net-detail-value net-detail-value--mono">
+                            "ws://localhost:3340"
+                        </span>
+                    </div>
+                    <div class="net-detail-row">
+                        <span class="net-detail-label">"encryption"</span>
+                        <span class="net-detail-value">"e2e · chacha20-poly1305"</span>
+                    </div>
+                </div>
+            </details>
+
+            // ── Infrastructure (collapsed, hides if empty) ─────────
             {
                 move || {
                     let all = peers.get();
@@ -52,66 +126,107 @@ pub fn MemberList(
                     if workers.is_empty() {
                         None
                     } else {
+                        let worker_count = workers.len();
                         Some(view! {
-                            <h3 class="section-header infra-header">
-                                {icons::icon_server()}
-                                " Infrastructure"
-                            </h3>
-                            <For
-                                each=move || workers.clone()
-                                key=|(id, name, online)| format!("{id}:{name}:{online}")
-                                let:worker
-                            >
-                                {
-                                    let (wpid, wname, w_online) = worker;
-                                    let wpid_display = wpid.clone();
-                                    view! {
-                                        <div class={if w_online { "worker-item" } else { "worker-item offline" }}>
-                                            <div class="worker-icon">
-                                                {
-                                                    // Determine role by name heuristic or just show server icon.
-                                                    let name_lower = wname.to_lowercase();
-                                                    if name_lower.contains("replay") {
-                                                        icons::icon_refresh().into_any()
-                                                    } else if name_lower.contains("storage") {
-                                                        icons::icon_database().into_any()
-                                                    } else {
-                                                        icons::icon_server().into_any()
-                                                    }
-                                                }
-                                            </div>
-                                            <div class="worker-info">
-                                                <span class="worker-name">{wname}</span>
-                                                <span class="worker-peer-id">{
-                                                    if wpid_display.len() > 12 {
-                                                        format!("{}...", &wpid_display[..12])
-                                                    } else {
-                                                        wpid_display
-                                                    }
-                                                }</span>
-                                            </div>
-                                            <div class="worker-status">
-                                                {if w_online {
-                                                    view! {
-                                                        <span class="worker-badge online">{icons::icon_activity()} " Active"</span>
-                                                    }.into_any()
+                            <details class="rail-section rail-section--infra">
+                                <summary class="rail-section__header">
+                                    <span class="rail-section__title">
+                                        {icons::icon_server()}
+                                        " Infrastructure"
+                                    </span>
+                                    <span class="rail-section__chip">
+                                        {if worker_count == 1 {
+                                            "1 node".to_string()
+                                        } else {
+                                            format!("{worker_count} nodes")
+                                        }}
+                                    </span>
+                                </summary>
+                                <div class="rail-section__body">
+                                    <For
+                                        each=move || workers.clone()
+                                        key=|(id, name, online)| format!("{id}:{name}:{online}")
+                                        let:worker
+                                    >
+                                        {
+                                            let (wpid, wname, w_online) = worker;
+                                            let wpid_display = wpid.clone();
+                                            let role_label = {
+                                                let name_lower = wname.to_lowercase();
+                                                if name_lower.contains("replay") {
+                                                    "replay"
+                                                } else if name_lower.contains("storage") {
+                                                    "storage"
                                                 } else {
-                                                    view! {
-                                                        <span class="worker-badge offline">"Offline"</span>
-                                                    }.into_any()
-                                                }}
-                                            </div>
-                                        </div>
-                                    }
-                                }
-                            </For>
+                                                    "worker"
+                                                }
+                                            };
+                                            view! {
+                                                <div class={if w_online { "worker-item" } else { "worker-item offline" }}>
+                                                    <div class="worker-icon">
+                                                        {
+                                                            let name_lower = wname.to_lowercase();
+                                                            if name_lower.contains("replay") {
+                                                                icons::icon_refresh().into_any()
+                                                            } else if name_lower.contains("storage") {
+                                                                icons::icon_database().into_any()
+                                                            } else {
+                                                                icons::icon_server().into_any()
+                                                            }
+                                                        }
+                                                    </div>
+                                                    <div class="worker-info">
+                                                        <span class="worker-name">{wname}</span>
+                                                        <span class="worker-role">{role_label}</span>
+                                                        <span class="worker-peer-id">{
+                                                            if wpid_display.len() > 16 {
+                                                                format!("{}…", &wpid_display[..16])
+                                                            } else {
+                                                                wpid_display
+                                                            }
+                                                        }</span>
+                                                    </div>
+                                                    <div class="worker-status">
+                                                        {if w_online {
+                                                            view! {
+                                                                <span class="worker-badge online">{icons::icon_activity()} " Active"</span>
+                                                            }.into_any()
+                                                        } else {
+                                                            view! {
+                                                                <span class="worker-badge offline">"Offline"</span>
+                                                            }.into_any()
+                                                        }}
+                                                    </div>
+                                                </div>
+                                            }
+                                        }
+                                    </For>
+                                </div>
+                            </details>
                         })
                     }
                 }
             }
 
-            // ── Members (regular peers) ────────────────────────────
-            <h3>"Members"</h3>
+            // ── Members (expanded by default) ──────────────────────
+            <details class="rail-section rail-section--members" open>
+                <summary class="rail-section__header">
+                    <span class="rail-section__title">"Members"</span>
+                    <span class="rail-section__chip">
+                        {move || {
+                            let all = peers.get();
+                            let owner_str = app_state.server.server_owner.get();
+                            let sync_providers = app_state.server.sync_provider_ids.get();
+                            let n = all.iter().filter(|(pid, _, _)| {
+                                !sync_providers.contains(pid)
+                                    || pid == &peer_id.get()
+                                    || *pid == owner_str
+                            }).count();
+                            if n == 1 { "1".to_string() } else { format!("{n}") }
+                        }}
+                    </span>
+                </summary>
+                <div class="rail-section__body">
             <For
                 each=move || {
                     let all = peers.get();
@@ -137,11 +252,51 @@ pub fn MemberList(
                     let pid_untrust = pid.clone();
                     let pid_kick = pid.clone();
                     let pid_self = pid.clone();
+                    let pid_dot = pid.clone();
+                    let pid_tooltip = pid.clone();
                     let handle_trust = handle_for_items.clone();
                     let handle_untrust = handle_for_items.clone();
+                    // Presence state for this peer — derived from AppState
+                    // presence map. Falls back to Here/Gone depending on
+                    // reachability so reloading the app before the tick
+                    // driver fires never shows a stale dot.
+                    let presence_state = Signal::derive(move || {
+                        app_state
+                            .presence
+                            .per_peer
+                            .get()
+                            .get(&pid_dot)
+                            .copied()
+                            .unwrap_or(if is_online {
+                                PresenceState::Here
+                            } else {
+                                PresenceState::Gone
+                            })
+                    });
+                    let tooltip_label = Signal::derive(move || {
+                        app_state
+                            .presence
+                            .per_peer
+                            .get()
+                            .get(&pid_tooltip)
+                            .copied()
+                            .unwrap_or(if is_online {
+                                PresenceState::Here
+                            } else {
+                                PresenceState::Gone
+                            })
+                            .label()
+                    });
                     view! {
                         <div class="member-item">
-                            <div class={if is_online { "status-dot" } else { "status-dot offline" }}></div>
+                            <span class="member-status" title=tooltip_label>
+                                <StatusDot
+                                    state=presence_state
+                                    size=StatusDotSize::Rail
+                                    border=StatusDotBorder::Bg1
+                                    ambient=true
+                                />
+                            </span>
                             <span class="member-name" style=format!("color: {}", super::peer_color(&pid))>
                                 {name}
                                 <span class="member-peer-id">{
@@ -149,6 +304,7 @@ pub fn MemberList(
                                     format!(" ({short})")
                                 }</span>
                             </span>
+                            <TrustBadge peer_id=pid.clone() size=TrustBadgeSize::Disk12/>
                             {
                                 let pb = pid_badge.clone();
                                 move || {
@@ -228,11 +384,18 @@ pub fn MemberList(
                         || *pid == owner_str
                 }).count();
                 if non_worker_count == 0 {
-                    Some(view! { <div class="empty-state" style="font-size: 12px;">"No peers connected"</div> })
+                    Some(view! {
+                        <div class="state-empty member-list-empty">
+                            <div class="state-empty__headline">"just you so far"</div>
+                            <div class="state-empty__hint">"invite someone"</div>
+                        </div>
+                    })
                 } else {
                     None
                 }
             }}
+                </div>
+            </details>
             <ConfirmDialog
                 visible=show_kick_confirm
                 title="Kick Member"
@@ -260,6 +423,6 @@ pub fn MemberList(
                     set_show_kick_confirm.set(false);
                 })
             />
-        </div>
+        </aside>
     }
 }

@@ -3615,3 +3615,112 @@ fn rebuild_message_index_restores_mapping() {
     );
     assert_eq!(state.message_index.len(), state.messages.len());
 }
+
+// ── Phase 1f: per-identity mute (MuteChannel / MuteGrove) ─────────────────
+
+#[test]
+fn mute_channel_roundtrip() {
+    let id = Identity::generate();
+    let mut dag = test_dag(&id);
+    do_emit(
+        &mut dag,
+        &id,
+        EventKind::MuteChannel {
+            channel_id: "ch-1".into(),
+            muted: true,
+        },
+    );
+    let state = materialize(&dag);
+    let ms = state.mute_state.get(&id.endpoint_id()).expect("entry");
+    assert!(ms.channels.contains("ch-1"));
+
+    // Unmute — channel drops out of the set.
+    do_emit(
+        &mut dag,
+        &id,
+        EventKind::MuteChannel {
+            channel_id: "ch-1".into(),
+            muted: false,
+        },
+    );
+    let state = materialize(&dag);
+    let ms = state.mute_state.get(&id.endpoint_id()).expect("entry");
+    assert!(!ms.channels.contains("ch-1"));
+}
+
+#[test]
+fn mute_grove_roundtrip() {
+    let id = Identity::generate();
+    let mut dag = test_dag(&id);
+    do_emit(&mut dag, &id, EventKind::MuteGrove { muted: true });
+    let state = materialize(&dag);
+    assert!(state.mute_state[&id.endpoint_id()].grove_muted);
+
+    do_emit(&mut dag, &id, EventKind::MuteGrove { muted: false });
+    let state = materialize(&dag);
+    assert!(!state.mute_state[&id.endpoint_id()].grove_muted);
+}
+
+#[test]
+fn mute_channel_idempotent() {
+    // Muting twice is a harmless no-op — the entry already reflects
+    // the mute state. Unmuting a channel that was never muted is
+    // also a no-op.
+    let id = Identity::generate();
+    let mut dag = test_dag(&id);
+    for _ in 0..3 {
+        do_emit(
+            &mut dag,
+            &id,
+            EventKind::MuteChannel {
+                channel_id: "ch-a".into(),
+                muted: true,
+            },
+        );
+    }
+    let state = materialize(&dag);
+    assert_eq!(
+        state.mute_state[&id.endpoint_id()].channels.len(),
+        1,
+        "repeated MuteChannel must not duplicate — it is a set"
+    );
+
+    // Unmute a never-muted channel: no crash, no entry.
+    do_emit(
+        &mut dag,
+        &id,
+        EventKind::MuteChannel {
+            channel_id: "never-muted".into(),
+            muted: false,
+        },
+    );
+    let state = materialize(&dag);
+    assert!(!state.mute_state[&id.endpoint_id()]
+        .channels
+        .contains("never-muted"));
+}
+
+#[test]
+fn mute_not_admin_gated() {
+    // Per-identity mute is never admin-gated — any member (or even a
+    // peer with no permissions at all) can mute their own view.
+    let admin = Identity::generate();
+    let stranger = Identity::generate();
+    let mut dag = test_dag(&admin);
+    do_emit(
+        &mut dag,
+        &stranger,
+        EventKind::MuteChannel {
+            channel_id: "ch-1".into(),
+            muted: true,
+        },
+    );
+    do_emit(&mut dag, &stranger, EventKind::MuteGrove { muted: true });
+    let state = materialize(&dag);
+    let ms = state
+        .mute_state
+        .get(&stranger.endpoint_id())
+        .expect("stranger's mute entry must exist — no admin check");
+    assert!(ms.channels.contains("ch-1"));
+    assert!(ms.grove_muted);
+}

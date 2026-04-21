@@ -6,8 +6,9 @@ use send_wrapper::SendWrapper;
 use willow_client::{ClientConfig, ClientEvent, ClientHandle, DisplayMessage, VoiceSignalPayload};
 
 use crate::components::{
-    AddServerPanel, CallPage, ChannelHeader, ChatInput, CommandPalette, FileShareButton, JoinPage,
-    MemberList, MessageList, PinnedPanel, ServerList, SettingsPanel, Sidebar, WelcomeScreen,
+    AddServerPanel, CallPage, ChannelSidebar, ChatInput, CommandPalette, FileShareButton,
+    GroveRail, JoinPage, MainPaneHeader, MessageList, MobileShell, RightRail, RightRailWhich,
+    SettingsPanel, ToastStackView, WelcomeScreen,
 };
 use crate::event_processing::process_event_batch;
 use crate::handlers;
@@ -25,6 +26,26 @@ fn init_theme() {
     .ok();
 }
 
+/// One-shot user-agent sniff to tag the app root with
+/// `data-platform="ios|android|web"`. The tab-bar styling branches on
+/// this attribute (iOS blur vs Android pill). Per plan: sniff once at
+/// boot, no reactive re-detection.
+fn detect_platform() -> &'static str {
+    let ua = web_sys::window()
+        .and_then(|w| w.navigator().user_agent().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if ua.contains("iphone") || ua.contains("ipad") || ua.contains("ipod") {
+        "ios"
+    } else if ua.contains("android") {
+        "android"
+    } else {
+        "web"
+    }
+}
+
+#[allow(dead_code)]
 pub fn toggle_theme() {
     js_sys::eval(
         r#"var h=document.documentElement;var c=h.getAttribute('data-theme')||'dark';var n=c==='dark'?'light':'dark';h.setAttribute('data-theme',n);localStorage.setItem('willow-theme',n);"#,
@@ -119,13 +140,23 @@ pub fn App() -> impl IntoView {
     // Create the client (connection happens async below).
     let handle = new_client();
 
-    // Create all signals.
-    let (app_state, write) = state::create_signals();
+    // Create all signals + boot the local trust store.
+    let state::InitialSignals {
+        app_state,
+        write,
+        trust_store,
+    } = state::create_signals();
+
+    // Thread the trust store into the client so shims persist + read
+    // from the same localStorage-backed source the UI subscribes to.
+    let handle_inner = (*handle).clone().with_trust_store(trust_store.clone());
+    let handle: WebClientHandle = SendWrapper::new(handle_inner);
 
     // Provide context so child components can access the handle and state.
     provide_context(handle.clone());
     provide_context(app_state);
     provide_context(write);
+    provide_context(trust_store.clone());
 
     // Create the VoiceManager.
     let local_peer_id = handle.peer_id();
@@ -165,6 +196,116 @@ pub fn App() -> impl IntoView {
 
     provide_context(voice_manager.clone());
 
+    // Initialize the chime player so any caller can `use_chime_player()`
+    // without knowing where it was constructed.
+    crate::audio::provide_chime_player();
+
+    // Inject the Notifier — single dispatch point for toast / chime /
+    // push. The caller resolves the `muted` + `is_own` flags before
+    // dispatching so this service stays pure.
+    let notifier = crate::notifications::provide_notifier();
+
+    // document.title prefix — "(N) willow" while hidden, bare "willow"
+    // 1 s after the tab becomes visible. Driven by an Effect on the
+    // unread-stats signal + a visibilitychange listener that kicks a
+    // deferred clear.
+    {
+        use wasm_bindgen::closure::Closure;
+        use wasm_bindgen::JsCast;
+        let write_for_vis = write;
+        let _ = write_for_vis;
+        let unread_stats = app_state.server.unread_stats;
+        leptos::prelude::Effect::new(move |_prev: Option<()>| {
+            let total: u32 = unread_stats.get().values().map(|s| s.count).sum();
+            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                let hidden = doc.hidden();
+                let title = if hidden && total > 0 {
+                    format!("({total}) willow")
+                } else {
+                    "willow".to_string()
+                };
+                doc.set_title(&title);
+            }
+        });
+        // On visibility change to visible, wait 1 s then strip the
+        // prefix. Doing it here (not inside the Effect) avoids
+        // re-running on every unread-stat update while the tab is
+        // hidden.
+        let cb = Closure::<dyn Fn(web_sys::Event)>::new(move |_| {
+            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                if !doc.hidden() {
+                    // Delay stripping so a quick focus doesn't snap.
+                    if let Some(window) = web_sys::window() {
+                        let clear = Closure::once_into_js(move || {
+                            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                                if !doc.hidden() {
+                                    doc.set_title("willow");
+                                }
+                            }
+                        });
+                        let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                            clear.unchecked_ref(),
+                            1000,
+                        );
+                    }
+                }
+            }
+        });
+        if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+            let _ = doc
+                .add_event_listener_with_callback("visibilitychange", cb.as_ref().unchecked_ref());
+        }
+        cb.forget();
+    }
+
+    // Wire the service-worker bridge — the `willow-push` window event
+    // fires whenever the SW forwards a focused-client push payload.
+    // Reads the payload out of `window.__willowLastPush` (stashed by
+    // `main.rs::wire_service_worker_bridge`) and routes it through the
+    // Notifier.
+    {
+        use wasm_bindgen::closure::Closure;
+        use wasm_bindgen::JsCast;
+        let notifier = notifier.clone();
+        let closure = Closure::<dyn Fn(web_sys::Event)>::new(move |_ev: web_sys::Event| {
+            let Some(window) = web_sys::window() else {
+                return;
+            };
+            let payload = js_sys::Reflect::get(
+                &window,
+                &wasm_bindgen::JsValue::from_str("__willowLastPush"),
+            )
+            .ok();
+            let Some(payload) = payload else {
+                return;
+            };
+            let cat = js_sys::Reflect::get(&payload, &"cat".into())
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_else(|| "msg".to_string());
+            let cat_enum = match cat.as_str() {
+                "mention" => crate::notifications::Category::Mention,
+                "letter" => crate::notifications::Category::Letter,
+                "ephemeral-expiry" => crate::notifications::Category::EphemeralExpiry,
+                "whisper-invite" => crate::notifications::Category::WhisperInvite,
+                "handoff" => crate::notifications::Category::Handoff,
+                _ => crate::notifications::Category::Msg,
+            };
+            notifier.dispatch(crate::notifications::NotificationKind {
+                category: cat_enum,
+                surface: format!("push:{cat}"),
+                toast: crate::components::Toast::info("willow — 1 new message").build(),
+                is_own: false,
+                muted: false,
+            });
+        });
+        if let Some(window) = web_sys::window() {
+            let _ = window
+                .add_event_listener_with_callback("willow-push", closure.as_ref().unchecked_ref());
+        }
+        closure.forget();
+    }
+
     // Auto-clear loading after LOADING_TIMEOUT_MS even if no peer connects.
     {
         let w = write;
@@ -176,28 +317,12 @@ pub fn App() -> impl IntoView {
         );
     }
 
-    // Register Ctrl+K / Cmd+K for command palette.
-    {
-        use wasm_bindgen::JsCast;
-        let write_for_palette = write;
-        let closure = wasm_bindgen::closure::Closure::<dyn Fn(web_sys::KeyboardEvent)>::new(
-            move |ev: web_sys::KeyboardEvent| {
-                if (ev.ctrl_key() || ev.meta_key()) && ev.key() == "k" {
-                    ev.prevent_default();
-                    write_for_palette.ui.set_show_palette.update(|v| *v = !*v);
-                }
-            },
-        );
-        if let Some(window) = web_sys::window() {
-            window
-                .add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref())
-                .ok();
-        }
-        closure.forget();
-    }
-
     // Wire derived signals that auto-update from state actor changes.
     crate::state::wire_derived_signals(&handle, handle.actor_system(), &write);
+
+    // Install global keybindings (palette toggle, Esc close-stack,
+    // Alt+↑ / Alt+↓ grove switch).
+    crate::keybindings::install(app_state, write);
 
     // Detect join link from URL fragment.
     {
@@ -434,12 +559,12 @@ pub fn App() -> impl IntoView {
     let pin_labels = app_state.chat.pin_labels;
     let loading = app_state.network.loading;
     let display_name = app_state.server.display_name;
-    let peer_count = app_state.network.peer_count;
     let peer_id = app_state.network.peer_id;
     let _roles = app_state.server.roles;
     let replying_to = app_state.chat.replying_to;
     let editing = app_state.chat.editing;
     let channel_views = app_state.chat.channel_views;
+    let channels_signal = app_state.chat.channels;
     let show_palette = app_state.ui.show_palette;
     let show_call_page = app_state.ui.show_call_page;
 
@@ -451,22 +576,31 @@ pub fn App() -> impl IntoView {
 
     let join_token_signal = app_state.ui.join_token;
 
-    view! {
-        {move || {
-            // Join link takes priority over everything.
-            if join_token_signal.get().is_some() {
-                return view! { <JoinPage /> }.into_any();
-            }
+    let platform = detect_platform();
 
-            let srv = servers.get();
-            if srv.is_empty() {
-                let on_done = on_welcome_done;
-                view! {
-                    <WelcomeScreen
-                        on_done=on_done
-                    />
-                }.into_any()
-            } else {
+    view! {
+        <div id="app-root" class="density-balanced" data-accent="moss" data-platform=platform>
+            // Trust-verification live region (assertive) + root-mounted
+            // compare-fingerprints dialog. Both live above the shell so
+            // they survive any sub-route remount.
+            <div id="trust-live-region" class="sr-only" aria-live="assertive" aria-atomic="true"></div>
+            <crate::components::AddFriendDialog/>
+            <ToastStackView/>
+            {move || {
+                // Join link takes priority over everything.
+                if join_token_signal.get().is_some() {
+                    return view! { <JoinPage /> }.into_any();
+                }
+
+                let srv = servers.get();
+                if srv.is_empty() {
+                    let on_done = on_welcome_done;
+                    view! {
+                        <WelcomeScreen
+                            on_done=on_done
+                        />
+                    }.into_any()
+                } else {
                 let ch_click = on_channel_click.clone();
                 let srv_click = on_server_click.clone();
                 let ch_click_for_palette = on_channel_click.clone();
@@ -482,11 +616,99 @@ pub fn App() -> impl IntoView {
                 let handle_ty = handle_for_typing.clone();
                 let vm_v = vm_for_view.clone();
                 let pin = on_pin.clone();
+                let pin_mobile = on_pin.clone();
+                let ch_click_mobile = on_channel_click.clone();
+                let srv_click_mobile = on_server_click.clone();
+                let send_mobile = on_send.clone();
+                let edit_send_mobile = on_edit_send.clone();
+                let del_msg_mobile = on_delete_msg.clone();
+                let react_mobile = on_react.clone();
+                let handle_vj_mobile = handle_for_voice_join.clone();
                 view! {
-                    <div class="app">
-                        <ServerList
+                    <>
+                    {move || {
+                        // Top-level overlays rendered outside the shell
+                        // split so they work on both mobile + desktop.
+                        if show_add_server.get() {
+                            let (add_name, set_add_name) = signal(String::new());
+                            Some(view! {
+                                <div class="top-overlay top-overlay--settings">
+                                    <div class="settings-panel">
+                                        <div class="server-settings-header">
+                                            <button class="btn btn-sm" on:click=move |_| write.ui.set_show_add_server.set(false)>
+                                                {icons::icon_arrow_left()} " Back"
+                                            </button>
+                                            <h2>"Add a Server"</h2>
+                                        </div>
+                                        <div class="welcome-name-row">
+                                            <label for="add-server-display-name">"Display name · optional"</label>
+                                            <input
+                                                id="add-server-display-name"
+                                                type="text"
+                                                placeholder="what peers should call you"
+                                                prop:value=move || add_name.get()
+                                                on:input=move |ev| set_add_name.set(event_target_value(&ev))
+                                            />
+                                        </div>
+                                        <AddServerPanel
+                                            on_done=move |_| {
+                                                refresh_stored.with_value(|f| f());
+                                                write.ui.set_show_add_server.set(false);
+                                            }
+                                            display_name=add_name
+                                        />
+                                    </div>
+                                </div>
+                            }.into_any())
+                        } else if show_settings.get() {
+                            let tab = app_state.ui.settings_tab.get_untracked();
+                            Some(view! {
+                                <div class="top-overlay top-overlay--settings">
+                                    <SettingsPanel
+                                        peer_id=peer_id
+                                        roles=Signal::from(_roles)
+                                        default_tab=tab
+                                        on_close=move |_| write.ui.set_show_settings.set(false)
+                                    />
+                                </div>
+                            }.into_any())
+                        } else {
+                            None
+                        }
+                    }}
+                    <div class="shell-desktop" aria-hidden="false">
+                    <div
+                        class="app app-shell"
+                        data-rail-open=move || {
+                            if show_members.get() || show_pinned.get() { "true" } else { "false" }
+                        }
+                    >
+                        <GroveRail
                             servers=app_state.server.servers
                             active_server_id=app_state.server.active_server_id
+                            grove_stats=Signal::derive(move || {
+                                // Aggregate per-grove stats from the
+                                // channel stats map. Only the active
+                                // grove is populated (the registry
+                                // tracks one active server at a time).
+                                let stats = app_state.server.unread_stats.get();
+                                let active = app_state.server.active_server_id.get();
+                                let mut agg = willow_client::views::UnreadStats::default();
+                                for s in stats.values() {
+                                    agg.count = agg.count.saturating_add(s.count);
+                                    agg.mentioned |= s.mentioned;
+                                    agg.whisper |= s.whisper;
+                                    agg.announce_only |= s.announce_only;
+                                    agg.muted |= s.muted;
+                                }
+                                if active.is_empty() {
+                                    std::collections::HashMap::new()
+                                } else {
+                                    let mut out = std::collections::HashMap::new();
+                                    out.insert(active, agg);
+                                    out
+                                }
+                            })
                             on_server_click=srv_click
                             on_add_server_click=move |_| {
                                 write.ui.set_show_add_server.update(|v| *v = !*v);
@@ -499,19 +721,18 @@ pub fn App() -> impl IntoView {
                                 write.ui.set_show_add_server.set(false);
                                 write.ui.set_show_sidebar.set(false);
                             })
+                            on_settings_tile_click=Callback::new(move |_| {
+                                write.ui.set_settings_tab.set(SettingsTab::Profile);
+                                write.ui.set_show_settings.set(true);
+                                write.ui.set_show_add_server.set(false);
+                                write.ui.set_show_sidebar.set(false);
+                            })
                         />
-                        // Overlay to close sidebar on mobile tap
-                        <div
-                            class=move || if show_sidebar.get() { "sidebar-overlay open" } else { "sidebar-overlay" }
-                            on:click=move |_| write.ui.set_show_sidebar.set(false)
-                        />
-                        <Sidebar
+                        <ChannelSidebar
                             channels=app_state.chat.channels
                             current_channel=current_channel
                             open=show_sidebar
-                            unread=app_state.server.unread
-                            connection_status=app_state.network.connection_status
-                            peer_count=peer_count
+                            unread=app_state.server.unread_stats
                             server_name=app_state.server.active_server_name
                             on_channel_click=ch_click
                             on_settings_click=move |_| {
@@ -626,32 +847,7 @@ pub fn App() -> impl IntoView {
                         />
                         <div class="main-content">
                             {move || {
-                                if show_add_server.get() {
-                                    view! {
-                                        <div class="settings-panel">
-                                            <div class="server-settings-header">
-                                                <button class="btn btn-sm" on:click=move |_| write.ui.set_show_add_server.set(false)>
-                                                    {icons::icon_arrow_left()} " Back"
-                                                </button>
-                                                <h2>"Add a Server"</h2>
-                                            </div>
-                                            <AddServerPanel
-                                                on_done=move |_| {
-                                                    refresh_stored.with_value(|f| f());
-                                                    write.ui.set_show_add_server.set(false);
-                                                }
-                                            />
-                                        </div>
-                                    }.into_any()
-                                } else if show_settings.get() {
-                                    let tab = app_state.ui.settings_tab.get_untracked();
-                                    view! { <SettingsPanel
-                                        peer_id=peer_id
-                                        roles=Signal::from(_roles)
-                                        default_tab=tab
-                                        on_close=move |_| write.ui.set_show_settings.set(false)
-                                    /> }.into_any()
-                                } else if show_call_page.get() {
+                                if show_call_page.get() {
                                     let on_mute_cp = on_mute.clone();
                                     let on_deafen_cp = on_deafen.clone();
                                     let on_disconnect_cp = on_disconnect.clone();
@@ -682,30 +878,41 @@ pub fn App() -> impl IntoView {
                                             pin_handler(msg);
                                         })
                                     };
+                                    // Derive one-of-three right-rail state from existing UI signals.
+                                    let which_signal = Signal::derive(move || {
+                                        if show_members.get() { RightRailWhich::Members }
+                                        else if show_pinned.get() { RightRailWhich::Pinned }
+                                        else { RightRailWhich::None }
+                                    });
+                                    let on_set_which = Callback::new(move |next: RightRailWhich| {
+                                        // Exactly one rail pane at a time.
+                                        write.ui.set_show_members.set(matches!(next, RightRailWhich::Members));
+                                        write.ui.set_show_pinned.set(matches!(next, RightRailWhich::Pinned));
+                                    });
+                                    let chat_channel = current_channel;
                                     view! {
-                                        <div class="chat-container">
-                                            <ChannelHeader
+                                        <main
+                                            class="chat-container main-pane"
+                                            role="main"
+                                            aria-label=move || chat_channel.get()
+                                        >
+                                            <MainPaneHeader
                                                 channel=current_channel
-                                                peer_count=peer_count
-                                                on_menu_click=move |_| write.ui.set_show_sidebar.update(|v| *v = !*v)
-                                                on_members_click=move |_| write.ui.set_show_members.update(|v| *v = !*v)
-                                                on_pinned_click=Callback::new(move |_| write.ui.set_show_pinned.update(|v| *v = !*v))
+                                                which=which_signal
+                                                on_set_which=on_set_which
                                                 on_search_click=Callback::new(move |_| write.ui.set_show_palette.set(true))
                                             />
                                             {move || {
-                                                if show_pinned.get() {
+                                                if channels_signal.get().is_empty() {
                                                     Some(view! {
-                                                        <PinnedPanel
-                                                            messages=pinned_messages
-                                                            on_jump=move |msg_id: String| {
-                                                                js_sys::eval(&format!(
-                                                                    "document.getElementById('msg-{}')?.scrollIntoView({{behavior:'smooth',block:'center'}})",
-                                                                    msg_id.replace('\'', "")
-                                                                )).ok();
-                                                                write.ui.set_show_pinned.set(false);
-                                                            }
-                                                            on_close=move |_| write.ui.set_show_pinned.set(false)
-                                                        />
+                                                        <div class="main-pane-empty state-empty">
+                                                            <div class="state-empty__headline main-pane-empty__headline">
+                                                                "this grove is quiet. say hi?"
+                                                            </div>
+                                                            <div class="state-empty__hint">
+                                                                "add a channel from the grove menu."
+                                                            </div>
+                                                        </div>
                                                     })
                                                 } else {
                                                     None
@@ -727,6 +934,17 @@ pub fn App() -> impl IntoView {
                                                 on_react=Callback::new(react2)
                                                 on_pin=on_pin_cb
                                                 pin_labels=Signal::from(pin_labels)
+                                                // Phase 2a Task 15 — Escape on
+                                                // the focused list returns focus
+                                                // to the composer textarea per
+                                                // spec §Accessibility keyboard
+                                                // path. Same DOM-query pattern
+                                                // as the reply / edit wiring
+                                                // above so the three focus
+                                                // entry-points stay consistent.
+                                                on_focus_composer=Callback::new(move |()| {
+                                                    js_sys::eval("var i=document.querySelector('.input-area input,.input-area textarea');if(i)i.focus();").ok();
+                                                })
                                             />
                                             <div class="typing-indicator">
                                                 {move || {
@@ -763,21 +981,40 @@ pub fn App() -> impl IntoView {
                                                     on_typing=on_typing_cb
                                                 />
                                             </div>
-                                        </div>
+                                        </main>
                                     }.into_any()
                                 }
                             }}
                         </div>
-                        <div
-                            class=move || if show_members.get() { "members-overlay open" } else { "members-overlay" }
-                            on:click=move |_| write.ui.set_show_members.set(false)
-                        />
-                        <div class=move || if show_members.get() { "member-list-wrapper open" } else { "member-list-wrapper" }>
-                            <MemberList
-                                peers=app_state.network.peers
-                                peer_id=peer_id
-                            />
-                        </div>
+                        {
+                            // Right rail — one of members / pinned / thread.
+                            let rail_which = Signal::derive(move || {
+                                if show_members.get() { RightRailWhich::Members }
+                                else if show_pinned.get() { RightRailWhich::Pinned }
+                                else { RightRailWhich::None }
+                            });
+                            let on_rail_close = Callback::new(move |_: ()| {
+                                write.ui.set_show_members.set(false);
+                                write.ui.set_show_pinned.set(false);
+                            });
+                            let on_pinned_jump = Callback::new(move |msg_id: String| {
+                                js_sys::eval(&format!(
+                                    "document.getElementById('msg-{}')?.scrollIntoView({{behavior:'smooth',block:'center'}})",
+                                    msg_id.replace('\'', "")
+                                )).ok();
+                                write.ui.set_show_pinned.set(false);
+                            });
+                            view! {
+                                <RightRail
+                                    which=rail_which
+                                    on_close=on_rail_close
+                                    peers=app_state.network.peers
+                                    peer_id=peer_id
+                                    pinned_messages=pinned_messages
+                                    on_pinned_jump=on_pinned_jump
+                                />
+                            }
+                        }
                         {move || {
                             if show_palette.get() {
                                 let ch_click_palette = ch_click_for_palette.clone();
@@ -804,9 +1041,32 @@ pub fn App() -> impl IntoView {
                             }
                         }}
                     </div>
+                    </div>
+                    <div class="shell-mobile" aria-hidden="false">
+                        <MobileShell
+                            on_send=send_mobile
+                            on_edit_send=edit_send_mobile
+                            on_delete_msg=del_msg_mobile
+                            on_react=react_mobile
+                            on_channel_click=ch_click_mobile
+                            on_server_click=srv_click_mobile
+                            on_voice_join={
+                                let h = handle_vj_mobile.clone();
+                                move |ch_name: String| {
+                                    let h = h.clone();
+                                    wasm_bindgen_futures::spawn_local(async move {
+                                        h.join_voice(&ch_name).await;
+                                    });
+                                }
+                            }
+                            on_pin=pin_mobile
+                        />
+                    </div>
+                    </>
                 }.into_any()
             }
         }}
+        </div>
     }
 }
 

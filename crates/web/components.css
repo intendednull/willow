@@ -1,0 +1,1874 @@
+/* components.css — willow UI Phase 1 component shell
+ *
+ * Source spec: docs/specs/2026-04-19-ui-design/layout-primitives.md
+ * Loaded AFTER style.css so component selectors win legacy token
+ * aliases. All values reference foundation tokens from foundation.css
+ * — NO raw hex, no new palette.
+ */
+
+/* ── Mobile shell container ──────────────────────────────────────── */
+
+.mobile-shell {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    position: relative;
+}
+
+/* ── Mobile top bar (primary + pushed routes) ────────────────────── */
+
+.mobile-top-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 52px;
+    flex: none;
+    padding: 10px 14px;
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--line-soft);
+}
+
+.mobile-top-bar .top-slot-left {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--ink-1);
+    cursor: pointer;
+    border-radius: 10px;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.mobile-top-bar .top-slot-left .top-glyph {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 10px;
+    background: var(--moss-2);
+    color: var(--ink-on-accent);
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 500;
+    font-size: 15px;
+}
+
+.mobile-top-bar .top-slot-left .top-back {
+    font-size: 20px;
+    line-height: 1;
+    color: var(--ink-1);
+}
+
+.mobile-top-bar .top-slot-left:active {
+    background: var(--bg-2);
+}
+
+.mobile-top-bar .top-title-col {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-width: 0;
+    line-height: 1.15;
+}
+
+.mobile-top-bar .top-title {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 500;
+    font-size: 17px;
+    color: var(--ink-0);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mobile-top-bar .top-subtitle {
+    font-family: var(--font-ui);
+    font-size: 11px;
+    color: var(--ink-3);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mobile-top-bar .top-slot-right {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: none;
+}
+
+.mobile-top-bar .top-action {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--ink-1);
+    cursor: pointer;
+    border-radius: 10px;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.mobile-top-bar .top-action:active {
+    background: var(--bg-2);
+}
+
+.mobile-top-bar .top-action .icon {
+    font-size: 20px;
+    line-height: 1;
+}
+
+/* ── Mobile body — host for primary route or pushed surface ─────── */
+
+.mobile-body {
+    flex: 1 1 auto;
+    position: relative;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.mobile-home,
+.mobile-tab-empty,
+.mobile-empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: auto;
+}
+
+.mobile-empty,
+.mobile-tab-empty {
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    text-align: center;
+}
+
+.mobile-empty .mobile-empty-cta {
+    margin-top: 12px;
+}
+
+/* ── Mobile tab bar (bottom primary navigation) ──────────────────── */
+
+.mobile-tab-bar {
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    justify-content: space-between;
+    height: calc(52px + env(safe-area-inset-bottom));
+    padding-bottom: env(safe-area-inset-bottom);
+    border-top: 1px solid var(--line-soft);
+    background: var(--bg-1);
+    flex: none;
+}
+
+/* iOS path: blurred translucent bar. */
+[data-platform="ios"] .mobile-tab-bar {
+    background: color-mix(in oklab, var(--bg-1) 85%, transparent);
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
+}
+
+/* Hide the tab bar while a full-screen push is on screen. */
+.mobile-tab-bar[data-visible="false"] {
+    display: none;
+}
+
+.mobile-tab-bar .tab {
+    appearance: none;
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    padding: 6px 0 2px;
+    min-width: 44px;
+    min-height: 44px;
+    background: transparent;
+    border: none;
+    color: var(--ink-3);
+    cursor: pointer;
+    position: relative;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.mobile-tab-bar .tab .tab-icon {
+    font-size: 22px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+}
+
+.mobile-tab-bar .tab .tab-label {
+    font-family: var(--font-ui);
+    font-size: 10.5px;
+    font-weight: 400;
+    letter-spacing: 0.2px;
+}
+
+.mobile-tab-bar .tab.tab-active {
+    color: var(--moss-3);
+}
+
+.mobile-tab-bar .tab.tab-active .tab-label {
+    font-weight: 500;
+}
+
+/* Android pill — sits behind the active tab's icon. */
+[data-platform="android"] .mobile-tab-bar .tab.tab-active .tab-icon::before {
+    content: "";
+    position: absolute;
+    inset: 50% auto auto 50%;
+    width: 54px;
+    height: 28px;
+    border-radius: 14px;
+    background: color-mix(in oklab, var(--moss-2) 22%, transparent);
+    transform: translate(-50%, -50%);
+    z-index: -1;
+}
+
+.mobile-tab-bar .tab-badge {
+    position: absolute;
+    top: 4px;
+    right: calc(50% - 18px);
+    min-width: 14px;
+    height: 14px;
+    padding: 0 3px;
+    border-radius: 7px;
+    background: var(--err);
+    color: var(--ink-on-accent);
+    font-family: var(--font-ui);
+    font-size: 9px;
+    font-weight: 600;
+    line-height: 14px;
+    text-align: center;
+    box-sizing: border-box;
+}
+
+/* ── Bottom sheet primitive (reusable) ───────────────────────────── */
+
+.bottom-sheet-root {
+    position: fixed;
+    inset: 0;
+    z-index: 45;
+    pointer-events: none;
+}
+
+.bottom-sheet-root[data-open="true"] {
+    pointer-events: auto;
+}
+
+.bottom-sheet-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    opacity: 0;
+    transition: opacity var(--motion-slow) var(--motion-ease);
+}
+
+.bottom-sheet-root[data-open="true"] .bottom-sheet-backdrop {
+    opacity: 1;
+}
+
+.bottom-sheet {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100vw;
+    background: var(--bg-1);
+    border-top: 1px solid var(--line);
+    border-top-left-radius: var(--radius-l);
+    border-top-right-radius: var(--radius-l);
+    box-shadow: 0 -20px 50px -20px rgba(0, 0, 0, 0.8),
+        0 -4px 12px rgba(0, 0, 0, 0.4);
+    transform: translateY(100%);
+    transition: transform var(--motion-slow) var(--motion-ease);
+    padding: 10px 0 max(12px, env(safe-area-inset-bottom));
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.bottom-sheet.open {
+    transform: translateY(0);
+}
+
+.bottom-sheet .bottom-sheet-handle {
+    width: 36px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--ink-4);
+    margin: 0 auto 8px;
+    flex: none;
+}
+
+.bottom-sheet .bottom-sheet-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .bottom-sheet {
+        transform: none;
+        opacity: 0;
+        transition: opacity var(--motion-slow) linear;
+    }
+    .bottom-sheet.open {
+        opacity: 1;
+    }
+}
+
+/* ── Mobile full-screen pushes ───────────────────────────────────── */
+
+.mobile-push {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--bg-0);
+    animation: mobile-push-in var(--motion-slow) var(--motion-ease) both;
+    z-index: 2;
+}
+
+@keyframes mobile-push-in {
+    from {
+        transform: translateX(100%);
+    }
+    to {
+        transform: translateX(0);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .mobile-push {
+        animation: mobile-push-fade var(--motion-slow) linear both;
+    }
+    @keyframes mobile-push-fade {
+        from {
+            opacity: 0;
+        }
+        to {
+            opacity: 1;
+        }
+    }
+}
+
+/* Channel push: mount MainPaneHeader + MessageList + ChatInput in a
+   flex column so the list flexes between header and composer. */
+.mobile-push--channel {
+    display: flex;
+    flex-direction: column;
+}
+
+.mobile-push--channel .main-pane-header {
+    flex: none;
+}
+
+.mobile-push--channel .message-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.mobile-push--channel .typing-indicator {
+    flex: none;
+    padding: 2px 12px;
+    font-size: 11px;
+    color: var(--ink-3);
+    min-height: 18px;
+}
+
+.mobile-push--channel .input-row {
+    flex: none;
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    padding: 8px 10px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--line-soft);
+    background: var(--bg-1);
+}
+
+/* Composer input: >= 16 px so iOS Safari doesn't auto-zoom on focus. */
+.mobile-push--channel .input-area input,
+.mobile-push--channel .input-area textarea {
+    font-size: 16px;
+}
+
+/* On mobile the per-message hover action bar is replaced by the
+   long-press action sheet — hide the always-visible dropdown trigger. */
+.shell-mobile .message-actions,
+.shell-mobile .action-trigger {
+    display: none !important;
+}
+
+/* ── Grove drawer (mobile, home route) ───────────────────────────── */
+
+.grove-drawer-root {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    pointer-events: none;
+}
+
+.grove-drawer-root[data-open="true"] {
+    pointer-events: auto;
+}
+
+.grove-drawer-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    opacity: 0;
+    transition: opacity var(--motion-slow) var(--motion-ease);
+}
+
+.grove-drawer-root[data-open="true"] .grove-drawer-backdrop {
+    opacity: 1;
+}
+
+.grove-drawer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 280px;
+    display: flex;
+    flex-direction: row;
+    background: var(--bg-1);
+    border-right: 1px solid var(--line-soft);
+    box-shadow: 10px 0 40px rgba(0, 0, 0, 0.4);
+    transform: translateX(-100%);
+    transition: transform var(--motion-slow) var(--motion-ease);
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+}
+
+.grove-drawer.open {
+    transform: translateX(0);
+}
+
+.grove-drawer .drawer-rail {
+    flex: none;
+    width: 64px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 0;
+    overflow-y: auto;
+    background: var(--bg-0);
+    border-right: 1px solid var(--line-soft);
+}
+
+.grove-drawer .drawer-rail-tile {
+    appearance: none;
+    width: 44px;
+    height: 44px;
+    border: none;
+    background: var(--bg-2);
+    color: var(--ink-1);
+    border-radius: 22px;
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 500;
+    font-size: 17px;
+    cursor: pointer;
+    transition:
+        border-radius var(--motion) var(--motion-ease),
+        background var(--motion) var(--motion-ease);
+    -webkit-tap-highlight-color: transparent;
+    position: relative;
+}
+
+.grove-drawer .drawer-rail-tile.active {
+    border-radius: 12px;
+    background: var(--moss-2);
+    color: var(--ink-on-accent);
+}
+
+.grove-drawer .drawer-rail-tile.active::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: -10px;
+    width: 3px;
+    height: 22px;
+    background: var(--ink-0);
+    border-radius: 2px;
+    transform: translateY(-50%);
+}
+
+.grove-drawer .drawer-body {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+}
+
+.grove-drawer .drawer-header {
+    padding: 14px 16px 10px;
+    border-bottom: 1px solid var(--line-soft);
+    flex: none;
+}
+
+.grove-drawer .drawer-wordmark {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 18px;
+    color: var(--willow);
+}
+
+.grove-drawer .drawer-summary {
+    margin-top: 2px;
+    font-family: var(--font-ui);
+    font-size: 11px;
+    color: var(--ink-3);
+}
+
+.grove-drawer .drawer-grove-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 6px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.grove-drawer .drawer-grove-row {
+    appearance: none;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px;
+    min-height: 44px;
+    background: transparent;
+    border: none;
+    border-radius: 10px;
+    color: var(--ink-1);
+    text-align: left;
+    cursor: pointer;
+    width: 100%;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.grove-drawer .drawer-grove-row:active {
+    background: var(--bg-2);
+}
+
+.grove-drawer .drawer-grove-row.active {
+    background: var(--bg-3);
+    color: var(--ink-0);
+}
+
+.grove-drawer .drawer-grove-glyph {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    background: var(--moss-2);
+    color: var(--ink-on-accent);
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 500;
+    font-size: 14px;
+}
+
+.grove-drawer .drawer-grove-row--new .drawer-grove-glyph {
+    background: var(--bg-2);
+    color: var(--ink-3);
+}
+
+.grove-drawer .drawer-grove-name {
+    font-size: 13.5px;
+    color: inherit;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.grove-drawer .drawer-me-strip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-top: 1px solid var(--line-soft);
+    flex: none;
+}
+
+.grove-drawer .drawer-me-avatar {
+    flex: none;
+    width: 28px;
+    height: 28px;
+    border-radius: 14px;
+    background: var(--moss-2);
+    color: var(--ink-on-accent);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 13px;
+}
+
+.grove-drawer .drawer-me-col {
+    flex: 1 1 auto;
+    min-width: 0;
+    line-height: 1.1;
+}
+
+.grove-drawer .drawer-me-name {
+    font-size: 12px;
+    color: var(--ink-0);
+}
+
+.grove-drawer .drawer-me-sub {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--moss-3);
+}
+
+.grove-drawer .drawer-me-settings {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: 10px;
+    color: var(--ink-2);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.grove-drawer .drawer-me-settings:active {
+    background: var(--bg-2);
+}
+
+/* Reduced motion: drawer fades instead of sliding. */
+@media (prefers-reduced-motion: reduce) {
+    .grove-drawer {
+        transform: none;
+        opacity: 0;
+        transition: opacity var(--motion-slow) linear;
+    }
+    .grove-drawer.open {
+        opacity: 1;
+    }
+}
+
+/* ── Top-level overlay (settings / add-server) ──────────────────── */
+
+/* Shared container: covers the viewport above both shells so the
+ * same panel works on desktop and mobile without duplication. */
+.top-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    background: var(--bg-0);
+    overflow: auto;
+}
+
+.top-overlay--settings .settings-panel {
+    height: 100%;
+    min-height: 0;
+    overflow: auto;
+}
+
+/* ── Shell split (desktop vs mobile) ─────────────────────────────── */
+
+/* `.shell-desktop` uses `display: contents` so the existing
+ * `.app-shell` grid keeps controlling its own layout. It is just a
+ * grouping wrapper whose only job is to toggle visibility against
+ * `.shell-mobile`. */
+.shell-desktop {
+    display: contents;
+}
+
+/* `.shell-mobile` is a flex column that occupies the whole viewport
+ * when active. Safe-area insets absorb the notched chrome on iOS /
+ * Android. */
+.shell-mobile {
+    display: none;
+    flex-direction: column;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+    background: var(--bg-0);
+    overflow: hidden;
+    padding-top: env(safe-area-inset-top);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+}
+
+@media (max-width: 720px) {
+    .shell-desktop {
+        display: none;
+    }
+    .shell-mobile {
+        display: flex;
+    }
+}
+
+/* Test-harness override: let a browser test force either shell via
+ * the `data-shell` attribute on <html>, bypassing the viewport media
+ * query. */
+html[data-shell="desktop"] .shell-desktop { display: contents; }
+html[data-shell="desktop"] .shell-mobile  { display: none; }
+html[data-shell="mobile"]  .shell-desktop { display: none; }
+html[data-shell="mobile"]  .shell-mobile  { display: flex; }
+
+/* ── App shell grid ──────────────────────────────────────────────── */
+
+/* Desktop three-pane shell: grove-rail / channel-sidebar / main / right-rail.
+ * Widths follow the spec: 68 / 232 / flex / 280. The right rail collapses
+ * to 0 width when no pane is active (`data-open="false"`) so the main pane
+ * expands to the viewport edge.
+ *
+ * The wrapper also targets legacy children (`.server-rail`, `.sidebar`)
+ * for a smooth migration: rows 1/2 host old OR new rail, row 3 hosts
+ * old OR new channel sidebar. This keeps the pre-rename app rendering
+ * correctly while Task 1 lands.
+ */
+.app-shell {
+    display: grid;
+    grid-template-columns: 68px 232px 1fr 0;
+    grid-template-rows: 1fr;
+    height: 100vh;
+    width: 100vw;
+    background: var(--bg-0);
+    overflow: hidden;
+}
+
+.app-shell[data-rail-open="true"] {
+    grid-template-columns: 68px 232px 1fr 280px;
+}
+
+/* Right-rail slot is the fourth column; transforms during open. */
+.app-shell > .right-rail {
+    grid-column: 4;
+    grid-row: 1;
+    background: var(--bg-1);
+    border-left: 1px solid var(--line-soft);
+    overflow: hidden;
+    width: 280px;
+    transform: translateX(100%);
+    opacity: 0;
+    pointer-events: none;
+    transition:
+        transform var(--motion) var(--motion-ease),
+        opacity var(--motion) var(--motion-ease);
+}
+
+.app-shell[data-rail-open="true"] > .right-rail {
+    transform: translateX(0);
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* Legacy rail + sidebar live in the grid too, so they keep
+ * rendering while Phase 1 tasks swap components in one at a time. */
+.app-shell > .server-rail,
+.app-shell > .grove-rail {
+    grid-column: 1;
+    grid-row: 1;
+}
+
+.app-shell > .sidebar,
+.app-shell > .channel-sidebar {
+    grid-column: 2;
+    grid-row: 1;
+}
+
+.app-shell > .main-content,
+.app-shell > .main-pane {
+    grid-column: 3;
+    grid-row: 1;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* Narrow-desktop overlay: <960 px the right rail overlays the main
+ * pane rather than stealing grid space. */
+@media (max-width: 960px) {
+    .app-shell {
+        grid-template-columns: 68px 232px 1fr 0;
+    }
+    .app-shell[data-rail-open="true"] {
+        grid-template-columns: 68px 232px 1fr 0;
+    }
+    .app-shell[data-rail-open="true"] > .right-rail {
+        position: absolute;
+        top: 0;
+        right: 0;
+        height: 100vh;
+        z-index: 20;
+        box-shadow: var(--shadow-2);
+    }
+    .app-shell[data-rail-open="true"]::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.4);
+        z-index: 19;
+        pointer-events: auto;
+    }
+}
+
+/* Narrow-desktop sidebar collapse: <840 px. 60 px glyph-only column
+ * for the channel sidebar; the grove rail keeps 68 px. */
+@media (max-width: 840px) {
+    .app-shell,
+    .app-shell[data-rail-open="true"] {
+        grid-template-columns: 68px 60px 1fr 0;
+    }
+    .app-shell > .channel-sidebar,
+    .app-shell > .sidebar {
+        overflow: hidden;
+    }
+}
+
+/* Reduced motion: opacity-only rail transitions. */
+@media (prefers-reduced-motion: reduce) {
+    .app-shell > .right-rail {
+        transform: none;
+        transition: opacity var(--motion) linear;
+    }
+}
+
+/* ── Grove rail ──────────────────────────────────────────────────── */
+
+.grove-rail {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 68px;
+    height: 100vh;
+    background: var(--bg-0);
+    border-right: 1px solid var(--line-soft);
+    padding: 0;
+    gap: 0;
+}
+
+.grove-rail-top-spacer {
+    height: 4px;
+    flex: none;
+}
+
+.grove-rail-divider {
+    width: 28px;
+    height: 1px;
+    background: var(--line);
+    margin: 6px 0;
+    flex: none;
+}
+
+.grove-rail-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0;
+}
+
+.grove-rail-spacer {
+    flex: 1 1 auto;
+    min-height: 12px;
+}
+
+/* Shared tile anatomy (rail tiles + grove tiles) */
+.rail-tile,
+.grove-tile {
+    appearance: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: none;
+    background: var(--bg-2);
+    color: var(--ink-1);
+    cursor: pointer;
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 500;
+    font-size: 17px;
+    border-radius: 22px;
+    transition:
+        border-radius var(--motion) var(--motion-ease),
+        background var(--motion) var(--motion-ease),
+        color var(--motion) var(--motion-ease);
+    position: relative;
+    flex: none;
+}
+
+.rail-tile .icon,
+.rail-tile svg {
+    font-size: 20px;
+    line-height: 1;
+}
+
+.rail-tile--settings {
+    margin-bottom: 6px;
+}
+
+/* Grove tile visual states — spec §Grove tile anatomy. */
+.grove-tile[data-state="idle"] {
+    background: var(--bg-2);
+    color: var(--ink-1);
+    border-radius: 22px;
+}
+.grove-tile[data-state="idle"]:hover,
+.rail-tile[data-state="idle"]:hover {
+    background: var(--moss-2);
+    color: #14130f;
+    border-radius: 14px;
+}
+.grove-tile[data-state="active"],
+.grove-tile:focus-visible[data-state="active"] {
+    background: var(--moss-2);
+    color: #14130f;
+    border-radius: 12px;
+}
+.grove-tile[data-state="active"]::before {
+    content: "";
+    position: absolute;
+    left: -12px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 3px;
+    height: 22px;
+    background: var(--ink-0);
+    border-radius: 0 2px 2px 0;
+}
+
+/* With-unread state — idle surface plus short pebble on the left edge.
+ * CSS in place; data binding (per-grove unread aggregate) lands when
+ * ServerState exposes it. */
+.grove-tile[data-state="with-unread"] {
+    background: var(--bg-2);
+    color: var(--ink-1);
+    border-radius: 22px;
+}
+.grove-tile[data-state="with-unread"]::before {
+    content: "";
+    position: absolute;
+    left: -12px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 3px;
+    height: 8px;
+    background: var(--ink-0);
+    border-radius: 0 2px 2px 0;
+}
+
+.grove-tile-glyph {
+    font-family: var(--font-display), system-ui, sans-serif;
+    font-style: italic;
+    font-weight: 500;
+    font-size: 17px;
+    line-height: 1;
+}
+
+.rail-tile--discover[data-state="active"] {
+    background: var(--amber);
+    color: #14130f;
+    border-radius: 12px;
+}
+
+/* Reduced-motion: drop radius animation; colour swap only. */
+@media (prefers-reduced-motion: reduce) {
+    .rail-tile,
+    .grove-tile {
+        transition: background var(--motion) linear, color var(--motion) linear;
+    }
+}
+
+/* ── Channel sidebar ─────────────────────────────────────────────── */
+
+.channel-sidebar {
+    display: flex;
+    flex-direction: column;
+    width: 232px;
+    height: 100vh;
+    background: var(--bg-1);
+    border-right: 1px solid var(--line-soft);
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.grove-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 14px;
+    border: none;
+    border-bottom: 1px solid var(--line-soft);
+    background: transparent;
+    flex: none;
+    width: 100%;
+    text-align: left;
+    cursor: pointer;
+    color: inherit;
+    font: inherit;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.grove-header:hover {
+    background: var(--bg-2);
+}
+
+.grove-header-glyph {
+    width: 26px;
+    height: 26px;
+    border-radius: 8px;
+    background: var(--moss-2);
+    color: #14130f;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-display), system-ui, sans-serif;
+    font-style: italic;
+    font-weight: 500;
+    font-size: 14px;
+    flex: none;
+}
+
+.grove-header-name {
+    flex: 1 1 auto;
+    font-family: var(--font-display);
+    font-size: 16px;
+    font-weight: 500;
+    color: var(--ink-0);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+
+/* Channel scroll region */
+.channel-sidebar .channel-list {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 8px 8px;
+    min-height: 0;
+}
+
+.channel-add-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 10px;
+    margin-bottom: 6px;
+    border-radius: var(--radius-s);
+    background: color-mix(in oklab, var(--moss-1) 22%, transparent);
+    border: 1px solid color-mix(in oklab, var(--moss-2) 28%, var(--line-soft));
+    color: var(--moss-3);
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.channel-add-btn .icon-tree {
+    color: var(--moss-3);
+    display: inline-flex;
+    align-items: center;
+    font-size: 14px;
+}
+.channel-add-btn__label {
+    flex: 1 1 auto;
+    text-align: left;
+}
+.channel-add-btn:hover {
+    background: color-mix(in oklab, var(--moss-1) 44%, transparent);
+    border-color: color-mix(in oklab, var(--moss-2) 60%, var(--line-soft));
+    color: var(--ink-0);
+}
+.channel-add-btn:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+}
+.channel-add-btn--active {
+    background: color-mix(in oklab, var(--moss-1) 52%, transparent);
+    border-color: color-mix(in oklab, var(--moss-2) 70%, var(--line-soft));
+    color: var(--ink-0);
+}
+
+/* Tree-create container (wraps plant button + picker + slot) */
+.tree-create {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+/* Kind picker dropdown */
+.tree-kind-picker {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px;
+    border-radius: var(--radius-s);
+    background: var(--bg-2);
+    border: 1px solid var(--line-soft);
+    box-shadow: 0 6px 18px color-mix(in oklab, #000 28%, transparent);
+}
+.tree-kind-picker__item {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: var(--radius-s);
+    background: transparent;
+    color: var(--ink-1);
+    cursor: pointer;
+    text-align: left;
+    width: 100%;
+}
+.tree-kind-picker__item:hover {
+    background: color-mix(in oklab, var(--moss-1) 32%, transparent);
+    color: var(--ink-0);
+}
+.tree-kind-picker__glyph {
+    font-family: var(--font-display);
+    font-size: 14px;
+    color: var(--moss-3);
+    width: 16px;
+    text-align: center;
+    flex: none;
+}
+.tree-kind-picker__label {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 13px;
+    color: var(--ink-0);
+}
+.tree-kind-picker__hint {
+    flex: 1 1 auto;
+    font-size: 11px;
+    color: var(--ink-4);
+    text-align: right;
+}
+
+/* Tree creation slot (name input awaiting save) */
+.tree-slot {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border-radius: var(--radius-s);
+    background: var(--bg-2);
+    border: 1px dashed color-mix(in oklab, var(--moss-2) 60%, var(--line-soft));
+}
+.tree-slot__glyph {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--moss-3);
+    font-family: var(--font-display);
+    font-size: 13px;
+    width: 18px;
+    flex: none;
+}
+.tree-slot__glyph .icon {
+    font-size: 14px;
+}
+.tree-slot__hash {
+    font-style: italic;
+    font-weight: 500;
+}
+.tree-slot__input {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 4px 6px;
+    background: var(--bg-1);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-s);
+    color: var(--ink-0);
+    font-family: var(--font-display);
+    font-size: 13px;
+}
+.tree-slot__input:focus {
+    outline: none;
+    border-color: var(--moss-2);
+    box-shadow: 0 0 0 2px color-mix(in oklab, var(--moss-2) 32%, transparent);
+}
+.tree-slot__save,
+.tree-slot__cancel {
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-s);
+    background: transparent;
+    color: var(--ink-3);
+    font-size: 14px;
+    cursor: pointer;
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.tree-slot__save {
+    color: var(--moss-3);
+    background: color-mix(in oklab, var(--moss-1) 40%, transparent);
+}
+.tree-slot__save:hover {
+    background: color-mix(in oklab, var(--moss-2) 55%, transparent);
+    color: var(--ink-0);
+}
+.tree-slot__save .icon {
+    font-size: 14px;
+}
+.tree-slot__cancel:hover {
+    background: var(--bg-3);
+    color: var(--ink-0);
+}
+
+.channel-groups {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.channel-group {
+    display: flex;
+    flex-direction: column;
+}
+
+.channel-group-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 6px 8px;
+    background: transparent;
+    color: var(--ink-3);
+    font-family: var(--font-ui);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    cursor: pointer;
+    border-radius: var(--radius-s);
+}
+
+.channel-group[data-group="voice"] .channel-group-label { color: var(--moss-3); }
+.channel-group[data-group="ephemeral"] .channel-group-label { color: var(--whisper); }
+
+.channel-group-chevron {
+    font-size: 10px;
+    line-height: 1;
+    color: inherit;
+    display: inline-flex;
+}
+
+.channel-group-name { flex: 1 1 auto; }
+
+.channel-group-meta {
+    font-size: 11px;
+    opacity: 0.8;
+}
+
+.channel-group-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 2px 0;
+}
+
+/* Channel row */
+.channel-item {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 32px;
+    padding: 0 10px 0 6px;
+    margin: 4px 6px;
+    border-radius: var(--radius-s);
+    font-family: var(--font-ui);
+    font-size: 13.5px;
+    color: var(--ink-3);
+    cursor: pointer;
+    user-select: none;
+}
+
+.channel-row-bar {
+    position: absolute;
+    left: 0;
+    top: 8px;
+    bottom: 8px;
+    width: 3px;
+    border-radius: 2px;
+    background: transparent;
+}
+
+.channel-row-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    flex: none;
+    color: inherit;
+}
+
+.channel-row-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: var(--font-ui);
+}
+
+.channel-row-trailing {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+}
+
+.channel-item:hover:not(.channel-item--current) {
+    background: var(--bg-2);
+    color: var(--ink-1);
+}
+
+.channel-item--unread {
+    color: var(--ink-1);
+}
+
+.channel-item--unread .channel-row-bar {
+    background: var(--ink-0);
+    width: 3px;
+    height: 16px;
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+.channel-item--current {
+    background: var(--bg-3);
+    color: var(--ink-0);
+}
+
+.channel-item--muted {
+    color: var(--ink-4);
+}
+
+.unread-pill {
+    min-width: 18px;
+    height: 16px;
+    padding: 0 6px;
+    border-radius: 10px;
+    background: var(--moss-2);
+    color: #14130f;
+    font-family: var(--font-ui);
+    font-size: 11px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.listener-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 6px;
+    font-family: var(--font-ui);
+    font-size: 11px;
+    color: var(--moss-3);
+    background: color-mix(in oklab, var(--moss-2) 18%, var(--bg-2));
+    border: 1px solid var(--moss-1);
+    border-radius: var(--radius-s);
+}
+.listener-pulse {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--moss-3);
+    animation: willowPulse 1.2s ease-in-out infinite;
+    display: inline-block;
+}
+
+.ephemeral-timer {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--whisper);
+    padding: 1px 6px;
+    border-radius: var(--radius-s);
+    background: color-mix(in oklab, var(--whisper) 14%, var(--bg-2));
+}
+
+.channel-empty-state {
+    padding: 48px 12px 24px;
+    text-align: center;
+    color: var(--ink-2);
+}
+.channel-empty-headline {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 22px;
+    color: var(--ink-2);
+    margin-bottom: 6px;
+}
+.channel-empty-sub {
+    font-size: 13px;
+    color: var(--ink-3);
+}
+
+/* Me strip — profile link */
+.me-strip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    margin: 8px 10px 10px;
+    background: var(--bg-2);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius);
+    cursor: pointer;
+    height: 48px;
+    width: calc(100% - 20px);
+    flex: none;
+    text-align: left;
+    color: inherit;
+    font: inherit;
+    -webkit-tap-highlight-color: transparent;
+}
+.me-strip:hover { background: var(--bg-3); }
+.me-strip:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+.me-avatar {
+    position: relative;
+    width: 30px;
+    height: 30px;
+    flex: none;
+}
+.me-avatar-glyph {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    background: var(--moss-1);
+    color: var(--ink-0);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-display), system-ui, sans-serif;
+    font-style: italic;
+    font-weight: 500;
+    font-size: 14px;
+}
+.me-avatar .status-dot {
+    position: absolute;
+    right: -2px;
+    bottom: -2px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 2px solid var(--bg-2);
+    background: var(--ink-4);
+}
+.me-avatar .status-dot.connected { background: var(--moss-2); }
+.me-avatar .status-dot.connecting { background: var(--amber); }
+
+.me-display-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ink-0);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Rail close button — top-right of MemberList */
+.rail-close-btn {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-s);
+    background: transparent;
+    color: var(--ink-3);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1;
+}
+.rail-close-btn:hover {
+    background: var(--bg-2);
+    color: var(--ink-0);
+}
+.member-list {
+    position: relative;
+}
+
+/* Collapsible rail sections in MemberList */
+.rail-section {
+    border-bottom: 1px solid var(--line-soft);
+    margin: 0;
+}
+.rail-section[open] {
+    padding-bottom: 6px;
+}
+.rail-section > .rail-section__header {
+    list-style: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    font-family: var(--font-display);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    color: var(--ink-2);
+    user-select: none;
+}
+.rail-section > .rail-section__header::-webkit-details-marker { display: none; }
+.rail-section > .rail-section__header::marker { content: ""; }
+.rail-section > .rail-section__header::before {
+    content: "›";
+    display: inline-block;
+    width: 10px;
+    color: var(--ink-3);
+    transition: transform 120ms ease;
+    font-size: 14px;
+    line-height: 1;
+}
+.rail-section[open] > .rail-section__header::before {
+    transform: rotate(90deg);
+}
+.rail-section__header:hover {
+    color: var(--ink-0);
+    background: color-mix(in oklab, var(--moss-1) 16%, transparent);
+}
+.rail-section__title {
+    flex: 1 1 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+.rail-section__title .icon {
+    color: var(--moss-3);
+    font-size: 13px;
+}
+.rail-section__chip {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--ink-3);
+    padding: 1px 6px;
+    border-radius: var(--radius-s);
+    background: color-mix(in oklab, var(--line-soft) 60%, transparent);
+}
+.rail-section__chip--ok {
+    color: var(--moss-3);
+    background: color-mix(in oklab, var(--moss-1) 36%, transparent);
+}
+.rail-section__chip--warn {
+    color: var(--amber);
+    background: color-mix(in oklab, var(--amber) 18%, transparent);
+}
+.rail-section__body {
+    padding: 2px 14px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+/* Net detail rows inside Network section */
+.net-detail {
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+.net-detail-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 3px 0;
+}
+.net-detail-label {
+    color: var(--ink-4);
+    text-transform: lowercase;
+    letter-spacing: 0.02em;
+}
+.net-detail-value {
+    color: var(--ink-2);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: right;
+}
+.net-detail-value--ok { color: var(--moss-3); }
+.net-detail-value--warn { color: var(--amber); }
+.net-detail-value--mono { font-family: var(--font-mono); font-size: 10.5px; }
+
+/* Worker role chip inside the Infrastructure section */
+.worker-role {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--moss-3);
+    letter-spacing: 0.02em;
+}
+
+.pulse-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--moss-2);
+    animation: willowPulse 1.8s ease-in-out infinite;
+}
+.pulse-dot--offline {
+    background: var(--ink-4);
+    animation: none;
+}
+.net-peer-count { color: var(--moss-3); }
+.net-sep { color: var(--ink-4); }
+.net-relay { color: var(--ink-3); }
+.net-offline {
+    color: var(--amber);
+    font-family: var(--font-mono);
+}
+
+/* ── Main-pane header ────────────────────────────────────────────── */
+
+.main-pane-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 52px;
+    padding: 0 14px;
+    background: var(--bg-0);
+    border-bottom: 1px solid var(--line-soft);
+    flex: none;
+}
+
+.mph-kind-icon {
+    display: inline-flex;
+    align-items: center;
+    color: var(--ink-2);
+    font-size: 17px;
+}
+
+.mph-title {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 17px;
+    font-weight: 500;
+    color: var(--ink-0);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+
+.mph-sep {
+    display: inline-block;
+    width: 1px;
+    height: 14px;
+    background: var(--line);
+    margin: 0 6px;
+    flex: none;
+}
+
+.mph-topic {
+    font-family: var(--font-ui);
+    font-size: 12px;
+    color: var(--ink-3);
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 40ch;
+}
+
+.mph-spacer {
+    flex: 1 1 auto;
+    min-width: 8px;
+}
+
+.mph-action-bar {
+    display: flex;
+    gap: 2px;
+    align-items: center;
+    flex: none;
+}
+
+.action-btn {
+    width: 32px;
+    height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-s);
+    background: transparent;
+    color: var(--ink-2);
+    cursor: pointer;
+    transition:
+        background var(--motion-fast) var(--motion-ease),
+        color var(--motion-fast) var(--motion-ease);
+}
+
+.action-btn:hover {
+    background: var(--bg-2);
+    color: var(--ink-1);
+}
+
+.action-btn.active {
+    background: var(--bg-3);
+    color: var(--ink-0);
+}
+
+.action-btn:disabled {
+    color: var(--ink-4);
+    cursor: not-allowed;
+}
+
+.action-btn .icon {
+    font-size: 17px;
+}
+
+/* Members button with count badge — merges holder-pill + members icon */
+.action-btn--with-count {
+    width: auto;
+    padding: 0 8px 0 6px;
+    gap: 4px;
+}
+.action-btn__count {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--ink-3);
+    min-width: 16px;
+    text-align: center;
+    padding: 0 2px;
+}
+.action-btn--with-count:hover .action-btn__count,
+.action-btn--with-count.active .action-btn__count {
+    color: var(--moss-3);
+}
+
+/* ── Desktop empty states ────────────────────────────────────────── */
+
+.main-pane-empty {
+    padding: 64px 24px 24px;
+    text-align: center;
+}
+.main-pane-empty__headline {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 22px;
+    color: var(--ink-2);
+}
+
+.member-list-empty {
+    padding: 48px 16px 16px;
+    text-align: center;
+}
+
+/* ── Right rail ──────────────────────────────────────────────────── */
+
+.right-rail-inner {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+.right-rail-pane {
+    flex: 1 1 auto;
+    min-height: 0;
+    opacity: 1;
+    transition: opacity var(--motion-fast) var(--motion-ease);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.right-rail-pane > * {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.right-rail[data-open="false"] .right-rail-pane {
+    opacity: 0;
+}
+
+.right-rail-pane--empty {
+    display: none;
+}
+
+.thread-stub {
+    padding: 48px 24px;
+}
+
+/* Member-list + pinned panel empty-state copy tweaks under right rail. */
+.right-rail-pane[data-pane="members"] .member-list {
+    height: 100%;
+    overflow-y: auto;
+}
+
+.right-rail-pane[data-pane="pinned"] .pinned-panel {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+

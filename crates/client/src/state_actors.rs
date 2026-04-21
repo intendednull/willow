@@ -15,6 +15,8 @@ use std::collections::{HashMap, HashSet};
 use willow_crypto::ChannelKey;
 use willow_identity::EndpointId;
 
+use crate::presence::{PresenceOverride, Tick, DEFAULT_GONE_TICKS, DEFAULT_IDLE_TICKS};
+
 // ───── Layer 1: Source state types ──────────────────────────────────────
 
 /// Registry of all servers and their metadata.
@@ -132,6 +134,49 @@ pub struct NetworkMeta {
     pub typing_peers: HashMap<EndpointId, (String, u64)>,
     /// Last time we sent a typing indicator (for debouncing).
     pub last_typing_sent_ms: u64,
+}
+
+/// Presence metadata — holds the tick counter, last-seen map, queue
+/// depth, whisper / invisibility hints, and the local self-override.
+///
+/// Derived view [`PresenceView`](crate::views::PresenceView) converts
+/// this snapshot plus [`ChatMeta`] reachability + [`VoiceState`] into
+/// per-peer [`PresenceState`](crate::presence::PresenceState) values.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PresenceMeta {
+    /// Monotonic tick counter. Advanced by the connect.rs tick driver.
+    pub now: Tick,
+    /// Last observed tick per peer (heartbeat or reachability probe).
+    pub last_seen: HashMap<EndpointId, Tick>,
+    /// Queued-outbound message depth per peer (stubbed — real queue in a
+    /// later phase).
+    pub queue_depth: HashMap<EndpointId, u32>,
+    /// Peers currently in a whisper session we know about (stub).
+    pub whispering_with: HashSet<EndpointId>,
+    /// Peers invisible to us (stub — stays empty in phase 1e).
+    pub invisible_to_me: HashSet<EndpointId>,
+    /// Local user's self-presence override. Sticky, per-device; resets
+    /// to [`PresenceOverride::Auto`] on browser reload.
+    pub self_override: PresenceOverride,
+    /// Idle threshold in ticks (default 6 min = 360).
+    pub idle_ticks: Tick,
+    /// Gone threshold in ticks (default 48 h = 172_800).
+    pub gone_ticks: Tick,
+}
+
+impl Default for PresenceMeta {
+    fn default() -> Self {
+        Self {
+            now: 0,
+            last_seen: HashMap::new(),
+            queue_depth: HashMap::new(),
+            whispering_with: HashSet::new(),
+            invisible_to_me: HashSet::new(),
+            self_override: PresenceOverride::Auto,
+            idle_ticks: DEFAULT_IDLE_TICKS,
+            gone_ticks: DEFAULT_GONE_TICKS,
+        }
+    }
 }
 
 /// Voice call state.

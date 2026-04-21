@@ -5,8 +5,10 @@
 //! speaking glow, and muted badge.
 
 use crate::icons;
+use crate::state::AppState;
 use leptos::prelude::*;
 use send_wrapper::SendWrapper;
+use willow_client::presence::PresenceState;
 
 /// Derive a unique gradient from a peer ID for the avatar background.
 ///
@@ -144,6 +146,35 @@ pub fn ParticipantTile(
             <div class="tile-name">
                 <span>{display_name}</span>
             </div>
+            <div class="tile-trust-corner">
+                <super::TrustBadge
+                    peer_id=peer_id.clone()
+                    size=super::TrustBadgeSize::Disk12
+                    context=super::TrustBadgeContext::TileCorner
+                />
+            </div>
+            {
+                // Presence dot — ring for `in a call`, filled violet for
+                // whispering, etc. Reads from AppState presence when the
+                // context is available; otherwise defaults to InCall (we
+                // only render inside calls).
+                let pid_for_presence = peer_id.clone();
+                let presence = Signal::derive(move || {
+                    use_context::<AppState>()
+                        .and_then(|a| a.presence.per_peer.get().get(&pid_for_presence).copied())
+                        .unwrap_or(PresenceState::InCall)
+                });
+                view! {
+                    <div class="tile-presence-corner">
+                        <super::StatusDot
+                            state=presence
+                            size=super::StatusDotSize::CallTile
+                            border=super::StatusDotBorder::Bg0
+                            ambient=false
+                        />
+                    </div>
+                }
+            }
             {if is_muted {
                 Some(view! {
                     <div class="tile-muted-badge">

@@ -10,16 +10,20 @@
     <link rel="manifest" href="/manifest.json">
     <link rel="icon" type="image/svg+xml" href="/icon-192.svg">
     <link rel="apple-touch-icon" href="/icon-192.svg">
+    <link data-trunk rel="css" href="foundation.css" />
     <link data-trunk rel="css" href="style.css" />
+    <link data-trunk rel="css" href="components.css" />
     <link data-trunk rel="copy-file" href="manifest.json" />
     <link data-trunk rel="copy-file" href="icon-192.svg" />
     <link data-trunk rel="copy-file" href="icon-512.svg" />
     <link data-trunk rel="copy-file" href="sw.js" />
+    <link data-trunk rel="copy-file" href="willow-chime.webm" />
     <link data-trunk rel="rust" data-wasm-opt="z" />
     <link data-trunk rel="copy-file" href="init.js" />
     <script src="init.js"></script>
 </head>
 <body>
     <div class="loading" id="loading">Loading Willow...</div>
+    <div id="toast-root" aria-live="polite" aria-relevant="additions"></div>
 </body>
 </html>

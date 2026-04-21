@@ -55,6 +55,37 @@ impl Default for ChatState {
     }
 }
 
+/// Queue-note classification for a `DisplayMessage`.
+///
+/// Driven by `docs/specs/2026-04-19-ui-design/message-row.md` §Queue
+/// notes. The projection tags each row with one of three states so the
+/// message-row renderer can apply the spec's inline hints, badges,
+/// opacity treatment, and delivery-flash animation.
+///
+/// - [`Self::None`] — nothing to show. The row renders as a normal
+///   delivered message.
+/// - [`Self::LateArrival`] — a peer authored this while offline and it
+///   only reached us now. The row shows `sent earlier · arrived now`
+///   in italic amber below the body + a `queued` badge in the meta
+///   row.
+/// - [`Self::Pending`] — the local user authored this while offline
+///   and no peer has acked it yet. The row renders at `opacity: 0.7`
+///   with `queued · will send on reconnect` below the body + a
+///   `queued` badge in the meta row. On transition to `None` the row
+///   fades back to full opacity and the badge flashes to `check +
+///   sent` for 900 ms (see `message.rs`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum QueueNote {
+    /// No queue note. The default for delivered / online-authored
+    /// messages.
+    #[default]
+    None,
+    /// Peer authored offline; arrived late to the local node.
+    LateArrival,
+    /// Local author sent while offline; not yet acked by any peer.
+    Pending,
+}
+
 /// A message prepared for display. Computed on-the-fly from
 /// event_state, never stored. Display names are resolved at
 /// construction time so they're never stale.
@@ -72,6 +103,48 @@ pub struct DisplayMessage {
     pub deleted: bool,
     pub reply_to: Option<String>,
     pub reply_preview: Option<String>,
+    /// Peer IDs explicitly mentioned by this message, as resolved by
+    /// `willow_client::mentions::parse_mentions` at projection time.
+    ///
+    /// Populated once by the view projection rather than re-parsed at
+    /// render time, so `mentions_me(msg, &local_peer)` is an O(1) read
+    /// per frame. Never empty for a resolved `@you` or `@handle` whose
+    /// resolver path produced a peer id; unresolved tokens stay in the
+    /// body as plain text and are not reflected here.
+    pub mentions: Vec<EndpointId>,
+    /// Whether this message is currently pinned in its channel.
+    ///
+    /// Derived at projection time from
+    /// `ServerState::channels[cid].pinned_messages`. The pin event
+    /// stream is owned by `reactions-pins.md`; Phase 2a Task 6 consumes
+    /// the projection to drive the row marker + badge + run-break rule
+    /// per `docs/specs/2026-04-19-ui-design/message-row.md` §Pins.
+    pub pinned: bool,
+    /// Whether this message is part of a whisper (violet-rule placeholder).
+    ///
+    /// Phase 2a Task 8 reserves the layout + styling surface behind an
+    /// always-false gate: the projection in
+    /// `views::compute_messages_view` hard-codes `false` and the
+    /// whisper-specific `EventKind` (`WhisperStart`) has not shipped
+    /// yet. Once `whisper-mode.md` lands the projection will flip this
+    /// via event lookup and the row renderer in `message.rs` + the
+    /// run-break predicate in `chat.rs` will light up without further
+    /// plumbing. Per `docs/specs/2026-04-19-ui-design/message-row.md`
+    /// §Whisper hand-off, a `true` value must render the violet left
+    /// rule, tinted bg, italic body, and `whisper` badge in the meta
+    /// row.
+    pub whisper: bool,
+    /// Queue-note state for this row (see [`QueueNote`]).
+    ///
+    /// Populated by the view projection in
+    /// `views::compute_messages_view`. Today the projection defers the
+    /// real detection to the sync-queue crate and always returns
+    /// `None` — see `TODO(sync-queue.md)` in `views.rs`. The renderer
+    /// is already wired for the full tri-state so the UX will light up
+    /// once detection lands. The grouping predicate in `chat.rs`
+    /// treats any non-`None` variant as a run-break per
+    /// `docs/specs/2026-04-19-ui-design/message-row.md` §Queue notes.
+    pub queue_note: QueueNote,
 }
 
 /// Maps EndpointId -> display names. Updated from profile broadcasts.

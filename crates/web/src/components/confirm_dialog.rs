@@ -18,6 +18,9 @@ pub fn ConfirmDialog(
     /// Label for the confirm button (e.g. "Delete", "Leave").
     #[prop(into)]
     confirm_text: String,
+    /// Label for the cancel button. Defaults to `Cancel`.
+    #[prop(into, default = "Cancel".to_string())]
+    cancel_text: String,
     /// When true the confirm button uses the danger (red) style.
     #[prop(default = false)]
     danger: bool,
@@ -40,6 +43,7 @@ pub fn ConfirmDialog(
             let title = title.clone();
             let msg = message.get();
             let confirm_text = confirm_text.clone();
+            let cancel_text = cancel_text.clone();
             Some(view! {
                 <div
                     class="confirm-overlay"
@@ -55,7 +59,7 @@ pub fn ConfirmDialog(
                         <p>{msg}</p>
                         <div class="confirm-actions">
                             <button class="btn btn-secondary" on:click=move |_| on_cancel.run(())>
-                                "Cancel"
+                                {cancel_text}
                             </button>
                             <button class=confirm_class on:click=move |_| on_confirm.run(())>
                                 {confirm_text}

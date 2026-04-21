@@ -10,6 +10,11 @@ import {
   switchChannel,
 } from './helpers';
 
+// Shared relay + gossip mesh — keep tests inside this file sequential
+// so they don't stampede the relay while `fullyParallel: true` runs
+// different spec files concurrently.
+test.describe.configure({ mode: 'serial' });
+
 test.describe('Multi-peer mobile', () => {
   // Mobile two-peer tests need extra time for setup + P2P sync + mobile navigation.
   test.setTimeout(120_000);
@@ -18,24 +23,24 @@ test.describe('Multi-peer mobile', () => {
     test.skip(!testInfo.project.name.startsWith('mobile'), 'mobile only');
   });
 
-  test('invite flow on mobile — sidebar accessible via hamburger', async ({ browser }) => {
+  test('invite flow on mobile — channels list is visible on home', async ({ browser }) => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Mobile Invite', 'Alice', 'Bob');
     try {
-      // Open sidebar on both peers via hamburger.
-      await openSidebar(page1);
-      await expect(page1.locator('.sidebar.open, .sidebar')).toBeVisible();
-      await expect(page1.locator('.channel-item', { hasText: 'general' })).toBeVisible();
+      // New mobile shell renders the channel list directly on the home tab;
+      // the grove drawer is a separate overlay reached from the top-bar glyph.
+      await expect(page1.locator('.mobile-home .channel-item', { hasText: 'general' })).toBeVisible();
+      await expect(page2.locator('.mobile-home .channel-item', { hasText: 'general' })).toBeVisible();
 
-      await openSidebar(page2);
-      await expect(page2.locator('.sidebar.open, .sidebar')).toBeVisible();
-      await expect(page2.locator('.channel-item', { hasText: 'general' })).toBeVisible();
+      // And the grove drawer opens on demand.
+      await openSidebar(page1);
+      await expect(page1.locator('.grove-drawer.open')).toBeVisible();
     } finally {
       await ctx1.close();
       await ctx2.close();
     }
   });
 
-  test('new channels visible via hamburger menu', async ({ browser }) => {
+  test('new channels visible on home tab after sync', async ({ browser }) => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Mobile Chan', 'Alice', 'Bob');
     try {
       // Alice creates a new channel.
@@ -44,15 +49,13 @@ test.describe('Multi-peer mobile', () => {
       await page2.waitForTimeout(500);
 
       // Wait for the channel event to reach Bob (attached to DOM means synced,
-      // regardless of sidebar visibility). Use a generous timeout since gossip
+      // regardless of scroll position). Use a generous timeout since gossip
       // establishment can be slow when the relay is handling previous teardown.
-      await expect(page2.locator('.channel-item', { hasText: 'mobile-news' }))
+      await expect(page2.locator('.shell-mobile .channel-item', { hasText: 'mobile-news' }).first())
         .toBeAttached({ timeout: 60_000 });
 
-      // Open sidebar so the user can see it.
-      await openSidebar(page2);
-      // Sidebar item should now be in view.
-      await expect(page2.locator('.channel-item', { hasText: 'mobile-news' }))
+      // It is rendered on the mobile home tab.
+      await expect(page2.locator('.mobile-home .channel-item', { hasText: 'mobile-news' }))
         .toBeVisible({ timeout: 5_000 });
     } finally {
       await ctx1.close();
@@ -60,13 +63,19 @@ test.describe('Multi-peer mobile', () => {
     }
   });
 
-  test('messages visible while sidebar is closed', async ({ browser }) => {
+  test('messages sync while grove drawer is closed', async ({ browser }) => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Mobile Msg', 'Alice', 'Bob');
     try {
-      // Alice sends a message (sidebar is closed on mobile after setup).
+      // Both peers push into the default channel's chat view.
+      await page1.locator('.mobile-home .channel-item').first().click();
+      await page1.waitForTimeout(400);
+      await page2.locator('.mobile-home .channel-item').first().click();
+      await page2.waitForTimeout(400);
+
+      // Alice sends a message (drawer stays closed).
       await sendMessage(page1, 'mobile hello');
 
-      // Bob should see the message in the chat area without opening sidebar.
+      // Bob should see the message in the chat area.
       await waitForMessage(page2, 'mobile hello', 30_000);
     } finally {
       await ctx1.close();
@@ -83,10 +92,12 @@ test.describe('Multi-peer mobile', () => {
       await page2.waitForTimeout(500);
 
       // Wait for the channel to appear in Bob's DOM (synced via gossip).
-      await expect(page2.locator('.channel-item', { hasText: 'mobile-dev' }))
+      await expect(page2.locator('.shell-mobile .channel-item', { hasText: 'mobile-dev' }).first())
         .toBeAttached({ timeout: 60_000 });
 
       // Alice switches to the new channel and sends a message.
+      // On mobile the `switchChannel` helper routes through the home tab
+      // and taps the channel row — which also pushes the chat view.
       await switchChannel(page1, 'mobile-dev');
       await sendMessage(page1, 'dev channel msg');
 

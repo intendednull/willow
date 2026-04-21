@@ -1,6 +1,65 @@
 use super::*;
 use willow_network::TopicHandle as _;
 
+/// Spawn the per-connection presence tick driver.
+///
+/// Advances [`PresenceMeta::now`](state_actors::PresenceMeta) by one
+/// every second and refreshes `last_seen` for each reachable peer so
+/// their derived state stays `here` while online.
+///
+/// On native we use `tokio::spawn`; on wasm we use
+/// `wasm_bindgen_futures::spawn_local` with `gloo-timers` for sleep.
+fn spawn_presence_tick(
+    presence_meta_addr: willow_actor::Addr<willow_actor::StateActor<state_actors::PresenceMeta>>,
+    chat_meta_addr: willow_actor::Addr<willow_actor::StateActor<state_actors::ChatMeta>>,
+) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    tick_once(&presence_meta_addr, &chat_meta_addr).await;
+                }
+            });
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        wasm_bindgen_futures::spawn_local(async move {
+            loop {
+                gloo_timers::future::TimeoutFuture::new(1_000).await;
+                tick_once(&presence_meta_addr, &chat_meta_addr).await;
+            }
+        });
+    }
+}
+
+/// Single tick: advance `now` and stamp `last_seen` for every peer in
+/// `chat_meta.peers`. Kept separate so it can be unit-tested by driving
+/// it directly without spawning a timer task.
+#[cfg(any(test, feature = "test-utils"))]
+pub async fn tick_once_for_test(
+    presence_meta_addr: &willow_actor::Addr<willow_actor::StateActor<state_actors::PresenceMeta>>,
+    chat_meta_addr: &willow_actor::Addr<willow_actor::StateActor<state_actors::ChatMeta>>,
+) {
+    tick_once(presence_meta_addr, chat_meta_addr).await;
+}
+
+async fn tick_once(
+    presence_meta_addr: &willow_actor::Addr<willow_actor::StateActor<state_actors::PresenceMeta>>,
+    chat_meta_addr: &willow_actor::Addr<willow_actor::StateActor<state_actors::ChatMeta>>,
+) {
+    let reachable = willow_actor::state::select(chat_meta_addr, |c| c.peers.clone()).await;
+    willow_actor::state::mutate(presence_meta_addr, move |pm| {
+        pm.now = pm.now.saturating_add(1);
+        for pid in &reachable {
+            pm.last_seen.insert(*pid, pm.now);
+        }
+    })
+    .await;
+}
+
 impl<N: willow_network::Network> ClientHandle<N> {
     /// Connect to the P2P network.
     pub async fn connect(
@@ -179,6 +238,14 @@ impl<N: willow_network::Network> ClientHandle<N> {
                     .broadcast_on_topic(ops::SERVER_OPS_TOPIC, data);
             }
         }
+
+        // Presence tick driver (phase 1e). 1 tick = 1 s. Advances the
+        // PresenceMeta `now` counter and refreshes `last_seen` for every
+        // currently-reachable peer so their presence state stays `here`
+        // while reachable. When a peer drops out of `chat_meta.peers`
+        // their last_seen stays frozen so elapsed = now - last_seen
+        // climbs past the idle / gone thresholds in due course.
+        spawn_presence_tick(self.presence_meta_addr.clone(), self.chat_meta_addr.clone());
 
         self.broadcast_profile_via_network();
         // Also announce via SERVER_OPS_TOPIC for peers that have a sync path

@@ -19,6 +19,7 @@ willow-state = { path = "../state" }
 willow-common = { path = "../common" }
 
 anyhow = { workspace = true }
+blake3 = { workspace = true }
 bytes = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
@@ -26,6 +27,7 @@ uuid = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 futures = { workspace = true }
+regex = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["full"] }

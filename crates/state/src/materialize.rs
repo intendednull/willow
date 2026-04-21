@@ -290,6 +290,8 @@ fn required_permission(kind: &EventKind) -> Option<Permission> {
         //   SetProfile          — unrestricted (any member)
         //   PinMessage,
         //   UnpinMessage        — unrestricted (any member)
+        //   MuteChannel,
+        //   MuteGrove           — per-identity preference, never gated
         //
         // If a new EventKind variant is added and is NOT listed here or
         // in an arm above, it will silently get no permission check.
@@ -526,6 +528,24 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
 
         EventKind::SetServerDescription { description } => {
             state.description = description.clone();
+        }
+
+        EventKind::MuteChannel { channel_id, muted } => {
+            // Per-identity preference — keyed by the event author so
+            // each peer maintains its own view. No member check;
+            // muting a channel the author isn't a member of is a
+            // harmless idempotent no-op.
+            let entry = state.mute_state.entry(event.author).or_default();
+            if *muted {
+                entry.channels.insert(channel_id.clone());
+            } else {
+                entry.channels.remove(channel_id);
+            }
+        }
+
+        EventKind::MuteGrove { muted } => {
+            let entry = state.mute_state.entry(event.author).or_default();
+            entry.grove_muted = *muted;
         }
 
         // Governance events handled above in apply_event.

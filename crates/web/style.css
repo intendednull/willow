@@ -1,45 +1,63 @@
-/* ── Typography: IBM Plex Sans + Mono ─────────────────────────────── */
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
-
 /* ── CSS Variables: Dark theme (default) ─────────────────────────── */
 
 :root, [data-theme="dark"] {
-    --bg-main: #1a1a1e;
-    --bg-sidebar: #15151a;
-    --bg-input: #2a2a30;
-    --bg-message-hover: #1e1e24;
-    --bg-server-rail: #111114;
-    --bg-elevated: #222228;
-    --text-primary: #e0e0e5;
-    --text-secondary: #b0b0b8;
-    --text-muted: #6a6a75;
-    --text-placeholder: #4a4a55;
-    --accent: #5865f2;
-    --accent-hover: #4752c4;
-    --accent-glow: rgba(88, 101, 242, 0.15);
-    --accent-subtle: rgba(88, 101, 242, 0.08);
-    --accent-green: #3ba55c;
-    --accent-green-hover: #2d8049;
-    --accent-green-glow: rgba(59, 165, 92, 0.15);
-    --danger: #ed4245;
-    --danger-hover: #c73538;
-    --danger-glow: rgba(237, 66, 69, 0.15);
-    --online: #3ba55c;
-    --unread: #f0b232;
-    --border: #2a2a30;
-    --border-subtle: #222228;
-    --scrollbar-thumb: #2a2a30;
-    --scrollbar-track: transparent;
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
-    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
-    --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.4);
-    --shadow-inset: inset 0 1px 3px rgba(0, 0, 0, 0.2);
-    --focus-ring: 0 0 0 2px var(--accent-glow), 0 0 0 1px var(--accent);
-    --overlay-bg: rgba(0, 0, 0, 0.6);
-    --backdrop-blur: blur(4px);
-    --transition-fast: 0.12s ease;
-    --transition-normal: 0.18s ease;
-    --transition-smooth: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    /* Every legacy token below aliases a foundation token from
+       foundation.css. This is a one-way migration step: components
+       keep their old names; the palette moves under them. */
+    --bg-main:           var(--bg-0);
+    --bg-sidebar:        var(--bg-1);
+    --bg-input:          var(--bg-2);
+    --bg-message-hover:  var(--bg-2);
+    --bg-server-rail:    var(--bg-0);
+    --bg-elevated:       var(--bg-1);
+
+    --text-primary:      var(--ink-1);
+    --text-secondary:    var(--ink-2);
+    --text-muted:        var(--ink-3);
+    --text-placeholder:  var(--ink-4);
+
+    --accent:            var(--moss-2);
+    --accent-hover:      var(--moss-3);
+    --accent-glow:       color-mix(in oklab, var(--moss-2) 18%, transparent);
+    --accent-subtle:     color-mix(in oklab, var(--moss-2) 8%,  transparent);
+
+    --accent-green:      var(--ok);
+    --accent-green-hover:color-mix(in oklab, var(--ok) 80%, black);
+    --accent-green-glow: color-mix(in oklab, var(--ok) 18%, transparent);
+
+    --danger:            var(--err);
+    --danger-hover:      color-mix(in oklab, var(--err) 80%, black);
+    --danger-glow:       color-mix(in oklab, var(--err) 18%, transparent);
+
+    --online:            var(--moss-2);
+    --unread:            var(--amber);
+
+    --border:            var(--line);
+    --border-subtle:     var(--line-soft);
+
+    --scrollbar-thumb:   var(--bg-3);
+    --scrollbar-track:   transparent;
+
+    --shadow-sm:         0 1px 2px rgba(0, 0, 0, 0.2);
+    --shadow-md:         0 4px 12px rgba(0, 0, 0, 0.3);
+    --shadow-lg:         0 8px 32px rgba(0, 0, 0, 0.4);
+    --shadow-inset:      inset 0 1px 3px rgba(0, 0, 0, 0.2);
+
+    /* Keep legacy focus-ring shape but re-seat on the foundation token. */
+    --focus-ring:        var(--focus-ring, 0 0 0 2px var(--moss-1), 0 0 0 3px rgba(106, 141, 94, 0.6));
+
+    --overlay-bg:        rgba(0, 0, 0, 0.6);
+    --backdrop-blur:     blur(4px);
+
+    --transition-fast:   var(--motion-fast);
+    --transition-normal: var(--motion);
+    --transition-smooth: var(--motion-slow) var(--motion-ease);
+}
+
+/* Legacy alias — IBM Plex Mono is no longer loaded; route to JetBrains Mono
+   until components migrate to --font-mono directly. */
+code, pre, .peer-id-text, .invite-code-display textarea, .welcome-invite-input {
+    font-family: var(--font-mono) !important;
 }
 
 /* ── CSS Variables: Light theme ──────────────────────────────────── */
@@ -428,14 +446,8 @@ select:focus-visible {
     gap: 4px;
 }
 
-.channel-item .unread-badge {
-    background: var(--unread);
-    color: #000;
-    font-size: 11px;
-    font-weight: 600;
-    padding: 1px 6px;
-    border-radius: 10px;
-}
+/* Legacy `.channel-item .unread-badge` amber rule deleted in phase 1f —
+ * the `UnreadBadge` atom now owns all badge styling in foundation.css. */
 
 /* Delete button -- hidden by default, visible on hover */
 .channel-item .delete-btn {
@@ -588,8 +600,28 @@ select:focus-visible {
     position: relative;
     border-left: 2px solid transparent;
     border-radius: 6px;
-    transition: background var(--transition-fast), border-color var(--transition-fast);
+    /* `transform` here drives the 200ms snap-back for the swipe
+     * gestures (spec §Swipe gestures). `.is-dragging` disables the
+     * transition so the translate tracks the finger 1:1. Reduced
+     * motion collapses the snap-back to an instant state change. */
+    transition:
+        background var(--transition-fast),
+        border-color var(--transition-fast),
+        transform 200ms ease-out;
     cursor: pointer;
+    touch-action: pan-y;
+}
+
+.message.is-dragging {
+    transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .message {
+        transition:
+            background var(--transition-fast),
+            border-color var(--transition-fast);
+    }
 }
 
 .message:hover {
@@ -619,11 +651,55 @@ select:focus-visible {
 }
 
 .message .author { font-weight: 600; font-size: 14px; }
+/* Phase 2a Task 15 — spec §Accessibility / ARIA labels.
+   `.author-btn` is the semantic `<button>` wrapper for the display-name —
+   the profile-card entry point (see `profile-card.md`). Strip the UA
+   default button chrome so the visual reads identical to the previous
+   `<span>` while keeping `<button>` semantics for screen readers and
+   keyboard users. */
+.message .author-btn {
+    background: transparent;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+    text-align: inherit;
+    line-height: inherit;
+}
+.message .author-btn:focus-visible {
+    outline: 2px solid var(--accent, var(--willow, currentColor));
+    outline-offset: 2px;
+    border-radius: 2px;
+}
 .message .timestamp { font-size: 11px; color: var(--text-muted); }
 .message .edited { font-size: 10px; color: var(--text-placeholder); font-style: italic; }
 
-.message .body { margin-top: 2px; line-height: 1.5; word-break: break-word; }
+/* Phase 2a Task 16 — spec §Edge cases:
+   - 500-char single-word bodies must wrap without breaking layout →
+     `word-break: break-word` + `overflow-wrap: anywhere` + `min-width: 0`
+     (the last one lets flex children actually shrink below their
+     content size so the break rules apply).
+   - Right-to-left paragraphs must pick their own base direction →
+     `unicode-bidi: plaintext` + `direction: auto`.
+*/
+.message .body {
+    margin-top: 2px;
+    line-height: 1.5;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    min-width: 0;
+    unicode-bidi: plaintext;
+    direction: auto;
+}
 .message .body.deleted { color: var(--text-muted); font-style: italic; }
+/* Phase 2a Task 14 — spec §Copy / Deleted placeholder + empty-body
+   fallback. Both variants render the same quiet italic stub in
+   `--ink-3`; keeping them as distinct classes so test selectors and
+   future copy divergence stay clean. */
+.message .body--deleted { color: var(--ink-3); font-style: italic; }
+.message .body--empty   { color: var(--ink-3); font-style: italic; }
 
 /* ── Reply Preview (Discord-style connected quote) ───────────────── */
 
@@ -725,31 +801,114 @@ select:focus-visible {
 /* ── Message Action Bar (dropdown) ────────────────────────────────── */
 
 .message-actions {
-    display: none;
+    /* Phase 2a Task 12: the action bar is now a *positioning anchor* for
+       the hover toolbar + dropdown. The toolbar itself controls its own
+       visibility via `.message:hover .message-hover-toolbar` below, so
+       `.message-actions` stays mounted at all times (it's inert until the
+       toolbar inside flips opacity). This keeps the dropdown's absolute
+       positioning stable and avoids layout thrash on hover. */
     position: absolute;
     top: -14px;
     right: 8px;
     z-index: 2;
 }
 
-.message:hover .message-actions { display: flex; }
+/* ── Phase 2a Task 12 · Desktop hover toolbar ─────────────────────────
+   Spec: docs/specs/2026-04-19-ui-design/message-row.md §Hover toolbar.
+   Inline-flex row of 26 × 26 IconBtns + thin divider; fades in over
+   `--motion-fast` on `.message:hover` / `.message:focus-within`;
+   reduced-motion collapses the transition to none (opacity-only state
+   change). Hidden on mobile viewports (<=720 px) where the long-press
+   action sheet is the entry point. */
+.message-hover-toolbar {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 3px;
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: var(--shadow-2);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--motion-fast, 120ms) ease;
+}
 
-.action-trigger {
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    color: var(--text-muted);
-    font-size: 16px;
-    padding: 4px 8px;
-    cursor: pointer;
+.message:hover .message-hover-toolbar,
+.message:focus-within .message-hover-toolbar {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.toolbar-btn {
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
     border-radius: 6px;
-    box-shadow: var(--shadow-md);
-    transition: background var(--transition-fast), color var(--transition-fast);
+    padding: 0;
+    cursor: pointer;
+    color: var(--ink-2);
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1;
+    -webkit-tap-highlight-color: transparent;
+    transition: background var(--motion-fast, 120ms) ease,
+                color var(--motion-fast, 120ms) ease;
+}
+
+.toolbar-btn:hover {
+    background: var(--bg-2);
+    color: var(--ink-1);
+}
+
+.toolbar-btn .icon {
+    width: 14px;
+    height: 14px;
+    font-size: 14px;
+}
+
+.toolbar-btn--quick-react {
+    font-size: 14px;
+}
+
+.toolbar-divider {
+    width: 1px;
+    align-self: stretch;
+    background: var(--line);
+    margin: 2px 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .message-hover-toolbar {
+        transition: none;
+    }
+    .toolbar-btn {
+        transition: none;
+    }
+}
+
+@media (max-width: 720px) {
+    .message-hover-toolbar {
+        display: none;
+    }
+}
+
+/* Legacy trigger (kept for visual regressions + clarity); the hover
+   toolbar wraps it now, so these rules only apply when that `.action-
+   trigger` appears inside `.message-hover-toolbar` via `.toolbar-btn`. */
+.action-trigger {
+    background: transparent;
+    color: var(--ink-2);
     -webkit-tap-highlight-color: transparent;
 }
 
 .action-trigger:hover {
-    background: var(--bg-input);
-    color: var(--text-primary);
+    background: var(--bg-2);
+    color: var(--ink-1);
 }
 
 .message-dropdown {
@@ -901,10 +1060,20 @@ select:focus-visible {
         background: var(--bg-input);
     }
 
-    .mobile-action-sheet .sheet-danger {
-        color: var(--danger);
+    /* Phase 2a Task 13 / spec §Long-press action sheet:
+       `delete` renders in the foundation `--err` ink. `--danger` is
+       the legacy alias that already resolves to `var(--err)` at
+       `:root`, so both class names point at the same token.
+       `.sheet-item--delete` is the spec-named variant; `.sheet-danger`
+       stays for back-compat. */
+    .mobile-action-sheet .sheet-danger,
+    .mobile-action-sheet .sheet-item--delete {
+        color: var(--err);
     }
 
+    /* Trailing `cancel` — separator above, muted ink. Per spec the
+       cancel sits at the bottom of the sheet with a clear break from
+       the action column above. */
     .mobile-action-sheet .sheet-cancel {
         border-top: 1px solid var(--border);
         margin-top: 4px;
@@ -1767,7 +1936,16 @@ select:focus-visible {
     border-top: 1px solid var(--border);
 }
 
-/* ── Scroll-to-Bottom Pill ───────────────────────────────────────── */
+/* ── Jump-to-Latest Pill ─────────────────────────────────────────── */
+/*
+ * Spec: docs/specs/2026-04-19-ui-design/message-row.md
+ *       §Scroll anchoring (jump-to-latest pill).
+ *
+ * The pill floats at the bottom-right of the message list when the
+ * user is more than 120 px from the bottom. Contents: chevron-down
+ * glyph + "jump to latest" label + optional " · {N} new" count.
+ * Click smooth-scrolls to bottom and clears the count.
+ */
 
 .message-list-container {
     flex: 1;
@@ -1778,22 +1956,23 @@ select:focus-visible {
     overflow: hidden;
 }
 
-.scroll-to-bottom {
+.jump-to-latest {
     position: absolute;
     bottom: 16px;
-    right: 20px;
-    background: var(--accent);
-    color: white;
-    border: none;
-    border-radius: 20px;
-    padding: 8px 16px;
-    font-size: 13px;
-    font-weight: 500;
-    cursor: pointer;
-    z-index: 5;
-    box-shadow: var(--shadow-lg);
-    transition: background var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
+    right: 16px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 9999px;
+    box-shadow: var(--shadow-2);
+    color: var(--ink-1);
     font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    z-index: 2;
     -webkit-tap-highlight-color: transparent;
     animation: fadeInUp 0.2s ease-out;
 }
@@ -1803,10 +1982,37 @@ select:focus-visible {
     to { opacity: 1; transform: translateY(0); }
 }
 
-.scroll-to-bottom:hover {
-    background: var(--accent-hover);
-    transform: translateY(-2px);
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+.jump-to-latest:hover {
+    background: var(--bg-2);
+}
+
+.jump-to-latest svg {
+    width: 14px;
+    height: 14px;
+    color: var(--ink-2);
+}
+
+.jump-to-latest__count {
+    color: var(--moss-3);
+    font-weight: 500;
+}
+
+.jump-to-latest:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+}
+
+@media (max-width: 720px) {
+    .jump-to-latest {
+        bottom: 80px;
+        right: 12px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .jump-to-latest {
+        animation: none;
+    }
 }
 
 /* ── Loading Spinner ─────────────────────────────────────────────── */
@@ -2088,467 +2294,6 @@ select:focus-visible {
     margin: 0;
 }
 
-/* ── Responsive: Tablet (< 900px) ───────────────────────────────── */
-
-@media (max-width: 900px) {
-    .mobile-members-toggle {
-        display: inline-flex;
-    }
-
-    .member-list-wrapper {
-        display: block;
-        position: fixed;
-        top: 0;
-        right: 0;
-        bottom: 0;
-        z-index: 10;
-        width: 260px;
-        max-width: 85vw;
-        transform: translateX(100%);
-        transition: transform var(--transition-smooth);
-        background: var(--bg-sidebar);
-        box-shadow: none;
-    }
-
-    .member-list-wrapper.open {
-        transform: translateX(0);
-        box-shadow: -4px 0 24px rgba(0, 0, 0, 0.5);
-    }
-
-    .member-list-wrapper .member-list {
-        width: 100%;
-        min-width: 0;
-        height: 100%;
-        border-left: none;
-    }
-
-    .members-overlay {
-        display: none;
-        position: fixed;
-        inset: 0;
-        z-index: 9;
-        background: var(--overlay-bg);
-        -webkit-backdrop-filter: var(--backdrop-blur);
-        backdrop-filter: var(--backdrop-blur);
-    }
-
-    .members-overlay.open {
-        display: block;
-    }
-
-    /* Member actions always visible on tablet (no hover) */
-    .member-actions {
-        display: flex;
-    }
-}
-
-/* ── Responsive: Mobile (< 640px) ───────────────────────────────── */
-
-@media (max-width: 640px) {
-    html, body {
-        height: 100%;
-        height: 100dvh;
-        /* Safe area for notched phones */
-        padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
-    }
-
-    .app {
-        height: 100%;
-        height: 100dvh;
-        flex-direction: column;
-    }
-
-    .mobile-nav-toggle {
-        display: block;
-    }
-
-    /* Sidebar becomes a slide-over drawer below the server rail */
-    .sidebar {
-        position: fixed;
-        top: 48px; /* below the compact horizontal server rail */
-        left: 0;
-        bottom: 0;
-        z-index: 10;
-        width: 280px;
-        max-width: 85vw;
-        transform: translateX(-100%);
-        transition: transform var(--transition-smooth);
-        box-shadow: none;
-    }
-
-    .sidebar.open {
-        transform: translateX(0);
-        box-shadow: 4px 0 24px rgba(0, 0, 0, 0.5);
-    }
-
-    .sidebar-overlay.open {
-        display: block;
-    }
-
-    /* Main content fills remaining space */
-    .main-content {
-        flex: 1;
-        width: 100%;
-        min-height: 0;
-        overflow: hidden;
-    }
-
-    .chat-container {
-        flex: 1;
-        min-height: 0;
-    }
-
-    /* Larger touch targets (min 44px) */
-    .channel-item {
-        padding: 10px 12px;
-        font-size: 15px;
-        min-height: 44px;
-    }
-
-    /* Always show delete button on mobile (no hover) */
-    .channel-item .delete-btn {
-        display: inline-block;
-    }
-
-    .user-area {
-        padding: 14px 12px;
-        min-height: 44px;
-    }
-
-    /* Channel header with hamburger */
-    .channel-header {
-        padding: 8px 10px;
-        gap: 6px;
-        min-height: 44px;
-        font-size: 15px;
-    }
-
-    /* Message layout */
-    .message-list {
-        padding: 8px;
-    }
-
-    .message {
-        padding: 6px 8px;
-    }
-
-    .message .meta {
-        gap: 6px;
-    }
-
-    .message .author {
-        font-size: 13px;
-    }
-
-    .message .body {
-        font-size: 14px;
-        word-break: break-word;
-    }
-
-    /* On mobile, hide the entire action bar — long-press opens the action sheet instead. */
-    .message-actions {
-        display: none !important;
-    }
-
-    /* Dropdown: prevent overflow on mobile */
-    .message-dropdown {
-        right: 0;
-        left: auto;
-        max-width: calc(100vw - 32px);
-    }
-
-    /* Reply preview compact on mobile */
-    .message .reply-preview {
-        font-size: 11px;
-        padding: 3px 10px 3px 12px;
-    }
-
-    /* Reactions flow nicely */
-    .message .reaction {
-        padding: 4px 10px;
-        font-size: 12px;
-    }
-
-    /* Input -- larger padding on mobile */
-    .input-area {
-        padding: 8px 10px;
-        padding-bottom: calc(8px + env(safe-area-inset-bottom));
-    }
-
-    .input-area input, .input-area textarea {
-        padding: 12px 14px;
-        font-size: 16px; /* prevents iOS zoom on focus */
-        border-radius: 20px;
-    }
-
-    /* File share button -- larger touch target */
-    .file-share-btn {
-        padding: 12px;
-        font-size: 22px;
-        min-width: 44px;
-        min-height: 44px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
-
-    /* File card full width */
-    .file-card {
-        max-width: 100%;
-    }
-
-    /* Image embeds full width */
-    .message-embeds {
-        max-width: 100%;
-    }
-    .embed-image {
-        max-height: 200px;
-    }
-
-    /* Settings */
-    .settings-panel {
-        padding: 16px;
-    }
-
-    .settings-panel h2 {
-        font-size: 20px;
-    }
-
-    .settings-panel input {
-        font-size: 16px;
-        padding: 10px 12px;
-    }
-
-    .settings-section {
-        padding: 16px;
-        border-radius: 8px;
-    }
-
-    /* Buttons -- min 44px touch target */
-    .btn {
-        padding: 10px 18px;
-        min-height: 44px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-    }
-
-    .btn-sm {
-        padding: 6px 10px;
-        min-height: 36px;
-    }
-
-    /* Server rail becomes horizontal strip at top on mobile */
-    .server-rail {
-        width: 100%;
-        min-width: unset;
-        height: 48px;
-        min-height: 48px;
-        flex-direction: row;
-        padding: 4px 8px;
-        gap: 6px;
-        overflow-x: auto;
-        overflow-y: hidden;
-        border-right: none;
-        border-bottom: 1px solid var(--border);
-        /* Hide scrollbar on mobile server rail */
-        -ms-overflow-style: none;
-        scrollbar-width: none;
-    }
-
-    .server-rail::-webkit-scrollbar {
-        display: none;
-    }
-
-    .server-icon {
-        width: 36px;
-        height: 36px;
-        min-width: 36px;
-        font-size: 14px;
-    }
-
-    /* Hide the left-side indicator pip on mobile horizontal rail */
-    .server-icon.active::before,
-    .server-icon:hover:not(.active)::before {
-        display: none;
-    }
-
-    /* Active indicator: bottom border on mobile */
-    .server-icon.active::after {
-        content: '';
-        position: absolute;
-        bottom: -4px;
-        left: 50%;
-        transform: translateX(-50%);
-        width: 60%;
-        height: 3px;
-        background: var(--text-primary);
-        border-radius: 3px 3px 0 0;
-    }
-
-    .server-rail-divider {
-        width: 2px;
-        height: 24px;
-        min-width: 2px;
-    }
-
-    /* Mobile hamburger button visual treatment */
-    .mobile-nav-toggle {
-        padding: 8px 12px;
-        min-height: 44px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
-
-    /* Mobile members toggle: larger touch target */
-    .mobile-members-toggle {
-        min-height: 44px;
-        padding: 8px 10px;
-        font-size: 14px;
-    }
-
-    /* Welcome screen mobile adjustments */
-    .welcome-screen {
-        padding: 12px;
-        align-items: flex-start;
-        padding-top: 24px;
-        overflow-y: auto;
-        -webkit-overflow-scrolling: touch;
-    }
-
-    .welcome-card {
-        padding: 24px 20px;
-        border-radius: 12px;
-        margin-bottom: 24px;
-        flex-shrink: 0;
-    }
-
-    .welcome-card h1 {
-        font-size: 24px;
-    }
-
-    .welcome-card .tagline {
-        font-size: 14px;
-        margin-bottom: 24px;
-    }
-
-    .welcome-options {
-        grid-template-columns: 1fr;
-        gap: 16px;
-    }
-
-    .welcome-option {
-        padding: 20px;
-    }
-
-    .welcome-option input {
-        font-size: 16px; /* prevent iOS zoom */
-        padding: 12px 14px;
-    }
-
-    .welcome-invite-input {
-        font-size: 13px;
-        height: 100px; /* more room on mobile for paste */
-    }
-
-    .welcome-peer-id .peer-id-text {
-        font-size: 10px;
-    }
-
-    /* Pinned panel: full width on mobile */
-    .pinned-panel {
-        max-height: 240px;
-    }
-
-    .pinned-header {
-        padding: 8px 12px;
-    }
-
-    .pinned-item {
-        padding: 8px 10px;
-    }
-
-    /* Typing indicator: compact on mobile */
-    .typing-indicator {
-        padding: 2px 10px;
-        font-size: 11px;
-        height: 20px;
-        min-height: 20px;
-        max-height: 20px;
-    }
-
-    /* Voice controls: larger touch targets */
-    .voice-controls {
-        padding: 10px 12px;
-    }
-
-    .voice-btn {
-        padding: 8px 12px;
-        font-size: 18px;
-        min-width: 44px;
-        min-height: 44px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 8px;
-    }
-
-    /* Voice channel items: larger touch targets */
-    .voice-channel {
-        padding: 10px 12px;
-        min-height: 44px;
-    }
-
-    /* Permission toggles: stack on mobile */
-    .permission-toggles {
-        gap: 8px 12px;
-    }
-
-    .permission-toggle {
-        min-height: 36px;
-        padding: 4px 0;
-    }
-
-    /* Scroll-to-bottom pill: centered on mobile */
-    .scroll-to-bottom {
-        right: 50%;
-        transform: translateX(50%);
-        bottom: 12px;
-    }
-
-    .scroll-to-bottom:hover {
-        transform: translateX(50%) translateY(-2px);
-    }
-
-    /* Role assign: stack on small screens */
-    .role-assign {
-        flex-wrap: wrap;
-    }
-
-    .role-assign-input {
-        min-width: 0;
-        flex: 1 1 auto;
-    }
-
-    /* Channel type toggle: larger buttons on mobile */
-    .type-btn {
-        padding: 8px 10px;
-        font-size: 13px;
-        min-height: 40px;
-    }
-
-    /* Member actions always visible on mobile */
-    .member-actions {
-        display: flex;
-    }
-
-    /* Member items: larger touch targets */
-    .member-item {
-        padding: 8px;
-        min-height: 40px;
-    }
-}
 
 /* ── Extra small screens (< 380px) ──────────────────────────────── */
 
@@ -2559,6 +2304,14 @@ select:focus-visible {
 
     .welcome-card h1 {
         font-size: 22px;
+    }
+
+    .welcome-card h1.willow-wordmark {
+        font-size: 34px;
+    }
+
+    .willow-mark-lg {
+        font-size: 38px;
     }
 
     .welcome-option {
@@ -2578,11 +2331,13 @@ select:focus-visible {
 
 .welcome-screen {
     display: flex;
-    align-items: center;
+    align-items: safe center;
     justify-content: center;
     min-height: 100vh;
     min-height: 100dvh;
-    padding: 20px;
+    padding: 48px 20px;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
     /* Animated subtle radial gradient background */
     background:
         radial-gradient(ellipse at 20% 50%, var(--accent-glow) 0%, transparent 50%),
@@ -2843,6 +2598,421 @@ select:focus-visible {
     color: var(--text-secondary);
     word-break: break-all;
     user-select: all;
+}
+
+/* ── Welcome hero (brand mark + wordmark + tagline) ──────────────── */
+
+.welcome-hero {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 28px;
+    animation: willow-pop-in var(--motion-slow) var(--motion-ease);
+}
+
+.welcome-hero .tagline {
+    margin: 0;
+}
+
+.welcome-hero .welcome-greeting {
+    margin-top: 14px;
+}
+
+.willow-mark-lg {
+    color: var(--willow);
+    font-size: 56px;
+    line-height: 1;
+    display: inline-flex;
+    filter: drop-shadow(0 4px 16px color-mix(in oklab, var(--willow) 40%, transparent));
+}
+
+.willow-wordmark {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 400;
+    font-size: 54px;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    color: var(--ink-0);
+    margin: 4px 0 0;
+    text-align: center;
+}
+
+/* Override legacy h1 rule inside welcome-card for wordmark only. */
+.welcome-card h1.willow-wordmark {
+    font-size: 54px;
+    font-weight: 400;
+    margin-bottom: 0;
+    letter-spacing: -0.02em;
+}
+
+.welcome-greeting {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 16px;
+    color: var(--moss-3);
+    margin: 2px 0 0;
+    text-align: center;
+    animation: willow-pop-in var(--motion) var(--motion-ease);
+}
+
+/* ── Welcome step 1 (display name first) ─────────────────────────── */
+
+.welcome-step {
+    animation: willow-pop-in var(--motion-slow) var(--motion-ease);
+}
+
+.welcome-step--name {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    padding: 8px 0;
+    max-width: 380px;
+    margin: 0 auto;
+}
+
+.willow-mark--small {
+    font-size: 52px;
+    margin-bottom: 18px;
+}
+
+.welcome-name-heading {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 400;
+    font-size: 36px;
+    line-height: 1.1;
+    letter-spacing: -0.015em;
+    color: var(--ink-0);
+    margin: 0 0 28px;
+    text-align: center;
+}
+
+/* Override legacy welcome-card h1 rule. */
+.welcome-card h1.welcome-name-heading {
+    font-size: 36px;
+    font-weight: 400;
+    margin: 0 0 28px;
+}
+
+.welcome-name-input {
+    width: 100%;
+    padding: 15px 20px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--ink-0);
+    font-family: var(--font-ui);
+    font-size: 16px;
+    text-align: center;
+    outline: none;
+    margin-bottom: 14px;
+    transition:
+        border-color var(--transition-normal),
+        box-shadow var(--transition-normal);
+}
+
+.welcome-name-input:focus {
+    border-color: var(--accent);
+    box-shadow: var(--focus-ring);
+}
+
+.welcome-name-input::placeholder {
+    color: var(--text-placeholder);
+    font-style: italic;
+}
+
+.welcome-continue-btn {
+    width: 100%;
+    padding: 13px 20px;
+    font-size: 15px;
+    letter-spacing: 0.02em;
+}
+
+/* ── Welcome shared display-name row (above tabs) ─────────────────── */
+
+.welcome-name-row {
+    margin-bottom: 16px;
+}
+
+.welcome-name-row label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.welcome-name-row input {
+    width: 100%;
+    padding: 10px 14px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-s);
+    color: var(--text-primary);
+    font-size: 14px;
+    outline: none;
+    font-family: inherit;
+    transition:
+        border-color var(--transition-normal),
+        box-shadow var(--transition-normal);
+}
+
+.welcome-name-row input:focus {
+    border-color: var(--accent);
+    box-shadow: var(--focus-ring);
+}
+
+.welcome-name-row input::placeholder {
+    color: var(--text-placeholder);
+}
+
+/* Secondary copy inside the join flow (peer-id instructions). */
+.welcome-hint--flow {
+    margin: 12px 0 12px;
+    line-height: 1.5;
+}
+
+/* Numbered step list for the join flow. */
+.welcome-join-steps {
+    list-style: none;
+    counter-reset: joinstep;
+    padding: 0;
+    margin: 12px 0 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.welcome-join-steps li {
+    counter-increment: joinstep;
+    position: relative;
+    padding: 4px 0 4px 36px;
+    font-size: 13px;
+    color: var(--ink-2);
+    line-height: 1.5;
+}
+
+.welcome-join-steps li::before {
+    content: counter(joinstep);
+    position: absolute;
+    left: 0;
+    top: 2px;
+    width: 24px;
+    height: 24px;
+    border-radius: 999px;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    color: var(--moss-3);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Share step — inline controls to the right of the text. */
+.welcome-join-steps__share {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.welcome-join-steps__text {
+    flex: 1;
+    min-width: 0;
+}
+
+.welcome-join-steps__controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.welcome-join-copied {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-right: 2px;
+    padding: 2px 6px;
+    border-radius: var(--radius-s);
+    background: var(--moss-0);
+    color: var(--moss-3);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    animation: welcome-join-copied-in 160ms var(--motion, ease-out);
+}
+
+.welcome-join-copied .icon {
+    width: 12px;
+    height: 12px;
+    color: var(--moss-3);
+}
+
+@keyframes welcome-join-copied-in {
+    from { opacity: 0; transform: translateX(4px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+.welcome-join-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-s);
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    color: var(--ink-2);
+    font-size: 14px;
+    cursor: pointer;
+    transition:
+        background var(--motion-fast) var(--motion-ease),
+        color var(--motion-fast) var(--motion-ease),
+        border-color var(--motion-fast) var(--motion-ease);
+}
+
+.welcome-join-icon-btn:hover {
+    background: var(--bg-3);
+    color: var(--ink-0);
+    border-color: var(--moss-2);
+}
+
+.welcome-join-icon-btn.active {
+    background: var(--moss-0);
+    color: var(--moss-3);
+    border-color: var(--moss-2);
+}
+
+/* Revealed full peer id under the share step. */
+.welcome-join-steps__full-id {
+    display: block;
+    flex-basis: 100%;
+    margin-top: 6px;
+    padding: 8px 10px;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-s);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-1);
+    word-break: break-all;
+    user-select: all;
+    animation: willow-pop-in var(--motion) var(--motion-ease);
+}
+
+/* ── Welcome compact peer-id row ──────────────────────────────────── */
+
+.welcome-peer-compact {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 3px 12px 3px 4px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    margin: 0 auto 20px;
+    width: fit-content;
+    max-width: 100%;
+    transition: border-color var(--transition-normal);
+}
+
+.welcome-peer-compact:hover {
+    border-color: var(--accent);
+}
+
+.welcome-peer-compact__label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-3);
+    flex-shrink: 0;
+}
+
+.welcome-peer-compact .peer-id-text {
+    font-size: 11px;
+    color: var(--text-secondary);
+    user-select: all;
+    letter-spacing: 0.02em;
+}
+
+.welcome-peer-compact__copy {
+    padding: 2px 10px;
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: lowercase;
+}
+
+/* ── Welcome tabs (create / join) ─────────────────────────────────── */
+
+.welcome-tabs {
+    display: flex;
+    gap: 4px;
+    padding: 4px;
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    margin-bottom: 16px;
+}
+
+.welcome-tab-btn {
+    flex: 1;
+    padding: 10px 16px;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-s);
+    color: var(--ink-2);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    transition:
+        color var(--motion) var(--motion-ease),
+        background var(--motion-fast) var(--motion-ease);
+    -webkit-tap-highlight-color: transparent;
+}
+
+.welcome-tab-btn:hover:not(.active) {
+    color: var(--ink-1);
+    background: var(--bg-2);
+}
+
+.welcome-tab-btn.active {
+    background: var(--bg-3);
+    color: var(--ink-0);
+    box-shadow: var(--shadow-1);
+    position: relative;
+}
+
+.welcome-tab-btn.active::after {
+    content: "";
+    position: absolute;
+    left: 20%;
+    right: 20%;
+    bottom: 4px;
+    height: 2px;
+    background: var(--moss-2);
+    border-radius: 1px;
+}
+
+.welcome-tab-panel {
+    animation: willow-pop-in var(--motion) var(--motion-ease);
+}
+
+.welcome-tab-panel .welcome-option {
+    background: var(--bg-main);
+    border-radius: var(--radius);
+    padding: 24px;
+    border: 1px solid var(--border);
 }
 
 /* ── Pinned messages panel ─────────────────────────────────────── */
@@ -3216,21 +3386,7 @@ select:focus-visible {
     margin-bottom: 0;
 }
 
-/* ── Command Palette ─────────────────────────────────────────────── */
-
-.palette-overlay { position: fixed; inset: 0; background: var(--overlay-bg); backdrop-filter: var(--backdrop-blur); display: flex; justify-content: center; padding-top: 15vh; z-index: 1000; animation: fade-in 0.1s ease; }
-.palette { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow-lg); width: 90%; max-width: 520px; max-height: 400px; display: flex; flex-direction: column; overflow: hidden; animation: scale-in 0.1s ease; align-self: flex-start; }
-.palette-input { padding: 14px 16px; background: transparent; border: none; border-bottom: 1px solid var(--border); color: var(--text-primary); font-size: 15px; font-family: inherit; outline: none; width: 100%; box-sizing: border-box; }
-.palette-input::placeholder { color: var(--text-placeholder); }
-.palette-results { overflow-y: auto; flex: 1; padding: 4px; }
-.palette-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 6px; cursor: pointer; color: var(--text-primary); transition: background var(--transition-fast); }
-.palette-item:hover, .palette-item.selected { background: var(--bg-message-hover); }
-.palette-item .icon { color: var(--text-muted); }
-.palette-item-label { flex: 1; }
-.palette-item-category { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
-.palette-empty { padding: 16px; text-align: center; color: var(--text-muted); font-size: 13px; }
-.palette-hint { padding: 8px 16px; font-size: 11px; color: var(--text-muted); border-top: 1px solid var(--border); display: flex; gap: 12px; }
-.palette-hint kbd { background: var(--bg-input); padding: 1px 5px; border-radius: 3px; font-size: 10px; }
+/* Command palette styles live in foundation.css. */
 
 .search-toggle { background: transparent; border: none; color: var(--text-muted); cursor: pointer; padding: 4px 8px; transition: color var(--transition-fast); }
 .search-toggle:hover { color: var(--text-primary); }
@@ -3805,6 +3961,521 @@ select:focus-visible {
     font-size: 12px;
 }
 
+/* ── Trust-verification — SAS grid + badges + add-friend dialog ──── */
+/* Phase 1d. Spec: docs/specs/2026-04-19-ui-design/trust-verification.md */
+
+/* Screen-reader-only utility (used by #trust-live-region and similar). */
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+
+.sas-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-sans, 'IBM Plex Sans', system-ui, sans-serif);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-3);
+}
+.sas-label--md { font-size: 11.5px; margin-top: 14px; }
+.sas-label--sm { font-size: 10px;   margin-top: 12px; }
+.sas-label--you  .sas-label__text { color: var(--moss-2); }
+.sas-label--peer .sas-label__text { color: var(--ink-3); }
+.sas-label__icon { display: inline-flex; align-items: center; }
+.sas-label__icon--matched  svg { color: var(--ok); }
+.sas-label__icon--mismatch svg { color: var(--warn); }
+
+.sas-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: transparent;
+    padding: 8px;
+    transition: border-color var(--motion) var(--motion-ease, ease-out);
+}
+.sas-grid--md { gap: 6px; padding: 10px; }
+.sas-grid--sm { gap: 5px; padding: 8px;  }
+.sas-grid--you {
+    border-left: 2px solid var(--moss-2);
+}
+.sas-grid--matched {
+    border-color: var(--moss-2);
+}
+.sas-grid--mismatch {
+    border-color: var(--warn);
+    border-style: dashed;
+    border-width: 1.5px;
+}
+
+.sas-cell {
+    display: flex;
+    align-items: center;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    transition: border-color var(--motion) var(--motion-ease, ease-out);
+}
+.sas-grid--md .sas-cell { padding: 10px 12px; gap: 6px; }
+.sas-grid--sm .sas-cell { padding: 8px;       gap: 4px; }
+.sas-grid--matched  .sas-cell { border-color: var(--ok);    border-width: 1px; }
+.sas-grid--mismatch .sas-cell { border-color: var(--warn);  border-style: dashed; border-width: 1.5px; }
+
+.sas-cell__num {
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    color: var(--ink-4);
+    user-select: none;
+}
+.sas-grid--md .sas-cell__num { font-size: 10.5px; }
+.sas-grid--sm .sas-cell__num { font-size: 9px;    }
+
+.sas-cell__word {
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    color: var(--ink-0);
+    font-weight: 500;
+    letter-spacing: 0.01em;
+}
+.sas-grid--md .sas-cell__word { font-size: 14px; }
+.sas-grid--sm .sas-cell__word { font-size: 12px; }
+
+/* Shimmer skeleton while the session key is being derived. */
+@keyframes sas-shimmer {
+    0%   { opacity: 0.35; }
+    50%  { opacity: 0.65; }
+    100% { opacity: 0.35; }
+}
+.sas-cell--loading {
+    animation: sas-shimmer 1200ms ease-in-out infinite;
+}
+
+/* ── Trust badges ─────────────────────────────────────────────────── */
+.trust-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    vertical-align: middle;
+    box-sizing: border-box;
+}
+.trust-badge--disk {
+    width: 14px;
+    height: 14px;
+    border-radius: 999px;
+}
+.trust-badge--disk-12 {
+    width: 12px;
+    height: 12px;
+    border-radius: 999px;
+}
+.trust-badge--verified {
+    background: var(--moss-1);
+    color: var(--ink-0);
+}
+.trust-badge--verified svg { color: var(--moss-3); }
+.trust-badge--unverified {
+    background: transparent;
+    border: 1.5px dashed var(--warn);
+    color: var(--warn);
+    font-family: var(--font-mono, monospace);
+    font-size: 9px;
+    line-height: 1;
+}
+.trust-badge--pending {
+    background: transparent;
+    color: var(--warn);
+    font-family: var(--font-mono, monospace);
+    font-size: 10px;
+}
+.trust-badge--new {
+    color: var(--ink-3);
+    font-size: 11px;
+    padding: 0 4px;
+}
+.trust-badge--downgrade {
+    background: transparent;
+    border: 1.5px dashed var(--warn);
+    color: var(--warn);
+}
+.trust-badge--pill {
+    width: auto;
+    padding: 3px 8px 3px 7px;
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--bg-0) 60%, transparent);
+    color: var(--moss-3);
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+    gap: 4px;
+    backdrop-filter: blur(6px);
+}
+.trust-badge--pill.trust-badge--unverified {
+    color: var(--warn);
+    background: color-mix(in oklab, var(--bg-0) 60%, transparent);
+}
+.trust-badge--tile-corner {
+    background: color-mix(in oklab, var(--bg-0) 60%, transparent);
+    padding: 2px;
+    border-radius: 999px;
+}
+
+.trust-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    color: var(--warn);
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+    cursor: pointer;
+    min-height: 22px;
+}
+.trust-chip:hover { background: var(--bg-3); }
+.trust-chip:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+@media (max-width: 720px) {
+    .trust-chip {
+        min-height: 44px;
+        min-width: 44px;
+        padding: 10px 14px;
+    }
+}
+
+/* ── Add-friend dialog (compare-fingerprints flow) ────────────────── */
+.add-friend__backdrop {
+    position: fixed;
+    inset: 0;
+    background: var(--overlay-bg, rgba(0, 0, 0, 0.6));
+    backdrop-filter: var(--backdrop-blur, blur(4px));
+    z-index: 1100;
+}
+.add-friend__dialog {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    z-index: 1101;
+}
+.add-friend__card {
+    pointer-events: auto;
+    width: min(880px, 94vw);
+    max-height: 92vh;
+    overflow: auto;
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-l, 18px);
+    box-shadow: var(--shadow-2, 0 24px 60px rgba(0, 0, 0, 0.35));
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+.add-friend__title {
+    font-family: var(--font-serif, 'Playfair Display', serif);
+    font-size: 28px;
+    font-style: italic;
+    color: var(--ink-0);
+    margin: 0;
+}
+.add-friend__intro {
+    color: var(--ink-2);
+    font-size: 14px;
+    line-height: 1.55;
+    max-width: 720px;
+    margin: 0;
+}
+.add-friend__grid {
+    display: grid;
+    gap: 20px;
+    grid-template-columns: 1fr 1fr;
+}
+@media (max-width: 720px) {
+    .add-friend__grid { grid-template-columns: 1fr; }
+    .add-friend__grid > .add-friend__card-peer { order: -1; }
+}
+.add-friend__panel {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px;
+    background: var(--bg-0);
+    border: 1px solid var(--line);
+    border-radius: var(--radius, 12px);
+}
+.add-friend__panel-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.add-friend__avatar {
+    width: 36px; height: 36px;
+    border-radius: 999px;
+    background: var(--bg-2);
+    color: var(--ink-1);
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+@media (max-width: 720px) {
+    .add-friend__avatar { width: 32px; height: 32px; }
+}
+.add-friend__identity { display: flex; flex-direction: column; }
+.add-friend__identity-label { color: var(--ink-1); font-weight: 500; font-size: 14px; }
+.add-friend__identity-meta  { color: var(--ink-3); font-size: 12px; margin-top: 2px; }
+.add-friend__ctas {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: flex-end;
+}
+@media (max-width: 720px) {
+    .add-friend__ctas { flex-direction: column; align-items: stretch; }
+}
+.add-friend__cta-primary {
+    background: var(--moss-2);
+    color: #14130f;
+    border: none;
+    border-radius: var(--radius-s, 8px);
+    padding: 10px 18px;
+    font-weight: 500;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 40px;
+}
+.add-friend__cta-primary:hover { background: var(--moss-3); }
+.add-friend__cta-primary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.add-friend__cta-secondary {
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--ink-2);
+    border-radius: var(--radius-s, 8px);
+    padding: 10px 18px;
+    font-weight: 500;
+    cursor: pointer;
+    min-height: 40px;
+}
+.add-friend__cta-secondary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.add-friend__reassurance {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    color: var(--ink-3);
+    font-size: 12px;
+    line-height: 1.6;
+    max-width: 720px;
+}
+.add-friend__reassurance svg { color: var(--ink-3); flex-shrink: 0; margin-top: 2px; }
+
+/* Mobile: sheet treatment. The bottom-sheet primitive owns its own
+   rise animation; we just tweak padding and the peer-card-first order. */
+.add-friend__card--mobile {
+    width: 100%;
+    max-width: 100vw;
+    border-radius: var(--radius-l, 18px) var(--radius-l, 18px) 0 0;
+}
+
+/* Confirm-match / confirm-mismatch panel replacements. */
+.add-friend__confirm {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.add-friend__confirm-title {
+    font-family: var(--font-serif, 'Playfair Display', serif);
+    font-size: 22px;
+    font-style: italic;
+    color: var(--ink-0);
+    margin: 0;
+}
+.add-friend__confirm-body {
+    color: var(--ink-1);
+    font-size: 14px;
+    line-height: 1.55;
+    max-width: 520px;
+    margin: 0;
+}
+
+/* ── Long-press ring (mobile avatar) ──────────────────────────────── */
+.sas-press-ring {
+    position: absolute;
+    inset: -3px;
+    border-radius: 999px;
+    border: 2px solid var(--moss-2);
+    pointer-events: none;
+    opacity: 0;
+    transform: scale(0.8);
+    transition: opacity var(--motion-fast) var(--motion-ease, ease-out),
+                transform var(--motion) var(--motion-ease, ease-out);
+}
+.sas-press-ring--growing {
+    opacity: 1;
+    transform: scale(1);
+}
+.sas-press-ring--armed {
+    border-color: var(--moss-3);
+}
+@media (prefers-reduced-motion: reduce) {
+    .sas-press-ring { transform: none !important; }
+    .sas-press-ring--growing { opacity: 1; }
+}
+
+.long-press-avatar {
+    position: relative;
+    display: inline-flex;
+}
+.long-press-avatar > :focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+    border-radius: 999px;
+}
+
+/* ── Holder pill + holder list ────────────────────────────────────── */
+.holder-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    color: var(--ink-2);
+    font-family: var(--font-mono, monospace);
+    font-size: 11.5px;
+    cursor: pointer;
+    min-height: 22px;
+}
+.holder-pill:hover { background: var(--bg-3); }
+.holder-pill[aria-pressed="true"],
+.holder-pill--active { background: var(--moss-1); color: var(--ink-0); }
+.holder-pill:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+@media (max-width: 720px) {
+    .holder-pill { min-height: 44px; padding: 10px 14px; }
+}
+.holder-pill svg { color: var(--ink-3); }
+
+.holder-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: var(--radius, 12px);
+    box-shadow: var(--shadow-2, 0 12px 32px rgba(0, 0, 0, 0.3));
+    min-width: 280px;
+}
+.holder-list__title {
+    font-size: 11.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-3);
+    margin: 0 0 4px 0;
+}
+.holder-list__row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.holder-list__avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 999px;
+    background: var(--bg-2);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+    color: var(--ink-1);
+    font-size: 12px;
+}
+.holder-list__name {
+    flex: 1;
+    color: var(--ink-1);
+    font-size: 13px;
+}
+.holder-list__rotation {
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+    color: var(--ink-4);
+}
+.holder-list__self {
+    margin-top: 6px;
+    padding: 10px 12px;
+    background: var(--bg-2);
+    border-radius: var(--radius-s, 8px);
+    color: var(--ink-2);
+    font-size: 12px;
+}
+
+.crypto-strip {
+    display: flex;
+    gap: 10px;
+    padding: 6px 12px;
+    color: var(--ink-3);
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg-1);
+}
+
+/* ── Downgrade / re-verify banner ─────────────────────────────────── */
+.downgrade-banner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    background: color-mix(in oklab, var(--warn) 12%, var(--bg-1));
+    border: 1px dashed var(--warn);
+    border-radius: var(--radius, 12px);
+    color: var(--ink-1);
+    margin: 12px;
+}
+.downgrade-banner__icon svg { color: var(--warn); }
+.downgrade-banner__copy { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 200px; }
+.downgrade-banner__title { color: var(--ink-0); font-size: 14.5px; font-weight: 500; }
+.downgrade-banner__body  { color: var(--ink-1); font-size: 14px; line-height: 1.5; }
+.downgrade-banner__actions { display: flex; gap: 8px; flex-shrink: 0; }
+
+/* Participant tile corner placement. */
+.tile-trust-corner {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    z-index: 2;
+}
+
+/* Holder pill slot in the channel header. */
+.mph-holder {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    margin-right: 10px;
+}
+.mph-holder-popover {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 40;
+}
+
+/* Live region is visually hidden but must preserve announcement layout. */
+#trust-live-region { position: absolute; }
+
 /* ── Reduced Motion ──────────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
@@ -3812,5 +4483,404 @@ select:focus-visible {
         animation-duration: 0.01ms !important;
         animation-iteration-count: 1 !important;
         transition-duration: 0.01ms !important;
+    }
+    .sas-grid { transition: none; }
+    .sas-cell { transition: none; }
+    .sas-press-ring { transition: opacity var(--motion-fast) ease; transform: none; }
+}
+
+/* ── Phase 2a · density-aware message padding ──────────────────────────── */
+/*
+ * `.message` consumes the `--msg-pad` foundation token so density-cozy /
+ * density-balanced / density-dense variants (see `foundation.css`) drive
+ * row height uniformly. Collapsed (grouped) rows compress to a 1px block
+ * pad so runs of same-author messages stay visually tight without losing
+ * the inline-hover timestamp surface added below.
+ */
+.message { padding: var(--msg-pad); }
+.message.grouped { padding-block: 1px; }
+
+/* Collapsed-row hover timestamp. The span lives inside the collapsed
+ * MessageView where the avatar column would be; CSS hides it off-hover
+ * so it only surfaces when the user targets the row. */
+.message .run-hover-ts {
+    display: inline-block;
+    width: 0;
+    overflow: hidden;
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: 10px;
+    color: var(--ink-3);
+    opacity: 0;
+    transition: opacity var(--transition-fast);
+    pointer-events: none;
+    user-select: none;
+}
+.message.grouped:hover .run-hover-ts {
+    width: auto;
+    opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+    .message .run-hover-ts { transition: none; }
+}
+
+/* ── Phase 2a · day separator ──────────────────────────────────────────── */
+/*
+ * Renders between messages whose local dates differ. Centered em-dashed
+ * label flanked by 1px rules that flex to fill the row. Copy in the
+ * `<em>` is built as `— {label} —` by the component; the CSS here only
+ * lays out geometry + typography. Spec:
+ * `docs/specs/2026-04-19-ui-design/message-row.md` §Day separator.
+ */
+.day-separator {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 18px 24px 10px;
+}
+.day-separator .rule {
+    flex: 1;
+    height: 1px;
+    background: var(--line);
+}
+.day-separator em {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 11px;
+    color: var(--ink-3);
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    flex: 0 0 auto;
+}
+@media (max-width: 720px) {
+    .day-separator { padding: 16px 16px 8px; }
+}
+
+/* ── Mention pill (phase 2a task 3) ─────────────────────────────────
+   Rendered inline inside `.message .body` by `parse_mentions`. Peer
+   variant uses moss colour-mix; self variant uses amber. Foundation
+   tokens only (`--moss-1/2/3`, `--amber`, `--amber-soft`, `--bg-2`,
+   `--radius-s`) — see `foundation.css`. */
+.mention-pill {
+    display: inline-flex;
+    align-items: baseline;
+    padding: 1px 6px;
+    border-radius: var(--radius-s, 5px);
+    font: inherit;
+    font-weight: 500;
+    cursor: pointer;
+    background: color-mix(in oklab, var(--moss-2) 22%, var(--bg-2));
+    color: var(--moss-3);
+    border: 1px solid var(--moss-1);
+    vertical-align: baseline;
+}
+.mention-pill--self {
+    background: color-mix(in oklab, var(--amber) 28%, var(--bg-2));
+    color: var(--amber);
+    border-color: var(--amber-soft);
+}
+
+/* Phase 2a Task 4 — Self-mention row highlight.
+   Per `docs/specs/2026-04-19-ui-design/message-row.md` §Row states and
+   §Self-mention row highlight: 8% amber row tint + 2px amber left rule
+   when `mentions_me(msg, local)` is true. Applied as a modifier so it
+   composes with `.message.grouped` (collapsed rows still carry the
+   amber cue on every row of the run). */
+.message.message--mention {
+    background: color-mix(in oklab, var(--amber) 8%, transparent);
+    box-shadow: inset 2px 0 0 var(--amber);
+}
+
+/* Phase 2a Task 6 — Pinned row marker.
+   Per `docs/specs/2026-04-19-ui-design/message-row.md` §Pins — "pin is
+   a quiet mark": a 1px amber left rule (not the 2px accent used by
+   mentions / whispers) plus a `pinned` badge in the author meta row.
+   Pinned rows always break a run so the badge is visible (see
+   `components/chat.rs` run-break predicate). */
+.message.message--pinned {
+    box-shadow: inset 1px 0 0 var(--amber);
+}
+/* When a row is both a self-mention and pinned, let the mention's
+   2 px rule win (stronger cue). The amber colour is shared, so the
+   visual is a single uninterrupted amber rule. */
+.message.message--pinned.message--mention {
+    box-shadow: inset 2px 0 0 var(--amber);
+}
+
+.pinned-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 6px;
+    font-size: 11px;
+    color: var(--amber);
+    border: 1px solid var(--amber-soft);
+    border-radius: 9999px;
+    line-height: 1.6;
+    vertical-align: middle;
+}
+.pinned-badge svg {
+    width: 12px;
+    height: 12px;
+}
+
+/* ── Queue notes — phase 2a task 7 ─────────────────────────────────
+   Spec: `docs/specs/2026-04-19-ui-design/message-row.md` §Queue notes
+   / §Copy queue notes.
+   * `message--pending` (local-author Pending) dims the row to 0.7
+     opacity with a 180 ms transition, so delivery ack will fade the
+     row back to full opacity when the projection flips queue_note
+     back to None.
+   * `.queue-note` inline hint below the body — italic 11.5 px, with
+     `--amber` for LateArrival (paired with a 10 px hourglass glyph)
+     and `--ink-3` for Pending (no glyph).
+   * `.queued-badge` is the compact meta-row badge paired with
+     pinned-badge; hourglass glyph + literal "queued" text,
+     `--ink-3` on `--line`-bordered pill (spec §Badges). */
+.message.message--pending {
+    opacity: 0.7;
+    transition: opacity 180ms ease-out;
+}
+
+.queue-note {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 2px;
+    font-style: italic;
+    font-size: 11.5px;
+}
+.queue-note--late { color: var(--amber); }
+.queue-note--pending { color: var(--ink-3); }
+.queue-note svg { width: 10px; height: 10px; }
+
+.queued-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 6px;
+    font-size: 11px;
+    color: var(--ink-3);
+    border: 1px solid var(--line);
+    border-radius: 9999px;
+    line-height: 1.6;
+    vertical-align: middle;
+}
+.queued-badge svg { width: 12px; height: 12px; }
+
+/* ── Whisper hand-off placeholder — phase 2a task 8 ────────────────
+   Spec: `docs/specs/2026-04-19-ui-design/message-row.md` §Whisper
+   hand-off. Reserves the row styling surface so that when
+   `whisper-mode.md` lands and the projection flips
+   `DisplayMessage.whisper` to `true`, the row renders the violet
+   rule, tinted background, and italic body described by the spec
+   without additional work. Whisper rows never collapse into a run
+   (see the run-break predicate in `components/chat.rs`), so the
+   `whisper-badge` in the meta row is always visible. */
+.message.message--whisper {
+    box-shadow: inset 2px 0 0 var(--whisper);
+    background: color-mix(in oklab, var(--whisper) 8%, transparent);
+}
+.message.message--whisper .body {
+    color: var(--ink-2);
+    font-style: italic;
+}
+
+.whisper-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 6px;
+    font-size: 11px;
+    color: var(--whisper);
+    border: 1px solid var(--whisper);
+    background: color-mix(in oklab, var(--whisper) 12%, transparent);
+    border-radius: 9999px;
+    line-height: 1.6;
+    vertical-align: middle;
+}
+.whisper-badge svg { width: 12px; height: 12px; }
+
+/* ── Code — inline + fenced (phase 2a task 5) ───────────────────────
+   Spec: `docs/specs/2026-04-19-ui-design/message-row.md` §Inline
+   artefacts (fenced code + inline code paragraphs) and §Code.
+   * Inline: mono pill on `--bg-2` / `--line` / `--ink-1`, 3 px radius,
+     `0 4px` padding. Parsed from single-backtick spans.
+   * Fenced: `<pre>` on `--bg-0` with `--line` border, 8 px radius,
+     `8px 12px` padding, mono M (12 px), `--ink-2`, `white-space:
+     pre-wrap`, `max-width: 520px`. Fence language parsed but unused
+     in v1 (no syntax highlighting).
+   * Copy IconBtn 24×24 pinned top-right, revealed on block hover on
+     desktop; always visible on mobile for tap surface. Icon flips to
+     a check for 900 ms after copy — driven by the `copied` signal
+     in `FencedCodeBlock`, not a CSS transition.
+   * Mobile overrides (spec §Message row — mobile): mono 11 px,
+     `6px 10px` padding. */
+.code-inline {
+    font-family: var(--font-mono, monospace);
+    font-size: 0.85em;
+    padding: 0 4px;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    color: var(--ink-1);
+}
+.code-fenced {
+    position: relative;
+    background: var(--bg-0);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 12px;
+    margin-top: 8px;
+    max-width: 520px;
+    font-family: var(--font-mono, monospace);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--ink-2);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.code-fenced > code {
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+}
+.code-copy-btn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    color: var(--ink-2);
+    cursor: pointer;
+}
+.code-fenced:hover .code-copy-btn {
+    display: flex;
+}
+@media (max-width: 720px) {
+    .code-fenced {
+        font-size: 11px;
+        padding: 6px 10px;
+    }
+    /* Mobile has no hover — expose the copy button as a tap surface. */
+    .code-copy-btn {
+        display: flex;
+    }
+}
+
+/* ── Phase 2a — Empty / cleared / loading states ─────────────────────
+   Message-list empty surfaces, per
+   `docs/specs/2026-04-19-ui-design/message-row.md` §Empty / loading
+   states. Three variants: never-had-messages (leaf + copy), cleared
+   (after deletions), and the loading skeleton. The `shimmer` keyframe
+   lives in `foundation.css` and is auto-disabled under reduced motion
+   so skeletons degrade to static `--bg-2` rectangles. */
+
+.chat-empty,
+.chat-cleared {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 60vh;
+    padding: 32px 24px;
+    text-align: center;
+    color: var(--ink-2);
+}
+
+.chat-empty__art {
+    color: var(--willow);
+    margin-bottom: 20px;
+    line-height: 0;
+}
+.chat-empty__art .icon-leaf svg {
+    width: 48px;
+    height: 48px;
+}
+
+.chat-empty__headline,
+.chat-cleared__headline {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 18px;
+    color: var(--ink-0);
+    margin: 0 0 8px 0;
+    font-weight: 500;
+}
+
+.chat-empty__subtext {
+    font-size: 13px;
+    color: var(--ink-2);
+    margin: 0;
+    max-width: 36ch;
+}
+
+.chat-skeleton {
+    padding: 12px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    /* First real message fades the skeleton out over 180 ms per spec.
+       Removed from the DOM on the next render tick, so the opacity
+       transition only fires when the loading branch itself is about
+       to unmount — reduced-motion honours foundation's blanket 0ms
+       transition override. */
+    transition: opacity 180ms ease-out;
+}
+
+.chat-skeleton-row {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+}
+
+.chat-skeleton__avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--bg-2);
+    flex-shrink: 0;
+}
+
+.chat-skeleton__bars {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-top: 4px;
+}
+
+.chat-skeleton__bar {
+    height: 10px;
+    background: var(--bg-2);
+    border-radius: 4px;
+}
+
+.chat-skeleton__bar--name { width: 18%; }
+.chat-skeleton__bar--body { width: 74%; }
+
+/* Shimmer animation: only enabled when motion is allowed. The
+   `shimmer` keyframe is defined in `foundation.css`. Reduced-motion
+   users see the static `--bg-2` rectangles defined above. */
+@media (prefers-reduced-motion: no-preference) {
+    .chat-skeleton__avatar,
+    .chat-skeleton__bar {
+        background: linear-gradient(
+            90deg,
+            var(--bg-2) 0%,
+            var(--bg-3) 40%,
+            var(--bg-2) 80%
+        );
+        background-size: 400px 100%;
+        background-repeat: no-repeat;
+        animation: shimmer 1.6s linear infinite;
     }
 }

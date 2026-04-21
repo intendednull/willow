@@ -215,10 +215,20 @@ pub fn event_to_json(event: &ClientEvent) -> serde_json::Value {
             r#type: "JoinLinkDenied",
             data: serde_json::json!({ "reason": reason }),
         }),
+        ClientEvent::MuteChanged { scope, muted } => to_value(&NotificationPayload {
+            r#type: "MuteChanged",
+            data: serde_json::json!({
+                "scope": match scope {
+                    willow_client::events::MuteScope::Grove => "grove".to_string(),
+                    willow_client::events::MuteScope::Channel(id) => format!("channel:{id}"),
+                },
+                "muted": muted,
+            }),
+        }),
     }
 }
 
-/// All 27 event type names for validation.
+/// All 28 event type names for validation.
 pub const EVENT_TYPE_NAMES: &[&str] = &[
     "MessageReceived",
     "MessageEdited",
@@ -247,6 +257,7 @@ pub const EVENT_TYPE_NAMES: &[&str] = &[
     "VoiceSignal",
     "JoinLinkResponse",
     "JoinLinkDenied",
+    "MuteChanged",
 ];
 
 #[derive(Serialize)]
@@ -265,8 +276,8 @@ mod tests {
     use willow_identity::Identity;
 
     #[test]
-    fn all_27_event_types_listed() {
-        assert_eq!(EVENT_TYPE_NAMES.len(), 27);
+    fn all_28_event_types_listed() {
+        assert_eq!(EVENT_TYPE_NAMES.len(), 28);
     }
 
     #[test]

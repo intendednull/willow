@@ -171,6 +171,20 @@ pub enum EventKind {
     RenameServer { new_name: String },
     /// Set the server description.
     SetServerDescription { description: String },
+
+    // -- Per-identity mute (not admin-gated) --
+    /// Mute or unmute a channel for the *author only*.
+    ///
+    /// Mute is a per-identity notification gate — it never changes
+    /// what other peers see. There is no permission check: any member
+    /// can silence their own channel pills.
+    MuteChannel { channel_id: String, muted: bool },
+    /// Mute or unmute the entire grove for the author only.
+    ///
+    /// A muted grove silences toasts / push / sound across every
+    /// channel in scope. Badges still increment so the user sees
+    /// *something is here*.
+    MuteGrove { muted: bool },
 }
 
 // ───── Event ───────────────────────────────────────────────────────────────

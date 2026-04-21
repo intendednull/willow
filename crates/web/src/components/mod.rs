@@ -15,42 +15,87 @@ pub fn peer_color(peer_id: &str) -> String {
     format!("hsl({hue}, {sat}%, {lit}%)")
 }
 
+mod add_friend;
 mod add_server;
+mod bottom_sheet;
 mod call_page;
+mod channel_sidebar;
 mod chat;
 mod command_palette;
 mod confirm_dialog;
 mod context_menu;
+mod downgrade_banner;
 mod file_share;
+mod grove_drawer;
+mod grove_rail;
+mod holder_pill;
 mod input;
 mod join_page;
+mod long_press;
+mod main_pane_header;
 mod member_list;
 mod message;
+pub mod message_row;
+pub(crate) mod mobile_shell;
+pub(crate) mod palette_actions;
 mod participant_tile;
+mod peer_status_label;
 mod pinned;
+mod presence_menu;
+mod profile_card;
+mod right_rail;
 mod roles;
-mod server_list;
+mod sas;
 mod settings;
-mod sidebar;
+mod status_dot;
+mod tab_bar;
+mod toast;
+mod trust_badge;
+mod unread_badge;
 mod voice;
 mod welcome;
 
+pub use add_friend::*;
 pub use add_server::*;
+pub use bottom_sheet::*;
 pub use call_page::*;
+pub use channel_sidebar::*;
 pub use chat::*;
 pub use command_palette::*;
 pub use confirm_dialog::*;
 pub use context_menu::*;
+pub use downgrade_banner::*;
 pub use file_share::*;
+pub use grove_drawer::*;
+pub use grove_rail::*;
+pub use holder_pill::*;
 pub use input::*;
 pub use join_page::*;
+pub use long_press::*;
+pub use main_pane_header::*;
 pub use member_list::*;
 pub use message::*;
+pub use message_row::{
+    day_bucket, parse_code_segments, CodeSegment, DayBucket, DaySeparator, FencedCodeBlock,
+    InlineCodePill, JumpToLatestPill, MentionPill,
+};
+pub use mobile_shell::MobileShell;
+#[allow(unused_imports)]
+pub use mobile_shell::{MobilePush, MobileTab};
 pub use participant_tile::*;
+pub use peer_status_label::*;
 pub use pinned::*;
+pub use presence_menu::*;
+pub use profile_card::*;
+pub use right_rail::*;
 pub use roles::*;
-pub use server_list::*;
+pub use sas::sas_copy;
+pub use sas::*;
 pub use settings::*;
-pub use sidebar::*;
+pub use status_dot::*;
+pub use tab_bar::*;
+pub use toast::*;
+pub use trust_badge::*;
+pub use unread_badge::*;
 pub use voice::*;
 pub use welcome::*;

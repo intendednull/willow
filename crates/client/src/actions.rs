@@ -213,4 +213,16 @@ impl<N: willow_network::Network> ClientHandle<N> {
     pub async fn switch_channel(&self, channel: &str) {
         self.mutation_handle.switch_channel(channel).await;
     }
+
+    /// Toggle per-identity mute on a channel (phase 1f).
+    pub async fn mutate_channel_mute(&self, channel: &str, muted: bool) -> anyhow::Result<()> {
+        self.mutation_handle
+            .mutate_channel_mute(channel, muted)
+            .await
+    }
+
+    /// Toggle per-identity mute for the active grove (phase 1f).
+    pub async fn mutate_grove_mute(&self, muted: bool) -> anyhow::Result<()> {
+        self.mutation_handle.mutate_grove_mute(muted).await
+    }
 }

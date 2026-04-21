@@ -786,10 +786,10 @@ async fn read_voice_status_resource() {
 
 #[tokio::test]
 async fn notification_serialization_covers_all_variants() {
-    // Verify that event_to_json produces valid output for all 27 event types.
+    // Verify that event_to_json produces valid output for all 28 event types.
     // This test complements the unit tests in notifications.rs by running
     // in the integration test context.
-    assert_eq!(willow_agent::notifications::EVENT_TYPE_NAMES.len(), 27);
+    assert_eq!(willow_agent::notifications::EVENT_TYPE_NAMES.len(), 28);
 
     for name in willow_agent::notifications::EVENT_TYPE_NAMES {
         assert!(!name.is_empty(), "event type name should not be empty");

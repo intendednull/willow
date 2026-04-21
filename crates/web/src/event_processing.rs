@@ -123,10 +123,66 @@ pub fn process_event_batch(
             ClientEvent::JoinLinkDenied { reason } => {
                 write.ui.set_join_status.set(format!("denied:{reason}"));
             }
+            // Phase 1f: the first local MessageReceived per session
+            // unlocks the notification-permission prompt path. We only
+            // request permission after the user has shown intent
+            // (their first send) — otherwise a cold-start prompt is
+            // annoying and likely to be denied.
+            ClientEvent::MessageReceived { is_local: true, .. } => {
+                if let Some(notifier) = crate::notifications::use_notifier() {
+                    if !notifier.local_send_seen() {
+                        notifier.mark_local_send();
+                        request_notification_permission(notifier);
+                    }
+                }
+            }
             // All other events (MessageReceived, ChannelCreated, PeerConnected,
             // ProfileUpdated, etc.) are handled by derived signal selectors
             // that auto-update when the state actor notifies subscribers.
             _ => {}
         }
+    }
+}
+
+/// Request `Notification.permission` from the browser and fire the
+/// spec's sticky info toast if it resolves to `denied`. Called once
+/// per session after the first local send.
+fn request_notification_permission(notifier: crate::notifications::Notifier) {
+    // `Notification.requestPermission()` returns a Promise. We don't
+    // `await` it — the SendWrapper + notifier handle survives across
+    // the closure.
+    let js = "(function(){if(typeof Notification==='undefined')return 'unsupported';\
+                if(Notification.permission==='granted')return 'granted';\
+                if(Notification.permission==='denied')return 'denied';\
+                try{return Notification.requestPermission();}catch(e){return 'error';}})()";
+    let Ok(result) = js_sys::eval(js) else {
+        return;
+    };
+    // `result` is either a string (immediate) or a Promise. Handle the
+    // Promise path — catch both arms and fire the sticky toast on
+    // `denied`.
+    if let Some(s) = result.as_string() {
+        if s == "denied" {
+            notifier.show_permission_denied_once();
+        }
+        return;
+    }
+    use wasm_bindgen::JsCast;
+    if let Ok(promise) = result.dyn_into::<js_sys::Promise>() {
+        let notifier_ok = notifier.clone();
+        let notifier_err = notifier;
+        let on_ok: wasm_bindgen::closure::Closure<dyn FnMut(wasm_bindgen::JsValue)> =
+            wasm_bindgen::closure::Closure::new(move |v: wasm_bindgen::JsValue| {
+                if v.as_string().as_deref() == Some("denied") {
+                    notifier_ok.show_permission_denied_once();
+                }
+            });
+        let on_err: wasm_bindgen::closure::Closure<dyn FnMut(wasm_bindgen::JsValue)> =
+            wasm_bindgen::closure::Closure::new(move |_err: wasm_bindgen::JsValue| {
+                notifier_err.show_permission_denied_once();
+            });
+        let _ = promise.then2(&on_ok, &on_err);
+        on_ok.forget();
+        on_err.forget();
     }
 }

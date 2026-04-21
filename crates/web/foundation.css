@@ -1,0 +1,809 @@
+/* foundation.css — willow UI foundation tokens
+ *
+ * Source spec: docs/specs/2026-04-19-ui-design/foundation.md
+ * Parent:      docs/specs/2026-04-19-ui-design/README.md
+ *
+ * This file is the single source of truth for willow's design primitives:
+ * palette, typography, iconography rules, motion, density, accent variants,
+ * states, scrollbars, selection, and focus. It is loaded BEFORE style.css;
+ * style.css remaps its legacy tokens to reference the foundation below.
+ *
+ * Nothing in this file touches component selectors. Components keep their
+ * own stylesheets; they consume foundation tokens by name.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* ── Background (deep bark → lit panel) ─────────────────────────── */
+:root {
+  --bg-0: #14130f;          /* page background, deepest */
+  --bg-1: #1b1a15;          /* primary panel (sidebar, thread, popover) */
+  --bg-2: #22211b;          /* raised surface (card, code, input) */
+  --bg-3: #2a2822;          /* hover on --bg-1 */
+  --bg-4: #34322a;          /* active / pressed */
+
+  /* ── Line (separators, borders) ──────────────────────────────── */
+  --line:      #34322a;
+  --line-soft: #22211b;
+
+  /* ── Ink (text contrast ladder) ──────────────────────────────── */
+  --ink-0: #f1ede2;         /* highest contrast: display, focused read */
+  --ink-1: #d9d3c2;         /* body default */
+  --ink-2: #a8a290;         /* secondary / meta */
+  --ink-3: #7a7463;         /* muted / hint */
+  --ink-4: #504b3f;         /* disabled / divider-as-text */
+  --ink-on-accent: #14130f; /* ink on filled moss / amber / err buttons */
+
+  /* ── Accent ladder (moss, default) ───────────────────────────── */
+  --moss-0: #2a3a28;        /* deep accent surface */
+  --moss-1: #425c3d;        /* selection highlight, active pill bg */
+  --moss-2: #6a8d5e;        /* primary interactive */
+  --moss-3: #93b582;        /* hover / focus variant of primary */
+  --moss-4: #c3d8b2;        /* fg on deep accent (icon on fill) */
+  --willow: #b8c67a;        /* wordmark, own-avatar tint */
+
+  /* ── Bark (amber warmth) ─────────────────────────────────────── */
+  --amber:      #c99b55;    /* warm accent (queued, warn-not-error) */
+  --amber-soft: #7a5a2e;    /* deep amber for borders, tag bg */
+
+  /* ── Whisper (private side-channel) ──────────────────────────── */
+  --whisper: #a88fc9;       /* violet — only for whisper surfaces */
+
+  /* ── Semantic ─────────────────────────────────────────────────── */
+  --ok:   #8fb36a;
+  --warn: #d6a54a;
+  --err:  #c97a5a;
+
+  /* ── Radius ───────────────────────────────────────────────────── */
+  --radius-s: 6px;          /* tags, pills, chips */
+  --radius:   10px;         /* panels, cards, inputs */
+  --radius-l: 16px;         /* sheets, full-card popovers */
+
+  /* ── Shadow ──────────────────────────────────────────────────── */
+  --shadow-1: 0 1px 0 rgba(255,255,255,0.02) inset, 0 1px 2px rgba(0,0,0,0.4);
+  --shadow-2: 0 20px 50px -20px rgba(0,0,0,0.8), 0 4px 12px rgba(0,0,0,0.4);
+
+  /* ── Focus ───────────────────────────────────────────────────── */
+  --focus-ring: 0 0 0 2px var(--moss-1), 0 0 0 3px rgba(106, 141, 94, 0.6);
+
+  /* ── Motion ──────────────────────────────────────────────────── */
+  --motion-fast:    120ms;
+  --motion:         180ms;
+  --motion-slow:    240ms;
+  --motion-ambient: 1200ms;
+  --motion-ease:    cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* ── Typography stacks ───────────────────────────────────────── */
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-ui:      'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono:    'JetBrains Mono', ui-monospace, monospace;
+}
+
+/* ── Body background + base ─────────────────────────────────────── */
+
+html, body {
+  background: var(--bg-0);
+  color: var(--ink-1);
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Desktop body uses two softly offset radial gradients so the
+   surface never reads flat. Mobile deepens the base and widens
+   the gradients (applies below 720 px). */
+body {
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(106,141,94,0.07), transparent 60%),
+    radial-gradient(900px 500px at 110% 110%, rgba(201,155,85,0.05), transparent 60%),
+    var(--bg-0);
+}
+
+@media (max-width: 720px) {
+  body {
+    background:
+      radial-gradient(1400px 700px at 20% 0%, rgba(106,141,94,0.06), transparent 60%),
+      radial-gradient(1000px 500px at 100% 100%, rgba(201,155,85,0.04), transparent 60%),
+      #0c0b08;
+  }
+}
+
+/* ── Keyframes ──────────────────────────────────────────────────── */
+
+@keyframes willowPulse {
+  0%, 100% { opacity: 0.3; transform: scale(0.8); }
+  50%      { opacity: 1;   transform: scale(1.3); }
+}
+
+@keyframes willow-pop-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0);    }
+}
+
+@keyframes leafFall {
+  0%   { transform: translateY(-12vh) rotate(-8deg); opacity: 0; }
+  20%  {                                             opacity: 1; }
+  100% { transform: translateY(120vh)  rotate(24deg); opacity: 0; }
+}
+
+@keyframes shimmer {
+  0%   { background-position: -200px 0; }
+  100% { background-position:  200px 0; }
+}
+
+/* ── Reduced motion ─────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+  /* Opacity-only fallbacks for specific ambient animations. */
+  @keyframes willowPulse { 0%, 100% { opacity: 1; transform: none; } }
+  @keyframes willow-pop-in { from { opacity: 0; transform: none; } to { opacity: 1; transform: none; } }
+  @keyframes leafFall { 0%, 100% { opacity: 0; transform: none; } }
+}
+
+/* ── Density ────────────────────────────────────────────────────── */
+:root { --msg-pad: 8px 24px; }                      /* balanced (default) */
+#app-root.density-cozy    { --msg-pad: 10px 24px; } /* breathing room */
+#app-root.density-balanced{ --msg-pad:  8px 24px; }
+#app-root.density-dense   { --msg-pad:  4px 24px; } /* power-user scroll */
+
+/* ── Accent variants — overwrite --moss-*, --willow only ───────────── */
+
+[data-accent="moss"] {
+  --moss-0: #2a3a28; --moss-1: #425c3d; --moss-2: #6a8d5e;
+  --moss-3: #93b582; --moss-4: #c3d8b2; --willow: #b8c67a;
+}
+[data-accent="willow"] {
+  --moss-0: #353b22; --moss-1: #5a663a; --moss-2: #a7b86a;
+  --moss-3: #c1d18a; --moss-4: #e4ecb8; --willow: #b8c67a;
+}
+[data-accent="amber"] {
+  --moss-0: #3a2c18; --moss-1: #7a5a2e; --moss-2: #c99b55;
+  --moss-3: #e0b57a; --moss-4: #f2d8a8; --willow: #c99b55;
+}
+[data-accent="dusk"] {
+  --moss-0: #2d2438; --moss-1: #5a4a72; --moss-2: #a88fc9;
+  --moss-3: #c2adda; --moss-4: #e0d4ef; --willow: #c2adda;
+}
+[data-accent="cedar"] {
+  --moss-0: #2e1e10; --moss-1: #5e3e20; --moss-2: #a47848;
+  --moss-3: #c99b55; --moss-4: #e6c08a; --willow: #d0a878;
+}
+[data-accent="lichen"] {
+  --moss-0: #18302a; --moss-1: #2e5b4c; --moss-2: #5a9580;
+  --moss-3: #86c1ae; --moss-4: #b8dccc; --willow: #89b6a5;
+}
+[data-accent="ember"] {
+  --moss-0: #3a1a10; --moss-1: #6e3722; --moss-2: #b5644a;
+  --moss-3: #d98a68; --moss-4: #f2b89e; --willow: #d48a6a;
+}
+
+/* ── Scrollbar (Firefox + WebKit) ───────────────────────────────── */
+.scroll {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg-3) transparent;
+}
+.scroll::-webkit-scrollbar       { width: 8px; }
+.scroll::-webkit-scrollbar-thumb { background: var(--bg-3); border-radius: 4px; }
+.scroll::-webkit-scrollbar-track { background: transparent; }
+
+@media (max-width: 720px) {
+  .scroll::-webkit-scrollbar { width: 6px; }
+}
+
+.noscroll::-webkit-scrollbar { width: 0; height: 0; }
+.noscroll                    { scrollbar-width: none; }
+
+/* ── Selection ──────────────────────────────────────────────────── */
+::selection { background: var(--moss-1); color: var(--ink-0); }
+
+/* ── Focus-visible (accessibility baseline) ─────────────────────── */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Composer + message bodies never trap focus. */
+textarea:focus-visible,
+[contenteditable]:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* ── States: empty / loading / error / skeleton ─────────────────── */
+
+/* Empty state shell. Components fill their own copy; this just
+   spaces the two-line pattern (italic Fraunces + Plex Sans hint). */
+.state-empty {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 6px;
+  padding: 32px 24px;
+  color: var(--ink-1);
+  font-family: var(--font-ui);
+}
+.state-empty__headline {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 17px;
+  color: var(--ink-1);
+}
+.state-empty__hint {
+  font-size: 13px;
+  color: var(--ink-3);
+  max-width: 36ch;
+  text-align: center;
+}
+
+/* Skeleton block — structural preview of content-about-to-render.
+   Uses shimmer keyframe. Reduced-motion path auto disables. */
+.state-skeleton {
+  background:
+    linear-gradient(90deg,
+      var(--bg-2) 0%,
+      var(--bg-3) 40%,
+      var(--bg-2) 80%);
+  background-size: 400px 100%;
+  background-repeat: no-repeat;
+  animation: shimmer 1.6s linear infinite;
+  border-radius: var(--radius-s);
+  min-height: 12px;
+}
+
+/* Inline loading hint (use where a skeleton would be visually noisy). */
+.state-loading-inline {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-style: italic;
+  color: var(--ink-3);
+}
+.state-loading-inline::after {
+  content: '…';
+}
+
+/* Error card — small, scoped, carries a recovery action. */
+.state-error {
+  display: inline-flex; align-items: flex-start; gap: 10px;
+  padding: 12px 14px;
+  background: color-mix(in oklab, var(--err) 12%, var(--bg-1));
+  border: 1px solid color-mix(in oklab, var(--err) 40%, var(--line));
+  border-radius: var(--radius);
+  color: var(--ink-1);
+  font-family: var(--font-ui);
+  font-size: 13px;
+}
+.state-error__icon { color: var(--err); flex: none; }
+
+/* ── Universal reset ─────────────────────────────────────────────── */
+* { box-sizing: border-box; }
+
+/* Inherit on form controls so type stacks are consistent. */
+button, input, textarea, select {
+  font: inherit;
+  color: inherit;
+}
+button { background: none; border: none; padding: 0; cursor: pointer; }
+a { color: inherit; }
+
+/* Exclamation marks are prohibited in copy per foundation §Copy voice —
+   no enforcement in CSS, but noted here for lint tooling. */
+
+/* ── Shell toggle custom property ────────────────────────────────── */
+/* Single source of truth for desktop / mobile shell selection.
+ * Consumed by `.shell-desktop` / `.shell-mobile` in components.css.
+ * Breakpoint is 720 px (spec §Window / viewport breakpoints). */
+:root { --shell: desktop; }
+@media (max-width: 720px) {
+  :root { --shell: mobile; }
+}
+
+/* ── Colour-independent cues (audit contract) ───────────────────────
+ * Every coloured-only state in the shell pairs colour with a shape,
+ * icon, or word so the UI stays legible under accent swaps and for
+ * users who cannot distinguish hue. Contract enforced by the Phase 1c
+ * a11y sweep; changing any cue below must also update the partner.
+ *
+ *   - Active grove tile:    3×22 px ink-0 bar to the left of the tile
+ *     (components.css `.grove-tile[data-state="active"]::before`).
+ *     Paired with --moss-2 fill + aria-current="page".
+ *   - Unread grove tile:    8 px ink-0 pebble (same ::before, shorter).
+ *     Paired with --bg-2 surface.
+ *   - Active channel row:   --bg-3 surface + --ink-0 text.
+ *     Paired with 3×16 bar on the row bar (existing markup slot).
+ *   - Unread channel row:   3×16 px ink-0 bar + numeric unread-pill.
+ *     Word cue is the pill count itself; reader-only equivalent.
+ *   - Offline net status:   pulse-dot--offline (no pulse) + --ink-4
+ *     dot + the word "queued · waiting for peers" rendered inline.
+ *   - Active header button: --bg-3 surface + --ink-0 icon.
+ *     Paired with aria-pressed="true" (consumed by screen readers).
+ */
+
+/* ── Command palette ─────────────────────────────────────────────── */
+.palette-backdrop {
+  position: fixed; inset: 0;
+  background: color-mix(in oklab, var(--bg-0) 40%, transparent);
+  backdrop-filter: blur(4px);
+  display: flex; justify-content: center;
+  padding-top: 15vh;
+  z-index: 1000;
+  animation: willow-pop-in var(--motion) var(--motion-ease);
+}
+.palette-root {
+  width: min(560px, calc(100% - 32px));
+  max-height: 60vh;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  box-shadow: var(--shadow-2);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  animation: willow-pop-in var(--motion) var(--motion-ease);
+}
+.palette-input {
+  height: 48px;
+  padding: 0 16px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--ink-0);
+  font: 15px var(--font-ui);
+  outline: none;
+}
+.palette-input::placeholder { color: var(--ink-3); }
+.palette-input:focus-visible { box-shadow: inset 0 -2px 0 var(--moss-2); }
+.palette-results { overflow-y: auto; padding: 4px 0; }
+.palette-group-label {
+  font: 500 10.5px var(--font-ui);
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  padding: 8px 16px 4px;
+}
+.palette-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 16px;
+  color: var(--ink-1);
+  cursor: pointer;
+  font: 13.5px var(--font-ui);
+}
+.palette-row[aria-selected="true"] { background: var(--bg-2); color: var(--ink-0); }
+.palette-row:focus-visible { box-shadow: var(--focus-ring); }
+.palette-row .icon { color: var(--ink-2); flex: none; }
+.palette-row-meta { color: var(--ink-3); font-size: 12px; margin-left: auto; }
+.palette-footer {
+  border-top: 1px solid var(--line-soft);
+  padding: 8px 16px;
+  color: var(--ink-3);
+  font: 11px var(--font-mono);
+  display: flex; gap: 14px;
+}
+.palette-empty, .palette-loading, .palette-error {
+  padding: 24px 16px; text-align: center;
+  color: var(--ink-2); font: italic 14px var(--font-display);
+}
+.palette-loading { color: var(--ink-3); font-family: var(--font-mono); font-style: normal; }
+.palette-error  { color: var(--err);   font-style: normal; }
+
+@media (max-width: 720px) {
+  .palette-backdrop { padding-top: 0; align-items: flex-start; }
+  .palette-root { width: 100%; max-height: 80vh; border-radius: 0 0 var(--radius-l) var(--radius-l); }
+  .palette-row { min-height: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .palette-backdrop, .palette-root { animation: none; }
+}
+
+/* ── Presence atoms (StatusDot + PeerStatusLabel) ──────────────────
+ * Spec: docs/specs/2026-04-19-ui-design/presence.md
+ *
+ * StatusDot ships in six sizes (profile/row/rail/me-strip/author/call-
+ * tile) and two border tokens (bg-0 for main-pane surfaces, bg-1 for
+ * panels). Colour comes from --moss-2 (here), --ink-3 (away), --whisper
+ * (whispering), --amber (queued), --ink-4 (gone). Ring variant for
+ * `in a call`. Invisible renders nothing — the component short-circuits
+ * before reaching the DOM.
+ */
+
+.status-dot {
+  display: inline-block;
+  border-radius: 50%;
+  background: var(--ink-4);
+  border-width: 2px;
+  border-style: solid;
+  border-color: var(--bg-1);
+  transition: background-color var(--motion) var(--motion-ease);
+  flex: none;
+  line-height: 1;
+}
+
+.status-dot[data-border="bg0"] { border-color: var(--bg-0); }
+.status-dot[data-border="bg1"] { border-color: var(--bg-1); }
+
+/* Sizes. 2 px border is included in the overall footprint. */
+.status-dot--profile   { width: 13px; height: 13px; border-width: 3px; }
+.status-dot--row       { width: 9px;  height: 9px;  }
+.status-dot--rail      { width: 10px; height: 10px; }
+.status-dot--me-strip  { width: 8px;  height: 8px;  }
+.status-dot--author    { width: 9px;  height: 9px;  }
+.status-dot--call-tile { width: 14px; height: 14px; }
+
+/* State colours — filled variants. */
+.status-dot--here       { background: var(--moss-2); }
+.status-dot--away       { background: var(--ink-3);  }
+.status-dot--whispering { background: var(--whisper);}
+.status-dot--queued     { background: var(--amber);  }
+.status-dot--gone       { background: var(--ink-4);  }
+
+/* Ring variant — `in a call`. Hollow circle, 2 px stroke. */
+.status-dot--in-a-call {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--moss-2);
+}
+
+/* Glyph slot (ear / hourglass on small sizes). */
+.status-dot__glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%; height: 100%;
+  color: var(--ink-on-accent);
+  font-size: 7px;
+  line-height: 1;
+}
+.status-dot--profile .status-dot__glyph   { font-size: 9px; }
+.status-dot--call-tile .status-dot__glyph { font-size: 10px; }
+
+/* Ambient pulse — here / whispering only. Reduced-motion override
+ * above collapses the keyframe to a steady opacity. */
+.presence-pulse {
+  animation: presencePulse var(--motion-ambient) ease-in-out infinite;
+}
+.status-dot--whispering.presence-pulse {
+  animation: presenceWhisperPulse var(--motion-ambient) ease-in-out infinite;
+}
+
+@keyframes presencePulse {
+  0%, 100% { opacity: 0.7; transform: scale(0.95); }
+  50%      { opacity: 1.0; transform: scale(1.05); }
+}
+@keyframes presenceWhisperPulse {
+  0%, 100% { opacity: 0.85; transform: scale(0.97); }
+  50%      { opacity: 1.0;  transform: scale(1.03); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Freeze pulse — steady opacity, no transform. */
+  @keyframes presencePulse { 0%, 100% { opacity: 1; transform: none; } }
+  @keyframes presenceWhisperPulse { 0%, 100% { opacity: 1; transform: none; } }
+  .presence-pulse { animation: none; }
+}
+
+/* Accent swap guard — presence dots never recolour under [data-accent="ember"]
+ * et al. The colours are semantic tokens outside the moss ladder. */
+[data-accent] .status-dot--here       { background: var(--moss-2); }
+[data-accent] .status-dot--in-a-call  { box-shadow: inset 0 0 0 2px var(--moss-2); }
+
+/* ── PeerStatusLabel ────────────────────────────────────────────────
+ * Composition: [icon] [dot] <text>. Typography: --font-ui, 13 px, 400.
+ * Mono 12 px amber for the queued count.
+ */
+
+.peer-status-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 400 13px var(--font-ui);
+  color: var(--ink-2);
+}
+
+.peer-status-label__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+.peer-status-label__dot { flex: none; }
+
+.peer-status-label__text { color: var(--ink-2); }
+
+.peer-status-label__count {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--amber);
+  margin-left: 4px;
+}
+
+.peer-status-label--whispering .peer-status-label__text { color: var(--whisper); }
+.peer-status-label--in-a-call  .peer-status-label__text { color: var(--ink-1); }
+.peer-status-label--queued     .peer-status-label__text { color: var(--amber); }
+.peer-status-label--gone       .peer-status-label__text { color: var(--ink-3); }
+
+/* ── Presence menu (me-strip self override) ────────────────────────── */
+
+.presence-menu {
+  position: absolute;
+  bottom: 56px;
+  left: 8px;
+  width: 180px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-2);
+  padding: 6px;
+  z-index: 500;
+  animation: willow-pop-in var(--motion) var(--motion-ease);
+}
+
+.presence-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  color: var(--ink-1);
+  font: 400 13.5px var(--font-ui);
+  cursor: pointer;
+  border-radius: var(--radius-s);
+  text-align: left;
+}
+
+.presence-menu__item:hover,
+.presence-menu__item:focus-visible {
+  background: var(--bg-2);
+  color: var(--ink-0);
+}
+
+.presence-menu__item[aria-checked="true"] {
+  background: var(--bg-3);
+  color: var(--ink-0);
+}
+
+.presence-menu__item .status-dot { pointer-events: none; }
+
+/* Call-tile presence corner — spec places the dot bottom-right of the
+ * video feed / avatar; mirror the trust-corner position. */
+.tile-presence-corner {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  z-index: 2;
+}
+
+.presence-override-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.presence-override-row .presence-menu__item {
+  width: auto;
+  min-height: 44px;
+  padding: 8px 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-soft);
+}
+.presence-override-row .presence-menu__item.active {
+  background: var(--bg-3);
+  border-color: var(--moss-2);
+  color: var(--ink-0);
+}
+
+/* ───── Phase 1f: Toast + Unread badge + Tab-bar dot ─────────────── */
+
+/* Portal container — positioned fixed bottom-centre. Sits above
+ * popovers (z-index 60) and below modals (z-index 100). */
+#toast-root {
+  position: fixed;
+  bottom: 24px;
+  left: 0;
+  right: 0;
+  z-index: 80;
+  pointer-events: none;
+  display: flex;
+  justify-content: center;
+}
+.toast-stack {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 8px;
+  pointer-events: auto;
+  max-width: 420px;
+  width: 100%;
+  padding: 0 16px;
+}
+/* Mobile: anchor above the tab bar (14px + 70px clearance). */
+@media (max-width: 720px) {
+  #toast-root { bottom: 84px; }
+  .toast-stack { padding: 0 12px; }
+}
+.toast {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  padding: 12px 14px;
+  padding-right: 36px; /* room for close `x` */
+  min-width: 280px;
+  max-width: 420px;
+  color: var(--ink-0);
+  animation: willow-pop-in 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.toast--warn { border-color: #7a5a2e; }
+.toast--err { border-color: #8c3b32; }
+.toast-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  margin-top: 2px;
+  color: var(--ink-2);
+}
+.toast-icon svg { width: 14px; height: 14px; stroke-width: 1.5; }
+.toast--success .toast-icon { color: #6a8d5e; }
+.toast--warn .toast-icon { color: #c99b55; }
+.toast--err .toast-icon { color: #c9554a; }
+.toast-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.toast-title {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--ink-0);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.toast-desc {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--ink-1);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.toast-action {
+  align-self: center;
+  background: var(--moss-2);
+  color: var(--ink-on-accent);
+  border: none;
+  border-radius: var(--radius-s);
+  height: 28px;
+  padding: 0 12px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  min-width: 44px;
+}
+.toast-action:hover { background: var(--moss-3); }
+.toast-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: transparent;
+  border: none;
+  color: var(--ink-3);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: var(--radius-s);
+}
+.toast-close:hover { color: var(--ink-0); background: var(--bg-2); }
+.toast:focus-visible,
+.toast-action:focus-visible,
+.toast-close:focus-visible,
+.toast-overflow-pill:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.toast-overflow-pill {
+  align-self: center;
+  height: 24px;
+  padding: 0 12px;
+  background: var(--bg-2);
+  color: var(--ink-3);
+  border-radius: var(--radius);
+  font-size: 11px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  border: 1px solid var(--line);
+}
+@keyframes willow-pop-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .toast { animation-duration: 120ms; animation-name: fade-in; }
+  @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+}
+
+/* ───── Unread badge ─────────────────────────────────────────────── */
+
+.unread-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-s);
+  background: var(--moss-2);
+  color: var(--ink-on-accent);
+  font-family: var(--font-mono, "JetBrains Mono", ui-monospace, monospace);
+  font-size: 10.5px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.unread-badge--single {
+  /* Circle for single-digit counts. */
+  padding: 0;
+  width: 18px;
+}
+.unread-badge--muted {
+  background: transparent;
+  color: var(--ink-3);
+  border: 1px solid var(--ink-3);
+}
+.unread-badge--whisper {
+  background: var(--whisper, #a88fc9);
+  color: var(--ink-on-accent);
+}
+.unread-badge--mentioned .unread-badge__at {
+  font-size: 10px;
+  font-weight: 500;
+  margin-right: 2px;
+}
+.unread-badge--announce {
+  background: var(--bg-3);
+  color: var(--ink-2);
+}
+.unread-badge--dot {
+  /* 6x6 tab-bar dot. Mentioned / whisper inherit their colour from
+   * the same variant classes. */
+  width: 6px;
+  height: 6px;
+  min-width: 6px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--moss-2);
+}
+.unread-badge--dot.unread-badge--muted {
+  /* Muted surfaces still show the dot per spec — "there is something
+   * here" is not itself a notification. Dim a shade to indicate
+   * silenced origin. */
+  background: var(--ink-3);
+}
+@media (prefers-reduced-motion: reduce) {
+  .unread-badge { transition: none; }
+}
+.grove-tile-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  z-index: 1;
+  pointer-events: none;
+}
+.grove-tile { position: relative; }

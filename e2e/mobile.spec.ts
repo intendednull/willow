@@ -1,151 +1,55 @@
 import { test, expect } from '@playwright/test';
-import { freshStart, createServer, sendMessage, waitForApp, reactToMessage } from './helpers';
+import {
+  freshStart,
+  createServer,
+  sendMessage,
+  reactToMessage,
+} from './helpers';
 
-// Mobile tests only run with mobile viewport.
+// Mobile tests only run with mobile viewport. Most non-gesture mobile
+// UX has migrated to wasm-pack (`crates/web/tests/browser.rs`
+// `mod mobile_ux`). The tests that remain here need a real browser
+// engine — real TouchEvent timing, auto-scroll layout, or link target
+// attribute semantics that the headless wasm-pack harness can't model.
+//
+// Note: `createServer` on mobile already pushes into `general`, so tests
+// below go straight from `sendMessage` after creation.
 test.describe('Mobile UX', () => {
   test.beforeEach(({}, testInfo) => {
     test.skip(!testInfo.project.name.startsWith('mobile'), 'mobile only');
   });
 
-  // ── Basic rendering ───────────────────────────────────────────────
-
-  test('app renders on mobile viewport', async ({ page }) => {
-    await freshStart(page);
-    await expect(page.locator('.welcome-card')).toBeVisible();
-  });
-
-  test('can create server on mobile', async ({ page }) => {
-    await freshStart(page);
-    await createServer(page, 'Mobile Server', 'MobileUser');
-    await expect(page.locator('.channel-header')).toBeVisible();
-  });
-
-  test('can send message on mobile', async ({ page }) => {
-    await freshStart(page);
-    await createServer(page, 'Mobile Chat');
-    await sendMessage(page, 'mobile message!');
-    await expect(page.locator('.message .body', { hasText: 'mobile message!' })).toBeVisible();
-  });
-
-  // ── Navigation ────────────────────────────────────────────────────
-
-  test('hamburger menu visible on mobile', async ({ page }) => {
-    await freshStart(page);
-    await createServer(page, 'Hamburger Test');
-    await expect(page.locator('.mobile-nav-toggle')).toBeVisible();
-  });
-
-  test('members toggle visible on mobile', async ({ page }) => {
-    await freshStart(page);
-    await createServer(page, 'Members Test');
-    await expect(page.locator('.mobile-members-toggle')).toBeVisible();
-  });
-
-  // ── Bug #9: Member list accessible on mobile ──────────────────────
-
-  test('member list opens via toggle button', async ({ page }) => {
-    await freshStart(page);
-    await createServer(page, 'Member List Mobile');
-
-    await page.locator('.mobile-members-toggle').click();
-    await page.waitForTimeout(500);
-
-    // Member list wrapper should be visible.
-    await expect(page.locator('.member-list-wrapper.open')).toBeVisible({ timeout: 3000 });
-  });
-
-  // ── Bug #10: Sidebar overlay dismisses ────────────────────────────
-
-  test('sidebar opens and overlay dismisses it', async ({ page }) => {
-    await freshStart(page);
-    await createServer(page, 'Sidebar Dismiss');
-
-    // Open sidebar.
-    await page.locator('.mobile-nav-toggle').click();
-    await page.waitForTimeout(500);
-
-    // Sidebar should be open.
-    await expect(page.locator('.sidebar.open')).toBeVisible({ timeout: 3000 });
-  });
-
-  // ── Channel creation ──────────────────────────────────────────────
-
-  test('voice channel creation works on mobile', async ({ page }) => {
-    await freshStart(page);
-    await createServer(page, 'Voice Mobile');
-
-    await page.locator('.mobile-nav-toggle').click();
-    await page.waitForTimeout(500);
-    await page.locator('.channel-add-btn').click();
-    await page.waitForTimeout(300);
-    await page.locator('.type-btn', { hasText: 'Voice' }).click();
-    await page.waitForTimeout(100);
-    await page.locator('.channel-create-input input').fill('vc');
-    await page.locator('.channel-create-input input').press('Enter');
-    await page.waitForTimeout(500);
-
-    await expect(page.locator('.channel-item', { hasText: 'vc' })).toBeVisible();
-  });
-
-  // ── Bug #7: Input zoom prevention ─────────────────────────────────
-
-  test('message input font size >= 16px (prevents iOS zoom)', async ({ page }) => {
-    await freshStart(page);
-    await createServer(page, 'Zoom Test');
-    const input = page.locator('.input-area input, .input-area textarea').first();
-    const fontSize = await input.evaluate(el => getComputedStyle(el).fontSize);
-    expect(parseInt(fontSize)).toBeGreaterThanOrEqual(16);
-  });
-
-  // ── Bug #1,2,3,4: Scrolling and tapping work after long-press fix ─
-
-  test('message list is scrollable on mobile', async ({ page }) => {
-    await freshStart(page);
-    await createServer(page, 'Scroll Test');
-
-    // Send enough messages to overflow.
-    for (let i = 0; i < 25; i++) {
-      await sendMessage(page, `Message ${i + 1}`);
-    }
-    await page.waitForTimeout(500);
-
-    // Last message should be visible (auto-scrolled to bottom).
-    await expect(page.locator('.message .body', { hasText: 'Message 25' })).toBeVisible();
-
-    // First message should NOT be visible (scrolled out of view).
-    await expect(page.locator('.message .body').filter({ hasText: /^Message 1$/ })).not.toBeInViewport();
-  });
+  // ── Reaction tap on a real message row (touch hit-test) ───────────
 
   test('can tap reaction on mobile', async ({ page }) => {
     await freshStart(page);
     await createServer(page, 'Tap React');
     await sendMessage(page, 'react to me');
-    await page.waitForTimeout(500);
 
     // Add a reaction (handles both desktop and mobile).
     await reactToMessage(page, 'react to me');
 
     // Reaction should be visible.
-    const reaction = page.locator('.reaction').first();
+    const reaction = page.locator('.shell-mobile .reaction').first();
     await expect(reaction).toBeVisible();
 
     // Tap the reaction (should toggle — this was bug #2).
     await reaction.click();
-    await page.waitForTimeout(300);
 
     // Should still be visible (either incremented or decremented).
     // The key test: clicking didn't crash or get blocked.
-    await expect(page.locator('.message')).toBeVisible();
+    await expect(page.locator('.shell-mobile .message').first()).toBeVisible();
   });
+
+  // ── Link semantics (target="_blank") ──────────────────────────────
 
   test('links in messages are tappable', async ({ page }) => {
     await freshStart(page);
     await createServer(page, 'Link Tap');
     await sendMessage(page, 'visit https://example.com please');
-    await page.waitForTimeout(500);
 
     // Link should be rendered.
-    const link = page.locator('a.message-link');
+    const link = page.locator('.shell-mobile a.message-link').first();
     await expect(link).toBeVisible();
 
     // Should have correct href.
@@ -157,7 +61,7 @@ test.describe('Mobile UX', () => {
     expect(target).toBe('_blank');
   });
 
-  // ── Bug #8: Auto-scroll on new messages ───────────────────────────
+  // ── Bug #8: Auto-scroll on new messages (needs real layout) ───────
 
   test('auto-scrolls to bottom on new message', async ({ page }) => {
     await freshStart(page);
@@ -167,42 +71,42 @@ test.describe('Mobile UX', () => {
     for (let i = 0; i < 10; i++) {
       await sendMessage(page, `Msg ${i + 1}`);
     }
-    await page.waitForTimeout(500);
 
     // The last message should be visible (auto-scrolled).
-    await expect(page.locator('.message .body', { hasText: 'Msg 10' })).toBeVisible();
+    await expect(
+      page.locator('.shell-mobile .message .body', { hasText: 'Msg 10' }).first(),
+    ).toBeVisible();
   });
 
-  // ── Bug #6: Long-press doesn't trigger on quick tap ───────────────
-  // NOTE: "quick tap does NOT open action sheet" is covered with stronger
-  // raw-TouchEvent assertions in mobile-actions.spec.ts. The test below
-  // covers the complementary "tap-then-wait" variant.
+  // ── Bug #6: Long-press threshold uses real TouchEvent timing ──────
+  // NOTE: "quick tap does NOT open action sheet" (via raw TouchEvent)
+  // lives in mobile-actions.spec.ts. These two cover the
+  // tap-then-wait variants that depend on real-touch timing.
 
   test('single tap then wait does NOT open action sheet', async ({ page }) => {
     await freshStart(page);
     await createServer(page, 'TapWait');
     await sendMessage(page, 'just tap me');
-    await page.waitForTimeout(500);
 
     // Single tap (touchstart + touchend quickly).
-    const msg = page.locator('.message').first();
+    const msg = page.locator('.shell-mobile .message').first();
     await msg.tap();
 
-    // Wait longer than the 500ms long-press threshold.
+    // Wait longer than the 500ms long-press threshold — intentional sleep.
     await page.waitForTimeout(1000);
 
     // Action sheet should NOT have opened from a quick tap.
-    await expect(page.locator('.mobile-action-sheet.open')).toBeHidden();
+    await expect(page.locator('.shell-mobile .mobile-action-sheet.open')).toHaveCount(0);
   });
 
   test('multiple quick taps do NOT open action sheet', async ({ page }) => {
     await freshStart(page);
     await createServer(page, 'MultiTap');
     await sendMessage(page, 'tap tap tap');
-    await page.waitForTimeout(500);
 
-    // Rapid taps on message.
-    const msg = page.locator('.message').first();
+    // Rapid taps on message — intentional spacing to exercise the
+    // quick-tap gesture vs. 500ms long-press threshold.
+    const msg = page.locator('.shell-mobile .message').first();
     await msg.tap();
     await page.waitForTimeout(100);
     await msg.tap();
@@ -211,26 +115,6 @@ test.describe('Mobile UX', () => {
     await page.waitForTimeout(600);
 
     // Action sheet should NOT be visible.
-    await expect(page.locator('.mobile-action-sheet.open')).toBeHidden();
-  });
-
-  // ── Bug #13: No always-visible dropdown on mobile ─────────────────
-  // NOTE: "action trigger button hidden on mobile" is covered with stronger
-  // assertions (checks both .action-trigger and .message-actions) in
-  // mobile-actions.spec.ts.
-
-  // ── Persistence on mobile ─────────────────────────────────────────
-
-  test('messages persist after mobile refresh', async ({ page }) => {
-    await freshStart(page);
-    await createServer(page, 'Mobile Persist');
-    await sendMessage(page, 'survives refresh');
-    await page.waitForTimeout(500);
-
-    await page.reload();
-    await waitForApp(page);
-    await page.waitForTimeout(1000);
-
-    await expect(page.locator('.message .body', { hasText: 'survives refresh' })).toBeVisible();
+    await expect(page.locator('.shell-mobile .mobile-action-sheet.open')).toHaveCount(0);
   });
 });

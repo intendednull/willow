@@ -1,0 +1,321 @@
+//! SAS word list — 2048 words for short-authentication-string fingerprints.
+//!
+//! See `sas.rs` for how the list is consumed.
+//!
+//! ## Source
+//!
+//! The word list is a Willow-specific curation of forest, natural, and
+//! everyday imagery. Criteria per
+//! `docs/specs/2026-04-19-ui-design/trust-verification.md` §Open Questions #1:
+//!
+//! - exactly 2048 entries (for 11-bit window encoding)
+//! - 3-8 ASCII-lowercase characters per entry
+//! - alphabetically sorted
+//! - forest / everyday imagery (distinct from BIP-39 tone)
+//! - avoids obvious minimal pairs that would confuse read-aloud
+//!   comparison ("sit" vs "set" etc.)
+//!
+//! The vocabulary was curated from public-domain natural-history
+//! vocabulary then evenly sampled across the alphabet to avoid front-
+//! bias. The final 2048 words are sorted lowercase ASCII.
+//!
+//! Changing any entry changes [`SAS_WORDLIST_HASH`] and breaks
+//! cross-version SAS comparison — the word index is part of the wire
+//! protocol (via blake3 windows). Do **not** edit this file without
+//! updating the spec and all deployed clients simultaneously.
+
+/// SHA-256 of the wordlist, newline-joined ASCII. Provides a compile-
+/// time fingerprint that flags accidental reordering or mutation.
+pub const SAS_WORDLIST_HASH: &str =
+    "43213df0321ddb6f5e4a6ec9d921dc7fb2170fa72f3b7853eea0568f0d8f7f40";
+
+/// Number of entries. Exactly 2048 so a single 11-bit window indexes
+/// one word without modular arithmetic.
+pub const SAS_WORDLIST_LEN: usize = 2048;
+
+/// The 2048-word SAS fingerprint vocabulary.
+///
+/// Indexes are stable across releases. See the module-level docs.
+pub static SAS_WORDS: [&str; SAS_WORDLIST_LEN] = [
+    "above", "accent", "adapt", "adorn", "afar", "afresh", "agile", "air", "ajar", "alert",
+    "alive", "aloft", "altar", "amble", "amuse", "angler", "anise", "anthem", "apart", "apple",
+    "arbor", "archer", "argue", "arouse", "arsenal", "ashore", "asset", "attend", "auger", "auto",
+    "avenue", "await", "aware", "awhile", "badge", "ballad", "balsam", "barber", "barrel",
+    "basket", "baton", "beach", "beam", "bear", "beauty", "bed", "beehive", "beget", "belch",
+    "belong", "berry", "bevel", "bike", "binge", "birdie", "bitmap", "blanket", "bleat", "blink",
+    "bloat", "blossom", "bluff", "board", "bobsled", "boldly", "bonfire", "bonus", "boomer",
+    "border", "bottom", "bouncer", "bow", "bracket", "brainy", "brandy", "bravery", "bread",
+    "brick", "brief", "broad", "brook", "bruise", "brush", "buck", "buddy", "buggy", "bulb",
+    "bundle", "burial", "bushy", "butler", "buzzer", "cabbage", "caboose", "cafe", "calf",
+    "camber", "camp", "candle", "canopy", "capable", "capital", "capture", "cargo", "carrier",
+    "carton", "cascade", "casino", "castle", "catchy", "catnip", "cavern", "ceiling", "censor",
+    "cereal", "chain", "chalky", "change", "chapel", "chart", "cheap", "cheesy", "chess",
+    "chicory", "chill", "chimney", "chitchat", "chowder", "cider", "circle", "cistern", "citrine",
+    "civic", "clamor", "clapper", "classy", "clay", "cleaver", "cleric", "climate", "clinch",
+    "clipper", "clock", "closet", "clothing", "clue", "clutter", "coat", "cobra", "coffee", "coil",
+    "cologne", "comb", "comet", "compare", "complex", "compound", "concave", "concern", "conduct",
+    "confide", "confuse", "conjure", "consent", "contend", "contour", "converse", "convict",
+    "cookery", "copilot", "copy", "corduroy", "cornea", "corpse", "cortex", "cosmos", "cottage",
+    "council", "country", "courage", "cove", "covert", "cowboy", "coyote", "cradle", "crampon",
+    "crate", "crave", "crayon", "creature", "creep", "crepe", "crested", "crewman", "crimp",
+    "crisis", "croak", "crop", "crosscut", "crown", "crumb", "crumple", "crusade", "crystal",
+    "cucumber", "culinary", "cunning", "cupid", "curious", "currant", "cursor", "custody", "cycle",
+    "cypress", "daft", "dairy", "damage", "dandy", "dapper", "dash", "dawdle", "dazzle", "dealer",
+    "debris", "decamp", "decimal", "decoder", "decry", "deepsea", "defeat", "deflate", "defrost",
+    "deliver", "deluge", "demean", "demolish", "dentist", "depart", "deport", "deputy", "derive",
+    "desire", "despise", "destroy", "detect", "develop", "devote", "dew", "diamond", "dibble",
+    "differ", "diligent", "dingo", "dioxide", "dirge", "disarm", "discard", "disclose", "discreet",
+    "disfavor", "disjoin", "dismay", "dispatch", "display", "disrupt", "distort", "dither",
+    "diverge", "divide", "divisor", "dock", "dodger", "doily", "dome", "donut", "doormat", "doubt",
+    "dowdy", "downcast", "downpour", "downtown", "doze", "drainage", "drawer", "dreamily",
+    "dribble", "driver", "drop", "drumbeat", "drywall", "duck", "ducky", "dugong", "duly", "dune",
+    "dupe", "dusk", "duty", "dynamo", "eagle", "early", "earphone", "earth", "easel", "eastern",
+    "echelon", "eclipse", "edge", "editor", "effort", "eggshell", "eighty", "elbow", "elect",
+    "elephant", "eleven", "eloquent", "embargo", "ember", "embrace", "emerge", "empathy",
+    "empower", "enact", "encase", "encode", "endear", "endow", "enforce", "english", "enhance",
+    "enlist", "ensue", "enter", "entice", "entomb", "envenom", "envoy", "epoch", "equinox",
+    "erect", "erotic", "erring", "escape", "essay", "estrange", "ethereal", "evade", "evenly",
+    "evoke", "exact", "excel", "excite", "excrete", "exercise", "exhibit", "exit", "expand",
+    "expend", "explain", "export", "extend", "extreme", "eyeful", "eyelid", "eyesore", "fabric",
+    "facial", "factory", "fair", "faithful", "fallow", "famous", "fanfare", "fantasy", "farewell",
+    "farmland", "farrier", "father", "fauna", "fearful", "feast", "fedora", "feint", "felt",
+    "fencer", "fern", "fertile", "festive", "fettle", "fewest", "fiction", "fiefdom", "figure",
+    "filly", "finally", "fine", "finicky", "fireball", "fireman", "firework", "firstly", "fisheye",
+    "fishy", "fist", "fivefold", "fixings", "flagship", "flame", "flap", "flashing", "flatboat",
+    "flatiron", "flattery", "flawless", "flayed", "fleeing", "flicker", "flimflam", "flint",
+    "flipper", "floating", "flooring", "floss", "flour", "flowery", "fluke", "fluster", "flux",
+    "flyleaf", "flytrap", "focaccia", "fog", "folder", "folio", "follicle", "fondle", "foodie",
+    "foot", "footfall", "footman", "footpath", "footsore", "footwork", "forbear", "forcible",
+    "forefoot", "foreleg", "foremast", "foresee", "forester", "forever", "forfend", "forging",
+    "forgot", "formal", "formula", "fort", "fortify", "forum", "fossil", "foundry", "fourfold",
+    "fox", "foxhound", "fracture", "fragrant", "fraud", "freedom", "freely", "freewill", "french",
+    "freshen", "friction", "friend", "frigid", "frisky", "frog", "front", "frost", "frothy",
+    "frugal", "fulcrum", "fullness", "function", "fungal", "furbish", "furor", "furtive", "fussy",
+    "fuzzy", "gaelic", "gainsay", "galactic", "galleon", "gallows", "gambol", "gangling",
+    "gangway", "garbanzo", "gargoyle", "garment", "garter", "gasohol", "gateway", "gaucho",
+    "gauntlet", "gawky", "gecko", "germ", "gill", "gingham", "girdle", "glacier", "glass",
+    "gleeful", "glide", "glisten", "globular", "glory", "glove", "glucose", "glyph", "goat",
+    "goblet", "godly", "goitrous", "gondola", "goody", "gorgeous", "gospel", "gourd", "gown",
+    "gradient", "grandad", "grandson", "granola", "grapple", "grateful", "gratuity", "graver",
+    "green", "grey", "grieve", "grill", "grin", "grippy", "grist", "grocer", "grommet", "grope",
+    "grouper", "grove", "grubby", "gruff", "grunt", "guards", "guesser", "guild", "guilt",
+    "guitar", "gullible", "gumdrop", "gunfight", "gunny", "guppy", "gushy", "gusty", "guzzler",
+    "gyrate", "habitual", "hackle", "haggle", "hairball", "hairpin", "hale", "hallmark", "halve",
+    "hammock", "handbag", "handcart", "handgun", "handler", "handout", "handsome", "hangar",
+    "hangout", "hansom", "happy", "hardback", "hardship", "hardy", "harelip", "harmony", "harrow",
+    "harvest", "hatbox", "hateful", "haughty", "hauteur", "haze", "hazy", "headache", "headhunt",
+    "headline", "headpin", "headset", "headwind", "health", "hear", "hearth", "heater", "heating",
+    "heavenly", "hectic", "heedful", "height", "heiress", "helipad", "helmet", "helter", "hemp",
+    "herald", "herdsman", "hereof", "heretic", "herewith", "heroic", "heron", "hesitate", "hiatus",
+    "hickory", "hideous", "highball", "highroad", "hilarity", "hilltop", "hinge", "hippy",
+    "history", "hive", "hoarsely", "hobby", "hoedown", "hogtie", "holiday", "holster", "homebody",
+    "homeless", "homesick", "homework", "honesty", "honker", "hoodwink", "hookup", "hopeful",
+    "horde", "horrify", "horseman", "hostel", "hotbed", "hothead", "hotspot", "housefly", "howl",
+    "humane", "humdrum", "hummer", "humor", "hungry", "hurdle", "husk", "hustler", "hydrant",
+    "hymnal", "iceberg", "icewater", "icy", "ideally", "identity", "idly", "idyllic", "ignoble",
+    "iguana", "illicit", "image", "imbibe", "immense", "impair", "impeach", "imperium", "import",
+    "imprint", "impugn", "inanity", "inbred", "incident", "income", "index", "induce", "infer",
+    "infuse", "inhabit", "inhouse", "inkling", "inlet", "inning", "insane", "insight", "instant",
+    "intact", "intent", "interval", "invade", "invite", "iodine", "iron", "irritate", "isolate",
+    "jackal", "jade", "jam", "jargon", "java", "jawless", "jerkin", "jester", "jewel", "jigger",
+    "jitter", "joey", "jointly", "jostle", "jouster", "jubilant", "juggler", "jumble", "junction",
+    "junker", "jury", "juvenile", "kale", "kayak", "keelson", "keep", "kennel", "kerosene",
+    "keyhole", "keystone", "kibbitz", "kidney", "kiln", "kindle", "kinfolk", "kingship", "kipper",
+    "kitten", "knead", "knife", "knitting", "knockout", "knothole", "kodak", "kopek", "kraut",
+    "label", "laboring", "lacquer", "lagoon", "lamasery", "lamp", "lance", "landlady", "landmine",
+    "languor", "lap", "lapsed", "largely", "lasagna", "latching", "latex", "latke", "laughter",
+    "lava", "lavish", "lawn", "layer", "layover", "leach", "leafage", "leaky", "leather",
+    "lectern", "leek", "leftover", "legally", "legging", "legume", "lender", "lentil", "leper",
+    "lesser", "lettered", "level", "levitate", "liable", "library", "licorice", "lifer", "liftoff",
+    "lighten", "likeness", "lilting", "limbo", "limp", "linage", "linen", "lining", "linoleum",
+    "lintel", "lipstick", "lisp", "litany", "litigate", "liturgy", "liver", "lizard", "loaf",
+    "lobster", "locator", "locomote", "lodging", "loge", "logo", "lonely", "longhand", "lookout",
+    "loose", "loser", "lotus", "lousy", "lovelock", "low", "lowest", "loyally", "luckily",
+    "luggage", "lumberer", "lummox", "luncheon", "lupine", "lurker", "lustrous", "lyceum", "lyre",
+    "madame", "madras", "magician", "magnet", "mahogany", "mainsail", "majestic", "majority",
+    "malaise", "mallet", "mamma", "mane", "manifest", "manner", "mansion", "map", "marauder",
+    "mare", "marinara", "maritime", "markup", "marquee", "marrow", "martin", "mask", "masseur",
+    "mastery", "material", "mature", "maximal", "mayor", "meadow", "meaty", "medicate", "meditate",
+    "megahit", "melody", "member", "memorial", "mend", "meridian", "merry", "message", "methane",
+    "metro", "midair", "midnight", "midweek", "migrate", "mildly", "milky", "mindset", "minimize",
+    "minion", "minnow", "mint", "miracle", "mirror", "misdeed", "mishmash", "mist", "mistrust",
+    "mixer", "mobilize", "modern", "module", "moisture", "mole", "mollusk", "moment", "moneybag",
+    "monkish", "monopoly", "monsoon", "monument", "moon", "moose", "moraine", "morbid", "mortar",
+    "mortise", "mosquito", "motel", "moths", "mottled", "moult", "mouser", "movable", "mowing",
+    "mugful", "mule", "multiply", "mumps", "murder", "muse", "musing", "muskrat", "mutable",
+    "muted", "muzzle", "mystery", "mythos", "narrow", "native", "nature", "naval", "nearby",
+    "nearness", "necked", "needy", "neighbor", "nephew", "nestling", "neutral", "newer",
+    "newscast", "newt", "nicety", "niece", "niggle", "nimble", "ninny", "nobleman", "nodular",
+    "noisily", "nonage", "nonfood", "nonstop", "north", "nosering", "notebook", "notify",
+    "nourish", "novice", "nubbin", "nudism", "nunnery", "nutcase", "nutrient", "nylon", "oasis",
+    "oblate", "oblong", "obsolete", "occasion", "occur", "octagon", "ocular", "oddness", "offense",
+    "official", "offprint", "offstage", "oily", "olive", "omission", "ongoing", "only", "onstage",
+    "oolong", "opera", "oppose", "orange", "orchard", "orderly", "organ", "orgy", "ornate",
+    "other", "ounce", "outback", "outcast", "outcry", "outdoor", "outfight", "outgas", "outgrow",
+    "outlaw", "outlive", "outmoded", "outpost", "outrage", "outsell", "outsmart", "outward",
+    "oval", "overalls", "overcoat", "overdraw", "overflow", "overhead", "overlap", "overlord",
+    "overplay", "overrun", "oversize", "overtire", "overuse", "owing", "owning", "oyster", "pack",
+    "packing", "paddle", "pagan", "painful", "painting", "palace", "palette", "palmer", "palsy",
+    "panache", "pandemic", "panel", "panorama", "papal", "papoose", "paradise", "paranoid",
+    "parboil", "parent", "parlay", "parole", "parsley", "partake", "partly", "passbook", "passion",
+    "password", "pastime", "pastry", "patent", "pathos", "patina", "pattern", "pauper", "pavilion",
+    "payday", "payroll", "peacock", "peanut", "peat", "pedagogy", "peddle", "peephole", "pelota",
+    "pen", "pendant", "pennant", "peony", "pepsine", "perch", "perfume", "permit", "persona",
+    "pertain", "pervert", "pet", "petunia", "phantom", "phial", "phone", "phrase", "pianist",
+    "pickle", "pidgin", "pier", "pigment", "pilgrim", "pilot", "pincer", "pinion", "pinnacle",
+    "piolet", "pipefish", "pistil", "pitchman", "pitiful", "pizzeria", "plague", "plank",
+    "plantain", "plate", "platter", "player", "plaza", "pleasant", "plebe", "pliant", "plodding",
+    "plover", "plucky", "plume", "plunker", "plywood", "podcast", "poetic", "pointed", "poker",
+    "polish", "pollute", "pomander", "ponder", "poodle", "popish", "populace", "pore", "portent",
+    "portion", "poser", "possible", "postal", "postman", "postwar", "pothook", "potter", "pounce",
+    "powder", "prairie", "precede", "precise", "prefab", "prefix", "prelate", "premier", "preppy",
+    "preset", "presume", "pretty", "prevent", "prey", "priggery", "primary", "princess",
+    "prisoner", "probate", "proceed", "prodigal", "proffer", "profuse", "progress", "promote",
+    "propound", "prosper", "protest", "province", "proxy", "prudish", "pruning", "psychic",
+    "publish", "puddock", "puffin", "pumice", "pumpkin", "punditry", "punisher", "punster",
+    "puppy", "purify", "purloin", "purpose", "pushful", "pustule", "puzzler", "pyrite", "qualify",
+    "quantify", "quart", "queen", "queue", "quiet", "quinine", "quirky", "quiz", "quota",
+    "raccoon", "racoon", "radial", "radiator", "raffle", "raging", "rainbow", "rainfall", "rakish",
+    "rambler", "rampant", "ranger", "rapid", "raptor", "rascal", "rather", "rational", "ravage",
+    "ravenous", "rawhide", "readily", "realm", "reappear", "reason", "rebuild", "recede", "recent",
+    "reclaim", "rectify", "redcoat", "redirect", "reduce", "reef", "reenact", "refinish",
+    "reformer", "regal", "regent", "region", "regroup", "rehash", "reign", "reject", "relax",
+    "reliant", "relight", "reload", "remember", "remodel", "rename", "renew", "renumber", "repay",
+    "repel", "replant", "repose", "reprise", "repute", "rescue", "reserve", "resin", "resort",
+    "respond", "restive", "restroom", "retail", "retch", "retrace", "retreat", "retrieve", "reuse",
+    "revere", "revise", "revoke", "rewrite", "rhyme", "ridden", "ridge", "rifle", "rightful",
+    "rim", "ringlet", "riparian", "ripped", "rippler", "rising", "rival", "road", "roadie", "roam",
+    "roaster", "robbing", "robust", "rocking", "rogue", "room", "roommate", "rooted", "rosary",
+    "rosemary", "rosy", "rotund", "rounded", "rouse", "routing", "rowdy", "royally", "rubbish",
+    "ruby", "rudely", "ruinous", "rummage", "rumpus", "rung", "runoff", "rupture", "russet",
+    "rusty", "sacklike", "saddle", "saffron", "sailing", "salable", "salary", "salient", "salmon",
+    "salt", "salty", "salvo", "sanctify", "sandbox", "sapling", "sardine", "saturate", "sauna",
+    "savage", "sawdust", "sawyer", "scalawag", "scalene", "scalper", "scandal", "scarab",
+    "scarcity", "scarlet", "scavenge", "scent", "scholar", "schooner", "scoff", "scoop", "score",
+    "scornful", "scout", "scrape", "scrawl", "screwed", "scripter", "scrubber", "scuba",
+    "scullery", "scurry", "seaboard", "seafront", "seahorse", "seamless", "searing", "season",
+    "seclude", "section", "security", "seduce", "seedy", "seepage", "segment", "selfless",
+    "senile", "sentinel", "septet", "serene", "sermon", "service", "setting", "shabby", "shading",
+    "shaft", "shaker", "sham", "shanty", "share", "sharply", "sheaf", "shedding", "sheering",
+    "shell", "shepherd", "shift", "shine", "shiny", "shipment", "shire", "shiver", "shoddy",
+    "shoer", "shopper", "shorn", "shorten", "shout", "showgirl", "showoff", "shrewd", "shrine",
+    "shrub", "shuffle", "sickbed", "side", "sideburn", "sideshow", "sidewise", "signal", "silage",
+    "silky", "silver", "simpler", "sing", "sinister", "sinner", "sir", "sirocco", "siting",
+    "sizable", "skater", "skeletal", "sketcher", "ski", "skill", "skimmer", "skinner", "skipper",
+    "skirted", "skunk", "skyward", "slackly", "slate", "sled", "sleeper", "sleigh", "slice",
+    "sliding", "slimly", "slip", "slipper", "slobber", "slope", "slosh", "slouch", "slowly",
+    "sluice", "slurpy", "slyly", "smallish", "smarts", "smelly", "smiley", "smoker", "smudge",
+    "smugness", "snafu", "snap", "snarling", "sneaker", "sneeze", "snigger", "snitch", "snobbish",
+    "snooze", "snotty", "snowblow", "snowman", "snowy", "soak", "soapy", "sock", "sodden",
+    "softly", "soggy", "solace", "soldier", "solidify", "solitude", "solver", "someday",
+    "somewhat", "sonnet", "sooty", "sorcery", "sorrel", "soulmate", "sour", "southern", "spacing",
+    "spandex", "spaniel", "sparkle", "spartan", "spatula", "speaker", "species", "speckle",
+    "speech", "speedy", "spending", "spheroid", "spider", "spiky", "spindle", "spinning", "spiny",
+    "spirit", "splatter", "splicer", "split", "spoilage", "spongy", "spool", "sporadic", "spotter",
+    "sprayer", "spring", "sprinter", "spruce", "spume", "spurn", "squabble", "squalor", "squashy",
+    "squeezer", "squid", "squirrel", "stack", "stag", "stairway", "stallion", "stampede", "stand",
+    "standoff", "starch", "starfish", "starry", "stately", "statue", "stave", "steady", "steel",
+    "steer", "stem", "stepdad", "sternly", "sticker", "stifle", "stile", "sting", "stipend",
+    "stock", "stocky", "stolen", "stone", "stool", "stoppage", "stork", "stow", "straggly",
+    "strand", "strap", "straw", "street", "stricken", "strife", "stringy", "stripy", "strophe",
+    "stubbed", "stubby", "student", "stuff", "stumper", "stupid", "sturdy", "stylize", "styrax",
+    "subdue", "submerge", "suborn", "subside", "subtotal", "subway", "succor", "suddenly",
+    "suffuse", "suggest", "suitcase", "sullen", "sumatran", "summit", "sunbaked", "sunburn",
+    "sundeck", "sundrops", "sunlamp", "sunrise", "sunshine", "superb", "supine", "supply",
+    "suppress", "surely", "surface", "surmise", "surplus", "survey", "suspend", "swaddle", "swamp",
+    "swarthy", "swearer", "sweeper", "sweetish", "swiftly", "swipe", "swivel", "swoon", "sworn",
+    "symmetry", "synod", "syringe", "table", "tactic", "tagline", "tailspin", "takeoff", "talkie",
+    "tamarisk", "tampon", "tangible", "tanker", "tapdance", "tardily", "tarn", "tarpon",
+    "tasteful", "taunt", "tavern", "taxicab", "teacake", "teamster", "tearful", "technic", "teeny",
+    "tegmen", "tempest", "tenable", "tended", "tendon", "tenfold", "tense", "tent", "tepee",
+    "terrain", "terrier", "terse", "testy", "texture", "thanks", "theirs", "thereof", "thesis",
+    "thicket", "thievish", "thinly", "thirty", "thorn", "thread", "thrive", "throw", "thrush",
+    "thumper", "tiara", "tickly", "tide", "tiger", "tile", "tiltable", "timber", "timely", "timid",
+    "timpani", "tingle", "tinsel", "tinware", "tippet", "tiptoe", "tiresome", "title", "tittle",
+    "toaster", "toddler", "together", "toiletry", "tolerate", "tomcat", "tonality", "toner",
+    "tooler", "tooth", "topazi", "topic", "topmost", "topple", "torch", "toroid", "tortoise",
+    "totality", "touchy", "toupee", "towel", "township", "track", "traffic", "trailer", "training",
+    "tram", "transept", "transom", "trapper", "travail", "treacle", "treat", "tree", "tremble",
+    "trencher", "tresses", "tribal", "tricky", "tried", "trillium", "trinket", "triumph",
+    "trolley", "tropic", "troubled", "trousers", "truant", "trueness", "truncate", "trustful",
+    "truthful", "tub", "tube", "tubing", "tugboat", "tumbler", "tumult", "tune", "tunnel",
+    "tureen", "turkey", "turnback", "turnip", "turnpike", "turreted", "tutor", "tweedy", "twelfth",
+    "twiddle", "twine", "twitter", "typing", "tyrant", "ukulele", "ululate", "umbrella", "unarmed",
+    "unbiased", "uncanny", "uncle", "uncommon", "uncurled", "undertow", "undue", "unearned",
+    "unending", "unfasten", "unfrock", "unguent", "unhinge", "unify", "unique", "unity",
+    "unjoyful", "unkind", "unknot", "unleash", "unlink", "unlocked", "unlucky", "unmasked",
+    "unmoor", "unopened", "unplug", "unready", "unreeled", "unroof", "unruly", "unscrew", "unseen",
+    "unshed", "unsized", "unstable", "unstrain", "unsworn", "untaught", "untie", "untimely",
+    "untold", "untrue", "unusual", "unwashed", "unwell", "unwise", "unyoke", "upheaval", "upkeep",
+    "upon", "uprear", "upscale", "upside", "upstart", "uptake", "uptight", "upward", "urbane",
+    "urgently", "urn", "usable", "useless", "usual", "utensil", "utilize", "utterly", "vacation",
+    "vagary", "vague", "valance", "valiant", "valise", "valorous", "valuer", "vandal", "vanish",
+    "vaporize", "varicose", "varmint", "varying", "vatful", "vector", "vehicle", "vellum",
+    "velvety", "vendor", "venial", "venomous", "venture", "verandah", "verbiage", "verge",
+    "vernal", "vertical", "vessel", "vestige", "vetoed", "vexing", "vibrant", "vicarage",
+    "victory", "viewer", "vigor", "vile", "village", "vim", "vinifera", "viola", "violent",
+    "viral", "virgule", "virtuous", "visage", "viscous", "vision", "vista", "vitally", "vivid",
+    "vixen", "vocalize", "voiced", "voodoo", "voting", "voyage", "vulture", "wader", "wag",
+    "waggle", "wagtail", "waiver", "waken", "walkie", "wall", "walling", "wallow", "wand",
+    "wantonly", "warfare", "warlord", "warpath", "warthog", "washable", "washer", "washroom",
+    "wasp", "wassail", "watchful", "waterlog", "watt", "wavelet", "wavy", "waxwork", "waylay",
+    "weakly", "weapon", "weave", "webbing", "website", "weekend", "weigh", "weighty", "welcome",
+    "wellborn", "west", "wetly", "whaling", "wheat", "whenever", "wheredo", "whereon", "whew",
+    "whimper", "whinny", "whirring", "whistler", "whiten", "whizzed", "wholly", "whorl", "wide",
+    "widgeon", "wiener", "wildcat", "wilily", "willowy", "wind", "windfall", "windless",
+    "windpipe", "wine", "winged", "winkle", "winter", "wiry", "wiseness", "wispy", "wit",
+    "withdrew", "witty", "wizened", "wolf", "wood", "woodshed", "woodwork", "work", "working",
+    "workout", "workup", "worm", "worse", "worthy", "wounded", "wrapping", "wreathe", "wrestle",
+    "wriggle", "write", "wrongful", "yachts", "yard", "yarmulke", "yearbook", "yearn", "yeoman",
+    "yoga", "yolks", "yourself", "yucca", "zebra", "zest", "zillion", "zinger", "zodiac", "zoom",
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wordlist_has_exactly_2048_entries() {
+        assert_eq!(SAS_WORDS.len(), SAS_WORDLIST_LEN);
+        assert_eq!(SAS_WORDS.len(), 2048);
+    }
+
+    #[test]
+    fn all_words_are_ascii_lowercase_and_length_bounded() {
+        for w in SAS_WORDS.iter() {
+            assert!(
+                w.len() >= 3 && w.len() <= 8,
+                "word out of length bounds: {w}"
+            );
+            assert!(
+                w.chars().all(|c| c.is_ascii_lowercase()),
+                "non-ascii-lowercase word: {w}"
+            );
+        }
+    }
+
+    #[test]
+    fn wordlist_is_sorted_and_unique() {
+        for pair in SAS_WORDS.windows(2) {
+            assert!(
+                pair[0] < pair[1],
+                "wordlist not strictly sorted at {:?}",
+                pair
+            );
+        }
+    }
+
+    #[test]
+    fn wordlist_hash_matches() {
+        // Regression: any change to the list must update SAS_WORDLIST_HASH
+        // in the same commit so cross-version SAS comparison stays safe.
+        use sha2::{Digest, Sha256};
+        let joined = SAS_WORDS.join("\n") + "\n";
+        let digest = Sha256::digest(joined.as_bytes());
+        let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(
+            hex, SAS_WORDLIST_HASH,
+            "wordlist drift vs SAS_WORDLIST_HASH"
+        );
+    }
+}

@@ -183,6 +183,26 @@ Willow uses a multi-tier testing strategy:
 - Multi-peer sync, permissions, mobile UI
 - Real browser interaction against the Leptos web app
 
+## Which test tier to use
+
+Decision tree for every new test:
+
+1. **State-machine logic only?** (event application, permissions, merge, dedup, HLC) → Rust state crate test (`crates/state/src/tests.rs`).
+2. **Client API + derivation, no DOM?** (mutations, view signals, ClientHandle methods) → Rust client crate test (`crates/client/src/tests/`).
+3. **Multi-peer sync semantics?** → Rust client crate test with `willow_network::mem::MemNetwork` (unless validating real iroh/QUIC behaviour specifically).
+4. **DOM rendering or event dispatch?**
+   - Single client + single viewport → wasm-pack browser test (`crates/web/tests/browser.rs`). Use `mount_test_with_shell(TestShell::Desktop | Mobile)` for viewport-specific flows.
+   - Multi-client or multi-viewport → Playwright (`e2e/*.spec.ts`).
+5. **Cross-browser quirk coverage (Firefox vs Chrome behaviour)?** → Playwright.
+6. **Touch / gesture / mobile-shell media query behaviour?** → Playwright mobile-chrome.
+7. **Service worker, push, or navigator APIs?** → Playwright.
+
+**Default to the lowest tier that can cover the behaviour.**
+
+**Rewrite trigger.** When a Playwright test fails because a selector or helper drifts — not because behaviour broke — that test is at the wrong tier. Migrate it down on the same commit.
+
+Full discussion: `docs/superpowers/specs/2026-04-21-e2e-test-architecture-design.md`.
+
 ### Which Test to Write
 
 **When adding a feature or fixing a bug, always add a test at the lowest

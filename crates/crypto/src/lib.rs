@@ -28,6 +28,14 @@ use willow_identity::Identity;
 // Re-export for convenience.
 pub use willow_messaging::{Content, SealedContent};
 
+// ───── SAS (Short Authentication String) ────────────────────────────────────
+
+pub mod sas;
+pub mod sas_wordlist;
+
+pub use sas::{sas_words, SasError, SAS_DS_TAG, SAS_WORD_COUNT};
+pub use sas_wordlist::{SAS_WORDLIST_HASH, SAS_WORDLIST_LEN, SAS_WORDS};
+
 // ───── HKDF Domain Separators ──────────────────────────────────────────────
 //
 // Every HKDF derivation in this crate uses an explicit, versioned domain

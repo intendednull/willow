@@ -1,7 +1,11 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use leptos::prelude::*;
+use willow_client::trust::{PeerTrust, TrustStoreHandle};
 use willow_client::DisplayMessage;
+
+use crate::trust_store::WebTrustStore;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum VideoSource {
@@ -22,7 +26,32 @@ pub enum SettingsTab {
     Profile,
     Server,
     Roles,
+    Presence,
+    /// Per-identity notification preferences (phase 1f placeholder).
+    Notifications,
 }
+
+/// Per-grove crypto-visibility tweak.
+///
+/// See `docs/specs/2026-04-19-ui-design/trust-verification.md` §Per-grove
+/// crypto-visibility setting. Controls how prominently the channel-key
+/// holder pill and related metadata surface in the channel header.
+#[derive(Clone, Copy, PartialEq, Default, Debug)]
+pub enum CryptoVisibility {
+    /// Holder pill visible only when the holder count is *less than*
+    /// the grove's member count.
+    Subtle,
+    /// Holder pill always visible. Default.
+    #[default]
+    Default,
+    /// Holder pill visible plus a one-line crypto strip below the header.
+    Explicit,
+}
+
+/// Feature flag: is the `not sure` CTA wired in the compare dialog? Per
+/// the implementation plan's ambiguity decisions this ships **off** in
+/// Phase 1d and the slot is reserved for a future change.
+pub const V1_ALLOW_UNSURE_CTA: bool = false;
 
 /// Per-channel UI state. Extensible for future needs (drafts, scroll pos).
 #[derive(Clone, Default, PartialEq)]
@@ -49,6 +78,41 @@ pub struct AppState {
     pub server: ServerState,
     pub ui: UiState,
     pub voice: VoiceState,
+    pub trust: TrustState,
+    pub presence: PresenceUiState,
+}
+
+/// Reactive presence bucket. `per_peer` maps a peer's string id to the
+/// derived [`willow_client::presence::PresenceState`]. `self_state`
+/// carries the local user's own label (respects the override). Both
+/// are reactive — UI surfaces subscribe directly without needing to
+/// round-trip through the client handle.
+#[derive(Clone, Copy)]
+pub struct PresenceUiState {
+    pub per_peer: ReadSignal<HashMap<String, willow_client::presence::PresenceState>>,
+    pub self_state: ReadSignal<willow_client::presence::PresenceState>,
+    pub self_override: ReadSignal<willow_client::presence::PresenceOverride>,
+}
+
+/// Reactive trust bucket. The `trust_map` signal mirrors the
+/// [`TrustStoreHandle`] snapshot and rebuilds on every `set` via the
+/// version token. `compare_target` drives the root-mounted
+/// `<AddFriendDialog>`: `None` closed, `Some(peer_id)` open for the
+/// given peer (including the self-peer, which renders a single card).
+#[derive(Clone, Copy)]
+pub struct TrustState {
+    /// Map of peer-id → current trust belief.
+    pub trust_map: ReadSignal<HashMap<String, PeerTrust>>,
+    /// Incrementing token — bumps when the underlying
+    /// [`TrustStoreHandle`] mutates. UIs don't read this directly, but
+    /// it exists as a debug handle for tests.
+    pub version: ReadSignal<u64>,
+    /// When `Some`, the compare-fingerprints dialog is open for that
+    /// peer. `None` closes it.
+    pub compare_target: ReadSignal<Option<String>>,
+    /// Per-grove crypto-visibility mode. Drives holder-pill + crypto
+    /// strip rendering.
+    pub crypto_visibility: ReadSignal<CryptoVisibility>,
 }
 
 #[derive(Clone, Copy)]
@@ -78,6 +142,10 @@ pub struct ServerState {
     pub active_server_id: ReadSignal<String>,
     pub active_server_name: ReadSignal<String>,
     pub unread: ReadSignal<HashMap<String, usize>>,
+    /// Per-surface unread stats (phase 1f) — drives the badge priority
+    /// pipeline. Keyed by channel name for `SurfaceId::Channel`; other
+    /// variants are stubbed empty until their phases land.
+    pub unread_stats: ReadSignal<HashMap<String, willow_client::views::UnreadStats>>,
     pub roles: ReadSignal<Vec<(String, String, Vec<String>)>>,
     pub display_name: ReadSignal<String>,
     pub server_owner: ReadSignal<String>,
@@ -130,6 +198,23 @@ pub struct AppWriteSignals {
     pub server: ServerWriteSignals,
     pub ui: UiWriteSignals,
     pub voice: VoiceWriteSignals,
+    pub trust: TrustWriteSignals,
+    pub presence: PresenceWriteSignals,
+}
+
+#[derive(Clone, Copy)]
+pub struct PresenceWriteSignals {
+    pub set_per_peer: WriteSignal<HashMap<String, willow_client::presence::PresenceState>>,
+    pub set_self_state: WriteSignal<willow_client::presence::PresenceState>,
+    pub set_self_override: WriteSignal<willow_client::presence::PresenceOverride>,
+}
+
+#[derive(Clone, Copy)]
+pub struct TrustWriteSignals {
+    pub set_trust_map: WriteSignal<HashMap<String, PeerTrust>>,
+    pub set_version: WriteSignal<u64>,
+    pub set_compare_target: WriteSignal<Option<String>>,
+    pub set_crypto_visibility: WriteSignal<CryptoVisibility>,
 }
 
 #[derive(Clone, Copy)]
@@ -161,6 +246,7 @@ pub struct ServerWriteSignals {
     pub set_active_server_id: WriteSignal<String>,
     pub set_active_server_name: WriteSignal<String>,
     pub set_unread: WriteSignal<HashMap<String, usize>>,
+    pub set_unread_stats: WriteSignal<HashMap<String, willow_client::views::UnreadStats>>,
     pub set_roles: WriteSignal<Vec<(String, String, Vec<String>)>>,
     pub set_display_name: WriteSignal<String>,
     pub set_server_owner: WriteSignal<String>,
@@ -219,12 +305,23 @@ impl VoiceWriteSignals {
     }
 }
 
-/// Create all signal pairs and return the read/write halves.
+/// Bundle returned from [`create_signals`] — read/write halves of every
+/// reactive signal plus the trust-store handle the app boots with.
+pub struct InitialSignals {
+    pub app_state: AppState,
+    pub write: AppWriteSignals,
+    /// The authoritative trust store. Cloned into [`ClientHandle::with_trust_store`]
+    /// and into the effect that syncs `trust_map` on every mutation.
+    pub trust_store: TrustStoreHandle,
+}
+
+/// Create all signal pairs, load the trust store, and return the
+/// [`InitialSignals`] bundle.
 ///
 /// Signals that reflect `SharedState` are created via `derived_signal()` when
 /// a state actor is available; otherwise they fall back to regular signals
 /// that are updated via `refresh_all_signals()`.
-pub fn create_signals() -> (AppState, AppWriteSignals) {
+pub fn create_signals() -> InitialSignals {
     // Chat signals
     let (messages, set_messages) = signal(Vec::<DisplayMessage>::new());
     let (current_channel, set_current_channel) = signal(String::from("general"));
@@ -247,6 +344,8 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
     let (active_server_id, set_active_server_id) = signal(String::new());
     let (active_server_name, set_active_server_name) = signal(String::new());
     let (unread, set_unread) = signal(HashMap::<String, usize>::new());
+    let (unread_stats, set_unread_stats) =
+        signal(HashMap::<String, willow_client::views::UnreadStats>::new());
     let (roles, set_roles) = signal(Vec::<(String, String, Vec<String>)>::new());
     let (display_name, set_display_name) = signal(String::new());
     let (server_owner, set_server_owner) = signal(String::new());
@@ -284,6 +383,24 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
     let (local_video_stream, set_local_video_stream) =
         signal(Option::<send_wrapper::SendWrapper<web_sys::MediaStream>>::None);
 
+    // Trust: boot the localStorage-backed store and seed signals from
+    // its snapshot. The root `<App>` wires an Effect that copies every
+    // version bump back into `trust_map`.
+    let trust_store: TrustStoreHandle = Arc::new(WebTrustStore::load());
+    let initial_trust: HashMap<String, PeerTrust> = trust_store.snapshot().into_iter().collect();
+    let (trust_map, set_trust_map) = signal(initial_trust);
+    let (trust_version, set_trust_version) = signal(trust_store.version());
+    let (compare_target, set_compare_target) = signal(Option::<String>::None);
+    let (crypto_visibility, set_crypto_visibility) = signal(CryptoVisibility::default());
+
+    // Presence signals (phase 1e)
+    let (presence_per_peer, set_presence_per_peer) =
+        signal(HashMap::<String, willow_client::presence::PresenceState>::new());
+    let (presence_self_state, set_presence_self_state) =
+        signal(willow_client::presence::PresenceState::Here);
+    let (presence_self_override, set_presence_self_override) =
+        signal(willow_client::presence::PresenceOverride::Auto);
+
     let app_state = AppState {
         chat: ChatState {
             messages,
@@ -307,6 +424,7 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
             active_server_id,
             active_server_name,
             unread,
+            unread_stats,
             roles,
             display_name,
             server_owner,
@@ -338,6 +456,17 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
             remote_video_streams,
             local_video_stream,
         },
+        trust: TrustState {
+            trust_map,
+            version: trust_version,
+            compare_target,
+            crypto_visibility,
+        },
+        presence: PresenceUiState {
+            per_peer: presence_per_peer,
+            self_state: presence_self_state,
+            self_override: presence_self_override,
+        },
     };
 
     let write_signals = AppWriteSignals {
@@ -363,6 +492,7 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
             set_active_server_id,
             set_active_server_name,
             set_unread,
+            set_unread_stats,
             set_roles,
             set_display_name,
             set_server_owner,
@@ -394,9 +524,24 @@ pub fn create_signals() -> (AppState, AppWriteSignals) {
             set_remote_video_streams,
             set_local_video_stream,
         },
+        trust: TrustWriteSignals {
+            set_trust_map,
+            set_version: set_trust_version,
+            set_compare_target,
+            set_crypto_visibility,
+        },
+        presence: PresenceWriteSignals {
+            set_per_peer: set_presence_per_peer,
+            set_self_state: set_presence_self_state,
+            set_self_override: set_presence_self_override,
+        },
     };
 
-    (app_state, write_signals)
+    InitialSignals {
+        app_state,
+        write: write_signals,
+        trust_store,
+    }
 }
 
 /// Wire up derived signals that auto-update from the state actor.
@@ -447,6 +592,24 @@ pub fn wire_derived_signals<N: willow_network::Network>(
         reg.active().map(|e| e.unread.clone()).unwrap_or_default()
     });
     leptos::prelude::Effect::new(move || write.server.set_unread.set(unread.get()));
+
+    // Per-surface UnreadStats signal — projects `UnreadView.stats`
+    // down to `{channel_name -> stats}` so the UI can render the
+    // badge atom without knowing about `SurfaceId`.
+    let unread_stats_signal = derived_signal(&views.unread, system, |uv| {
+        uv.stats
+            .iter()
+            .filter_map(|(surface, stats)| match surface {
+                willow_client::views::SurfaceId::Channel(name) => {
+                    Some((name.clone(), stats.clone()))
+                }
+                _ => None,
+            })
+            .collect::<HashMap<String, willow_client::views::UnreadStats>>()
+    });
+    leptos::prelude::Effect::new(move || {
+        write.server.set_unread_stats.set(unread_stats_signal.get())
+    });
 
     let pid_str = handle.peer_id();
     let peer_id = derived_signal(&views.network, system, move |_| pid_str.clone());
@@ -532,4 +695,28 @@ pub fn wire_derived_signals<N: willow_network::Network>(
 
     let messages_sig = derived_signal(&views.messages, system, |mv| mv.messages.clone());
     leptos::prelude::Effect::new(move || write.chat.set_messages.set(messages_sig.get()));
+
+    // ── Presence derived signals (phase 1e) ──────────────────────────
+    let presence_per_peer_sig = derived_signal(&views.presence, system, |pv| {
+        pv.per_peer
+            .iter()
+            .map(|(pid, st)| (pid.to_string(), *st))
+            .collect::<HashMap<String, willow_client::presence::PresenceState>>()
+    });
+    leptos::prelude::Effect::new(move || {
+        write.presence.set_per_peer.set(presence_per_peer_sig.get())
+    });
+
+    let presence_self_sig = derived_signal(&views.presence, system, |pv| pv.self_state);
+    leptos::prelude::Effect::new(move || {
+        write.presence.set_self_state.set(presence_self_sig.get())
+    });
+
+    let presence_override_sig = derived_signal(&views.presence_meta, system, |pm| pm.self_override);
+    leptos::prelude::Effect::new(move || {
+        write
+            .presence
+            .set_self_override
+            .set(presence_override_sig.get())
+    });
 }
