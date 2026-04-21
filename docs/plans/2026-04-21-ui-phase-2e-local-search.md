@@ -1716,7 +1716,7 @@ git commit -m "ui(phase-2e): expose SearchIndexHandle on willow-client"
 **Files:**
 - Modify: `crates/web/src/state.rs` — add `SearchUiState` + `SearchUiWriteSignals` + wire into `AppState` / `AppWriteSignals` / `create_signals()`.
 
-- [ ] **Step 8.1 — Add signal buckets.**
+- [x] **Step 8.1 — Add signal buckets.**
 
 ```rust
 // Append in crates/web/src/state.rs
@@ -1784,9 +1784,9 @@ Effect::new(move |_| {
 
 (Requires `SearchScope: Serialize + Deserialize` — add `#[derive(Serialize, Deserialize)]` in `crates/client/src/search/execute.rs`.)
 
-- [ ] **Step 8.2 — Clippy + wasm check.** `cargo check --target wasm32-unknown-unknown -p willow-web`. Zero warnings.
+- [x] **Step 8.2 — Clippy + wasm check.** Both clean.
 
-- [ ] **Step 8.3 — Commit.**
+- [x] **Step 8.3 — Commit.** `SearchScope` already carried `Serialize + Deserialize` from Task 4, so no extra derive change needed.
 
 ```bash
 git add crates/web/src/state.rs crates/client/src/search/execute.rs

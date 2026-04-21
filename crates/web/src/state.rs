@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use leptos::prelude::*;
 use willow_client::trust::{PeerTrust, TrustStoreHandle};
-use willow_client::DisplayMessage;
+use willow_client::{DisplayMessage, RecentQuery, SearchIndexBuildStatus, SearchResult, SearchScope};
 
 use crate::trust_store::WebTrustStore;
 
@@ -80,6 +80,39 @@ pub struct AppState {
     pub voice: VoiceState,
     pub trust: TrustState,
     pub presence: PresenceUiState,
+    /// Local-search UI state (phase 2e — `local-search.md`).
+    pub search: SearchUiState,
+}
+
+/// Reactive local-search bucket. All writes flow through
+/// [`SearchUiWriteSignals`]; reads are side-effect-free so the UI can
+/// subscribe without risk of feedback loops.
+///
+/// Per `docs/specs/2026-04-19-ui-design/local-search.md` §Privacy: none
+/// of these signals ride the event stream. They live on this device
+/// only. `scope` is persisted across reloads via `localStorage`;
+/// everything else is session-scoped.
+#[derive(Clone, Copy)]
+pub struct SearchUiState {
+    /// `true` while the search surface is mounted over the main pane.
+    pub open: ReadSignal<bool>,
+    /// The raw query the user has typed (may contain quoted phrases /
+    /// operators — parse with `willow_client::parse_query`).
+    pub query: ReadSignal<String>,
+    /// Currently-selected scope chip.
+    pub scope: ReadSignal<SearchScope>,
+    /// Last successful result set. Replaced on each debounced query
+    /// rerun; dimmed by 15 % while `debouncing` is true.
+    pub results: ReadSignal<Vec<SearchResult>>,
+    /// Index build-status signal driving the streaming banner + the
+    /// `indexing… (local only)` placeholder.
+    pub status: ReadSignal<SearchIndexBuildStatus>,
+    /// Recent-query chips (up to 8 per spec). Empty when
+    /// `SearchIndexConfig::remember_recents` is false.
+    pub recents: ReadSignal<Vec<RecentQuery>>,
+    /// True while a 120 ms debounce timer is outstanding — UI dims the
+    /// stale results row by 15 % per spec §Performance envelope.
+    pub debouncing: ReadSignal<bool>,
 }
 
 /// Reactive presence bucket. `per_peer` maps a peer's string id to the
@@ -200,6 +233,19 @@ pub struct AppWriteSignals {
     pub voice: VoiceWriteSignals,
     pub trust: TrustWriteSignals,
     pub presence: PresenceWriteSignals,
+    pub search: SearchUiWriteSignals,
+}
+
+/// Writes for the local-search UI state.
+#[derive(Clone, Copy)]
+pub struct SearchUiWriteSignals {
+    pub set_open: WriteSignal<bool>,
+    pub set_query: WriteSignal<String>,
+    pub set_scope: WriteSignal<SearchScope>,
+    pub set_results: WriteSignal<Vec<SearchResult>>,
+    pub set_status: WriteSignal<SearchIndexBuildStatus>,
+    pub set_recents: WriteSignal<Vec<RecentQuery>>,
+    pub set_debouncing: WriteSignal<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -401,6 +447,33 @@ pub fn create_signals() -> InitialSignals {
     let (presence_self_override, set_presence_self_override) =
         signal(willow_client::presence::PresenceOverride::Auto);
 
+    // Local-search signals (phase 2e). Scope persists across reloads
+    // via `localStorage` per spec §Scope ladder — everything else is
+    // session-scoped.
+    let saved_scope: SearchScope = web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|s| s.get_item("willow.search.scope").ok().flatten())
+        .and_then(|v| serde_json::from_str::<SearchScope>(&v).ok())
+        .unwrap_or(SearchScope::AllGrovesAndLetters);
+    let (search_open, set_search_open) = signal(false);
+    let (search_query, set_search_query) = signal(String::new());
+    let (search_scope, set_search_scope) = signal(saved_scope);
+    let (search_results, set_search_results) = signal(Vec::<SearchResult>::new());
+    let (search_status, set_search_status) = signal(SearchIndexBuildStatus::default());
+    let (search_recents, set_search_recents) = signal(Vec::<RecentQuery>::new());
+    let (search_debouncing, set_search_debouncing) = signal(false);
+
+    // Persist scope on every change so the user's preference survives
+    // a reload. Run on wasm only — native tests don't mount this state.
+    Effect::new(move |_| {
+        let s = search_scope.get();
+        if let Some(store) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+            if let Ok(j) = serde_json::to_string(&s) {
+                let _ = store.set_item("willow.search.scope", &j);
+            }
+        }
+    });
+
     let app_state = AppState {
         chat: ChatState {
             messages,
@@ -466,6 +539,15 @@ pub fn create_signals() -> InitialSignals {
             per_peer: presence_per_peer,
             self_state: presence_self_state,
             self_override: presence_self_override,
+        },
+        search: SearchUiState {
+            open: search_open,
+            query: search_query,
+            scope: search_scope,
+            results: search_results,
+            status: search_status,
+            recents: search_recents,
+            debouncing: search_debouncing,
         },
     };
 
@@ -534,6 +616,15 @@ pub fn create_signals() -> InitialSignals {
             set_per_peer: set_presence_per_peer,
             set_self_state: set_presence_self_state,
             set_self_override: set_presence_self_override,
+        },
+        search: SearchUiWriteSignals {
+            set_open: set_search_open,
+            set_query: set_search_query,
+            set_scope: set_search_scope,
+            set_results: set_search_results,
+            set_status: set_search_status,
+            set_recents: set_search_recents,
+            set_debouncing: set_search_debouncing,
         },
     };
 
