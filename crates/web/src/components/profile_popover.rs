@@ -9,6 +9,7 @@
 //! [`use_profile_controller`](crate::profile::use_profile_controller).
 
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
 
 use super::{ProfileCardContent, ProfileVariant};
 use crate::profile::{close_profile, use_profile_controller};
@@ -41,14 +42,49 @@ pub fn ProfilePopover() -> impl IntoView {
 
     let on_close = Callback::new(move |_| close_profile());
 
+    // Focus the first interactive element in the popover on open, and
+    // remember the previous focus so close restores it.
+    Effect::new(move |prev: Option<Option<web_sys::HtmlElement>>| {
+        let previous_focus: Option<web_sys::HtmlElement> = prev.flatten();
+        if open.get().is_some() {
+            // Capture the currently-focused element so we can restore
+            // it later (spec §Accessibility: focus returns to the
+            // anchor when the card closes).
+            let active = web_sys::window()
+                .and_then(|w| w.document())
+                .and_then(|d| d.active_element())
+                .and_then(|e| e.dyn_into::<web_sys::HtmlElement>().ok());
+            // Move focus to the first focusable element inside the card
+            // on the next tick so the DOM is in place.
+            leptos::task::spawn_local(async move {
+                gloo_timers::future::TimeoutFuture::new(0).await;
+                let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+                    return;
+                };
+                if let Some(first) = doc.query_selector(".profile-popover button").ok().flatten()
+                {
+                    if let Ok(el) = first.dyn_into::<web_sys::HtmlElement>() {
+                        el.focus().ok();
+                    }
+                }
+            });
+            active
+        } else {
+            // Restore focus to the previous target on close.
+            if let Some(el) = previous_focus {
+                el.focus().ok();
+            }
+            None
+        }
+    });
+
     view! {
         <Show when=move || open.get().is_some() fallback=|| ()>
             {move || {
                 let state = open.get().unwrap();
                 let pos = position.get().unwrap_or((12.0, 12.0));
                 let state_for_view = state.clone();
-                let view_signal =
-                    Signal::derive(move || state_for_view.view.clone());
+                let view_signal = Signal::derive(move || state_for_view.view.clone());
                 let variant = if state.view.is_self {
                     ProfileVariant::Self_
                 } else {

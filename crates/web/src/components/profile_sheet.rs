@@ -8,6 +8,7 @@
 //! media-query. Scrim tap + Escape + back gesture dismiss.
 
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
 
 use super::{ProfileCardContent, ProfileVariant};
 use crate::profile::{close_profile, use_profile_controller};
@@ -18,6 +19,35 @@ use crate::profile::{close_profile, use_profile_controller};
 pub fn ProfileSheet() -> impl IntoView {
     let (open, _set_open) = use_profile_controller();
     let on_close = Callback::new(move |_| close_profile());
+
+    // Focus management: move focus into the sheet on open, restore on
+    // close. Matches the popover's pattern (spec §Accessibility).
+    Effect::new(move |prev: Option<Option<web_sys::HtmlElement>>| {
+        let previous_focus: Option<web_sys::HtmlElement> = prev.flatten();
+        if open.get().is_some() {
+            let active = web_sys::window()
+                .and_then(|w| w.document())
+                .and_then(|d| d.active_element())
+                .and_then(|e| e.dyn_into::<web_sys::HtmlElement>().ok());
+            leptos::task::spawn_local(async move {
+                gloo_timers::future::TimeoutFuture::new(0).await;
+                let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+                    return;
+                };
+                if let Some(first) = doc.query_selector(".profile-sheet button").ok().flatten() {
+                    if let Ok(el) = first.dyn_into::<web_sys::HtmlElement>() {
+                        el.focus().ok();
+                    }
+                }
+            });
+            active
+        } else {
+            if let Some(el) = previous_focus {
+                el.focus().ok();
+            }
+            None
+        }
+    });
 
     view! {
         <Show when=move || open.get().is_some() fallback=|| ()>

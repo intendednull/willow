@@ -2152,11 +2152,11 @@ Wire the focus-on-open / focus-return-on-close contract, confirm all ARIA labels
 
 **Files:** modify `crates/web/src/components/profile_popover.rs`, modify `crates/web/src/components/profile_sheet.rs`, modify `crates/web/src/components/profile_card.rs`, modify `crates/web/style.css`.
 
-- [ ] **Step 13.1 — Focus management.** On open, both wrappers call `element.focus()` on the first focusable element inside `.profile-card` (the primary-action-row first button, or the close button on desktop if present). Track the anchor element in an `RwSignal` so close can call `anchor.focus()` to return focus.
+- [x] **Step 13.1 — Focus management.** On open, both wrappers call `element.focus()` on the first focusable element inside `.profile-card` (the primary-action-row first button, or the close button on desktop if present). Track the anchor element in an `RwSignal` so close can call `anchor.focus()` to return focus.
 
-- [ ] **Step 13.2 — Role + aria-label.** Confirm `<ProfileCardContent>` root carries `role="dialog"` + `aria-label={format!("profile — {}", view.display_name)}`.
+- [x] **Step 13.2 — Role + aria-label.** Confirm `<ProfileCardContent>` root carries `role="dialog"` + `aria-label={format!("profile — {}", view.display_name)}`.
 
-- [ ] **Step 13.3 — Reading order.** Spec §Accessibility requires the banner badge pill be read immediately after the avatar. Ensure DOM order is:
+- [x] **Step 13.3 — Reading order.** Spec §Accessibility requires the banner badge pill be read immediately after the avatar. Ensure DOM order is:
   1. crest banner (`aria-hidden="true"`)
   2. close button (desktop only) — but `aria-label="close profile"`, not read first because avatar is in flow
   3. avatar (alt-text via the author-name label)
@@ -2166,13 +2166,13 @@ Wire the focus-on-open / focus-return-on-close contract, confirm all ARIA labels
 
   If DOM order doesn't match, restructure the template. Double-check with the test `leaf_renders_all_peer_fields` above.
 
-- [ ] **Step 13.4 — Reduced motion.** Crest banner, pop-in, sheet-slide, nickname-editor ring all collapse to opacity fades under `prefers-reduced-motion: reduce` (already in the CSS emitted during earlier tasks — audit with a grep).
+- [x] **Step 13.4 — Reduced motion.** Crest banner, pop-in, sheet-slide, nickname-editor ring all collapse to opacity fades under `prefers-reduced-motion: reduce` (already in the CSS emitted during earlier tasks — audit with a grep).
 
-- [ ] **Step 13.5 — SR live region on live update.** When the controller updates `ProfileState` for the same user (cross-fade case), the `aria-live="polite"` region inside `.profile-card__bio` announces the new content.
+- [x] **Step 13.5 — SR live region on live update.** When the controller updates `ProfileState` for the same user (cross-fade case), the `aria-live="polite"` region inside `.profile-card__bio` announces the new content.
 
-- [ ] **Step 13.6 — 44×44 touch targets.** All mobile buttons meet the baseline. Audit CSS selectors on `.profile-sheet .profile-card__actions-primary button` and `.profile-card__actions-secondary a`.
+- [x] **Step 13.6 — 44×44 touch targets.** All mobile buttons meet the baseline. Audit CSS selectors on `.profile-sheet .profile-card__actions-primary button` and `.profile-card__actions-secondary a`.
 
-- [ ] **Step 13.7 — Browser test.** Append a test `leaf_has_role_dialog_and_aria_label` in `phase_2c_profile_card`:
+- [x] **Step 13.7 — Browser test.** Append a test `leaf_has_role_dialog_and_aria_label` in `phase_2c_profile_card`:
 
   ```rust
   #[wasm_bindgen_test]
@@ -2184,7 +2184,7 @@ Wire the focus-on-open / focus-return-on-close contract, confirm all ARIA labels
   }
   ```
 
-- [ ] **Step 13.8 — Commit.**
+- [x] **Step 13.8 — Commit.**
 
   ```bash
   git add crates/web/
