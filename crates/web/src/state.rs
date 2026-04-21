@@ -80,6 +80,58 @@ pub struct AppState {
     pub voice: VoiceState,
     pub trust: TrustState,
     pub presence: PresenceUiState,
+    /// Phase 2b sync-queue state bucket.
+    pub queue: QueueUiState,
+}
+
+/// Tightened connection state companion to `NetworkState::connection_status`.
+///
+/// The legacy string signal (`connection_status: ReadSignal<String>`) stays
+/// for back-compat with existing callers. New code uses this enum via
+/// `NetworkState::connection_state` so the queue-aware offline/reconnect
+/// transitions (Phase 2b) can be pattern-matched without string parsing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ConnectionState {
+    /// Still dialling / bootstrapping — no relay session yet.
+    #[default]
+    Connecting,
+    /// Relay session established or at least one peer reachable.
+    Connected,
+    /// Lost an earlier connection; awaiting network to come back.
+    Reconnecting,
+    /// Device reports offline (`navigator.onLine == false` on WASM, or
+    /// `Network::device_online == false` on native).
+    Offline,
+}
+
+impl ConnectionState {
+    /// Human-readable label — also used as the legacy string fallback
+    /// so existing readers of `connection_status` keep seeing sensible
+    /// text.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Connecting => "connecting",
+            Self::Connected => "connected",
+            Self::Reconnecting => "reconnecting",
+            Self::Offline => "offline",
+        }
+    }
+}
+
+/// Phase 2b — reactive queue bucket.
+///
+/// `view` carries the full `QueueView` snapshot (depth, peer counts,
+/// per-peer summaries, arrivals). `relay_status` + `device_online` are
+/// separate so components can subscribe to the narrow signal they need
+/// without forcing a re-render on every queue depth change.
+#[derive(Clone, Copy)]
+pub struct QueueUiState {
+    pub view: ReadSignal<willow_client::views::QueueView>,
+    pub relay_status: ReadSignal<willow_client::RelayStatus>,
+    pub device_online: ReadSignal<bool>,
+    /// When `true`, the sync-queue screen is mounted (desktop right-pane
+    /// or mobile route).
+    pub open: RwSignal<bool>,
 }
 
 /// Reactive presence bucket. `per_peer` maps a peer's string id to the
@@ -133,6 +185,10 @@ pub struct NetworkState {
     pub peer_count: ReadSignal<usize>,
     pub peer_id: ReadSignal<String>,
     pub connection_status: ReadSignal<String>,
+    /// Tightened companion to `connection_status` — Phase 2b. Readers
+    /// that need pattern matching switch to this; the legacy string
+    /// stays for back-compat.
+    pub connection_state: ReadSignal<ConnectionState>,
     pub loading: ReadSignal<bool>,
 }
 
@@ -200,6 +256,7 @@ pub struct AppWriteSignals {
     pub voice: VoiceWriteSignals,
     pub trust: TrustWriteSignals,
     pub presence: PresenceWriteSignals,
+    pub queue: QueueWriteSignals,
 }
 
 #[derive(Clone, Copy)]
@@ -237,7 +294,20 @@ pub struct NetworkWriteSignals {
     pub set_peer_count: WriteSignal<usize>,
     pub set_peer_id: WriteSignal<String>,
     pub set_connection_status: WriteSignal<String>,
+    pub set_connection_state: WriteSignal<ConnectionState>,
     pub set_loading: WriteSignal<bool>,
+}
+
+/// Phase 2b write signals for the queue bucket. `open` is exposed as
+/// an `RwSignal` on the read side; its setter is provided via the
+/// `RwSignal::write_only()` handle at call sites, so no explicit
+/// `set_open` field is needed here. The queue `view`, `relay_status`,
+/// and `device_online` signals are fed from `event_processing.rs`.
+#[derive(Clone, Copy)]
+pub struct QueueWriteSignals {
+    pub set_view: WriteSignal<willow_client::views::QueueView>,
+    pub set_relay_status: WriteSignal<willow_client::RelayStatus>,
+    pub set_device_online: WriteSignal<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -401,6 +471,14 @@ pub fn create_signals() -> InitialSignals {
     let (presence_self_override, set_presence_self_override) =
         signal(willow_client::presence::PresenceOverride::Auto);
 
+    // Phase 2b — sync-queue signals.
+    let (queue_view, set_queue_view) = signal(willow_client::views::QueueView::default());
+    let (queue_relay_status, set_queue_relay_status) =
+        signal(willow_client::RelayStatus::NotConfigured);
+    let (queue_device_online, set_queue_device_online) = signal(true);
+    let queue_open = RwSignal::new(false);
+    let (connection_state, set_connection_state) = signal(ConnectionState::Connecting);
+
     let app_state = AppState {
         chat: ChatState {
             messages,
@@ -417,6 +495,7 @@ pub fn create_signals() -> InitialSignals {
             peer_count,
             peer_id,
             connection_status,
+            connection_state,
             loading,
         },
         server: ServerState {
@@ -467,6 +546,12 @@ pub fn create_signals() -> InitialSignals {
             self_state: presence_self_state,
             self_override: presence_self_override,
         },
+        queue: QueueUiState {
+            view: queue_view,
+            relay_status: queue_relay_status,
+            device_online: queue_device_online,
+            open: queue_open,
+        },
     };
 
     let write_signals = AppWriteSignals {
@@ -485,6 +570,7 @@ pub fn create_signals() -> InitialSignals {
             set_peer_count,
             set_peer_id,
             set_connection_status,
+            set_connection_state,
             set_loading,
         },
         server: ServerWriteSignals {
@@ -534,6 +620,11 @@ pub fn create_signals() -> InitialSignals {
             set_per_peer: set_presence_per_peer,
             set_self_state: set_presence_self_state,
             set_self_override: set_presence_self_override,
+        },
+        queue: QueueWriteSignals {
+            set_view: set_queue_view,
+            set_relay_status: set_queue_relay_status,
+            set_device_online: set_queue_device_online,
         },
     };
 

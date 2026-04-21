@@ -225,10 +225,32 @@ pub fn event_to_json(event: &ClientEvent) -> serde_json::Value {
                 "muted": muted,
             }),
         }),
+        ClientEvent::QueueChanged(view) => to_value(&NotificationPayload {
+            r#type: "QueueChanged",
+            data: serde_json::json!({
+                "depth": view.depth,
+                "peer_count": view.peer_count,
+                "device_online": view.device_online,
+            }),
+        }),
+        ClientEvent::RelayStatusChanged(status) => to_value(&NotificationPayload {
+            r#type: "RelayStatusChanged",
+            data: serde_json::json!({
+                "status": match status {
+                    willow_client::RelayStatus::Reachable => "reachable",
+                    willow_client::RelayStatus::Unreachable => "unreachable",
+                    willow_client::RelayStatus::NotConfigured => "not_configured",
+                },
+            }),
+        }),
+        ClientEvent::DeviceOnlineChanged(online) => to_value(&NotificationPayload {
+            r#type: "DeviceOnlineChanged",
+            data: serde_json::json!({ "online": online }),
+        }),
     }
 }
 
-/// All 28 event type names for validation.
+/// All 31 event type names for validation.
 pub const EVENT_TYPE_NAMES: &[&str] = &[
     "MessageReceived",
     "MessageEdited",
@@ -258,6 +280,10 @@ pub const EVENT_TYPE_NAMES: &[&str] = &[
     "JoinLinkResponse",
     "JoinLinkDenied",
     "MuteChanged",
+    // Phase 2b sync-queue variants.
+    "QueueChanged",
+    "RelayStatusChanged",
+    "DeviceOnlineChanged",
 ];
 
 #[derive(Serialize)]
@@ -276,8 +302,8 @@ mod tests {
     use willow_identity::Identity;
 
     #[test]
-    fn all_28_event_types_listed() {
-        assert_eq!(EVENT_TYPE_NAMES.len(), 28);
+    fn all_31_event_types_listed() {
+        assert_eq!(EVENT_TYPE_NAMES.len(), 31);
     }
 
     #[test]

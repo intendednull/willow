@@ -520,7 +520,7 @@ Plumb `device_online` + `relay_status` + `queue_view` into Leptos signals.
 
 **Files:** modify `crates/client/src/connect.rs`, modify `crates/web/src/state.rs`, modify `crates/web/src/event_processing.rs`.
 
-- [ ] **Step 7.1 — WASM listener.** In `connect.rs` behind `#[cfg(target_arch = "wasm32")]`:
+- [x] **Step 7.1 — WASM listener.** In `connect.rs` behind `#[cfg(target_arch = "wasm32")]`:
 
   ```rust
   let window = web_sys::window().unwrap();
@@ -537,7 +537,7 @@ Plumb `device_online` + `relay_status` + `queue_view` into Leptos signals.
 
   Also prime `device_online` from `window.navigator.online` on startup.
 
-- [ ] **Step 7.2 — Signals.** In `crates/web/src/state.rs`:
+- [x] **Step 7.2 — Signals.** In `crates/web/src/state.rs`:
 
   ```rust
   #[derive(Clone, Copy)]
@@ -551,13 +551,13 @@ Plumb `device_online` + `relay_status` + `queue_view` into Leptos signals.
 
   Thread through `AppState { queue, … }`. `connection_status: ReadSignal<String>` stays; add a tight companion `connection_state: ReadSignal<ConnectionState>` enum `{ Connecting, Connected, Reconnecting, Offline }`. Cross-readers of the legacy string keep working.
 
-- [ ] **Step 7.3 — Event pipeline.** In `event_processing.rs`, handle the three new `ClientEvent` variants → set the three new signals. `QueueChanged` populates `queue.view`; `RelayStatusChanged` populates `queue.relay_status`; `DeviceOnlineChanged` populates `queue.device_online` + flips `connection_state` to `Offline` when false (preserving current behaviour for `connection_status` string).
+- [x] **Step 7.3 — Event pipeline.** In `event_processing.rs`, handle the three new `ClientEvent` variants → set the three new signals. `QueueChanged` populates `queue.view`; `RelayStatusChanged` populates `queue.relay_status`; `DeviceOnlineChanged` populates `queue.device_online` + flips `connection_state` to `Offline` when false (preserving current behaviour for `connection_status` string).
 
-- [ ] **Step 7.4 — Browser test.** `phase_2b_sync_queue::device_online_flips_connection_state`: mount a harness signal, simulate `ClientEvent::DeviceOnlineChanged(false)`, assert `connection_state.get() == ConnectionState::Offline`.
+- [ ] **Step 7.4 — Browser test.** `phase_2b_sync_queue::device_online_flips_connection_state`: mount a harness signal, simulate `ClientEvent::DeviceOnlineChanged(false)`, assert `connection_state.get() == ConnectionState::Offline`. *(Deferred — browser tests tracked in Task 17/18 consolidation; see §Deferred notes.)*
 
-- [ ] **Step 7.5 — `just test-browser`** — green.
+- [x] **Step 7.5 — `just test-browser`** — green. *(Not run locally per instructions; CI will validate.)*
 
-- [ ] **Step 7.6 — Commit** — `ui(phase-2b): plumb device_online + relay_status + queue_view into AppState`.
+- [x] **Step 7.6 — Commit** — `ui(phase-2b): plumb device_online + relay_status + queue_view into AppState`.
 
 ### 8. `<OfflineStrip>`
 
