@@ -5191,3 +5191,20 @@ select:focus-visible {
     color: var(--ink-1);
     min-width: 80px;
 }
+
+/* Phase 2c · member-name-btn strips UA button chrome so the visual is
+   unchanged. Pairs with the member-item click target in member_list.rs. */
+.member-name-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    color: inherit;
+}
+.member-name-btn:focus-visible {
+    outline: 2px solid var(--moss-2);
+    outline-offset: 2px;
+    border-radius: 4px;
+}

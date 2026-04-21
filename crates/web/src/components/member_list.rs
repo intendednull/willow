@@ -287,6 +287,14 @@ pub fn MemberList(
                             })
                             .label()
                     });
+                    let pid_for_click = pid.clone();
+                    let on_open_profile = move |ev: web_sys::MouseEvent| {
+                        use wasm_bindgen::JsCast as _;
+                        let anchor = ev
+                            .current_target()
+                            .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok());
+                        crate::profile::open_profile(&pid_for_click, anchor);
+                    };
                     view! {
                         <div class="member-item">
                             <span class="member-status" title=tooltip_label>
@@ -297,13 +305,19 @@ pub fn MemberList(
                                     ambient=true
                                 />
                             </span>
-                            <span class="member-name" style=format!("color: {}", super::peer_color(&pid))>
-                                {name}
+                            <button
+                                class="member-name member-name-btn"
+                                type="button"
+                                aria-label=format!("{} — open profile", name)
+                                style=format!("color: {}", super::peer_color(&pid))
+                                on:click=on_open_profile
+                            >
+                                {name.clone()}
                                 <span class="member-peer-id">{
                                     let short = if pid.len() > 8 { format!("{}...", &pid[..8]) } else { pid.clone() };
                                     format!(" ({short})")
                                 }</span>
-                            </span>
+                            </button>
                             <TrustBadge peer_id=pid.clone() size=TrustBadgeSize::Disk12/>
                             {
                                 let pb = pid_badge.clone();

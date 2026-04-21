@@ -1877,7 +1877,7 @@ Wire every avatar surface to dispatch `open_profile`. Surfaces listed in spec §
 
 **Files:** modify `crates/web/src/components/grove_rail.rs`, modify `crates/web/src/components/channel_sidebar.rs`, modify `crates/web/src/components/message.rs`, modify `crates/web/src/components/member_list.rs`, modify `crates/web/src/components/participant_tile.rs`.
 
-- [ ] **Step 10.1 — Grove rail.** Find the grove-rail peer avatar render (or server icon if applicable) and attach:
+- [x] **Step 10.1 — Grove rail.** Find the grove-rail peer avatar render (or server icon if applicable) and attach:
 
   ```rust
   on:click=move |ev: web_sys::MouseEvent| {
@@ -1886,15 +1886,15 @@ Wire every avatar surface to dispatch `open_profile`. Surfaces listed in spec §
   }
   ```
 
-- [ ] **Step 10.2 — Channel sidebar.** Same wiring on the "me" strip avatar + any DM avatar rows.
+- [x] **Step 10.2 — Channel sidebar.** Same wiring on the "me" strip avatar + any DM avatar rows.
 
-- [ ] **Step 10.3 — Message row author button.** Author buttons already carry `aria-label="{name} — open profile"` from message-row phase 2a. Replace the current no-op click (or the existing `on:click=ignore`) with `open_profile`.
+- [x] **Step 10.3 — Message row author button.** Author buttons already carry `aria-label="{name} — open profile"` from message-row phase 2a. Replace the current no-op click (or the existing `on:click=ignore`) with `open_profile`.
 
-- [ ] **Step 10.4 — Members pane.** `member_list.rs` — avatar click opens the card. Keep the existing roles / kick admin buttons unchanged.
+- [x] **Step 10.4 — Members pane.** `member_list.rs` — avatar click opens the card. Keep the existing roles / kick admin buttons unchanged.
 
-- [ ] **Step 10.5 — Participant tile.** `participant_tile.rs` — tile avatar click → `open_profile`. Stop propagation so it doesn't trigger voice-related click handlers.
+- [x] **Step 10.5 — Participant tile.** `participant_tile.rs` — tile avatar click → `open_profile`. Stop propagation so it doesn't trigger voice-related click handlers.
 
-- [ ] **Step 10.6 — `just check-wasm`.**
+- [x] **Step 10.6 — `just check-wasm`.**
 
   ```bash
   just check-wasm
@@ -1902,7 +1902,7 @@ Wire every avatar surface to dispatch `open_profile`. Surfaces listed in spec §
 
   Expected: clean.
 
-- [ ] **Step 10.7 — Commit.**
+- [x] **Step 10.7 — Commit.**
 
   ```bash
   git add crates/web/src/components/
