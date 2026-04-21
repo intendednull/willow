@@ -4328,3 +4328,35 @@ select:focus-visible {
 @media (prefers-reduced-motion: reduce) {
     .message .run-hover-ts { transition: none; }
 }
+
+/* ── Phase 2a · day separator ──────────────────────────────────────────── */
+/*
+ * Renders between messages whose local dates differ. Centered em-dashed
+ * label flanked by 1px rules that flex to fill the row. Copy in the
+ * `<em>` is built as `— {label} —` by the component; the CSS here only
+ * lays out geometry + typography. Spec:
+ * `docs/specs/2026-04-19-ui-design/message-row.md` §Day separator.
+ */
+.day-separator {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 18px 24px 10px;
+}
+.day-separator .rule {
+    flex: 1;
+    height: 1px;
+    background: var(--line);
+}
+.day-separator em {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 11px;
+    color: var(--ink-3);
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    flex: 0 0 auto;
+}
+@media (max-width: 720px) {
+    .day-separator { padding: 16px 16px 8px; }
+}

@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use willow_client::DisplayMessage;
 
+use super::message_row::{day_bucket, DaySeparator};
 use super::MessageView;
 
 /// Scrollable message list for the current channel.
@@ -158,7 +159,13 @@ pub fn MessageList(
                             .map(|sig| sig.get())
                             .unwrap_or_default();
                         let label_map = pn_labels.map(|s| s.get()).unwrap_or_default();
-                        let views: Vec<_> = msgs.iter().enumerate().map(|(i, msg)| {
+                        // Track the previous message's local-date bucket so we
+                        // can inject a `<DaySeparator>` at every local-date
+                        // boundary (and before the first message). `PartialEq`
+                        // on `DayBucket` drives the comparison — a bucket
+                        // difference means "emit a separator before this row".
+                        let mut prev_bucket: Option<super::message_row::DayBucket> = None;
+                        let views: Vec<_> = msgs.iter().enumerate().flat_map(|(i, msg)| {
                             let show_header = if i == 0 {
                                 true
                             } else {
@@ -166,6 +173,19 @@ pub fn MessageList(
                                 prev.author_display_name != msg.author_display_name
                                     || msg.timestamp_ms.saturating_sub(prev.timestamp_ms)
                                         > 300_000
+                            };
+                            let curr_bucket = day_bucket(msg.timestamp_ms);
+                            let emit_sep = match &prev_bucket {
+                                None => true,
+                                Some(p) => p != &curr_bucket,
+                            };
+                            prev_bucket = Some(curr_bucket.clone());
+                            let sep_view = if emit_sep {
+                                Some(view! {
+                                    <DaySeparator bucket=curr_bucket.clone() />
+                                }.into_any())
+                            } else {
+                                None
                             };
                             let m = msg.clone();
                             let is_own = msg.is_local;
@@ -213,7 +233,12 @@ pub fn MessageList(
                                     />
                                 };
                             }
-                            builder.into_any()
+                            let mut out = Vec::with_capacity(2);
+                            if let Some(sep) = sep_view {
+                                out.push(sep);
+                            }
+                            out.push(builder.into_any());
+                            out
                         }).collect();
                         view! { <div>{views}</div> }.into_any()
                     }

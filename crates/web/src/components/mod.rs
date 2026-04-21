@@ -35,6 +35,7 @@ mod long_press;
 mod main_pane_header;
 mod member_list;
 mod message;
+pub mod message_row;
 pub(crate) mod mobile_shell;
 pub(crate) mod palette_actions;
 mod participant_tile;
@@ -74,6 +75,7 @@ pub use long_press::*;
 pub use main_pane_header::*;
 pub use member_list::*;
 pub use message::*;
+pub use message_row::{day_bucket, DayBucket, DaySeparator};
 pub use mobile_shell::MobileShell;
 #[allow(unused_imports)]
 pub use mobile_shell::{MobilePush, MobileTab};

@@ -7177,4 +7177,225 @@ mod phase_2a_message_row {
             ".run-hover-ts must live inside the .message.grouped row"
         );
     }
+
+    // ── Day separator ──────────────────────────────────────────────────────
+    //
+    // Contract pinned by `docs/specs/2026-04-19-ui-design/message-row.md`
+    // §Day separator: `— today —`, `— yesterday —`,
+    // `— friday · 14 april —`, `— friday · 14 april · 2025 —`, all
+    // lowercase, wrapped in em-dashes inside an `<em>` with flanking
+    // `.rule` spans.
+
+    use willow_web::components::message_row::{day_bucket, DayBucket, DaySeparator};
+
+    #[wasm_bindgen_test]
+    async fn day_bucket_now_is_today() {
+        // Oracle: `Date::now()` must bucket to `Today`. Using the
+        // implementation's own clock reference keeps the test
+        // deterministic across timezones.
+        let now_ms = js_sys::Date::now() as u64;
+        assert_eq!(
+            day_bucket(now_ms),
+            DayBucket::Today,
+            "day_bucket(Date::now()) must return Today"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn day_bucket_24h_ago_is_yesterday() {
+        // Roughly 24 hours ago. May land on the same date during DST
+        // transitions, so accept either Today or Yesterday — the
+        // contract we actually care about is "never ThisYear/Older for
+        // a one-day offset".
+        let ts = js_sys::Date::now() as u64 - 24 * 3600 * 1000;
+        let bucket = day_bucket(ts);
+        assert!(
+            matches!(bucket, DayBucket::Today | DayBucket::Yesterday),
+            "24h-ago timestamp must bucket to Today or Yesterday, got {bucket:?}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn day_separator_renders_today_label() {
+        let container = mount_test(|| {
+            view! { <DaySeparator bucket=DayBucket::Today /> }
+        });
+        tick().await;
+
+        let sep = query(&container, ".day-separator").expect("must render .day-separator");
+        assert_eq!(
+            sep.get_attribute("role").as_deref(),
+            Some("separator"),
+            ".day-separator must carry role=separator"
+        );
+        assert_eq!(
+            sep.get_attribute("aria-label").as_deref(),
+            Some("today"),
+            "aria-label must equal the bucket label without em-dashes"
+        );
+        let em = query(&container, ".day-separator em").expect(".day-separator must wrap an <em>");
+        assert_eq!(
+            text(&em),
+            "— today —",
+            "<em> text must be the em-dash flanked lowercase label"
+        );
+        let rules = query_all(&container, ".day-separator .rule");
+        assert_eq!(
+            rules.len(),
+            2,
+            "day separator needs two flanking .rule spans"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn day_separator_renders_yesterday_label() {
+        let container = mount_test(|| {
+            view! { <DaySeparator bucket=DayBucket::Yesterday /> }
+        });
+        tick().await;
+
+        let em = query(&container, ".day-separator em").expect(".day-separator em");
+        assert_eq!(text(&em), "— yesterday —", "yesterday variant label");
+    }
+
+    #[wasm_bindgen_test]
+    async fn day_separator_renders_this_year_label() {
+        let container = mount_test(|| {
+            view! {
+                <DaySeparator bucket=DayBucket::ThisYear {
+                    weekday: "friday",
+                    day: 14,
+                    month: "april",
+                } />
+            }
+        });
+        tick().await;
+
+        let em = query(&container, ".day-separator em").expect(".day-separator em");
+        assert_eq!(
+            text(&em),
+            "— friday · 14 april —",
+            "this-year label must match `{{weekday}} · {{day}} {{month}}` form"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn day_separator_renders_older_label() {
+        let container = mount_test(|| {
+            view! {
+                <DaySeparator bucket=DayBucket::Older {
+                    weekday: "friday",
+                    day: 14,
+                    month: "april",
+                    year: 2025,
+                } />
+            }
+        });
+        tick().await;
+
+        let em = query(&container, ".day-separator em").expect(".day-separator em");
+        assert_eq!(
+            text(&em),
+            "— friday · 14 april · 2025 —",
+            "older label must append ` · {{year}}` to the this-year form"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn day_bucket_label_is_always_lowercase() {
+        // Spec: "English locale, lowercase enforced". The four
+        // variants must never produce upper-case characters in their
+        // label text.
+        for bucket in [
+            DayBucket::Today,
+            DayBucket::Yesterday,
+            DayBucket::ThisYear {
+                weekday: "friday",
+                day: 14,
+                month: "april",
+            },
+            DayBucket::Older {
+                weekday: "friday",
+                day: 14,
+                month: "april",
+                year: 2025,
+            },
+        ] {
+            let label = bucket.label();
+            assert_eq!(
+                label,
+                label.to_lowercase(),
+                "DayBucket::label must be lowercase: {label:?}"
+            );
+        }
+    }
+
+    /// Mount a `<MessageList>` with a seeded `AppState` / write context so
+    /// every `MessageView` inside (which renders a `TrustBadge`) can read
+    /// the reactive trust map without panicking on `use_context`.
+    fn mount_message_list(messages: Vec<willow_client::DisplayMessage>) -> web_sys::HtmlElement {
+        use willow_web::components::MessageList;
+        use willow_web::state::{create_signals, InitialSignals};
+        mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+
+            let (msgs, _set_msgs) = signal(messages);
+            view! { <MessageList messages=msgs /> }
+        })
+    }
+
+    #[wasm_bindgen_test]
+    async fn message_list_inserts_separator_before_each_day_boundary() {
+        use willow_client::DisplayMessage;
+
+        // Two messages separated by ~48 hours. Local dates will differ,
+        // so MessageList must emit TWO `.day-separator` rows: one
+        // before the first message and one before the second.
+        let now_ms = js_sys::Date::now() as u64;
+        let msg_a = DisplayMessage {
+            timestamp_ms: now_ms - 48 * 3600 * 1000,
+            ..make_msg("Mira", "earlier", now_ms - 48 * 3600 * 1000)
+        };
+        let msg_b = DisplayMessage {
+            timestamp_ms: now_ms,
+            ..make_msg("Rin", "later", now_ms)
+        };
+
+        let container = mount_message_list(vec![msg_a, msg_b]);
+        tick().await;
+
+        let seps = query_all(&container, ".day-separator");
+        assert_eq!(
+            seps.len(),
+            2,
+            "MessageList must emit a separator before the first message AND at each \
+             local-date boundary — got {} separator(s)",
+            seps.len()
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn message_list_one_separator_for_same_day_messages() {
+        // Two messages on the same local day → exactly ONE
+        // `.day-separator` (the lead-in before the first message).
+        let now_ms = js_sys::Date::now() as u64;
+        let msg_a = make_msg("Mira", "hi", now_ms - 60_000);
+        let msg_b = make_msg("Rin", "hello", now_ms);
+
+        let container = mount_message_list(vec![msg_a, msg_b]);
+        tick().await;
+
+        let seps = query_all(&container, ".day-separator");
+        assert_eq!(
+            seps.len(),
+            1,
+            "Same-day messages must share a single lead-in separator"
+        );
+    }
 }
