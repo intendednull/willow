@@ -9644,7 +9644,7 @@ mod phase_2c_profile_card {
             .unwrap();
         input.set_value("mira");
         // Fire `input` so prop:value reflects the draft.
-        let mut init = web_sys::EventInit::new();
+        let init = web_sys::EventInit::new();
         init.set_bubbles(true);
         let ev = web_sys::Event::new_with_event_init_dict("input", &init).unwrap();
         input.dispatch_event(&ev).unwrap();
