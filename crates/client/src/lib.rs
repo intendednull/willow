@@ -54,6 +54,10 @@ mod tests_trust_flow;
 #[path = "tests/multi_peer_sync.rs"]
 mod tests_multi_peer_sync;
 
+#[cfg(test)]
+#[path = "tests/profile_view.rs"]
+mod tests_profile_view;
+
 // Re-export key types at crate root for convenience.
 pub use event_receiver::EventReceiver;
 pub use events::ClientEvent;
@@ -143,6 +147,8 @@ pub mod event_receiver {
     }
 }
 pub use state::{DisplayMessage, QueueNote};
+pub use views::{since_hint, ProfileDelta, ProfileView};
+pub use willow_state::{CrestPattern, PinnedFragment, PinnedKind};
 
 // ClientState, ServerContext, ChatState, ProfileStore are used internally
 // during initialization only (loading from storage → populating domain actors).

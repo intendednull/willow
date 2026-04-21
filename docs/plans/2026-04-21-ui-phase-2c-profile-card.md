@@ -657,7 +657,7 @@ Expose a materialized `ProfileView` the UI consumes directly, plus the `ClientMu
 
 **Files:** modify `crates/client/src/views.rs`, modify `crates/client/src/mutations.rs`, modify `crates/client/src/lib.rs`, new `crates/client/src/tests/profile_view.rs`.
 
-- [ ] **Step 4.1 — Define `ProfileView` + `ProfileDelta`.** Append to `crates/client/src/views.rs`:
+- [x] **Step 4.1 — Define `ProfileView` + `ProfileDelta`.** Append to `crates/client/src/views.rs`:
 
   ```rust
   /// Merged profile payload the UI renders.
@@ -705,7 +705,7 @@ Expose a materialized `ProfileView` the UI consumes directly, plus the `ClientMu
   }
   ```
 
-- [ ] **Step 4.2 — `profile_view` selector.** The existing `ProfilesView { names: HashMap<EndpointId, String> }` carries only display names today. We keep it as the name index and add a second view that wraps a read-through to `ServerRegistryView`'s `active().state.profiles` map.
+- [x] **Step 4.2 — `profile_view` selector.** The existing `ProfilesView { names: HashMap<EndpointId, String> }` carries only display names today. We keep it as the name index and add a second view that wraps a read-through to `ServerRegistryView`'s `active().state.profiles` map.
 
   In `crates/client/src/views.rs`, extend `ClientViewHandle` with a helper method:
 
@@ -761,7 +761,7 @@ Expose a materialized `ProfileView` the UI consumes directly, plus the `ClientMu
 
   If `ClientViewHandle` doesn't already expose `profiles_addr()` / `server_registry_addr()`, thread the existing internal addrs through a `pub(crate) fn` accessor. If the required `willow_identity::handle` / `willow_identity::fingerprint_words` helpers don't exist yet, add them as thin wrappers over `EndpointId::to_string()` (handle = first 8 hex chars lowercased) and over the existing 6-word-mnemonic machinery used by `trust-verification.md` (already present in `willow-crypto`). See Ambiguity decisions.
 
-- [ ] **Step 4.3 — `shared_groves` helper.** In `views.rs`:
+- [x] **Step 4.3 — `shared_groves` helper.** In `views.rs`:
 
   ```rust
   impl crate::views::ServerRegistryView {
@@ -788,7 +788,7 @@ Expose a materialized `ProfileView` the UI consumes directly, plus the `ClientMu
   }
   ```
 
-- [ ] **Step 4.4 — `since_hint` soft-time formatter.** Append a free function to `views.rs`:
+- [x] **Step 4.4 — `since_hint` soft-time formatter.** Append a free function to `views.rs`:
 
   ```rust
   /// Format a wall-clock ms timestamp as a soft-time hint.
@@ -804,7 +804,7 @@ Expose a materialized `ProfileView` the UI consumes directly, plus the `ClientMu
   }
   ```
 
-- [ ] **Step 4.5 — `update_profile_fields` mutation.** Append to `crates/client/src/mutations.rs`:
+- [x] **Step 4.5 — `update_profile_fields` mutation.** Append to `crates/client/src/mutations.rs`:
 
   ```rust
   impl<N: willow_network::Network> ClientMutations<N> {
@@ -838,14 +838,14 @@ Expose a materialized `ProfileView` the UI consumes directly, plus the `ClientMu
   }
   ```
 
-- [ ] **Step 4.6 — Re-exports.** In `crates/client/src/lib.rs`:
+- [x] **Step 4.6 — Re-exports.** In `crates/client/src/lib.rs`:
 
   ```rust
   pub use views::{ProfileDelta, ProfileView, since_hint};
   pub use willow_state::{CrestPattern, PinnedFragment, PinnedKind};
   ```
 
-- [ ] **Step 4.7 — Client tests.** New `crates/client/src/tests/profile_view.rs`:
+- [x] **Step 4.7 — Client tests.** New `crates/client/src/tests/profile_view.rs`:
 
   ```rust
   //! Tests for `ProfileView` derivation + `shared_groves` + `since_hint`.
@@ -942,7 +942,7 @@ Expose a materialized `ProfileView` the UI consumes directly, plus the `ClientMu
 
   (`server_registry_snapshot()` may not exist yet. If not, add a `pub async fn server_registry_snapshot(&self) -> ServerRegistryView` helper in `ClientViewHandle` that clones the actor state.)
 
-- [ ] **Step 4.8 — Declare test module.** In `crates/client/src/tests/mod.rs` (create if missing; mark `#[cfg(test)]` in `lib.rs`):
+- [x] **Step 4.8 — Declare test module.** In `crates/client/src/tests/mod.rs` (create if missing; mark `#[cfg(test)]` in `lib.rs`):
 
   ```rust
   #[cfg(test)]
@@ -951,7 +951,7 @@ Expose a materialized `ProfileView` the UI consumes directly, plus the `ClientMu
 
   Ensure `lib.rs` already has `#[cfg(test)] mod tests;` (it does — see `crates/client/src/tests/multi_peer_sync.rs`).
 
-- [ ] **Step 4.9 — Run client tests.**
+- [x] **Step 4.9 — Run client tests.**
 
   ```bash
   cargo test -p willow-client profile
@@ -959,7 +959,7 @@ Expose a materialized `ProfileView` the UI consumes directly, plus the `ClientMu
 
   Expected: 6 new tests green (the 4 MemNicknameStore tests from Task 3 plus 6 here). If helpers are missing, plug them until green.
 
-- [ ] **Step 4.10 — Commit.**
+- [x] **Step 4.10 — Commit.**
 
   ```bash
   git add crates/client/

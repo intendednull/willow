@@ -33,7 +33,9 @@ pub use willow_messaging::{Content, SealedContent};
 pub mod sas;
 pub mod sas_wordlist;
 
-pub use sas::{sas_words, SasError, SAS_DS_TAG, SAS_WORD_COUNT};
+pub use sas::{
+    peer_fingerprint, sas_words, SasError, PEER_FINGERPRINT_DS_TAG, SAS_DS_TAG, SAS_WORD_COUNT,
+};
 pub use sas_wordlist::{SAS_WORDLIST_HASH, SAS_WORDLIST_LEN, SAS_WORDS};
 
 // ───── HKDF Domain Separators ──────────────────────────────────────────────
