@@ -1327,7 +1327,7 @@ git commit -m "ui(phase-2e): build highlight match-ranges + centred excerpts"
 - Modify: `crates/client/src/storage.rs` — persistence helpers.
 - Modify: `crates/client/src/search/tests.rs` — `mod config_tests;`
 
-- [ ] **Step 6.1 — Config + recents types.**
+- [x] **Step 6.1 — Config + recents types.**
 
 ```rust
 //! Per-device search settings and the recent-queries ring buffer.
@@ -1443,7 +1443,7 @@ mod config_tests {
 }
 ```
 
-- [ ] **Step 6.2 — Status enum.** `crates/client/src/search/status.rs`:
+- [x] **Step 6.2 — Status enum.** `crates/client/src/search/status.rs`:
 
 ```rust
 //! Build-status signal for the search index. UI surfaces subscribe.
@@ -1463,7 +1463,7 @@ impl Default for SearchIndexBuildStatus {
 
 Register `pub mod status;` in `mod.rs` + re-export.
 
-- [ ] **Step 6.3 — Persistence.** In `crates/client/src/storage.rs` add:
+- [x] **Step 6.3 — Persistence.** In `crates/client/src/storage.rs` add `save_search_config` / `load_search_config` / `save_search_recents` / `load_search_recents` (names renamed to the `search_` prefix to stay consistent with the existing `save_settings` naming):
 
 ```rust
 /// Persisted search config (see `SearchIndexConfig` in `crate::search::config`).
@@ -1487,9 +1487,9 @@ pub fn load_recents() -> Vec<crate::search::RecentQuery> {
 }
 ```
 
-- [ ] **Step 6.4 — Verify GREEN.** `cargo test -p willow-client search::config_tests`. All 7 pass.
+- [x] **Step 6.4 — Verify GREEN.** `cargo test -p willow-client search::tests::config_tests` → 7/7 pass. `status_tests` → 2/2 pass. Full workspace clippy clean.
 
-- [ ] **Step 6.5 — Commit.**
+- [x] **Step 6.5 — Commit.**
 
 ```bash
 git add crates/client/src/search/config.rs crates/client/src/search/status.rs crates/client/src/search/mod.rs crates/client/src/storage.rs crates/client/src/search/tests.rs

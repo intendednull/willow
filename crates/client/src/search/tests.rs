@@ -1,6 +1,131 @@
 //! Unit tests for the search module. One sub-module per file — see
 //! each sub-module's doc for the behaviour it covers.
 
+mod config_tests {
+    use super::super::config::*;
+
+    #[test]
+    fn default_horizon_is_90() {
+        assert_eq!(SearchIndexConfig::default().horizon_days, 90);
+    }
+
+    #[test]
+    fn default_enabled_true() {
+        assert!(SearchIndexConfig::default().enabled);
+    }
+
+    #[test]
+    fn remember_recents_default_on() {
+        assert!(SearchIndexConfig::default().remember_recents);
+    }
+
+    #[test]
+    fn push_recent_moves_to_front() {
+        let mut list = Vec::new();
+        push_recent(
+            &mut list,
+            RecentQuery {
+                text: "hello".into(),
+                timestamp_ms: 1,
+            },
+        );
+        push_recent(
+            &mut list,
+            RecentQuery {
+                text: "world".into(),
+                timestamp_ms: 2,
+            },
+        );
+        assert_eq!(list[0].text, "world");
+    }
+
+    #[test]
+    fn push_recent_dedups_by_text() {
+        let mut list = Vec::new();
+        push_recent(
+            &mut list,
+            RecentQuery {
+                text: "hello".into(),
+                timestamp_ms: 1,
+            },
+        );
+        push_recent(
+            &mut list,
+            RecentQuery {
+                text: "hello".into(),
+                timestamp_ms: 2,
+            },
+        );
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].timestamp_ms, 2);
+    }
+
+    #[test]
+    fn push_recent_caps_at_max() {
+        let mut list = Vec::new();
+        for i in 0..20 {
+            push_recent(
+                &mut list,
+                RecentQuery {
+                    text: format!("q{i}"),
+                    timestamp_ms: i as u64,
+                },
+            );
+        }
+        assert_eq!(list.len(), MAX_RECENTS);
+    }
+
+    #[test]
+    fn forget_recent_removes_by_text() {
+        let mut list = Vec::new();
+        push_recent(
+            &mut list,
+            RecentQuery {
+                text: "hello".into(),
+                timestamp_ms: 1,
+            },
+        );
+        forget_recent(&mut list, "hello");
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn clear_all_empties_list() {
+        let mut list = Vec::new();
+        push_recent(
+            &mut list,
+            RecentQuery {
+                text: "a".into(),
+                timestamp_ms: 1,
+            },
+        );
+        push_recent(
+            &mut list,
+            RecentQuery {
+                text: "b".into(),
+                timestamp_ms: 2,
+            },
+        );
+        clear_all_recents(&mut list);
+        assert!(list.is_empty());
+    }
+}
+
+mod status_tests {
+    use super::super::status::*;
+
+    #[test]
+    fn default_status_is_idle() {
+        assert_eq!(SearchIndexBuildStatus::default(), SearchIndexBuildStatus::Idle);
+    }
+
+    #[test]
+    fn indexing_variant_carries_progress() {
+        let s = SearchIndexBuildStatus::Indexing { done: 3, total: 10 };
+        assert!(matches!(s, SearchIndexBuildStatus::Indexing { done: 3, total: 10 }));
+    }
+}
+
 mod highlight_tests {
     use super::super::highlight::*;
     use super::super::query::*;

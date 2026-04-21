@@ -9,17 +9,22 @@
 //! Sub-modules land incrementally as the plan's tasks are ticked off.
 //! Today (Task 1): [`query`] only.
 
+pub mod config;
 pub mod execute;
 pub mod highlight;
 pub mod index;
 pub mod query;
+pub mod status;
 pub mod tokenize;
 
 #[cfg(test)]
 mod tests;
 
+pub use config::{clear_all_recents, forget_recent, push_recent, RecentQuery, SearchIndexConfig,
+                 MAX_RECENTS};
 pub use execute::{execute, SearchResult, SearchScope};
 pub use highlight::{build_excerpt, match_ranges, Excerpt};
 pub use index::{IndexableMessage, Posting, SearchIndex};
 pub use query::{parse_query, QueryFilters, QueryWarning, SearchQuery};
+pub use status::SearchIndexBuildStatus;
 pub use tokenize::{token_positions, tokenize};
