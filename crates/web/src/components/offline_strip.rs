@@ -8,6 +8,7 @@
 use leptos::prelude::*;
 use willow_client::RelayStatus;
 
+use crate::components::sync_queue_copy;
 use crate::icons;
 use crate::state::AppState;
 
@@ -47,14 +48,14 @@ pub fn OfflineStrip() -> impl IntoView {
                         }
                     })
                     .unwrap_or_else(|| "someone".to_string());
-                format!("waiting for {peer_name} · {} messages queued", v.depth)
+                sync_queue_copy::strip_singular(&peer_name, v.depth)
             }
-            n => format!("waiting for {n} peers · {} messages queued", v.depth),
+            n => sync_queue_copy::strip_default(n, v.depth),
         }
     };
 
     let relay_suffix = move || match relay.get() {
-        RelayStatus::Unreachable => " · relay unreachable",
+        RelayStatus::Unreachable => sync_queue_copy::STRIP_RELAY_SUFFIX,
         _ => "",
     };
 

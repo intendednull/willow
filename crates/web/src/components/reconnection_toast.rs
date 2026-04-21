@@ -59,14 +59,7 @@ pub fn ReconnectionToast() -> impl IntoView {
         }
     });
 
-    let label = move || {
-        let n = queued_count.get();
-        if n > 0 {
-            format!("reconnected · delivering {n} messages")
-        } else {
-            "reconnected".to_string()
-        }
-    };
+    let label = move || sync_queue_copy::toast_reconnected(queued_count.get());
 
     view! {
         <Show when=move || visible.get()>

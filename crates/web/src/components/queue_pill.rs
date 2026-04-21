@@ -10,6 +10,7 @@ use leptos::prelude::*;
 use willow_client::trust::PeerTrust;
 use willow_identity::EndpointId;
 
+use crate::components::sync_queue_copy;
 use crate::icons;
 use crate::state::AppState;
 
@@ -52,22 +53,16 @@ pub fn QueuePill(
     let pill_text = move || {
         let (out, inb) = counts();
         let n = out.saturating_add(inb);
-        if n > 500 {
-            "queued · 500+".to_string()
-        } else if n > 99 {
-            "queued · 99+".to_string()
-        } else {
-            format!("queued · {n}")
-        }
+        sync_queue_copy::pill_queued(n)
     };
 
     let aria_label = move || {
         let (out, inb) = counts();
         let name = display_name.get();
         match (out, inb) {
-            (o, 0) => format!("you have {o} messages waiting for {name}"),
-            (0, i) => format!("{name} has {i} messages pending for you"),
-            (o, i) => format!("{o} waiting for {name} · {i} pending from them"),
+            (o, 0) => sync_queue_copy::pill_tooltip_out(o, &name),
+            (0, i) => sync_queue_copy::pill_tooltip_in(&name, i),
+            (o, i) => sync_queue_copy::pill_tooltip_both(o, &name, i),
         }
     };
 

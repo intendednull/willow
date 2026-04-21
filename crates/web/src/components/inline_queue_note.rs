@@ -13,6 +13,7 @@
 
 use leptos::prelude::*;
 
+use crate::components::sync_queue_copy;
 use crate::icons;
 
 /// Three-state variant for the inline note.
@@ -42,9 +43,9 @@ pub fn InlineQueueNote(
     #[prop(into)] message_id: Signal<String>,
 ) -> impl IntoView {
     let text = move || match state.get() {
-        InlineState::Queued => format!("queued · will send when {} reachable", peer_or_grove.get()),
-        InlineState::JustDelivered => "queued earlier · delivered just now".to_string(),
-        InlineState::InboundHeld => "sent earlier · arrived now".to_string(),
+        InlineState::Queued => sync_queue_copy::msg_note_queued(&peer_or_grove.get()),
+        InlineState::JustDelivered => sync_queue_copy::MSG_NOTE_JUST_DELIVERED.to_string(),
+        InlineState::InboundHeld => sync_queue_copy::MSG_NOTE_INBOUND_HELD.to_string(),
     };
 
     let color_class = move || match state.get() {

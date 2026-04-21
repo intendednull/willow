@@ -50,12 +50,7 @@ pub fn WelcomeBackBanner() -> impl IntoView {
         }
     });
 
-    let label = move || {
-        format!(
-            "willow queued {} messages while you were away — everything arrived",
-            count.get()
-        )
-    };
+    let label = move || sync_queue_copy::banner_welcome_back(count.get());
 
     view! {
         <Show when=move || visible.get()>
