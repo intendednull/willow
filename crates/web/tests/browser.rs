@@ -6641,8 +6641,14 @@ mod mobile_actions {
         );
         let reply = items
             .iter()
-            .find(|el| el.text_content().unwrap_or_default().contains("Reply"))
-            .expect("Reply sheet-item should exist");
+            .find(|el| {
+                // Spec §Long-press action sheet: sheet copy is
+                // lowercase `reply`. Case-insensitive comparison keeps
+                // the test resilient to future casing tweaks.
+                let txt = el.text_content().unwrap_or_default();
+                txt.trim().eq_ignore_ascii_case("reply")
+            })
+            .expect("reply sheet-item should exist");
         simulate_click(reply);
         tick().await;
         assert!(

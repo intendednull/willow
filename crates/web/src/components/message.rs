@@ -425,13 +425,17 @@ pub fn MessageView(
         let drag = sheet_drag_y.get_untracked();
         let elapsed = js_sys::Date::now() - st_time_for_end.get();
         let distance = st_last_for_end.get() - st_start_for_end.get();
-        // Dismiss if dragged past 80px OR fast swipe (>200px/s downward).
+        // Phase 2a Task 13 / spec §Long-press action sheet:
+        // dismiss on `drag >= 80 px` OR release-velocity > 200 px/s.
+        // Transition is already disabled during drag via the inline
+        // `transition: none` on the sheet's style binding; tapping the
+        // overlay dismisses from the overlay's own click handler below.
         let velocity = if elapsed > 0.0 {
             distance / elapsed * 1000.0
         } else {
             0.0
         };
-        if drag > 80.0 || velocity > 200.0 {
+        if drag >= 80.0 || velocity > 200.0 {
             set_show_sheet_close();
         }
         set_sheet_drag_y.set(0.0);
@@ -1136,10 +1140,29 @@ pub fn MessageView(
             } else {
                 None
             }}
-            // Mobile bottom action sheet (shown via long-press, hidden by default).
+            // Phase 2a Task 13 / spec §Long-press action sheet:
+            // the mobile bottom sheet renders in this exact order with
+            // all-lowercase copy — quick-emoji row → `reply` →
+            // `reply in thread` → `add reaction` → `pin`/`unpin` →
+            // `copy text` → `edit` → `delete` (`--err` foreground via
+            // `.sheet-item--delete`) → trailing `cancel`. Items that
+            // depend on a permission-gated callback (`reply`, `pin`,
+            // `edit`, `delete`, `add reaction`) are rendered only when
+            // that callback is supplied; `copy text` and `cancel` are
+            // always shown. `reply in thread` falls back to a no-op
+            // when `on_open_thread` is unwired (thread pane belongs to
+            // `thread-pane.md`, not this phase). `add reaction` is a
+            // stand-in that re-opens the quick-emoji row until the
+            // full picker lands in `reactions-pins.md`.
+            //
+            // Swipe-down ≥ 80 px OR release velocity > 200 px/s
+            // dismisses; the overlay tap also dismisses. See
+            // `on_sheet_touchend` for the arithmetic.
             {if show_actions {
                 let reply_cb2 = on_click;
                 let reply_msg2 = message.clone();
+                let thread_cb2 = on_open_thread;
+                let thread_msg2 = message.clone();
                 let pin_cb2 = on_pin;
                 let pin_msg2 = message.clone();
                 let pin_label2 = pin_label.clone();
@@ -1147,6 +1170,7 @@ pub fn MessageView(
                 let edit_msg2 = message.clone();
                 let react_cb2 = on_react;
                 let react_msg2 = message.clone();
+                let body_for_copy = message.body.clone();
 
                 let close_sheet = set_show_sheet_close;
 
@@ -1170,38 +1194,18 @@ pub fn MessageView(
                         on:touchmove=on_sheet_touchmove
                         on:touchend=on_sheet_touchend
                     >
-                        {if has_reply {
-                            let cb = reply_cb2;
-                            let msg = reply_msg2.clone();
-                            let close = close_sheet;
-                            Some(view! {
-                                <button class="sheet-item" on:click=move |ev| {
-                                    ev.stop_propagation();
-                                    if let Some(ref cb) = cb { cb.run(msg.clone()); }
-                                    close();
-                                }>"Reply"</button>
-                            })
-                        } else { None }}
-                        {if has_pin {
-                            let cb = pin_cb2;
-                            let msg = pin_msg2.clone();
-                            let label = pin_label2.clone();
-                            let close = close_sheet;
-                            Some(view! {
-                                <button class="sheet-item" on:click=move |ev| {
-                                    ev.stop_propagation();
-                                    if let Some(ref cb) = cb { cb.run(msg.clone()); }
-                                    close();
-                                }>{label}</button>
-                            })
-                        } else { None }}
+                        // Quick-emoji row — six hit targets from recency.
+                        // TODO(reactions-pins.md): swap `REACTION_EMOJI`
+                        // for the channel-scoped recency list once that
+                        // spec lands. Rendered first so the sheet opens
+                        // with the common case one tap away.
                         {if has_react {
                             let cb = react_cb2;
                             let msg = react_msg2.clone();
                             let close = close_sheet;
                             Some(view! {
                                 <div class="sheet-emoji-row">
-                                    {REACTION_EMOJI.iter().map(|emoji| {
+                                    {REACTION_EMOJI.iter().take(6).map(|emoji| {
                                         let e = emoji.to_string();
                                         let ev = e.clone();
                                         let m = msg.clone();
@@ -1217,6 +1221,80 @@ pub fn MessageView(
                                 </div>
                             })
                         } else { None }}
+                        {if has_reply {
+                            let cb = reply_cb2;
+                            let msg = reply_msg2.clone();
+                            let close = close_sheet;
+                            Some(view! {
+                                <button class="sheet-item" on:click=move |ev| {
+                                    ev.stop_propagation();
+                                    if let Some(ref cb) = cb { cb.run(msg.clone()); }
+                                    close();
+                                }>"reply"</button>
+                            })
+                        } else { None }}
+                        // `reply in thread` — always rendered per
+                        // spec (thread-pane is a standalone feature,
+                        // not permission-gated on the row). When
+                        // `on_open_thread` is unwired the tap is a
+                        // no-op (see `thread-pane.md`).
+                        {
+                            let cb_opt = thread_cb2;
+                            let msg = thread_msg2.clone();
+                            let close = close_sheet;
+                            view! {
+                                <button class="sheet-item" on:click=move |ev| {
+                                    ev.stop_propagation();
+                                    if let Some(cb) = cb_opt { cb.run(msg.clone()); }
+                                    close();
+                                }>"reply in thread"</button>
+                            }
+                        }
+                        // `add reaction` — opens the full picker when
+                        // `reactions-pins.md` lands. Today the
+                        // quick-emoji row already sits at the top of
+                        // the sheet, so this item re-focuses the sheet
+                        // without dismissing; once the picker lands it
+                        // will route there instead.
+                        {has_react.then(|| view! {
+                            <button class="sheet-item" on:click=move |ev| {
+                                // TODO(reactions-pins.md): route to the
+                                // full emoji picker here. For now the
+                                // quick-emoji row above is the only
+                                // path, so we keep the sheet open.
+                                ev.stop_propagation();
+                            }>"add reaction"</button>
+                        })}
+                        {if has_pin {
+                            let cb = pin_cb2;
+                            let msg = pin_msg2.clone();
+                            // `pin_label` is either `Pin` or `Unpin`
+                            // — lowercase it to match spec copy.
+                            let label = pin_label2.to_lowercase();
+                            let close = close_sheet;
+                            Some(view! {
+                                <button class="sheet-item" on:click=move |ev| {
+                                    ev.stop_propagation();
+                                    if let Some(ref cb) = cb { cb.run(msg.clone()); }
+                                    close();
+                                }>{label}</button>
+                            })
+                        } else { None }}
+                        // `copy text` is a free action — available on
+                        // every row regardless of permissions. Uses
+                        // the shared `copy_to_clipboard` helper (same
+                        // clipboard-API + textarea fallback as invite
+                        // codes + fenced-code copy).
+                        {
+                            let close = close_sheet;
+                            view! {
+                                <button class="sheet-item" on:click=move |ev| {
+                                    ev.stop_propagation();
+                                    crate::util::copy_to_clipboard(&body_for_copy);
+                                    close();
+                                }>"copy text"</button>
+                            }
+                        }
                         {if has_edit {
                             let cb = edit_cb2;
                             let msg = edit_msg2.clone();
@@ -1226,20 +1304,20 @@ pub fn MessageView(
                                     ev.stop_propagation();
                                     if let Some(ref cb) = cb { cb.run(msg.clone()); }
                                     close();
-                                }>"Edit"</button>
+                                }>"edit"</button>
                             })
                         } else { None }}
                         {if has_delete {
                             let close = close_sheet;
                             Some(view! {
-                                <button class="sheet-item sheet-danger" on:click=move |ev| {
+                                <button class="sheet-item sheet-danger sheet-item--delete" on:click=move |ev| {
                                     ev.stop_propagation();
                                     close();
                                     set_show_del_confirm.set(true);
-                                }>"Delete"</button>
+                                }>"delete"</button>
                             })
                         } else { None }}
-                        <button class="sheet-item sheet-cancel" on:click=move |_| close_sheet()>"Cancel"</button>
+                        <button class="sheet-item sheet-cancel" on:click=move |_| close_sheet()>"cancel"</button>
                     </div>
                 })
             } else { None }}

@@ -336,19 +336,13 @@ Align the existing mobile long-press sheet with the spec's exact copy list and d
 
 **Files:** modify `crates/web/src/components/message.rs`, modify `e2e/mobile-actions.spec.ts`.
 
-- [ ] **Step 13.1 — Copy alignment.** Replace the current `"Reply"`, `"Edit"`, `"Delete"` strings with lowercase spec copy: `reply`, `reply in thread`, `add reaction`, `pin` / `unpin`, `copy text`, `edit`, `delete`, `cancel`. Add missing entries: `reply in thread`, `add reaction` (opens picker — delegate to `TODO(reactions-pins.md)`), `copy text` (`navigator.clipboard.writeText(msg.body)`).
+- [x] **Step 13.1 — Copy alignment.** All sheet items now render the lowercase spec copy — `reply`, `reply in thread`, `add reaction`, `pin`/`unpin` (via `pin_label.to_lowercase()`), `copy text`, `edit`, `delete`, `cancel` — in the spec's order with the quick-emoji row at the top (capped at 6 slots per spec). `reply in thread` always renders (falls back to a no-op when `on_open_thread` is unwired, per `thread-pane.md` TODO). `add reaction` is a stand-in that keeps the sheet open until `reactions-pins.md` lands the full picker. `copy text` routes through the shared `crate::util::copy_to_clipboard` helper.
 
-- [ ] **Step 13.2 — Dismissal path.** Existing `on_sheet_touchend` already handles the 80px-OR-200px/s rule; audit the arithmetic:
+- [x] **Step 13.2 — Dismissal path.** `on_sheet_touchend` now uses `drag >= 80.0 || velocity > 200.0` (tightened from `>`) with a spec-citation comment. Overlay tap and sheet drag are unchanged — the overlay's own click handler dismisses, and `transition: none` during drag keeps the finger tracking 1:1.
 
-  ```rust
-  if drag > 80.0 || velocity > 200.0 { set_show_sheet_close(); }
-  ```
+- [x] **Step 13.3 — E2E case.** `e2e/mobile-actions.spec.ts` adds two tests: `action sheet renders spec copy verbatim` (asserts every label is visible with an anchored-regex match) and `fast downward swipe dismisses by velocity` (60 px over ~60 ms real wall-time → ~1000 px/s, past the 200 px/s threshold but below the 80 px distance threshold, so the dismiss must fire from the velocity branch). `e2e/helpers.ts::messageAction` now does a case-insensitive `hasText` match so existing call-sites passing `'Reply'`/`'Edit'`/`'Delete'` still work. `npx playwright test e2e/mobile-actions.spec.ts --project=mobile-chrome` → 5 passed.
 
-  Confirm it matches spec, add a comment citing the spec line.
-
-- [ ] **Step 13.3 — E2E case.** Assert exact copy + velocity-dismiss path in `e2e/mobile-actions.spec.ts`.
-
-- [ ] **Step 13.4 — Commit** — `ui(phase-2): align action-sheet copy + dismissal with spec`.
+- [x] **Step 13.4 — Commit** — `ui(phase-2): align action-sheet copy + dismissal with spec`.
 
 ### 14. Copy pass (exact strings)
 

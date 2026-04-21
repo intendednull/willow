@@ -1016,10 +1016,20 @@ select:focus-visible {
         background: var(--bg-input);
     }
 
-    .mobile-action-sheet .sheet-danger {
-        color: var(--danger);
+    /* Phase 2a Task 13 / spec §Long-press action sheet:
+       `delete` renders in the foundation `--err` ink. `--danger` is
+       the legacy alias that already resolves to `var(--err)` at
+       `:root`, so both class names point at the same token.
+       `.sheet-item--delete` is the spec-named variant; `.sheet-danger`
+       stays for back-compat. */
+    .mobile-action-sheet .sheet-danger,
+    .mobile-action-sheet .sheet-item--delete {
+        color: var(--err);
     }
 
+    /* Trailing `cancel` — separator above, muted ink. Per spec the
+       cancel sits at the bottom of the sheet with a clear break from
+       the action column above. */
     .mobile-action-sheet .sheet-cancel {
         border-top: 1px solid var(--border);
         margin-top: 4px;

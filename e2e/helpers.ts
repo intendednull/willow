@@ -486,15 +486,21 @@ export async function createChannel(page: Page, name: string) {
 
 // ── Message actions ───────────────────────────────────────────────────
 
-/** Performs a named action on a message (desktop: hover+dropdown, mobile: long-press+sheet). */
+/** Performs a named action on a message (desktop: hover+dropdown, mobile: long-press+sheet).
+ *  Mobile sheet copy is lowercase per `message-row.md` §Long-press
+ *  action sheet — the helper matches `actionName` case-insensitively
+ *  so callers can pass either `Reply` or `reply`. */
 export async function messageAction(page: Page, messageText: string, actionName: string) {
   if (isMobile(page)) {
     // Mobile: long-press to open action sheet.
     await longPress(page, `.message:has-text("${messageText}")`);
     await page.locator('.shell-mobile .mobile-action-sheet.open').first()
       .waitFor({ timeout: 3000 });
+    // Case-insensitive match: spec copy is lowercase `reply`, `edit`,
+    // `delete`, but call-sites historically passed capitalized names.
+    const actionRe = new RegExp(`^\\s*${actionName}\\s*$`, 'i');
     await page
-      .locator('.shell-mobile .mobile-action-sheet.open .sheet-item', { hasText: actionName })
+      .locator('.shell-mobile .mobile-action-sheet.open .sheet-item', { hasText: actionRe })
       .click();
     await page.waitForTimeout(300);
   } else {
