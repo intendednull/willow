@@ -1483,7 +1483,7 @@ Real implementation of the 17 fields. Replaces the stub in `profile_card.rs`. Mo
 
 **Files:** modify `crates/web/src/components/profile_card.rs`, modify `crates/web/style.css`.
 
-- [ ] **Step 7.1 — Variant enum.** In `profile_card.rs`:
+- [x] **Step 7.1 — Variant enum.** In `profile_card.rs`:
 
   ```rust
   #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1493,7 +1493,7 @@ Real implementation of the 17 fields. Replaces the stub in `profile_card.rs`. Mo
   }
   ```
 
-- [ ] **Step 7.2 — New `ProfileCardContent` component.** Replace `ProfileCardStub` body (keep the name as a `#[deprecated]` re-export):
+- [x] **Step 7.2 — New `ProfileCardContent` component.** Replace `ProfileCardStub` body (keep the name as a `#[deprecated]` re-export):
 
   ```rust
   /// 17-field profile card content. Used inside both the desktop popover
@@ -1546,7 +1546,7 @@ Real implementation of the 17 fields. Replaces the stub in `profile_card.rs`. Mo
 
   Implementation detail: the 17-field checklist is lengthy; write each section top-to-bottom following spec field order. Each field uses the exact copy string from `crate::profile::copy`. Hidden fields (pronouns/bio/tagline/pinned/elsewhere/since) are `{move || view.get().foo.clone().map(|v| view!{<div class="profile-card__foo">{v}</div>.into_any())}.unwrap_or_else(|| ().into_any())}` — the peer card never renders empty-state rows for unset fields (spec §Edge cases). The self card shows `no pinned fragment` when pinned is unset.
 
-- [ ] **Step 7.3 — Primary + secondary rows.**
+- [x] **Step 7.3 — Primary + secondary rows.**
 
   ```rust
   // Peer variant primary row:
@@ -1564,11 +1564,11 @@ Real implementation of the 17 fields. Replaces the stub in `profile_card.rs`. Mo
 
   `edit profile` (self): calls `write.ui.set_settings_tab.set(SettingsTab::Profile)` + `write.ui.set_show_settings.set(true)` + `on_close.run(())`.
 
-- [ ] **Step 7.4 — Badge click handoff.** The verification badge uses the existing `<TrustBadge>` component. Wrap it so that click calls `write.trust.set_compare_target.set(Some(view.get().peer_id.clone()))` + `on_close.run(())`. The existing `<AddFriendDialog>` reads `compare_target` and takes over from there — we do NOT reimplement the compare flow.
+- [x] **Step 7.4 — Badge click handoff.** The verification badge uses the existing `<TrustBadge>` component. Wrap it so that click calls `write.trust.set_compare_target.set(Some(view.get().peer_id.clone()))` + `on_close.run(())`. The existing `<AddFriendDialog>` reads `compare_target` and takes over from there — we do NOT reimplement the compare flow.
 
-- [ ] **Step 7.5 — Stub deprecation.** Keep the old `ProfileCardStub` symbol as a `#[deprecated = "use ProfileCardContent"]` thin wrapper that constructs a minimal `ProfileView` and renders the new component — so phase-1e presence surfaces keep working.
+- [x] **Step 7.5 — Stub deprecation.** Keep the old `ProfileCardStub` symbol as a `#[deprecated = "use ProfileCardContent"]` thin wrapper that constructs a minimal `ProfileView` and renders the new component — so phase-1e presence surfaces keep working.
 
-- [ ] **Step 7.6 — CSS skeleton.** Append `crates/web/style.css`:
+- [x] **Step 7.6 — CSS skeleton.** Append `crates/web/style.css`:
 
   ```css
   /* ── Phase 2c · Profile card content ───────────────────────────── */
@@ -1632,7 +1632,7 @@ Real implementation of the 17 fields. Replaces the stub in `profile_card.rs`. Mo
 
   Fill in the remaining selectors per spec §Peer view — each spec bullet gets its own selector.
 
-- [ ] **Step 7.7 — `just check-wasm`.**
+- [x] **Step 7.7 — `just check-wasm`.**
 
   ```bash
   just check-wasm
@@ -1640,7 +1640,7 @@ Real implementation of the 17 fields. Replaces the stub in `profile_card.rs`. Mo
 
   Expected: clean.
 
-- [ ] **Step 7.8 — Commit.**
+- [x] **Step 7.8 — Commit.**
 
   ```bash
   git add crates/web/src/components/profile_card.rs crates/web/style.css
