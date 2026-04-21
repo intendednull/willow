@@ -49,9 +49,7 @@ pub fn LongPressAvatar(
             // (wasm-bindgen-test) lack `navigator.vibrate`, so
             // feature-detect before calling.
             if let Some(nav) = web_sys::window().map(|w| w.navigator()) {
-                if js_sys::Reflect::has(nav.as_ref(), &"vibrate".into())
-                    .unwrap_or(false)
-                {
+                if js_sys::Reflect::has(nav.as_ref(), &"vibrate".into()).unwrap_or(false) {
                     nav.vibrate_with_duration(8);
                 }
             }

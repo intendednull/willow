@@ -29,18 +29,13 @@ pub fn install(state: AppState, write: AppWriteSignals) {
                 // Ctrl+Alt+N — move focus to the newest toast. Plain
                 // Ctrl+N / Cmd+N is reserved by the browser, so the
                 // chord ships with Alt included per the spec keymap.
-                "n" | "N" if is_ctrl && ev.alt_key() => {
-                    if focus_newest_toast() {
-                        ev.prevent_default();
-                    }
+                "n" | "N" if is_ctrl && ev.alt_key() && focus_newest_toast() => {
+                    ev.prevent_default();
                 }
-                "Escape" => {
-                    // Toast dismiss takes priority over the modal
-                    // close-stack — a focused toast is the most
-                    // immediate surface.
-                    if dismiss_focused_toast() || close_top_of_stack(state, write) {
-                        ev.prevent_default();
-                    }
+                // Toast dismiss takes priority over the modal close-stack —
+                // a focused toast is the most immediate surface.
+                "Escape" if dismiss_focused_toast() || close_top_of_stack(state, write) => {
+                    ev.prevent_default();
                 }
                 "ArrowUp" if ev.alt_key() => {
                     ev.prevent_default();

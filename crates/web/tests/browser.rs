@@ -6849,7 +6849,6 @@ mod worker_nodes_css {
     use super::test_support::*;
     use super::*;
     use wasm_bindgen::JsCast;
-    use willow_web::app::App;
 
     /// Drive the welcome flow: fill the display-name step, click
     /// continue, then fill + submit the create-server tab. Mirrors

@@ -520,9 +520,7 @@ pub fn MessageView(
                 // `navigator.vibrate`, so feature-detect first.
                 if let Some(w) = web_sys::window() {
                     let nav = w.navigator();
-                    if js_sys::Reflect::has(nav.as_ref(), &"vibrate".into())
-                        .unwrap_or(false)
-                    {
+                    if js_sys::Reflect::has(nav.as_ref(), &"vibrate".into()).unwrap_or(false) {
                         let _ = nav.vibrate_with_duration(25);
                     }
                 }
