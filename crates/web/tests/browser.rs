@@ -7091,3 +7091,90 @@ mod trust_badge_dom {
         );
     }
 }
+
+// ── Phase 2a — Message row ──────────────────────────────────────────────────
+//
+// Task 1 landing: density-aware `.message` padding consumes `--msg-pad`
+// (see `foundation.css`) and collapsed rows (`show_header=false`) expose a
+// pre-formatted 24-hour `HH:MM` stamp inside the avatar column so runs of
+// consecutive messages keep a per-row time hint on hover.
+mod phase_2a_message_row {
+    use super::*;
+    use willow_web::components::MessageView;
+
+    /// Timestamp fixture: `3h 25m` past UTC midnight → `03:25`.
+    const FIXTURE_TS_MS: u64 = (3 * 3600 + 25 * 60) * 1000;
+
+    #[wasm_bindgen_test]
+    async fn collapsed_row_renders_hover_timestamp() {
+        let msg = make_msg("Mira", "follow-up line", FIXTURE_TS_MS);
+
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            view! {
+                <MessageView
+                    message=msg
+                    show_header=false
+                />
+            }
+        });
+        tick().await;
+
+        let hover_ts = query(&container, ".run-hover-ts")
+            .expect("collapsed MessageView must render .run-hover-ts");
+        assert_eq!(
+            text(&hover_ts),
+            "03:25",
+            ".run-hover-ts must carry the pre-formatted HH:MM of the row's timestamp"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn collapsed_row_hover_ts_matches_client_formatter() {
+        // The collapsed-row hover stamp must equal the canonical
+        // `willow_client::util::format_timestamp` output so all rows read
+        // in a single 24-hour HH:MM dialect.
+        let ts: u64 = (18 * 3600 + 7 * 60) * 1000 + 42; // 18:07 + 42ms noise
+        let msg = make_msg("Rin", "still me", ts);
+
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            view! {
+                <MessageView
+                    message=msg
+                    show_header=false
+                />
+            }
+        });
+        tick().await;
+
+        let hover_ts = query(&container, ".run-hover-ts").expect(".run-hover-ts must render");
+        assert_eq!(
+            text(&hover_ts),
+            willow_client::util::format_timestamp(ts),
+            ".run-hover-ts must equal willow_client::util::format_timestamp"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn collapsed_row_carries_grouped_class() {
+        // Density CSS hinges on `.message.grouped` still being emitted
+        // for show_header=false rows — guard against regression.
+        let msg = make_msg("Rin", "run continuation", FIXTURE_TS_MS);
+
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            view! {
+                <MessageView
+                    message=msg
+                    show_header=false
+                />
+            }
+        });
+        tick().await;
+
+        let row = query(&container, ".message.grouped")
+            .expect("show_header=false must emit .message.grouped");
+        assert!(
+            row.query_selector(".run-hover-ts").unwrap().is_some(),
+            ".run-hover-ts must live inside the .message.grouped row"
+        );
+    }
+}

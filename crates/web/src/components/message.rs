@@ -219,6 +219,12 @@ pub fn MessageView(
         "body"
     };
     let timestamp = format_relative_time(message.timestamp_ms);
+    // Pre-formatted 24-hour HH:MM stamp shown inside the collapsed-row
+    // avatar column on hover. Headered rows already carry the timestamp
+    // in `.meta` so we only render this for grouped (run) rows.
+    // TODO(phase-2a-task-6): gate run-break predicate on msg.pinned /
+    // msg.whisper / msg.queue_note once DisplayMessage carries them.
+    let run_hover_ts = willow_client::util::format_timestamp(message.timestamp_ms);
 
     let reply_preview = message.reply_preview.clone();
     let reply_to_id = message.reply_to.clone();
@@ -462,7 +468,7 @@ pub fn MessageView(
                         .and_then(|a| a.presence.per_peer.get().get(&author_pid_for_presence).copied())
                         .unwrap_or(willow_client::presence::PresenceState::Here)
                 });
-                Some(view! {
+                view! {
                     <div class="meta">
                         <span class="author" style=format!("color: {author_color}")>{author}</span>
                         <super::TrustBadge
@@ -484,9 +490,13 @@ pub fn MessageView(
                             None
                         }}
                     </div>
-                })
+                }.into_any()
             } else {
-                None
+                // Collapsed (grouped) row: expose an HH:MM stamp inside the
+                // empty avatar column. CSS reveals it on `.message.grouped:hover`.
+                view! {
+                    <span class="run-hover-ts" aria-hidden="true">{run_hover_ts.clone()}</span>
+                }.into_any()
             }}
             {if let Some((filename, data)) = file_info.clone() {
                 if is_image_file(&filename) {

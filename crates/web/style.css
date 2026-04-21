@@ -4294,3 +4294,37 @@ select:focus-visible {
     .sas-cell { transition: none; }
     .sas-press-ring { transition: opacity var(--motion-fast) ease; transform: none; }
 }
+
+/* ── Phase 2a · density-aware message padding ──────────────────────────── */
+/*
+ * `.message` consumes the `--msg-pad` foundation token so density-cozy /
+ * density-balanced / density-dense variants (see `foundation.css`) drive
+ * row height uniformly. Collapsed (grouped) rows compress to a 1px block
+ * pad so runs of same-author messages stay visually tight without losing
+ * the inline-hover timestamp surface added below.
+ */
+.message { padding: var(--msg-pad); }
+.message.grouped { padding-block: 1px; }
+
+/* Collapsed-row hover timestamp. The span lives inside the collapsed
+ * MessageView where the avatar column would be; CSS hides it off-hover
+ * so it only surfaces when the user targets the row. */
+.message .run-hover-ts {
+    display: inline-block;
+    width: 0;
+    overflow: hidden;
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: 10px;
+    color: var(--text-muted);
+    opacity: 0;
+    transition: opacity var(--transition-fast);
+    pointer-events: none;
+    user-select: none;
+}
+.message.grouped:hover .run-hover-ts {
+    width: auto;
+    opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+    .message .run-hover-ts { transition: none; }
+}
