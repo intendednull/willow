@@ -6786,3 +6786,217 @@ mod mobile_actions {
         );
     }
 }
+
+// ── Worker-nodes CSS + member-list structure ────────────────────────────────
+//
+// Migrated from `e2e/worker-nodes.spec.ts`. Three pure-DOM / pure-CSS
+// assertions that don't need a real relay: the owner-only member-list
+// section, the absence of the Infrastructure section when no peer has
+// SyncProvider, and a stylesheet scan that confirms the worker-node
+// classes are defined. The real-relay `relay connection is established`
+// test stays in Playwright — it asserts transport-level behaviour.
+
+mod worker_nodes_css {
+    use super::test_support::*;
+    use super::*;
+    use wasm_bindgen::JsCast;
+    use willow_web::app::App;
+
+    /// Drive the welcome flow: fill the display-name step, click
+    /// continue, then fill + submit the create-server tab. Mirrors
+    /// `basic_flow::create_server_flow` but kept module-local so this
+    /// file doesn't have to re-export private helpers across modules.
+    async fn create_server_flow(
+        container: &web_sys::HtmlElement,
+        server_name: &str,
+        display_name: &str,
+    ) {
+        assert!(
+            wait_for(container, ".welcome-name-input", 5_000).await,
+            "welcome step-1 name input did not render"
+        );
+        fill_selector(container, ".welcome-name-input", display_name);
+        tick().await;
+        click_selector(container, ".welcome-continue-btn");
+        tick().await;
+        assert!(
+            wait_for(container, ".welcome-tabs", 5_000).await,
+            "welcome tabs did not render after continue"
+        );
+        assert!(
+            wait_for(
+                container,
+                ".welcome-tab-panel input[placeholder=\"backyard\"]",
+                5_000
+            )
+            .await
+        );
+        fill_selector(
+            container,
+            ".welcome-tab-panel input[placeholder=\"backyard\"]",
+            server_name,
+        );
+        tick().await;
+        click_selector(container, ".welcome-tab-panel .welcome-btn");
+        assert!(
+            wait_for(container, ".sidebar-header", 10_000).await,
+            "sidebar-header did not render after server creation"
+        );
+    }
+
+    /// Click the main-pane header's `members` action button to open the
+    /// right-rail member list, then wait for the `.member-list` node to
+    /// mount inside the desktop shell.
+    async fn open_member_rail(container: &web_sys::HtmlElement) {
+        let sel = ".shell-desktop .mph-action-bar .action-btn[aria-label=\"members\"]";
+        assert!(
+            wait_for(container, sel, 5_000).await,
+            "members action button did not mount"
+        );
+        click_selector(container, sel);
+        tick().await;
+        assert!(
+            wait_for(container, ".shell-desktop .member-list", 5_000).await,
+            ".member-list did not mount after clicking members"
+        );
+    }
+
+    // ── 1. Member list renders with correct section structure ───────────
+
+    #[wasm_bindgen_test]
+    async fn member_list_renders_with_correct_section_structure() {
+        let container = mount_app_fresh(TestShell::Desktop).await;
+        create_server_flow(&container, "Section Test", "Alice").await;
+        open_member_rail(&container).await;
+
+        // Members heading.
+        let heading = query_text(&container, ".shell-desktop .member-list h3").unwrap_or_default();
+        assert!(
+            heading.contains("Members"),
+            "member-list h3 should read 'Members', got: {heading:?}"
+        );
+
+        // Owner badge for the creator.
+        assert!(
+            wait_for(&container, ".shell-desktop .badge.owner-badge", 5_000).await,
+            "owner-badge should be visible for the server creator"
+        );
+
+        // Exactly one member row — the local creator. No peers connect
+        // in the wasm-pack harness so this is deterministic.
+        let items = query_all(&container, ".shell-desktop .member-list .member-item");
+        assert_eq!(
+            items.len(),
+            1,
+            "expected exactly one member row, got {}",
+            items.len()
+        );
+    }
+
+    // ── 2. Infrastructure section hidden when no workers present ────────
+
+    #[wasm_bindgen_test]
+    async fn infrastructure_section_hidden_without_sync_providers() {
+        let container = mount_app_fresh(TestShell::Desktop).await;
+        create_server_flow(&container, "No Workers", "Alice").await;
+        open_member_rail(&container).await;
+
+        // `.infra-header` only renders when at least one peer has
+        // SyncProvider permission. The wasm-pack harness has no peers
+        // at all, so neither the header nor any worker rows should be
+        // in the DOM.
+        assert!(
+            query(&container, ".shell-desktop .infra-header").is_none(),
+            ".infra-header should be absent when no workers have SyncProvider"
+        );
+        let workers = query_all(&container, ".shell-desktop .worker-item");
+        assert_eq!(
+            workers.len(),
+            0,
+            "expected 0 .worker-item rows, got {}",
+            workers.len()
+        );
+    }
+
+    /// Inject the legacy `style.css` bundle once per page. Worker-node
+    /// classes live there (not in `components.css`), so we need a
+    /// separate hook to get them onto `document.styleSheets` for the
+    /// CSS-rule scan. Dedupes via an id guard.
+    fn ensure_style_css_loaded() {
+        const STYLE_ID: &str = "willow-test-style-css";
+        let doc = web_sys::window().unwrap().document().unwrap();
+        if doc.get_element_by_id(STYLE_ID).is_some() {
+            return;
+        }
+        let style = doc.create_element("style").unwrap();
+        style.set_id(STYLE_ID);
+        style.set_text_content(Some(include_str!("../style.css")));
+        let head = doc.head().expect("document has <head>");
+        head.append_child(&style).unwrap();
+    }
+
+    // ── 3. Worker-node CSS classes are defined in the stylesheet ────────
+
+    // Worker-node styles live in `style.css`; inject that bundle, then
+    // walk `document.styleSheets`, collect the selector text of every
+    // `CSSStyleRule`, and assert the three worker-node classes resolve.
+    #[wasm_bindgen_test]
+    async fn worker_item_css_classes_exist_in_stylesheet() {
+        // Ensure both stylesheet bundles are loaded. `components.css`
+        // is injected via `ensure_app_css`; `style.css` is injected
+        // separately because it's not part of the test harness default.
+        ensure_app_css();
+        ensure_style_css_loaded();
+
+        let document = web_sys::window().unwrap().document().unwrap();
+        let sheets = document.style_sheets();
+
+        let mut saw_worker_item = false;
+        let mut saw_worker_icon = false;
+        let mut saw_infra_header = false;
+
+        for i in 0..sheets.length() {
+            let Some(sheet) = sheets.item(i) else {
+                continue;
+            };
+            let Ok(css_sheet) = sheet.dyn_into::<web_sys::CssStyleSheet>() else {
+                continue;
+            };
+            // cross-origin stylesheets throw on cssRules access — skip.
+            let Ok(rules) = css_sheet.css_rules() else {
+                continue;
+            };
+            for j in 0..rules.length() {
+                let Some(rule) = rules.item(j) else {
+                    continue;
+                };
+                let Ok(style_rule) = rule.dyn_into::<web_sys::CssStyleRule>() else {
+                    continue;
+                };
+                let selector = style_rule.selector_text();
+                if selector.contains(".worker-item") {
+                    saw_worker_item = true;
+                }
+                if selector.contains(".worker-icon") {
+                    saw_worker_icon = true;
+                }
+                if selector.contains(".infra-header") {
+                    saw_infra_header = true;
+                }
+            }
+        }
+
+        assert!(
+            saw_worker_item,
+            ".worker-item selector missing from stylesheet"
+        );
+        assert!(
+            saw_worker_icon,
+            ".worker-icon selector missing from stylesheet"
+        );
+        assert!(
+            saw_infra_header,
+            ".infra-header selector missing from stylesheet"
+        );
+    }
+}
