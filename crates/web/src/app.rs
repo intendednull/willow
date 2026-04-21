@@ -559,7 +559,6 @@ pub fn App() -> impl IntoView {
     let pin_labels = app_state.chat.pin_labels;
     let loading = app_state.network.loading;
     let display_name = app_state.server.display_name;
-    let peer_count = app_state.network.peer_count;
     let peer_id = app_state.network.peer_id;
     let _roles = app_state.server.roles;
     let replying_to = app_state.chat.replying_to;
@@ -734,8 +733,6 @@ pub fn App() -> impl IntoView {
                             current_channel=current_channel
                             open=show_sidebar
                             unread=app_state.server.unread_stats
-                            connection_status=app_state.network.connection_status
-                            peer_count=peer_count
                             server_name=app_state.server.active_server_name
                             on_channel_click=ch_click
                             on_settings_click=move |_| {

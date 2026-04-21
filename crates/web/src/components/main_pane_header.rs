@@ -1,4 +1,4 @@
-//! Main-pane header — channel title strip + six-button action bar.
+//! Main-pane header — channel title strip + action bar.
 //!
 //! Spec: docs/specs/2026-04-19-ui-design/layout-primitives.md §Main pane header
 //!
@@ -7,9 +7,10 @@
 //!   2. Italic channel title
 //!   3. Topic text, prefixed by a divider bar (truncates)
 //!   4. Flex spacer
-//!   5. Six action buttons in fixed order: members · pinned · thread ·
-//!      phone · search · more. Exactly one of members / pinned / thread
-//!      is active at a time; the others close when one opens.
+//!   5. Action buttons in fixed order: members (with count badge) ·
+//!      pinned · search · more. Members and pinned are mutually
+//!      exclusive — opening one closes the other. Clicking the members
+//!      button opens the right-rail member pane.
 
 use leptos::prelude::*;
 
@@ -39,10 +40,6 @@ pub fn MainPaneHeader(
     /// None closes the rail; Some swaps in the given pane.
     #[prop(into)]
     on_set_which: Callback<RightRailWhich>,
-    /// Call toggle — active when a call is in progress. Hook for the
-    /// call-experience plan; Phase 1a passes a no-op.
-    #[prop(optional, into)]
-    on_call_click: Option<Callback<()>>,
     /// Opens the command palette.
     #[prop(into)]
     on_search_click: Callback<()>,
@@ -55,13 +52,9 @@ pub fn MainPaneHeader(
     /// Topic string beside the title (truncates).
     #[prop(optional, into)]
     topic: Option<Signal<String>>,
-    /// True when a voice call is active — swaps phone ↔ phone-off.
-    #[prop(optional, into)]
-    call_active: Option<Signal<bool>>,
 ) -> impl IntoView {
     let is_members = Signal::derive(move || which.get() == RightRailWhich::Members);
     let is_pinned = Signal::derive(move || which.get() == RightRailWhich::Pinned);
-    let is_thread = Signal::derive(move || which.get() == RightRailWhich::Thread);
 
     let kind_icon_view = move || {
         let k = kind
@@ -103,49 +96,9 @@ pub fn MainPaneHeader(
 
             <div class="mph-spacer"></div>
 
-            {
-                // Holder pill — flush-right, just before the action toolbar.
-                // Respects the per-grove crypto_visibility setting. The
-                // pill self-hides when the AppState context isn't mounted
-                // (e.g. isolated component tests) so the header stays
-                // portable.
-                use crate::components::{
-                    holder_count_for_active_channel, holder_pill_visible, HolderList, HolderPill,
-                };
-                use crate::state::AppState;
-                use_context::<AppState>().map(|app_state| {
-                    let count = holder_count_for_active_channel(&app_state);
-                    let member_count = Signal::derive(move || app_state.network.peers.get().len());
-                    let visibility = app_state.trust.crypto_visibility;
-                    let open = RwSignal::new(false);
-                    let holders = crate::components::holders_for_active_channel(&app_state);
-                    let local_pid = app_state.network.peer_id;
-                    view! {
-                        {move || {
-                            if holder_pill_visible(visibility.get(), count.get(), member_count.get()) {
-                                Some(view! {
-                                    <div class="mph-holder">
-                                        <HolderPill count=count open=open/>
-                                        {move || if open.get() {
-                                            Some(view! {
-                                                <div class="mph-holder-popover">
-                                                    <HolderList holders=holders local_pid=local_pid/>
-                                                </div>
-                                            })
-                                        } else { None }}
-                                    </div>
-                                })
-                            } else {
-                                None
-                            }
-                        }}
-                    }
-                })
-            }
-
             <div class="mph-action-bar" role="toolbar" aria-label="channel actions">
                 <button
-                    class=move || if is_members.get() { "action-btn active" } else { "action-btn" }
+                    class=move || if is_members.get() { "action-btn action-btn--with-count active" } else { "action-btn action-btn--with-count" }
                     aria-label="members"
                     aria-pressed=move || if is_members.get() { "true" } else { "false" }
                     title="members"
@@ -155,6 +108,19 @@ pub fn MainPaneHeader(
                     }
                 >
                     {icons::icon_users()}
+                    {
+                        use crate::state::AppState;
+                        use_context::<AppState>().map(|app_state| {
+                            let member_count = Signal::derive(
+                                move || app_state.network.peers.get().len(),
+                            );
+                            view! {
+                                <span class="action-btn__count">
+                                    {move || member_count.get().to_string()}
+                                </span>
+                            }
+                        })
+                    }
                 </button>
                 <button
                     class=move || if is_pinned.get() { "action-btn active" } else { "action-btn" }
@@ -167,41 +133,6 @@ pub fn MainPaneHeader(
                     }
                 >
                     {icons::icon_pin()}
-                </button>
-                <button
-                    class=move || if is_thread.get() { "action-btn active" } else { "action-btn" }
-                    aria-label="thread"
-                    aria-pressed=move || if is_thread.get() { "true" } else { "false" }
-                    title="thread"
-                    on:click=move |_| {
-                        let next = if is_thread.get() { RightRailWhich::None } else { RightRailWhich::Thread };
-                        on_set_which.run(next);
-                    }
-                >
-                    {icons::icon_thread()}
-                </button>
-                <button
-                    class="action-btn"
-                    aria-label=move || {
-                        let active = call_active.map(|s| s.get()).unwrap_or(false);
-                        if active { "leave call" } else { "join call" }
-                    }
-                    title=move || {
-                        let active = call_active.map(|s| s.get()).unwrap_or(false);
-                        if active { "leave call" } else { "join call" }
-                    }
-                    on:click=move |_| {
-                        if let Some(cb) = on_call_click { cb.run(()); }
-                    }
-                >
-                    {move || {
-                        let active = call_active.map(|s| s.get()).unwrap_or(false);
-                        if active {
-                            icons::icon_phone_off().into_any()
-                        } else {
-                            icons::icon_phone().into_any()
-                        }
-                    }}
                 </button>
                 <button
                     class="action-btn"

@@ -4362,10 +4362,10 @@ async fn desktop_shell_channel_sidebar_is_navigation_landmark() {
     let container = mount_test(|| {
         view! {
             <aside class="channel-sidebar" role="navigation" aria-label="channels">
-                <div class="grove-header">
+                <button class="grove-header" aria-label="grove menu">
+                    <span class="grove-header-glyph" aria-hidden="true">"B"</span>
                     <span class="grove-header-name">"Backyard"</span>
-                    <button class="grove-menu-chevron server-gear-btn" aria-label="grove menu"></button>
-                </div>
+                </button>
                 <div class="channel-list">
                     <div class="channel-group" data-group="commons">
                         <button class="channel-group-label">"commons"</button>
@@ -4386,16 +4386,41 @@ async fn desktop_shell_channel_sidebar_is_navigation_landmark() {
         Some("channels")
     );
 
-    // `.server-gear-btn` compat class still sits on the grove-menu chevron.
-    let chevron = query(&container, ".grove-menu-chevron.server-gear-btn");
+    // Grove header is itself the menu trigger (no separate chevron).
+    let header = query(&container, "button.grove-header").expect("grove-header button");
+    assert_eq!(
+        header.get_attribute("aria-label").as_deref(),
+        Some("grove menu"),
+        "grove header carries menu aria-label"
+    );
     assert!(
-        chevron.is_some(),
-        "grove menu chevron keeps server-gear-btn compat class"
+        query(&container, "button.grove-header .grove-header-glyph").is_some(),
+        "grove header keeps glyph tile"
+    );
+    assert!(
+        query(&container, "button.grove-header .grove-header-name").is_some(),
+        "grove header keeps name"
+    );
+    assert!(
+        query(&container, ".grove-chip").is_none(),
+        "grove chip removed"
+    );
+    assert!(
+        query(&container, ".grove-header-status").is_none(),
+        "grove status row removed"
+    );
+    assert!(
+        query(&container, ".grove-tagline").is_none(),
+        "grove tagline removed"
+    );
+    assert!(
+        query(&container, ".grove-menu-chevron").is_none(),
+        "grove chevron removed"
     );
 }
 
 #[wasm_bindgen_test]
-async fn desktop_shell_main_pane_header_six_buttons_in_order() {
+async fn desktop_shell_main_pane_header_four_buttons_in_order() {
     let container = mount_test(|| {
         view! {
             <header class="main-pane-header" role="banner" aria-label="channel header">
@@ -4405,8 +4430,6 @@ async fn desktop_shell_main_pane_header_six_buttons_in_order() {
                 <div class="mph-action-bar">
                     <button class="action-btn" aria-label="members"></button>
                     <button class="action-btn" aria-label="pinned"></button>
-                    <button class="action-btn" aria-label="thread"></button>
-                    <button class="action-btn" aria-label="join call"></button>
                     <button class="action-btn" aria-label="search (⌘K)"></button>
                     <button class="action-btn" aria-label="more"></button>
                 </div>
@@ -4423,7 +4446,7 @@ async fn desktop_shell_main_pane_header_six_buttons_in_order() {
     );
 
     let buttons = query_all(&container, ".mph-action-bar .action-btn");
-    assert_eq!(buttons.len(), 6, "action bar has six buttons");
+    assert_eq!(buttons.len(), 4, "action bar has four buttons");
 
     let labels: Vec<String> = buttons
         .iter()
@@ -4434,8 +4457,6 @@ async fn desktop_shell_main_pane_header_six_buttons_in_order() {
         vec![
             "members",
             "pinned",
-            "thread",
-            "join call",
             "search (⌘K)",
             "more",
         ],
@@ -4492,6 +4513,80 @@ async fn desktop_shell_right_rail_one_of_three() {
     assert_eq!(
         panes[0].get_attribute("data-pane").as_deref(),
         Some("thread")
+    );
+}
+
+#[wasm_bindgen_test]
+async fn channel_sidebar_add_button_says_new_tree_with_glyph() {
+    let container = mount_test(|| {
+        view! {
+            <aside class="channel-sidebar">
+                <button class="channel-add-btn" title="plant a new tree">
+                    <span class="icon icon-tree"></span>
+                    <span class="channel-add-btn__label">"new tree"</span>
+                </button>
+            </aside>
+        }
+    });
+    tick().await;
+
+    let btn = query(&container, ".channel-add-btn").expect("channel-add-btn present");
+    assert_eq!(
+        btn.get_attribute("title").as_deref(),
+        Some("plant a new tree")
+    );
+    assert!(
+        query(&container, ".channel-add-btn .icon-tree").is_some(),
+        "add button carries tree glyph"
+    );
+    let label =
+        query(&container, ".channel-add-btn .channel-add-btn__label").expect("label span");
+    assert_eq!(label.text_content().unwrap_or_default(), "new tree");
+}
+
+#[wasm_bindgen_test]
+async fn member_list_sections_collapsed_except_members() {
+    let container = mount_test(|| {
+        view! {
+            <aside class="member-list">
+                <details class="rail-section rail-section--net">
+                    <summary class="rail-section__header">
+                        <span class="rail-section__title">"Network"</span>
+                    </summary>
+                    <div class="rail-section__body"></div>
+                </details>
+                <details class="rail-section rail-section--infra">
+                    <summary class="rail-section__header">
+                        <span class="rail-section__title">"Infrastructure"</span>
+                    </summary>
+                    <div class="rail-section__body"></div>
+                </details>
+                <details class="rail-section rail-section--members" open>
+                    <summary class="rail-section__header">
+                        <span class="rail-section__title">"Members"</span>
+                    </summary>
+                    <div class="rail-section__body"></div>
+                </details>
+            </aside>
+        }
+    });
+    tick().await;
+
+    let net = query(&container, ".rail-section--net").expect("net section");
+    let infra = query(&container, ".rail-section--infra").expect("infra section");
+    let members = query(&container, ".rail-section--members").expect("members section");
+
+    assert!(
+        !net.has_attribute("open"),
+        "Network section is collapsed by default"
+    );
+    assert!(
+        !infra.has_attribute("open"),
+        "Infrastructure section is collapsed by default"
+    );
+    assert!(
+        members.has_attribute("open"),
+        "Members section is expanded by default"
     );
 }
 
@@ -5164,7 +5259,7 @@ mod trust_verification {
         );
         assert_eq!(sas_copy::DOWNGRADE_CTA, "compare now");
         assert_eq!(sas_copy::DOWNGRADE_DISMISS, "dismiss for now");
-        assert_eq!(sas_copy::HOLDER_PILL, "{n} holders");
+        assert_eq!(sas_copy::HOLDER_PILL, "{n} members");
         assert_eq!(sas_copy::HOLDER_TITLE, "who can read this channel");
         assert_eq!(sas_copy::HOLDER_SELF_FOOTER, "you · holder since {t}");
     }
@@ -5933,10 +6028,22 @@ mod basic_flow {
         create_server_flow(&container, "Channel Test", "Alice").await;
         assert!(wait_for(&container, ".shell-desktop .channel-add-btn", 5_000).await);
         click_selector(&container, ".shell-desktop .channel-add-btn");
-        let input_sel = ".shell-desktop .channel-create-input input";
+        // Pick "text" from the kind picker.
+        assert!(
+            wait_for(&container, ".shell-desktop .tree-kind-picker", 5_000).await,
+            "tree-kind-picker did not appear"
+        );
+        let items = query_all(&container, ".shell-desktop .tree-kind-picker__item");
+        let text_btn = items
+            .iter()
+            .find(|b| b.text_content().unwrap_or_default().contains("text"))
+            .expect("text kind option should exist");
+        simulate_click(text_btn);
+        tick().await;
+        let input_sel = ".shell-desktop .tree-slot__input";
         assert!(
             wait_for(&container, input_sel, 5_000).await,
-            "channel-create-input did not appear"
+            "tree-slot did not appear"
         );
         fill_selector(&container, input_sel, "random");
         press_key(&container, input_sel, "Enter");
@@ -5961,25 +6068,16 @@ mod basic_flow {
         create_server_flow(&container, "Voice Test", "Alice").await;
         assert!(wait_for(&container, ".shell-desktop .channel-add-btn", 5_000).await);
         click_selector(&container, ".shell-desktop .channel-add-btn");
-        // Wait for type-toggle buttons, then click "Voice".
-        assert!(wait_for(&container, ".shell-desktop .type-btn", 5_000).await);
-        let buttons = query_all(&container, ".shell-desktop .type-btn");
-        let voice_btn = buttons
+        // Pick "voice" from the kind picker.
+        assert!(wait_for(&container, ".shell-desktop .tree-kind-picker", 5_000).await);
+        let items = query_all(&container, ".shell-desktop .tree-kind-picker__item");
+        let voice_btn = items
             .iter()
-            .find(|b| b.text_content().unwrap_or_default().contains("Voice"))
-            .expect("voice type toggle should exist");
-        // The Voice toggle listens on `mousedown`, not `click` (so
-        // pointer-drag UIs don't steal focus). Dispatch both to keep
-        // this helper robust to future changes.
-        let mousedown = web_sys::MouseEvent::new("mousedown").unwrap();
-        voice_btn
-            .dyn_ref::<web_sys::EventTarget>()
-            .unwrap()
-            .dispatch_event(&mousedown)
-            .unwrap();
+            .find(|b| b.text_content().unwrap_or_default().contains("voice"))
+            .expect("voice kind option should exist");
         simulate_click(voice_btn);
         tick().await;
-        let input_sel = ".shell-desktop .channel-create-input input";
+        let input_sel = ".shell-desktop .tree-slot__input";
         assert!(wait_for(&container, input_sel, 5_000).await);
         fill_selector(&container, input_sel, "voice-chat");
         press_key(&container, input_sel, "Enter");
@@ -6367,22 +6465,15 @@ mod mobile_ux {
         create_server_mobile(&container, "Voice Mobile", "Alice").await;
         assert!(wait_for(&container, ".shell-mobile .channel-add-btn", 5_000).await);
         click_selector(&container, ".shell-mobile .channel-add-btn");
-        assert!(wait_for(&container, ".shell-mobile .type-btn", 5_000).await);
-        let buttons = query_all(&container, ".shell-mobile .type-btn");
-        let voice_btn = buttons
+        assert!(wait_for(&container, ".shell-mobile .tree-kind-picker", 5_000).await);
+        let items = query_all(&container, ".shell-mobile .tree-kind-picker__item");
+        let voice_btn = items
             .iter()
-            .find(|b| b.text_content().unwrap_or_default().contains("Voice"))
-            .expect("Voice toggle should exist");
-        // Voice toggle listens on mousedown as well as click (see desktop).
-        let mousedown = web_sys::MouseEvent::new("mousedown").unwrap();
-        voice_btn
-            .dyn_ref::<web_sys::EventTarget>()
-            .unwrap()
-            .dispatch_event(&mousedown)
-            .unwrap();
+            .find(|b| b.text_content().unwrap_or_default().contains("voice"))
+            .expect("voice kind option should exist");
         simulate_click(voice_btn);
         tick().await;
-        let input_sel = ".shell-mobile .channel-create-input input";
+        let input_sel = ".shell-mobile .tree-slot__input";
         assert!(wait_for(&container, input_sel, 5_000).await);
         fill_selector(&container, input_sel, "vc");
         press_key(&container, input_sel, "Enter");

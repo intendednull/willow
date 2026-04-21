@@ -47,11 +47,20 @@ pub fn RightRail(
         >
             <div class="right-rail-inner">
                 {move || match which.get() {
-                    RightRailWhich::Members => view! {
-                        <div class="right-rail-pane" data-pane="members">
-                            <MemberList peers=peers peer_id=peer_id />
-                        </div>
-                    }.into_any(),
+                    RightRailWhich::Members => {
+                        let on_close_cb = on_close;
+                        view! {
+                            <div class="right-rail-pane" data-pane="members">
+                                <MemberList
+                                    peers=peers
+                                    peer_id=peer_id
+                                    on_close=Callback::new(move |_| {
+                                        if let Some(cb) = on_close_cb { cb.run(()); }
+                                    })
+                                />
+                            </div>
+                        }.into_any()
+                    },
                     RightRailWhich::Pinned => {
                         let on_jump = on_pinned_jump;
                         let on_close_cb = on_close;

@@ -46,7 +46,7 @@ pub mod sas_copy {
     pub const DOWNGRADE_CTA: &str = "compare now";
     pub const DOWNGRADE_DISMISS: &str = "dismiss for now";
 
-    pub const HOLDER_PILL: &str = "{n} holders";
+    pub const HOLDER_PILL: &str = "{n} members";
     pub const HOLDER_TITLE: &str = "who can read this channel";
     pub const HOLDER_SELF_FOOTER: &str = "you · holder since {t}";
 }
