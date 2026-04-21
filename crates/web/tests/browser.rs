@@ -7000,3 +7000,94 @@ mod worker_nodes_css {
         );
     }
 }
+
+// ── Trust badge DOM (migrated from e2e/permissions.spec.ts) ─────────
+//
+// `e2e/permissions.spec.ts` previously asserted that the trusted /
+// unverified badge appears or hides on a peer's member-item row after
+// the owner clicks Trust / Untrust. The DOM half of that assertion —
+// "given trust state X, the badge renders class Y" — is a component
+// contract that only needs a real Leptos DOM, not real P2P. The
+// Rust-side transition `Unknown → Verified → Unverified` moved to
+// `crates/client/src/tests/trust_flow.rs`.
+mod trust_badge_dom {
+    use super::*;
+    use willow_client::trust::{PeerTrust, UnverifiedReason};
+    use willow_web::components::{TrustBadge, TrustBadgeSize};
+    use willow_web::state::{create_signals, InitialSignals};
+
+    /// Mount a `<TrustBadge>` for `peer_id` with `AppState` + write
+    /// context seeded so `app_state.trust.trust_map` resolves `peer_id`
+    /// to `initial`. Returns the container for query assertions.
+    fn mount_badge_with_trust(peer_id: &str, initial: PeerTrust) -> web_sys::HtmlElement {
+        let peer_id_owned = peer_id.to_string();
+        mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+
+            // Seed the reactive trust map before the badge mounts so the
+            // `Memo` it subscribes to resolves to `initial` on first read.
+            let mut seeded = std::collections::HashMap::new();
+            seeded.insert(peer_id_owned.clone(), initial.clone());
+            write.trust.set_trust_map.set(seeded);
+
+            provide_context(app_state);
+            provide_context(write);
+
+            view! {
+                <TrustBadge
+                    peer_id=peer_id_owned.clone()
+                    size=TrustBadgeSize::Disk14
+                />
+            }
+        })
+    }
+
+    #[wasm_bindgen_test]
+    async fn verified_peer_renders_trust_badge_verified_class() {
+        let container = mount_badge_with_trust(
+            "peer-verified-fixture",
+            PeerTrust::Verified {
+                at_ms: 0,
+                pinned_key: [1u8; 32],
+            },
+        );
+        tick().await;
+
+        let badge = query(&container, ".trust-badge.trust-badge--verified")
+            .expect("verified peer must render .trust-badge--verified");
+        assert_eq!(
+            badge.get_attribute("data-trust-state").as_deref(),
+            Some("verified"),
+            "data-trust-state must be 'verified' for a Verified peer"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn unverified_peer_renders_trust_badge_unverified_class() {
+        let container = mount_badge_with_trust(
+            "peer-unverified-fixture",
+            PeerTrust::Unverified {
+                reason: UnverifiedReason::SasMismatch,
+            },
+        );
+        tick().await;
+
+        let badge = query(&container, ".trust-badge.trust-badge--unverified")
+            .expect("unverified peer must render .trust-badge--unverified");
+        assert_eq!(
+            badge.get_attribute("data-trust-state").as_deref(),
+            Some("unverified"),
+            "data-trust-state must be 'unverified' for an Unverified peer"
+        );
+        // Verified class must NOT be present — guards against the badge
+        // picking the wrong arm of the trust match.
+        assert!(
+            query(&container, ".trust-badge--verified").is_none(),
+            "unverified peer must not render the .trust-badge--verified class"
+        );
+    }
+}

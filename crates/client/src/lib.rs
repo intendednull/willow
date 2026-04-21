@@ -44,6 +44,10 @@ mod joining;
 mod servers;
 mod voice;
 
+#[cfg(test)]
+#[path = "tests/trust_flow.rs"]
+mod tests_trust_flow;
+
 // Re-export key types at crate root for convenience.
 pub use event_receiver::EventReceiver;
 pub use events::ClientEvent;
