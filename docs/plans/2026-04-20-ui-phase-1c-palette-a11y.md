@@ -70,7 +70,7 @@ No other files change in Phase 1c.
 - Modify: `crates/web/foundation.css`
 - Modify: `crates/web/style.css` (delete legacy block)
 
-- [ ] **Step 1.1 — Append the palette CSS block to `foundation.css`.**
+- [x] **Step 1.1 — Append the palette CSS block to `foundation.css`.**
 
 ```css
 /* ── Command palette ─────────────────────────────────────────────── */
@@ -150,11 +150,11 @@ No other files change in Phase 1c.
 }
 ```
 
-- [ ] **Step 1.2 — Delete the legacy palette CSS from `style.css`.**
+- [x] **Step 1.2 — Delete the legacy palette CSS from `style.css`.**
 
 Grep for `.palette-overlay` in `crates/web/style.css`; remove the block it opens plus `.palette`, `.palette-input`, `.palette-results`, `.palette-item`, `.palette-empty`, `.palette-hint` that follow it.
 
-- [ ] **Step 1.3 — Rewrite `command_palette.rs` container skeleton.**
+- [x] **Step 1.3 — Rewrite `command_palette.rs` container skeleton.**
 
 Keep the existing signals (`show_palette`, `query`, `selected_index`). Replace the root `view!` with:
 
@@ -178,9 +178,9 @@ view! {
 }
 ```
 
-- [ ] **Step 1.4 — `just check-wasm`.** Expected: compiles. Visual regression mid-refactor is fine; later tasks restore UX.
+- [x] **Step 1.4 — `just check-wasm`.** Expected: compiles. Visual regression mid-refactor is fine; later tasks restore UX.
 
-- [ ] **Step 1.5 — Commit.**
+- [x] **Step 1.5 — Commit.**
 
 ```bash
 git add crates/web/src/components/command_palette.rs crates/web/foundation.css crates/web/style.css
@@ -194,7 +194,7 @@ git commit -m "ui(phase-1): refactor palette container to spec anatomy + tokens"
 **Files:**
 - Modify: `crates/web/src/components/command_palette.rs`
 
-- [ ] **Step 2.1 — Add `PaletteScope` enum + `parse_input`.**
+- [x] **Step 2.1 — Add `PaletteScope` enum + `parse_input`.**
 
 ```rust
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -239,7 +239,7 @@ mod parse_input_tests {
 }
 ```
 
-- [ ] **Step 2.2 — Replace the `<input>`.**
+- [x] **Step 2.2 — Replace the `<input>`.**
 
 Inside `.palette-root`:
 
@@ -264,7 +264,7 @@ Inside `.palette-root`:
 
 `active_row_id` is a `Memo<String>` resolved in Task 3.
 
-- [ ] **Step 2.3 — `Escape` clears, else closes.**
+- [x] **Step 2.3 — `Escape` clears, else closes.**
 
 ```rust
 "Escape" => {
@@ -278,9 +278,9 @@ Inside `.palette-root`:
 }
 ```
 
-- [ ] **Step 2.4 — `just test` + `just check-wasm`.** Scope parser unit tests green.
+- [x] **Step 2.4 — `just test` + `just check-wasm`.** Scope parser unit tests green.
 
-- [ ] **Step 2.5 — Commit.**
+- [x] **Step 2.5 — Commit.**
 
 ```bash
 git add crates/web/src/components/command_palette.rs
@@ -294,7 +294,7 @@ git commit -m "ui(phase-1): palette input placeholder + scope prefix parser"
 **Files:**
 - Modify: `crates/web/src/components/command_palette.rs`
 
-- [ ] **Step 3.1 — Replace `PaletteCategory` with spec groups.**
+- [x] **Step 3.1 — Replace `PaletteCategory` with spec groups.**
 
 ```rust
 #[derive(Clone, PartialEq, Debug)]
@@ -320,7 +320,7 @@ enum PaletteActivate {
 }
 ```
 
-- [ ] **Step 3.2 — Memo-assemble rows from state + scope.**
+- [x] **Step 3.2 — Memo-assemble rows from state + scope.**
 
 ```rust
 let rows = Memo::new(move |_| {
@@ -432,7 +432,7 @@ fn scope_label(scope: PaletteScope) -> &'static str {
 }
 ```
 
-- [ ] **Step 3.3 — Emit grouped DOM.**
+- [x] **Step 3.3 — Emit grouped DOM.**
 
 Between input and footer:
 
@@ -471,7 +471,7 @@ Between input and footer:
 
 Helpers `group_rows`, `group_label`, `icon_for_group`, `row_is_selected`, `flat_index_of`, `dispatch_activate` live at the bottom of the file.
 
-- [ ] **Step 3.4 — `active_row_id` memo.**
+- [x] **Step 3.4 — `active_row_id` memo.**
 
 ```rust
 let active_row_id = Memo::new(move |_| {
@@ -480,11 +480,11 @@ let active_row_id = Memo::new(move |_| {
 });
 ```
 
-- [ ] **Step 3.5 — Wire activate dispatch.**
+- [x] **Step 3.5 — Wire activate dispatch.**
 
 Replace the legacy match with `dispatch_activate` that fans to the existing callbacks (`on_switch_channel`, `on_switch_server`, `on_open_members` for profile), plus `palette_actions::run(id, &ctx)` for actions and a new `on_search` prop for Search. After dispatch: `palette_recents::push(entry_from(&row))` + `on_close.run(())`.
 
-- [ ] **Step 3.6 — Commit.**
+- [x] **Step 3.6 — Commit.**
 
 ```bash
 git add crates/web/src/components/command_palette.rs
@@ -500,7 +500,7 @@ git commit -m "ui(phase-1): palette result groups + listbox combobox pattern"
 - Modify: `crates/web/src/components/mod.rs`
 - Modify: `crates/web/src/components/command_palette.rs`
 
-- [ ] **Step 4.1 — Create the module.**
+- [x] **Step 4.1 — Create the module.**
 
 ```rust
 //! Palette action catalog — spec layout-primitives.md §Actions catalog (v1).
@@ -567,13 +567,13 @@ fn is_call_active(state: &AppState) -> bool {
 }
 ```
 
-- [ ] **Step 4.2 — Register in `components/mod.rs`.** Add `mod palette_actions;` + re-export.
+- [x] **Step 4.2 — Register in `components/mod.rs`.** Add `mod palette_actions;` + re-export.
 
-- [ ] **Step 4.3 — Consume from `command_palette.rs`.** Pass `ctx: CommandContext` as a prop; filter catalog rows via `(a.available)(&app_state)`; dispatch via `palette_actions::run`.
+- [x] **Step 4.3 — Consume from `command_palette.rs`.** Pass `ctx: CommandContext` as a prop; filter catalog rows via `(a.available)(&app_state)`; dispatch via `palette_actions::run`.
 
-- [ ] **Step 4.4 — `just check-wasm`.**
+- [x] **Step 4.4 — `just check-wasm`.**
 
-- [ ] **Step 4.5 — Commit.**
+- [x] **Step 4.5 — Commit.**
 
 ```bash
 git add crates/web/src/components/palette_actions.rs crates/web/src/components/mod.rs crates/web/src/components/command_palette.rs
@@ -589,7 +589,7 @@ git commit -m "ui(phase-1): palette actions catalog v1 with permission gating"
 - Modify: `crates/web/src/main.rs`
 - Modify: `crates/web/src/components/command_palette.rs`
 
-- [ ] **Step 5.1 — Create the module.**
+- [x] **Step 5.1 — Create the module.**
 
 ```rust
 //! Palette recents — local storage, max 8 entries, toggleable.
@@ -650,13 +650,13 @@ pub fn clear() {
 }
 ```
 
-- [ ] **Step 5.2 — Register in `main.rs`.** Add `mod palette_recents;`.
+- [x] **Step 5.2 — Register in `main.rs`.** Add `mod palette_recents;`.
 
-- [ ] **Step 5.3 — Consume in `command_palette.rs`.**
+- [x] **Step 5.3 — Consume in `command_palette.rs`.**
 - When opened + `query` empty, render Recents group instead of result groups.
 - On activate, build a `Recent { kind, id, label }` and call `palette_recents::push`.
 
-- [ ] **Step 5.4 — Commit.**
+- [x] **Step 5.4 — Commit.**
 
 ```bash
 git add crates/web/src/palette_recents.rs crates/web/src/main.rs crates/web/src/components/command_palette.rs
@@ -670,7 +670,7 @@ git commit -m "ui(phase-1): palette recents persistence (local storage, max 8)"
 **Files:**
 - Modify: `crates/web/src/components/command_palette.rs`
 
-- [ ] **Step 6.1 — State renderer.**
+- [x] **Step 6.1 — State renderer.**
 
 ```rust
 let body = move || {
@@ -710,7 +710,7 @@ let body = move || {
 
 `search_running`, `search_error` are `RwSignal<bool>`; v1 stays `false` until `local-search.md` ships.
 
-- [ ] **Step 6.2 — Footer hint strip.**
+- [x] **Step 6.2 — Footer hint strip.**
 
 ```rust
 <div class="palette-footer" aria-hidden="true">
@@ -720,9 +720,9 @@ let body = move || {
 </div>
 ```
 
-- [ ] **Step 6.3 — `just check-wasm` + `just test-browser`.**
+- [x] **Step 6.3 — `just check-wasm` + `just test-browser`.**
 
-- [ ] **Step 6.4 — Commit.**
+- [x] **Step 6.4 — Commit.**
 
 ```bash
 git add crates/web/src/components/command_palette.rs
@@ -736,9 +736,9 @@ git commit -m "ui(phase-1): palette empty / loading / error states with spec cop
 **Files:**
 - Modify: `crates/web/src/components/command_palette.rs`
 
-- [ ] **Step 7.1 — Verify `willow-pop-in` + reduced-motion override landed in Task 1.** Grep `crates/web/foundation.css`.
+- [x] **Step 7.1 — Verify `willow-pop-in` + reduced-motion override landed in Task 1.** Grep `crates/web/foundation.css`.
 
-- [ ] **Step 7.2 — `will-change` scrub effect.**
+- [x] **Step 7.2 — `will-change` scrub effect.**
 
 ```rust
 Effect::new(move |_| {
@@ -759,7 +759,7 @@ Effect::new(move |_| {
 });
 ```
 
-- [ ] **Step 7.3 — Commit.**
+- [x] **Step 7.3 — Commit.**
 
 ```bash
 git add crates/web/src/components/command_palette.rs
@@ -775,7 +775,7 @@ git commit -m "ui(phase-1): palette motion polish (will-change scrub)"
 - Modify: `crates/web/src/main.rs`
 - Modify: `crates/web/src/app.rs`
 
-- [ ] **Step 8.1 — Create the module.**
+- [x] **Step 8.1 — Create the module.**
 
 ```rust
 //! Global keybindings — spec layout-primitives.md §Accessibility.
@@ -851,13 +851,13 @@ fn switch_grove(state: AppState, write: AppWriteSignals, delta: i32) {
 }
 ```
 
-- [ ] **Step 8.2 — Register in `main.rs`.** Add `mod keybindings;`.
+- [x] **Step 8.2 — Register in `main.rs`.** Add `mod keybindings;`.
 
-- [ ] **Step 8.3 — Replace inline keydown in `app.rs`.** Delete the existing ⌘K / Ctrl-K block, replace with `crate::keybindings::install(app_state.clone(), write.clone());` after `wire_derived_signals`.
+- [x] **Step 8.3 — Replace inline keydown in `app.rs`.** Delete the existing ⌘K / Ctrl-K block, replace with `crate::keybindings::install(app_state.clone(), write.clone());` after `wire_derived_signals`.
 
-- [ ] **Step 8.4 — `just test-browser`.**
+- [x] **Step 8.4 — `just test-browser`.**
 
-- [ ] **Step 8.5 — Commit.**
+- [x] **Step 8.5 — Commit.**
 
 ```bash
 git add crates/web/src/keybindings.rs crates/web/src/main.rs crates/web/src/app.rs
@@ -876,7 +876,7 @@ git commit -m "ui(phase-1): extract keybindings module + Esc close-stack + Alt±
 - Modify: `crates/web/src/components/member_list.rs`
 - Modify: `crates/web/src/components/pinned.rs`
 
-- [ ] **Step 9.1 — Grove rail.** In `server_list.rs`:
+- [x] **Step 9.1 — Grove rail.** In `server_list.rs`:
 
 ```rust
 <nav class="server-rail" role="navigation" aria-label="groves">
@@ -884,13 +884,13 @@ git commit -m "ui(phase-1): extract keybindings module + Esc close-stack + Alt±
 
 Active tile: `aria-current="page"`.
 
-- [ ] **Step 9.2 — Channel sidebar.** In `sidebar.rs`:
+- [x] **Step 9.2 — Channel sidebar.** In `sidebar.rs`:
 
 ```rust
 <nav class="sidebar" role="navigation" aria-label="channels" aria-hidden=move || if open.get() { "false" } else { "true" }>
 ```
 
-- [ ] **Step 9.3 — Main pane header + body.** In `chat.rs`:
+- [x] **Step 9.3 — Main pane header + body.** In `chat.rs`:
 
 ```rust
 <header class="channel-header" role="banner" aria-label="channel header">
@@ -904,18 +904,18 @@ Container (in `app.rs` chat wrapper):
 
 Search button: `aria-keyshortcuts="Control+K Meta+K"` + `aria-label="search (⌘K)"`. Members / pinned / thread toggles: `aria-pressed=move || flag.get().to_string()`.
 
-- [ ] **Step 9.4 — Right rail.**
+- [x] **Step 9.4 — Right rail.**
 - `member_list.rs`: `<aside class="member-list" role="complementary" aria-label="members" aria-modal="true">`.
 - `pinned.rs`: `<aside class="pinned-panel" role="complementary" aria-label="pinned">`.
 
-- [ ] **Step 9.5 — Mobile tab bar + grove drawer + bottom sheet.** Phase 1b owns containers; add landmarks *if present*, else leave `// TODO(phase-1b)` comments referencing selectors:
+- [x] **Step 9.5 — Mobile tab bar + grove drawer + bottom sheet.** Phase 1b owns containers; add landmarks *if present*, else leave `// TODO(phase-1b)` comments referencing selectors:
 - Tab bar: `<nav class="tab-bar" role="navigation" aria-label="primary">`.
 - Grove drawer: `<dialog class="grove-drawer" role="dialog" aria-modal="true" aria-label="groves">`.
 - Bottom sheet: `<dialog class="bottom-sheet" role="dialog" aria-modal="true" aria-label="{sheet-label}">`.
 
-- [ ] **Step 9.6 — `just check-wasm`.**
+- [x] **Step 9.6 — `just check-wasm`.**
 
-- [ ] **Step 9.7 — Commit.**
+- [x] **Step 9.7 — Commit.**
 
 ```bash
 git add crates/web/src/app.rs crates/web/src/components/server_list.rs crates/web/src/components/sidebar.rs crates/web/src/components/chat.rs crates/web/src/components/member_list.rs crates/web/src/components/pinned.rs
@@ -932,19 +932,19 @@ git commit -m "ui(phase-1): ARIA landmarks on every shell region"
 - Modify: `crates/web/src/components/chat.rs`
 - Modify: `crates/web/foundation.css`
 
-- [ ] **Step 10.1 — Active grove indicator bar.** Ensure `.server-rail-tile.active::before { content:''; position:absolute; left:-12px; top:50%; transform:translateY(-50%); width:3px; height:22px; background:var(--ink-0); border-radius:2px; }` in `foundation.css`.
+- [x] **Step 10.1 — Active grove indicator bar.** Ensure `.server-rail-tile.active::before { content:''; position:absolute; left:-12px; top:50%; transform:translateY(-50%); width:3px; height:22px; background:var(--ink-0); border-radius:2px; }` in `foundation.css`.
 
-- [ ] **Step 10.2 — Unread grove pebble.** `.server-rail-tile.has-unread::before { height:8px; }`.
+- [x] **Step 10.2 — Unread grove pebble.** `.server-rail-tile.has-unread::before { height:8px; }`.
 
-- [ ] **Step 10.3 — Active channel row.** `.channel-row.current { background:var(--bg-3); color:var(--ink-0); }` pairs accent with fill.
+- [x] **Step 10.3 — Active channel row.** `.channel-row.current { background:var(--bg-3); color:var(--ink-0); }` pairs accent with fill.
 
-- [ ] **Step 10.4 — Unread channel row.** `.channel-row.has-unread::before { content:''; position:absolute; left:0; top:50%; transform:translateY(-50%); width:3px; height:16px; background:var(--ink-0); border-radius:2px; } .channel-row.has-unread .unread-pill { display:inline-flex; }`.
+- [x] **Step 10.4 — Unread channel row.** `.channel-row.has-unread::before { content:''; position:absolute; left:0; top:50%; transform:translateY(-50%); width:3px; height:16px; background:var(--ink-0); border-radius:2px; } .channel-row.has-unread .unread-pill { display:inline-flex; }`.
 
-- [ ] **Step 10.5 — Offline net status.** `.net-status.offline .pulse { color:var(--ink-4); }` pairs with word `queued` rendered by the component.
+- [x] **Step 10.5 — Offline net status.** `.net-status.offline .pulse { color:var(--ink-4); }` pairs with word `queued` rendered by the component.
 
-- [ ] **Step 10.6 — Active header action button.** `aria-pressed="true"` (Task 9.3) + `--bg-3` fill.
+- [x] **Step 10.6 — Active header action button.** `aria-pressed="true"` (Task 9.3) + `--bg-3` fill.
 
-- [ ] **Step 10.7 — Commit.**
+- [x] **Step 10.7 — Commit.**
 
 ```bash
 git add crates/web/src/components/server_list.rs crates/web/src/components/sidebar.rs crates/web/src/components/chat.rs crates/web/foundation.css
@@ -958,7 +958,7 @@ git commit -m "ui(phase-1): pair every colour-only state with a shape or icon cu
 **Files:**
 - Modify: `crates/web/tests/browser.rs`
 
-- [ ] **Step 11.1 — Append test module.**
+- [x] **Step 11.1 — Append test module.**
 
 ```rust
 // ── Phase 1c — palette + a11y (spec: layout-primitives.md) ──────────────────
@@ -1054,13 +1054,13 @@ mod phase_1c_palette_and_a11y {
 }
 ```
 
-- [ ] **Step 11.2 — `just check`.**
+- [x] **Step 11.2 — `just check`.**
 
-- [ ] **Step 11.3 — `just test-browser`.**
+- [x] **Step 11.3 — `just test-browser`.**
 
-- [ ] **Step 11.4 — Manual smoke** from Acceptance gates.
+- [x] **Step 11.4 — Manual smoke** from Acceptance gates.
 
-- [ ] **Step 11.5 — PR.**
+- [x] **Step 11.5 — PR.**
 
 ```bash
 git push
@@ -1085,7 +1085,7 @@ EOF
 )"
 ```
 
-- [ ] **Step 11.6 — Record PR URL.**
+- [x] **Step 11.6 — Record PR URL.**
 
 ---
 
