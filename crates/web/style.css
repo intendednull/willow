@@ -676,7 +676,23 @@ select:focus-visible {
 .message .timestamp { font-size: 11px; color: var(--text-muted); }
 .message .edited { font-size: 10px; color: var(--text-placeholder); font-style: italic; }
 
-.message .body { margin-top: 2px; line-height: 1.5; word-break: break-word; }
+/* Phase 2a Task 16 — spec §Edge cases:
+   - 500-char single-word bodies must wrap without breaking layout →
+     `word-break: break-word` + `overflow-wrap: anywhere` + `min-width: 0`
+     (the last one lets flex children actually shrink below their
+     content size so the break rules apply).
+   - Right-to-left paragraphs must pick their own base direction →
+     `unicode-bidi: plaintext` + `direction: auto`.
+*/
+.message .body {
+    margin-top: 2px;
+    line-height: 1.5;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    min-width: 0;
+    unicode-bidi: plaintext;
+    direction: auto;
+}
 .message .body.deleted { color: var(--text-muted); font-style: italic; }
 /* Phase 2a Task 14 — spec §Copy / Deleted placeholder + empty-body
    fallback. Both variants render the same quiet italic stub in

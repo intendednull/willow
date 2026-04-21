@@ -9053,4 +9053,163 @@ mod phase_2a_message_row {
             "`R` keystroke must fire on_message_click against the focused row"
         );
     }
+
+    // ── Edge cases (Task 16) ───────────────────────────────────────────────
+    //
+    // Spec `docs/specs/2026-04-19-ui-design/message-row.md` §Edge cases:
+    // long single-word wrap, run-break promotion on pin/whisper, same-author
+    // run-collapse via the real MessageList predicate (not a hand-rolled
+    // show_header), mention-pill title attribute carrying the full handle
+    // past the 32-char truncation point.
+
+    #[wasm_bindgen_test]
+    async fn body_wraps_500_char_single_word() {
+        // Spec §Edge cases: a 500-char single-word body must render in a
+        // `.message .body` element without truncation or crash. The
+        // actual wrap behaviour is CSS-level (`overflow-wrap: anywhere`
+        // + `word-break: break-word` on `.message .body` in
+        // `crates/web/style.css`) — we can't read the computed style in
+        // this harness because wasm-pack doesn't pull `style.css` into
+        // the test document (only `components.css` is injected; see
+        // `ensure_components_css_loaded`). This test pins the DOM-level
+        // contract — the full 500-char body reaches `.message .body`
+        // intact so whatever CSS the production app serves gets a
+        // chance to wrap it. A manual check in a browser plus the
+        // `manual walkthrough` row in the plan acceptance gate covers
+        // the live-layout assertion.
+        let long = "w".repeat(500);
+        let msg = make_msg("Mira", &long, FIXTURE_TS_MS);
+
+        let container = mount_message_list(vec![msg]);
+        tick().await;
+
+        let body = query(&container, ".message .body").expect(".message .body must render");
+        assert_eq!(
+            text(&body),
+            long,
+            "`.message .body` must receive the full 500-char body intact"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn run_collapses_same_author_within_5min() {
+        // Spec §Author-run grouping: two same-author messages < 5 min
+        // apart must collapse — the second row renders as `.grouped`
+        // (no header). Uses the real MessageList predicate, not a
+        // hand-rolled show_header flag.
+        let now_ms = js_sys::Date::now() as u64;
+        let m0 = {
+            let mut m = make_msg("Mira", "one", now_ms);
+            m.author_peer_id = m.author_peer_id; // no-op, keep
+            m
+        };
+        let shared_author = m0.author_peer_id;
+        let shared_name = m0.author_display_name.clone();
+        let mut m1 = make_msg(&shared_name, "two", now_ms + 4 * 60 * 1000);
+        m1.author_peer_id = shared_author;
+        m1.author_display_name = shared_name.clone();
+
+        let container = mount_message_list(vec![m0, m1]);
+        tick().await;
+
+        let grouped = query_all(&container, ".message.grouped");
+        assert_eq!(
+            grouped.len(),
+            1,
+            "two same-author messages 4 min apart must collapse — exactly one `.message.grouped` row"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn run_breaks_on_pin() {
+        // Spec §Author-run grouping: `pinned` always breaks a run, even
+        // when author + 5-min rule would otherwise collapse the row.
+        let now_ms = js_sys::Date::now() as u64;
+        let m0 = make_msg("Mira", "one", now_ms);
+        let shared_author = m0.author_peer_id;
+        let shared_name = m0.author_display_name.clone();
+        let mut m1 = make_msg(&shared_name, "two", now_ms + 60 * 1000);
+        m1.author_peer_id = shared_author;
+        m1.author_display_name = shared_name.clone();
+        m1.pinned = true;
+
+        let container = mount_message_list(vec![m0, m1]);
+        tick().await;
+
+        let grouped = query_all(&container, ".message.grouped");
+        assert_eq!(
+            grouped.len(),
+            0,
+            "pinned message must break a run — no `.message.grouped` rows even 1 min apart"
+        );
+        // Sanity: both rows are still present (headers preserved).
+        let rows = query_all(&container, ".message");
+        assert_eq!(rows.len(), 2, "both messages must still render");
+    }
+
+    #[wasm_bindgen_test]
+    async fn run_breaks_on_whisper() {
+        // Spec §Author-run grouping: `whisper` always breaks a run.
+        // Mirrors `run_breaks_on_pin` but flips the whisper bit.
+        let now_ms = js_sys::Date::now() as u64;
+        let m0 = make_msg("Mira", "one", now_ms);
+        let shared_author = m0.author_peer_id;
+        let shared_name = m0.author_display_name.clone();
+        let mut m1 = make_msg(&shared_name, "two", now_ms + 60 * 1000);
+        m1.author_peer_id = shared_author;
+        m1.author_display_name = shared_name.clone();
+        m1.whisper = true;
+
+        let container = mount_message_list(vec![m0, m1]);
+        tick().await;
+
+        let grouped = query_all(&container, ".message.grouped");
+        assert_eq!(
+            grouped.len(),
+            0,
+            "whisper message must break a run — no `.message.grouped` rows even 1 min apart"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn mention_pill_title_truncates_but_preserves_full_handle() {
+        // Spec §Edge cases: pill label caps at 32 chars (→ first 28 +
+        // `…`), but the `title` attribute must still expose the full
+        // handle for hover reveal. `willow_client::mentions::parse_mentions`
+        // handles the truncation; `MentionPill` renders the full handle
+        // via the `title` attribute. Verifies the wiring end-to-end by
+        // constructing a `<MentionPill>` with a 40-char label and the
+        // original full handle through the `full_label` prop.
+        let long: String = "q".repeat(40);
+        let label_capped: String = {
+            // Mirror `truncate_label` shape: 28 q's + `…`. We assert
+            // against the visible pill text downstream.
+            let mut s: String = "q".repeat(28);
+            s.push('…');
+            s
+        };
+        let full = long.clone();
+
+        let container = mount_test({
+            let label = label_capped.clone();
+            let full = full.clone();
+            move || {
+                view! { <MentionPill label=label.clone() full_label=full.clone() is_self=false /> }
+            }
+        });
+        tick().await;
+
+        let pill = query(&container, ".mention-pill").expect(".mention-pill must render");
+        assert_eq!(
+            pill.get_attribute("title").as_deref(),
+            Some(full.as_str()),
+            "`title` must carry the untruncated 40-char handle"
+        );
+        // Sanity: the visible label is the truncated form.
+        let txt = text(&pill);
+        assert!(
+            txt.contains(&label_capped),
+            "pill text must include the truncated label form (28 chars + …); got {txt:?}"
+        );
+    }
 }

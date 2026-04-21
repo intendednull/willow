@@ -64,13 +64,23 @@ const MAX_LABEL_LEN: usize = 32;
 const TRUNCATE_KEEP: usize = 28;
 
 /// Cached mention regex: `@handle` where handle starts with a letter
-/// and may contain letters, digits, `.`, `_`, `-`. The `(?i)` inline
-/// flag is case-insensitive, so `@Mira` matches too; the regex itself
+/// and may contain letters, digits, `.`, `_`, `-`, and zero-width
+/// Unicode join / no-join / space characters. The `(?i)` inline flag
+/// is case-insensitive, so `@Mira` matches too; the regex itself
 /// keeps a lowercase-only character class to stay aligned with the
 /// spec while tolerating user casing.
+///
+/// Zero-widths (`U+200B`, `U+200C`, `U+200D`) in the middle of a
+/// handle are tolerated so a smuggled invisible character doesn't cut
+/// the capture short. [`strip_zero_width`] then removes them during
+/// peer-handle comparison in [`resolve_mention`] so the match still
+/// lands (spec §Edge cases).
 fn mention_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)@([a-z][a-z0-9._\-]*)").expect("mention regex is valid"))
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)@([a-z][a-z0-9._\-\x{200B}\x{200C}\x{200D}]*)")
+            .expect("mention regex is valid")
+    })
 }
 
 /// Truncate a mention label for display. Pre-truncation string is used
@@ -172,6 +182,22 @@ pub fn extract_mention_peers(segments: &[Segment]) -> Vec<EndpointId> {
         .collect()
 }
 
+/// Strip Unicode zero-width characters (ZWSP `U+200B`, ZWNJ `U+200C`,
+/// ZWJ `U+200D`) from a string. Used before comparing a captured handle
+/// against a peer's stored handle / display name so a smuggled
+/// zero-width inside the typed token doesn't sink the lookup.
+///
+/// Per spec §Edge cases: invisible characters in the body must not
+/// prevent a mention from resolving. We intentionally only strip during
+/// comparison — the segment pipeline in [`parse_mentions`] still emits
+/// the original body bytes so the user sees what they typed (the pill
+/// label comes from `raw_handle`, not the stripped form).
+fn strip_zero_width(s: &str) -> String {
+    s.chars()
+        .filter(|c| !matches!(*c, '\u{200B}' | '\u{200C}' | '\u{200D}'))
+        .collect()
+}
+
 /// Resolve a single captured handle to `(peer_id, is_self)`. Follows
 /// the order documented on [`parse_mentions`]. Returns `None` when the
 /// token doesn't match any known peer, display name, or `@you` alias.
@@ -180,7 +206,9 @@ fn resolve_mention(
     peers: &[PeerRef],
     local_peer: &EndpointId,
 ) -> Option<(EndpointId, bool)> {
-    let lower = raw_handle.to_lowercase();
+    // Strip zero-widths before comparison so `@m\u{200B}ira` still
+    // matches handle `mira` (spec §Edge cases).
+    let lower = strip_zero_width(&raw_handle.to_lowercase());
 
     // 4. `@you` → local peer.
     if lower == "you" {
@@ -465,6 +493,39 @@ mod tests {
         assert!(matches!(&segs[0], Segment::Text(t) if t == "hello "));
         assert!(matches!(&segs[1], Segment::Mention { .. }));
         assert!(matches!(&segs[2], Segment::Text(t) if t == " bye"));
+    }
+
+    #[test]
+    fn mention_with_zero_width_in_handle_still_resolves() {
+        // Spec §Edge cases: zero-width characters smuggled into the
+        // middle of an `@handle` token must not prevent resolution.
+        // The regex permits ZWSP / ZWNJ / ZWJ inside the capture (after
+        // the mandatory leading letter); [`strip_zero_width`] then
+        // removes them during peer-handle comparison.
+        let mira = peer("mira.forest.1", "Mira");
+        let local = Identity::generate().endpoint_id();
+        // `m` then ZWSP then `ira` — regex captures `m\u{200B}ira`,
+        // resolver strips the ZWSP, matches peer `mira`.
+        let body = "hey @m\u{200B}ira!";
+        let segs = parse_mentions(body, std::slice::from_ref(&mira), &local);
+        let mention = segs
+            .iter()
+            .find(|s| matches!(s, Segment::Mention { .. }))
+            .expect("zero-width-in-handle @mention must resolve to a pill");
+        match mention {
+            Segment::Mention { peer_id, .. } => {
+                assert_eq!(peer_id.as_ref(), Some(&mira.peer_id));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn strip_zero_width_removes_zwsp_zwnj_zwj() {
+        // Direct unit on the stripping helper so the contract is
+        // pinned independently of the regex quirks above.
+        let input = "m\u{200B}i\u{200C}r\u{200D}a";
+        assert_eq!(strip_zero_width(input), "mira");
     }
 
     #[test]

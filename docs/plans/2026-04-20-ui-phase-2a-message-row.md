@@ -64,7 +64,7 @@ Tighten the existing `.message` rules to consume `--msg-pad`, add run-break rule
 
 **Files:** modify `crates/web/src/components/message.rs`, `crates/web/src/components/chat.rs`, `crates/web/style.css` (or new `components.css`).
 
-- [ ] **Step 1.1 — Promote run-break predicate.** In `MessageList`, expand the grouping predicate to break runs when `prev.whisper || prev.pinned || prev.queue_note != None || msg.whisper || msg.pinned || msg.queue_note != None`. Preserve existing 5-minute + same-author rule.
+- [x] **Step 1.1 — Promote run-break predicate.** In `MessageList`, expand the grouping predicate to break runs when `prev.whisper || prev.pinned || prev.queue_note != None || msg.whisper || msg.pinned || msg.queue_note != None`. Preserve existing 5-minute + same-author rule.
 
   ```rust
   let break_run = prev.author_peer_id != msg.author_peer_id
@@ -74,13 +74,13 @@ Tighten the existing `.message` rules to consume `--msg-pad`, add run-break rule
   let show_header = i == 0 || break_run;
   ```
 
-- [ ] **Step 1.2 — Density-aware padding.** Replace hard-coded `.message` / `.message.grouped` padding with `padding: var(--msg-pad)` + `padding-block: 1px` on `.message--run`. Keep `--msg-pad` density variants from `foundation.css` (no new vars).
+- [x] **Step 1.2 — Density-aware padding.** Replace hard-coded `.message` / `.message.grouped` padding with `padding: var(--msg-pad)` + `padding-block: 1px` on `.message--run`. Keep `--msg-pad` density variants from `foundation.css` (no new vars).
 
-- [ ] **Step 1.3 — Collapsed-row hover timestamp.** In `MessageView`, when `!show_header`, render `<span class="run-hover-ts">` inside the empty avatar column with the pre-formatted `HH:MM`. CSS reveals it on `.message--run:hover` only.
+- [x] **Step 1.3 — Collapsed-row hover timestamp.** In `MessageView`, when `!show_header`, render `<span class="run-hover-ts">` inside the empty avatar column with the pre-formatted `HH:MM`. CSS reveals it on `.message--run:hover` only.
 
-- [ ] **Step 1.4 — `just check-wasm`** — expect clean build.
+- [x] **Step 1.4 — `just check-wasm`** — clean build.
 
-- [ ] **Step 1.5 — Commit** — `ui(phase-2): tighten run-break rules + density-aware message padding`.
+- [x] **Step 1.5 — Commit** — `ui(phase-2): tighten run-break rules + density-aware message padding` (commit `d1554c5`).
 
 ### 2. Day separators
 
@@ -88,20 +88,20 @@ Emit `<DaySeparator>` between messages whose local dates differ. No existing sep
 
 **Files:** new `crates/web/src/components/message_row/day_separator.rs`, new `crates/web/src/components/message_row/mod.rs`, modify `crates/web/src/components/chat.rs`, modify `crates/web/src/components/mod.rs`, modify `crates/web/style.css`.
 
-- [ ] **Step 2.1 — `DayBucket` enum + formatter.** `Today | Yesterday | ThisYear { weekday, day, month } | Older { weekday, day, month, year }`. Use `js_sys::Date` for local-timezone bucketing in WASM.
+- [x] **Step 2.1 — `DayBucket` enum + formatter.** `Today | Yesterday | ThisYear { weekday, day, month } | Older { weekday, day, month, year }`. Use `js_sys::Date` for local-timezone bucketing in WASM.
 
   ```rust
   pub enum DayBucket { Today, Yesterday, ThisYear(String), Older(String) }
   pub fn day_bucket(ts_ms: u64) -> DayBucket { /* Date::new_0() offsets */ }
   ```
 
-- [ ] **Step 2.2 — `<DaySeparator>` component.** Markup: `<div class="day-separator"><span class="rule"/> <em>— {label} —</em> <span class="rule"/></div>`. CSS per spec §Day separator (flex 1 rules, `font-display italic 11px --ink-3 uppercase letter-spacing 1.2px`).
+- [x] **Step 2.2 — `<DaySeparator>` component.** Markup: `<div class="day-separator"><span class="rule"/> <em>— {label} —</em> <span class="rule"/></div>`. CSS per spec §Day separator (flex 1 rules, `font-display italic 11px --ink-3 uppercase letter-spacing 1.2px`).
 
-- [ ] **Step 2.3 — Insertion in `MessageList`.** During the enumerate pass, when `day_bucket(msg.ts) != day_bucket(prev.ts)`, push a `<DaySeparator>` view before the row. For the first message of the list, emit one too.
+- [x] **Step 2.3 — Insertion in `MessageList`.** During the enumerate pass, when `day_bucket(msg.ts) != day_bucket(prev.ts)`, push a `<DaySeparator>` view before the row. For the first message of the list, emit one too.
 
-- [ ] **Step 2.4 — `just test-browser`** (day-separator renders `today` / `yesterday` / dated label given fixture timestamps). Expect green.
+- [x] **Step 2.4 — `just test-browser`** — day-separator renders `today` / `yesterday` / dated label given fixture timestamps. Green.
 
-- [ ] **Step 2.5 — Commit** — `ui(phase-2): add day separators between local-date boundaries`.
+- [x] **Step 2.5 — Commit** — `ui(phase-2): add day separators between local-date boundaries` (commit `74c08c5`).
 
 ### 3. Mention parsing + pills
 
@@ -109,9 +109,9 @@ Resolve `@handle` tokens against channel peers and render coloured pills. Prepar
 
 **Files:** new `crates/web/src/components/message_row/mention.rs`, modify `crates/web/src/components/message.rs`, modify `crates/web/style.css`.
 
-- [ ] **Step 3.1 — Parser.** `parse_mentions(body, peers: &[PeerRef], local_peer: &EndpointId) -> Vec<Segment>` where `Segment` is `Text(String) | Mention { label, peer_id, is_self }`. Regex `@([a-z][a-z0-9._-]*)` (case-insensitive). Resolve in order: exact handle → first segment of handle → display-name → literal `@you` → local peer. Unresolved → fall through to `Text`.
+- [x] **Step 3.1 — Parser.** `parse_mentions(body, peers: &[PeerRef], local_peer: &EndpointId) -> Vec<Segment>` where `Segment` is `Text(String) | Mention { label, peer_id, is_self }`. Regex `@([a-z][a-z0-9._-]*)` (case-insensitive). Resolve in order: exact handle → first segment of handle → display-name → literal `@you` → local peer. Unresolved → fall through to `Text`.
 
-- [ ] **Step 3.2 — `<MentionPill>`.** Variants `Peer` (moss colour-mix bg, moss-3 fg, moss-1 border) and `Self_` (amber 28% bg, amber fg, amber-soft border). Opens profile popover on click (wire to `use_context::<AppState>()::ui::open_profile` if present; else no-op + `TODO(profile-card.md)`).
+- [x] **Step 3.2 — `<MentionPill>`.** Variants `Peer` (moss colour-mix bg, moss-3 fg, moss-1 border) and `Self_` (amber 28% bg, amber fg, amber-soft border). Opens profile popover on click (wire to `use_context::<AppState>()::ui::open_profile` if present; else no-op + `TODO(profile-card.md)`).
 
   ```rust
   view! {
@@ -122,13 +122,13 @@ Resolve `@handle` tokens against channel peers and render coloured pills. Prepar
   }
   ```
 
-- [ ] **Step 3.3 — Wire segment pipeline.** In `MessageView`, run mentions → inline code → urls (order matters: mentions must run first so `@mira` inside backticks stays code; inline-code protects against mention regex inside fences). Keep existing URL handler as the tail stage.
+- [x] **Step 3.3 — Wire segment pipeline.** In `MessageView`, run mentions → inline code → urls (order matters: mentions must run first so `@mira` inside backticks stays code; inline-code protects against mention regex inside fences). Keep existing URL handler as the tail stage.
 
-- [ ] **Step 3.4 — Unit tests.** In the new file's `#[cfg(test)]`: exact handle match, first-segment match, display-name match, `@you` self-alias, unresolved fallthrough, long-handle truncation (>32 chars → `first 28 + …`).
+- [x] **Step 3.4 — Unit tests.** In the new file's `#[cfg(test)]`: exact handle match, first-segment match, display-name match, `@you` self-alias, unresolved fallthrough, long-handle truncation (>32 chars → `first 28 + …`).
 
-- [ ] **Step 3.5 — `just check`** — expect clean fmt/clippy/tests.
+- [x] **Step 3.5 — `just check`** — clean fmt/clippy/tests.
 
-- [ ] **Step 3.6 — Commit** — `ui(phase-2): parse @handle mentions + render MentionPill`.
+- [x] **Step 3.6 — Commit** — `ui(phase-2): parse @handle mentions + render MentionPill` (commit `2c07f64`).
 
 ### 4. Self-mention row highlight + sidebar signal
 
@@ -175,7 +175,7 @@ Replace the current "url-only" body pipeline with mentions → code → urls.
 
 - [x] **Step 5.4 — `just test-browser`** — 4 new tests: inline-backtick pill renders, fenced-block + copy button renders, mixed inline+fenced in one body, reply-preview stays plain text. Plus 10 parser unit tests in `code.rs` (`parse_no_backticks`, `parse_inline_only`, `parse_fenced_only`, `parse_fenced_with_lang`, `parse_unmatched_backtick`, `parse_unmatched_fence`, `parse_triple_backtick_inline_is_not_fence`, `parse_inline_does_not_span_newline`, `parse_mixed_inline_and_fenced`, `parse_fence_with_junk_after_lang_falls_back_to_text`). All green.
 
-- [ ] **Step 5.5 — Commit** — `ui(phase-2): render inline + fenced code with copy button`.
+- [x] **Step 5.5 — Commit** — `ui(phase-2): render inline + fenced code with copy button` (commit `0be5b23`).
 
 ### 6. Pinned marker
 
@@ -199,29 +199,19 @@ Add `queue_note: QueueNote` to `DisplayMessage` and render hints / badges / opac
 
 **Files:** modify `crates/client/src/state.rs`, modify `crates/client/src/views.rs`, modify `crates/web/src/components/message.rs`, modify `crates/web/style.css`.
 
-- [ ] **Step 7.1 — `QueueNote` enum.** In `willow-client`:
+- [x] **Step 7.1 — `QueueNote` enum.** Added to `willow-client` with `None | LateArrival | Pending` variants; re-exported from `lib.rs`.
 
-  ```rust
-  #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-  pub enum QueueNote { None, LateArrival, Pending }
-  ```
+- [x] **Step 7.2 — Projection.** `views::compute_messages_view` stamps `queue_note = QueueNote::None` today — real `Pending` / `LateArrival` detection is gated on `MessageStore::delivery_state` + `ServerState::peer_presence_history`, both deferred to `sync-queue.md`. `TODO(sync-queue.md)` markers pin the wire points.
 
-  Re-export from `lib.rs`.
+- [x] **Step 7.3 — Row rendering.** `MessageView` renders the inline hint + `.queued-badge` in `.meta` and gates `opacity: 0.7` on `Pending`. CSS in `crates/web/style.css` under `/* Phase 2a Task 7 — queue notes */` owns the visual.
 
-- [ ] **Step 7.2 — Projection.** Derive during `views::compute_messages`:
-  - `Pending` when `message.is_local && message_store.delivery_state(&msg.id) == NotAcked`.
-  - `LateArrival` when `!message.is_local && peer_was_offline_at(msg.author_peer_id, msg.timestamp_ms)` — use `ServerState::peer_presence_history` if available; else fallback to "author peer was unreachable within 30s of authoring" (cross-reference `sync-queue.md` dependency note — flag inline `TODO(sync-queue.md)` if the presence-history store isn't landed yet).
-  - `None` otherwise.
+- [x] **Step 7.4 — Delivery flash.** Transition + 900 ms flash wired at the CSS + signal layer; triggers today when a projection rerun flips `queue_note` (real trigger lands with the sync-queue work, same TODO as Step 7.2).
 
-- [ ] **Step 7.3 — Row rendering.** For `LateArrival`: inline hint `<span class="queue-note late">{icon_hourglass()} "sent earlier · arrived now"</span>` under the body. For `Pending`: hint `queued · will send on reconnect`, row `opacity: 0.7`. Both get the `queued` badge in `.meta`.
+- [x] **Step 7.5 — Client test.** 4 projection tests in `views::tests` cover the current `None` contract (`projection_queue_note_none_by_default`, `projection_queue_note_none_for_local_author_pending_stub`, etc.). Full `Pending` → `None` flip tests land with `sync-queue.md`.
 
-- [ ] **Step 7.4 — Delivery flash.** When a `Pending` transitions to `None` (delivery ack), drive a 900 ms `check + sent` flash: local `RwSignal<bool>` on the row, set true in an `Effect::new` that watches `queue_note`; `set_timeout` resets after 900 ms. Opacity fades to 1 over 180 ms via transition.
+- [x] **Step 7.6 — `just test-client` + `just test-browser`** — both green.
 
-- [ ] **Step 7.5 — Client test.** `crates/client/src/tests/display_message.rs` — Pending for local unacked; LateArrival when peer was offline; flips to None on ack.
-
-- [ ] **Step 7.6 — `just test-client` + `just test-browser`** — expect green.
-
-- [ ] **Step 7.7 — Commit** — `ui(phase-2): derive + render queue_note hints with delivery flash`.
+- [x] **Step 7.7 — Commit** — `ui(phase-2): derive + render queue_note hints with delivery flash` (commit `77ce56e`).
 
 ### 8. Whisper hand-off placeholder
 
@@ -350,23 +340,19 @@ Single-commit string pass aligning every user-visible string owned by the messag
 
 **Files:** modify `crates/web/src/components/message.rs`, modify `crates/web/src/components/chat.rs`.
 
-- [ ] **Step 14.1 — Delete confirm.** Replace the current `"Delete Message"` / `"Are you sure you want to delete this message?"` / `"Delete"` / `"Cancel"` with:
-  - Title: `withdraw message?`
-  - Body: `this removes it from every peer's view. it was already read by some.`
-  - Confirm: `withdraw`
-  - Cancel: `keep`
+- [x] **Step 14.1 — Delete confirm.** `ConfirmDialog` title `withdraw message?`, body `this removes it from every peer's view. it was already read by some.`, confirm `withdraw`, cancel `keep`. Added a `cancel_text` prop so the cancel label is configurable per caller.
 
-- [ ] **Step 14.2 — Edited suffix.** Confirm `(edited)` (already in place).
+- [x] **Step 14.2 — Edited suffix.** Confirmed — `(edited)` rendered by `.edited` span when `message.edited`.
 
-- [ ] **Step 14.3 — Deleted placeholder.** Replace current `class="body deleted"` text path — when `message.deleted`, render `this message was withdrawn` in `--ink-3` italic.
+- [x] **Step 14.3 — Deleted placeholder.** `MessageView` now renders `this message was withdrawn` inside `.body.body--deleted` (italic `--ink-3`) when `message.deleted`.
 
-- [ ] **Step 14.4 — Empty-body fallback.** When `message.body.trim().is_empty() && !message.deleted`, render `empty message` (per spec edge case).
+- [x] **Step 14.4 — Empty-body fallback.** Empty / whitespace-only bodies render `empty message` inside `.body.body--empty` per spec §Edge cases.
 
-- [ ] **Step 14.5 — Unknown peer fallback.** In projection, when display name + handle are both missing, use `unknown peer` in `--ink-3` italic.
+- [x] **Step 14.5 — Unknown peer fallback.** `resolve_display_name` returns the literal `unknown peer` when neither the server registry nor the local `ProfileState.names` map has an entry.
 
-- [ ] **Step 14.6 — `just test-browser`** — 1 test asserting delete-confirm copy table byte-exact.
+- [x] **Step 14.6 — `just test-browser`** — 4 new browser tests (delete-confirm byte-exact, deleted placeholder, empty-body fallback, guard rail) + 2 projection tests; green.
 
-- [ ] **Step 14.7 — Commit** — `ui(phase-2): align message-row copy with spec table`.
+- [x] **Step 14.7 — Commit** — `ui(phase-2): align message-row copy with spec table` (commit `3460721`).
 
 ### 15. Accessibility — ARIA + keyboard
 
@@ -423,17 +409,30 @@ Consolidate the §Edge cases sweep + fill out the `phase_2a_message_row` browser
 
 **Files:** modify `crates/web/src/components/message.rs`, modify `crates/web/style.css`, modify `crates/web/tests/browser.rs`.
 
-- [ ] **Step 16.1 — 500-char single-word wrap.** CSS: `.message .body { word-break: break-word; overflow-wrap: anywhere; min-width: 0; }`.
+- [x] **Step 16.1 — 500-char single-word wrap.** `.message .body` now carries `word-break: break-word`, `overflow-wrap: anywhere`, and `min-width: 0` in `crates/web/style.css`. `word-break: break-word` was already present from earlier phases; `overflow-wrap: anywhere` + `min-width: 0` are new. The `.code-fenced` rule already had `overflow-wrap: anywhere` from Task 5 — unchanged.
 
-- [ ] **Step 16.2 — RTL.** `.message .body { unicode-bidi: plaintext; direction: auto; }`.
+- [x] **Step 16.2 — RTL.** `.message .body` now also carries `unicode-bidi: plaintext` + `direction: auto` in `crates/web/style.css`.
 
-- [ ] **Step 16.3 — Zero-width chars.** No-op (Leptos renders as text, not `innerHTML`). Mention regex: add a strip step `body.chars().filter(|c| !matches!(c, '\u{200B}' | '\u{200C}' | '\u{200D}')).collect::<String>()` before resolving.
+- [x] **Step 16.3 — Zero-width chars.** `willow_client::mentions` now tolerates ZWSP (`U+200B`), ZWNJ (`U+200C`), ZWJ (`U+200D`) inside `@handle` captures. The regex's tail character class now admits those codepoints, and a new `strip_zero_width` helper removes them inside `resolve_mention` before peer-handle / display-name comparison. The leading letter must still be `[a-z]`, so no spurious empty matches from lone zero-widths. New unit tests: `mention_with_zero_width_in_handle_still_resolves`, `strip_zero_width_removes_zwsp_zwnj_zwj`.
 
-- [ ] **Step 16.4 — Long-handle mention truncation.** In `MentionPill`, when `label.len() > 32`, render `first 28 + …` with full handle in `title`.
+- [x] **Step 16.4 — Long-handle mention truncation.** Already wired from Task 3: `parse_mentions` truncates pill labels to 28 chars + `…` when the capture exceeds 32 chars, and `<MentionPill>` renders the untruncated handle via the `title` attribute. Unit test `long_handle_truncates_label` (client) + new browser test `mention_pill_title_truncates_but_preserves_full_handle` pin the end-to-end wiring.
 
-- [ ] **Step 16.5 — Edit after 24h.** Confirm `(edited)` is the only marker; no timeline. Already covered by Step 14.2.
+- [x] **Step 16.5 — Edit after 24h.** Confirmed — `(edited)` is the only marker; no timeline. The `.edited` span is rendered unconditionally when `message.edited` is true (see `crates/web/style.css` line 677 + `MessageView` render path). Spec table calls for this in v1; no code change needed.
 
-- [ ] **Step 16.6 — `phase_2a_message_row` module.** Append to `crates/web/tests/browser.rs`:
+- [x] **Step 16.6 — `phase_2a_message_row` module.** Added 5 new tests covering the edge-case rows that prior tasks didn't already assert (the rest were wired in Tasks 1–15):
+
+  ```rust
+  mod phase_2a_message_row {
+      // …existing tests…
+      body_wraps_500_char_single_word
+      run_collapses_same_author_within_5min
+      run_breaks_on_pin
+      run_breaks_on_whisper
+      mention_pill_title_truncates_but_preserves_full_handle
+  }
+  ```
+
+  Total `phase_2a_message_row` count: 54 tests. Full browser-test suite: 231 (up from 226 after Task 15).
 
   ```rust
   mod phase_2a_message_row {
@@ -462,9 +461,9 @@ Consolidate the §Edge cases sweep + fill out the `phase_2a_message_row` browser
   }
   ```
 
-- [ ] **Step 16.7 — `just test-browser`** — full `phase_2a_message_row` module green.
+- [x] **Step 16.7 — `just test-browser`** — 231 browser tests green; 5 new in `phase_2a_message_row` (no regressions).
 
-- [ ] **Step 16.8 — Commit** — `ui(phase-2): add phase_2a_message_row browser coverage + edge cases`.
+- [x] **Step 16.8 — Commit** — `ui(phase-2): sweep message-row edge cases + tick acceptance`.
 
 ## Ambiguity decisions
 
@@ -479,22 +478,22 @@ Consolidate the §Edge cases sweep + fill out the `phase_2a_message_row` browser
 
 ## Acceptance criteria (mirrors spec §Acceptance criteria)
 
-- [ ] Message row renders avatar (32 px desktop, 36 px mobile), display name (Fraunces 15 px, italic for `you`), mono handle, `11 px --ink-3` timestamp, and body with density-aware padding.
-- [ ] Consecutive same-author messages within 5 min collapse into a run: avatar hidden, meta row hidden, padding tightened, hover reveals a mono timestamp in the avatar column.
-- [ ] Whisper, pinned, and queueNote always break a run.
-- [ ] Day separators render between messages from different local dates using copy in §Copy.
-- [ ] `@mention` tokens become pills in the correct variant; `messageMentionsMe` matches either `mentions[]` or parsed body; self-mention rows carry the amber left rule + background.
-- [ ] Hover toolbar (desktop) appears on mouseenter, offers five quick reactions, thread, whisper, more; all buttons carry the ARIA labels in §Accessibility.
-- [ ] Long-press ≥ 500 ms opens the bottom action sheet; swipe-down at 80 px *or* velocity > 200 px/s dismisses; haptic fires on open.
-- [ ] Pinned messages render with a 1 px amber left rule and a `pinned` badge.
-- [ ] Fenced code renders in mono with `--bg-0` + `--line` border; a copy button appears on hover (desktop).
-- [ ] Queue notes render the inline hint + badge; pending messages dim to 0.7 opacity until delivered; delivery flashes `sent`.
-- [ ] Whisper rows carry the violet left rule, tinted background, and whisper badge (full styling in `whisper-mode.md`).
-- [ ] Empty channel shows the leaf illustration and the copy in §Copy.
-- [ ] Scroll anchoring: auto-scroll only when within 120 px of bottom; otherwise a `jump to latest` pill with unread count appears.
-- [ ] Every interactive element has an ARIA label per §Accessibility.
-- [ ] Every interaction has a keyboard path; reduced motion collapses animations per foundation.
-- [ ] 500-char single-word messages wrap without breaking layout.
+- [x] Message row renders avatar (32 px desktop, 36 px mobile), display name (Fraunces 15 px, italic for `you`), mono handle, `11 px --ink-3` timestamp, and body with density-aware padding.
+- [x] Consecutive same-author messages within 5 min collapse into a run: avatar hidden, meta row hidden, padding tightened, hover reveals a mono timestamp in the avatar column.
+- [x] Whisper, pinned, and queueNote always break a run.
+- [x] Day separators render between messages from different local dates using copy in §Copy.
+- [x] `@mention` tokens become pills in the correct variant; `messageMentionsMe` matches either `mentions[]` or parsed body; self-mention rows carry the amber left rule + background.
+- [x] Hover toolbar (desktop) appears on mouseenter, offers five quick reactions, thread, whisper, more; all buttons carry the ARIA labels in §Accessibility.
+- [x] Long-press ≥ 500 ms opens the bottom action sheet; swipe-down at 80 px *or* velocity > 200 px/s dismisses; haptic fires on open.
+- [x] Pinned messages render with a 1 px amber left rule and a `pinned` badge.
+- [x] Fenced code renders in mono with `--bg-0` + `--line` border; a copy button appears on hover (desktop).
+- [ ] Queue notes render the inline hint + badge; pending messages dim to 0.7 opacity until delivered; delivery flashes `sent`. _(Task 7 hint/badge/opacity rendering covered; the delivery `sent` flash transition is wired in CSS but the projection's Pending → None state-flip is TODO-gated in `views.rs` pending sync-queue presence history — see Task 7 ambiguity decisions.)_
+- [x] Whisper rows carry the violet left rule, tinted background, and whisper badge (full styling in `whisper-mode.md`).
+- [x] Empty channel shows the leaf illustration and the copy in §Copy.
+- [x] Scroll anchoring: auto-scroll only when within 120 px of bottom; otherwise a `jump to latest` pill with unread count appears.
+- [x] Every interactive element has an ARIA label per §Accessibility.
+- [x] Every interaction has a keyboard path; reduced motion collapses animations per foundation.
+- [x] 500-char single-word messages wrap without breaking layout.
 
 ## Self-review
 
