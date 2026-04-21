@@ -232,7 +232,7 @@ Define the event kind carrying a full delta, wire `apply()` to overlay the delta
 
 **Files:** modify `crates/state/src/event.rs`, modify `crates/state/src/materialize.rs`, modify `crates/state/src/tests.rs`.
 
-- [ ] **Step 2.1 — Add `EventKind::UpdateProfile`.** In `crates/state/src/event.rs` under `// -- Identity --`:
+- [x] **Step 2.1 — Add `EventKind::UpdateProfile`.** In `crates/state/src/event.rs` under `// -- Identity --`:
 
   ```rust
   /// Update one or more profile fields in-place.
@@ -259,7 +259,7 @@ Define the event kind carrying a full delta, wire `apply()` to overlay the delta
 
   Note: display_name stays a plain `Option<String>` because the existing contract is "empty string = never set", not nullable. The event is author-gated: any member can author `UpdateProfile` for their own `Profile` (the author field of the event IS the peer id being updated).
 
-- [ ] **Step 2.2 — Add caps constants.** In `crates/state/src/types.rs`:
+- [x] **Step 2.2 — Add caps constants.** In `crates/state/src/types.rs`:
 
   ```rust
   /// Per-field caps enforced by `apply_event(UpdateProfile)`.
@@ -277,7 +277,7 @@ Define the event kind carrying a full delta, wire `apply()` to overlay the delta
   pub const PROFILE_CAP_NICKNAME: usize = 32;
   ```
 
-- [ ] **Step 2.3 — Implement in `apply_event`.** In `crates/state/src/materialize.rs` immediately after the `SetProfile` branch:
+- [x] **Step 2.3 — Implement in `apply_event`.** In `crates/state/src/materialize.rs` immediately after the `SetProfile` branch:
 
   ```rust
   EventKind::UpdateProfile {
@@ -340,9 +340,9 @@ Define the event kind carrying a full delta, wire `apply()` to overlay the delta
 
   Add a private `fn truncate(s: &str, cap: usize) -> String` helper to the top of `materialize.rs` (UTF-8-safe — walks char boundaries; existing codebase has no equivalent).
 
-- [ ] **Step 2.4 — Permission table.** In `required_permission(kind)` in `crates/state/src/materialize.rs`, add `EventKind::UpdateProfile { .. } => None` right next to `EventKind::SetProfile { .. } => None`. Same contract: self-authorship is sufficient.
+- [x] **Step 2.4 — Permission table.** In `required_permission(kind)` in `crates/state/src/materialize.rs`, add `EventKind::UpdateProfile { .. } => None` right next to `EventKind::SetProfile { .. } => None`. Same contract: self-authorship is sufficient.
 
-- [ ] **Step 2.5 — State tests.** Append to `crates/state/src/tests.rs`:
+- [x] **Step 2.5 — State tests.** Append to `crates/state/src/tests.rs`:
 
   ```rust
   #[test]
@@ -487,7 +487,7 @@ Define the event kind carrying a full delta, wire `apply()` to overlay the delta
 
   Imports: add `use crate::types::{Profile, CrestPattern, PROFILE_CAP_BIO};` at the top of the test module if not already present (the `tests.rs` file typically wildcards from `super::*`).
 
-- [ ] **Step 2.6 — Run state tests.**
+- [x] **Step 2.6 — Run state tests.**
 
   ```bash
   cargo test -p willow-state
@@ -495,7 +495,7 @@ Define the event kind carrying a full delta, wire `apply()` to overlay the delta
 
   Expected: 6 new tests green + existing suite green.
 
-- [ ] **Step 2.7 — Commit.**
+- [x] **Step 2.7 — Commit.**
 
   ```bash
   git add crates/state/

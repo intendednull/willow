@@ -3724,3 +3724,313 @@ fn mute_not_admin_gated() {
     assert!(ms.channels.contains("ch-1"));
     assert!(ms.grove_muted);
 }
+
+// ───────────────────── Phase 2c — UpdateProfile ─────────────────────
+//
+// Spec: docs/specs/2026-04-19-ui-design/profile-card.md
+// §Data dependencies — the profile card's new optional fields land as
+// a single `EventKind::UpdateProfile` carrying a delta. Below tests
+// cover the six contract rows from the plan: merge / clear / preserve /
+// idempotent / caps / creates-on-missing.
+
+use crate::types::{CrestPattern, PinnedFragment, PinnedKind, PROFILE_CAP_BIO};
+
+#[test]
+fn update_profile_merges_fields() {
+    let alice = Identity::generate();
+    let mut dag = test_dag(&alice);
+    // Seed a display name via the legacy event so we can confirm
+    // UpdateProfile merges with existing state rather than wiping it.
+    do_emit(
+        &mut dag,
+        &alice,
+        EventKind::SetProfile {
+            display_name: "alice".into(),
+        },
+    );
+    do_emit(
+        &mut dag,
+        &alice,
+        EventKind::UpdateProfile {
+            display_name: None,
+            pronouns: Some(Some("she/her".into())),
+            bio: Some(Some("gardener".into())),
+            tagline: None,
+            crest_pattern: Some(Some(CrestPattern::Fronds)),
+            crest_color: Some(Some("#6b8e4e".into())),
+            pinned: None,
+            elsewhere: Some(vec!["west coast".into()]),
+            since: Some(Some("spring · yr 2".into())),
+        },
+    );
+    let state = materialize(&dag);
+    let p = state
+        .profiles
+        .get(&alice.endpoint_id())
+        .expect("profile present");
+    assert_eq!(p.display_name, "alice");
+    assert_eq!(p.pronouns.as_deref(), Some("she/her"));
+    assert_eq!(p.bio.as_deref(), Some("gardener"));
+    assert_eq!(p.crest_pattern, Some(CrestPattern::Fronds));
+    assert_eq!(p.crest_color.as_deref(), Some("#6b8e4e"));
+    assert_eq!(p.elsewhere, vec!["west coast".to_string()]);
+    assert_eq!(p.since.as_deref(), Some("spring · yr 2"));
+    // Untouched field stays its prior value (None).
+    assert!(p.tagline.is_none());
+}
+
+#[test]
+fn update_profile_clears_field_with_inner_none() {
+    let alice = Identity::generate();
+    let mut dag = test_dag(&alice);
+    do_emit(
+        &mut dag,
+        &alice,
+        EventKind::UpdateProfile {
+            display_name: None,
+            pronouns: None,
+            bio: Some(Some("old bio".into())),
+            tagline: None,
+            crest_pattern: None,
+            crest_color: None,
+            pinned: None,
+            elsewhere: None,
+            since: None,
+        },
+    );
+    do_emit(
+        &mut dag,
+        &alice,
+        EventKind::UpdateProfile {
+            display_name: None,
+            pronouns: None,
+            bio: Some(None),
+            tagline: None,
+            crest_pattern: None,
+            crest_color: None,
+            pinned: None,
+            elsewhere: None,
+            since: None,
+        },
+    );
+    let state = materialize(&dag);
+    assert!(state.profiles[&alice.endpoint_id()].bio.is_none());
+}
+
+#[test]
+fn update_profile_preserves_untouched_fields() {
+    let alice = Identity::generate();
+    let mut dag = test_dag(&alice);
+    do_emit(
+        &mut dag,
+        &alice,
+        EventKind::UpdateProfile {
+            display_name: None,
+            pronouns: Some(Some("she/her".into())),
+            bio: Some(Some("hello".into())),
+            tagline: None,
+            crest_pattern: None,
+            crest_color: None,
+            pinned: None,
+            elsewhere: None,
+            since: None,
+        },
+    );
+    do_emit(
+        &mut dag,
+        &alice,
+        EventKind::UpdateProfile {
+            display_name: None,
+            pronouns: None,
+            bio: None,
+            tagline: Some(Some("tending the moss".into())),
+            crest_pattern: None,
+            crest_color: None,
+            pinned: None,
+            elsewhere: None,
+            since: None,
+        },
+    );
+    let state = materialize(&dag);
+    let p = &state.profiles[&alice.endpoint_id()];
+    assert_eq!(p.bio.as_deref(), Some("hello"));
+    assert_eq!(p.pronouns.as_deref(), Some("she/her"));
+    assert_eq!(p.tagline.as_deref(), Some("tending the moss"));
+}
+
+#[test]
+fn update_profile_reapply_is_idempotent() {
+    let alice = Identity::generate();
+    let mut dag = test_dag(&alice);
+    // Replaying the same delta twice must produce the same state as
+    // replaying it once — the event hash dedupes on the DAG side.
+    let kind = EventKind::UpdateProfile {
+        display_name: Some("alice".into()),
+        pronouns: Some(Some("she/her".into())),
+        bio: None,
+        tagline: None,
+        crest_pattern: None,
+        crest_color: None,
+        pinned: None,
+        elsewhere: None,
+        since: None,
+    };
+    let e1 = do_emit(&mut dag, &alice, kind.clone());
+    // Re-inserting the *same* event is a DAG-level dedup; re-creating
+    // via `create_event` would bump the seq and hash, so we re-insert
+    // `e1` directly and confirm the insert is a no-op.
+    assert!(dag.insert(e1.clone()).is_err());
+    let state = materialize(&dag);
+    let p = &state.profiles[&alice.endpoint_id()];
+    assert_eq!(p.display_name, "alice");
+    assert_eq!(p.pronouns.as_deref(), Some("she/her"));
+}
+
+#[test]
+fn update_profile_caps_enforced_on_apply() {
+    let alice = Identity::generate();
+    let mut dag = test_dag(&alice);
+    let long_bio = "a".repeat(500);
+    do_emit(
+        &mut dag,
+        &alice,
+        EventKind::UpdateProfile {
+            display_name: None,
+            pronouns: None,
+            bio: Some(Some(long_bio)),
+            tagline: None,
+            crest_pattern: None,
+            crest_color: None,
+            pinned: None,
+            elsewhere: None,
+            since: None,
+        },
+    );
+    let state = materialize(&dag);
+    let p = &state.profiles[&alice.endpoint_id()];
+    assert_eq!(
+        p.bio.as_ref().map(|s| s.chars().count()),
+        Some(PROFILE_CAP_BIO)
+    );
+}
+
+#[test]
+fn update_profile_creates_profile_if_missing() {
+    let alice = Identity::generate();
+    let mut dag = test_dag(&alice);
+    // alice has genesis + no SetProfile yet. Before the UpdateProfile,
+    // her profile entry does not exist.
+    let state_pre = materialize(&dag);
+    assert!(!state_pre.profiles.contains_key(&alice.endpoint_id()));
+    do_emit(
+        &mut dag,
+        &alice,
+        EventKind::UpdateProfile {
+            display_name: None,
+            pronouns: Some(Some("they/them".into())),
+            bio: None,
+            tagline: None,
+            crest_pattern: None,
+            crest_color: None,
+            pinned: None,
+            elsewhere: None,
+            since: None,
+        },
+    );
+    let state = materialize(&dag);
+    let p = state
+        .profiles
+        .get(&alice.endpoint_id())
+        .expect("profile upserted by UpdateProfile");
+    assert_eq!(p.pronouns.as_deref(), Some("they/them"));
+    // display_name never set — empty string is the "unset" marker.
+    assert_eq!(p.display_name, "");
+}
+
+#[test]
+fn update_profile_invalid_crest_color_drops_to_none() {
+    let alice = Identity::generate();
+    let mut dag = test_dag(&alice);
+    // "red" is 3 chars + no leading '#' — apply_event should reject it
+    // to None so the UI falls back to --moss-2.
+    do_emit(
+        &mut dag,
+        &alice,
+        EventKind::UpdateProfile {
+            display_name: None,
+            pronouns: None,
+            bio: None,
+            tagline: None,
+            crest_pattern: None,
+            crest_color: Some(Some("red".into())),
+            pinned: None,
+            elsewhere: None,
+            since: None,
+        },
+    );
+    let state = materialize(&dag);
+    let p = &state.profiles[&alice.endpoint_id()];
+    assert!(p.crest_color.is_none());
+}
+
+#[test]
+fn update_profile_elsewhere_caps_length() {
+    let alice = Identity::generate();
+    let mut dag = test_dag(&alice);
+    do_emit(
+        &mut dag,
+        &alice,
+        EventKind::UpdateProfile {
+            display_name: None,
+            pronouns: None,
+            bio: None,
+            tagline: None,
+            crest_pattern: None,
+            crest_color: None,
+            pinned: None,
+            elsewhere: Some(vec![
+                "one".into(),
+                "two".into(),
+                "three".into(),
+                "four".into(),
+                "five".into(),
+            ]),
+            since: None,
+        },
+    );
+    let state = materialize(&dag);
+    let p = &state.profiles[&alice.endpoint_id()];
+    // Cap is 4 entries — fifth is dropped.
+    assert_eq!(p.elsewhere.len(), 4);
+    assert_eq!(p.elsewhere[0], "one");
+    assert_eq!(p.elsewhere[3], "four");
+}
+
+#[test]
+fn update_profile_pinned_round_trip() {
+    let alice = Identity::generate();
+    let mut dag = test_dag(&alice);
+    do_emit(
+        &mut dag,
+        &alice,
+        EventKind::UpdateProfile {
+            display_name: None,
+            pronouns: None,
+            bio: None,
+            tagline: None,
+            crest_pattern: None,
+            crest_color: None,
+            pinned: Some(Some(PinnedFragment {
+                kind: PinnedKind::Quote,
+                body: "quiet is a kind of music".into(),
+            })),
+            elsewhere: None,
+            since: None,
+        },
+    );
+    let state = materialize(&dag);
+    let p = &state.profiles[&alice.endpoint_id()];
+    let pinned = p.pinned.as_ref().expect("pinned present");
+    assert_eq!(pinned.kind, PinnedKind::Quote);
+    assert_eq!(pinned.body, "quiet is a kind of music");
+}
