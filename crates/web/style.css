@@ -4505,17 +4505,21 @@ select:focus-visible {
  * so it only surfaces when the user targets the row. */
 .message .run-hover-ts {
     position: absolute;
-    left: 4px;
+    right: 8px;
     top: 50%;
     transform: translateY(-50%);
     font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
     font-size: 10px;
     line-height: 1;
     color: var(--ink-3);
+    background: color-mix(in oklab, var(--bg-0) 85%, transparent);
+    padding: 2px 6px;
+    border-radius: 4px;
     opacity: 0;
     transition: opacity var(--transition-fast);
     pointer-events: none;
     user-select: none;
+    z-index: 1;
 }
 .message.grouped:hover .run-hover-ts {
     opacity: 1;
