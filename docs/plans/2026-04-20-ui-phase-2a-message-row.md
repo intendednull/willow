@@ -136,19 +136,19 @@ Wire `messageMentionsMe` as the source of truth for both the row highlight and t
 
 **Files:** modify `crates/client/src/state.rs` (add `mentions: Vec<EndpointId>`), modify `crates/client/src/views.rs` (populate `mentions` during projection), modify `crates/web/src/components/message.rs`, modify `crates/web/style.css`.
 
-- [ ] **Step 4.1 — Extend `DisplayMessage`.** Add `pub mentions: Vec<EndpointId>` (default `vec![]`). Projection populates via `parse_mentions` (shared module usable from both client + web).
+- [x] **Step 4.1 — Extend `DisplayMessage`.** Add `pub mentions: Vec<EndpointId>` (default `vec![]`). Projection populates via `parse_mentions` (shared module usable from both client + web).
 
   **Decision:** put the parser in `willow-client` (not `willow-web`) so projection can populate it; `<MentionPill>` stays in web. Mention parser is text-only, no WASM-specific deps.
 
-- [ ] **Step 4.2 — `messageMentionsMe`.** Helper `pub fn mentions_me(m: &DisplayMessage, local: &EndpointId) -> bool` — `m.mentions.contains(local) || body parser finds any segment with is_self==true`.
+- [x] **Step 4.2 — `messageMentionsMe`.** Helper `pub fn mentions_me(m: &DisplayMessage, local: &EndpointId) -> bool` — `m.mentions.contains(local) || body parser finds any segment with is_self==true`.
 
-- [ ] **Step 4.3 — Row class.** In `MessageView`, append `message--mention` when `mentions_me`. CSS: `background: color-mix(in oklab, var(--amber) 8%, transparent); box-shadow: inset 2px 0 0 var(--amber);`.
+- [x] **Step 4.3 — Row class.** In `MessageView`, append `message--mention` when `mentions_me`. CSS: `background: color-mix(in oklab, var(--amber) 8%, transparent); box-shadow: inset 2px 0 0 var(--amber);`.
 
-- [ ] **Step 4.4 — Sidebar counter source.** Emit a new `Signal<HashMap<SurfaceId, u32>>` from `UnreadView` counting `mentions_me(m)` over unread messages. Sidebar / grove-tile counter *rendering* landed in 1f; this commit just wires the new signal source and swaps the provider. Add a one-line rename note in `views.rs` if 1f's `UnreadStats.mentioned` was a substring-heuristic — swap it to use `mentions_me`.
+- [x] **Step 4.4 — Sidebar counter source.** `UnreadStats.mentioned` now derives from `mentions_me` over the tail-slice of each channel (capped at 500 per spec). 1f's stub is swapped in-place; the public shape (`mentioned: bool`) is unchanged so sidebar / grove-tile renderers keep reading it via the existing path.
 
-- [ ] **Step 4.5 — `just test-client`** — expect the new `mentions_me` unit test green.
+- [x] **Step 4.5 — `just test-client`** — 4 new projection tests + 3 new `mentions_me` unit tests all green.
 
-- [ ] **Step 4.6 — Commit** — `ui(phase-2): highlight self-mention rows + feed sidebar mention counter`.
+- [x] **Step 4.6 — Commit** — `ui(phase-2): highlight self-mention rows + feed sidebar mention counter`.
 
 ### 5. Inline + fenced code
 

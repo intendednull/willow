@@ -72,6 +72,15 @@ pub struct DisplayMessage {
     pub deleted: bool,
     pub reply_to: Option<String>,
     pub reply_preview: Option<String>,
+    /// Peer IDs explicitly mentioned by this message, as resolved by
+    /// `willow_client::mentions::parse_mentions` at projection time.
+    ///
+    /// Populated once by the view projection rather than re-parsed at
+    /// render time, so `mentions_me(msg, &local_peer)` is an O(1) read
+    /// per frame. Never empty for a resolved `@you` or `@handle` whose
+    /// resolver path produced a peer id; unresolved tokens stay in the
+    /// body as plain text and are not reflected here.
+    pub mentions: Vec<EndpointId>,
 }
 
 /// Maps EndpointId -> display names. Updated from profile broadcasts.

@@ -20,6 +20,8 @@ use regex::Regex;
 use std::sync::OnceLock;
 use willow_identity::EndpointId;
 
+use crate::state::DisplayMessage;
+
 /// One chunk of a parsed message body.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Segment {
@@ -141,6 +143,35 @@ pub fn parse_mentions(body: &str, peers: &[PeerRef], local_peer: &EndpointId) ->
     segments
 }
 
+/// Return `true` when `m.mentions` contains `local` — i.e. the
+/// projection resolved one of the `@` tokens in the body to the local
+/// peer.
+///
+/// Spec: `docs/specs/2026-04-19-ui-design/message-row.md`
+/// §Self-mention row highlight — `messageMentionsMe(m)`.
+///
+/// Projection-first: we rely on [`parse_mentions`] already having run
+/// over the body when the `DisplayMessage` was built, so this is an
+/// O(n) scan over a usually-empty list. Re-parsing the body here would
+/// require the channel peer list, which the call site may not have.
+pub fn mentions_me(m: &DisplayMessage, local: &EndpointId) -> bool {
+    m.mentions.iter().any(|p| p == local)
+}
+
+/// Extract just the peer ids from a segment list. Used by the
+/// projection to stamp `DisplayMessage::mentions`.
+pub fn extract_mention_peers(segments: &[Segment]) -> Vec<EndpointId> {
+    segments
+        .iter()
+        .filter_map(|s| match s {
+            Segment::Mention {
+                peer_id: Some(p), ..
+            } => Some(*p),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Resolve a single captured handle to `(peer_id, is_self)`. Follows
 /// the order documented on [`parse_mentions`]. Returns `None` when the
 /// token doesn't match any known peer, display name, or `@you` alias.
@@ -189,6 +220,7 @@ fn resolve_mention(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use willow_identity::Identity;
 
     fn peer(handle: &str, display: &str) -> PeerRef {
@@ -197,6 +229,72 @@ mod tests {
             handle: handle.to_string(),
             display_name: display.to_string(),
         }
+    }
+
+    fn msg_with_mentions(mentions: Vec<EndpointId>) -> DisplayMessage {
+        DisplayMessage {
+            id: "test-id".into(),
+            channel_id: "test-channel".into(),
+            author_peer_id: Identity::generate().endpoint_id(),
+            author_display_name: "Mira".into(),
+            body: String::new(),
+            is_local: false,
+            timestamp_ms: 0,
+            reactions: HashMap::new(),
+            edited: false,
+            deleted: false,
+            reply_to: None,
+            reply_preview: None,
+            mentions,
+        }
+    }
+
+    #[test]
+    fn mentions_me_true_when_mentioned() {
+        let local = Identity::generate().endpoint_id();
+        let m = msg_with_mentions(vec![local]);
+        assert!(
+            mentions_me(&m, &local),
+            "mentions_me must be true when local peer id is in mentions"
+        );
+    }
+
+    #[test]
+    fn mentions_me_false_when_not() {
+        let local = Identity::generate().endpoint_id();
+        let other = Identity::generate().endpoint_id();
+        let m = msg_with_mentions(vec![other]);
+        assert!(
+            !mentions_me(&m, &local),
+            "mentions_me must be false when only other peers are mentioned"
+        );
+    }
+
+    #[test]
+    fn mentions_me_false_on_empty() {
+        let local = Identity::generate().endpoint_id();
+        let m = msg_with_mentions(vec![]);
+        assert!(!mentions_me(&m, &local));
+    }
+
+    #[test]
+    fn extract_mention_peers_from_mixed_segments() {
+        // Construct segments manually mirroring what parse_mentions
+        // would emit for "hi @mira @ghost": one mention (mira), one
+        // text fallback for an unresolved token.
+        let mira_id = Identity::generate().endpoint_id();
+        let segs = vec![
+            Segment::Text("hi ".into()),
+            Segment::Mention {
+                label: "mira".into(),
+                full_label: "mira".into(),
+                peer_id: Some(mira_id),
+                is_self: false,
+            },
+            Segment::Text(" @ghost".into()),
+        ];
+        let peers = extract_mention_peers(&segs);
+        assert_eq!(peers, vec![mira_id]);
     }
 
     #[test]

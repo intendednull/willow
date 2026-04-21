@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use willow_identity::EndpointId;
 
+use crate::mentions::{extract_mention_peers, parse_mentions, PeerRef};
 use crate::presence::{derive_peer_presence, derive_self_presence, PresenceInputs, PresenceState};
 use crate::state::DisplayMessage;
 use crate::state_actors::*;
@@ -289,6 +290,26 @@ pub fn compute_messages_view(
         };
     }
 
+    // Build a PeerRef list for mention resolution. Willow does not yet
+    // track a distinct `@handle` (see `profile-card.md` for the target
+    // profile data model); as a stand-in we derive a handle from the
+    // display name via `display_name.to_lowercase().replace(' ', '.')`.
+    // TODO(profile-card.md): replace the display-name-derived handle
+    // with the real handle field once profile data is plumbed.
+    let peer_refs: Vec<PeerRef> = events
+        .members
+        .keys()
+        .map(|pid| {
+            let display = resolve_display_name(events, profiles, pid);
+            let handle = display.to_lowercase().replace(' ', ".");
+            PeerRef {
+                peer_id: *pid,
+                handle,
+                display_name: display,
+            }
+        })
+        .collect();
+
     let mut msgs: Vec<DisplayMessage> = events
         .messages
         .iter()
@@ -322,6 +343,8 @@ pub fn compute_messages_view(
                     (emoji.clone(), names)
                 })
                 .collect();
+            let mention_segments = parse_mentions(&m.body, &peer_refs, &local_peer_id);
+            let mentions = extract_mention_peers(&mention_segments);
             DisplayMessage {
                 id: m.id.to_string(),
                 channel_id: m.channel_id.clone(),
@@ -335,6 +358,7 @@ pub fn compute_messages_view(
                 deleted: m.deleted,
                 reply_to: m.reply_to.as_ref().map(|h| h.to_string()),
                 reply_preview,
+                mentions,
             }
         })
         .collect();
@@ -394,11 +418,15 @@ pub fn compute_channels_view(
 
 /// Compute unread stats per surface.
 ///
-/// Phase 1f: consumes the active server's `unread` topic map plus the
-/// event-sourced `mute_state` to build per-channel `UnreadStats`.
-/// `mentioned` is stubbed as `false` until the last-500-message
-/// substring pass lands — the render pipeline already handles the
-/// variant, so turning it on is a single-line change.
+/// Phase 1f seeded `mentioned` as a stub. Phase 2a Task 4 replaces the
+/// stub with `mentions_me`: for each channel with `count > 0`, scan
+/// the tail of that channel's messages (up to `count`, capped at 500
+/// per spec §Self-mention row highlight) and flip `mentioned = true`
+/// if any of them mentions the local peer.
+///
+/// The projection uses `DisplayMessage.mentions` via `parse_mentions`,
+/// so this respects the same resolver order as the row-level highlight
+/// (exact handle → first-segment → display-name → `@you`).
 pub fn compute_unread_view(
     registry: &Arc<ServerRegistry>,
     event_state: &Arc<willow_state::ServerState>,
@@ -406,6 +434,33 @@ pub fn compute_unread_view(
 ) -> UnreadView {
     let mut stats: HashMap<SurfaceId, UnreadStats> = HashMap::new();
     let mute = event_state.mute_state.get(&local_peer_id).cloned();
+
+    // Build a PeerRef list once for the mention parser. Mirrors the
+    // build in `compute_messages_view`; TODO(profile-card.md) tracks
+    // swapping display-name-derived handles for real profile handles.
+    //
+    // `resolve_display_name` needs a `ProfileState` — we only have the
+    // event-state profiles here, so fall back to the event-state entry
+    // (and the truncated peer id) via a small inline helper. This
+    // keeps `compute_unread_view`'s signature stable for 1f's callers.
+    let peer_refs: Vec<PeerRef> = event_state
+        .members
+        .keys()
+        .map(|pid| {
+            let display = event_state
+                .profiles
+                .get(pid)
+                .map(|p| p.display_name.clone())
+                .unwrap_or_else(|| crate::util::truncate_peer_id(&pid.to_string()));
+            let handle = display.to_lowercase().replace(' ', ".");
+            PeerRef {
+                peer_id: *pid,
+                handle,
+                display_name: display,
+            }
+        })
+        .collect();
+
     if let Some(entry) = registry.active() {
         for (topic, count) in &entry.unread {
             if let Some(name) = entry.name_for_topic(topic) {
@@ -424,9 +479,36 @@ pub fn compute_unread_view(
                                 .unwrap_or(false)
                     })
                     .unwrap_or(false);
+
+                // Heuristic: "unread mention" = any message in the
+                // tail-slice of this channel mentions the local peer.
+                // Cap at 500 per spec §Self-mention row highlight.
+                let mentioned = if *count > 0 {
+                    if let Some(cid) = &channel_id {
+                        let tail_len = (*count).min(500);
+                        // Collect channel messages in arrival order
+                        // (already ordered in ServerState) and scan
+                        // the last `tail_len` of them.
+                        let channel_msgs: Vec<&willow_state::ChatMessage> = event_state
+                            .messages
+                            .iter()
+                            .filter(|msg| &msg.channel_id == cid)
+                            .collect();
+                        let start = channel_msgs.len().saturating_sub(tail_len);
+                        channel_msgs[start..].iter().any(|msg| {
+                            let segs = parse_mentions(&msg.body, &peer_refs, &local_peer_id);
+                            extract_mention_peers(&segs).contains(&local_peer_id)
+                        })
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
                 let s = UnreadStats {
                     count: *count as u32,
-                    mentioned: false,
+                    mentioned,
                     whisper: false,
                     announce_only: false,
                     muted,
@@ -563,4 +645,180 @@ pub fn resolve_display_name(
         .get(peer_id)
         .map(|p| p.display_name.clone())
         .unwrap_or_else(|| profiles.display_name(peer_id))
+}
+
+#[cfg(test)]
+mod tests {
+    //! Projection tests for Phase 2a Task 4 — populated `mentions` in
+    //! `DisplayMessage` and `mentioned` flag in `UnreadStats`.
+    use super::*;
+    use std::collections::{BTreeMap, HashMap};
+    use willow_identity::Identity;
+    use willow_state::{Channel, ChannelKind, ChatMessage, Member, Profile, ServerState};
+
+    fn fresh_state(owner: EndpointId) -> ServerState {
+        ServerState::new("srv", "Test", owner)
+    }
+
+    fn add_member(state: &mut ServerState, peer_id: EndpointId, display: &str) {
+        state.members.insert(
+            peer_id,
+            Member {
+                peer_id,
+                roles: Default::default(),
+                display_name: None,
+            },
+        );
+        state.profiles.insert(
+            peer_id,
+            Profile {
+                peer_id,
+                display_name: display.into(),
+            },
+        );
+    }
+
+    fn push_channel(state: &mut ServerState, id: &str, name: &str) {
+        state.channels.insert(
+            id.into(),
+            Channel {
+                id: id.into(),
+                name: name.into(),
+                pinned_messages: Default::default(),
+                kind: ChannelKind::Text,
+            },
+        );
+    }
+
+    fn push_message(
+        state: &mut ServerState,
+        channel_id: &str,
+        author: EndpointId,
+        body: &str,
+        ts_ms: u64,
+    ) {
+        // Derive a unique-ish EventHash from message index + body so
+        // repeat calls within one test don't collide.
+        let seed = format!("test-msg-{}-{}", state.messages.len(), body);
+        let id = willow_state::EventHash::from_bytes(seed.as_bytes());
+        state.messages.push(ChatMessage {
+            id,
+            channel_id: channel_id.into(),
+            author,
+            body: body.into(),
+            timestamp_ms: ts_ms,
+            edited: false,
+            deleted: false,
+            reactions: BTreeMap::new(),
+            reply_to: None,
+        });
+    }
+
+    #[test]
+    fn projection_populates_mentions_for_body_at_mira() {
+        // Spec: body "hi @mira" → DisplayMessage.mentions contains
+        // Mira's endpoint id. The handle-from-display-name stand-in
+        // lowercases the display name and maps spaces → dots, so
+        // `@mira` resolves by the first-segment-of-handle path.
+        let owner = Identity::generate().endpoint_id();
+        let mira = Identity::generate().endpoint_id();
+        let mut state = fresh_state(owner);
+        add_member(&mut state, mira, "Mira");
+        push_channel(&mut state, "ch-1", "general");
+        push_message(&mut state, "ch-1", owner, "hi @mira", 1_000);
+
+        let events = Arc::new(state);
+        let registry = Arc::new(ServerRegistry::default());
+        let chat = Arc::new(ChatMeta {
+            current_channel: "general".into(),
+            peers: Vec::new(),
+        });
+        let profiles = Arc::new(ProfileState::default());
+        let view = compute_messages_view(&events, &registry, &chat, &profiles, owner);
+        assert_eq!(view.messages.len(), 1);
+        assert_eq!(
+            view.messages[0].mentions,
+            vec![mira],
+            "`@mira` must resolve Mira's endpoint id into msg.mentions"
+        );
+    }
+
+    #[test]
+    fn projection_mentions_empty_when_no_at_tokens() {
+        let owner = Identity::generate().endpoint_id();
+        let mira = Identity::generate().endpoint_id();
+        let mut state = fresh_state(owner);
+        add_member(&mut state, mira, "Mira");
+        push_channel(&mut state, "ch-1", "general");
+        push_message(&mut state, "ch-1", owner, "no mentions here", 1_000);
+
+        let events = Arc::new(state);
+        let registry = Arc::new(ServerRegistry::default());
+        let chat = Arc::new(ChatMeta {
+            current_channel: "general".into(),
+            peers: Vec::new(),
+        });
+        let profiles = Arc::new(ProfileState::default());
+        let view = compute_messages_view(&events, &registry, &chat, &profiles, owner);
+        assert_eq!(view.messages.len(), 1);
+        assert!(view.messages[0].mentions.is_empty());
+    }
+
+    fn make_registry(server_id: &str, unread_topic: &str, unread_count: usize) -> ServerRegistry {
+        let mut unread = HashMap::new();
+        unread.insert(unread_topic.into(), unread_count);
+        let entry = ServerEntry {
+            server_id: server_id.into(),
+            name: "Test".into(),
+            keys: HashMap::new(),
+            unread,
+        };
+        let mut servers = HashMap::new();
+        servers.insert(server_id.into(), entry);
+        ServerRegistry {
+            servers,
+            active_server: Some(server_id.into()),
+        }
+    }
+
+    #[test]
+    fn unread_mentioned_counter_counts_at_me() {
+        // A channel with one unread message that mentions the local
+        // peer (via @you alias) must flip `mentioned = true`.
+        let owner = Identity::generate().endpoint_id();
+        let other = Identity::generate().endpoint_id();
+        let mut state = fresh_state(owner);
+        add_member(&mut state, other, "Rin");
+        push_channel(&mut state, "ch-1", "general");
+        push_message(&mut state, "ch-1", other, "ping @you", 1_000);
+        let events = Arc::new(state);
+
+        let registry = Arc::new(make_registry("srv", "srv/general", 1));
+        let view = compute_unread_view(&registry, &events, owner);
+        let stats = view
+            .stats
+            .get(&SurfaceId::Channel("general".into()))
+            .expect("general surface must exist");
+        assert_eq!(stats.count, 1);
+        assert!(stats.mentioned, "@you in unread must flip mentioned=true");
+    }
+
+    #[test]
+    fn unread_mentioned_stays_false_when_no_self_mention() {
+        let owner = Identity::generate().endpoint_id();
+        let other = Identity::generate().endpoint_id();
+        let mut state = fresh_state(owner);
+        add_member(&mut state, other, "Rin");
+        push_channel(&mut state, "ch-1", "general");
+        push_message(&mut state, "ch-1", other, "just a normal message", 1_000);
+        let events = Arc::new(state);
+
+        let registry = Arc::new(make_registry("srv", "srv/general", 1));
+        let view = compute_unread_view(&registry, &events, owner);
+        let stats = view
+            .stats
+            .get(&SurfaceId::Channel("general".into()))
+            .expect("general surface must exist");
+        assert!(!stats.mentioned);
+    }
 }

@@ -4384,3 +4384,14 @@ select:focus-visible {
     color: var(--amber);
     border-color: var(--amber-soft);
 }
+
+/* Phase 2a Task 4 — Self-mention row highlight.
+   Per `docs/specs/2026-04-19-ui-design/message-row.md` §Row states and
+   §Self-mention row highlight: 8% amber row tint + 2px amber left rule
+   when `mentions_me(msg, local)` is true. Applied as a modifier so it
+   composes with `.message.grouped` (collapsed rows still carry the
+   amber cue on every row of the run). */
+.message.message--mention {
+    background: color-mix(in oklab, var(--amber) 8%, transparent);
+    box-shadow: inset 2px 0 0 var(--amber);
+}

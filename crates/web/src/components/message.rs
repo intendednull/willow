@@ -235,11 +235,29 @@ pub fn MessageView(
     reactions.sort_by(|a, b| a.0.cmp(&b.0));
     let has_reactions = !reactions.is_empty();
 
-    let msg_class = match (show_header, is_mention) {
-        (true, true) => "message mentioned",
-        (true, false) => "message",
-        (false, true) => "message grouped mentioned",
-        (false, false) => "message grouped",
+    // Phase 2a Task 4: derive self-mention highlight from the
+    // projection-populated `mentions` field. The existing `is_mention`
+    // prop encodes "this is a reply targeting me" (reply-preview match)
+    // and is kept for backwards compatibility; the new class
+    // `message--mention` is the spec-named row state for *body-level*
+    // self-mentions per message-row.md §Self-mention row highlight.
+    use leptos::context::use_context;
+    let local_peer_from_ctx: Option<willow_identity::EndpointId> =
+        use_context::<crate::state::AppState>()
+            .map(|a| a.network.peer_id.get_untracked())
+            .and_then(|s| s.parse().ok());
+    let is_self_mention = local_peer_from_ctx
+        .as_ref()
+        .map(|lp| willow_client::mentions::mentions_me(&message, lp))
+        .unwrap_or(false);
+
+    let msg_class = match (show_header, is_mention, is_self_mention) {
+        (true, _, true) => "message message--mention",
+        (true, true, false) => "message mentioned",
+        (true, false, false) => "message",
+        (false, _, true) => "message grouped message--mention",
+        (false, true, false) => "message grouped mentioned",
+        (false, false, false) => "message grouped",
     };
     let msg_dom_id = format!("msg-{}", message.id);
 
@@ -516,19 +534,45 @@ pub fn MessageView(
             } else {
                 // Segment pipeline: mentions → urls.
                 //
-                // Task 4 will populate `peers` + `local_peer` from a
-                // proper AppState-driven channel-peer context. For now
-                // we stub `peers: &[]` and parse `local_peer` out of
-                // the already-exposed `network.peer_id` signal so
-                // `@you` still resolves on the parser path.
-                // TODO(phase-2a-task-4): thread real channel peers.
+                // Phase 2a Task 4: build `peers` from the app-state
+                // members registry so `@handle` resolves in the row.
+                // The display-name → handle derivation mirrors
+                // `views::compute_messages_view` (see there for the
+                // `profile-card.md` TODO).
                 use leptos::context::use_context;
-                let local_peer_str = use_context::<crate::state::AppState>()
+                let app_state = use_context::<crate::state::AppState>();
+                let local_peer_str = app_state
+                    .as_ref()
                     .map(|a| a.network.peer_id.get_untracked())
                     .unwrap_or_default();
                 let local_peer: Option<willow_identity::EndpointId> =
                     local_peer_str.parse().ok();
-                let peers_vec: Vec<willow_client::mentions::PeerRef> = Vec::new();
+                // TODO(profile-card.md): use real handles when profile
+                // data is plumbed. For now handle ≈ display-name
+                // lowercased with spaces → dots, matching the
+                // client-side projection.
+                let peers_vec: Vec<willow_client::mentions::PeerRef> = app_state
+                    .as_ref()
+                    .map(|a| {
+                        a.network
+                            .peers
+                            .get_untracked()
+                            .into_iter()
+                            .filter_map(|(pid_str, display, _online)| {
+                                pid_str.parse::<willow_identity::EndpointId>().ok().map(
+                                    |peer_id| {
+                                        let handle = display.to_lowercase().replace(' ', ".");
+                                        willow_client::mentions::PeerRef {
+                                            peer_id,
+                                            handle,
+                                            display_name: display,
+                                        }
+                                    },
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let mention_segments = if let Some(ref lp) = local_peer {
                     willow_client::mentions::parse_mentions(&body, &peers_vec, lp)
                 } else {

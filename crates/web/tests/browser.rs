@@ -136,6 +136,7 @@ fn make_msg(author: &str, body: &str, timestamp_ms: u64) -> willow_client::Displ
         deleted: false,
         reply_to: None,
         reply_preview: None,
+        mentions: Vec::new(),
     }
 }
 
@@ -7548,6 +7549,92 @@ mod phase_2a_message_row {
             text(&body_el).contains("hey"),
             "body text before the mention must still render; got {:?}",
             text(&body_el)
+        );
+    }
+
+    // ── Self-mention row highlight (Task 4) ────────────────────────────────
+    //
+    // Spec §Self-mention row highlight: when `mentions_me(msg, local)`
+    // is true — i.e. `msg.mentions` contains the local peer id — the
+    // row carries the `message--mention` modifier class, which CSS
+    // styles with the amber left rule + 8% amber row tint.
+
+    #[wasm_bindgen_test]
+    async fn row_has_mention_class_when_mentions_me() {
+        use willow_client::DisplayMessage;
+        use willow_web::components::MessageView;
+        use willow_web::state::{create_signals, InitialSignals};
+
+        let local_id = willow_identity::Identity::generate().endpoint_id();
+        let local_id_str = local_id.to_string();
+
+        // Build a message whose projected `mentions` list already
+        // contains the local peer. Skips the parser so the test
+        // covers exactly the `mentions_me` → row-class path.
+        let msg = DisplayMessage {
+            mentions: vec![local_id],
+            ..make_msg("Mira", "ping @you", FIXTURE_TS_MS)
+        };
+
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.network.set_peer_id.set(local_id_str.clone());
+            provide_context(app_state);
+            provide_context(write);
+            view! {
+                <MessageView message=msg.clone() />
+            }
+        });
+        tick().await;
+
+        let row = query(&container, ".message.message--mention")
+            .expect(".message.message--mention must render when mentions_me is true");
+        assert!(
+            row.class_list().contains("message"),
+            "modifier class must compose with base .message class"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn row_has_no_mention_class_when_not_mentioned() {
+        use willow_client::DisplayMessage;
+        use willow_web::components::MessageView;
+        use willow_web::state::{create_signals, InitialSignals};
+
+        let local_id = willow_identity::Identity::generate().endpoint_id();
+        let other_id = willow_identity::Identity::generate().endpoint_id();
+        let local_id_str = local_id.to_string();
+
+        // The message only mentions `other`, not the local peer →
+        // `mentions_me` must be false → row must NOT carry the
+        // `message--mention` modifier.
+        let msg = DisplayMessage {
+            mentions: vec![other_id],
+            ..make_msg("Mira", "hey @rin", FIXTURE_TS_MS)
+        };
+
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.network.set_peer_id.set(local_id_str.clone());
+            provide_context(app_state);
+            provide_context(write);
+            view! {
+                <MessageView message=msg.clone() />
+            }
+        });
+        tick().await;
+
+        assert!(
+            query(&container, ".message.message--mention").is_none(),
+            "row must not carry .message--mention when mentions_me is false"
         );
     }
 }

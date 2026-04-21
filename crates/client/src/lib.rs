@@ -56,6 +56,7 @@ mod tests_multi_peer_sync;
 // Re-export key types at crate root for convenience.
 pub use event_receiver::EventReceiver;
 pub use events::ClientEvent;
+pub use mentions::mentions_me;
 pub use ops::{pack_wire, unpack_wire, VoiceSignalPayload, WireMessage};
 pub use trust::{
     ComparePreview, InMemoryTrustStore, PeerTrust, TrustStore, TrustStoreHandle, UnverifiedReason,
