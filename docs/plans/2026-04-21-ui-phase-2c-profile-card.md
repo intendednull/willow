@@ -1653,7 +1653,7 @@ Mount once at root. Subscribes to `use_profile_controller()`, positions against 
 
 **Files:** new `crates/web/src/components/profile_popover.rs`, modify `crates/web/src/components/mod.rs`, modify `crates/web/src/app.rs`, modify `crates/web/style.css`.
 
-- [ ] **Step 8.1 — Component.** New `crates/web/src/components/profile_popover.rs`:
+- [x] **Step 8.1 — Component.** New `crates/web/src/components/profile_popover.rs`:
 
   ```rust
   //! Desktop profile-card popover wrapper.
@@ -1728,7 +1728,7 @@ Mount once at root. Subscribes to `use_profile_controller()`, positions against 
 
   Add an outside-click listener that closes when pointerdown lands outside `.profile-popover` AND outside the anchor. Attach one tick after open (to avoid closing on the originating click) via `set_timeout(.., 0)`.
 
-- [ ] **Step 8.2 — CSS.**
+- [x] **Step 8.2 — CSS.**
 
   ```css
   .profile-popover {
@@ -1751,11 +1751,11 @@ Mount once at root. Subscribes to `use_profile_controller()`, positions against 
   }
   ```
 
-- [ ] **Step 8.3 — Register.** `crates/web/src/components/mod.rs`: add `mod profile_popover;` + `pub use profile_popover::ProfilePopover;`.
+- [x] **Step 8.3 — Register.** `crates/web/src/components/mod.rs`: add `mod profile_popover;` + `pub use profile_popover::ProfilePopover;`.
 
-- [ ] **Step 8.4 — Mount in `<App>`.** `crates/web/src/app.rs` — add `<crate::components::ProfilePopover/>` next to the existing `<AddFriendDialog/>` mount.
+- [x] **Step 8.4 — Mount in `<App>`.** `crates/web/src/app.rs` — add `<crate::components::ProfilePopover/>` next to the existing `<AddFriendDialog/>` mount.
 
-- [ ] **Step 8.5 — Commit.**
+- [x] **Step 8.5 — Commit.**
 
   ```bash
   git add crates/web/
@@ -1768,7 +1768,7 @@ Mount once at root. Renders a scrim + translateY-in sheet holding `<ProfileCardC
 
 **Files:** new `crates/web/src/components/profile_sheet.rs`, modify `crates/web/src/components/mod.rs`, modify `crates/web/src/app.rs`, modify `crates/web/style.css`.
 
-- [ ] **Step 9.1 — Component.** New `crates/web/src/components/profile_sheet.rs`:
+- [x] **Step 9.1 — Component.** New `crates/web/src/components/profile_sheet.rs`:
 
   ```rust
   //! Mobile profile-card bottom-sheet wrapper.
@@ -1819,7 +1819,7 @@ Mount once at root. Renders a scrim + translateY-in sheet holding `<ProfileCardC
 
   Browser-back dismissal: on open, push a transient `history.state` (`history.pushState({ profile_sheet: true }, "", "")`) and install a one-shot `popstate` listener that closes the sheet. On close initiated from code, `history.go(-1)` to pop the entry cleanly.
 
-- [ ] **Step 9.2 — CSS.**
+- [x] **Step 9.2 — CSS.**
 
   ```css
   .profile-sheet__scrim {
@@ -1862,9 +1862,9 @@ Mount once at root. Renders a scrim + translateY-in sheet holding `<ProfileCardC
   }
   ```
 
-- [ ] **Step 9.3 — Register + mount.** `components/mod.rs` + `app.rs` same pattern as the popover.
+- [x] **Step 9.3 — Register + mount.** `components/mod.rs` + `app.rs` same pattern as the popover.
 
-- [ ] **Step 9.4 — Commit.**
+- [x] **Step 9.4 — Commit.**
 
   ```bash
   git add crates/web/
