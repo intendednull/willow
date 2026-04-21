@@ -6074,10 +6074,22 @@ mod basic_flow {
         create_server_flow(&container, "Channel Test", "Alice").await;
         assert!(wait_for(&container, ".shell-desktop .channel-add-btn", 5_000).await);
         click_selector(&container, ".shell-desktop .channel-add-btn");
-        let input_sel = ".shell-desktop .channel-create-input input";
+        // Pick "text" from the kind picker.
+        assert!(
+            wait_for(&container, ".shell-desktop .tree-kind-picker", 5_000).await,
+            "tree-kind-picker did not appear"
+        );
+        let items = query_all(&container, ".shell-desktop .tree-kind-picker__item");
+        let text_btn = items
+            .iter()
+            .find(|b| b.text_content().unwrap_or_default().contains("text"))
+            .expect("text kind option should exist");
+        simulate_click(text_btn);
+        tick().await;
+        let input_sel = ".shell-desktop .tree-slot__input";
         assert!(
             wait_for(&container, input_sel, 5_000).await,
-            "channel-create-input did not appear"
+            "tree-slot did not appear"
         );
         fill_selector(&container, input_sel, "random");
         press_key(&container, input_sel, "Enter");
@@ -6102,25 +6114,16 @@ mod basic_flow {
         create_server_flow(&container, "Voice Test", "Alice").await;
         assert!(wait_for(&container, ".shell-desktop .channel-add-btn", 5_000).await);
         click_selector(&container, ".shell-desktop .channel-add-btn");
-        // Wait for type-toggle buttons, then click "Voice".
-        assert!(wait_for(&container, ".shell-desktop .type-btn", 5_000).await);
-        let buttons = query_all(&container, ".shell-desktop .type-btn");
-        let voice_btn = buttons
+        // Pick "voice" from the kind picker.
+        assert!(wait_for(&container, ".shell-desktop .tree-kind-picker", 5_000).await);
+        let items = query_all(&container, ".shell-desktop .tree-kind-picker__item");
+        let voice_btn = items
             .iter()
-            .find(|b| b.text_content().unwrap_or_default().contains("Voice"))
-            .expect("voice type toggle should exist");
-        // The Voice toggle listens on `mousedown`, not `click` (so
-        // pointer-drag UIs don't steal focus). Dispatch both to keep
-        // this helper robust to future changes.
-        let mousedown = web_sys::MouseEvent::new("mousedown").unwrap();
-        voice_btn
-            .dyn_ref::<web_sys::EventTarget>()
-            .unwrap()
-            .dispatch_event(&mousedown)
-            .unwrap();
+            .find(|b| b.text_content().unwrap_or_default().contains("voice"))
+            .expect("voice kind option should exist");
         simulate_click(voice_btn);
         tick().await;
-        let input_sel = ".shell-desktop .channel-create-input input";
+        let input_sel = ".shell-desktop .tree-slot__input";
         assert!(wait_for(&container, input_sel, 5_000).await);
         fill_selector(&container, input_sel, "voice-chat");
         press_key(&container, input_sel, "Enter");
@@ -6508,22 +6511,15 @@ mod mobile_ux {
         create_server_mobile(&container, "Voice Mobile", "Alice").await;
         assert!(wait_for(&container, ".shell-mobile .channel-add-btn", 5_000).await);
         click_selector(&container, ".shell-mobile .channel-add-btn");
-        assert!(wait_for(&container, ".shell-mobile .type-btn", 5_000).await);
-        let buttons = query_all(&container, ".shell-mobile .type-btn");
-        let voice_btn = buttons
+        assert!(wait_for(&container, ".shell-mobile .tree-kind-picker", 5_000).await);
+        let items = query_all(&container, ".shell-mobile .tree-kind-picker__item");
+        let voice_btn = items
             .iter()
-            .find(|b| b.text_content().unwrap_or_default().contains("Voice"))
-            .expect("Voice toggle should exist");
-        // Voice toggle listens on mousedown as well as click (see desktop).
-        let mousedown = web_sys::MouseEvent::new("mousedown").unwrap();
-        voice_btn
-            .dyn_ref::<web_sys::EventTarget>()
-            .unwrap()
-            .dispatch_event(&mousedown)
-            .unwrap();
+            .find(|b| b.text_content().unwrap_or_default().contains("voice"))
+            .expect("voice kind option should exist");
         simulate_click(voice_btn);
         tick().await;
-        let input_sel = ".shell-mobile .channel-create-input input";
+        let input_sel = ".shell-mobile .tree-slot__input";
         assert!(wait_for(&container, input_sel, 5_000).await);
         fill_selector(&container, input_sel, "vc");
         press_key(&container, input_sel, "Enter");
