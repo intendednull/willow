@@ -247,6 +247,7 @@ mod tests {
             reply_preview: None,
             mentions,
             pinned: false,
+            queue_note: crate::state::QueueNote::None,
         }
     }
 

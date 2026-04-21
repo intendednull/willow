@@ -138,6 +138,7 @@ fn make_msg(author: &str, body: &str, timestamp_ms: u64) -> willow_client::Displ
         reply_preview: None,
         mentions: Vec::new(),
         pinned: false,
+        queue_note: willow_client::QueueNote::None,
     }
 }
 
@@ -7849,6 +7850,161 @@ mod phase_2a_message_row {
         assert!(
             query(&container, ".pinned-badge").is_none(),
             "unpinned row must not render a .pinned-badge"
+        );
+    }
+
+    // ── Queue notes (phase 2a task 7) ─────────────────────────────────
+    //
+    // Contract pinned by `docs/specs/2026-04-19-ui-design/message-row.md`
+    // §Queue notes / §Copy queue notes:
+    //   * `message.queue_note == Pending` → row carries the
+    //     `message--pending` class (CSS drops to 0.7 opacity) and
+    //     renders the `queued · will send on reconnect` inline hint
+    //     below the body plus a `queued-badge` in the meta row.
+    //   * `message.queue_note == LateArrival` → no `--pending` class
+    //     (peer-authored, no dim), but the `sent earlier · arrived
+    //     now` inline hint + `queued-badge` in the meta row.
+    //   * `message.queue_note == None` → no hint, no badge, no class.
+
+    #[wasm_bindgen_test]
+    async fn row_has_pending_class_when_queue_pending() {
+        use willow_client::{DisplayMessage, QueueNote};
+        use willow_web::state::{create_signals, InitialSignals};
+        let msg = DisplayMessage {
+            queue_note: QueueNote::Pending,
+            ..make_msg("Mira", "sending...", FIXTURE_TS_MS)
+        };
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <MessageView message=msg.clone() show_header=true /> }
+        });
+        tick().await;
+
+        assert!(
+            query(&container, ".message.message--pending").is_some(),
+            "Pending queue_note must emit .message--pending class"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn queue_note_late_renders_hint() {
+        use willow_client::{DisplayMessage, QueueNote};
+        use willow_web::state::{create_signals, InitialSignals};
+        let msg = DisplayMessage {
+            queue_note: QueueNote::LateArrival,
+            ..make_msg("Rin", "hi from offline", FIXTURE_TS_MS)
+        };
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <MessageView message=msg.clone() show_header=true /> }
+        });
+        tick().await;
+
+        let hint = query(&container, ".queue-note.queue-note--late")
+            .expect("LateArrival must render .queue-note.queue-note--late");
+        assert!(
+            text(&hint).contains("sent earlier · arrived now"),
+            "LateArrival hint must carry the literal spec copy, got: {:?}",
+            text(&hint)
+        );
+        // Plus the meta-row badge.
+        let badge =
+            query(&container, ".queued-badge").expect("LateArrival row must carry a .queued-badge");
+        assert_eq!(
+            badge.get_attribute("aria-label").as_deref(),
+            Some("queued"),
+            ".queued-badge aria-label must be 'queued' per spec §Badges"
+        );
+        assert!(
+            text(&badge).contains("queued"),
+            ".queued-badge must carry the literal 'queued' text, got: {:?}",
+            text(&badge)
+        );
+        // LateArrival must NOT dim the row.
+        assert!(
+            query(&container, ".message.message--pending").is_none(),
+            "LateArrival must not carry .message--pending (only Pending dims)"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn queue_note_pending_renders_hint_and_badge() {
+        use willow_client::{DisplayMessage, QueueNote};
+        use willow_web::state::{create_signals, InitialSignals};
+        let msg = DisplayMessage {
+            queue_note: QueueNote::Pending,
+            ..make_msg("Mira", "while offline", FIXTURE_TS_MS)
+        };
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <MessageView message=msg.clone() show_header=true /> }
+        });
+        tick().await;
+
+        let hint = query(&container, ".queue-note.queue-note--pending")
+            .expect("Pending must render .queue-note.queue-note--pending");
+        assert!(
+            text(&hint).contains("queued · will send on reconnect"),
+            "Pending hint must carry the literal spec copy, got: {:?}",
+            text(&hint)
+        );
+        assert!(
+            query(&container, ".queued-badge").is_some(),
+            "Pending row must carry a .queued-badge in the meta row"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn queue_note_none_has_no_hint_or_badge() {
+        use willow_web::state::{create_signals, InitialSignals};
+        // Default queue_note=None — neither the hint, the badge, nor
+        // the `--pending` class should render.
+        let msg = make_msg("Mira", "delivered message", FIXTURE_TS_MS);
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <MessageView message=msg.clone() show_header=true /> }
+        });
+        tick().await;
+
+        assert!(
+            query(&container, ".queue-note.queue-note--late").is_none(),
+            "None queue_note must not render a late-arrival hint"
+        );
+        assert!(
+            query(&container, ".queue-note.queue-note--pending").is_none(),
+            "None queue_note must not render a pending hint"
+        );
+        assert!(
+            query(&container, ".queued-badge").is_none(),
+            "None queue_note must not render a .queued-badge"
+        );
+        assert!(
+            query(&container, ".message.message--pending").is_none(),
+            "None queue_note must not carry .message--pending"
         );
     }
 }

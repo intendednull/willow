@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
-use willow_client::DisplayMessage;
+use willow_client::{DisplayMessage, QueueNote};
 
 use super::file_share::{parse_inline_file, FileCard};
 use crate::components::ConfirmDialog;
@@ -221,9 +221,13 @@ pub fn MessageView(
     let timestamp = format_relative_time(message.timestamp_ms);
     // Phase 2a Task 6: `message.pinned` gates the row marker + badge
     // and also feeds the run-break predicate in `MessageList` (see
-    // `chat.rs`). Whisper + queue_note join the predicate in tasks 7
-    // + 8; for now `pinned` is the only cue carried by DisplayMessage.
+    // `chat.rs`). Phase 2a Task 7 extends the same treatment to
+    // `queue_note`: non-None variants drive the inline hint + badge
+    // + `.message--pending` opacity class (see below).
     let is_pinned = message.pinned;
+    let queue_note = message.queue_note;
+    let is_pending = queue_note == QueueNote::Pending;
+    let has_queue_note = queue_note != QueueNote::None;
 
     let reply_preview = message.reply_preview.clone();
     let reply_to_id = message.reply_to.clone();
@@ -265,10 +269,24 @@ pub fn MessageView(
     // Append `message--pinned` when the projection flagged this row
     // pinned. Pinned rows always break a run (see `chat.rs`), so a
     // pinned row always lands in a first-of-run branch above.
-    let msg_class = if is_pinned {
-        std::borrow::Cow::Owned(format!("{base_msg_class} message--pinned"))
-    } else {
+    //
+    // Phase 2a Task 7: additionally append `message--pending` when
+    // `queue_note == Pending`. CSS drops that variant to
+    // `opacity: 0.7` with an 180 ms fade-out (see §Queue notes). The
+    // run-break predicate in `chat.rs` ensures rows with a queue_note
+    // always render as a first-of-run branch above, matching the
+    // spec's badge-in-author-row contract.
+    let mut suffix = String::new();
+    if is_pinned {
+        suffix.push_str(" message--pinned");
+    }
+    if is_pending {
+        suffix.push_str(" message--pending");
+    }
+    let msg_class = if suffix.is_empty() {
         std::borrow::Cow::Borrowed(base_msg_class)
+    } else {
+        std::borrow::Cow::Owned(format!("{base_msg_class}{suffix}"))
     };
     let msg_dom_id = format!("msg-{}", message.id);
 
@@ -520,6 +538,12 @@ pub fn MessageView(
                                 " pinned"
                             </span>
                         })}
+                        {has_queue_note.then(|| view! {
+                            <span class="queued-badge" aria-label="queued">
+                                {icons::icon_hourglass()}
+                                " queued"
+                            </span>
+                        })}
                     </div>
                 }.into_any()
             } else {
@@ -683,6 +707,27 @@ pub fn MessageView(
                         None
                     }}
                 }.into_any()
+            }}
+            // Phase 2a Task 7: inline queue-note hint below the body.
+            // Spec §Queue notes / §Copy queue notes: italic 11.5 px,
+            // `--amber` for LateArrival (with hourglass glyph), `--ink-3`
+            // for Pending (no glyph). The hint complements the
+            // `queued` badge in the meta row (shown first-of-run via
+            // the run-break predicate) so the state is legible with or
+            // without the badge.
+            {match queue_note {
+                QueueNote::LateArrival => view! {
+                    <span class="queue-note queue-note--late">
+                        {icons::icon_hourglass()}
+                        " sent earlier · arrived now"
+                    </span>
+                }.into_any(),
+                QueueNote::Pending => view! {
+                    <span class="queue-note queue-note--pending">
+                        " queued · will send on reconnect"
+                    </span>
+                }.into_any(),
+                QueueNote::None => view! { <span class="queue-note-empty"/> }.into_any(),
             }}
             // Action bar -- single dropdown triggered by "..." button.
             {if show_actions {

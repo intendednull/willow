@@ -18,7 +18,7 @@ use willow_identity::EndpointId;
 
 use crate::mentions::{extract_mention_peers, parse_mentions, PeerRef};
 use crate::presence::{derive_peer_presence, derive_self_presence, PresenceInputs, PresenceState};
-use crate::state::DisplayMessage;
+use crate::state::{DisplayMessage, QueueNote};
 use crate::state_actors::*;
 
 // ───── Layer 2: Derived view types ──────────────────────────────────────
@@ -355,6 +355,20 @@ pub fn compute_messages_view(
                 .get(&m.channel_id)
                 .map(|ch| ch.pinned_messages.contains(&m.id))
                 .unwrap_or(false);
+            // Queue-note derivation. Phase 2a Task 7 wires the field
+            // end-to-end but defers real detection to sync-queue.md:
+            // today there is no `MessageStore::delivery_state`, no
+            // per-peer presence history, and no ack set — so both
+            // `Pending` (local author, unacked) and `LateArrival` (peer
+            // offline at authoring) fall back to `None`. The renderer
+            // is ready for the full tri-state; once sync-queue lands
+            // the only change needed here is replacing `None` with
+            // the real lookups.
+            // TODO(sync-queue.md): derive Pending from
+            // `MessageStore::delivery_state(&m.id)` for `m.is_local`
+            // and LateArrival from a peer-presence-history oracle
+            // (was-peer-offline-near(author, ts, 30_000)).
+            let queue_note = QueueNote::None;
             DisplayMessage {
                 id: m.id.to_string(),
                 channel_id: m.channel_id.clone(),
@@ -370,6 +384,7 @@ pub fn compute_messages_view(
                 reply_preview,
                 mentions,
                 pinned,
+                queue_note,
             }
         })
         .collect();
@@ -918,6 +933,99 @@ mod tests {
         assert!(
             !view.messages[0].pinned,
             "UnpinMessage must flip `pinned` back to false on projection"
+        );
+    }
+
+    // ── Phase 2a Task 7 — queue_note projection ────────────────────────
+    //
+    // The projection carries `queue_note` end-to-end but defers real
+    // detection (delivery_state + peer presence history) to
+    // sync-queue.md. Today it always emits `QueueNote::None`. These
+    // tests pin that baseline so the UX stays non-broken until
+    // sync-queue lands — when real detection arrives, new tests
+    // covering Pending / LateArrival join these.
+
+    #[test]
+    fn projection_queue_note_none_by_default() {
+        // A fresh message (local author, no sync-queue hooks) must
+        // project with `queue_note == None`. See the
+        // `TODO(sync-queue.md)` marker in `compute_messages_view`.
+        let owner = Identity::generate().endpoint_id();
+        let mut state = fresh_state(owner);
+        push_channel(&mut state, "ch-1", "general");
+        push_message(&mut state, "ch-1", owner, "hello", 1_000);
+
+        let events = Arc::new(state);
+        let registry = Arc::new(ServerRegistry::default());
+        let chat = Arc::new(ChatMeta {
+            current_channel: "general".into(),
+            peers: Vec::new(),
+        });
+        let profiles = Arc::new(ProfileState::default());
+        let view = compute_messages_view(&events, &registry, &chat, &profiles, owner);
+        assert_eq!(view.messages.len(), 1);
+        assert_eq!(
+            view.messages[0].queue_note,
+            QueueNote::None,
+            "default projection must emit QueueNote::None (sync-queue.md wires real detection)"
+        );
+    }
+
+    #[test]
+    fn projection_queue_note_none_for_local_author_pending_stub() {
+        // Until `MessageStore::delivery_state` lands, local-author
+        // messages cannot be detected as Pending — the fallback must
+        // still be None so the UX stays coherent. This test pins the
+        // fallback so the day detection lands we notice the flip.
+        let owner = Identity::generate().endpoint_id();
+        let mut state = fresh_state(owner);
+        push_channel(&mut state, "ch-1", "general");
+        push_message(&mut state, "ch-1", owner, "sent while offline", 1_000);
+
+        let events = Arc::new(state);
+        let registry = Arc::new(ServerRegistry::default());
+        let chat = Arc::new(ChatMeta {
+            current_channel: "general".into(),
+            peers: Vec::new(),
+        });
+        let profiles = Arc::new(ProfileState::default());
+        let view = compute_messages_view(&events, &registry, &chat, &profiles, owner);
+        assert_eq!(view.messages.len(), 1);
+        assert!(view.messages[0].is_local, "author must be local");
+        assert_eq!(
+            view.messages[0].queue_note,
+            QueueNote::None,
+            "sync-queue.md fallback: local-author messages project as None today"
+        );
+    }
+
+    #[test]
+    fn projection_queue_note_none_for_peer_offline_late_arrival_stub() {
+        // Mirror of the above for the LateArrival fallback. Until a
+        // peer-presence-history oracle exists, peer-authored messages
+        // cannot be flagged as LateArrival — the projection must
+        // still emit None to keep the row render stable.
+        let owner = Identity::generate().endpoint_id();
+        let other = Identity::generate().endpoint_id();
+        let mut state = fresh_state(owner);
+        add_member(&mut state, other, "Rin");
+        push_channel(&mut state, "ch-1", "general");
+        push_message(&mut state, "ch-1", other, "from offline peer", 1_000);
+
+        let events = Arc::new(state);
+        let registry = Arc::new(ServerRegistry::default());
+        let chat = Arc::new(ChatMeta {
+            current_channel: "general".into(),
+            peers: Vec::new(),
+        });
+        let profiles = Arc::new(ProfileState::default());
+        let view = compute_messages_view(&events, &registry, &chat, &profiles, owner);
+        assert_eq!(view.messages.len(), 1);
+        assert!(!view.messages[0].is_local, "author must be peer");
+        assert_eq!(
+            view.messages[0].queue_note,
+            QueueNote::None,
+            "sync-queue.md fallback: peer-authored messages project as None today"
         );
     }
 }

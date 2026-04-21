@@ -140,7 +140,7 @@ pub mod event_receiver {
         }
     }
 }
-pub use state::DisplayMessage;
+pub use state::{DisplayMessage, QueueNote};
 
 // ClientState, ServerContext, ChatState, ProfileStore are used internally
 // during initialization only (loading from storage → populating domain actors).

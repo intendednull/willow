@@ -55,6 +55,37 @@ impl Default for ChatState {
     }
 }
 
+/// Queue-note classification for a `DisplayMessage`.
+///
+/// Driven by `docs/specs/2026-04-19-ui-design/message-row.md` §Queue
+/// notes. The projection tags each row with one of three states so the
+/// message-row renderer can apply the spec's inline hints, badges,
+/// opacity treatment, and delivery-flash animation.
+///
+/// - [`Self::None`] — nothing to show. The row renders as a normal
+///   delivered message.
+/// - [`Self::LateArrival`] — a peer authored this while offline and it
+///   only reached us now. The row shows `sent earlier · arrived now`
+///   in italic amber below the body + a `queued` badge in the meta
+///   row.
+/// - [`Self::Pending`] — the local user authored this while offline
+///   and no peer has acked it yet. The row renders at `opacity: 0.7`
+///   with `queued · will send on reconnect` below the body + a
+///   `queued` badge in the meta row. On transition to `None` the row
+///   fades back to full opacity and the badge flashes to `check +
+///   sent` for 900 ms (see `message.rs`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum QueueNote {
+    /// No queue note. The default for delivered / online-authored
+    /// messages.
+    #[default]
+    None,
+    /// Peer authored offline; arrived late to the local node.
+    LateArrival,
+    /// Local author sent while offline; not yet acked by any peer.
+    Pending,
+}
+
 /// A message prepared for display. Computed on-the-fly from
 /// event_state, never stored. Display names are resolved at
 /// construction time so they're never stale.
@@ -89,6 +120,17 @@ pub struct DisplayMessage {
     /// the projection to drive the row marker + badge + run-break rule
     /// per `docs/specs/2026-04-19-ui-design/message-row.md` §Pins.
     pub pinned: bool,
+    /// Queue-note state for this row (see [`QueueNote`]).
+    ///
+    /// Populated by the view projection in
+    /// `views::compute_messages_view`. Today the projection defers the
+    /// real detection to the sync-queue crate and always returns
+    /// `None` — see `TODO(sync-queue.md)` in `views.rs`. The renderer
+    /// is already wired for the full tri-state so the UX will light up
+    /// once detection lands. The grouping predicate in `chat.rs`
+    /// treats any non-`None` variant as a run-break per
+    /// `docs/specs/2026-04-19-ui-design/message-row.md` §Queue notes.
+    pub queue_note: QueueNote,
 }
 
 /// Maps EndpointId -> display names. Updated from profile broadcasts.
