@@ -9,11 +9,13 @@
 //! Sub-modules land incrementally as the plan's tasks are ticked off.
 //! Today (Task 1): [`query`] only.
 
+pub mod index;
 pub mod query;
 pub mod tokenize;
 
 #[cfg(test)]
 mod tests;
 
+pub use index::{IndexableMessage, Posting, SearchIndex};
 pub use query::{parse_query, QueryFilters, QueryWarning, SearchQuery};
 pub use tokenize::{token_positions, tokenize};

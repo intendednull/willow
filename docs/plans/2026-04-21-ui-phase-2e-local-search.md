@@ -565,7 +565,7 @@ git commit -m "ui(phase-2e): tokenize message bodies preserving mentions + urls"
 - Modify: `crates/client/src/search/mod.rs` — `pub mod index;`
 - Modify: `crates/client/src/search/tests.rs` — `mod index_tests;`
 
-- [ ] **Step 3.1 — Define types.**
+- [x] **Step 3.1 — Define types.**
 
 ```rust
 //! Inverted index for local search. Maps each token to the set of
@@ -658,7 +658,7 @@ impl SearchIndex {
 }
 ```
 
-- [ ] **Step 3.2 — Failing tests.** In `crates/client/src/search/tests.rs` add `mod index_tests;`:
+- [x] **Step 3.2 — Failing tests.** In `crates/client/src/search/tests.rs` add `mod index_tests;`:
 
 ```rust
 #[cfg(test)]
@@ -739,7 +739,7 @@ mod index_tests {
 
 Run: FAIL.
 
-- [ ] **Step 3.3 — Implement.**
+- [x] **Step 3.3 — Implement.**
 
 ```rust
 impl SearchIndex {
@@ -802,9 +802,9 @@ impl SearchIndex {
 }
 ```
 
-- [ ] **Step 3.4 — Verify GREEN.** `cargo test -p willow-client search::index_tests`. All 5 pass.
+- [x] **Step 3.4 — Verify GREEN.** `cargo test -p willow-client search::tests::index_tests` → 8/8 pass (original 5 + bonuses: insert idempotency, author-synthetic-tokens indexing, all-postings dedup). WASM compile + clippy clean.
 
-- [ ] **Step 3.5 — Commit.**
+- [x] **Step 3.5 — Commit.**
 
 ```bash
 git add crates/client/src/search/index.rs crates/client/src/search/mod.rs crates/client/src/search/tests.rs
