@@ -218,7 +218,7 @@ Expose an acked-recipients view so the client-layer `derive_pending` has a real 
 
 **Files:** modify `crates/messaging/src/store.rs`, modify `crates/messaging/src/lib.rs`.
 
-- [ ] **Step 2.1 — Enum.** In `store.rs`:
+- [x] **Step 2.1 — Enum.** In `store.rs`:
 
   ```rust
   use std::collections::HashSet;
@@ -232,7 +232,7 @@ Expose an acked-recipients view so the client-layer `derive_pending` has a real 
   }
   ```
 
-- [ ] **Step 2.2 — Trait method.** Add to `MessageStore`:
+- [x] **Step 2.2 — Trait method.** Add to `MessageStore`:
 
   ```rust
   pub trait MessageStore: Send + Sync {
@@ -248,11 +248,11 @@ Expose an acked-recipients view so the client-layer `derive_pending` has a real 
   }
   ```
 
-- [ ] **Step 2.3 — `InMemoryStore` impl.** Track delivery via an additional `pending: HashMap<MessageId, HashSet<EndpointId>>` field. Writes on `store` / `ack` / `ack_all`. Provide `pub fn ack(&self, id, peer)` + `pub fn mark_pending(&self, id, recipients)` helpers.
+- [x] **Step 2.3 — `InMemoryStore` impl.** Track delivery via an additional `pending: HashMap<MessageId, HashSet<EndpointId>>` field. Writes on `store` / `ack` / `ack_all`. Provide `pub fn ack(&self, id, peer)` + `pub fn mark_pending(&self, id, recipients)` helpers.
 
-- [ ] **Step 2.4 — Re-export.** `pub use store::DeliveryState;` in `messaging/src/lib.rs`.
+- [x] **Step 2.4 — Re-export.** `pub use store::DeliveryState;` in `messaging/src/lib.rs`.
 
-- [ ] **Step 2.5 — Tests.** In `store.rs` `#[cfg(test)]`:
+- [x] **Step 2.5 — Tests.** In `store.rs` `#[cfg(test)]`:
 
   ```rust
   #[test]
@@ -263,9 +263,9 @@ Expose an acked-recipients view so the client-layer `derive_pending` has a real 
   fn ack_all_transitions_to_delivered() { /* terminal */ }
   ```
 
-- [ ] **Step 2.6 — `just check`** — clean.
+- [x] **Step 2.6 — `just check`** — clean.
 
-- [ ] **Step 2.7 — Commit** — `ui(phase-2b): add DeliveryState to willow-messaging::store`.
+- [x] **Step 2.7 — Commit** — `ui(phase-2b): add DeliveryState to willow-messaging::store`.
 
 ### 3. Network trait: `relay_status` + `device_online`
 

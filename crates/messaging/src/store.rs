@@ -6,9 +6,37 @@
 //! must implement. [`InMemoryStore`] is a simple reference implementation that
 //! keeps everything in RAM — perfect for tests and lightweight nodes.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+use willow_identity::EndpointId;
 
 use crate::{hlc::HlcTimestamp, ChannelId, Message, MessageId};
+
+/// Delivery state for a single message.
+///
+/// Used by the sync-queue UI in [`willow_client`] to classify a message
+/// as `Pending` (not yet acked by at least one recipient) or `Delivered`
+/// (every expected recipient acked).
+///
+/// The per-recipient ack mechanism lives in the client-layer actor
+/// bus — this enum is the storage-facing snapshot the UI queries.
+///
+/// See [`docs/specs/2026-04-19-ui-design/sync-queue.md`] §Data shape.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeliveryState {
+    /// Every expected recipient has acknowledged this message.
+    Delivered,
+    /// No recipient has acknowledged yet; the inner set is the
+    /// pending-recipient cohort.
+    PendingAllRecipients(HashSet<EndpointId>),
+    /// Some recipients have acked; others have not.
+    PendingSomeRecipients {
+        /// Recipients that have acknowledged.
+        acked: HashSet<EndpointId>,
+        /// Recipients that have not yet acknowledged.
+        pending: HashSet<EndpointId>,
+    },
+}
 
 /// Errors that can occur during storage operations.
 #[derive(Debug, thiserror::Error)]
@@ -43,6 +71,15 @@ pub trait MessageStore: Send + Sync {
     /// Whether the store is empty.
     fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Returns the delivery state for `id`, or `None` when unknown.
+    ///
+    /// Default impl returns `Some(DeliveryState::Delivered)` so stores
+    /// without delivery tracking behave as "everything delivered" — the
+    /// Phase 2b sync-queue work only upgrades `InMemoryStore` here.
+    fn delivery_state(&self, _id: &MessageId) -> Option<DeliveryState> {
+        Some(DeliveryState::Delivered)
     }
 }
 
@@ -82,12 +119,66 @@ pub struct InMemoryStore {
     /// The `Vec<MessageId>` value handles the (rare) case where two messages share
     /// the exact same HLC timestamp.
     channel_index: HashMap<ChannelId, BTreeMap<HlcTimestamp, Vec<MessageId>>>,
+    /// Per-message delivery tracking.
+    ///
+    /// - `acked[id]`   = recipients that have acknowledged the message.
+    /// - `pending[id]` = recipients the message is still pending for.
+    ///
+    /// When a message has no entry in either map the store reports
+    /// [`DeliveryState::Delivered`] (the permissive default expected by
+    /// the trait).
+    acked: HashMap<MessageId, HashSet<EndpointId>>,
+    pending: HashMap<MessageId, HashSet<EndpointId>>,
 }
 
 impl InMemoryStore {
     /// Create an empty store.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Record the cohort of expected recipients for a newly-sent
+    /// message. Every recipient starts in the `pending` set.
+    ///
+    /// Call this after [`insert`](Self::insert) when the sender knows
+    /// which peers must ack the message for it to count as delivered.
+    pub fn mark_pending<I>(&mut self, id: MessageId, recipients: I)
+    where
+        I: IntoIterator<Item = EndpointId>,
+    {
+        let set: HashSet<EndpointId> = recipients.into_iter().collect();
+        if set.is_empty() {
+            self.pending.remove(&id);
+            self.acked.remove(&id);
+            return;
+        }
+        self.pending.insert(id.clone(), set);
+        self.acked.entry(id).or_default();
+    }
+
+    /// Mark a single `peer` as having acknowledged `id`. Moves the peer
+    /// from the pending → acked sets. A no-op when the message has no
+    /// tracking entry or the peer is not in the pending set.
+    pub fn ack(&mut self, id: &MessageId, peer: EndpointId) {
+        if let Some(pending) = self.pending.get_mut(id) {
+            if pending.remove(&peer) {
+                self.acked.entry(id.clone()).or_default().insert(peer);
+                if pending.is_empty() {
+                    // Terminal state: every recipient acked. Drop the
+                    // tracking entry so `delivery_state` falls back to
+                    // the permissive `Delivered` default.
+                    self.pending.remove(id);
+                    self.acked.remove(id);
+                }
+            }
+        }
+    }
+
+    /// Mark every expected recipient for `id` as acknowledged. Clears
+    /// the tracking entry so the message reports as `Delivered`.
+    pub fn ack_all(&mut self, id: &MessageId) {
+        self.pending.remove(id);
+        self.acked.remove(id);
     }
 }
 
@@ -131,6 +222,28 @@ impl MessageStore for InMemoryStore {
 
     fn len(&self) -> usize {
         self.messages.len()
+    }
+
+    fn delivery_state(&self, id: &MessageId) -> Option<DeliveryState> {
+        // Message we have never heard of — `None`.
+        if !self.messages.contains_key(id) {
+            return None;
+        }
+        // No tracking entry at all — treat as delivered (permissive
+        // default matching the trait docstring).
+        let pending = match self.pending.get(id) {
+            Some(set) if !set.is_empty() => set,
+            _ => return Some(DeliveryState::Delivered),
+        };
+        let acked = self.acked.get(id).cloned().unwrap_or_default();
+        if acked.is_empty() {
+            Some(DeliveryState::PendingAllRecipients(pending.clone()))
+        } else {
+            Some(DeliveryState::PendingSomeRecipients {
+                acked,
+                pending: pending.clone(),
+            })
+        }
     }
 }
 
@@ -284,6 +397,89 @@ mod tests {
         assert_eq!(listed[2].id, msg_t3.id);
         assert_eq!(listed[3].id, msg_t5.id);
         assert_eq!(listed[4].id, msg_t200.id);
+    }
+
+    #[test]
+    fn delivery_state_defaults_to_delivered() {
+        // A freshly stored message with no tracking entry reports as
+        // `Delivered` — the permissive default per the trait docstring.
+        let mut store = InMemoryStore::new();
+        let mut hlc = HLC::new();
+        let channel = ChannelId::new();
+        let msg = make_text_msg(&channel, &mut hlc);
+        let id = msg.id.clone();
+        store.insert(msg).unwrap();
+        assert_eq!(store.delivery_state(&id), Some(DeliveryState::Delivered));
+    }
+
+    #[test]
+    fn delivery_state_unknown_message_returns_none() {
+        let store = InMemoryStore::new();
+        assert_eq!(store.delivery_state(&MessageId::new()), None);
+    }
+
+    #[test]
+    fn mark_pending_then_ack_one_moves_to_pending_some() {
+        let mut store = InMemoryStore::new();
+        let mut hlc = HLC::new();
+        let channel = ChannelId::new();
+        let msg = make_text_msg(&channel, &mut hlc);
+        let id = msg.id.clone();
+        store.insert(msg).unwrap();
+
+        let alice = Identity::generate().endpoint_id();
+        let bob = Identity::generate().endpoint_id();
+        store.mark_pending(id.clone(), [alice, bob]);
+
+        // Both pending, nothing acked → PendingAllRecipients.
+        match store.delivery_state(&id) {
+            Some(DeliveryState::PendingAllRecipients(set)) => {
+                assert_eq!(set.len(), 2);
+                assert!(set.contains(&alice));
+                assert!(set.contains(&bob));
+            }
+            other => panic!("expected PendingAllRecipients, got {other:?}"),
+        }
+
+        store.ack(&id, alice);
+
+        // One acked, one pending → PendingSomeRecipients.
+        match store.delivery_state(&id) {
+            Some(DeliveryState::PendingSomeRecipients { acked, pending }) => {
+                assert!(acked.contains(&alice));
+                assert!(pending.contains(&bob));
+                assert_eq!(acked.len(), 1);
+                assert_eq!(pending.len(), 1);
+            }
+            other => panic!("expected PendingSomeRecipients, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ack_all_transitions_to_delivered() {
+        let mut store = InMemoryStore::new();
+        let mut hlc = HLC::new();
+        let channel = ChannelId::new();
+        let msg = make_text_msg(&channel, &mut hlc);
+        let id = msg.id.clone();
+        store.insert(msg).unwrap();
+
+        let alice = Identity::generate().endpoint_id();
+        let bob = Identity::generate().endpoint_id();
+        store.mark_pending(id.clone(), [alice, bob]);
+
+        // Ack each recipient individually — also drains to Delivered.
+        store.ack(&id, alice);
+        store.ack(&id, bob);
+        assert_eq!(store.delivery_state(&id), Some(DeliveryState::Delivered));
+
+        // Using the `ack_all` fast path from a fresh pending state.
+        let msg2 = make_text_msg(&channel, &mut hlc);
+        let id2 = msg2.id.clone();
+        store.insert(msg2).unwrap();
+        store.mark_pending(id2.clone(), [alice, bob]);
+        store.ack_all(&id2);
+        assert_eq!(store.delivery_state(&id2), Some(DeliveryState::Delivered));
     }
 
     #[test]

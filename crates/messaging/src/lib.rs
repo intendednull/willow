@@ -31,6 +31,10 @@
 pub mod hlc;
 pub mod store;
 
+// Re-export `DeliveryState` at crate root so `willow-client` can reach
+// it without naming the `store` submodule — per Phase 2b Task 2.
+pub use store::DeliveryState;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
