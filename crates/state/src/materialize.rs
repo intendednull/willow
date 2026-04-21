@@ -5,7 +5,7 @@
 //! [`apply_event`], producing identical output on all peers given the
 //! same DAG contents.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 use willow_identity::EndpointId;
 
@@ -324,14 +324,15 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
 
         EventKind::DeleteChannel { channel_id } => {
             state.channels.remove(channel_id);
-            state.messages.retain(|m| m.channel_id != *channel_id);
-            // Rebuild message_index because retain may have shifted indexes.
-            state.message_index = state
-                .messages
-                .iter()
-                .enumerate()
-                .map(|(i, m)| (m.id, i))
-                .collect::<HashMap<_, _>>();
+            let mut kept = Vec::with_capacity(state.messages.len());
+            state.message_index.clear();
+            for msg in state.messages.drain(..) {
+                if msg.channel_id != *channel_id {
+                    state.message_index.insert(msg.id, kept.len());
+                    kept.push(msg);
+                }
+            }
+            state.messages = kept;
         }
 
         EventKind::RenameChannel {

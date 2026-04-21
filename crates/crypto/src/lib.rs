@@ -36,6 +36,32 @@ pub mod sas_wordlist;
 pub use sas::{sas_words, SasError, SAS_DS_TAG, SAS_WORD_COUNT};
 pub use sas_wordlist::{SAS_WORDLIST_HASH, SAS_WORDLIST_LEN, SAS_WORDS};
 
+// ───── HKDF Domain Separators ──────────────────────────────────────────────
+//
+// Every HKDF derivation in this crate uses an explicit, versioned domain
+// string as (part of) its `info` parameter. This ensures keys derived
+// for distinct purposes (ratchet message keys, ratchet seed advance,
+// channel-key-wrap) cannot collide, even if an implementation bug ever
+// reused the same salt or IKM across contexts.
+//
+// The `v1` component is an in-band version marker. Any future change that
+// alters the semantics of a derivation MUST bump the version (e.g. `v2`)
+// so old and new keys are provably distinct.
+//
+// NOTE: the prefixes below are part of the wire protocol — changing them
+// breaks decryption of any previously encrypted content. Willow has not
+// shipped a stable release, so this is acceptable as an initial rollout.
+
+/// Domain prefix for per-message key derivation inside the ratchet.
+const HKDF_RATCHET_MSG_DOMAIN: &[u8] = b"willow-crypto/v1/ratchet/msg";
+
+/// Domain string for the ratchet's seed-advance derivation.
+const HKDF_RATCHET_ADVANCE_DOMAIN: &[u8] = b"willow-crypto/v1/ratchet/advance";
+
+/// Domain string for the channel-key-wrap derivation (encrypt_channel_key_for
+/// / decrypt_channel_key).
+const HKDF_KEYWRAP_DOMAIN: &[u8] = b"willow-crypto/v1/keywrap/channel-key";
+
 // ───── Errors ───────────────────────────────────────────────────────────────
 
 /// Errors that can occur during cryptographic operations.
@@ -133,7 +159,12 @@ impl KeyRatchet {
         let hk = Hkdf::<Sha256>::new(None, &self.seed);
 
         // Derive message key from seed + counter.
-        let mut info = Vec::with_capacity(12);
+        // The HKDF `info` is explicitly prefixed with a versioned domain
+        // separator so ratchet-derived keys cannot collide with keys
+        // derived for any other use (channel-key-wrap, future contexts).
+        // See `HKDF_RATCHET_MSG_DOMAIN`.
+        let mut info = Vec::with_capacity(HKDF_RATCHET_MSG_DOMAIN.len() + 12);
+        info.extend_from_slice(HKDF_RATCHET_MSG_DOMAIN);
         info.extend_from_slice(&self.counter.to_le_bytes());
         info.extend_from_slice(&self.epoch.to_le_bytes());
 
@@ -142,11 +173,13 @@ impl KeyRatchet {
             .expect("32 bytes is valid HKDF output length");
 
         // Ratchet forward: derive next seed from current seed + counter.
-        // This ensures the old seed can't recover future keys.
+        // This ensures the old seed can't recover future keys. The advance
+        // step uses a distinct versioned `info` string so the next-seed
+        // derivation cannot collide with the message-key derivation.
         let mut next_seed = [0u8; 32];
         let hk_advance = Hkdf::<Sha256>::new(Some(&info), &self.seed);
         hk_advance
-            .expand(b"willow-ratchet-advance", &mut next_seed)
+            .expand(HKDF_RATCHET_ADVANCE_DOMAIN, &mut next_seed)
             .expect("32 bytes is valid HKDF output length");
         self.seed = next_seed;
 
@@ -369,7 +402,7 @@ pub fn encrypt_channel_key_for(
     // than lingering on the stack after `cipher` is consumed.
     let hk = Hkdf::<Sha256>::new(None, shared_secret.as_bytes());
     let mut wrapping_key: Zeroizing<[u8; 32]> = Zeroizing::new([0u8; 32]);
-    hk.expand(b"willow-channel-key-wrap", wrapping_key.as_mut())
+    hk.expand(HKDF_KEYWRAP_DOMAIN, wrapping_key.as_mut())
         .map_err(|_| CryptoError::KeyDerivationFailed)?;
 
     let cipher = ChaCha20Poly1305::new(wrapping_key.as_ref().into());
@@ -401,7 +434,7 @@ pub fn decrypt_channel_key(
     // than lingering on the stack after `cipher` is consumed.
     let hk = Hkdf::<Sha256>::new(None, shared_secret.as_bytes());
     let mut wrapping_key: Zeroizing<[u8; 32]> = Zeroizing::new([0u8; 32]);
-    hk.expand(b"willow-channel-key-wrap", wrapping_key.as_mut())
+    hk.expand(HKDF_KEYWRAP_DOMAIN, wrapping_key.as_mut())
         .map_err(|_| CryptoError::KeyDerivationFailed)?;
 
     let cipher = ChaCha20Poly1305::new(wrapping_key.as_ref().into());
@@ -1283,6 +1316,28 @@ mod tests {
         assert!(
             matches!(result, Err(CryptoError::DecryptionFailed)),
             "expected DecryptionFailed after ephemeral_public tamper, got {result:?}"
+        );
+    }
+
+    /// Flipping a byte in the key-wrap `nonce` yields an AEAD failure.
+    /// This guards the tampered-nonce path for
+    /// `encrypt_channel_key_for` / `decrypt_channel_key`, parallel to the
+    /// tampered-ciphertext and tampered-ephemeral-public tests above.
+    #[test]
+    fn tampered_nonce_fails_key_wrap_decryption() {
+        let recipient = Identity::generate();
+        let channel_key = generate_channel_key();
+        let pub_bytes = recipient_public_bytes(&recipient);
+
+        let mut encrypted = encrypt_channel_key_for(&channel_key, &pub_bytes).unwrap();
+
+        // Flip one byte in the nonce portion of the wire payload.
+        encrypted.nonce[0] ^= 0xFF;
+
+        let result = decrypt_channel_key(&encrypted, &recipient);
+        assert!(
+            matches!(result, Err(CryptoError::DecryptionFailed)),
+            "expected DecryptionFailed after nonce tamper, got {result:?}"
         );
     }
 

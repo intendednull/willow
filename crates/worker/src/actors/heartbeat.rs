@@ -103,7 +103,9 @@ impl<T: TopicHandle + 'static> Handler<HeartbeatTick> for HeartbeatActor<T> {
             let msg = WorkerWireMessage::Announcement(announcement);
             let wire = willow_common::WireMessage::Worker(msg);
             if let Some(bytes) = willow_common::pack_wire(&wire, &identity) {
-                topic.broadcast(bytes::Bytes::from(bytes)).await.ok();
+                if let Err(err) = topic.broadcast(bytes::Bytes::from(bytes)).await {
+                    warn!(%err, %peer_id, "heartbeat announcement broadcast failed");
+                }
             }
         }
     }
