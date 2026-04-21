@@ -719,13 +719,11 @@ mod tests {
                 display_name: None,
             },
         );
-        state.profiles.insert(
-            peer_id,
-            Profile {
-                peer_id,
-                display_name: display.into(),
-            },
-        );
+        state.profiles.insert(peer_id, {
+            let mut p = Profile::new(peer_id);
+            p.display_name = display.into();
+            p
+        });
     }
 
     fn push_channel(state: &mut ServerState, id: &str, name: &str) {

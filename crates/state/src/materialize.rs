@@ -472,13 +472,11 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
         }
 
         EventKind::SetProfile { display_name } => {
-            state.profiles.insert(
-                event.author,
-                Profile {
-                    peer_id: event.author,
-                    display_name: display_name.clone(),
-                },
-            );
+            let entry = state
+                .profiles
+                .entry(event.author)
+                .or_insert_with(|| Profile::new(event.author));
+            entry.display_name = display_name.clone();
             if let Some(member) = state.members.get_mut(&event.author) {
                 member.display_name = Some(display_name.clone());
             }

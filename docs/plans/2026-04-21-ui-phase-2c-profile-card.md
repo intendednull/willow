@@ -104,7 +104,7 @@ Extend `willow-state` with the new fields so downstream crates can reference the
 
 **Files:** modify `crates/state/src/types.rs`, modify `crates/state/src/tests.rs`.
 
-- [ ] **Step 1.1 — Add `CrestPattern` enum.**
+- [x] **Step 1.1 — Add `CrestPattern` enum.**
 
   ```rust
   /// Procedural crest patterns. Deterministic SVG seeded by peer id.
@@ -125,7 +125,7 @@ Extend `willow-state` with the new fields so downstream crates can reference the
   }
   ```
 
-- [ ] **Step 1.2 — Add `PinnedFragment` + `PinnedKind`.**
+- [x] **Step 1.2 — Add `PinnedFragment` + `PinnedKind`.**
 
   ```rust
   #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,7 +141,7 @@ Extend `willow-state` with the new fields so downstream crates can reference the
   }
   ```
 
-- [ ] **Step 1.3 — Extend `Profile`.** Replace the existing `Profile` struct with:
+- [x] **Step 1.3 — Extend `Profile`.** Replace the existing `Profile` struct with:
 
   ```rust
   /// A peer's display profile.
@@ -178,7 +178,7 @@ Extend `willow-state` with the new fields so downstream crates can reference the
 
   Note: `Profile` was previously missing `Default`. Add `Default` via the derive — this requires `EndpointId: Default` which it already is (`EndpointId([0u8; 32])`).
 
-- [ ] **Step 1.4 — Unit tests.** In `crates/state/src/types.rs` `#[cfg(test)] mod tests` (add if missing):
+- [x] **Step 1.4 — Unit tests.** In `crates/state/src/types.rs` `#[cfg(test)] mod tests` (add if missing):
 
   ```rust
   #[test]
@@ -211,7 +211,7 @@ Extend `willow-state` with the new fields so downstream crates can reference the
 
   (If the crate doesn't use `serde_json` in tests yet, add it to `[dev-dependencies]` of `crates/state/Cargo.toml` — it is already a workspace dep.)
 
-- [ ] **Step 1.5 — Run state tests.**
+- [x] **Step 1.5 — Run state tests.**
 
   ```bash
   cargo test -p willow-state
@@ -219,7 +219,7 @@ Extend `willow-state` with the new fields so downstream crates can reference the
 
   Expected: all existing tests plus 3 new `profile_*` / `crest_pattern_*` tests green.
 
-- [ ] **Step 1.6 — Commit.**
+- [x] **Step 1.6 — Commit.**
 
   ```bash
   git add crates/state/src/types.rs crates/state/Cargo.toml
