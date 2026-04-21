@@ -61,8 +61,7 @@ pub fn ProfilePopover() -> impl IntoView {
                 let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
                     return;
                 };
-                if let Some(first) = doc.query_selector(".profile-popover button").ok().flatten()
-                {
+                if let Some(first) = doc.query_selector(".profile-popover button").ok().flatten() {
                     if let Ok(el) = first.dyn_into::<web_sys::HtmlElement>() {
                         el.focus().ok();
                     }

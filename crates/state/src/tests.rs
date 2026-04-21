@@ -3733,9 +3733,7 @@ fn mute_not_admin_gated() {
 // cover the six contract rows from the plan: merge / clear / preserve /
 // idempotent / caps / creates-on-missing.
 
-use crate::types::{
-    CrestPattern, PinnedFragment, PinnedKind, ProfileDelta, PROFILE_CAP_BIO,
-};
+use crate::types::{CrestPattern, PinnedFragment, PinnedKind, ProfileDelta, PROFILE_CAP_BIO};
 
 #[test]
 fn update_profile_merges_fields() {
