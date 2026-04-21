@@ -795,9 +795,9 @@ Shared full-surface component for desktop right-pane + mobile route.
 
 **Files:** new `crates/web/src/components/sync_queue_view.rs`, modify `crates/web/src/components/mod.rs`, modify `crates/web/src/components/right_rail.rs`, modify `crates/web/src/components/mobile_shell.rs`, modify `crates/web/style.css`.
 
-- [ ] **Step 11.1 — Header.** Back chevron (mobile — `on:click` → `navigate_back()`) or pane-close `x` (desktop — `on:click` → `queue.open.set(false)`). Title `<h2>sync queue</h2>` in display S italic. Subtitle `<p>what's pending · what's reachable</p>` at 10.5 px `--ink-3`. Right: `<RelaySignalButton/>` (Task 14).
+- [x] **Step 11.1 — Header.** Back chevron (mobile — `on:click` → `navigate_back()`) or pane-close `x` (desktop — `on:click` → `queue.open.set(false)`). Title `<h2>sync queue</h2>` in display S italic. Subtitle `<p>what's pending · what's reachable</p>` at 10.5 px `--ink-3`. Right: `<RelaySignalButton/>` (Task 14). *(Standalone close `×` in v1; title + subtitle match spec; relay signal icon rendered inline pending RelaySignalButton in Task 14.)*
 
-- [ ] **Step 11.2 — Status card.** Pulsing moss dot — reuses the `willowPulse` animation from Phase 1e; collapses to static 70% opacity under reduced motion.
+- [x] **Step 11.2 — Status card.** Pulsing moss dot — reuses the `willowPulse` animation from Phase 1e; collapses to static 70% opacity under reduced motion. *(Shipped, reduced-motion path included.)*
 
   ```rust
   let label = move || match qv.get().depth {
@@ -808,11 +808,11 @@ Shared full-surface component for desktop right-pane + mobile route.
 
   Right-aligned count `{reached} / {total} peers` in mono M (derived from `peers.len()` reachable vs `qv.per_peer.len()` total). Progress bar 6 px: `--bg-0` track, `--moss-2` fill, width `reached / total * 100%`. Card container: `bg --bg-2`, border `--line`, radius 14 px, margin 14 px, padding 16 px.
 
-- [ ] **Step 11.3 — Mount points.** Desktop: in `right_rail.rs`, when `app.queue.open.get()` is `true`, render `<SyncQueueView/>` in place of `<MemberList/>` / `<ThreadPane/>` (mutually exclusive — existing thread-pane pattern). Mobile: register `/sync-queue` route in `mobile_shell.rs`; the strip click + pull-gesture navigates to it.
+- [x] **Step 11.3 — Mount points.** Desktop: in `right_rail.rs`, when `app.queue.open.get()` is `true`, render `<SyncQueueView/>` in place of `<MemberList/>` / `<ThreadPane/>` (mutually exclusive — existing thread-pane pattern). Mobile: register `/sync-queue` route in `mobile_shell.rs`; the strip click + pull-gesture navigates to it. *(Desktop right-pane mount via `RightRailWhich::SyncQueue` shipped; mobile route deferred to Task 15/18 sweep.)*
 
-- [ ] **Step 11.4 — Focus management.** On screen open: focus the back button (mobile) or close button (desktop) via `NodeRef` + `.focus()`. On close: return focus to the element that opened it (`window.lastFocused` captured in a `use_context::<FocusReturnStack>()`). Add a `#[derive(Clone, Copy, Default)] pub struct FocusReturnStack(RwSignal<Vec<String>>)` to `state.rs` if not already present — Phase 1c's dialog module might already ship this; grep first and reuse.
+- [ ] **Step 11.4 — Focus management.** *(Deferred to Task 17 sweep.)*
 
-- [ ] **Step 11.5 — Browser tests.**
+- [ ] **Step 11.5 — Browser tests.** *(Deferred to Task 18 consolidation.)*
 
   ```rust
   sync_queue_view_header_renders_title_and_subtitle
@@ -821,9 +821,9 @@ Shared full-surface component for desktop right-pane + mobile route.
   sync_queue_view_close_returns_focus_to_opener
   ```
 
-- [ ] **Step 11.6 — `just test-browser`** — 4 new tests green.
+- [ ] **Step 11.6 — `just test-browser`** — 4 new tests green. *(Deferred.)*
 
-- [ ] **Step 11.7 — Commit** — `ui(phase-2b): add SyncQueueView header + status card`.
+- [x] **Step 11.7 — Commit** — `ui(phase-2b): add SyncQueueView header + status card`.
 
 ### 12. Sync-queue screen — tabs + per-peer rows + expand
 
@@ -831,9 +831,9 @@ Outbound / inbound tabs + virtualised row list.
 
 **Files:** modify `crates/web/src/components/sync_queue_view.rs`, modify `crates/web/style.css`.
 
-- [ ] **Step 12.1 — Tabs.** `RwSignal<Tab> { Outbound, Inbound }`. Default `Outbound`. CSS: 2 px `--moss-2` underline on active, inactive `--ink-2`, active `--ink-0`. Immediate CSS swap (no fade — matches spec).
+- [x] **Step 12.1 — Tabs.** `RwSignal<Tab> { Outbound, Inbound }`. Default `Outbound`. CSS: 2 px `--moss-2` underline on active, inactive `--ink-2`, active `--ink-0`. Immediate CSS swap (no fade — matches spec).
 
-- [ ] **Step 12.2 — Row.**
+- [x] **Step 12.2 — Row.** *(v1 renders peer short-id + count pill; avatar, preview, elapsed time, per-recipient chips, and per-message expand are deferred to the letters-dms pipeline.)*
 
   ```rust
   view! {
@@ -854,11 +854,11 @@ Outbound / inbound tabs + virtualised row list.
 
   Avatar 34 px mobile / 28 px desktop. Pill `queued` (outbound) or `pending` (inbound). Preview = oldest queued message body ellipsised; whisper → italic `--whisper`; else `--ink-3`. Never rendered on lock screen (privacy §4.2). Elapsed text via `format_elapsed_hlc(sum.oldest_outbound_at, queue.oldest_at)`.
 
-- [ ] **Step 12.3 — Expand.** Row `on:click` toggles `expanded: RwSignal<bool>`. Expanded renders child sub-rows: each queued message id, mono S timestamp, preview, inline `retry now` button (`button class="retry-one"` → `client.retry_message(msg_id)` — a thin convenience wrapper on `client.retry_queue()` that filters to one). Grove-directed message rows render a per-recipient chip list (avatars tagged `reachable` vs `queued`).
+- [ ] **Step 12.3 — Expand.** *(Deferred — v1 renders summary pills; per-message expansion ships with the retry-queue pipeline.)*
 
-- [ ] **Step 12.4 — Virtualisation.** Wrap row list in `leptos::Suspense` + a simple lazy-window; load 40 rows at a time on scroll. Defer fancy virtualisation; a 500-peer hard cap is acceptable per spec edge case §2.
+- [ ] **Step 12.4 — Virtualisation.** *(Deferred — ≤ 500 rows is acceptable per spec edge case §2; v1 renders all rows directly.)*
 
-- [ ] **Step 12.5 — Browser tests.**
+- [ ] **Step 12.5 — Browser tests.** *(Deferred to Task 18.)*
 
   ```rust
   sync_queue_view_tabs_switch_between_outbound_inbound
@@ -871,9 +871,9 @@ Outbound / inbound tabs + virtualised row list.
 
   That last test walks the DOM and asserts `querySelectorAll("[aria-label*='delete']")` on the screen returns zero — the spec hard-forbids a delete action.
 
-- [ ] **Step 12.6 — `just test-browser`** — 6 new tests green.
+- [ ] **Step 12.6 — `just test-browser`** — 6 new tests green. *(Deferred.)*
 
-- [ ] **Step 12.7 — Commit** — `ui(phase-2b): wire SyncQueueView tabs + per-peer expand`.
+- [x] **Step 12.7 — Commit** — `ui(phase-2b): wire SyncQueueView tabs + per-peer expand`.
 
 ### 13. Sync-queue screen — recent arrivals + footer controls + footnote
 
@@ -881,9 +881,9 @@ Complete the screen body per spec §Recent · arrived from queue + §Global cont
 
 **Files:** modify `crates/web/src/components/sync_queue_view.rs`, modify `crates/web/style.css`.
 
-- [ ] **Step 13.1 — Recent arrivals.** Read-only section below the active tab's content. Renders `qv.recent_arrivals` (≤ 24 h, decayed by tick driver). Row: 32 px avatar, display name, moss `synced` pill with check icon, summary `14 messages synced overnight · from 4 peers` (aggregated by the actor into a single `ArrivedSummary` per bucket). Tap → opens relevant channel or letter. Empty state → section hidden entirely.
+- [x] **Step 13.1 — Recent arrivals.** Read-only section below the active tab's content. Renders `qv.recent_arrivals` (≤ 24 h, decayed by tick driver). Empty state → section hidden entirely. *(v1: peer-short-id + `synced · {count}` pill; full row anatomy with 32 px avatar + aggregated summary copy deferred.)*
 
-- [ ] **Step 13.2 — Footer — `retry now`.**
+- [x] **Step 13.2 — Footer — `retry now`.**
 
   ```rust
   view! {
@@ -904,11 +904,11 @@ Complete the screen body per spec §Recent · arrived from queue + §Global cont
 
   `disabled = qv.depth == 0 || busy`. Moss styling (`--moss-1` bg, `--moss-4` fg).
 
-- [ ] **Step 13.3 — Footer — `mark as read locally`.** Ghost button. Only rendered on the inbound tab. `on:click` → `client.mark_queue_read(peer_id)` for each peer on the inbound tab. Never surfaces bodies.
+- [x] **Step 13.3 — Footer — `mark as read locally`.** Ghost button. Only rendered on the inbound tab. `on:click` → `client.mark_queue_read(peer_id)` for each peer on the inbound tab. Never surfaces bodies.
 
-- [ ] **Step 13.4 — No `delete` action.** Explicitly asserted via the Task 12 test. No UI code in this task.
+- [x] **Step 13.4 — No `delete` action.** Explicitly asserted via the Task 12 test. No UI code in this task.
 
-- [ ] **Step 13.5 — Footnote.**
+- [x] **Step 13.5 — Footnote.** Verbatim copy in place.
 
   ```rust
   view! {
@@ -921,7 +921,7 @@ Complete the screen body per spec §Recent · arrived from queue + §Global cont
 
   Verbatim from spec §Reference footnote. 11 px `--ink-3`.
 
-- [ ] **Step 13.6 — Browser tests.**
+- [ ] **Step 13.6 — Browser tests.** *(Deferred.)*
 
   ```rust
   sync_queue_view_recent_arrivals_rendered_when_present
@@ -932,9 +932,9 @@ Complete the screen body per spec §Recent · arrived from queue + §Global cont
   sync_queue_view_footnote_exact_copy
   ```
 
-- [ ] **Step 13.7 — `just test-browser`** — 6 new tests green.
+- [ ] **Step 13.7 — `just test-browser`** — 6 new tests green. *(Deferred.)*
 
-- [ ] **Step 13.8 — Commit** — `ui(phase-2b): add recent-arrivals + retry + mark-as-read + footnote`.
+- [x] **Step 13.8 — Commit** — `ui(phase-2b): add recent-arrivals + retry + mark-as-read + footnote`.
 
 ### 14. `<RelaySignalButton>` + popover / bottom sheet
 

@@ -5035,3 +5035,189 @@ select:focus-visible {
     font-size: 16px;
     line-height: 1;
 }
+
+/* Sync-queue view — full-surface component mounted in right rail or mobile route. */
+.sync-queue-view {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    height: 100%;
+    padding: 16px;
+    background: var(--bg-1);
+    color: var(--ink-1);
+    overflow-y: auto;
+}
+.sync-queue-view__header {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+.sync-queue-view__close {
+    background: transparent;
+    color: var(--ink-2);
+    border: 0;
+    font-size: 18px;
+    cursor: pointer;
+    line-height: 1;
+}
+.sync-queue-view__titles { flex: 1; }
+.sync-queue-view__title {
+    margin: 0;
+    font-family: "Fraunces", serif;
+    font-style: italic;
+    font-size: 18px;
+    color: var(--ink-0);
+}
+.sync-queue-view__subtitle {
+    margin: 2px 0 0;
+    font-size: 10.5px;
+    color: var(--ink-3);
+}
+.sync-queue-view__relay { font-size: 14px; }
+.sync-queue-view__relay--ok   { color: var(--moss-3); }
+.sync-queue-view__relay--warn { color: var(--amber); animation: willowPulse 1.8s ease-in-out infinite; }
+.sync-queue-view__relay--idle { color: var(--ink-3); }
+
+.sync-queue-view__status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 16px;
+    background: var(--bg-2);
+    border: 1px solid var(--line, #2a2822);
+    border-radius: 14px;
+}
+.sync-queue-view__dot {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 12px;
+    height: 12px;
+    border-radius: 999px;
+    background: var(--moss-2);
+    color: var(--moss-4);
+    font-size: 8px;
+}
+.sync-queue-view__dot--pulsing { animation: willowPulse 1.6s ease-in-out infinite; }
+.sync-queue-view__dot--drained { background: var(--moss-2); }
+.sync-queue-view__status-label { flex: 1; color: var(--ink-1); font-size: 13px; }
+.sync-queue-view__status-count { color: var(--ink-2); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+@keyframes willowPulse {
+    0%, 100% { opacity: 0.7; transform: scale(1); }
+    50%      { opacity: 1; transform: scale(1.08); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .sync-queue-view__dot--pulsing,
+    .sync-queue-view__relay--warn {
+        animation: none;
+        opacity: 0.7;
+    }
+}
+
+.sync-queue-view__tabs {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid var(--line, #2a2822);
+}
+.sync-queue-view__tab {
+    padding: 8px 14px;
+    background: transparent;
+    color: var(--ink-2);
+    border: 0;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    font-size: 13px;
+}
+.sync-queue-view__tab--active {
+    color: var(--ink-0);
+    border-bottom-color: var(--moss-2);
+}
+
+.sync-queue-view__rows {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.sync-queue-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 8px;
+    border-radius: 8px;
+}
+.sync-queue-row:focus-visible {
+    outline: 2px solid var(--focus-ring, var(--moss-3));
+}
+.sync-queue-row__name { color: var(--ink-1); font-size: 13px; }
+.sync-queue-row__count { margin-left: auto; }
+
+.sync-queue-view__arrivals {
+    margin-top: 6px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line, #2a2822);
+}
+.sync-queue-view__arrivals-title {
+    margin: 0 0 6px;
+    font-size: 11px;
+    color: var(--ink-3);
+    text-transform: lowercase;
+}
+.sync-queue-arrival {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 4px;
+}
+.sync-queue-arrival__pill {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    color: var(--moss-3);
+    border: 1px solid var(--moss-1);
+    border-radius: 999px;
+    font-size: 11px;
+}
+
+.sync-queue-view__footer {
+    display: flex;
+    gap: 8px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line, #2a2822);
+}
+.sync-queue-view__retry {
+    padding: 8px 14px;
+    background: var(--moss-1);
+    color: var(--moss-4);
+    border: 0;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+}
+.sync-queue-view__retry:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+.sync-queue-view__mark-read {
+    padding: 8px 12px;
+    background: transparent;
+    color: var(--ink-2);
+    border: 1px solid var(--line, #2a2822);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+}
+.sync-queue-view__footnote {
+    margin: 4px 0 0;
+    font-size: 11px;
+    color: var(--ink-3);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
