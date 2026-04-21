@@ -4,12 +4,13 @@
 //! banner.
 //!
 //! Fires once per reopen-after-long-offline session: a 60+ s offline
-//! window **plus** at least one queued message that arrived during the
-//! offline window (`recent_arrivals`). Persists until the user
-//! dismisses the banner.
+//! window (read from `QueueView::last_offline_ticks`) **plus** at
+//! least one queued message that arrived during the offline window
+//! (`recent_arrivals`). Persists until the user dismisses the banner.
 
 use leptos::prelude::*;
 
+use crate::components::sync_queue_copy;
 use crate::icons;
 use crate::state::AppState;
 
@@ -32,11 +33,18 @@ pub fn WelcomeBackBanner() -> impl IntoView {
         let prev = last_online.get_value();
         last_online.set_value(online);
         if !prev && online {
-            // Sum recent arrivals — proxy for "messages queued while
-            // offline that have now arrived".
-            let n: u32 = queue_view.with(|v| v.recent_arrivals.iter().map(|a| a.count).sum());
-            if n > 0 {
-                count.set(n);
+            // 60 s offline gate — only fire after a long window.
+            let (offline_ticks, arrivals_sum) = queue_view.with(|v| {
+                (
+                    v.last_offline_ticks,
+                    v.recent_arrivals.iter().map(|a| a.count).sum::<u32>(),
+                )
+            });
+            if offline_ticks.is_none_or(|t| t < sync_queue_copy::RECONNECT_GATE_TICKS) {
+                return;
+            }
+            if arrivals_sum > 0 {
+                count.set(arrivals_sum);
                 visible.set(true);
             }
         }

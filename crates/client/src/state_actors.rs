@@ -247,6 +247,14 @@ pub struct QueueMeta {
     /// the reconnection toast + welcome-back banner (Phase 2b Task 16):
     /// both gate on `offline_since_tick >= 60 s`. `None` while online.
     pub offline_since_tick: Option<Tick>,
+    /// Duration (in ticks ≈ seconds) of the most recent completed
+    /// offline → online transition. Populated by `set_device_online`
+    /// on the offline-to-online flip and exposed verbatim via
+    /// `QueueView::last_offline_ticks` so the reconnection toast +
+    /// welcome-back banner can gate on "≥ 60 s offline" without having
+    /// to observe the pre-clear `offline_since_tick`. `None` until the
+    /// first offline window completes.
+    pub last_offline_ticks: Option<Tick>,
 }
 
 impl QueueMeta {
@@ -320,11 +328,16 @@ impl QueueMeta {
 
     /// Update the device-online snapshot. Stamps
     /// `offline_since_tick` on a transition to offline and clears it on
-    /// transition to online.
+    /// transition to online, capturing the elapsed offline duration in
+    /// `last_offline_ticks` so the reconnection toast + welcome-back
+    /// banner can gate on "≥ 60 s offline" (spec §Reconnection toast).
     pub fn set_device_online(&mut self, online: bool) {
         if self.device_online && !online {
             self.offline_since_tick = Some(self.now);
         } else if !self.device_online && online {
+            if let Some(since) = self.offline_since_tick {
+                self.last_offline_ticks = Some(self.now.saturating_sub(since));
+            }
             self.offline_since_tick = None;
         }
         self.device_online = online;

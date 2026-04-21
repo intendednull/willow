@@ -729,6 +729,12 @@ pub struct QueueView {
     pub relay_status: crate::queue::RelayStatus,
     /// Device-online snapshot.
     pub device_online: bool,
+    /// Duration (in ticks ≈ seconds) of the most recent completed
+    /// offline → online transition. `None` until the first offline
+    /// window completes. Consumed by the reconnection toast +
+    /// welcome-back banner to gate on "≥ 60 s offline" without
+    /// having to observe the pre-clear `QueueMeta::offline_since_tick`.
+    pub last_offline_ticks: Option<crate::presence::Tick>,
 }
 
 /// Aggregate a [`QueueMeta`] snapshot into a [`QueueView`].
@@ -771,6 +777,7 @@ pub fn compute_queue_view(meta: &Arc<QueueMeta>) -> QueueView {
         recent_arrivals: meta.recent_arrivals.iter().cloned().collect(),
         relay_status: meta.relay_status,
         device_online: meta.device_online,
+        last_offline_ticks: meta.last_offline_ticks,
     }
 }
 

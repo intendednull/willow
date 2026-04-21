@@ -52,6 +52,7 @@ mod roles;
 mod sas;
 mod settings;
 mod status_dot;
+pub mod sync_queue_copy;
 mod sync_queue_view;
 mod tab_bar;
 mod toast;

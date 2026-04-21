@@ -230,6 +230,62 @@ async fn queue_view_inbound_hint_propagates() {
     assert_eq!(view.inbound_per_peer.get(&alice), Some(&7));
 }
 
+// ───── 60 s reconnection gate (spec §Reconnection toast) ──────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn offline_transition_captures_last_offline_ticks_for_gate() {
+    // Offline-then-online transition must record the duration of the
+    // offline window in `last_offline_ticks` so the reconnection toast
+    // + welcome-back banner can gate on "≥ 60 s offline" without the
+    // UI having to observe the pre-clear `offline_since_tick`.
+    let (client, _broker) = test_client();
+
+    // Prime: start online at `now = 10`. Go offline, stay 65 s, back online.
+    willow_actor::state::mutate(client._queue_meta_addr(), |qm| {
+        qm.device_online = true;
+        qm.now = 10;
+        qm.set_device_online(false);
+        qm.now = 75; // 65 s later
+        qm.set_device_online(true);
+    })
+    .await;
+
+    let view = client.queue_view().await;
+    assert_eq!(view.last_offline_ticks, Some(65));
+    assert!(view.device_online);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn short_offline_transition_still_records_last_offline_ticks() {
+    // Short offline (< 60 s) also populates the field — the gate lives
+    // in the UI components, not in the capture. The client records the
+    // duration faithfully; the reconnection toast + welcome-back
+    // banner decide whether to fire based on the value.
+    let (client, _broker) = test_client();
+
+    willow_actor::state::mutate(client._queue_meta_addr(), |qm| {
+        qm.device_online = true;
+        qm.now = 100;
+        qm.set_device_online(false);
+        qm.now = 130; // 30 s later — under the 60 s gate
+        qm.set_device_online(true);
+    })
+    .await;
+
+    let view = client.queue_view().await;
+    assert_eq!(view.last_offline_ticks, Some(30));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn last_offline_ticks_is_none_on_first_connect() {
+    // Fresh client that has never been offline — `last_offline_ticks`
+    // stays `None` so the welcome-back banner does not fire on first
+    // connect.
+    let (client, _broker) = test_client();
+    let view = client.queue_view().await;
+    assert_eq!(view.last_offline_ticks, None);
+}
+
 // Sanity-check the `Arc::new((*snap).clone())` path used by the
 // `retry_queue` + `mark_queue_read` methods — guards against future
 // changes accidentally making the snapshot lose data.

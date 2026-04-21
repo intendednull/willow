@@ -4,16 +4,18 @@
 //! toast.
 //!
 //! Listens to `app.queue.device_online` transitions. Fires only when
-//! the offline window was ≥ 60 s (tracked via
-//! `QueueMeta::offline_since_tick` → exposed through the queue view as
-//! part of `device_online`'s transition). Auto-hides after 4 s;
-//! dismissible via the `x` button.
+//! the preceding offline window was ≥ 60 s — read from
+//! `QueueView::last_offline_ticks` which the client stamps on every
+//! offline → online flip. This suppresses the toast on initial connect
+//! and on brief reconnect blips. Auto-hides after 4 s; dismissible via
+//! the `x` button.
 //!
 //! When the welcome-back banner is also visible the toast yields to it
-//! (spec §Open questions §5).
+//! (spec §Open questions §5 — `sync_queue_copy::BANNER_TAKES_PRECEDENCE`).
 
 use leptos::prelude::*;
 
+use crate::components::sync_queue_copy;
 use crate::icons;
 use crate::state::AppState;
 
@@ -39,9 +41,15 @@ pub fn ReconnectionToast() -> impl IntoView {
         let prev = last_online.get_value();
         last_online.set_value(online);
         if !prev && online {
-            // Transitioned offline → online. Show the toast with the
-            // current queue depth as the snapshot count.
-            queued_count.set(queue_view.with(|v| v.depth));
+            // Transitioned offline → online. Read the 60 s gate from
+            // the freshly stamped `last_offline_ticks` — if the offline
+            // window was shorter, keep the toast suppressed (first-
+            // connect + brief blip behaviour, spec §Reconnection toast).
+            let (offline_ticks, depth) = queue_view.with(|v| (v.last_offline_ticks, v.depth));
+            if offline_ticks.is_none_or(|t| t < sync_queue_copy::RECONNECT_GATE_TICKS) {
+                return;
+            }
+            queued_count.set(depth);
             visible.set(true);
             let vis = visible;
             let handle = gloo_timers::callback::Timeout::new(AUTO_HIDE_MS as u32, move || {
