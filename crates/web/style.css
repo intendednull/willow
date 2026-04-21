@@ -4473,6 +4473,39 @@ select:focus-visible {
 }
 .queued-badge svg { width: 12px; height: 12px; }
 
+/* ── Whisper hand-off placeholder — phase 2a task 8 ────────────────
+   Spec: `docs/specs/2026-04-19-ui-design/message-row.md` §Whisper
+   hand-off. Reserves the row styling surface so that when
+   `whisper-mode.md` lands and the projection flips
+   `DisplayMessage.whisper` to `true`, the row renders the violet
+   rule, tinted background, and italic body described by the spec
+   without additional work. Whisper rows never collapse into a run
+   (see the run-break predicate in `components/chat.rs`), so the
+   `whisper-badge` in the meta row is always visible. */
+.message.message--whisper {
+    box-shadow: inset 2px 0 0 var(--whisper);
+    background: color-mix(in oklab, var(--whisper) 8%, transparent);
+}
+.message.message--whisper .body {
+    color: var(--ink-2);
+    font-style: italic;
+}
+
+.whisper-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 6px;
+    font-size: 11px;
+    color: var(--whisper);
+    border: 1px solid var(--whisper);
+    background: color-mix(in oklab, var(--whisper) 12%, transparent);
+    border-radius: 9999px;
+    line-height: 1.6;
+    vertical-align: middle;
+}
+.whisper-badge svg { width: 12px; height: 12px; }
+
 /* ── Code — inline + fenced (phase 2a task 5) ───────────────────────
    Spec: `docs/specs/2026-04-19-ui-design/message-row.md` §Inline
    artefacts (fenced code + inline code paragraphs) and §Code.

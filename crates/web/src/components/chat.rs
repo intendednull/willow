@@ -173,9 +173,12 @@ pub fn MessageList(
                                 // Per message-row.md §Author-run grouping: break a run
                                 // on author change, >5min gap, or when either the
                                 // previous *or* current message carries a run-break
-                                // cue (whisper / pinned / queueNote). `pinned` and
-                                // `queue_note` are wired today; whisper joins in
-                                // Task 8 once whisper-mode.md lands.
+                                // cue (whisper / pinned / queueNote). Task 8 fully
+                                // wires all three rules — `whisper` is gated
+                                // always-false in the projection today (see
+                                // `views::compute_messages_view` TODO) but the
+                                // predicate is ready for when `whisper-mode.md`
+                                // flips the gate.
                                 prev.author_display_name != msg.author_display_name
                                     || msg.timestamp_ms.saturating_sub(prev.timestamp_ms)
                                         > 300_000
@@ -183,6 +186,8 @@ pub fn MessageList(
                                     || msg.pinned
                                     || prev.queue_note != willow_client::QueueNote::None
                                     || msg.queue_note != willow_client::QueueNote::None
+                                    || prev.whisper
+                                    || msg.whisper
                             };
                             let curr_bucket = day_bucket(msg.timestamp_ms);
                             let emit_sep = match &prev_bucket {

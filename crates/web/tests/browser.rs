@@ -139,6 +139,7 @@ fn make_msg(author: &str, body: &str, timestamp_ms: u64) -> willow_client::Displ
         mentions: Vec::new(),
         pinned: false,
         queue_note: willow_client::QueueNote::None,
+        whisper: false,
     }
 }
 
@@ -8005,6 +8006,110 @@ mod phase_2a_message_row {
         assert!(
             query(&container, ".message.message--pending").is_none(),
             "None queue_note must not carry .message--pending"
+        );
+    }
+
+    // ── Whisper hand-off placeholder (phase 2a task 8) ─────────────────
+    //
+    // Contract pinned by `docs/specs/2026-04-19-ui-design/message-row.md`
+    // §Whisper hand-off: the row styling surface + `whisper` badge are
+    // reserved behind an always-false gate today. The projection in
+    // `views::compute_messages_view` hard-codes `DisplayMessage.whisper
+    // = false`; these tests force-construct a row with `whisper: true`
+    // to verify the class + badge render so the later `whisper-mode.md`
+    // phase only has to flip the projection gate.
+
+    #[wasm_bindgen_test]
+    async fn row_has_whisper_class_when_whisper() {
+        use willow_client::DisplayMessage;
+        use willow_web::state::{create_signals, InitialSignals};
+        let msg = DisplayMessage {
+            whisper: true,
+            ..make_msg("Mira", "quiet aside", FIXTURE_TS_MS)
+        };
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <MessageView message=msg.clone() show_header=true /> }
+        });
+        tick().await;
+
+        let row = query(&container, ".message.message--whisper")
+            .expect("whisper message must carry .message--whisper class");
+        let badge = row
+            .query_selector(".whisper-badge")
+            .unwrap()
+            .expect(".message--whisper must carry a .whisper-badge in the meta row");
+        assert!(
+            text(&badge).contains("whisper"),
+            ".whisper-badge must carry the literal 'whisper' text, got: {:?}",
+            text(&badge)
+        );
+        assert!(
+            badge.query_selector("svg").unwrap().is_some(),
+            ".whisper-badge must render the ear icon"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn whisper_badge_has_aria_label() {
+        use willow_client::DisplayMessage;
+        use willow_web::state::{create_signals, InitialSignals};
+        let msg = DisplayMessage {
+            whisper: true,
+            ..make_msg("Mira", "quiet aside", FIXTURE_TS_MS)
+        };
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <MessageView message=msg.clone() show_header=true /> }
+        });
+        tick().await;
+
+        let badge = query(&container, ".whisper-badge")
+            .expect(".whisper-badge must render when whisper=true");
+        assert_eq!(
+            badge.get_attribute("aria-label").as_deref(),
+            Some("whisper"),
+            ".whisper-badge aria-label must be 'whisper' per spec §Badges"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn row_has_no_whisper_class_by_default() {
+        use willow_web::state::{create_signals, InitialSignals};
+        // Default whisper=false — neither the row class nor the badge
+        // should render (mirrors row_has_no_pinned_class_when_unpinned).
+        let msg = make_msg("Mira", "normal message", FIXTURE_TS_MS);
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <MessageView message=msg.clone() show_header=true /> }
+        });
+        tick().await;
+
+        assert!(
+            query(&container, ".message.message--whisper").is_none(),
+            "non-whisper row must not carry .message--whisper"
+        );
+        assert!(
+            query(&container, ".whisper-badge").is_none(),
+            "non-whisper row must not render a .whisper-badge"
         );
     }
 }

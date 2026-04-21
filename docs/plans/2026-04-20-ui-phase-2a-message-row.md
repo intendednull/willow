@@ -229,15 +229,15 @@ Reserve layout + styling surface so the later `whisper-mode.md` phase only has t
 
 **Files:** modify `crates/client/src/state.rs`, modify `crates/web/src/components/message.rs`, modify `crates/web/style.css`.
 
-- [ ] **Step 8.1 — Field + always-false gate.** `pub whisper: bool` on `DisplayMessage`, default `false` in projection. Add a `// TODO(whisper-mode.md): flip via WhisperStart event` comment.
+- [x] **Step 8.1 — Field + always-false gate.** `pub whisper: bool` added to `DisplayMessage` with `TODO(whisper-mode.md)` comment in `views::compute_messages_view`. All three construction sites (projection, `mentions.rs` test helper, `browser.rs` `make_msg`) updated.
 
-- [ ] **Step 8.2 — Row styling.** `message--whisper` CSS: `box-shadow: inset 2px 0 0 var(--whisper); background: color-mix(in oklab, var(--whisper) 8%, transparent); font-style: italic; color: var(--ink-2);` on the body only (not meta). Whisper rows never collapse (already covered by Step 1.1 run-break predicate).
+- [x] **Step 8.2 — Row styling.** `.message.message--whisper` CSS appended to `crates/web/style.css` per spec §Whisper hand-off: violet 2 px left rule + 8% tinted bg, italic body on `--ink-2`. Run-break predicate in `chat.rs` now breaks runs on `prev.whisper || msg.whisper` — Task 1's last deferred rule is fully wired.
 
-- [ ] **Step 8.3 — `whisper` badge.** Violet pill `<span class="whisper-badge">{icon_ear()} whisper</span>` in `.meta` when `whisper`.
+- [x] **Step 8.3 — `whisper` badge.** `<span class="whisper-badge" aria-label="whisper">{icon_ear()} whisper</span>` renders in `.meta` when `is_whisper`. `icon_ear` already existed.
 
-- [ ] **Step 8.4 — Browser test.** Force-mount a `DisplayMessage { whisper: true, .. }` via a test-only constructor and assert the class + badge render. Use `#[cfg(any(test, feature = "test-utils"))]` builder on the client side.
+- [x] **Step 8.4 — Browser test.** Three tests added to `phase_2a_message_row` (`row_has_whisper_class_when_whisper`, `whisper_badge_has_aria_label`, `row_has_no_whisper_class_by_default`) using inline `DisplayMessage { whisper: true, ..make_msg(..) }` construction — no feature flag needed since fields are public.
 
-- [ ] **Step 8.5 — Commit** — `ui(phase-2): reserve whisper row styling behind always-false gate`.
+- [x] **Step 8.5 — Commit** — `ui(phase-2): reserve whisper row styling behind always-false gate`.
 
 ### 9. Empty / loading states
 

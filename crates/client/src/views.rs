@@ -369,6 +369,12 @@ pub fn compute_messages_view(
             // and LateArrival from a peer-presence-history oracle
             // (was-peer-offline-near(author, ts, 30_000)).
             let queue_note = QueueNote::None;
+            // TODO(whisper-mode.md): flip via WhisperStart event when
+            // that phase lands. Phase 2a Task 8 reserves the row
+            // styling surface (message--whisper class + whisper-badge)
+            // behind this always-false gate so later work only has to
+            // swap the projection lookup.
+            let whisper = false;
             DisplayMessage {
                 id: m.id.to_string(),
                 channel_id: m.channel_id.clone(),
@@ -385,6 +391,7 @@ pub fn compute_messages_view(
                 mentions,
                 pinned,
                 queue_note,
+                whisper,
             }
         })
         .collect();

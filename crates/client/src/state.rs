@@ -120,6 +120,20 @@ pub struct DisplayMessage {
     /// the projection to drive the row marker + badge + run-break rule
     /// per `docs/specs/2026-04-19-ui-design/message-row.md` §Pins.
     pub pinned: bool,
+    /// Whether this message is part of a whisper (violet-rule placeholder).
+    ///
+    /// Phase 2a Task 8 reserves the layout + styling surface behind an
+    /// always-false gate: the projection in
+    /// `views::compute_messages_view` hard-codes `false` and the
+    /// whisper-specific `EventKind` (`WhisperStart`) has not shipped
+    /// yet. Once `whisper-mode.md` lands the projection will flip this
+    /// via event lookup and the row renderer in `message.rs` + the
+    /// run-break predicate in `chat.rs` will light up without further
+    /// plumbing. Per `docs/specs/2026-04-19-ui-design/message-row.md`
+    /// §Whisper hand-off, a `true` value must render the violet left
+    /// rule, tinted bg, italic body, and `whisper` badge in the meta
+    /// row.
+    pub whisper: bool,
     /// Queue-note state for this row (see [`QueueNote`]).
     ///
     /// Populated by the view projection in

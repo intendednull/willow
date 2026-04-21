@@ -228,6 +228,12 @@ pub fn MessageView(
     let queue_note = message.queue_note;
     let is_pending = queue_note == QueueNote::Pending;
     let has_queue_note = queue_note != QueueNote::None;
+    // Phase 2a Task 8: reserve the whisper surface. `message.whisper`
+    // is gated always-false in the projection today (see
+    // `client/src/views.rs` TODO(whisper-mode.md)); once that phase
+    // lands the projection will flip it and the class + badge below
+    // light up automatically.
+    let is_whisper = message.whisper;
 
     let reply_preview = message.reply_preview.clone();
     let reply_to_id = message.reply_to.clone();
@@ -282,6 +288,9 @@ pub fn MessageView(
     }
     if is_pending {
         suffix.push_str(" message--pending");
+    }
+    if is_whisper {
+        suffix.push_str(" message--whisper");
     }
     let msg_class = if suffix.is_empty() {
         std::borrow::Cow::Borrowed(base_msg_class)
@@ -542,6 +551,12 @@ pub fn MessageView(
                             <span class="queued-badge" aria-label="queued">
                                 {icons::icon_hourglass()}
                                 " queued"
+                            </span>
+                        })}
+                        {is_whisper.then(|| view! {
+                            <span class="whisper-badge" aria-label="whisper">
+                                {icons::icon_ear()}
+                                " whisper"
                             </span>
                         })}
                     </div>
