@@ -401,7 +401,7 @@ git commit -m "ui(phase-2e): add local-search query parser + unit tests"
 - Modify: `crates/client/src/search/mod.rs` — `pub mod tokenize;`
 - Modify: `crates/client/src/search/tests.rs` — `mod tokenize_tests;`
 
-- [ ] **Step 2.1 — Write failing tests.** In `crates/client/src/search/tests.rs`:
+- [x] **Step 2.1 — Write failing tests.** In `crates/client/src/search/tests.rs`:
 
 ```rust
 #[cfg(test)]
@@ -468,7 +468,7 @@ mod tokenize_tests {
 
 Run: FAIL.
 
-- [ ] **Step 2.2 — Implement.** `crates/client/src/search/tokenize.rs`:
+- [x] **Step 2.2 — Implement.** `crates/client/src/search/tokenize.rs`:
 
 ```rust
 //! Tokenizer for local search. ASCII-lowercase, splits on whitespace +
@@ -547,11 +547,9 @@ fn expand(tok: String) -> Vec<String> {
 }
 ```
 
-- [ ] **Step 2.3 — Verify GREEN.** `cargo test -p willow-client search::tokenize_tests`. All 9 pass.
+- [x] **Step 2.3 — Verify GREEN.** `cargo test -p willow-client search::tokenize_tests` → 11/11 pass (original 9 + two bonuses: interleaved mention-token and apostrophe-inside-word). WASM compile + clippy clean.
 
-  *Note:* the `is_token_start` branch on `'h'` / `'m'` is a perf hint to anchor URL detection — unit tests assert behaviour, not the branch. If any test fails, loosen the predicate.
-
-- [ ] **Step 2.4 — Commit.**
+- [x] **Step 2.4 — Commit.**
 
 ```bash
 git add crates/client/src/search/tokenize.rs crates/client/src/search/mod.rs crates/client/src/search/tests.rs

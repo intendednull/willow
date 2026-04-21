@@ -1,6 +1,85 @@
 //! Unit tests for the search module. One sub-module per file — see
 //! each sub-module's doc for the behaviour it covers.
 
+mod tokenize_tests {
+    use super::super::tokenize::*;
+
+    #[test]
+    fn empty_body_yields_empty() {
+        assert!(tokenize("").is_empty());
+    }
+
+    #[test]
+    fn splits_on_whitespace() {
+        assert_eq!(tokenize("hello world"), vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn splits_on_punctuation() {
+        assert_eq!(tokenize("hello, world!"), vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn lowercases_all_tokens() {
+        assert_eq!(tokenize("Hello WORLD"), vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn preserves_mention_token() {
+        // `@mira` stays as a single token so `from:@mira` filtering
+        // can match it. Body search still sees the `mira` stem as a
+        // token too so plain-text queries hit it.
+        let toks = tokenize("hello @mira there");
+        assert!(toks.contains(&"@mira".to_string()));
+        assert!(toks.contains(&"mira".to_string()));
+    }
+
+    #[test]
+    fn preserves_channel_token() {
+        let toks = tokenize("moved to #general");
+        assert!(toks.contains(&"#general".to_string()));
+        assert!(toks.contains(&"general".to_string()));
+    }
+
+    #[test]
+    fn preserves_url_as_single_token() {
+        let toks = tokenize("see https://willow.im");
+        assert!(toks.contains(&"https://willow.im".to_string()));
+    }
+
+    #[test]
+    fn token_positions_returns_byte_offsets() {
+        let pairs = token_positions("hello world");
+        assert_eq!(pairs, vec![(0, "hello".into()), (6, "world".into())]);
+    }
+
+    #[test]
+    fn token_positions_handles_multibyte() {
+        // `héllo` is 5 chars but 6 bytes — token_positions must stay
+        // byte-addressable without truncating the trailing `o`.
+        let body = "héllo";
+        let pairs = token_positions(body);
+        assert_eq!(pairs, vec![(0, "héllo".into())]);
+    }
+
+    #[test]
+    fn plain_then_mention_then_plain() {
+        let toks = tokenize("hi @mira bye");
+        assert!(toks.contains(&"hi".to_string()));
+        assert!(toks.contains(&"@mira".to_string()));
+        assert!(toks.contains(&"mira".to_string()));
+        assert!(toks.contains(&"bye".to_string()));
+    }
+
+    #[test]
+    fn apostrophe_inside_word_is_part_of_token() {
+        let toks = tokenize("it's fine");
+        // `it's` is a single token, not `it` + `s`.
+        assert!(toks.contains(&"it's".to_string()));
+        assert!(toks.contains(&"fine".to_string()));
+    }
+}
+
 mod query_tests {
     use super::super::query::*;
     use chrono::NaiveDate;

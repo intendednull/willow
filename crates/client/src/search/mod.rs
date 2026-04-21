@@ -10,8 +10,10 @@
 //! Today (Task 1): [`query`] only.
 
 pub mod query;
+pub mod tokenize;
 
 #[cfg(test)]
 mod tests;
 
 pub use query::{parse_query, QueryFilters, QueryWarning, SearchQuery};
+pub use tokenize::{token_positions, tokenize};
