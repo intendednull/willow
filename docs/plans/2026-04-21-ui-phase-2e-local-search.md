@@ -110,7 +110,7 @@ Each task = one commit (some have 2-3). Tick the checkbox in the same commit. Pu
 - Create: `crates/client/src/search/mod.rs` (skeleton — `pub mod query; pub use query::*;`)
 - Modify: `crates/client/src/lib.rs` — add `pub mod search;`.
 
-- [ ] **Step 1.1 — Define the types.** In `crates/client/src/search/query.rs`:
+- [x] **Step 1.1 — Define the types.** In `crates/client/src/search/query.rs`:
 
 ```rust
 //! Query grammar for local search.
@@ -175,7 +175,7 @@ pub struct SearchQuery {
 pub fn parse_query(raw: &str) -> SearchQuery { /* Step 1.3 */ }
 ```
 
-- [ ] **Step 1.2 — Write failing unit tests.** Create `crates/client/src/search/tests.rs` with:
+- [x] **Step 1.2 — Write failing unit tests.** Create `crates/client/src/search/tests.rs` with:
 
 ```rust
 #[cfg(test)]
@@ -296,7 +296,7 @@ Register in `crates/client/src/lib.rs`: `pub mod search;`.
 
 Run: `cargo test -p willow-client search::query_tests`. Expected: FAIL (`parse_query` not implemented).
 
-- [ ] **Step 1.3 — Implement `parse_query`.**
+- [x] **Step 1.3 — Implement `parse_query`.**
 
 ```rust
 pub fn parse_query(raw: &str) -> SearchQuery {
@@ -381,11 +381,11 @@ fn detect_unknown_prefix(span: &str) -> Option<&str> {
 
 Add `chrono` workspace dep to `crates/client/Cargo.toml` if missing (check first; `willow-messaging` already pulls it via workspace).
 
-- [ ] **Step 1.4 — Verify GREEN.** `cargo test -p willow-client search::query_tests` → all 15 tests pass.
+- [x] **Step 1.4 — Verify GREEN.** `cargo test -p willow-client search::query_tests` → 17/17 pass (includes the two bonus edge cases: URL-in-query + raw-echo-preserved).
 
-- [ ] **Step 1.5 — WASM compile check.** `cargo check --target wasm32-unknown-unknown -p willow-client`. Zero warnings.
+- [x] **Step 1.5 — WASM compile check.** `cargo check --target wasm32-unknown-unknown -p willow-client`. Zero warnings.
 
-- [ ] **Step 1.6 — Commit.**
+- [x] **Step 1.6 — Commit.**
 
 ```bash
 git add crates/client/src/search/query.rs crates/client/src/search/mod.rs crates/client/src/search/tests.rs crates/client/src/lib.rs crates/client/Cargo.toml

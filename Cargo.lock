@@ -5981,6 +5981,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "bytes",
+ "chrono",
  "dirs",
  "futures",
  "gloo-timers",
