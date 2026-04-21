@@ -4884,3 +4884,154 @@ select:focus-visible {
         animation: shimmer 1.6s linear infinite;
     }
 }
+
+/* ── Phase 2b sync-queue surfaces ────────────────────────────────────── */
+
+/* Offline strip — amber status line, 36 px desktop / 40 px mobile. */
+.offline-strip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    height: 36px;
+    padding: 0 14px;
+    background: var(--bg-2);
+    color: var(--ink-1);
+    border: 0;
+    border-top: 1px solid var(--amber-soft);
+    border-bottom: 1px solid var(--amber-soft);
+    font-size: 13px;
+    cursor: pointer;
+    text-align: left;
+    transition: background 140ms ease;
+}
+.offline-strip:hover { background: var(--bg-3); }
+.offline-strip:focus-visible {
+    outline: 2px solid var(--focus-ring, var(--moss-3));
+    outline-offset: -2px;
+}
+.offline-strip .icon { color: var(--amber); font-size: 11px; }
+.offline-strip__summary { flex: 1; font-variant-numeric: tabular-nums; }
+.offline-strip__chevron { color: var(--ink-3); font-size: 12px; }
+.offline-strip--flash {
+    background: var(--moss-0);
+    transition: background 240ms ease;
+}
+@media (max-width: 720px) {
+    .offline-strip { height: 40px; }
+    .offline-strip__chevron { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .offline-strip, .offline-strip--flash { transition: opacity 120ms ease; }
+}
+
+/* Queue pill — amber inline badge on letters / member rows. */
+.queue-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    min-height: 20px;
+    background: transparent;
+    color: var(--amber);
+    border: 1px solid var(--amber-soft);
+    border-radius: 999px;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    cursor: pointer;
+}
+.queue-pill:hover { background: rgba(201, 155, 85, 0.08); }
+.queue-pill:focus-visible {
+    outline: 2px solid var(--focus-ring, var(--moss-3));
+    outline-offset: 2px;
+}
+.queue-pill .icon { font-size: 9px; }
+@media (max-width: 720px) {
+    .queue-pill {
+        padding: 14px 6px;   /* ≥ 44x44 hit target */
+        min-height: 44px;
+    }
+}
+
+/* Inline queue note — below message body. */
+.inline-note {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 4px;
+    padding-left: 38px; /* align with body gutter past avatar column */
+    font-family: "Fraunces", serif;
+    font-style: italic;
+    font-size: 13px;
+    color: var(--ink-3);
+}
+.inline-note--queued .icon { color: var(--amber); }
+.inline-note--just-delivered {
+    color: var(--ink-2);
+}
+.inline-note--just-delivered .icon { color: var(--moss-3); }
+.inline-note--inbound-held .icon { color: var(--moss-2); }
+
+/* Reconnection toast — top-centre moss accent. */
+.reconnection-toast {
+    position: fixed;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    background: var(--bg-2);
+    color: var(--ink-0);
+    border: 1px solid var(--moss-1);
+    border-radius: 10px;
+    box-shadow: var(--shadow-2, 0 6px 20px rgba(0, 0, 0, 0.35));
+    font-size: 13px;
+    z-index: 9000;
+    animation: willow-pop-in 180ms ease-out;
+}
+.reconnection-toast__icon { color: var(--moss-3); font-size: 14px; }
+.reconnection-toast__dismiss {
+    margin-left: 4px;
+    background: transparent;
+    color: var(--ink-2);
+    border: 0;
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+}
+@keyframes willow-pop-in {
+    from { opacity: 0; transform: translate(-50%, -6px); }
+    to   { opacity: 1; transform: translate(-50%, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .reconnection-toast { animation: none; transition: opacity 120ms ease; }
+}
+
+/* Welcome-back banner — 48 px moss accent, persists until dismissed. */
+.welcome-back-banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 48px;
+    padding: 0 14px;
+    background: var(--moss-0);
+    color: var(--ink-1);
+    border-bottom: 1px solid var(--moss-1);
+    font-size: 13px;
+}
+.welcome-back-banner__glyph {
+    color: var(--willow, var(--moss-3));
+    font-size: 14px;
+    flex-shrink: 0;
+}
+.welcome-back-banner__label { flex: 1; }
+.welcome-back-banner__dismiss {
+    background: transparent;
+    color: var(--ink-2);
+    border: 0;
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+}

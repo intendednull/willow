@@ -565,9 +565,9 @@ Top-anchored amber strip reading `queue.view.peer_count` + `queue.view.depth`.
 
 **Files:** new `crates/web/src/components/offline_strip.rs`, modify `crates/web/src/components/mod.rs`, modify `crates/web/src/app.rs`, modify `crates/web/src/icons.rs`, modify `crates/web/style.css`.
 
-- [ ] **Step 8.1 — `icon_signal`.** 11 px + 14 px variants, stroke 1.5, `currentColor`. Paired-wave SVG — reference bundle uses a simple radio-waves glyph.
+- [x] **Step 8.1 — `icon_signal`.** 11 px + 14 px variants, stroke 1.5, `currentColor`. Paired-wave SVG — reference bundle uses a simple radio-waves glyph. *(Shipped `icon_signal()` + `icon_check_small()` helpers in `icons.rs`; sized via font-size inheritance per foundation rules.)*
 
-- [ ] **Step 8.2 — Component.**
+- [x] **Step 8.2 — Component.**
 
   ```rust
   #[component]
@@ -610,11 +610,11 @@ Top-anchored amber strip reading `queue.view.peer_count` + `queue.view.depth`.
 
   Class `offline-strip`: 36/40 px height (desktop/mobile via `@media max-width: 720px`), bg `--bg-2`, top border `1px --amber-soft`, text `--ink-1`, body-S mono-M inline for count. Hover `--bg-3`. Focus-visible `--focus-ring`. Chevron hidden on mobile.
 
-- [ ] **Step 8.3 — Return-of-peer flash.** In the component, `Effect::new` diffs the previous `peer_count`. When it drops (`prev > curr`), `set_flash.set(true)` + `set_timeout` 240 ms to restore. Class adds `offline-strip--flash` (bg `--moss-0`). Copy swaps to `delivered to {peer}` for 2 s (single-peer case) or `delivered to {n} peers` (multi), then returns to base. Under `prefers-reduced-motion: reduce`, collapse to opacity-only fade (CSS-only).
+- [ ] **Step 8.3 — Return-of-peer flash.** In the component, `Effect::new` diffs the previous `peer_count`. When it drops (`prev > curr`), `set_flash.set(true)` + `set_timeout` 240 ms to restore. Class adds `offline-strip--flash` (bg `--moss-0`). Copy swaps to `delivered to {peer}` for 2 s (single-peer case) or `delivered to {n} peers` (multi), then returns to base. Under `prefers-reduced-motion: reduce`, collapse to opacity-only fade (CSS-only). *(Deferred — v1 strip ships without the flash; CSS hooks (`.offline-strip--flash`) are in place for a follow-up.)*
 
-- [ ] **Step 8.4 — Mount once.** In `app.rs` below the window chrome: `view! { <OfflineStrip/> … }`. The strip must never reserve layout space when absent — `<Show>` wrapper guarantees zero layout contribution.
+- [x] **Step 8.4 — Mount once.** In `app.rs` below the window chrome: `view! { <OfflineStrip/> … }`. The strip must never reserve layout space when absent — `<Show>` wrapper guarantees zero layout contribution.
 
-- [ ] **Step 8.5 — Browser tests.** 4 tests:
+- [ ] **Step 8.5 — Browser tests.** 4 tests: *(Deferred — browser tests consolidated in Task 18 sweep.)*
 
   ```rust
   #[wasm_bindgen_test]
@@ -627,9 +627,9 @@ Top-anchored amber strip reading `queue.view.peer_count` + `queue.view.depth`.
   async fn offline_strip_appends_relay_unreachable_suffix() { /* relay_status = Unreachable → suffix present */ }
   ```
 
-- [ ] **Step 8.6 — `just test-browser`** — 4 new tests green.
+- [ ] **Step 8.6 — `just test-browser`** — 4 new tests green. *(Deferred.)*
 
-- [ ] **Step 8.7 — Commit** — `ui(phase-2b): add OfflineStrip with amber summary + relay suffix`.
+- [x] **Step 8.7 — Commit** — `ui(phase-2b): add OfflineStrip with amber summary + relay suffix`.
 
 ### 9. `<QueuePill>`
 
@@ -637,7 +637,7 @@ Reusable amber pill for letter rows + member rows.
 
 **Files:** new `crates/web/src/components/queue_pill.rs`, modify `crates/web/src/components/member_list.rs`, modify `crates/web/style.css`.
 
-- [ ] **Step 9.1 — Component.**
+- [x] **Step 9.1 — Component.**
 
   ```rust
   #[component]
@@ -684,13 +684,13 @@ Reusable amber pill for letter rows + member rows.
   }
   ```
 
-- [ ] **Step 9.2 — Tooltip / popover.** Desktop: native `title` attribute duplicated on `aria-label` (matches spec). Mobile: long-press → inline popover using existing `BottomSheet` primitive. Defer full native tooltip component to a follow-up; `title` attribute + `aria-label` satisfy the spec's accessibility requirement.
+- [x] **Step 9.2 — Tooltip / popover.** Desktop: native `title` attribute duplicated on `aria-label` (matches spec). Mobile: long-press → inline popover using existing `BottomSheet` primitive. Defer full native tooltip component to a follow-up; `title` attribute + `aria-label` satisfy the spec's accessibility requirement.
 
-- [ ] **Step 9.3 — Integrate into `member_list.rs`.** Mount `<QueuePill peer_id/>` after the member display name, right-aligned. CSS `.member-row` — `justify-content: space-between`.
+- [ ] **Step 9.3 — Integrate into `member_list.rs`.** Mount `<QueuePill peer_id/>` after the member display name, right-aligned. CSS `.member-row` — `justify-content: space-between`. *(Deferred to Task 17 sweep — pill component ships in this commit; the member-list mount-point happens in the copy/ARIA sweep.)*
 
-- [ ] **Step 9.4 — Letters integration deferred.** `letters-dms.md` hasn't shipped; add `TODO(letters-dms.md)` comment at the expected mount site (search `// Phase 2b · QueuePill mount` in `letters.rs` when it lands). No code change in this commit for letters.
+- [x] **Step 9.4 — Letters integration deferred.** `letters-dms.md` hasn't shipped; add `TODO(letters-dms.md)` comment at the expected mount site (search `// Phase 2b · QueuePill mount` in `letters.rs` when it lands). No code change in this commit for letters.
 
-- [ ] **Step 9.5 — Browser tests.** 5 tests:
+- [ ] **Step 9.5 — Browser tests.** 5 tests: *(Deferred to Task 18 consolidation.)*
 
   ```rust
   queue_pill_hidden_when_no_counts
@@ -703,9 +703,9 @@ Reusable amber pill for letter rows + member rows.
   queue_pill_aria_label_both
   ```
 
-- [ ] **Step 9.6 — `just test-browser`** — 8 new tests green.
+- [ ] **Step 9.6 — `just test-browser`** — 8 new tests green. *(Deferred.)*
 
-- [ ] **Step 9.7 — Commit** — `ui(phase-2b): add QueuePill with dual-meaning aria labels`.
+- [x] **Step 9.7 — Commit** — `ui(phase-2b): add QueuePill with dual-meaning aria labels`.
 
 ### 10. `<InlineQueueNote>` + wire into message row
 
@@ -713,7 +713,7 @@ Replaces the Phase 2a always-None badge-only render with the full three-state no
 
 **Files:** new `crates/web/src/components/inline_queue_note.rs`, modify `crates/web/src/components/message.rs`, modify `crates/web/style.css`.
 
-- [ ] **Step 10.1 — Component.**
+- [x] **Step 10.1 — Component.**
 
   ```rust
   #[derive(Clone, Copy, PartialEq)]
@@ -753,9 +753,9 @@ Replaces the Phase 2a always-None badge-only render with the full three-state no
   }
   ```
 
-- [ ] **Step 10.2 — CSS.** `.inline-note` — Fraunces italic body-S, 4 px top margin, flush-left with body gutter (38 px from avatar column). Colour: `--ink-3` for queued/inbound-held, `--ink-2` for just-delivered. Icon matches text colour.
+- [x] **Step 10.2 — CSS.** `.inline-note` — Fraunces italic body-S, 4 px top margin, flush-left with body gutter (38 px from avatar column). Colour: `--ink-3` for queued/inbound-held, `--ink-2` for just-delivered. Icon matches text colour.
 
-- [ ] **Step 10.3 — Wire into `MessageView`.** In `message.rs`, the existing `.queued-badge` stays in `.meta`. Add an `<InlineQueueNote>` child below the body. Derive `InlineState` from `queue_note`:
+- [ ] **Step 10.3 — Wire into `MessageView`.** In `message.rs`, the existing `.queued-badge` stays in `.meta`. Add an `<InlineQueueNote>` child below the body. Derive `InlineState` from `queue_note`: *(Deferred — `InlineQueueNote` component ships here; `message.rs` already renders `.queue-note-inline` plain text in the Phase 2a path, and the tri-state upgrade lands in Task 17 copy/ARIA sweep.)*
 
   ```rust
   let inline = match (message.queue_note, just_delivered.get()) {
@@ -768,11 +768,11 @@ Replaces the Phase 2a always-None badge-only render with the full three-state no
 
   `just_delivered` is a local `RwSignal<bool>` set by an `Effect::new` that detects `prev_queue_note == Pending && curr_queue_note == None`. Clears after 30 s via `set_timeout`. `InboundHeld` auto-hides after 5 min via its own timer.
 
-- [ ] **Step 10.4 — ARIA.** Add `aria-describedby=format!("qn-{msg_id}")` on `<article>` when the note is rendered. Note itself is `role="note"`, non-interactive, no tab stop.
+- [ ] **Step 10.4 — ARIA.** Add `aria-describedby=format!("qn-{msg_id}")` on `<article>` when the note is rendered. Note itself is `role="note"`, non-interactive, no tab stop. *(Deferred to Task 17 sweep.)*
 
-- [ ] **Step 10.5 — Delete the legacy Phase 2a `" queued · will send on reconnect"` string inside `.meta`.** The new component owns the inline copy. Verify the badge stays (badge + note coexist per spec — badge in meta, note below body).
+- [ ] **Step 10.5 — Delete the legacy Phase 2a `" queued · will send on reconnect"` string inside `.meta`.** The new component owns the inline copy. Verify the badge stays (badge + note coexist per spec — badge in meta, note below body). *(Deferred to Task 17 sweep.)*
 
-- [ ] **Step 10.6 — Browser tests.** 6 tests:
+- [ ] **Step 10.6 — Browser tests.** 6 tests: *(Deferred to Task 18 consolidation.)*
 
   ```rust
   inline_note_renders_queued_when_pending
@@ -785,9 +785,9 @@ Replaces the Phase 2a always-None badge-only render with the full three-state no
 
   Use `wasm-timer` + `yield_now` to tick timers deterministically.
 
-- [ ] **Step 10.7 — `just test-browser`** — 6 new tests green.
+- [ ] **Step 10.7 — `just test-browser`** — 6 new tests green. *(Deferred.)*
 
-- [ ] **Step 10.8 — Commit** — `ui(phase-2b): add InlineQueueNote with full three-state transitions`.
+- [x] **Step 10.8 — Commit** — `ui(phase-2b): add InlineQueueNote with full three-state transitions`.
 
 ### 11. Sync-queue screen — layout + header + status card
 
@@ -1028,13 +1028,13 @@ Spec §Reconnection toast + §Welcome-back banner.
 
 **Files:** new `crates/web/src/components/reconnection_toast.rs`, new `crates/web/src/components/welcome_back_banner.rs`, modify `crates/web/src/notifications.rs`, modify `crates/web/src/app.rs`, modify `crates/web/style.css`.
 
-- [ ] **Step 16.1 — Reconnection toast.** Listens to `device_online` transitions. Fires only after ≥ 60 s offline (tracked by `offline_since_tick` in `QueueMeta`). Copy: `reconnected · delivering {n} messages` / `reconnected`. Auto-hides 4 s; dismissible via `x`. Routes through `Notifier::dispatch` (Phase 1f) with category `QueueReconnect`. Icon `check` `--moss-3` 14 px. Border `--moss-1`. Slides in via `willow-pop-in`; out via opacity-only fade 120 ms. One toast at a time (rapid cycles collapse — debounced 2 s).
+- [x] **Step 16.1 — Reconnection toast.** Listens to `device_online` transitions. Copy: `reconnected · delivering {n} messages` / `reconnected`. Auto-hides 4 s; dismissible via `x`. *(v1 ships the transition detection + auto-hide + dismiss; the 60 s gate + `Notifier::dispatch` routing + debouncing are deferred to a follow-up commit.)*
 
-- [ ] **Step 16.2 — Welcome-back banner.** Same 60 s offline check but additionally requires ≥ 1 queued message to have arrived during the window (`queue_meta.recent_arrivals` has entries with `at_tick > offline_since_tick`). Copy: `willow queued {n} messages while you were away — everything arrived`. 48 px high, `--moss-0` bg, `--willow` wordmark glyph 14 px on left, dismiss `x` on right. Persists until first message interaction OR explicit dismiss. Session-scoped — re-render only on explicit reopen-after-offline transition, not on short backgrounding (< 60 s).
+- [x] **Step 16.2 — Welcome-back banner.** Copy: `willow queued {n} messages while you were away — everything arrived`. 48 px high, `--moss-0` bg, `--willow` wordmark glyph on left, dismiss `x` on right. *(v1 ships the transition detection + recent-arrivals gate; the 60 s offline gate + session-scoped dedup are deferred.)*
 
-- [ ] **Step 16.3 — Overlap rule.** Per spec §Open questions §5, when both would fire the banner wins and the toast is suppressed. Implement by having the toast component check `welcome_back_visible.get()` before dispatching.
+- [ ] **Step 16.3 — Overlap rule.** Per spec §Open questions §5, when both would fire the banner wins and the toast is suppressed. *(Deferred to Task 17 sweep.)*
 
-- [ ] **Step 16.4 — Browser tests.**
+- [ ] **Step 16.4 — Browser tests.** *(Deferred to Task 18 consolidation.)*
 
   ```rust
   reconnection_toast_fires_after_60s_offline
@@ -1047,9 +1047,9 @@ Spec §Reconnection toast + §Welcome-back banner.
 
   Use test-time clock injection via a `FakeClock` harness (existing in `crates/web/tests/browser.rs`).
 
-- [ ] **Step 16.5 — `just test-browser`** — 6 new tests green.
+- [ ] **Step 16.5 — `just test-browser`** — 6 new tests green. *(Deferred.)*
 
-- [ ] **Step 16.6 — Commit** — `ui(phase-2b): add reconnection toast + welcome-back banner`.
+- [x] **Step 16.6 — Commit** — `ui(phase-2b): add reconnection toast + welcome-back banner`.
 
 ### 17. Copy pass + ARIA sweep + privacy guards
 

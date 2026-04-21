@@ -586,6 +586,12 @@ pub fn App() -> impl IntoView {
             <div id="trust-live-region" class="sr-only" aria-live="assertive" aria-atomic="true"></div>
             <crate::components::AddFriendDialog/>
             <ToastStackView/>
+            // Phase 2b sync-queue overlays. All three self-hide when
+            // their gating condition is false; none reserve layout
+            // space when absent.
+            <crate::components::OfflineStrip/>
+            <crate::components::ReconnectionToast/>
+            <crate::components::WelcomeBackBanner/>
             {move || {
                 // Join link takes priority over everything.
                 if join_token_signal.get().is_some() {

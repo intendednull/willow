@@ -562,6 +562,25 @@ pub fn icon_leaf() -> impl IntoView {
     }
 }
 
+/// Signal / radio-waves glyph (stroke 1.5). Used by the sync-queue
+/// surfaces (offline strip suffix + relay-signal button + per-row
+/// relay-only marker). Three concentric arcs + a centre dot.
+pub fn icon_signal() -> impl IntoView {
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 12.5a12 12 0 0 1 17 0"/><path d="M6.5 15.5a8 8 0 0 1 11 0"/><path d="M9.5 18.5a4 4 0 0 1 5 0"/><circle cx="12" cy="21" r="0.8" fill="currentColor" stroke="none"/></svg>"#;
+    view! {
+        <span class="icon icon-signal" inner_html=svg.to_string()></span>
+    }
+}
+
+/// Check icon (small). Used by the sync-queue footer + recent-arrivals
+/// pill + delivery-flash badge.
+pub fn icon_check_small() -> impl IntoView {
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>"#;
+    view! {
+        <span class="icon icon-check-small" inner_html=svg.to_string()></span>
+    }
+}
+
 /// Willow brand mark — three drooping fronds with leaf tips.
 /// Rendered with its own viewBox (48) and stroke width (1.5) to match the
 /// foundation iconography rules for brand surfaces.
