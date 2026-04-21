@@ -192,6 +192,29 @@ pub struct PinnedFragment {
     pub body: String,
 }
 
+/// Profile-field delta payload carried by
+/// [`crate::event::EventKind::UpdateProfile`].
+///
+/// Each outer `Option` is "unchanged when `None`", "overwrite when
+/// `Some`". For nullable fields (`pronouns`, `bio`, `tagline`,
+/// `crest_pattern`, `crest_color`, `pinned`, `since`) the inner
+/// `Option` carries the "clear vs. set" distinction.
+///
+/// Spec: `docs/specs/2026-04-19-ui-design/profile-card.md`
+/// §Data dependencies.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileDelta {
+    pub display_name: Option<String>,
+    pub pronouns: Option<Option<String>>,
+    pub bio: Option<Option<String>>,
+    pub tagline: Option<Option<String>>,
+    pub crest_pattern: Option<Option<CrestPattern>>,
+    pub crest_color: Option<Option<String>>,
+    pub pinned: Option<Option<PinnedFragment>>,
+    pub elsewhere: Option<Vec<String>>,
+    pub since: Option<Option<String>>,
+}
+
 /// Per-field caps enforced by `apply_event(UpdateProfile)`.
 ///
 /// Values above the cap are silently truncated on apply rather than

@@ -149,11 +149,15 @@ pub enum EventKind {
 
     /// Overlay one or more profile fields in-place.
     ///
-    /// Each *outer* `Option` means "unchanged when `None`", "overwrite
-    /// when `Some`". For nullable fields (`pronouns`, `bio`, `tagline`,
-    /// `crest_pattern`, `crest_color`, `pinned`, `since`), the inner
-    /// `Option` distinguishes "clear when `None`" from "set when
-    /// `Some(value)`".
+    /// Each *outer* `Option` on [`crate::types::ProfileDelta`] means
+    /// "unchanged when `None`", "overwrite when `Some`". For nullable
+    /// fields (`pronouns`, `bio`, `tagline`, `crest_pattern`,
+    /// `crest_color`, `pinned`, `since`), the inner `Option`
+    /// distinguishes "clear when `None`" from "set when `Some(value)`".
+    ///
+    /// The delta is [`Box`]ed because [`EventKind`] is stored inline in
+    /// `WireMessage::Event` and clippy's `large_enum_variant` lint
+    /// keeps the enum below the 200-byte threshold.
     ///
     /// Permission: self-authorship only (same contract as
     /// [`EventKind::SetProfile`]). No permission check is performed —
@@ -161,17 +165,7 @@ pub enum EventKind {
     ///
     /// Spec: `docs/specs/2026-04-19-ui-design/profile-card.md`
     /// §Data dependencies.
-    UpdateProfile {
-        display_name: Option<String>,
-        pronouns: Option<Option<String>>,
-        bio: Option<Option<String>>,
-        tagline: Option<Option<String>>,
-        crest_pattern: Option<Option<crate::types::CrestPattern>>,
-        crest_color: Option<Option<String>>,
-        pinned: Option<Option<crate::types::PinnedFragment>>,
-        elsewhere: Option<Vec<String>>,
-        since: Option<Option<String>>,
-    },
+    UpdateProfile(Box<crate::types::ProfileDelta>),
 
     // -- Encryption --
     /// Rotate a channel's encryption key.

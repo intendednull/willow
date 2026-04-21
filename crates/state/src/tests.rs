@@ -3733,7 +3733,9 @@ fn mute_not_admin_gated() {
 // cover the six contract rows from the plan: merge / clear / preserve /
 // idempotent / caps / creates-on-missing.
 
-use crate::types::{CrestPattern, PinnedFragment, PinnedKind, PROFILE_CAP_BIO};
+use crate::types::{
+    CrestPattern, PinnedFragment, PinnedKind, ProfileDelta, PROFILE_CAP_BIO,
+};
 
 #[test]
 fn update_profile_merges_fields() {
@@ -3751,7 +3753,7 @@ fn update_profile_merges_fields() {
     do_emit(
         &mut dag,
         &alice,
-        EventKind::UpdateProfile {
+        EventKind::UpdateProfile(Box::new(ProfileDelta {
             display_name: None,
             pronouns: Some(Some("she/her".into())),
             bio: Some(Some("gardener".into())),
@@ -3761,7 +3763,7 @@ fn update_profile_merges_fields() {
             pinned: None,
             elsewhere: Some(vec!["west coast".into()]),
             since: Some(Some("spring · yr 2".into())),
-        },
+        })),
     );
     let state = materialize(&dag);
     let p = state
@@ -3786,7 +3788,7 @@ fn update_profile_clears_field_with_inner_none() {
     do_emit(
         &mut dag,
         &alice,
-        EventKind::UpdateProfile {
+        EventKind::UpdateProfile(Box::new(ProfileDelta {
             display_name: None,
             pronouns: None,
             bio: Some(Some("old bio".into())),
@@ -3796,12 +3798,12 @@ fn update_profile_clears_field_with_inner_none() {
             pinned: None,
             elsewhere: None,
             since: None,
-        },
+        })),
     );
     do_emit(
         &mut dag,
         &alice,
-        EventKind::UpdateProfile {
+        EventKind::UpdateProfile(Box::new(ProfileDelta {
             display_name: None,
             pronouns: None,
             bio: Some(None),
@@ -3811,7 +3813,7 @@ fn update_profile_clears_field_with_inner_none() {
             pinned: None,
             elsewhere: None,
             since: None,
-        },
+        })),
     );
     let state = materialize(&dag);
     assert!(state.profiles[&alice.endpoint_id()].bio.is_none());
@@ -3824,7 +3826,7 @@ fn update_profile_preserves_untouched_fields() {
     do_emit(
         &mut dag,
         &alice,
-        EventKind::UpdateProfile {
+        EventKind::UpdateProfile(Box::new(ProfileDelta {
             display_name: None,
             pronouns: Some(Some("she/her".into())),
             bio: Some(Some("hello".into())),
@@ -3834,12 +3836,12 @@ fn update_profile_preserves_untouched_fields() {
             pinned: None,
             elsewhere: None,
             since: None,
-        },
+        })),
     );
     do_emit(
         &mut dag,
         &alice,
-        EventKind::UpdateProfile {
+        EventKind::UpdateProfile(Box::new(ProfileDelta {
             display_name: None,
             pronouns: None,
             bio: None,
@@ -3849,7 +3851,7 @@ fn update_profile_preserves_untouched_fields() {
             pinned: None,
             elsewhere: None,
             since: None,
-        },
+        })),
     );
     let state = materialize(&dag);
     let p = &state.profiles[&alice.endpoint_id()];
@@ -3864,7 +3866,7 @@ fn update_profile_reapply_is_idempotent() {
     let mut dag = test_dag(&alice);
     // Replaying the same delta twice must produce the same state as
     // replaying it once — the event hash dedupes on the DAG side.
-    let kind = EventKind::UpdateProfile {
+    let kind = EventKind::UpdateProfile(Box::new(ProfileDelta {
         display_name: Some("alice".into()),
         pronouns: Some(Some("she/her".into())),
         bio: None,
@@ -3874,7 +3876,7 @@ fn update_profile_reapply_is_idempotent() {
         pinned: None,
         elsewhere: None,
         since: None,
-    };
+    }));
     let e1 = do_emit(&mut dag, &alice, kind.clone());
     // Re-inserting the *same* event is a DAG-level dedup; re-creating
     // via `create_event` would bump the seq and hash, so we re-insert
@@ -3894,7 +3896,7 @@ fn update_profile_caps_enforced_on_apply() {
     do_emit(
         &mut dag,
         &alice,
-        EventKind::UpdateProfile {
+        EventKind::UpdateProfile(Box::new(ProfileDelta {
             display_name: None,
             pronouns: None,
             bio: Some(Some(long_bio)),
@@ -3904,7 +3906,7 @@ fn update_profile_caps_enforced_on_apply() {
             pinned: None,
             elsewhere: None,
             since: None,
-        },
+        })),
     );
     let state = materialize(&dag);
     let p = &state.profiles[&alice.endpoint_id()];
@@ -3925,7 +3927,7 @@ fn update_profile_creates_profile_if_missing() {
     do_emit(
         &mut dag,
         &alice,
-        EventKind::UpdateProfile {
+        EventKind::UpdateProfile(Box::new(ProfileDelta {
             display_name: None,
             pronouns: Some(Some("they/them".into())),
             bio: None,
@@ -3935,7 +3937,7 @@ fn update_profile_creates_profile_if_missing() {
             pinned: None,
             elsewhere: None,
             since: None,
-        },
+        })),
     );
     let state = materialize(&dag);
     let p = state
@@ -3956,7 +3958,7 @@ fn update_profile_invalid_crest_color_drops_to_none() {
     do_emit(
         &mut dag,
         &alice,
-        EventKind::UpdateProfile {
+        EventKind::UpdateProfile(Box::new(ProfileDelta {
             display_name: None,
             pronouns: None,
             bio: None,
@@ -3966,7 +3968,7 @@ fn update_profile_invalid_crest_color_drops_to_none() {
             pinned: None,
             elsewhere: None,
             since: None,
-        },
+        })),
     );
     let state = materialize(&dag);
     let p = &state.profiles[&alice.endpoint_id()];
@@ -3980,7 +3982,7 @@ fn update_profile_elsewhere_caps_length() {
     do_emit(
         &mut dag,
         &alice,
-        EventKind::UpdateProfile {
+        EventKind::UpdateProfile(Box::new(ProfileDelta {
             display_name: None,
             pronouns: None,
             bio: None,
@@ -3996,7 +3998,7 @@ fn update_profile_elsewhere_caps_length() {
                 "five".into(),
             ]),
             since: None,
-        },
+        })),
     );
     let state = materialize(&dag);
     let p = &state.profiles[&alice.endpoint_id()];
@@ -4013,7 +4015,7 @@ fn update_profile_pinned_round_trip() {
     do_emit(
         &mut dag,
         &alice,
-        EventKind::UpdateProfile {
+        EventKind::UpdateProfile(Box::new(ProfileDelta {
             display_name: None,
             pronouns: None,
             bio: None,
@@ -4026,7 +4028,7 @@ fn update_profile_pinned_round_trip() {
             })),
             elsewhere: None,
             since: None,
-        },
+        })),
     );
     let state = materialize(&dag);
     let p = &state.profiles[&alice.endpoint_id()];

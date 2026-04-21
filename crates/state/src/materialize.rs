@@ -498,17 +498,18 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
             }
         }
 
-        EventKind::UpdateProfile {
-            display_name,
-            pronouns,
-            bio,
-            tagline,
-            crest_pattern,
-            crest_color,
-            pinned,
-            elsewhere,
-            since,
-        } => {
+        EventKind::UpdateProfile(delta) => {
+            let crate::types::ProfileDelta {
+                display_name,
+                pronouns,
+                bio,
+                tagline,
+                crest_pattern,
+                crest_color,
+                pinned,
+                elsewhere,
+                since,
+            } = delta.as_ref();
             let entry = state
                 .profiles
                 .entry(event.author)
