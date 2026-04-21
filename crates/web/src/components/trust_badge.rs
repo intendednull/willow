@@ -115,8 +115,11 @@ pub fn TrustBadge(
                 PeerTrust::Unknown => (
                     "trust-badge--new",
                     sas_copy::BADGE_NEW_PEER.to_string(),
-                    view! { <span class="trust-badge__text">{sas_copy::BADGE_NEW_PEER}</span> }
-                        .into_any(),
+                    view! {
+                        <span class="trust-badge__icon" aria-hidden="true">
+                            {icons::icon_sprout()}
+                        </span>
+                    }.into_any(),
                 ),
             };
 

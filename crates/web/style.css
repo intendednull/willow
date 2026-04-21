@@ -4096,10 +4096,10 @@ select:focus-visible {
     font-size: 10px;
 }
 .trust-badge--new {
-    color: var(--ink-3);
-    font-size: 11px;
-    padding: 0 4px;
+    background: color-mix(in oklab, var(--moss-1) 60%, transparent);
+    color: var(--moss-3);
 }
+.trust-badge--new svg { color: var(--moss-3); }
 .trust-badge--downgrade {
     background: transparent;
     border: 1.5px dashed var(--warn);

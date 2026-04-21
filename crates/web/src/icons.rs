@@ -311,6 +311,17 @@ pub fn icon_shield() -> impl IntoView {
     )
 }
 
+/// Sprout icon — two-leaf seedling used as the "new peer" trust sigil.
+/// Matches the grove/willow theme: a peer that's just taken root.
+pub fn icon_sprout() -> impl IntoView {
+    icon(
+        &format!(
+            r#"<svg {SVG_ATTRS}><path d="M12 22V11"/><path d="M12 13c-2.5-2.5-6-1-7.5-4 2.5-.5 5.5 0 7.5 4"/><path d="M12 11c2.5-2.5 5.5-1 7-3.5-2 0-5 0-7 3.5"/></svg>"#
+        ),
+        "icon-sprout",
+    )
+}
+
 /// Key icon — used by the holder pill + related crypto visibility
 /// surfaces.
 pub fn icon_key() -> impl IntoView {
