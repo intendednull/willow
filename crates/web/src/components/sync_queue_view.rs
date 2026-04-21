@@ -12,9 +12,9 @@
 //! and permanent-unreachable card are tracked in Task 18.
 
 use leptos::prelude::*;
-use willow_client::RelayStatus;
 
 use crate::app::WebClientHandle;
+use crate::components::{sync_queue_copy, RelaySignalButton};
 use crate::icons;
 use crate::state::AppState;
 
@@ -33,7 +33,6 @@ pub fn SyncQueueView() -> impl IntoView {
     let handle = use_context::<WebClientHandle>()
         .expect("<SyncQueueView> requires a WebClientHandle context");
     let queue_view = app.queue.view;
-    let relay = app.queue.relay_status;
     let queue_open = app.queue.open;
 
     let tab = RwSignal::new(Tab::Outbound);
@@ -42,9 +41,9 @@ pub fn SyncQueueView() -> impl IntoView {
     let status_label = move || {
         let v = queue_view.get();
         if v.depth == 0 {
-            "queue drained".to_string()
+            sync_queue_copy::SCREEN_CARD_DRAINED.to_string()
         } else {
-            "reaching out…".to_string()
+            sync_queue_copy::SCREEN_CARD_REACHING_OUT.to_string()
         }
     };
 
@@ -99,24 +98,10 @@ pub fn SyncQueueView() -> impl IntoView {
                     "×"
                 </button>
                 <div class="sync-queue-view__titles">
-                    <h2 class="sync-queue-view__title">"sync queue"</h2>
-                    <p class="sync-queue-view__subtitle">"what's pending · what's reachable"</p>
+                    <h2 class="sync-queue-view__title">{sync_queue_copy::SCREEN_TITLE}</h2>
+                    <p class="sync-queue-view__subtitle">{sync_queue_copy::SCREEN_SUBTITLE}</p>
                 </div>
-                <span class=move || match relay.get() {
-                    RelayStatus::Reachable => "sync-queue-view__relay sync-queue-view__relay--ok",
-                    RelayStatus::Unreachable => "sync-queue-view__relay sync-queue-view__relay--warn",
-                    RelayStatus::NotConfigured => "sync-queue-view__relay sync-queue-view__relay--idle",
-                } title=move || match relay.get() {
-                    RelayStatus::Reachable => "relay reachable",
-                    RelayStatus::Unreachable => "relay unreachable · waiting",
-                    RelayStatus::NotConfigured => "no relay configured",
-                } aria-label=move || match relay.get() {
-                    RelayStatus::Reachable => "relay reachable",
-                    RelayStatus::Unreachable => "relay unreachable",
-                    RelayStatus::NotConfigured => "no relay configured",
-                }>
-                    {icons::icon_signal()}
-                </span>
+                <RelaySignalButton />
             </header>
 
             // ── Status card ─────────────────────────────────────────
@@ -138,7 +123,7 @@ pub fn SyncQueueView() -> impl IntoView {
                 <span class="sync-queue-view__status-count">
                     {move || {
                         let (r, t) = peer_counts();
-                        format!("{r} / {t} peers")
+                        sync_queue_copy::screen_card_count(r, t)
                     }}
                 </span>
             </div>
@@ -190,7 +175,7 @@ pub fn SyncQueueView() -> impl IntoView {
                                         <span class="sync-queue-row__name">{short}</span>
                                         <span class="sync-queue-row__count queue-pill">
                                             {icons::icon_hourglass_sm()}
-                                            <span aria-hidden="true">{format!("queued · {count}")}</span>
+                                            <span aria-hidden="true">{sync_queue_copy::pill_queued(count)}</span>
                                         </span>
                                     </li>
                                 }
@@ -221,7 +206,7 @@ pub fn SyncQueueView() -> impl IntoView {
             // ── Recent arrivals ─────────────────────────────────────
             <Show when=move || !queue_view.get().recent_arrivals.is_empty()>
                 <section class="sync-queue-view__arrivals" role="list" aria-label="recent arrivals">
-                    <h3 class="sync-queue-view__arrivals-title">"recent · arrived from queue"</h3>
+                    <h3 class="sync-queue-view__arrivals-title">{sync_queue_copy::SCREEN_SECTION_RECENT}</h3>
                     <ul>
                         {move || {
                             queue_view.get().recent_arrivals.iter().map(|a| {
@@ -252,7 +237,7 @@ pub fn SyncQueueView() -> impl IntoView {
                     disabled=move || busy.get() || queue_view.get().depth == 0
                     on:click=retry_click
                 >
-                    {move || if busy.get() { "retrying…" } else { "retry now" }}
+                    {move || if busy.get() { sync_queue_copy::ACTION_RETRY_BUSY } else { sync_queue_copy::ACTION_RETRY }}
                 </button>
                 <Show when=move || tab.get() == Tab::Inbound>
                     <button
@@ -260,7 +245,7 @@ pub fn SyncQueueView() -> impl IntoView {
                         class="sync-queue-view__mark-read"
                         on:click=mark_read_click.clone()
                     >
-                        "mark as read locally"
+                        {sync_queue_copy::ACTION_MARK_READ}
                     </button>
                 </Show>
             </footer>
@@ -268,7 +253,8 @@ pub fn SyncQueueView() -> impl IntoView {
             // ── Footnote (verbatim) ─────────────────────────────────
             <p class="sync-queue-view__footnote">
                 {icons::icon_signal()}
-                " willow holds unsent messages on this device and tries again automatically. nothing is stored on a server."
+                " "
+                {sync_queue_copy::SCREEN_FOOTNOTE}
             </p>
         </section>
     }
