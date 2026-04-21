@@ -300,7 +300,7 @@ Render the desktop-only floating toolbar at top-right of the row on mouseenter. 
 
 **Files:** modify `crates/web/src/components/message.rs`, modify `crates/web/style.css`, modify `crates/web/src/icons.rs`.
 
-- [ ] **Step 12.1 — Markup.** Replace the current `.message-actions` `…` button with a full `<div class="message-hover-toolbar">`:
+- [x] **Step 12.1 — Markup.** Replaced the single `.message-actions` `…` trigger with a `<div class="message-hover-toolbar" role="toolbar" aria-label="message actions">` wrapping: 5 quick-reaction placeholder `.toolbar-btn--quick-react` buttons (emoji literals until `reactions-pins.md` lands), a `.toolbar-divider`, then `smile` / `thread` / `ear` / `more-horizontal` buttons. The `more-horizontal` button retained the `.action-trigger` class so its existing `show_dropdown` toggle still opens the overflow menu; the dropdown contents (Reply / Pin / React / Edit / Delete / Download) stayed unchanged. The ear (whisper reply) is a layout-only placeholder behind a `TODO(whisper-mode.md)` comment — click is a no-op. Thread button is wired through the existing `on_open_thread` Callback from Task 11.
 
   ```rust
   view! {
@@ -322,13 +322,13 @@ Render the desktop-only floating toolbar at top-right of the row on mouseenter. 
   }
   ```
 
-- [ ] **Step 12.2 — CSS.** `position: absolute; top: -14px; right: 8px; background: var(--bg-1); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow-2); padding: 3px; gap: 2px; opacity: 0; transition: opacity var(--motion-fast) ease;`. `.message:hover .message-hover-toolbar { opacity: 1; }`. Under `@media (prefers-reduced-motion: reduce)` the transition collapses to `none`; opacity-only per spec.
+- [x] **Step 12.2 — CSS.** Appended in `crates/web/style.css` under `/* ── Phase 2a Task 12 · Desktop hover toolbar ──*/`. `.message-hover-toolbar` is `inline-flex` with `gap: 2px; padding: 3px; background: var(--bg-1); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow-2)`; fades in via `opacity` + `pointer-events` on `.message:hover` / `.message:focus-within` over `var(--motion-fast, 120ms)`. `.toolbar-btn` is a 26 × 26 transparent button with `--ink-2` → `--ink-1` on hover; `.toolbar-divider` is a 1 px `--line` strip. `@media (prefers-reduced-motion: reduce)` drops the transition to `none`; `@media (max-width: 720px)` hides the toolbar (mobile long-press sheet owns that surface). The outer `.message-actions` is now a positioning-only anchor (its `display: none` was removed) so the toolbar inside controls visibility via opacity — this keeps the dropdown's absolute positioning stable and avoids layout thrash on hover.
 
-- [ ] **Step 12.3 — Wire reply + thread.** Reply button → existing `on_click` callback (quote-reply). Thread button → existing `on_click` with a `thread: bool` flag (or a new `on_thread` callback — add one if the composer doesn't expose thread mode yet; mark with `TODO(composer.md)` if threads aren't wired).
+- [x] **Step 12.3 — Wire reply + thread.** Thread button routes through the `on_open_thread` Callback added in Task 11 (same surface the swipe-right gesture uses). Quick-reaction buttons route through the existing `on_react` callback immediately. Reply is still served by the dropdown's Reply item (via `more-horizontal` → `show_dropdown`) plus the swipe-left gesture — a dedicated reply toolbar button is out-of-scope for this task (the spec's toolbar list covers quick-reacts / smile / thread / ear / more-horizontal and never a reply chevron).
 
-- [ ] **Step 12.4 — `just test-browser`** — 1 test: hover toolbar appears on desktop mouseenter with the 4 static buttons + placeholder reaction slots; ARIA labels match spec table.
+- [x] **Step 12.4 — `just test-browser`** — 3 new tests in `phase_2a_message_row`: `hover_toolbar_renders_all_buttons` (asserts `role=toolbar`, 5 quick-reaction buttons with `react with {emoji}` aria-labels, divider, and the 4 trailing buttons with exact `aria-label` text), `hover_toolbar_more_actions_toggles_dropdown` (click → `.message-dropdown` mounts), `hover_toolbar_quick_react_fires_callback` (click first quick-react → `on_react` receives (msg, emoji) pair). Captured via `RwSignal` because leptos `Callback` requires `Send + Sync`. 215 browser tests pass (up from 212).
 
-- [ ] **Step 12.5 — Commit** — `ui(phase-2): render desktop hover toolbar anatomy`.
+- [x] **Step 12.5 — Commit** — `ui(phase-2): render desktop hover toolbar anatomy`.
 
 ### 13. Long-press action sheet copy + dismissal
 

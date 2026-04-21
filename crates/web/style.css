@@ -757,31 +757,114 @@ select:focus-visible {
 /* ── Message Action Bar (dropdown) ────────────────────────────────── */
 
 .message-actions {
-    display: none;
+    /* Phase 2a Task 12: the action bar is now a *positioning anchor* for
+       the hover toolbar + dropdown. The toolbar itself controls its own
+       visibility via `.message:hover .message-hover-toolbar` below, so
+       `.message-actions` stays mounted at all times (it's inert until the
+       toolbar inside flips opacity). This keeps the dropdown's absolute
+       positioning stable and avoids layout thrash on hover. */
     position: absolute;
     top: -14px;
     right: 8px;
     z-index: 2;
 }
 
-.message:hover .message-actions { display: flex; }
+/* ── Phase 2a Task 12 · Desktop hover toolbar ─────────────────────────
+   Spec: docs/specs/2026-04-19-ui-design/message-row.md §Hover toolbar.
+   Inline-flex row of 26 × 26 IconBtns + thin divider; fades in over
+   `--motion-fast` on `.message:hover` / `.message:focus-within`;
+   reduced-motion collapses the transition to none (opacity-only state
+   change). Hidden on mobile viewports (<=720 px) where the long-press
+   action sheet is the entry point. */
+.message-hover-toolbar {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 3px;
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: var(--shadow-2);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--motion-fast, 120ms) ease;
+}
 
-.action-trigger {
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    color: var(--text-muted);
-    font-size: 16px;
-    padding: 4px 8px;
-    cursor: pointer;
+.message:hover .message-hover-toolbar,
+.message:focus-within .message-hover-toolbar {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.toolbar-btn {
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
     border-radius: 6px;
-    box-shadow: var(--shadow-md);
-    transition: background var(--transition-fast), color var(--transition-fast);
+    padding: 0;
+    cursor: pointer;
+    color: var(--ink-2);
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1;
+    -webkit-tap-highlight-color: transparent;
+    transition: background var(--motion-fast, 120ms) ease,
+                color var(--motion-fast, 120ms) ease;
+}
+
+.toolbar-btn:hover {
+    background: var(--bg-2);
+    color: var(--ink-1);
+}
+
+.toolbar-btn .icon {
+    width: 14px;
+    height: 14px;
+    font-size: 14px;
+}
+
+.toolbar-btn--quick-react {
+    font-size: 14px;
+}
+
+.toolbar-divider {
+    width: 1px;
+    align-self: stretch;
+    background: var(--line);
+    margin: 2px 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .message-hover-toolbar {
+        transition: none;
+    }
+    .toolbar-btn {
+        transition: none;
+    }
+}
+
+@media (max-width: 720px) {
+    .message-hover-toolbar {
+        display: none;
+    }
+}
+
+/* Legacy trigger (kept for visual regressions + clarity); the hover
+   toolbar wraps it now, so these rules only apply when that `.action-
+   trigger` appears inside `.message-hover-toolbar` via `.toolbar-btn`. */
+.action-trigger {
+    background: transparent;
+    color: var(--ink-2);
     -webkit-tap-highlight-color: transparent;
 }
 
 .action-trigger:hover {
-    background: var(--bg-input);
-    color: var(--text-primary);
+    background: var(--bg-2);
+    color: var(--ink-1);
 }
 
 .message-dropdown {

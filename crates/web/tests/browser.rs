@@ -8359,4 +8359,201 @@ mod phase_2a_message_row {
             "on_click Callback<()> must fire when the pill is clicked"
         );
     }
+
+    // ── Task 12 · Desktop hover toolbar ────────────────────────────────
+    //
+    // Spec: docs/specs/2026-04-19-ui-design/message-row.md §Hover toolbar.
+    // The toolbar is mounted statically (no mouseenter simulation needed);
+    // CSS handles fade-in on `.message:hover`. These tests assert the
+    // markup anatomy + the two callback paths this phase owns (more-actions
+    // → dropdown signal flip, quick-react button → on_react callback).
+
+    /// Mount a standalone `<MessageView>` with `AppState` + write signals
+    /// provided so the nested `<TrustBadge>` can read the reactive trust
+    /// map without panicking on `use_context`. Callers pass a `wire`
+    /// closure that builds the view given the seeded message.
+    fn mount_message_view_with_callbacks<F>(
+        msg: willow_client::DisplayMessage,
+        wire: F,
+    ) -> web_sys::HtmlElement
+    where
+        F: FnOnce(willow_client::DisplayMessage) -> leptos::prelude::AnyView + 'static,
+    {
+        use willow_web::state::{create_signals, InitialSignals};
+        mount_test_with_shell(TestShell::Desktop, move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            wire(msg)
+        })
+    }
+
+    #[wasm_bindgen_test]
+    async fn hover_toolbar_renders_all_buttons() {
+        // Wire every relevant callback so `show_actions` is true and the
+        // toolbar mounts. Quick-reactions render only when `has_react`;
+        // thread button renders only when `on_open_thread` is wired;
+        // smile, ear, more-horizontal always render while show_actions is
+        // on.
+        let msg = make_msg("Mira", "hover me", FIXTURE_TS_MS);
+        let react_cb = Callback::new(|_: (willow_client::DisplayMessage, String)| {});
+        let reply_cb = Callback::new(|_: willow_client::DisplayMessage| {});
+        let thread_cb = Callback::new(|_: willow_client::DisplayMessage| {});
+
+        let container = mount_message_view_with_callbacks(msg, move |msg| {
+            view! {
+                <MessageView
+                    message=msg
+                    on_click=reply_cb
+                    on_react=react_cb
+                    on_open_thread=thread_cb
+                />
+            }
+            .into_any()
+        });
+        tick().await;
+
+        let toolbar = query(&container, ".message-hover-toolbar")
+            .expect(".message-hover-toolbar must mount when show_actions is true");
+        assert_eq!(
+            toolbar.get_attribute("role").as_deref(),
+            Some("toolbar"),
+            "hover toolbar must carry role=toolbar"
+        );
+
+        // Quick-reaction buttons — exactly 5, each with `react with {emoji}`
+        // aria-label.
+        let quick_reacts = query_all(&container, ".toolbar-btn--quick-react");
+        assert_eq!(
+            quick_reacts.len(),
+            5,
+            "hover toolbar must render 5 quick-reaction placeholder buttons"
+        );
+        for btn in &quick_reacts {
+            let label = btn.get_attribute("aria-label").unwrap_or_default();
+            assert!(
+                label.starts_with("react with "),
+                "quick-react aria-label must start with `react with `, got {label:?}"
+            );
+        }
+
+        // Divider between quick-reacts and the trailing action buttons.
+        assert!(
+            query(&container, ".message-hover-toolbar .toolbar-divider").is_some(),
+            "thin divider must separate quick-reactions from action buttons"
+        );
+
+        // Trailing action buttons, in order: smile / thread / ear / more.
+        for label in [
+            "more reactions",
+            "start thread",
+            "whisper reply",
+            "more actions",
+        ] {
+            let selector = format!(".message-hover-toolbar .toolbar-btn[aria-label=\"{label}\"]");
+            assert!(
+                query(&container, &selector).is_some(),
+                "hover toolbar must expose `{label}` button"
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    async fn hover_toolbar_more_actions_toggles_dropdown() {
+        // The `more actions` button is the entry point to the existing
+        // message dropdown (Reply / Pin / React / Edit / Delete). Before
+        // click → `.message-dropdown` absent. After click → present.
+        let msg = make_msg("Rin", "dropdown me", FIXTURE_TS_MS);
+        let reply_cb = Callback::new(|_: willow_client::DisplayMessage| {});
+
+        let container = mount_message_view_with_callbacks(msg, move |msg| {
+            view! {
+                <MessageView
+                    message=msg
+                    on_click=reply_cb
+                />
+            }
+            .into_any()
+        });
+        tick().await;
+
+        assert!(
+            query(&container, ".message-dropdown").is_none(),
+            "dropdown must be absent before `more actions` is clicked"
+        );
+
+        let more = query(
+            &container,
+            ".message-hover-toolbar .toolbar-btn[aria-label=\"more actions\"]",
+        )
+        .expect("`more actions` button must render");
+        simulate_click(&more);
+        tick().await;
+
+        assert!(
+            query(&container, ".message-dropdown").is_some(),
+            "dropdown must render after clicking `more actions`"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn hover_toolbar_quick_react_fires_callback() {
+        // Clicking the first quick-reaction button routes through the
+        // `on_react` callback with the emoji that button rendered. This
+        // matches the existing React-row contract in the dropdown; the
+        // toolbar simply surfaces it persistently on desktop. We capture
+        // the emitted (id, emoji) via an `RwSignal` because leptos
+        // `Callback` requires the closure to be `Send + Sync`.
+        let seen: RwSignal<Option<(String, String)>> = RwSignal::new(None);
+        let cb = Callback::new(
+            move |(msg, emoji): (willow_client::DisplayMessage, String)| {
+                let msg: willow_client::DisplayMessage = msg;
+                seen.set(Some((msg.id.clone(), emoji)));
+            },
+        );
+
+        let msg = make_msg("Rin", "react me", FIXTURE_TS_MS);
+        let msg_id = msg.id.clone();
+
+        let container = mount_message_view_with_callbacks(msg, move |msg| {
+            view! {
+                <MessageView
+                    message=msg
+                    on_react=cb
+                />
+            }
+            .into_any()
+        });
+        tick().await;
+
+        let quick_reacts = query_all(&container, ".toolbar-btn--quick-react");
+        assert_eq!(
+            quick_reacts.len(),
+            5,
+            "quick-react strip must have 5 buttons"
+        );
+        let first = &quick_reacts[0];
+        let emoji = text(first);
+        assert!(
+            !emoji.is_empty(),
+            "first quick-reaction button must render an emoji"
+        );
+
+        simulate_click(first);
+        tick().await;
+
+        let captured = seen.get_untracked();
+        let (seen_id, seen_emoji) = captured
+            .as_ref()
+            .expect("on_react must fire on toolbar click");
+        assert_eq!(seen_id, &msg_id, "callback must carry the correct message");
+        assert_eq!(
+            seen_emoji, &emoji,
+            "callback emoji must equal the button's rendered glyph"
+        );
+    }
 }

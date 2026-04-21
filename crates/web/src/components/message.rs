@@ -348,6 +348,12 @@ pub fn MessageView(
     let msg_for_edit = message.clone();
     let msg_for_delete = message.clone();
     let msg_for_pin = message.clone();
+    // Phase 2a Task 12: hover-toolbar thread + quick-reaction targets.
+    // `on_open_thread` is the same Callback plumbed through Task 11 for the
+    // swipe-right gesture; the `start thread` toolbar button reuses it so
+    // desktop users get the same affordance without swipes.
+    let msg_for_thread = message.clone();
+    let msg_for_quick_react = message.clone();
 
     // Clone on_react for use in the reactions display.
     let on_react_for_reactions = on_react;
@@ -876,13 +882,121 @@ pub fn MessageView(
 
                 let msg_for_react = message.clone();
 
+                // Phase 2a Task 12: the desktop hover toolbar sits above the
+                // row (top: -14px, right: 8px) and fades in on `.message:hover`
+                // / `.message:focus-within`. The `more-horizontal` trigger here
+                // owns the dropdown — clicking it still toggles `show_dropdown`
+                // so the existing dropdown contents (Reply / Pin / React / Edit
+                // / Delete / Download) stay intact. Quick-reaction slots render
+                // placeholder emoji until `reactions-pins.md` lands a recency-
+                // based quick-reactions list; each click routes through
+                // `on_react` immediately. The whisper button is a layout
+                // placeholder awaiting `whisper-mode.md` (`WhisperStart`) —
+                // click is a no-op. Mobile viewports hide the toolbar via a
+                // `@media (max-width: 720px)` CSS rule; the long-press action
+                // sheet remains the mobile entry.
+                let react_cb_for_quick = on_react;
+                let msg_for_more_reactions = msg_for_react.clone();
                 Some(view! {
                     <div class="message-actions">
-                        <button class="action-trigger" on:click=move |ev| {
-                            ev.stop_propagation();
-                            set_show_dropdown.update(|v| *v = !*v);
-                            set_show_react_row.set(false);
-                        }>{icons::icon_more_horizontal()}</button>
+                        <div class="message-hover-toolbar" role="toolbar" aria-label="message actions">
+                            {if has_react {
+                                ["\u{1F44D}", "\u{1F389}", "\u{2764}\u{FE0F}", "\u{1F642}", "\u{1F440}"]
+                                    .into_iter()
+                                    .map(|emoji| {
+                                        let e_for_click = emoji.to_string();
+                                        let e_for_label = emoji.to_string();
+                                        let e_for_render = emoji.to_string();
+                                        let cb = react_cb_for_quick;
+                                        let msg = msg_for_quick_react.clone();
+                                        Some(view! {
+                                            <button
+                                                class="toolbar-btn toolbar-btn--quick-react"
+                                                type="button"
+                                                aria-label=format!("react with {e_for_label}")
+                                                on:click=move |ev| {
+                                                    ev.stop_propagation();
+                                                    if let Some(ref cb) = cb {
+                                                        cb.run((msg.clone(), e_for_click.clone()));
+                                                    }
+                                                }
+                                            >
+                                                {e_for_render}
+                                            </button>
+                                        })
+                                    })
+                                    .collect::<Vec<_>>()
+                            } else {
+                                Vec::new()
+                            }}
+                            {has_react.then(|| view! {
+                                <span class="toolbar-divider" aria-hidden="true"></span>
+                            })}
+                            {has_react.then(|| {
+                                let msg_for_click = msg_for_more_reactions.clone();
+                                let _ = msg_for_click; // reserved for future emoji-picker route
+                                view! {
+                                    <button
+                                        class="toolbar-btn"
+                                        type="button"
+                                        aria-label="more reactions"
+                                        on:click=move |ev| {
+                                            ev.stop_propagation();
+                                            // Toggle the existing React row
+                                            // inside the dropdown, opening the
+                                            // dropdown if it's closed so the
+                                            // row is visible. `reactions-pins.md`
+                                            // will replace this with a full
+                                            // emoji picker.
+                                            set_show_dropdown.set(true);
+                                            set_show_react_row.update(|v| *v = !*v);
+                                        }
+                                    >
+                                        {icons::icon_smile()}
+                                    </button>
+                                }
+                            })}
+                            {on_open_thread.map(|cb| {
+                                let msg = msg_for_thread.clone();
+                                view! {
+                                    <button
+                                        class="toolbar-btn"
+                                        type="button"
+                                        aria-label="start thread"
+                                        on:click=move |ev| {
+                                            ev.stop_propagation();
+                                            cb.run(msg.clone());
+                                        }
+                                    >
+                                        {icons::icon_thread()}
+                                    </button>
+                                }
+                            })}
+                            <button
+                                class="toolbar-btn"
+                                type="button"
+                                aria-label="whisper reply"
+                                // TODO(whisper-mode.md): permission-gated; no-op
+                                // until `WhisperStart` EventKind lands and the
+                                // local peer has permission to send a whisper
+                                // reply to this row's author.
+                                on:click=move |ev| { ev.stop_propagation(); }
+                            >
+                                {icons::icon_ear()}
+                            </button>
+                            <button
+                                class="toolbar-btn action-trigger"
+                                type="button"
+                                aria-label="more actions"
+                                on:click=move |ev| {
+                                    ev.stop_propagation();
+                                    set_show_dropdown.update(|v| *v = !*v);
+                                    set_show_react_row.set(false);
+                                }
+                            >
+                                {icons::icon_more_horizontal()}
+                            </button>
+                        </div>
                         {move || {
                             if show_dropdown.get() {
                                 let reply_view = if has_reply {
