@@ -456,7 +456,7 @@ Surface the new view + retry / mark-read mutations.
 
 **Files:** modify `crates/client/src/lib.rs`, modify `crates/client/src/mutations.rs`, modify `crates/client/src/events.rs`.
 
-- [ ] **Step 6.1 — `events.rs`.** Add:
+- [x] **Step 6.1 — `events.rs`.** Add:
 
   ```rust
   pub enum ClientEvent {
@@ -467,7 +467,7 @@ Surface the new view + retry / mark-read mutations.
   }
   ```
 
-- [ ] **Step 6.2 — Mutations.** In `mutations.rs`:
+- [x] **Step 6.2 — Mutations.** In `mutations.rs`: *(Routed through the existing method-based `ClientMutations` interface rather than a typed `Mutation` enum — the crate's pattern throughout. Methods: `retry_queue`, `mark_queue_read`, `set_relay_status`, `set_device_online`.)*
 
   ```rust
   pub enum Mutation {
@@ -479,7 +479,7 @@ Surface the new view + retry / mark-read mutations.
 
   Route through the actor-bus. `RetryQueue` → iterates `queue_meta.outbound` and calls `network.attempt_direct(peer)` for unique recipients (best-effort; failures logged but not surfaced). `MarkQueueRead` → writes a `last_seen` marker into a new local key-value shape on `QueueMeta::marks: HashMap<EndpointId, Tick>`.
 
-- [ ] **Step 6.3 — `ClientHandle` methods.** In `lib.rs`:
+- [x] **Step 6.3 — `ClientHandle` methods.** In `lib.rs`:
 
   ```rust
   impl ClientHandle {
@@ -491,9 +491,9 @@ Surface the new view + retry / mark-read mutations.
   }
   ```
 
-- [ ] **Step 6.4 — Re-exports.** `pub use state::{QueueSummary, ArrivedSummary};` / `pub use queue::RelayStatus;` in `client/src/lib.rs`.
+- [x] **Step 6.4 — Re-exports.** `pub use state::{QueueSummary, ArrivedSummary};` / `pub use queue::RelayStatus;` in `client/src/lib.rs`.
 
-- [ ] **Step 6.5 — Client tests.** 5 tests in a new `crates/client/src/tests/queue.rs`:
+- [x] **Step 6.5 — Client tests.** 11 tests in `crates/client/src/tests/queue.rs` (plan asked for 5; we land 11 covering the full spec surface):
 
   ```rust
   #[tokio::test]
@@ -508,11 +508,11 @@ Surface the new view + retry / mark-read mutations.
   async fn device_online_transition_emits_event() { /* set_device_online(false) → (true); assert ClientEvent::DeviceOnlineChanged events */ }
   ```
 
-- [ ] **Step 6.6 — Hook up `crates/client/src/tests/mod.rs`** to include `mod queue;`.
+- [x] **Step 6.6 — Hook up `crates/client/src/tests/mod.rs`** to include `mod queue;`. *(The crate uses a flat-file + `#[path = ...]` pattern for its tests modules; module declared in `lib.rs` as `tests_queue`.)*
 
-- [ ] **Step 6.7 — `just test-client`** — 5 new tests green.
+- [x] **Step 6.7 — `just test-client`** — 11 new tests green; 167 total client tests pass.
 
-- [ ] **Step 6.8 — Commit** — `ui(phase-2b): add queue_view + retry_queue + mark_queue_read to ClientHandle`.
+- [x] **Step 6.8 — Commit** — `ui(phase-2b): add queue_view + retry_queue + mark_queue_read to ClientHandle`.
 
 ### 7. WASM device-online listener + web AppState wiring
 

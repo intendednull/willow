@@ -121,6 +121,18 @@ pub enum ClientEvent {
         scope: MuteScope,
         muted: bool,
     },
+    /// Sync-queue aggregate snapshot changed (Phase 2b). Re-emitted
+    /// after any `QueueMeta` mutation the UI surfaces care about
+    /// (enqueue, ack, retry, arrival bucket, relay / device signal).
+    ///
+    /// Payload is the fresh `QueueView`. The web crate pipes this into
+    /// `AppState.queue.view` via `event_processing.rs`.
+    QueueChanged(crate::views::QueueView),
+    /// Relay reachability transitioned (Phase 2b).
+    RelayStatusChanged(crate::queue::RelayStatus),
+    /// Device-online signal transitioned (Phase 2b). Consumed by the
+    /// reconnection-toast + welcome-back-banner components.
+    DeviceOnlineChanged(bool),
 }
 
 impl willow_actor::Message for ClientEvent {

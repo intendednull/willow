@@ -54,11 +54,16 @@ mod tests_trust_flow;
 #[path = "tests/multi_peer_sync.rs"]
 mod tests_multi_peer_sync;
 
+#[cfg(test)]
+#[path = "tests/queue.rs"]
+mod tests_queue;
+
 // Re-export key types at crate root for convenience.
 pub use event_receiver::EventReceiver;
 pub use events::ClientEvent;
 pub use mentions::mentions_me;
 pub use ops::{pack_wire, unpack_wire, VoiceSignalPayload, WireMessage};
+pub use queue::{ArrivedSummary, QueueSummary, RelayStatus};
 pub use trust::{
     ComparePreview, InMemoryTrustStore, PeerTrust, TrustStore, TrustStoreHandle, UnverifiedReason,
 };
@@ -413,6 +418,65 @@ impl<N: willow_network::Network> ClientHandle<N> {
         })
         .await;
     }
+
+    // ── Phase 2b — sync-queue API ──────────────────────────────────────
+
+    /// Return a `QueueView` snapshot computed off the current
+    /// `QueueMeta`. The web layer usually subscribes to the reactive
+    /// `ClientViewHandle::queue_meta` signal + runs `compute_queue_view`
+    /// through a derived actor; this accessor is primarily for
+    /// integration tests + ad-hoc callers.
+    pub async fn queue_view(&self) -> views::QueueView {
+        let snap = willow_actor::state::get(&self.queue_meta_addr).await;
+        views::compute_queue_view(&Arc::new((*snap).clone()))
+    }
+
+    /// Trigger a best-effort retry of every pending outbound message.
+    /// See [`ClientMutations::retry_queue`].
+    pub async fn retry_queue(&self) -> anyhow::Result<()> {
+        self.mutation_handle.retry_queue().await
+    }
+
+    /// Stamp a local `mark as read` annotation for `peer_id`'s inbound
+    /// queue. Never reveals message bodies.
+    pub async fn mark_queue_read(
+        &self,
+        peer_id: willow_identity::EndpointId,
+    ) -> anyhow::Result<()> {
+        self.mutation_handle.mark_queue_read(peer_id).await
+    }
+
+    /// Seed a queue entry for testing — `(message_id, recipient)` pair
+    /// enters `QueueMeta::outbound`. Only exposed under
+    /// `#[cfg(any(test, feature = "test-utils"))]`; production code
+    /// hits this through the retry-queue pipeline.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn _enqueue_outbound(
+        &self,
+        message_id: willow_messaging::MessageId,
+        recipient: willow_identity::EndpointId,
+        authored_at: u64,
+    ) {
+        willow_actor::state::mutate(&self.queue_meta_addr, move |qm| {
+            qm.enqueue(state_actors::QueueEntry {
+                message_id,
+                recipient,
+                authored_at,
+                last_attempt_at: None,
+                last_attempt_error: None,
+            });
+        })
+        .await;
+    }
+
+    /// Expose the [`QueueMeta`] address so internal tests can observe
+    /// the actor state directly.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn _queue_meta_addr(
+        &self,
+    ) -> &willow_actor::Addr<willow_actor::StateActor<state_actors::QueueMeta>> {
+        &self.queue_meta_addr
+    }
 }
 
 /// Platform-appropriate "now in epoch milliseconds". Uses
@@ -764,6 +828,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             join_links: Arc::clone(&join_links),
             topics: Arc::clone(&topics),
             dag: dag_addr.clone(),
+            queue_meta: queue_meta_addr.clone(),
         };
 
         let handle = ClientHandle {
@@ -1089,6 +1154,7 @@ pub fn test_client() -> (
         join_links: Arc::clone(&join_links),
         topics: Arc::clone(&topics),
         dag: dag_addr.clone(),
+        queue_meta: queue_meta_addr.clone(),
     };
 
     // Leak the system so actors stay alive for the test duration.
@@ -1423,6 +1489,7 @@ mod tests {
             dag: alice.dag_addr.clone(),
             join_links: Arc::clone(&alice.join_links),
             topics: Arc::clone(&alice.topics),
+            queue_meta: alice.queue_meta_addr.clone(),
         };
 
         // Bob attempts to create a channel — must fail (PermissionDenied).
