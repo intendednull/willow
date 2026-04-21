@@ -30,8 +30,9 @@ enum Tab {
 pub fn SyncQueueView() -> impl IntoView {
     let app =
         use_context::<AppState>().expect("<SyncQueueView> mounted outside an AppState context");
-    let handle = use_context::<WebClientHandle>()
-        .expect("<SyncQueueView> requires a WebClientHandle context");
+    // The `WebClientHandle` is pulled lazily in the retry / mark-read
+    // click handlers so headless browser tests can render the screen
+    // for DOM assertions without constructing a live iroh handle.
     let queue_view = app.queue.view;
     let queue_open = app.queue.open;
 
@@ -60,22 +61,28 @@ pub fn SyncQueueView() -> impl IntoView {
         (reached, total)
     };
 
-    let retry_handle = handle.clone();
     let retry_click = move |_| {
         if busy.get() {
             return;
         }
         busy.set(true);
-        let h = retry_handle.clone();
+        let Some(h) = use_context::<WebClientHandle>() else {
+            // No handle in context — used by the browser-test harness.
+            // Flip busy straight back so the button exits the pending
+            // state; real deployments always have a handle.
+            busy.set(false);
+            return;
+        };
         wasm_bindgen_futures::spawn_local(async move {
             let _ = h.retry_queue().await;
             busy.set(false);
         });
     };
 
-    let mark_read_handle = handle.clone();
     let mark_read_click = move |_| {
-        let h = mark_read_handle.clone();
+        let Some(h) = use_context::<WebClientHandle>() else {
+            return;
+        };
         let view = queue_view.get();
         let peers: Vec<_> = view.inbound_per_peer.keys().copied().collect();
         wasm_bindgen_futures::spawn_local(async move {
@@ -243,7 +250,7 @@ pub fn SyncQueueView() -> impl IntoView {
                     <button
                         type="button"
                         class="sync-queue-view__mark-read"
-                        on:click=mark_read_click.clone()
+                        on:click=mark_read_click
                     >
                         {sync_queue_copy::ACTION_MARK_READ}
                     </button>

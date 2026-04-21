@@ -9303,3 +9303,1033 @@ mod phase_2a_message_row {
         );
     }
 }
+
+// ── Phase 2b — Sync queue ───────────────────────────────────────────────────
+//
+// Spec: `docs/specs/2026-04-19-ui-design/sync-queue.md`. Single-client
+// DOM assertions only — multi-peer flow tests live in Playwright.
+// The 60 s reconnection gate is unit-tested in `willow-client` so the
+// browser layer only exercises the offline→online signal transition.
+mod phase_2b_sync_queue {
+    use super::*;
+
+    use std::collections::HashMap;
+
+    use willow_client::queue::{ArrivedSummary, QueueSummary, RelayStatus};
+    use willow_client::views::QueueView;
+    use willow_identity::{EndpointId, Identity};
+    use willow_web::components::{
+        sync_queue_copy, InlineQueueNote, InlineState, OfflineStrip, QueuePill, ReconnectionToast,
+        RelaySignalButton, SyncQueueView, WelcomeBackBanner,
+    };
+    use willow_web::state::{create_signals, InitialSignals};
+
+    /// Build a [`QueueView`] with a single queued peer for the
+    /// offline-strip + queue-pill tests.
+    fn view_with_peer(peer: EndpointId, outbound: u32) -> QueueView {
+        let mut per_peer = HashMap::new();
+        per_peer.insert(
+            peer,
+            QueueSummary {
+                outbound,
+                ..Default::default()
+            },
+        );
+        QueueView {
+            depth: outbound,
+            peer_count: 1,
+            per_peer,
+            ..Default::default()
+        }
+    }
+
+    // ── OfflineStrip ────────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn offline_strip_hidden_when_peer_count_zero() {
+        // Spec: strip is suppressed entirely when no peers have queued
+        // items — zero layout contribution via `<Show when=…>`.
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <OfflineStrip /> }
+        });
+        tick().await;
+
+        assert!(
+            query(&container, ".offline-strip").is_none(),
+            "OfflineStrip must not render when peer_count == 0"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn offline_strip_renders_plural_copy_for_multi_peer() {
+        let alice = Identity::generate().endpoint_id();
+        let bob = Identity::generate().endpoint_id();
+        let mut per_peer = HashMap::new();
+        per_peer.insert(
+            alice,
+            QueueSummary {
+                outbound: 2,
+                ..Default::default()
+            },
+        );
+        per_peer.insert(
+            bob,
+            QueueSummary {
+                outbound: 1,
+                ..Default::default()
+            },
+        );
+        let view_val = QueueView {
+            depth: 3,
+            peer_count: 2,
+            per_peer,
+            ..Default::default()
+        };
+
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.queue.set_view.set(view_val.clone());
+            provide_context(app_state);
+            provide_context(write);
+            view! { <OfflineStrip /> }
+        });
+        tick().await;
+
+        let strip = query(&container, ".offline-strip").expect("strip must render with peers");
+        let t = text(&strip);
+        assert!(
+            t.contains("waiting for 2 peers"),
+            "plural copy must render `waiting for 2 peers · …`, got: {t:?}"
+        );
+        assert!(
+            t.contains("3 messages queued"),
+            "plural copy must render the depth, got: {t:?}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn offline_strip_appends_relay_unreachable_suffix() {
+        // Spec §Relay awareness: the strip appends
+        // ` · relay unreachable` when the relay has not responded.
+        let peer = Identity::generate().endpoint_id();
+        let view_val = view_with_peer(peer, 2);
+
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.queue.set_view.set(view_val.clone());
+            write.queue.set_relay_status.set(RelayStatus::Unreachable);
+            provide_context(app_state);
+            provide_context(write);
+            view! { <OfflineStrip /> }
+        });
+        tick().await;
+
+        let strip = query(&container, ".offline-strip").expect("strip must render");
+        let t = text(&strip);
+        assert!(
+            t.contains(" · relay unreachable"),
+            "strip must append the relay unreachable suffix, got: {t:?}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn offline_strip_carries_button_role_and_aria_label() {
+        let peer = Identity::generate().endpoint_id();
+        let view_val = view_with_peer(peer, 1);
+
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.queue.set_view.set(view_val.clone());
+            provide_context(app_state);
+            provide_context(write);
+            view! { <OfflineStrip /> }
+        });
+        tick().await;
+
+        let strip = query(&container, ".offline-strip").expect("strip must render");
+        assert_eq!(
+            strip.get_attribute("role").as_deref(),
+            Some("button"),
+            "strip must carry role=button for assistive tech"
+        );
+        assert_eq!(
+            strip.get_attribute("aria-label").as_deref(),
+            Some("open sync queue"),
+            "strip aria-label must match spec verbatim"
+        );
+    }
+
+    // ── QueuePill ───────────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn queue_pill_hidden_when_no_counts() {
+        let alice = Identity::generate().endpoint_id();
+        let alice_signal = Signal::derive(move || alice);
+        let name = Signal::derive(|| "alice".to_string());
+
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write: _,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            view! { <QueuePill peer_id=alice_signal display_name=name /> }
+        });
+        tick().await;
+
+        assert!(
+            query(&container, ".queue-pill").is_none(),
+            "pill must be hidden when both outbound and inbound counts are zero"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn queue_pill_renders_queued_n_for_outbound() {
+        let alice = Identity::generate().endpoint_id();
+        let view_val = view_with_peer(alice, 7);
+        let alice_signal = Signal::derive(move || alice);
+        let name = Signal::derive(|| "alice".to_string());
+
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.queue.set_view.set(view_val.clone());
+            provide_context(app_state);
+            provide_context(write);
+            view! { <QueuePill peer_id=alice_signal display_name=name /> }
+        });
+        tick().await;
+
+        let pill = query(&container, ".queue-pill").expect("pill must render");
+        assert!(
+            text(&pill).contains("queued · 7"),
+            "pill text must be the literal `queued · n`, got: {:?}",
+            text(&pill)
+        );
+        assert_eq!(
+            pill.get_attribute("aria-label").as_deref(),
+            Some("you have 7 messages waiting for alice"),
+            "aria-label must use the spec's outbound-only tooltip"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn queue_pill_clamps_above_99_and_500() {
+        let alice = Identity::generate().endpoint_id();
+        let alice_signal = Signal::derive(move || alice);
+        let name = Signal::derive(|| "alice".to_string());
+
+        // Above 99 but under 500 → "queued · 99+"
+        let view_99p = view_with_peer(alice, 150);
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.queue.set_view.set(view_99p.clone());
+            provide_context(app_state);
+            provide_context(write);
+            view! { <QueuePill peer_id=alice_signal display_name=name /> }
+        });
+        tick().await;
+        let pill = query(&container, ".queue-pill").expect("pill must render");
+        assert!(
+            text(&pill).contains("queued · 99+"),
+            "150 queued must clamp to `queued · 99+`, got: {:?}",
+            text(&pill)
+        );
+    }
+
+    // ── InlineQueueNote ─────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn inline_queue_note_queued_uses_spec_copy() {
+        // Spec §Copy (exact) `msg_note_queued_peer`.
+        let state = Signal::derive(|| InlineState::Queued);
+        let peer = Signal::derive(|| "alice".to_string());
+        let mid = Signal::derive(|| "msg-1".to_string());
+
+        let container = mount_test(move || {
+            view! {
+                <InlineQueueNote state=state peer_or_grove=peer message_id=mid />
+            }
+        });
+        tick().await;
+
+        let note = query(&container, ".inline-note.inline-note--queued")
+            .expect("Queued inline note must render");
+        assert!(
+            text(&note).contains("queued · will send when alice reachable"),
+            "Queued copy must match spec verbatim, got: {:?}",
+            text(&note)
+        );
+        assert_eq!(
+            note.get_attribute("id").as_deref(),
+            Some("qn-msg-1"),
+            "note id must be `qn-{{message_id}}` for aria-describedby"
+        );
+        assert_eq!(
+            note.get_attribute("role").as_deref(),
+            Some("note"),
+            "note must carry role=note"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn inline_queue_note_inbound_held_uses_spec_copy() {
+        let state = Signal::derive(|| InlineState::InboundHeld);
+        let peer = Signal::derive(|| "alice".to_string());
+        let mid = Signal::derive(|| "msg-2".to_string());
+
+        let container = mount_test(move || {
+            view! {
+                <InlineQueueNote state=state peer_or_grove=peer message_id=mid />
+            }
+        });
+        tick().await;
+
+        let note = query(&container, ".inline-note.inline-note--inbound-held")
+            .expect("InboundHeld note must render");
+        assert!(
+            text(&note).contains("sent earlier · arrived now"),
+            "InboundHeld copy must match spec verbatim, got: {:?}",
+            text(&note)
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn inline_queue_note_just_delivered_uses_spec_copy() {
+        let state = Signal::derive(|| InlineState::JustDelivered);
+        let peer = Signal::derive(|| "alice".to_string());
+        let mid = Signal::derive(|| "msg-3".to_string());
+
+        let container = mount_test(move || {
+            view! {
+                <InlineQueueNote state=state peer_or_grove=peer message_id=mid />
+            }
+        });
+        tick().await;
+
+        let note = query(&container, ".inline-note.inline-note--just-delivered")
+            .expect("JustDelivered note must render");
+        assert!(
+            text(&note).contains("queued earlier · delivered just now"),
+            "JustDelivered copy must match spec verbatim, got: {:?}",
+            text(&note)
+        );
+    }
+
+    // ── SyncQueueView ───────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn sync_queue_view_header_renders_title_and_subtitle() {
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <SyncQueueView /> }
+        });
+        tick().await;
+
+        let title = query(&container, ".sync-queue-view__title").expect("title must render");
+        assert_eq!(text(&title), sync_queue_copy::SCREEN_TITLE);
+        let sub = query(&container, ".sync-queue-view__subtitle").expect("subtitle must render");
+        assert_eq!(text(&sub), sync_queue_copy::SCREEN_SUBTITLE);
+    }
+
+    #[wasm_bindgen_test]
+    async fn sync_queue_view_status_card_shows_drained_when_depth_zero() {
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <SyncQueueView /> }
+        });
+        tick().await;
+
+        let label =
+            query(&container, ".sync-queue-view__status-label").expect("status label must render");
+        assert_eq!(text(&label), sync_queue_copy::SCREEN_CARD_DRAINED);
+    }
+
+    #[wasm_bindgen_test]
+    async fn sync_queue_view_status_card_shows_reaching_out_when_pending() {
+        let alice = Identity::generate().endpoint_id();
+        let view_val = view_with_peer(alice, 4);
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.queue.set_view.set(view_val.clone());
+            provide_context(app_state);
+            provide_context(write);
+            view! { <SyncQueueView /> }
+        });
+        tick().await;
+
+        let label =
+            query(&container, ".sync-queue-view__status-label").expect("status label must render");
+        assert_eq!(text(&label), sync_queue_copy::SCREEN_CARD_REACHING_OUT);
+    }
+
+    #[wasm_bindgen_test]
+    async fn sync_queue_view_renders_both_tabs_with_outbound_default() {
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <SyncQueueView /> }
+        });
+        tick().await;
+
+        let tabs = query_all(&container, "[role='tab']");
+        assert_eq!(tabs.len(), 2, "must render two tabs (outbound + inbound)");
+        // Outbound is active by default.
+        let active: Vec<_> = tabs
+            .iter()
+            .filter(|t| t.get_attribute("aria-selected").as_deref() == Some("true"))
+            .collect();
+        assert_eq!(active.len(), 1, "exactly one tab must be active");
+        assert_eq!(
+            text(active[0]),
+            "outbound",
+            "outbound tab must be active by default per spec"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn sync_queue_view_outbound_renders_per_peer_row() {
+        let alice = Identity::generate().endpoint_id();
+        let view_val = view_with_peer(alice, 3);
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.queue.set_view.set(view_val.clone());
+            provide_context(app_state);
+            provide_context(write);
+            view! { <SyncQueueView /> }
+        });
+        tick().await;
+
+        let rows = query_all(&container, ".sync-queue-row");
+        assert_eq!(rows.len(), 1, "one queued peer should render one row");
+        let t = text(&rows[0]);
+        assert!(
+            t.contains("queued · 3"),
+            "row must show `queued · 3`, got: {t:?}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn sync_queue_view_recent_arrivals_hidden_when_empty() {
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <SyncQueueView /> }
+        });
+        tick().await;
+
+        assert!(
+            query(&container, ".sync-queue-view__arrivals").is_none(),
+            "recent-arrivals section must be hidden when empty"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn sync_queue_view_recent_arrivals_renders_when_present() {
+        let alice = Identity::generate().endpoint_id();
+        let view_val = QueueView {
+            recent_arrivals: vec![ArrivedSummary {
+                peer_id: alice,
+                at_tick: 10,
+                count: 5,
+                preview: None,
+            }],
+            ..Default::default()
+        };
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.queue.set_view.set(view_val.clone());
+            provide_context(app_state);
+            provide_context(write);
+            view! { <SyncQueueView /> }
+        });
+        tick().await;
+
+        let section = query(&container, ".sync-queue-view__arrivals")
+            .expect("recent-arrivals section must render when present");
+        assert!(
+            text(&section).contains(sync_queue_copy::SCREEN_SECTION_RECENT),
+            "recent section must include the spec header verbatim"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn sync_queue_view_retry_button_disabled_when_empty() {
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <SyncQueueView /> }
+        });
+        tick().await;
+
+        let retry = query(&container, ".sync-queue-view__retry").expect("retry button must exist");
+        assert!(
+            retry.has_attribute("disabled"),
+            "retry must be disabled when queue depth is zero"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn sync_queue_view_mark_as_read_only_on_inbound_tab() {
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <SyncQueueView /> }
+        });
+        tick().await;
+
+        // Default Outbound tab — mark-read must not render.
+        assert!(
+            query(&container, ".sync-queue-view__mark-read").is_none(),
+            "mark-as-read must be hidden on the outbound tab"
+        );
+
+        // Flip to the Inbound tab via the tab button.
+        let tabs = query_all(&container, "[role='tab']");
+        let inbound_tab = tabs
+            .iter()
+            .find(|t| text(t) == "inbound")
+            .expect("inbound tab must exist");
+        simulate_click(inbound_tab);
+        tick().await;
+
+        assert!(
+            query(&container, ".sync-queue-view__mark-read").is_some(),
+            "mark-as-read must render on the inbound tab"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn sync_queue_view_no_delete_action_anywhere() {
+        // Spec is explicit: the queue is authoritative — no destructive
+        // action is permitted. Walk the DOM and guard against any
+        // element carrying a delete-tagged aria-label or class.
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <SyncQueueView /> }
+        });
+        tick().await;
+
+        assert!(
+            query(&container, "[aria-label*='delete']").is_none(),
+            "sync-queue screen must never surface a delete action"
+        );
+        assert!(
+            query(&container, "[aria-label*='remove']").is_none(),
+            "sync-queue screen must never surface a remove action"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn sync_queue_view_footnote_uses_verbatim_copy() {
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <SyncQueueView /> }
+        });
+        tick().await;
+
+        let footnote =
+            query(&container, ".sync-queue-view__footnote").expect("footnote must render");
+        assert!(
+            text(&footnote).contains(sync_queue_copy::SCREEN_FOOTNOTE),
+            "footnote must include the spec's verbatim privacy copy"
+        );
+    }
+
+    // ── ReconnectionToast (60 s gate) ───────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn reconnection_toast_hidden_without_transition() {
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <ReconnectionToast /> }
+        });
+        tick().await;
+
+        assert!(
+            query(&container, ".reconnection-toast").is_none(),
+            "toast must stay hidden without a device-online transition"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn reconnection_toast_suppressed_under_60s_offline() {
+        // last_offline_ticks = 10 s (< 60) → toast must NOT show even
+        // after the device_online signal flips.
+        let view_with_short_offline = QueueView {
+            last_offline_ticks: Some(10),
+            ..Default::default()
+        };
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.queue.set_device_online.set(false);
+            provide_context(app_state);
+            provide_context(write);
+            let view_val = view_with_short_offline.clone();
+            let write_copy = write;
+            request_animation_frame(move || {
+                write_copy.queue.set_view.set(view_val);
+                write_copy.queue.set_device_online.set(true);
+            });
+            view! { <ReconnectionToast /> }
+        });
+        tick().await;
+        tick().await;
+
+        assert!(
+            query(&container, ".reconnection-toast").is_none(),
+            "toast must stay hidden when the offline window was < 60 s"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn reconnection_toast_fires_after_60s_offline() {
+        // last_offline_ticks = 120 s (≥ 60) → toast SHOULD show.
+        let view_with_long_offline = QueueView {
+            last_offline_ticks: Some(120),
+            depth: 3,
+            ..Default::default()
+        };
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.queue.set_device_online.set(false);
+            provide_context(app_state);
+            provide_context(write);
+            let view_val = view_with_long_offline.clone();
+            let write_copy = write;
+            request_animation_frame(move || {
+                write_copy.queue.set_view.set(view_val);
+                write_copy.queue.set_device_online.set(true);
+            });
+            view! { <ReconnectionToast /> }
+        });
+        tick().await;
+        tick().await;
+
+        let toast = query(&container, ".reconnection-toast")
+            .expect("toast must render after a ≥ 60 s offline transition");
+        let t = text(&toast);
+        assert!(
+            t.contains("reconnected") && t.contains("3"),
+            "toast must include the reconnected copy + queue depth, got: {t:?}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn reconnection_toast_dismiss_button_hides_toast() {
+        let view_with_long_offline = QueueView {
+            last_offline_ticks: Some(120),
+            ..Default::default()
+        };
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.queue.set_device_online.set(false);
+            provide_context(app_state);
+            provide_context(write);
+            let view_val = view_with_long_offline.clone();
+            let write_copy = write;
+            request_animation_frame(move || {
+                write_copy.queue.set_view.set(view_val);
+                write_copy.queue.set_device_online.set(true);
+            });
+            view! { <ReconnectionToast /> }
+        });
+        tick().await;
+        tick().await;
+
+        let dismiss = query(&container, ".reconnection-toast__dismiss")
+            .expect("dismiss button must render when toast is visible");
+        simulate_click(&dismiss);
+        tick().await;
+
+        assert!(
+            query(&container, ".reconnection-toast").is_none(),
+            "dismiss click must unmount the toast"
+        );
+    }
+
+    // ── WelcomeBackBanner (60 s gate) ───────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn welcome_back_banner_hidden_without_transition() {
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <WelcomeBackBanner /> }
+        });
+        tick().await;
+
+        assert!(
+            query(&container, ".welcome-back-banner").is_none(),
+            "banner must stay hidden without a long-offline transition"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn welcome_back_banner_hidden_under_60s_offline() {
+        let view_short = QueueView {
+            last_offline_ticks: Some(10),
+            recent_arrivals: vec![ArrivedSummary {
+                peer_id: Identity::generate().endpoint_id(),
+                at_tick: 0,
+                count: 2,
+                preview: None,
+            }],
+            ..Default::default()
+        };
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.queue.set_device_online.set(false);
+            provide_context(app_state);
+            provide_context(write);
+            let view_val = view_short.clone();
+            let write_copy = write;
+            request_animation_frame(move || {
+                write_copy.queue.set_view.set(view_val);
+                write_copy.queue.set_device_online.set(true);
+            });
+            view! { <WelcomeBackBanner /> }
+        });
+        tick().await;
+        tick().await;
+
+        assert!(
+            query(&container, ".welcome-back-banner").is_none(),
+            "banner must stay hidden when offline window was < 60 s"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn welcome_back_banner_renders_after_long_offline_with_arrivals() {
+        let view_long = QueueView {
+            last_offline_ticks: Some(600),
+            recent_arrivals: vec![ArrivedSummary {
+                peer_id: Identity::generate().endpoint_id(),
+                at_tick: 0,
+                count: 4,
+                preview: None,
+            }],
+            ..Default::default()
+        };
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.queue.set_device_online.set(false);
+            provide_context(app_state);
+            provide_context(write);
+            let view_val = view_long.clone();
+            let write_copy = write;
+            request_animation_frame(move || {
+                write_copy.queue.set_view.set(view_val);
+                write_copy.queue.set_device_online.set(true);
+            });
+            view! { <WelcomeBackBanner /> }
+        });
+        tick().await;
+        tick().await;
+
+        let banner = query(&container, ".welcome-back-banner")
+            .expect("banner must render after ≥ 60 s offline with arrivals");
+        let t = text(&banner);
+        assert!(
+            t.contains("willow queued 4 messages"),
+            "banner copy must include the spec's verbatim string, got: {t:?}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn welcome_back_banner_dismiss_button_hides_banner() {
+        let view_long = QueueView {
+            last_offline_ticks: Some(600),
+            recent_arrivals: vec![ArrivedSummary {
+                peer_id: Identity::generate().endpoint_id(),
+                at_tick: 0,
+                count: 2,
+                preview: None,
+            }],
+            ..Default::default()
+        };
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.queue.set_device_online.set(false);
+            provide_context(app_state);
+            provide_context(write);
+            let view_val = view_long.clone();
+            let write_copy = write;
+            request_animation_frame(move || {
+                write_copy.queue.set_view.set(view_val);
+                write_copy.queue.set_device_online.set(true);
+            });
+            view! { <WelcomeBackBanner /> }
+        });
+        tick().await;
+        tick().await;
+
+        let dismiss = query(&container, ".welcome-back-banner__dismiss")
+            .expect("banner must expose a dismiss button");
+        simulate_click(&dismiss);
+        tick().await;
+        assert!(
+            query(&container, ".welcome-back-banner").is_none(),
+            "dismiss click must unmount the banner"
+        );
+    }
+
+    // ── RelaySignalButton ───────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    async fn relay_signal_button_idle_class_when_not_configured() {
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <RelaySignalButton /> }
+        });
+        tick().await;
+
+        let btn = query(&container, ".relay-signal-button--idle")
+            .expect("idle class must render when relay not configured");
+        assert_eq!(
+            btn.get_attribute("aria-label").as_deref(),
+            Some("no relay configured")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn relay_signal_button_ok_class_when_reachable() {
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.queue.set_relay_status.set(RelayStatus::Reachable);
+            provide_context(app_state);
+            provide_context(write);
+            view! { <RelaySignalButton /> }
+        });
+        tick().await;
+
+        let btn = query(&container, ".relay-signal-button--ok")
+            .expect("ok class must render when relay reachable");
+        assert_eq!(
+            btn.get_attribute("aria-label").as_deref(),
+            Some("relay reachable")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn relay_signal_button_warn_class_when_unreachable() {
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.queue.set_relay_status.set(RelayStatus::Unreachable);
+            provide_context(app_state);
+            provide_context(write);
+            view! { <RelaySignalButton /> }
+        });
+        tick().await;
+
+        let btn = query(&container, ".relay-signal-button--warn")
+            .expect("warn class must render when relay unreachable");
+        assert_eq!(
+            btn.get_attribute("aria-label").as_deref(),
+            Some("relay unreachable")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn relay_signal_button_opens_popover_when_reachable() {
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.queue.set_relay_status.set(RelayStatus::Reachable);
+            provide_context(app_state);
+            provide_context(write);
+            view! { <RelaySignalButton /> }
+        });
+        tick().await;
+
+        let btn = query(&container, ".relay-signal-button").expect("button must render");
+        assert!(
+            query(&container, ".relay-popover").is_none(),
+            "popover must be hidden initially"
+        );
+        simulate_click(&btn);
+        tick().await;
+
+        assert!(
+            query(&container, ".relay-popover").is_some(),
+            "click on a reachable relay icon must open the popover"
+        );
+        assert_eq!(
+            btn.get_attribute("aria-expanded").as_deref(),
+            Some("true"),
+            "aria-expanded must flip to true when the popover opens"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn relay_signal_button_does_not_open_when_not_configured() {
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            // NotConfigured by default.
+            provide_context(app_state);
+            provide_context(write);
+            view! { <RelaySignalButton /> }
+        });
+        tick().await;
+
+        let btn = query(&container, ".relay-signal-button").expect("button must render");
+        simulate_click(&btn);
+        tick().await;
+        assert!(
+            query(&container, ".relay-popover").is_none(),
+            "click must be a no-op when relay is not configured"
+        );
+    }
+
+    /// `request_animation_frame` wrapper used to schedule signal
+    /// updates after mount so the `Effect` subscribing to
+    /// `device_online` has already run once with the `prev == true`
+    /// default before the test drives the transition.
+    fn request_animation_frame(f: impl FnOnce() + 'static) {
+        let closure =
+            wasm_bindgen::closure::Closure::once_into_js(Box::new(f) as Box<dyn FnOnce()>);
+        let window = web_sys::window().expect("window");
+        window
+            .request_animation_frame(closure.as_ref().unchecked_ref())
+            .expect("request_animation_frame");
+    }
+}
