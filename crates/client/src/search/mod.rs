@@ -21,8 +21,9 @@ pub mod tokenize;
 #[cfg(test)]
 mod tests;
 
-pub use config::{clear_all_recents, forget_recent, push_recent, RecentQuery, SearchIndexConfig,
-                 MAX_RECENTS};
+pub use config::{
+    clear_all_recents, forget_recent, push_recent, RecentQuery, SearchIndexConfig, MAX_RECENTS,
+};
 pub use execute::{execute, SearchResult, SearchScope};
 pub use handle::SearchIndexHandle;
 pub use highlight::{build_excerpt, match_ranges, Excerpt};

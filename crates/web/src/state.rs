@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use leptos::prelude::*;
 use willow_client::trust::{PeerTrust, TrustStoreHandle};
-use willow_client::{DisplayMessage, RecentQuery, SearchIndexBuildStatus, SearchResult, SearchScope};
+use willow_client::{
+    DisplayMessage, RecentQuery, SearchIndexBuildStatus, SearchResult, SearchScope,
+};
 
 use crate::trust_store::WebTrustStore;
 

@@ -67,9 +67,8 @@ pub fn ResultsList(
         _ => None,
     };
 
-    let groups = Memo::new(move |_| {
-        group_results(&state.search.results.get(), &state.search.scope.get())
-    });
+    let groups =
+        Memo::new(move |_| group_results(&state.search.results.get(), &state.search.scope.get()));
 
     let sections = move || {
         groups

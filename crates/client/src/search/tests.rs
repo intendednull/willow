@@ -217,13 +217,19 @@ mod status_tests {
 
     #[test]
     fn default_status_is_idle() {
-        assert_eq!(SearchIndexBuildStatus::default(), SearchIndexBuildStatus::Idle);
+        assert_eq!(
+            SearchIndexBuildStatus::default(),
+            SearchIndexBuildStatus::Idle
+        );
     }
 
     #[test]
     fn indexing_variant_carries_progress() {
         let s = SearchIndexBuildStatus::Indexing { done: 3, total: 10 };
-        assert!(matches!(s, SearchIndexBuildStatus::Indexing { done: 3, total: 10 }));
+        assert!(matches!(
+            s,
+            SearchIndexBuildStatus::Indexing { done: 3, total: 10 }
+        ));
     }
 }
 
@@ -521,7 +527,9 @@ mod execute_tests {
         let idx = seed_index();
         let q = parse_query("hello");
         let hits = execute(&idx, &q, &SearchScope::AllGrovesAndLetters);
-        assert!(hits.windows(2).all(|w| w[0].timestamp_ms >= w[1].timestamp_ms));
+        assert!(hits
+            .windows(2)
+            .all(|w| w[0].timestamp_ms >= w[1].timestamp_ms));
     }
 
     #[test]

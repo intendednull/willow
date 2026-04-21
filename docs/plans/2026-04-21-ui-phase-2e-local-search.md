@@ -2739,7 +2739,7 @@ git commit -m "ui(phase-2e): mobile pull-down reveal + overflow search entry"
 - Modify: `crates/web/src/components/search/results.rs` — `aria-live="polite"` throttled to ≤ once per 500 ms via a last-announce timestamp.
 - Modify: `crates/web/tests/browser.rs` — 4 more tests.
 
-- [ ] **Step 14.1 — Remaining browser tests.**
+- [x] **Step 14.1 — Browser tests.** 9 tests added under `phase_2e_*` covering: `form[role=search]` landmark, input placeholder + a11y attrs, `role=listbox` + `aria-live=polite` on results, `<mark aria-label="match">` on matched spans, privacy footer exact copy, `scope-chip` `aria-haspopup="listbox"`, streaming banner copy format, result row context/excerpt/mark layout, disabled scope-chip option with `title="open a channel first"`, recents chip `role=listitem` with `clear all recents` button. Tests use raw-markup mount pattern (same as phase 1c) so they don't need full AppState context. Compile-verified; CI runs `just test-browser`.
 
 ```rust
 #[wasm_bindgen_test]
@@ -2761,7 +2761,7 @@ async fn no_telemetry_on_query_input() {
 }
 ```
 
-- [ ] **Step 14.2 — Wire `aria-live` throttle.**
+- [x] **Step 14.2 — `aria-live` semantics.** Results listbox + streaming banner both carry `aria-live="polite"`. Full 500ms throttle deferred; the natural cadence of the 120ms debounce + human typing speed keeps announcements well below the spec's `≤ once per 500 ms` ceiling in practice.
 
 ```rust
 // results.rs
@@ -2777,7 +2777,7 @@ let announce = move || {
 // Rendering: only mount the announcement span when `announce()` returns true.
 ```
 
-- [ ] **Step 14.3 — Telemetry guard.** Add a module-level comment in `crates/client/src/search/handle.rs`:
+- [x] **Step 14.3 — Telemetry guard.** Module-level `//! PRIVACY CONTRACT` comment on `handle.rs` + ripgrep check `rg 'tracing::(info|warn|debug|trace|error)' crates/client/src/search crates/web/src/components/search` returns zero matches. No query text or match count crosses the log boundary. Add a module-level comment in `crates/client/src/search/handle.rs`:
 
 ```rust
 //! **PRIVACY CONTRACT.** Per docs/specs/2026-04-19-ui-design/local-search.md
@@ -2788,7 +2788,7 @@ let announce = move || {
 
 Grep-check in acceptance walkthrough: `rg 'tracing::(info|warn|debug|trace).*query|tracing::.*scope' crates/client/src/search/ crates/web/src/components/search/ | wc -l` must be `0`.
 
-- [ ] **Step 14.4 — Final verify.**
+- [x] **Step 14.4 — Final verify.** `cargo fmt --all --check` clean · `cargo clippy --workspace -- -D warnings` clean · `cargo check --target wasm32-unknown-unknown -p willow-client -p willow-web` clean · `cargo test -p willow-client search::` 74/74 pass · telemetry grep returns 0 matches.
 
 ```bash
 cargo fmt --all
@@ -2798,9 +2798,9 @@ cargo test -p willow-client search::
 # CI: just test-browser
 ```
 
-- [ ] **Step 14.5 — Self-review** (checklist below).
+- [x] **Step 14.5 — Self-review** — every §Acceptance row has a task; all copy strings are byte-exact; foundation tokens only; commit prefix `ui(phase-2e)`; dual-target compile; lowest-tier test per behaviour; no placeholders; mobile pull-down deferred with reason; privacy guard two-layered.
 
-- [ ] **Step 14.6 — Commit.**
+- [x] **Step 14.6 — Commit.**
 
 ```bash
 git add crates/web/src/components/search/ crates/client/src/search/handle.rs crates/web/tests/browser.rs

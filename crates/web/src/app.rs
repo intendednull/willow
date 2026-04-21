@@ -364,8 +364,7 @@ pub fn App() -> impl IntoView {
                     // Lightweight link detection — `has:link` operator
                     // key. Proper URL parsing lives in message-row
                     // rendering; this is the cheap version.
-                    let has_link = m.body.contains("http://")
-                        || m.body.contains("https://");
+                    let has_link = m.body.contains("http://") || m.body.contains("https://");
                     willow_client::IndexableMessage {
                         message_id: m.id,
                         channel_id: m.channel_id.clone(),

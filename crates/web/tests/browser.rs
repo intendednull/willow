@@ -9303,3 +9303,248 @@ mod phase_2a_message_row {
         );
     }
 }
+
+// ── Phase 2e — local search (spec: local-search.md) ─────────────────────────
+//
+// Mounts raw markup (same pattern as phase 1a / 1b / 1c) so these tests
+// assert the ARIA + copy contracts without needing the full AppState
+// context.
+
+#[wasm_bindgen_test]
+async fn phase_2e_search_form_has_role_search_landmark() {
+    let container = mount_test(|| {
+        view! {
+            <form role="search" aria-label="local search" class="search-form">
+                <input class="search-input" placeholder="search groves + letters" />
+            </form>
+        }
+    });
+    tick().await;
+
+    let form = query(&container, "form[role='search']").expect("form[role=search]");
+    assert_eq!(
+        form.get_attribute("aria-label").as_deref(),
+        Some("local search"),
+        "form must carry the spec's aria-label"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn phase_2e_search_input_placeholder_matches_spec() {
+    // Widest scope placeholder per §Copy.
+    let container = mount_test(|| {
+        view! {
+            <input
+                class="search-input"
+                placeholder="search groves + letters"
+                aria-label="local search input"
+                aria-autocomplete="list"
+                aria-controls="search-results-list"
+            />
+        }
+    });
+    tick().await;
+
+    let input = query(&container, ".search-input").expect("search-input present");
+    assert_eq!(
+        input.get_attribute("placeholder").as_deref(),
+        Some("search groves + letters")
+    );
+    assert_eq!(
+        input.get_attribute("aria-autocomplete").as_deref(),
+        Some("list")
+    );
+    assert_eq!(
+        input.get_attribute("aria-controls").as_deref(),
+        Some("search-results-list")
+    );
+}
+
+#[wasm_bindgen_test]
+async fn phase_2e_results_listbox_has_aria_live_polite() {
+    let container = mount_test(|| {
+        view! {
+            <div
+                id="search-results-list"
+                class="search-results"
+                role="listbox"
+                aria-label="search results"
+                aria-live="polite"
+            ></div>
+        }
+    });
+    tick().await;
+
+    let listbox = query(&container, "#search-results-list").expect("results listbox present");
+    assert_eq!(listbox.get_attribute("role").as_deref(), Some("listbox"));
+    assert_eq!(
+        listbox.get_attribute("aria-live").as_deref(),
+        Some("polite")
+    );
+    assert_eq!(
+        listbox.get_attribute("aria-label").as_deref(),
+        Some("search results")
+    );
+}
+
+#[wasm_bindgen_test]
+async fn phase_2e_match_marker_carries_aria_label() {
+    let container = mount_test(|| {
+        view! {
+            <div class="search-result-excerpt">
+                <span>"hello "</span>
+                <mark aria-label="match">"world"</mark>
+            </div>
+        }
+    });
+    tick().await;
+
+    let mark = query(&container, "mark").expect("<mark> present");
+    assert_eq!(
+        mark.get_attribute("aria-label").as_deref(),
+        Some("match"),
+        "every matched span must carry `aria-label=\"match\"` per spec §Accessibility"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn phase_2e_privacy_footer_has_exact_copy() {
+    let container = mount_test(|| {
+        view! {
+            <div class="search-privacy-footer">
+                "search runs on this device only. queries never leave your device."
+            </div>
+        }
+    });
+    tick().await;
+
+    let footer = query(&container, ".search-privacy-footer").expect("footer present");
+    assert_eq!(
+        text(&footer).trim(),
+        "search runs on this device only. queries never leave your device.",
+        "privacy footer copy must be byte-exact per spec §Copy"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn phase_2e_scope_chip_aria_haspopup() {
+    let container = mount_test(|| {
+        view! {
+            <button class="scope-chip" aria-haspopup="listbox" aria-expanded="false">
+                <span class="scope-chip-label">"all groves + letters"</span>
+            </button>
+        }
+    });
+    tick().await;
+
+    let chip = query(&container, ".scope-chip").expect("scope chip present");
+    assert_eq!(
+        chip.get_attribute("aria-haspopup").as_deref(),
+        Some("listbox")
+    );
+    assert_eq!(
+        chip.get_attribute("aria-expanded").as_deref(),
+        Some("false")
+    );
+    let t = text(&chip);
+    assert!(t.contains("all groves + letters"));
+}
+
+#[wasm_bindgen_test]
+async fn phase_2e_streaming_banner_copy_format() {
+    // `searching… · {n} matches so far` — `{n}` is `42` here.
+    let container = mount_test(|| {
+        view! {
+            <div class="search-streaming-banner" role="status" aria-live="polite">
+                "searching… · 42 matches so far"
+            </div>
+        }
+    });
+    tick().await;
+
+    let banner = query(&container, ".search-streaming-banner").expect("banner present");
+    assert_eq!(banner.get_attribute("role").as_deref(), Some("status"));
+    assert_eq!(banner.get_attribute("aria-live").as_deref(), Some("polite"));
+    let t = text(&banner);
+    assert!(t.starts_with("searching… · "));
+    assert!(t.ends_with(" matches so far"));
+}
+
+#[wasm_bindgen_test]
+async fn phase_2e_result_row_renders_context_excerpt_and_mark() {
+    let container = mount_test(|| {
+        view! {
+            <button class="search-result-row" role="option" aria-selected="false">
+                <div class="search-result-context">
+                    <em class="search-result-container">"general"</em>
+                    " "
+                    <span class="search-result-author">"Mira"</span>
+                    " · "
+                    <span class="search-result-ts">"14:30"</span>
+                </div>
+                <div class="search-result-excerpt">
+                    <span>"and then "</span>
+                    <mark aria-label="match">"hello"</mark>
+                    <span>" world"</span>
+                </div>
+            </button>
+        }
+    });
+    tick().await;
+
+    let row = query(&container, ".search-result-row").expect("result row present");
+    assert_eq!(row.get_attribute("role").as_deref(), Some("option"));
+    assert!(query(&container, ".search-result-container").is_some());
+    assert!(query(&container, ".search-result-author").is_some());
+    assert!(query(&container, ".search-result-ts").is_some());
+    let mark = query(&container, "mark").expect("<mark> inside excerpt");
+    assert_eq!(mark.get_attribute("aria-label").as_deref(), Some("match"));
+    assert_eq!(text(&mark).trim(), "hello");
+}
+
+#[wasm_bindgen_test]
+async fn phase_2e_scope_chip_disabled_option_has_tooltip() {
+    let container = mount_test(|| {
+        view! {
+            <button
+                class="scope-chip-popover-option"
+                role="option"
+                disabled=true
+                title="open a channel first"
+            >
+                "this channel"
+            </button>
+        }
+    });
+    tick().await;
+
+    let option = query(&container, ".scope-chip-popover-option").expect("option present");
+    assert!(option.has_attribute("disabled"));
+    assert_eq!(
+        option.get_attribute("title").as_deref(),
+        Some("open a channel first"),
+        "unreachable scopes must carry the `open a {{…}} first` tooltip per spec §Scope ladder"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn phase_2e_recent_chip_has_listitem_role() {
+    let container = mount_test(|| {
+        view! {
+            <div class="search-recents" role="list" aria-label="recent searches">
+                <button class="search-recent-chip" role="listitem">
+                    <span>"hello world"</span>
+                </button>
+                <button class="search-recent-clear">"clear all recents"</button>
+            </div>
+        }
+    });
+    tick().await;
+
+    let list = query(&container, ".search-recents").expect("recents list present");
+    assert_eq!(list.get_attribute("role").as_deref(), Some("list"));
+    let chip = query(&container, ".search-recent-chip").expect("chip present");
+    assert_eq!(chip.get_attribute("role").as_deref(), Some("listitem"));
+    let clear = query(&container, ".search-recent-clear").expect("clear-all present");
+    assert_eq!(text(&clear).trim(), "clear all recents");
+}

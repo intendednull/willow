@@ -39,9 +39,10 @@ pub fn install(state: AppState, write: AppWriteSignals) {
                     let ch = state.chat.current_channel.get_untracked();
                     if !ch.is_empty() {
                         ev.prevent_default();
-                        write.search.set_scope.set(
-                            willow_client::SearchScope::ThisChannel(ch),
-                        );
+                        write
+                            .search
+                            .set_scope
+                            .set(willow_client::SearchScope::ThisChannel(ch));
                         write.search.set_open.set(true);
                         focus_search_input();
                     }
@@ -127,11 +128,8 @@ fn focus_search_input() {
                 }
             }
         });
-        let _ = w
-            .set_timeout_with_callback_and_timeout_and_arguments_0(
-                cb.as_ref().unchecked_ref(),
-                0,
-            );
+        let _ =
+            w.set_timeout_with_callback_and_timeout_and_arguments_0(cb.as_ref().unchecked_ref(), 0);
         cb.forget();
     }
 }
