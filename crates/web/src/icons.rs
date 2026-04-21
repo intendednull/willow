@@ -538,6 +538,16 @@ pub fn icon_hourglass_sm() -> impl IntoView {
     }
 }
 
+/// Small tree glyph (24 viewBox, stroke 1.5) — sits inside buttons and
+/// pills at 1em. Crown + trunk silhouette meant to pair with the moss
+/// palette.
+pub fn icon_tree() -> impl IntoView {
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 6.5 10h3L5 16h4l-2 3h10l-2-3h4l-4.5-6h3z"/><path d="M12 19v2"/></svg>"#;
+    view! {
+        <span class="icon icon-tree" inner_html=svg.to_string()></span>
+    }
+}
+
 /// Single leaf glyph (24 viewBox, stroke 1.5) — rendered at 48 × 48 for
 /// the never-had-messages empty state in the message list.
 ///

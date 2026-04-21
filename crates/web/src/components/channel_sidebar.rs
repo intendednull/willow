@@ -1,13 +1,10 @@
 //! Channel sidebar — the second pane on the desktop shell.
 //!
 //! Replaces the legacy `Sidebar`. Top-to-bottom:
-//!   1. Grove header (glyph tile + italic grove name + chip + status
-//!      row + tagline + chevron)
+//!   1. Grove header (glyph tile + grove name, clickable → grove menu)
 //!   2. Channel scroll region — four canonical groups
 //!      (commons / voice / ephemeral / archives)
-//!   3. Me strip (self profile card: avatar + display name + fingerprint
-//!      + mic + deafen)
-//!   4. Net status footer
+//!   3. Me strip (profile link: avatar + display name → profile page)
 //!
 //! Spec: docs/specs/2026-04-19-ui-design/layout-primitives.md §Channel sidebar
 
@@ -17,8 +14,7 @@ use leptos::prelude::*;
 
 use crate::app::WebClientHandle;
 use crate::components::{
-    ConfirmDialog, ContextMenu, PeerStatusLabel, PresenceMenu, StatusDot, StatusDotBorder,
-    StatusDotSize, VoiceControls,
+    ConfirmDialog, ContextMenu, StatusDot, StatusDotBorder, StatusDotSize, VoiceControls,
 };
 use crate::icons;
 
@@ -78,8 +74,6 @@ pub fn ChannelSidebar(
     current_channel: ReadSignal<String>,
     open: ReadSignal<bool>,
     unread: ReadSignal<HashMap<String, willow_client::views::UnreadStats>>,
-    connection_status: ReadSignal<String>,
-    peer_count: ReadSignal<usize>,
     server_name: ReadSignal<String>,
     on_channel_click: impl Fn(String) + Send + Clone + 'static,
     on_settings_click: impl Fn(()) + Send + Clone + 'static,
@@ -109,47 +103,103 @@ pub fn ChannelSidebar(
     let peer_id = app_state.network.peer_id;
     let can_manage_channels = move || app_state.server.admin_ids.get().contains(&peer_id.get());
 
-    // Channel-create input state (kept verbatim from the legacy Sidebar).
-    let (creating, set_creating) = signal(false);
+    // Channel-create flow: picker → slot. Nothing commits to state
+    // until the slot's Save fires.
+    //   - `picker_open`: type dropdown is visible, awaiting a pick.
+    //   - `pending_kind`: user picked a kind; slot with name input is
+    //     shown and auto-focused.
+    let (picker_open, set_picker_open) = signal(false);
+    let (pending_kind, set_pending_kind) =
+        signal(Option::<willow_state::ChannelKind>::None);
     let (new_name, set_new_name) = signal(String::new());
-    let (create_voice, set_create_voice) = signal(false);
+    let name_input_ref: NodeRef<leptos::html::Input> = NodeRef::new();
+
+    // Focus + select-all on the slot input when a kind is picked.
+    // Fires once per None → Some(kind) transition so typing doesn't
+    // keep retriggering focus.
+    Effect::new(move |prev: Option<bool>| {
+        let is_some = pending_kind.get().is_some();
+        let was_some = prev.unwrap_or(false);
+        if is_some && !was_some {
+            let input_ref = name_input_ref;
+            leptos::prelude::request_animation_frame(move || {
+                if let Some(el) = input_ref.get_untracked() {
+                    let _ = el.focus();
+                    let len = el.value().len() as u32;
+                    let _ = el.set_selection_range(0, len);
+                }
+            });
+        }
+        is_some
+    });
 
     // Channel delete confirmation state.
     let (show_del_confirm, set_show_del_confirm) = signal(false);
     let (pending_del_channel, set_pending_del_channel) = signal(Option::<String>::None);
     let handle_del_confirm = handle.clone();
 
-    let handle_create = handle.clone();
-    let on_create_submit = move || {
-        let name = new_name.get_untracked();
-        let name = name.trim().to_string();
-        let is_voice = create_voice.get_untracked();
-        if !name.is_empty() {
-            let h = handle_create.clone();
-            let name = name.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                if is_voice {
-                    let _ = h.create_voice_channel(&name).await;
-                } else {
-                    let _ = h.create_channel(&name).await;
-                }
-            });
-            on_channel_created(());
-        }
+    let reset_create = move || {
+        set_picker_open.set(false);
+        set_pending_kind.set(None);
         set_new_name.set(String::new());
-        set_creating.set(false);
-        set_create_voice.set(false);
+    };
+
+    let handle_create = handle.clone();
+    let on_create_submit = {
+        let reset = reset_create.clone();
+        move || {
+            let name = new_name.get_untracked();
+            let name = name.trim().to_string();
+            let kind = pending_kind.get_untracked();
+            if let Some(kind) = kind {
+                if !name.is_empty() {
+                    let h = handle_create.clone();
+                    let name_owned = name.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        match kind {
+                            willow_state::ChannelKind::Voice => {
+                                let _ = h.create_voice_channel(&name_owned).await;
+                            }
+                            _ => {
+                                let _ = h.create_channel(&name_owned).await;
+                            }
+                        }
+                    });
+                    on_channel_created(());
+                }
+            }
+            reset();
+        }
     };
 
     let on_create_keydown = {
         let submit = on_create_submit.clone();
+        let reset = reset_create.clone();
         move |ev: web_sys::KeyboardEvent| {
             if ev.key() == "Enter" {
                 ev.prevent_default();
                 submit();
             } else if ev.key() == "Escape" {
-                set_creating.set(false);
-                set_new_name.set(String::new());
+                reset();
+            }
+        }
+    };
+
+    let pick_kind = move |kind: willow_state::ChannelKind| {
+        set_picker_open.set(false);
+        set_pending_kind.set(Some(kind));
+        set_new_name.set("new-tree".to_string());
+        // Focus + select-all happens via the Effect above.
+    };
+
+    let on_plant_click = {
+        let reset = reset_create.clone();
+        move |_| {
+            if pending_kind.get_untracked().is_some() {
+                // Already filling a slot — cancel.
+                reset();
+            } else {
+                set_picker_open.update(|v| *v = !*v);
             }
         }
     };
@@ -157,8 +207,7 @@ pub fn ChannelSidebar(
     // Collapsed groups (persisted locally — defaults to all expanded).
     let (collapsed, set_collapsed) = signal(std::collections::HashSet::<&'static str>::new());
 
-    // Presence menu open/close + self-state signal.
-    let (presence_menu_open, set_presence_menu_open) = signal(false);
+    // Self-presence signal (drives the status dot on the me-strip).
     let self_presence = app_state.presence.self_state;
 
     view! {
@@ -174,98 +223,139 @@ pub fn ChannelSidebar(
             aria-label="channels"
         >
             // ── Grove header ───────────────────────────────────────
-            <div class="grove-header sidebar-header">
-                <div class="grove-header-top">
-                    <div class="grove-header-glyph" aria-hidden="true">
-                        {move || {
-                            server_name.get()
-                                .chars()
-                                .next()
-                                .unwrap_or('?')
-                                .to_uppercase()
-                                .to_string()
-                        }}
-                    </div>
-                    <div class="grove-header-name-col">
-                        <div class="grove-header-row">
-                            <span
-                                class="grove-header-name"
-                                title=move || server_name.get()
-                            >
-                                {move || server_name.get()}
-                            </span>
-                            <span
-                                class="grove-chip"
-                                title="a grove is a small private network of peers — no central server"
-                            >
-                                "grove"
-                            </span>
-                        </div>
-                        <div class="grove-header-status">
-                            {icons::icon_users()}
-                            <span class="grove-status-peers">
-                                {move || format!("{} peers", peer_count.get())}
-                            </span>
-                            <span class="grove-status-sep">"·"</span>
-                            {icons::icon_lock()}
-                            <span class="grove-status-e2e">"e2e"</span>
-                        </div>
-                    </div>
-                    <button
-                        class="grove-menu-chevron server-gear-btn"
-                        title="grove menu"
-                        aria-label="grove menu"
-                        on:click=move |_| on_server_settings_click(())
-                    >
-                        {icons::icon_chevron_down()}
-                    </button>
+            <button
+                class="grove-header sidebar-header"
+                title="grove menu"
+                aria-label="grove menu"
+                on:click=move |_| on_server_settings_click(())
+            >
+                <div class="grove-header-glyph" aria-hidden="true">
+                    {move || {
+                        server_name.get()
+                            .chars()
+                            .next()
+                            .unwrap_or('?')
+                            .to_uppercase()
+                            .to_string()
+                    }}
                 </div>
-                <div class="grove-tagline">"not a server — held between us"</div>
-            </div>
+                <span
+                    class="grove-header-name"
+                    title=move || server_name.get()
+                >
+                    {move || server_name.get()}
+                </span>
+            </button>
 
             // ── Channel scroll region ──────────────────────────────
             <div class="channel-list scroll" role="list">
-                {move || {
-                    if creating.get() {
-                        Some(view! {
-                            <div class="channel-create-input">
-                                <div class="channel-type-toggle">
-                                    <button
-                                        class=move || if !create_voice.get() { "type-btn active" } else { "type-btn" }
-                                        on:mousedown=move |ev: web_sys::MouseEvent| {
-                                            ev.prevent_default();
-                                            set_create_voice.set(false);
-                                        }
-                                    >"# Text"</button>
-                                    <button
-                                        class=move || if create_voice.get() { "type-btn active" } else { "type-btn" }
-                                        on:mousedown=move |ev: web_sys::MouseEvent| {
-                                            ev.prevent_default();
-                                            set_create_voice.set(true);
-                                        }
-                                    >{icons::icon_volume_2()} " Voice"</button>
-                                </div>
-                                <input
-                                    type="text"
-                                    placeholder=move || if create_voice.get() { "voice channel name" } else { "channel name" }
-                                    prop:value=move || new_name.get()
-                                    on:input=move |ev| set_new_name.set(event_target_value(&ev))
-                                    on:keydown=on_create_keydown.clone()
-                                />
-                            </div>
-                        })
-                    } else {
-                        None
+                {move || can_manage_channels().then(|| {
+                    let on_plant_click = on_plant_click.clone();
+                    let pick_kind_a = pick_kind.clone();
+                    let pick_kind_b = pick_kind.clone();
+                    let cancel = reset_create.clone();
+                    let on_kd = on_create_keydown.clone();
+                    let submit_save = on_create_submit.clone();
+                    view! {
+                        <div class="tree-create">
+                            <button
+                                class=move || {
+                                    let active = picker_open.get() || pending_kind.get().is_some();
+                                    if active {
+                                        "channel-add-btn channel-add-btn--active"
+                                    } else {
+                                        "channel-add-btn"
+                                    }
+                                }
+                                title="plant a new tree"
+                                aria-expanded=move || {
+                                    if picker_open.get() { "true" } else { "false" }
+                                }
+                                on:click=on_plant_click
+                            >
+                                {icons::icon_tree()}
+                                <span class="channel-add-btn__label">"new"</span>
+                            </button>
+                            {move || picker_open.get().then(|| {
+                                let pick_t = pick_kind_a.clone();
+                                let pick_v = pick_kind_b.clone();
+                                view! {
+                                    <div class="tree-kind-picker" role="menu" aria-label="choose tree type">
+                                        <button
+                                            class="tree-kind-picker__item"
+                                            role="menuitem"
+                                            on:click=move |_| pick_t(willow_state::ChannelKind::Text)
+                                        >
+                                            <span class="tree-kind-picker__glyph">"#"</span>
+                                            <span class="tree-kind-picker__label">"text"</span>
+                                            <span class="tree-kind-picker__hint">"chat channel"</span>
+                                        </button>
+                                        <button
+                                            class="tree-kind-picker__item"
+                                            role="menuitem"
+                                            on:click=move |_| pick_v(willow_state::ChannelKind::Voice)
+                                        >
+                                            <span class="tree-kind-picker__glyph">
+                                                {icons::icon_volume_2()}
+                                            </span>
+                                            <span class="tree-kind-picker__label">"voice"</span>
+                                            <span class="tree-kind-picker__hint">"call + audio"</span>
+                                        </button>
+                                    </div>
+                                }
+                            })}
+                            {move || pending_kind.get().map(|kind| {
+                                let cancel = cancel.clone();
+                                let on_kd = on_kd.clone();
+                                let save = submit_save.clone();
+                                let glyph_view = match kind {
+                                    willow_state::ChannelKind::Voice => {
+                                        icons::icon_volume_2().into_any()
+                                    }
+                                    _ => view! {
+                                        <span class="tree-slot__hash">"#"</span>
+                                    }.into_any(),
+                                };
+                                view! {
+                                    <div class="tree-slot" data-kind=match kind {
+                                        willow_state::ChannelKind::Voice => "voice",
+                                        _ => "text",
+                                    }>
+                                        <span class="tree-slot__glyph">{glyph_view}</span>
+                                        <input
+                                            type="text"
+                                            class="tree-slot__input"
+                                            node_ref=name_input_ref
+                                            placeholder="tree name"
+                                            prop:value=move || new_name.get()
+                                            on:input=move |ev| set_new_name.set(event_target_value(&ev))
+                                            on:keydown=on_kd
+                                        />
+                                        <button
+                                            class="tree-slot__save"
+                                            title="plant tree"
+                                            aria-label="plant tree"
+                                            on:mousedown=move |ev: web_sys::MouseEvent| {
+                                                ev.prevent_default();
+                                                save();
+                                            }
+                                        >
+                                            {icons::icon_tree()}
+                                        </button>
+                                        <button
+                                            class="tree-slot__cancel"
+                                            title="cancel"
+                                            aria-label="cancel"
+                                            on:mousedown=move |ev: web_sys::MouseEvent| {
+                                                ev.prevent_default();
+                                                cancel();
+                                            }
+                                        >"×"</button>
+                                    </div>
+                                }
+                            })}
+                        </div>
                     }
-                }}
-                {move || can_manage_channels().then(|| view! {
-                    <button
-                        class="channel-add-btn"
-                        title="create channel"
-                        on:click=move |_| set_creating.set(true)
-                    >
-                        {icons::icon_plus()} " new channel"
-                    </button>
                 })}
 
                 // Four canonical groups in ORDER; empty groups hide entirely.
@@ -369,10 +459,11 @@ pub fn ChannelSidebar(
                 }
             </div>
 
-            // ── Me strip ───────────────────────────────────────────
-            <div
+            // ── Me strip — profile link ───────────────────────────
+            <button
                 class="me-strip"
-                style="position: relative"
+                title="open profile"
+                aria-label="open profile"
                 on:click=move |_| on_settings_click(())
             >
                 <div class="me-avatar">
@@ -390,87 +481,13 @@ pub fn ChannelSidebar(
                         ambient=true
                     />
                 </div>
-                <div class="me-identity">
-                    <span class="me-display-name">
-                        {move || {
-                            let name = app_state.server.display_name.get();
-                            if name.is_empty() { "you".to_string() } else { name }
-                        }}
-                        {move || {
-                            let pid = peer_id.get();
-                            if pid.is_empty() {
-                                None
-                            } else {
-                                Some(view! {
-                                    <super::TrustBadge
-                                        peer_id=pid
-                                        size=super::TrustBadgeSize::Disk12
-                                    />
-                                })
-                            }
-                        }}
-                    </span>
-                    <span class="me-fingerprint">
-                        {move || short_fingerprint(&peer_id.get())}
-                    </span>
-                    <button
-                        class="presence-menu-trigger"
-                        aria-haspopup="menu"
-                        aria-live="polite"
-                        aria-label=move || format!(
-                            "change your status · currently {}",
-                            self_presence.get().label()
-                        )
-                        on:click=move |ev: web_sys::MouseEvent| {
-                            ev.stop_propagation();
-                            set_presence_menu_open.update(|v| *v = !*v);
-                        }
-                    >
-                        <PeerStatusLabel state=self_presence show_dot=false/>
-                        {icons::icon_chevron_down()}
-                    </button>
-                </div>
-                {move || {
-                    if presence_menu_open.get() {
-                        Some(view! {
-                            <PresenceMenu
-                                open=presence_menu_open
-                                on_close=Callback::new(move |_| set_presence_menu_open.set(false))
-                            />
-                        })
-                    } else {
-                        None
-                    }
-                }}
-                <div class="me-actions" on:click=move |ev: web_sys::MouseEvent| ev.stop_propagation()>
+                <span class="me-display-name">
                     {move || {
-                        let muted = voice_muted.map(|s| s.get()).unwrap_or(false);
-                        let deafened = voice_deafened.map(|s| s.get()).unwrap_or(false);
-                        view! {
-                            <button
-                                class=if muted { "me-mic muted" } else { "me-mic" }
-                                title="mic"
-                                aria-label="mic"
-                                on:click=move |_| {
-                                    if let Some(cb) = on_voice_mute { cb.run(()); }
-                                }
-                            >
-                                {if muted { icons::icon_mic_off().into_any() } else { icons::icon_mic().into_any() }}
-                            </button>
-                            <button
-                                class=if deafened { "me-deafen muted" } else { "me-deafen" }
-                                title="deafen"
-                                aria-label="deafen"
-                                on:click=move |_| {
-                                    if let Some(cb) = on_voice_deafen { cb.run(()); }
-                                }
-                            >
-                                {if deafened { icons::icon_headphones_off().into_any() } else { icons::icon_headphones().into_any() }}
-                            </button>
-                        }
+                        let name = app_state.server.display_name.get();
+                        if name.is_empty() { "you".to_string() } else { name }
                     }}
-                </div>
-            </div>
+                </span>
+            </button>
 
             // ── Voice controls (active call) ───────────────────────
             {move || {
@@ -496,34 +513,6 @@ pub fn ChannelSidebar(
                     None
                 }
             }}
-
-            // ── Net status footer ──────────────────────────────────
-            <div class="net-status-footer">
-                {move || {
-                    let status = connection_status.get();
-                    let n = peer_count.get();
-                    let offline = status != "connected";
-                    if offline {
-                        view! {
-                            <>
-                                <span class="pulse-dot pulse-dot--offline" aria-hidden="true"></span>
-                                <span class="net-offline">"queued · waiting for peers"</span>
-                            </>
-                        }.into_any()
-                    } else {
-                        view! {
-                            <>
-                                <span class="pulse-dot" aria-hidden="true"></span>
-                                <span class="net-peer-count">
-                                    {if n == 1 { "1 peer".to_string() } else { format!("{n} peers") }}
-                                </span>
-                                <span class="net-sep">"·"</span>
-                                <span class="net-relay">"relay"</span>
-                            </>
-                        }.into_any()
-                    }
-                }}
-            </div>
 
             <ConfirmDialog
                 visible=show_del_confirm
@@ -552,23 +541,6 @@ pub fn ChannelSidebar(
             />
         </aside>
     }
-}
-
-/// Three-word lowercase fingerprint hint, format `word·word·word`, from
-/// a peer id. Falls back to a truncated id when the id is too short.
-fn short_fingerprint(peer_id: &str) -> String {
-    if peer_id.is_empty() {
-        return String::new();
-    }
-    const WORDS: &[&str] = &[
-        "willow", "moss", "cedar", "bark", "lichen", "quiet", "ember", "amber", "fern", "thistle",
-        "dusk", "pine", "birch", "stone", "river", "rook",
-    ];
-    let bytes = peer_id.as_bytes();
-    let a = WORDS[(bytes.first().copied().unwrap_or(0) as usize) % WORDS.len()];
-    let b = WORDS[(bytes.get(3).copied().unwrap_or(0) as usize) % WORDS.len()];
-    let c = WORDS[(bytes.get(7).copied().unwrap_or(0) as usize) % WORDS.len()];
-    format!("{a}·{b}·{c}")
 }
 
 /// Render a single channel row in the scroll region. Variant chosen by

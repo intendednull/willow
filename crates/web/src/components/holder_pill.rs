@@ -4,14 +4,14 @@
 //! §Holder pill + visibility tweak.
 //!
 //! The pill renders flush-right in the channel header and reports
-//! `{n} holders` — the number of peers with a copy of the channel key.
+//! `{n} members` — the number of peers with a copy of the channel key.
 //! Visibility follows the per-grove `crypto_visibility` tweak:
 //!
 //! - `Subtle` — hide when every member holds the key (no asymmetry
 //!   worth surfacing).
 //! - `Default` — always visible.
 //! - `Explicit` — always visible, plus a one-line crypto strip below
-//!   the header showing `{n} holders · last rotated {t} · unverified
+//!   the header showing `{n} members · last rotated {t} · unverified
 //!   peers: {m}`.
 //!
 //! Holder counts derive from `ServerState::channel_keys` length via a
@@ -164,7 +164,7 @@ pub fn CryptoStrip(
 ) -> impl IntoView {
     view! {
         <div class="crypto-strip" aria-label="channel key status">
-            <span>{move || format!("{} holders", holder_count.get())}</span>
+            <span>{move || format!("{} members", holder_count.get())}</span>
             <span>"·"</span>
             <span>"last rotated —"</span>
             <span>"·"</span>
