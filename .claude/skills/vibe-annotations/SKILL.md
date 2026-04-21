@@ -1,16 +1,21 @@
 ---
 name: vibe-annotations
-description: Drive the vibe-annotations feedback loop on a running web UI. Use when the user asks to "check annotations", "do a vibe pass", "read annotations", or hands you a running dev server + MCP vibe-annotations endpoint. The agent reads pending annotations, triages them, implements mechanical fixes, proposes options for structural ones, opens issues for changes that need specs, and deletes annotations once addressed.
-tools: Read, Write, Edit, Glob, Grep, Bash, Monitor, WebFetch, TaskCreate, TaskUpdate, TaskGet, TaskList, mcp__vibe-annotations__read_annotations, mcp__vibe-annotations__get_annotation_screenshot, mcp__vibe-annotations__delete_annotation, mcp__vibe-annotations__watch_annotations, mcp__vibe-annotations__get_project_context
+description: Drive the vibe-annotations feedback loop on a running web UI. Use when the user asks to "check annotations", "do a vibe pass", "read annotations", or hands you a running dev server + MCP vibe-annotations endpoint. Reads pending annotations, triages them, implements mechanical fixes, proposes options for structural ones, opens issues for changes that need specs, and deletes annotations once addressed.
 ---
 
-# Vibe-annotations workflow agent
+# Vibe-annotations workflow
 
-You drive a tight feedback loop: annotation in Chrome → code change → rebuild visible → annotation deleted. Keep it terse. Work autonomously on mechanical asks. Ask before destructive/structural work.
+Drive a tight feedback loop: annotation in Chrome → code change → rebuild visible → annotation deleted. Keep it terse. Work autonomously on mechanical asks. Ask before destructive/structural work.
+
+## REQUIRED: invoke frontend-design skill first
+
+**Before reading annotations or writing any UI/CSS code, invoke `frontend-design:frontend-design` via the `Skill` tool.** It loads design-system knowledge (tokens, spacing, typography, component patterns) needed to make annotation fixes cohere with the target UX. Re-invoke it if the session compacts the skill content out of context.
+
+Applies to every vibe-annotations session — mechanical fixes included. Copy changes without visual impact are the only exception.
 
 ## Self-improvement note
 
-**This agent is iteratively evolving.** If you notice a workflow friction point (a decision you made that could be systematized, a command sequence worth memorizing, a missing tool permission, a heuristic that failed), record it in a dedicated `## Lessons` section at the bottom of this file before ending the session. Don't edit the top of the file without user approval — append to `## Lessons`, and the user will fold good lessons upward over time.
+**This skill is iteratively evolving.** If you notice a workflow friction point (a decision you made that could be systematized, a command sequence worth memorizing, a missing tool permission, a heuristic that failed), record it in a dedicated `## Lessons` section at the bottom of this file before ending the session. Don't edit the top of the file without user approval — append to `## Lessons`, and the user will fold good lessons upward over time.
 
 ## Preconditions to verify on entry
 
@@ -28,6 +33,23 @@ You drive a tight feedback loop: annotation in Chrome → code change → rebuil
 - `element_context` + `parent_chain` + `selector` are usually enough. Call `get_annotation_screenshot` only when styling/layout/visual-hierarchy asks need pixel context that text can't convey.
 - Treat terse or incomplete comments charitably. Read the element path + surrounding UI to infer intent. If ambiguous after that, ask briefly.
 
+## Verifying visually with `agent-browser`
+
+Use the `agent-browser` CLI to drive the live UI and confirm fixes land. It's a Chromium-based headed browser with an accessibility-tree snapshot for element refs. Key commands:
+
+- `agent-browser open <url>` — navigate.
+- `agent-browser snapshot` — get interactive element tree with `ref=e{N}` handles.
+- `agent-browser click e3` / `fill e4 "text"` / `key "Enter"` — interact by ref.
+- `agent-browser screenshot /tmp/shot.png` — capture for before/after comparison.
+- `agent-browser eval "<js>"` — run JS in page context. Invaluable for measuring computed styles / `offsetHeight` when diagnosing why a CSS change didn't land the expected effect.
+- `agent-browser close` — release the browser.
+
+When a visual fix "looks wrong," pull computed dimensions via `eval` before guessing at CSS tweaks. Typical pattern:
+```
+agent-browser eval "JSON.stringify(Array.from(document.querySelectorAll('.foo')).map(el => ({h: el.offsetHeight, mt: getComputedStyle(el).marginTop})))"
+```
+Reveals hidden line-boxes, min-heights, and inline-block ghosts that the static CSS read can't.
+
 ## Triage — three buckets
 
 | Bucket | Examples | Response |
@@ -44,7 +66,15 @@ You drive a tight feedback loop: annotation in Chrome → code change → rebuil
 4. **`query()` helper takes `&HtmlElement`, not `&Element`.** When asserting inside a queried element, requery from `container` with a compound selector (e.g. `query(&container, "button.foo .bar")`) instead of passing the intermediate element.
 5. **Thread props through parents** when splitting UI concerns (e.g. `on_close` from `RightRail` → `MemberList`). Update every call site; remove unused props when you're sure they're no longer needed (check `app.rs` + `mobile_shell.rs` at minimum).
 6. **Delete each annotation via `mcp__vibe-annotations__delete_annotation` as soon as its fix is written.** Don't batch to end-of-session. (Memory: `feedback_delete_annotations_when_addressed.md`.)
-7. **Verify compile after each batch** — no tests:
+7. **Commit + push after each annotation lands.** One annotation → one commit → one push. Do NOT batch multiple annotations into one commit unless they're truly inseparable (e.g. a CSS rule + its matching component edit for the same ask). Sequence:
+   ```
+   just fmt && just clippy
+   git add -A
+   git commit -m "ui(vibe): <terse what> — <why/annotation gist>"
+   git push
+   ```
+   Commit message stays normal prose (caveman doesn't apply). Never `--no-verify`; if a hook fails, fix the root cause.
+8. **Verify compile after each batch** — no tests:
    ```
    cargo check -p willow-web --target wasm32-unknown-unknown
    cargo check --workspace --tests
