@@ -5159,3 +5159,30 @@ select:focus-visible {
     border-top: 1px solid var(--line-soft);
     background: var(--bg-1);
 }
+
+.search-pull-down-bar {
+    height: 0;
+    overflow: hidden;
+    background: var(--bg-2);
+    transition: height var(--motion, 220ms) var(--motion-ease, ease-out);
+}
+
+.search-pull-down-bar.is-revealed {
+    height: 44px;
+}
+
+.search-pull-down-hint {
+    width: 100%;
+    height: 44px;
+    background: transparent;
+    border: none;
+    color: var(--ink-3);
+    font: 12px var(--font-mono);
+    cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .search-pull-down-bar {
+        transition: none;
+    }
+}
