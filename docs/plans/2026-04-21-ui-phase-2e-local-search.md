@@ -2811,13 +2811,13 @@ git commit -m "ui(phase-2e): sweep a11y contract + privacy guard + final tests"
 
 ### Task 15: PR
 
-- [ ] **Step 15.1 — Push.**
+- [x] **Step 15.1 — Push.**
 
 ```bash
 git push -u origin phase-2e/local-search
 ```
 
-- [ ] **Step 15.2 — Open PR.**
+- [x] **Step 15.2 — Open PR.**
 
 ```bash
 gh pr create --title "ui(phase-2e): local-search — plan + implementation" \
@@ -2857,7 +2857,7 @@ EOF
 )"
 ```
 
-- [ ] **Step 15.3 — Record PR URL.**
+- [x] **Step 15.3 — Record PR URL.** https://github.com/intendednull/willow/pull/187
 
 ---
 
