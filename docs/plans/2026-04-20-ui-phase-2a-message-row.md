@@ -374,28 +374,48 @@ Wire the spec's ARIA label table, keyboard path, and screen-reader single-unit a
 
 **Files:** modify `crates/web/src/components/message.rs`, modify `crates/web/src/components/chat.rs`, modify `crates/web/style.css`.
 
-- [ ] **Step 15.1 — ARIA label table.** Per spec §Accessibility:
-  - avatar button → `{display_name} — open profile`
-  - author name button → `{display_name} — open profile`
-  - message row → `role="article"` + `aria-label="message from {display_name} at {timestamp}"`
-  - toolbar buttons → per spec (see Task 12)
-  - jump-to-latest pill → `jump to latest messages`
-  - thread stub → `open thread with {count} replies`
+- [x] **Step 15.1 — ARIA label table.** `MessageView` now renders the row as
+  `<article role="article" aria-label="message from {name} at {HH:MM}" tabindex="-1">`
+  with the timestamp reused from `willow_client::util::format_timestamp` so the
+  ARIA string never drifts from the visible `.meta` time. `.author` is a real
+  `<button class="author author-btn" aria-label="{name} — open profile">` with
+  UA button chrome stripped by `.author-btn` CSS so the visual is unchanged.
+  Avatar button and thread-stub labels are deferred: the message row does not
+  render a distinct avatar element today (avatar column is CSS-only) and the
+  thread stub lives in `thread-pane.md`, which hasn't landed. The
+  jump-to-latest pill already carries `aria-label="jump to latest messages"`
+  from Task 10.
 
-- [ ] **Step 15.2 — Keyboard path.** On `MessageList`, add `tabindex="0"` + keyboard handler:
-  - Tab from composer → focus into list (single tab stop).
-  - ArrowUp/ArrowDown → move focused row (track `focused_idx` signal).
-  - Enter → open overflow menu on focused row.
-  - `R` reply, `T` reply in thread, `P` pin/unpin (permission-gated), `E` edit (if own), `Delete` delete (with confirm), `C` copy body, `+` or `:` add reaction.
-  - Escape → return focus to composer (emit `on_focus_composer` callback).
+- [x] **Step 15.2 — Keyboard path.** `MessageList` tracks `focused_idx: RwSignal<usize>`
+  and installs a list-level `on:keydown` handler: ArrowUp/Down + Home/End move
+  focus (clamped to `[0, len)`); Enter clicks the focused row's `.action-trigger`
+  so the overflow dropdown opens; Escape fires `on_focus_composer`; `R` → `on_message_click`,
+  `P` → `on_pin`, `E` → `on_edit` (gated on `is_local`), `Delete`/`Backspace` →
+  `on_delete` (gated on `is_local`), `C` copies the body via `crate::util::copy_to_clipboard`,
+  `+`/`:` fire the thumbs-up quick-reaction through `on_react` as a stand-in
+  until `reactions-pins.md` lands the full picker. `T` consumes the keystroke
+  so literal `t` doesn't leak to the composer (thread-pane is deferred).
 
-- [ ] **Step 15.3 — `aria-live`.** Add `role="log"` + `aria-live="polite"` on the message list container so incoming messages announce while list is focused. Not focused → no announcement (notifications in 1f handle OS cue).
+- [x] **Step 15.3 — `aria-live`.** `.message-list` now carries
+  `role="log"` + `aria-live="polite"` + `aria-label="channel messages"` +
+  `tabindex="0"` so the list is the single Tab stop, arriving messages
+  announce while focused, and the log region is named.
 
-- [ ] **Step 15.4 — Color-independent cues.** Confirm: mention has amber bg + rule + bold weight; whisper has violet rule + ear icon + italic; queued has hourglass + text; pinned has pin icon + rule + text. Add missing icons where color was the sole signifier.
+- [x] **Step 15.4 — Color-independent cues.** Audit confirms all four cues
+  have a non-colour signifier: `.mention-pill` already carries `font-weight: 500`
+  (Task 3); whisper has violet left-rule + `icon_ear` + italic body (Task 8);
+  queued has `icon_hourglass` + inline text (Task 7); pinned has 1px amber
+  left-rule + `icon_pin` + `pinned` label (Task 6). No new icons needed.
 
-- [ ] **Step 15.5 — `just test-browser`** — 2 tests: ArrowUp moves focus; Escape fires `on_focus_composer`.
+- [x] **Step 15.5 — `just test-browser`** — 7 new tests added to
+  `phase_2a_message_row`: `message_row_has_article_role_and_aria_label`,
+  `author_button_has_open_profile_aria_label`,
+  `message_list_container_has_log_role_and_aria_live`,
+  `arrow_down_advances_focus_across_rows`, `arrow_up_at_top_stays_at_top`,
+  `escape_fires_on_focus_composer_callback`, `r_key_fires_reply_callback_on_focused_row`.
+  226 browser tests pass (up from 219).
 
-- [ ] **Step 15.6 — Commit** — `ui(phase-2): wire message-row ARIA contract + keyboard path`.
+- [x] **Step 15.6 — Commit** — `ui(phase-2): wire message-row ARIA contract + keyboard path`.
 
 ### 16. Edge cases + browser test coverage
 

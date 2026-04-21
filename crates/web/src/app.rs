@@ -937,6 +937,17 @@ pub fn App() -> impl IntoView {
                                                 on_react=Callback::new(react2)
                                                 on_pin=on_pin_cb
                                                 pin_labels=Signal::from(pin_labels)
+                                                // Phase 2a Task 15 — Escape on
+                                                // the focused list returns focus
+                                                // to the composer textarea per
+                                                // spec §Accessibility keyboard
+                                                // path. Same DOM-query pattern
+                                                // as the reply / edit wiring
+                                                // above so the three focus
+                                                // entry-points stay consistent.
+                                                on_focus_composer=Callback::new(move |()| {
+                                                    js_sys::eval("var i=document.querySelector('.input-area input,.input-area textarea');if(i)i.focus();").ok();
+                                                })
                                             />
                                             <div class="typing-indicator">
                                                 {move || {

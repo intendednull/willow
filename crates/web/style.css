@@ -651,6 +651,28 @@ select:focus-visible {
 }
 
 .message .author { font-weight: 600; font-size: 14px; }
+/* Phase 2a Task 15 — spec §Accessibility / ARIA labels.
+   `.author-btn` is the semantic `<button>` wrapper for the display-name —
+   the profile-card entry point (see `profile-card.md`). Strip the UA
+   default button chrome so the visual reads identical to the previous
+   `<span>` while keeping `<button>` semantics for screen readers and
+   keyboard users. */
+.message .author-btn {
+    background: transparent;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+    text-align: inherit;
+    line-height: inherit;
+}
+.message .author-btn:focus-visible {
+    outline: 2px solid var(--accent, var(--willow, currentColor));
+    outline-offset: 2px;
+    border-radius: 2px;
+}
 .message .timestamp { font-size: 11px; color: var(--text-muted); }
 .message .edited { font-size: 10px; color: var(--text-placeholder); font-style: italic; }
 

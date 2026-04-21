@@ -593,8 +593,24 @@ pub fn MessageView(
     };
 
     let base_class = msg_class.to_string();
+    // Phase 2a Task 15 — spec §Accessibility / ARIA labels.
+    // The row announces as one unit to screen readers:
+    //   `role="article"` (implicit on `<article>`) + `aria-label="message
+    //   from {display_name} at {timestamp}"`, where `{timestamp}` is the
+    //   canonical `HH:MM` 24-hour stamp produced by
+    //   `willow_client::util::format_timestamp`. We reuse the same
+    //   formatter the meta-row uses for the collapsed run-hover stamp so
+    //   the ARIA string never drifts from the visible time.
+    // `tabindex="-1"` keeps the row programmatically focusable (arrow-key
+    // navigation driven by the parent list) while leaving Tab focus on
+    // the list container itself (single tab stop — see `chat.rs`).
+    let row_aria_label = format!(
+        "message from {} at {}",
+        message.author_display_name,
+        willow_client::util::format_timestamp(message.timestamp_ms)
+    );
     view! {
-        <div
+        <article
             class=move || {
                 // Compose base class + long-press-active + is-dragging.
                 // `is-dragging` disables the 200ms snap-back transition
@@ -623,6 +639,9 @@ pub fn MessageView(
                 }
             }
             id=msg_dom_id
+            role="article"
+            aria-label=row_aria_label
+            tabindex="-1"
             on:touchstart=on_msg_touchstart
             on:touchend=on_msg_touchend
             on:touchmove=on_msg_touchmove
@@ -659,9 +678,25 @@ pub fn MessageView(
                         .and_then(|a| a.presence.per_peer.get().get(&author_pid_for_presence).copied())
                         .unwrap_or(willow_client::presence::PresenceState::Here)
                 });
+                // Phase 2a Task 15 — spec §Accessibility / ARIA labels.
+                // The author name is the profile-card entry point: render as
+                // a real `<button>` with `aria-label="{name} — open profile"`
+                // so screen readers announce it as an interactive affordance.
+                // The click still opens the profile popover once
+                // `profile-card.md` lands; today it's a visual-only button
+                // (no click handler), matching the rest of the profile
+                // affordances in this phase. `.author-btn` strips the UA
+                // default button chrome so the visual is unchanged.
+                let author_for_aria = author.clone();
+                let author_aria = format!("{author_for_aria} — open profile");
                 view! {
                     <div class="meta">
-                        <span class="author" style=format!("color: {author_color}")>{author}</span>
+                        <button
+                            class="author author-btn"
+                            type="button"
+                            aria-label=author_aria
+                            style=format!("color: {author_color}")
+                        >{author}</button>
                         <super::TrustBadge
                             peer_id=author_pid.clone()
                             size=super::TrustBadgeSize::Disk12
@@ -1392,7 +1427,7 @@ pub fn MessageView(
             } else {
                 None
             }}
-        </div>
+        </article>
     }
 }
 

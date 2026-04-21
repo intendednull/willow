@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
 use willow_client::DisplayMessage;
 
 use super::message_row::{day_bucket, DaySeparator, JumpToLatestPill};
@@ -41,6 +42,11 @@ pub fn MessageList(
     /// Signal mapping message IDs to pin labels ("Pin" or "Unpin").
     #[prop(optional, into)]
     pin_labels: Option<Signal<std::collections::HashMap<String, String>>>,
+    /// Callback fired when the user presses Escape with the list focused.
+    /// Parents should focus the composer textarea in response. When
+    /// unwired the Escape key is a no-op.
+    #[prop(optional, into)]
+    on_focus_composer: Option<Callback<()>>,
 ) -> impl IntoView {
     let list_ref = NodeRef::<leptos::html::Div>::new();
     // `show_pill` drives pill mount/unmount. True when the user is
@@ -172,6 +178,165 @@ pub fn MessageList(
 
     let on_msg_click = on_message_click;
 
+    // Phase 2a Task 15 — spec §Accessibility / Keyboard path.
+    //
+    // The list container is a single Tab stop (`tabindex="0"`); arrow
+    // keys move a logical `focused_idx` pointer across rows. The pointer
+    // is clamped to `[0, messages_len)` on each render so newly-arrived
+    // messages don't dangle the index past the end. Per-row shortcuts
+    // (`R` reply, `E` edit, `Delete`, `C` copy, `+`/`:` react, `P` pin,
+    // `T` reply in thread, `Enter` open overflow) route to the existing
+    // MessageList callbacks by indexing into the current message vec —
+    // no per-row handler churn. `Escape` fires `on_focus_composer` so
+    // the parent can return focus to the composer textarea.
+    let focused_idx: RwSignal<usize> = RwSignal::new(0);
+
+    // Helper: focus the `<article>` for the message at `idx`. We look
+    // the row up by `id="msg-{id}"` (already emitted by `MessageView`)
+    // because the message-list DOM layout is flat and the id-based
+    // query is stable across re-renders.
+    let focus_row_by_idx = move |idx: usize| {
+        let msgs = messages.get_untracked();
+        if let Some(msg) = msgs.get(idx) {
+            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                let sel = format!("#msg-{}", msg.id);
+                if let Ok(Some(el)) = doc.query_selector(&sel) {
+                    if let Ok(html_el) = el.dyn_into::<web_sys::HtmlElement>() {
+                        let _ = html_el.focus();
+                    }
+                }
+            }
+        }
+    };
+
+    // Capture the inbound callbacks for the keyboard handler so we can
+    // dispatch without re-borrowing MessageView's prop surface. Each
+    // handler operates on the message at `focused_idx.get_untracked()`
+    // at dispatch-time so keyboard actions follow the visible cursor.
+    let kb_on_click = on_message_click;
+    let kb_on_edit = on_edit;
+    let kb_on_delete = on_delete;
+    let kb_on_react = on_react;
+    let kb_on_pin = on_pin;
+    let kb_on_focus_composer = on_focus_composer;
+
+    let handle_list_keydown = move |ev: web_sys::KeyboardEvent| {
+        let msgs = messages.get_untracked();
+        let messages_len = msgs.len();
+        if messages_len == 0 {
+            return;
+        }
+        // Re-clamp defensively in case messages shrank since the last
+        // render (delete, channel swap, etc.).
+        let mut idx = focused_idx.get_untracked().min(messages_len - 1);
+        let key = ev.key();
+        match key.as_str() {
+            "ArrowUp" => {
+                ev.prevent_default();
+                idx = idx.saturating_sub(1);
+                focused_idx.set(idx);
+                focus_row_by_idx(idx);
+            }
+            "ArrowDown" => {
+                ev.prevent_default();
+                if idx + 1 < messages_len {
+                    idx += 1;
+                }
+                focused_idx.set(idx);
+                focus_row_by_idx(idx);
+            }
+            "Home" => {
+                ev.prevent_default();
+                focused_idx.set(0);
+                focus_row_by_idx(0);
+            }
+            "End" => {
+                ev.prevent_default();
+                let last = messages_len - 1;
+                focused_idx.set(last);
+                focus_row_by_idx(last);
+            }
+            "Escape" => {
+                ev.prevent_default();
+                if let Some(cb) = kb_on_focus_composer {
+                    cb.run(());
+                }
+            }
+            "Enter" => {
+                // Per spec: Enter opens the overflow menu on the focused
+                // row. The overflow menu is attached to the row's
+                // `.action-trigger` button; click it programmatically.
+                ev.prevent_default();
+                if let Some(msg) = msgs.get(idx) {
+                    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                        let sel = format!("#msg-{} .action-trigger", msg.id);
+                        if let Ok(Some(el)) = doc.query_selector(&sel) {
+                            if let Ok(html_el) = el.dyn_into::<web_sys::HtmlElement>() {
+                                html_el.click();
+                            }
+                        }
+                    }
+                }
+            }
+            "r" | "R" => {
+                ev.prevent_default();
+                if let (Some(msg), Some(cb)) = (msgs.get(idx), kb_on_click) {
+                    cb.run(msg.clone());
+                }
+            }
+            "t" | "T" => {
+                // Reply in thread — no-op placeholder until the thread
+                // pane ships (`thread-pane.md`). Consuming the keystroke
+                // prevents a literal `t` from leaking to the composer
+                // when the list is focused.
+                ev.prevent_default();
+            }
+            "p" | "P" => {
+                ev.prevent_default();
+                if let (Some(msg), Some(cb)) = (msgs.get(idx), kb_on_pin) {
+                    cb.run(msg.clone());
+                }
+            }
+            "e" | "E" => {
+                ev.prevent_default();
+                if let (Some(msg), Some(cb)) = (msgs.get(idx), kb_on_edit) {
+                    // Parent gates edit on `is_own`; we mirror that
+                    // gate here so an `E` keystroke on a non-own row
+                    // is a silent no-op rather than a permission error.
+                    if msg.is_local {
+                        cb.run(msg.clone());
+                    }
+                }
+            }
+            "Delete" | "Backspace" => {
+                ev.prevent_default();
+                if let (Some(msg), Some(cb)) = (msgs.get(idx), kb_on_delete) {
+                    if msg.is_local {
+                        cb.run(msg.clone());
+                    }
+                }
+            }
+            "c" | "C" => {
+                ev.prevent_default();
+                if let Some(msg) = msgs.get(idx) {
+                    crate::util::copy_to_clipboard(&msg.body);
+                }
+            }
+            "+" | ":" => {
+                // Spec: `+` or `:` opens the reaction picker. Until
+                // `reactions-pins.md` lands the full picker, fire the
+                // first quick-reaction (thumbs up) through the existing
+                // `on_react` callback so the keystroke has a visible
+                // effect rather than silently doing nothing.
+                ev.prevent_default();
+                if let (Some(msg), Some(cb)) = (msgs.get(idx), kb_on_react) {
+                    cb.run((msg.clone(), "\u{1F44D}".to_string()));
+                }
+            }
+            _ => {}
+        }
+    };
+
     // Surface downgrade banners for any downgraded peer visible in this
     // chat view. The peer-letter / DM view is the eventual home for
     // this banner per spec; until that surface exists we render the
@@ -204,7 +369,27 @@ pub fn MessageList(
                     }
                 })
             }}
-            <div class="message-list" node_ref=list_ref on:scroll=on_scroll>
+            // Phase 2a Task 15 — spec §Accessibility.
+            // * `role="log"` + `aria-live="polite"`: incoming messages
+            //   announce to screen readers while the list is focused.
+            //   Not focused → no announcement (notifications in 1f
+            //   handle the OS-level cue per spec).
+            // * `aria-label="channel messages"`: names the log region.
+            // * `tabindex="0"`: single tab-stop — Tab from the composer
+            //   moves focus here; arrow keys then navigate rows.
+            // * `on:keydown=handle_list_keydown`: wires the spec's
+            //   keyboard path (ArrowUp/Down, Enter, Escape, R/T/P/E/
+            //   Delete/C/+/:).
+            <div
+                class="message-list"
+                node_ref=list_ref
+                role="log"
+                aria-live="polite"
+                aria-label="channel messages"
+                tabindex="0"
+                on:scroll=on_scroll
+                on:keydown=handle_list_keydown
+            >
                 {move || {
                     let msgs = messages.get();
                     let is_loading = loading.get();

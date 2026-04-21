@@ -342,6 +342,14 @@ where
                                                 pin(msg);
                                             })
                                             pin_labels=Signal::from(pin_labels)
+                                            // Phase 2a Task 15 — Escape returns
+                                            // focus to the composer textarea
+                                            // per spec §Accessibility keyboard
+                                            // path. Mirrors the desktop wiring
+                                            // in `app.rs`.
+                                            on_focus_composer=Callback::new(move |()| {
+                                                js_sys::eval("var i=document.querySelector('.input-area input,.input-area textarea');if(i)i.focus();").ok();
+                                            })
                                         />
                                         <div class="typing-indicator">
                                             {move || {

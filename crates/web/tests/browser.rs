@@ -8741,4 +8741,316 @@ mod phase_2a_message_row {
             "live body must not carry `.body--deleted`"
         );
     }
+
+    // ── Task 15 · Accessibility — ARIA + keyboard ───────────────────────────
+    //
+    // Contract: `docs/specs/2026-04-19-ui-design/message-row.md`
+    // §Accessibility. These tests pin the byte-exact ARIA labels for
+    // the row + author button, the `role="log"` / `aria-live="polite"` /
+    // `tabindex="0"` triad on the list container, and the keyboard
+    // path (ArrowUp/Down focus traversal, Escape → on_focus_composer).
+
+    #[wasm_bindgen_test]
+    async fn message_row_has_article_role_and_aria_label() {
+        // Row must render as `<article>` with `role="article"` + the
+        // spec's exact `message from {name} at {HH:MM}` label, and
+        // `tabindex="-1"` so it's programmatically focusable for
+        // arrow-key navigation without stealing a Tab stop.
+        let msg = make_msg("Mira", "hello", FIXTURE_TS_MS);
+
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            use willow_web::state::{create_signals, InitialSignals};
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <MessageView message=msg /> }
+        });
+        tick().await;
+
+        let row = query(&container, "article.message")
+            .expect("MessageView must render as <article class=\"message\">");
+        assert_eq!(
+            row.get_attribute("role").as_deref(),
+            Some("article"),
+            "row must carry role=article"
+        );
+        assert_eq!(
+            row.get_attribute("aria-label").as_deref(),
+            Some("message from Mira at 03:25"),
+            "aria-label must match spec §Accessibility byte-exact"
+        );
+        assert_eq!(
+            row.get_attribute("tabindex").as_deref(),
+            Some("-1"),
+            "row tabindex must be -1 (list is the single Tab stop)"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn author_button_has_open_profile_aria_label() {
+        // `.author` renders as `<button>` with
+        // `aria-label="{name} — open profile"` so screen readers
+        // announce the profile entry-point as a real interactive
+        // element (spec §ARIA labels row: `author name button`).
+        let msg = make_msg("Rin", "body", FIXTURE_TS_MS);
+
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            use willow_web::state::{create_signals, InitialSignals};
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <MessageView message=msg /> }
+        });
+        tick().await;
+
+        let btn = query(&container, "button.author.author-btn")
+            .expect(".author must render as <button class=\"author author-btn\">");
+        assert_eq!(
+            btn.get_attribute("aria-label").as_deref(),
+            Some("Rin — open profile"),
+            "author-btn aria-label must match `{{name}} — open profile`"
+        );
+        assert_eq!(
+            btn.get_attribute("type").as_deref(),
+            Some("button"),
+            "author-btn must carry type=button so it does not submit a form"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn message_list_container_has_log_role_and_aria_live() {
+        // The list container is the announcement surface: `role="log"`
+        // + `aria-live="polite"` means arriving messages read out while
+        // the list is focused, and `tabindex="0"` makes it the single
+        // Tab stop (arrow keys navigate rows inside).
+        let now_ms = js_sys::Date::now() as u64;
+        let msgs = vec![make_msg("Mira", "hi", now_ms)];
+
+        let container = mount_message_list(msgs);
+        tick().await;
+
+        let list = query(&container, ".message-list")
+            .expect("MessageList must render .message-list container");
+        assert_eq!(
+            list.get_attribute("role").as_deref(),
+            Some("log"),
+            "message-list must carry role=log"
+        );
+        assert_eq!(
+            list.get_attribute("aria-live").as_deref(),
+            Some("polite"),
+            "message-list must carry aria-live=polite"
+        );
+        assert_eq!(
+            list.get_attribute("aria-label").as_deref(),
+            Some("channel messages"),
+            "message-list must name the log region"
+        );
+        assert_eq!(
+            list.get_attribute("tabindex").as_deref(),
+            Some("0"),
+            "message-list must be the single Tab stop (tabindex=0)"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn arrow_down_advances_focus_across_rows() {
+        // Mount a list with three messages, dispatch two ArrowDown
+        // keydowns on the list container, and assert focus landed on
+        // the second row (idx 1). We can't synthesise a "first"
+        // landing at idx 0 because the keyboard handler interprets
+        // the very first ArrowDown as a move from idx 0 → 1; so
+        // measuring `document.activeElement` after that single press
+        // pins the contract. The list-level `tabindex="0"` path is
+        // covered separately.
+        let now_ms = js_sys::Date::now() as u64;
+        let m0 = make_msg("Mira", "one", now_ms);
+        let m1 = make_msg("Rin", "two", now_ms + 1000);
+        let m2 = make_msg("Noa", "three", now_ms + 2000);
+        let id_m1 = m0.id.clone();
+        let _ = id_m1;
+        let id_target = m1.id.clone();
+
+        let container = mount_message_list(vec![m0, m1, m2]);
+        tick().await;
+
+        // Dispatch bubbling ArrowDown on the list container. The
+        // handler re-clamps the focused index to [0, len) at dispatch
+        // time, so an initial idx 0 → 1 move focuses the second row.
+        let list = query(&container, ".message-list").expect(".message-list must mount");
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_key("ArrowDown");
+        init.set_bubbles(true);
+        let ev =
+            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        list.dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&ev)
+            .unwrap();
+        tick().await;
+
+        let doc = web_sys::window().unwrap().document().unwrap();
+        let active_id = doc
+            .active_element()
+            .and_then(|el| el.get_attribute("id"))
+            .unwrap_or_default();
+        assert_eq!(
+            active_id,
+            format!("msg-{id_target}"),
+            "ArrowDown from idx 0 must focus the row at idx 1"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn arrow_up_at_top_stays_at_top() {
+        // Saturating sub: ArrowUp at idx 0 is a no-op (focus stays on
+        // the first row, no panic).
+        let now_ms = js_sys::Date::now() as u64;
+        let m0 = make_msg("Mira", "one", now_ms);
+        let m1 = make_msg("Rin", "two", now_ms + 1000);
+        let target_id = m0.id.clone();
+
+        let container = mount_message_list(vec![m0, m1]);
+        tick().await;
+
+        let list = query(&container, ".message-list").expect(".message-list");
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_key("ArrowUp");
+        init.set_bubbles(true);
+        let ev =
+            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        list.dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&ev)
+            .unwrap();
+        tick().await;
+
+        let doc = web_sys::window().unwrap().document().unwrap();
+        let active_id = doc
+            .active_element()
+            .and_then(|el| el.get_attribute("id"))
+            .unwrap_or_default();
+        assert_eq!(
+            active_id,
+            format!("msg-{target_id}"),
+            "ArrowUp at idx 0 must stay on the first row"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn escape_fires_on_focus_composer_callback() {
+        // Escape with the list focused must route through the
+        // `on_focus_composer` callback so the parent can hand focus
+        // back to the composer textarea.
+        use willow_web::components::MessageList;
+        use willow_web::state::{create_signals, InitialSignals};
+
+        let fired: RwSignal<bool> = RwSignal::new(false);
+
+        let now_ms = js_sys::Date::now() as u64;
+        let msgs = vec![make_msg("Mira", "hi", now_ms)];
+
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+
+            let (sig, _set) = signal(msgs);
+            let cb = Callback::new(move |()| {
+                fired.set(true);
+            });
+            view! {
+                <MessageList
+                    messages=sig
+                    on_focus_composer=cb
+                />
+            }
+        });
+        tick().await;
+
+        let list = query(&container, ".message-list").expect(".message-list");
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_key("Escape");
+        init.set_bubbles(true);
+        let ev =
+            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        list.dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&ev)
+            .unwrap();
+        tick().await;
+
+        assert!(
+            fired.get_untracked(),
+            "Escape on focused list must fire on_focus_composer"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn r_key_fires_reply_callback_on_focused_row() {
+        // `R` shortcut: should route through the existing
+        // `on_message_click` callback against the focused row.
+        use willow_client::DisplayMessage;
+        use willow_web::components::MessageList;
+        use willow_web::state::{create_signals, InitialSignals};
+
+        let replied: RwSignal<Option<String>> = RwSignal::new(None);
+
+        let now_ms = js_sys::Date::now() as u64;
+        let m0 = make_msg("Mira", "one", now_ms);
+        let id0 = m0.id.clone();
+        let msgs = vec![m0];
+
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+
+            let (sig, _set) = signal(msgs);
+            let cb = Callback::new(move |msg: DisplayMessage| {
+                replied.set(Some(msg.id));
+            });
+            view! {
+                <MessageList
+                    messages=sig
+                    on_message_click=cb
+                />
+            }
+        });
+        tick().await;
+
+        let list = query(&container, ".message-list").expect(".message-list");
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_key("r");
+        init.set_bubbles(true);
+        let ev =
+            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        list.dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&ev)
+            .unwrap();
+        tick().await;
+
+        assert_eq!(
+            replied.get_untracked().as_deref(),
+            Some(id0.as_str()),
+            "`R` keystroke must fire on_message_click against the focused row"
+        );
+    }
 }
