@@ -74,7 +74,7 @@ pub fn execute(index: &SearchIndex, query: &SearchQuery, scope: &SearchScope) ->
         })
         .collect();
 
-    out.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
+    out.sort_by_key(|p| std::cmp::Reverse(p.timestamp_ms));
     out
 }
 
