@@ -2502,7 +2502,7 @@ pub fn SearchSurface(index: SearchIndexHandle) -> impl IntoView {
 }
 ```
 
-- [ ] **Step 11.2 — Mount in `app.rs`.** After the palette mount:
+- [x] **Step 11.2 — Mount in `app.rs`.** After the palette mount:
 
 ```rust
 {move || app_state.search.open.get().then(|| {
@@ -2513,9 +2513,9 @@ pub fn SearchSurface(index: SearchIndexHandle) -> impl IntoView {
 
 Wire index hydration at bootstrap: after `wire_derived_signals`, add an Effect that converts `messages_sig` → `IndexableMessage` and calls `search_index_handle.rebuild(...)`. Subsequent `MessageReceived` events call `search_index_handle.insert(...)`. The handle already lives on `ClientHandle::search()` from Task 7.
 
-- [ ] **Step 11.3 — WASM check.** `cargo check --target wasm32-unknown-unknown -p willow-web`.
+- [x] **Step 11.3 — WASM check.** Clean.
 
-- [ ] **Step 11.4 — Commit.**
+- [x] **Step 11.4 — Commit.**
 
 ```bash
 git add crates/web/src/components/search/surface.rs crates/web/src/components/search/mod.rs crates/web/src/app.rs
@@ -2532,7 +2532,7 @@ git commit -m "ui(phase-2e): mount SearchSurface + hydrate index from messages"
 - Modify: `crates/web/src/app.rs` — wire the `on_search` callback.
 - Modify: `crates/web/tests/browser.rs` — 3 more tests.
 
-- [ ] **Step 12.1 — Failing browser tests.**
+- [ ] **Step 12.1 — Failing browser tests.** Deferred to Task 14 sweep.
 
 ```rust
 #[wasm_bindgen_test]
@@ -2545,7 +2545,7 @@ async fn cmd_f_flips_scope_to_this_channel() { /* focus chat container; dispatch
 async fn palette_forwards_plain_text_to_all_letters() { /* open palette; type "foo"; press Enter; assert surface open + scope == AllLetters + query == "foo" */ }
 ```
 
-- [ ] **Step 12.2 — Extend `keybindings::install`.**
+- [x] **Step 12.2 — Extend `keybindings::install`.**
 
 ```rust
 // In crates/web/src/keybindings.rs inside the match:
@@ -2603,7 +2603,7 @@ fn close_top_of_stack(state: AppState, write: AppWriteSignals) -> bool {
 }
 ```
 
-- [ ] **Step 12.3 — Wire palette `on_search` in app.rs.**
+- [x] **Step 12.3 — Wire palette `on_search` in app.rs.**
 
 ```rust
 <CommandPalette
@@ -2622,9 +2622,9 @@ fn close_top_of_stack(state: AppState, write: AppWriteSignals) -> bool {
 />
 ```
 
-- [ ] **Step 12.4 — Verify.** `cargo check --target wasm32-unknown-unknown -p willow-web`. CI runs the new tests.
+- [x] **Step 12.4 — Verify.** Workspace clippy + WASM check both clean.
 
-- [ ] **Step 12.5 — Commit.**
+- [x] **Step 12.5 — Commit.**
 
 ```bash
 git add crates/web/src/keybindings.rs crates/web/src/app.rs crates/web/tests/browser.rs crates/web/src/components/command_palette.rs

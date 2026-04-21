@@ -158,6 +158,17 @@ pub fn App() -> impl IntoView {
     provide_context(write);
     provide_context(trust_store.clone());
 
+    // Local-search index handle (phase 2e). Session-scoped, in-memory,
+    // dual-target. The UI hydrates it from `messages_sig` once the
+    // derived signals are wired (below). Not persisted per
+    // `local-search.md` §Index — recents + config do persist via
+    // `crate::storage` but the inverted index itself is rebuilt per
+    // session.
+    let search_index = willow_client::SearchIndexHandle::new();
+    // Seed recents from config so the empty-state chips render on boot.
+    write.search.set_recents.set(search_index.recents());
+    provide_context(search_index.clone());
+
     // Create the VoiceManager.
     let local_peer_id = handle.peer_id();
     let voice_signal_handle = handle.clone();
@@ -321,8 +332,69 @@ pub fn App() -> impl IntoView {
     crate::state::wire_derived_signals(&handle, handle.actor_system(), &write);
 
     // Install global keybindings (palette toggle, Esc close-stack,
-    // Alt+↑ / Alt+↓ grove switch).
+    // Alt+↑ / Alt+↓ grove switch, `/` focus + ⌘F scope-flip for search).
     crate::keybindings::install(app_state, write);
+
+    // Hydrate the search index from the messages signal. Runs on every
+    // message-list change; the index itself dedups by message_id so
+    // repeated rebuilds are idempotent.
+    //
+    // Per `local-search.md` §Build behaviour: incremental on arrival,
+    // lazy on historical scan. We do a simple full rebuild here in v1
+    // since the in-memory backend is fast enough for typical corpora
+    // (< 10k messages). A future phase can switch to incremental insert
+    // via `ClientEvent::MessageReceived`.
+    {
+        let messages_sig = app_state.chat.messages;
+        let current_channel_sig = app_state.chat.current_channel;
+        let peer_id_sig = app_state.network.peer_id;
+        let active_server_sig = app_state.server.active_server_id;
+        let search = search_index.clone();
+        let write_local = write;
+        Effect::new(move |_| {
+            let msgs = messages_sig.get();
+            let current_ch = current_channel_sig.get();
+            let grove_id = active_server_sig.get();
+            let local_peer = peer_id_sig.get();
+
+            let indexable: Vec<willow_client::IndexableMessage> = msgs
+                .into_iter()
+                .map(|m| {
+                    let author_peer_id = m.author_peer_id;
+                    // Lightweight link detection — `has:link` operator
+                    // key. Proper URL parsing lives in message-row
+                    // rendering; this is the cheap version.
+                    let has_link = m.body.contains("http://")
+                        || m.body.contains("https://");
+                    willow_client::IndexableMessage {
+                        message_id: m.id,
+                        channel_id: m.channel_id.clone(),
+                        channel_name: current_ch.clone(),
+                        grove_id: if grove_id.is_empty() {
+                            None
+                        } else {
+                            Some(grove_id.clone())
+                        },
+                        letter_id: None,
+                        author_peer_id,
+                        author_handle: m.author_display_name.to_lowercase(),
+                        author_display_name: m.author_display_name,
+                        timestamp_ms: m.timestamp_ms,
+                        body: m.body,
+                        has_image: false,
+                        has_file: false,
+                        has_link,
+                    }
+                })
+                .collect();
+            // Ignore local peer binding to avoid unused_variables clippy
+            // noise — we keep the read so the effect subscribes in case
+            // a later phase filters by author presence.
+            let _ = local_peer;
+            search.rebuild(indexable);
+            write_local.search.set_status.set(search.status());
+        });
+    }
 
     // Detect join link from URL fragment.
     {
@@ -1034,12 +1106,46 @@ pub fn App() -> impl IntoView {
                                             write.ui.set_show_members.set(true);
                                             write.ui.set_show_palette.set(false);
                                         })
+                                        on_search=Callback::new(move |q: String| {
+                                            // Palette bridge per
+                                            // `local-search.md` §Command-
+                                            // palette bridge: plain text
+                                            // forwards with scope
+                                            // `all letters`.
+                                            write.search.set_query.set(q);
+                                            write.search.set_scope.set(
+                                                willow_client::SearchScope::AllLetters
+                                            );
+                                            write.ui.set_show_palette.set(false);
+                                            write.search.set_open.set(true);
+                                        })
                                     />
                                 })
                             } else {
                                 None
                             }
                         }}
+                        {
+                            let search_index_for_view = search_index.clone();
+                            move || {
+                                if app_state.search.open.get() {
+                                    let idx = search_index_for_view.clone();
+                                    Some(view! {
+                                        <crate::components::SearchSurface
+                                            index=idx
+                                            on_select_result=Callback::new(move |r: willow_client::SearchResult| {
+                                                // Jump to the message's channel
+                                                // and close the surface.
+                                                write.chat.set_current_channel.set(r.channel_name.clone());
+                                                write.search.set_open.set(false);
+                                            })
+                                        />
+                                    })
+                                } else {
+                                    None
+                                }
+                            }
+                        }
                     </div>
                     </div>
                     <div class="shell-mobile" aria-hidden="false">

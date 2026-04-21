@@ -1,9 +1,14 @@
-//! Global keybindings — spec layout-primitives.md §Accessibility.
+//! Global keybindings — spec layout-primitives.md §Accessibility +
+//! local-search.md §Entry points.
 //!
 //! Registers a single window-level `keydown` listener that owns:
 //!   - ⌘K / Ctrl-K: toggle command palette
-//!   - Escape: pop the top of the close-stack (rail → pinned → bottom
-//!     sheet → grove drawer → palette)
+//!   - ⌘F / Ctrl-F: flip local-search scope to `this channel` and open
+//!     the search surface (spec local-search.md §Desktop)
+//!   - `/`: focus the search input when not typing elsewhere (spec
+//!     local-search.md §Desktop — top-right slot)
+//!   - Escape: pop the top of the close-stack (rail → pinned → search
+//!     → bottom sheet → grove drawer → palette)
 //!   - Alt+↑ / Alt+↓: cycle groves
 //!
 //! Mutation goes through the provided `AppWriteSignals`; reads go
@@ -25,6 +30,31 @@ pub fn install(state: AppState, write: AppWriteSignals) {
                 "k" | "K" if is_ctrl => {
                     ev.prevent_default();
                     write.ui.set_show_palette.update(|v| *v = !*v);
+                }
+                // ⌘F / Ctrl-F — flip search scope to `this channel`
+                // and open the surface (spec local-search.md §Desktop).
+                "f" | "F" if is_ctrl => {
+                    // Only intercept when a channel is focused — otherwise
+                    // fall through to the browser's native find.
+                    let ch = state.chat.current_channel.get_untracked();
+                    if !ch.is_empty() {
+                        ev.prevent_default();
+                        write.search.set_scope.set(
+                            willow_client::SearchScope::ThisChannel(ch),
+                        );
+                        write.search.set_open.set(true);
+                        focus_search_input();
+                    }
+                }
+                // `/` — focus the search input when not typing
+                // elsewhere. Spec local-search.md §Desktop — top-right
+                // slot.
+                "/" if !is_editable_focus() => {
+                    ev.prevent_default();
+                    if !state.search.open.get_untracked() {
+                        write.search.set_open.set(true);
+                    }
+                    focus_search_input();
                 }
                 // Ctrl+Alt+N — move focus to the newest toast. Plain
                 // Ctrl+N / Cmd+N is reserved by the browser, so the
@@ -55,7 +85,8 @@ pub fn install(state: AppState, write: AppWriteSignals) {
 }
 
 /// Pop one layer off the modal stack; returns true if something closed.
-/// Priority (top → bottom): members rail → pinned rail → palette.
+/// Priority (top → bottom): members rail → pinned rail → search
+/// surface → palette.
 fn close_top_of_stack(state: AppState, write: AppWriteSignals) -> bool {
     if state.ui.show_members.get_untracked() {
         write.ui.set_show_members.set(false);
@@ -65,11 +96,59 @@ fn close_top_of_stack(state: AppState, write: AppWriteSignals) -> bool {
         write.ui.set_show_pinned.set(false);
         return true;
     }
+    if state.search.open.get_untracked() {
+        // The SearchInput owns its own Esc contract (clear query vs
+        // close surface). The global listener only pops the surface
+        // itself when the search input has handed focus back — i.e.
+        // when the query is already empty.
+        if state.search.query.get_untracked().is_empty() {
+            write.search.set_open.set(false);
+            return true;
+        }
+        // Else let the input's Esc handler run via propagation.
+    }
     if state.ui.show_palette.get_untracked() {
         write.ui.set_show_palette.set(false);
         return true;
     }
     false
+}
+
+/// Push DOM focus to the mounted `.search-input`. Runs after a zero-
+/// timeout so Leptos has mounted the surface if we just opened it.
+fn focus_search_input() {
+    if let Some(w) = web_sys::window() {
+        let cb = Closure::<dyn FnMut()>::new(move || {
+            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                if let Some(el) = doc.query_selector(".search-input").ok().flatten() {
+                    if let Ok(html) = el.dyn_into::<web_sys::HtmlElement>() {
+                        let _ = html.focus();
+                    }
+                }
+            }
+        });
+        let _ = w
+            .set_timeout_with_callback_and_timeout_and_arguments_0(
+                cb.as_ref().unchecked_ref(),
+                0,
+            );
+        cb.forget();
+    }
+}
+
+/// True when DOM focus is on an editable element (input / textarea /
+/// contenteditable) — keybindings that would collide with typing
+/// (like `/`) check this before swallowing the event.
+fn is_editable_focus() -> bool {
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return false;
+    };
+    let Some(active) = doc.active_element() else {
+        return false;
+    };
+    let tag = active.tag_name().to_lowercase();
+    matches!(tag.as_str(), "input" | "textarea")
+        || active.get_attribute("contenteditable").as_deref() == Some("true")
 }
 
 /// Move DOM focus to the newest toast in the stack. Returns `true`
