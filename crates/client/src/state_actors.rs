@@ -339,6 +339,36 @@ impl QueueMeta {
         }
         out
     }
+
+    /// Derive a [`DeliveryState`](willow_messaging::DeliveryState) for
+    /// the given message-id string from the in-memory `outbound` map.
+    ///
+    /// This is the projection-facing shim used by
+    /// [`compute_messages_view`](crate::views::compute_messages_view)
+    /// while the real `MessageStore::delivery_state` plumbing is
+    /// deferred (see plan §Open questions §3). Implements the
+    /// `MessageStore::delivery_state` *contract* using QueueMeta's
+    /// outbound tracking:
+    ///
+    /// - No entries for `message_id` → `Delivered` (permissive default).
+    /// - One or more entries → `PendingAllRecipients` keyed on the
+    ///   recipient set.
+    pub fn delivery_state_by_id_str(
+        &self,
+        message_id_str: &str,
+    ) -> willow_messaging::DeliveryState {
+        let mut pending: HashSet<EndpointId> = HashSet::new();
+        for ((mid, _), entry) in self.outbound.iter() {
+            if mid.to_string() == message_id_str {
+                pending.insert(entry.recipient);
+            }
+        }
+        if pending.is_empty() {
+            willow_messaging::DeliveryState::Delivered
+        } else {
+            willow_messaging::DeliveryState::PendingAllRecipients(pending)
+        }
+    }
 }
 
 /// Voice call state.

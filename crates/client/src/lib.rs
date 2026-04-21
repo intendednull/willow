@@ -647,9 +647,10 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 registry_ref.clone(),
                 chat_ref.clone(),
                 profile_ref.clone(),
+                queue_meta_ref.clone(),
             ),
-            move |(es, reg, chat, prof)| {
-                views::compute_messages_view(es, reg, chat, prof, local_pid)
+            move |(es, reg, chat, prof, qm)| {
+                views::compute_messages_view(es, reg, chat, prof, qm, local_pid)
             },
         );
         let local_pid2 = identity_clone.endpoint_id();
@@ -978,8 +979,11 @@ pub fn test_client() -> (
             registry_ref.clone(),
             chat_ref.clone(),
             profile_ref.clone(),
+            queue_meta_ref.clone(),
         ),
-        move |(es, reg, chat, prof)| views::compute_messages_view(es, reg, chat, prof, local_pid),
+        move |(es, reg, chat, prof, qm)| {
+            views::compute_messages_view(es, reg, chat, prof, qm, local_pid)
+        },
     );
     let local_pid2 = identity_clone.endpoint_id();
     let members_view = willow_actor::derived(

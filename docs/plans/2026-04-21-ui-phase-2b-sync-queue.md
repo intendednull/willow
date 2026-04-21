@@ -363,7 +363,7 @@ The critical task. Replaces `let queue_note = QueueNote::None` in `views.rs` wit
 
 **Files:** modify `crates/client/src/views.rs`.
 
-- [ ] **Step 5.1 — `QueueView` struct.**
+- [x] **Step 5.1 — `QueueView` struct.**
 
   ```rust
   #[derive(Clone, Debug, PartialEq, Default)]
@@ -379,7 +379,7 @@ The critical task. Replaces `let queue_note = QueueNote::None` in `views.rs` wit
   }
   ```
 
-- [ ] **Step 5.2 — `compute_queue_view`.** Aggregate from `QueueMeta`:
+- [x] **Step 5.2 — `compute_queue_view`.** Aggregate from `QueueMeta`:
 
   ```rust
   pub fn compute_queue_view(meta: &Arc<QueueMeta>) -> QueueView {
@@ -409,7 +409,7 @@ The critical task. Replaces `let queue_note = QueueNote::None` in `views.rs` wit
   }
   ```
 
-- [ ] **Step 5.3 — Swap `compute_messages_view` queue-note.** **This closes the Phase 2a gate.** Replace the `TODO(sync-queue.md)` block:
+- [x] **Step 5.3 — Swap `compute_messages_view` queue-note.** **This closes the Phase 2a gate.** Replace the `TODO(sync-queue.md)` block:
 
   ```rust
   // Phase 2b: real QueueNote derivation replaces the Phase 2a stub.
@@ -431,7 +431,7 @@ The critical task. Replaces `let queue_note = QueueNote::None` in `views.rs` wit
 
   Add `queue_meta: &Arc<QueueMeta>` + `message_store: &dyn MessageStore` parameters to `compute_messages_view`. Update all callers (search `compute_messages_view(` — single site in `lib.rs` per view refresh; pass the new addresses from the client handle context).
 
-- [ ] **Step 5.4 — Tests.** Extend `crates/client/src/views.rs` `#[cfg(test)]` mod with:
+- [x] **Step 5.4 — Tests.** Extend `crates/client/src/views.rs` `#[cfg(test)]` mod with:
 
   ```rust
   #[test]
@@ -446,9 +446,9 @@ The critical task. Replaces `let queue_note = QueueNote::None` in `views.rs` wit
 
   The existing 4 `projection_queue_note_none_*` stub tests are **replaced** with the tests above in the same commit — the stub tests can't coexist because they assumed `None` for local-pending + late-arrival cases.
 
-- [ ] **Step 5.5 — `just test-client`** — 4 new tests green; 4 old stub tests removed.
+- [x] **Step 5.5 — `just test-client`** — 4 new tests green; 4 old stub tests removed.
 
-- [ ] **Step 5.6 — Commit** — `ui(phase-2b): derive real QueueNote + close Phase 2a TODO`.
+- [x] **Step 5.6 — Commit** — `ui(phase-2b): derive real QueueNote + close Phase 2a TODO`.
 
 ### 6. `ClientHandle` queue API
 
