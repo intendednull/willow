@@ -820,7 +820,7 @@ git commit -m "ui(phase-2e): add inverted index with insert/remove/evict"
 - Modify: `crates/client/src/search/mod.rs` — `pub mod execute;`
 - Modify: `crates/client/src/search/tests.rs` — `mod execute_tests;`
 
-- [ ] **Step 4.1 — Types.**
+- [x] **Step 4.1 — Types.**
 
 ```rust
 //! Search execution — applies scope + filters to the inverted index.
@@ -868,7 +868,7 @@ pub fn execute<'a>(
 ) -> impl Iterator<Item = SearchResult> + 'a { /* Step 4.3 */ }
 ```
 
-- [ ] **Step 4.2 — Failing tests.**
+- [x] **Step 4.2 — Failing tests.**
 
 ```rust
 #[cfg(test)]
@@ -1009,7 +1009,7 @@ mod execute_tests {
 
 Run: FAIL.
 
-- [ ] **Step 4.3 — Implement.**
+- [x] **Step 4.3 — Implement.**
 
 ```rust
 pub fn execute<'a>(
@@ -1133,11 +1133,11 @@ fn body_contains_token(body: &str, display: &str, handle: &str, channel: &str, t
 
 **Note — dual-target.** `chrono::Local` is available on wasm (chrono >= 0.4.22 with default features). If the wasm build complains about `Local`, fall back to a fixed UTC reading plus a comment flagging the divergence — local-tz semantics are per-user and the spec says "local timezone".
 
-- [ ] **Step 4.4 — Verify GREEN.** `cargo test -p willow-client search::execute_tests`. All 10 pass.
+- [x] **Step 4.4 — Verify GREEN.** `cargo test -p willow-client search::tests::execute_tests` → 11/11 pass (10 core + bonus matched-ranges population test).
 
-- [ ] **Step 4.5 — WASM compile.** `cargo check --target wasm32-unknown-unknown -p willow-client`.
+- [x] **Step 4.5 — WASM compile.** `cargo check --target wasm32-unknown-unknown -p willow-client` clean.
 
-- [ ] **Step 4.6 — Commit.**
+- [x] **Step 4.6 — Commit.**
 
 ```bash
 git add crates/client/src/search/execute.rs crates/client/src/search/mod.rs crates/client/src/search/tests.rs

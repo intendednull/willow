@@ -1,6 +1,262 @@
 //! Unit tests for the search module. One sub-module per file — see
 //! each sub-module's doc for the behaviour it covers.
 
+mod execute_tests {
+    use super::super::execute::*;
+    use super::super::index::*;
+    use super::super::query::*;
+    use willow_identity::Identity;
+
+    #[allow(clippy::too_many_arguments)]
+    fn mk(
+        id: &str,
+        body: &str,
+        cid: &str,
+        chname: &str,
+        ts: u64,
+        author: &str,
+        handle: &str,
+        grove: Option<&str>,
+        letter: Option<&str>,
+        img: bool,
+        file: bool,
+        link: bool,
+    ) -> IndexableMessage {
+        IndexableMessage {
+            message_id: id.into(),
+            channel_id: cid.into(),
+            channel_name: chname.into(),
+            grove_id: grove.map(String::from),
+            letter_id: letter.map(String::from),
+            author_peer_id: Identity::generate().endpoint_id(),
+            author_handle: handle.into(),
+            author_display_name: author.into(),
+            timestamp_ms: ts,
+            body: body.into(),
+            has_image: img,
+            has_file: file,
+            has_link: link,
+        }
+    }
+
+    fn seed_index() -> SearchIndex {
+        let mut idx = SearchIndex::new();
+        idx.insert(mk(
+            "m1",
+            "hello world",
+            "c1",
+            "general",
+            100,
+            "Mira",
+            "mira",
+            Some("g0"),
+            None,
+            false,
+            false,
+            false,
+        ));
+        idx.insert(mk(
+            "m2",
+            "hello everyone",
+            "c2",
+            "random",
+            200,
+            "Jun",
+            "jun",
+            Some("g0"),
+            None,
+            false,
+            false,
+            false,
+        ));
+        idx.insert(mk(
+            "m3",
+            "see https://ok",
+            "c1",
+            "general",
+            300,
+            "Mira",
+            "mira",
+            Some("g0"),
+            None,
+            false,
+            false,
+            true,
+        ));
+        idx.insert(mk(
+            "m4",
+            "letter text",
+            "l1",
+            "letter",
+            400,
+            "Jun",
+            "jun",
+            None,
+            Some("l1"),
+            false,
+            false,
+            false,
+        ));
+        idx.insert(mk(
+            "m5",
+            "two words here",
+            "c1",
+            "general",
+            500,
+            "Mira",
+            "mira",
+            Some("g0"),
+            None,
+            false,
+            false,
+            false,
+        ));
+        idx
+    }
+
+    #[test]
+    fn scope_this_channel_only_matches_that_channel() {
+        let idx = seed_index();
+        let q = parse_query("hello");
+        let hits = execute(&idx, &q, &SearchScope::ThisChannel("c1".into()));
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].message_id, "m1");
+    }
+
+    #[test]
+    fn scope_all_letters_excludes_grove_channels() {
+        let idx = seed_index();
+        let q = parse_query("text");
+        let hits = execute(&idx, &q, &SearchScope::AllLetters);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].message_id, "m4");
+    }
+
+    #[test]
+    fn scope_all_groves_and_letters_matches_both() {
+        let idx = seed_index();
+        let q = parse_query("hello");
+        let hits = execute(&idx, &q, &SearchScope::AllGrovesAndLetters);
+        let ids: Vec<_> = hits.iter().map(|h| h.message_id.clone()).collect();
+        assert!(ids.contains(&"m1".into()));
+        assert!(ids.contains(&"m2".into()));
+    }
+
+    #[test]
+    fn quoted_phrase_matches_adjacent_only() {
+        let idx = seed_index();
+        let q = parse_query(r#""two words""#);
+        let hits = execute(&idx, &q, &SearchScope::AllGrovesAndLetters);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].message_id, "m5");
+    }
+
+    #[test]
+    fn quoted_phrase_requires_adjacency() {
+        let idx = seed_index();
+        // "hello words" — not adjacent anywhere in the corpus.
+        let q = parse_query(r#""hello words""#);
+        let hits = execute(&idx, &q, &SearchScope::AllGrovesAndLetters);
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn from_filter_narrows_by_author() {
+        let idx = seed_index();
+        let q = parse_query("hello from:@jun");
+        let hits = execute(&idx, &q, &SearchScope::AllGrovesAndLetters);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].message_id, "m2");
+    }
+
+    #[test]
+    fn in_filter_narrows_by_channel() {
+        let idx = seed_index();
+        let q = parse_query("hello in:#general");
+        let hits = execute(&idx, &q, &SearchScope::AllGrovesAndLetters);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].message_id, "m1");
+    }
+
+    #[test]
+    fn has_link_filter() {
+        let idx = seed_index();
+        // Pure-operator query: no tokens, no phrases. Executor must
+        // fall through to `all_postings()` then apply the filter.
+        let q = parse_query("has:link");
+        let hits = execute(&idx, &q, &SearchScope::AllGrovesAndLetters);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].message_id, "m3");
+    }
+
+    #[test]
+    fn results_ordered_desc_by_timestamp() {
+        let idx = seed_index();
+        let q = parse_query("hello");
+        let hits = execute(&idx, &q, &SearchScope::AllGrovesAndLetters);
+        assert!(hits.windows(2).all(|w| w[0].timestamp_ms >= w[1].timestamp_ms));
+    }
+
+    #[test]
+    fn matched_ranges_populated_on_hit() {
+        let idx = seed_index();
+        let q = parse_query("hello");
+        let hits = execute(&idx, &q, &SearchScope::ThisChannel("c1".into()));
+        assert_eq!(hits.len(), 1);
+        assert!(!hits[0].matched_ranges.is_empty());
+    }
+
+    #[test]
+    fn since_before_filter_ranges() {
+        use chrono::NaiveDate;
+        // Seed with a millisecond-epoch timestamp that's well past
+        // any local-tz offset edge case — 2026-04-20 UTC is
+        // comfortably inside every local-tz window.
+        let ts_2026 = 1_776_326_400_000; // 2026-04-16 04:00 UTC
+        let mut idx = SearchIndex::new();
+        idx.insert(mk(
+            "m1",
+            "hello world",
+            "c1",
+            "general",
+            ts_2026,
+            "Mira",
+            "mira",
+            Some("g0"),
+            None,
+            false,
+            false,
+            false,
+        ));
+        idx.insert(mk(
+            "m2",
+            "hello there",
+            "c1",
+            "general",
+            ts_2026 + 86_400_000,
+            "Jun",
+            "jun",
+            Some("g0"),
+            None,
+            false,
+            false,
+            false,
+        ));
+
+        let mut q = parse_query("hello");
+        q.filters.since = Some(NaiveDate::from_ymd_opt(2020, 1, 1).unwrap());
+        q.filters.before = Some(NaiveDate::from_ymd_opt(2030, 1, 1).unwrap());
+        let hits = execute(&idx, &q, &SearchScope::AllGrovesAndLetters);
+        assert!(hits.len() >= 2, "expected ≥ 2 hits, got {}", hits.len());
+
+        // Tight window that excludes everything.
+        let mut q = parse_query("hello");
+        q.filters.since = Some(NaiveDate::from_ymd_opt(2030, 1, 1).unwrap());
+        let hits = execute(&idx, &q, &SearchScope::AllGrovesAndLetters);
+        assert!(hits.is_empty());
+    }
+}
+
 mod index_tests {
     use super::super::index::*;
     use willow_identity::Identity;
