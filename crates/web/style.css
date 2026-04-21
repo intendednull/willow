@@ -1779,7 +1779,16 @@ select:focus-visible {
     border-top: 1px solid var(--border);
 }
 
-/* ── Scroll-to-Bottom Pill ───────────────────────────────────────── */
+/* ── Jump-to-Latest Pill ─────────────────────────────────────────── */
+/*
+ * Spec: docs/specs/2026-04-19-ui-design/message-row.md
+ *       §Scroll anchoring (jump-to-latest pill).
+ *
+ * The pill floats at the bottom-right of the message list when the
+ * user is more than 120 px from the bottom. Contents: chevron-down
+ * glyph + "jump to latest" label + optional " · {N} new" count.
+ * Click smooth-scrolls to bottom and clears the count.
+ */
 
 .message-list-container {
     flex: 1;
@@ -1790,22 +1799,23 @@ select:focus-visible {
     overflow: hidden;
 }
 
-.scroll-to-bottom {
+.jump-to-latest {
     position: absolute;
     bottom: 16px;
-    right: 20px;
-    background: var(--accent);
-    color: white;
-    border: none;
-    border-radius: 20px;
-    padding: 8px 16px;
-    font-size: 13px;
-    font-weight: 500;
-    cursor: pointer;
-    z-index: 5;
-    box-shadow: var(--shadow-lg);
-    transition: background var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
+    right: 16px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 9999px;
+    box-shadow: var(--shadow-2);
+    color: var(--ink-1);
     font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    z-index: 2;
     -webkit-tap-highlight-color: transparent;
     animation: fadeInUp 0.2s ease-out;
 }
@@ -1815,10 +1825,37 @@ select:focus-visible {
     to { opacity: 1; transform: translateY(0); }
 }
 
-.scroll-to-bottom:hover {
-    background: var(--accent-hover);
-    transform: translateY(-2px);
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+.jump-to-latest:hover {
+    background: var(--bg-2);
+}
+
+.jump-to-latest svg {
+    width: 14px;
+    height: 14px;
+    color: var(--ink-2);
+}
+
+.jump-to-latest__count {
+    color: var(--moss-3);
+    font-weight: 500;
+}
+
+.jump-to-latest:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+}
+
+@media (max-width: 720px) {
+    .jump-to-latest {
+        bottom: 80px;
+        right: 12px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .jump-to-latest {
+        animation: none;
+    }
 }
 
 /* ── Loading Spinner ─────────────────────────────────────────────── */

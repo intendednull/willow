@@ -1,14 +1,19 @@
 use leptos::prelude::*;
 use willow_client::DisplayMessage;
 
-use super::message_row::{day_bucket, DaySeparator};
+use super::message_row::{day_bucket, DaySeparator, JumpToLatestPill};
 use super::MessageView;
 use crate::icons;
 
 /// Scrollable message list for the current channel.
-/// Auto-scrolls to bottom when new messages arrive if the user
-/// is already at (or near) the bottom. Shows a floating
-/// "scroll to bottom" pill when the user has scrolled up.
+///
+/// Auto-scroll to bottom only fires when the user sits within 120 px
+/// of the bottom (per `docs/specs/2026-04-19-ui-design/message-row.md`
+/// §Scroll anchoring). When the user has scrolled up further, a
+/// `jump to latest` pill floats at the bottom-right with a ` · {N} new`
+/// suffix counting messages that have arrived while they were away.
+/// Clicking the pill smooth-scrolls back to the newest row and clears
+/// the count.
 #[component]
 pub fn MessageList(
     messages: ReadSignal<Vec<DisplayMessage>>,
@@ -38,7 +43,18 @@ pub fn MessageList(
     pin_labels: Option<Signal<std::collections::HashMap<String, String>>>,
 ) -> impl IntoView {
     let list_ref = NodeRef::<leptos::html::Div>::new();
-    let (show_scroll_btn, set_show_scroll_btn) = signal(false);
+    // `show_pill` drives pill mount/unmount. True when the user is
+    // more than 120 px from the bottom of the list (per spec).
+    let (show_pill, set_show_pill) = signal(false);
+    // `new_count` counts messages arrived since the user last sat
+    // within the 120 px bottom band. The pill renders ` · {N} new`
+    // when this is greater than zero; clicking the pill or scrolling
+    // back into the band resets it to zero.
+    let new_count: RwSignal<u32> = RwSignal::new(0);
+    // Previous message-vector length, carried across ticks without
+    // participating in reactivity — used to compute the delta of
+    // newly-arrived messages each render.
+    let prev_msg_len = StoredValue::new(0usize);
     // Tracks which message ID has the mobile action sheet open.
     // Lives here (outside the reactive closure) so it survives
     // message-list re-renders caused by sync events.
@@ -58,10 +74,22 @@ pub fn MessageList(
         }
     });
 
-    // When messages change, check if we should auto-scroll.
-    Effect::new(move |prev_len: Option<usize>| {
+    // When messages change, check if we should auto-scroll and/or
+    // bump `new_count`. Contract (spec §Scroll anchoring):
+    //
+    // * Auto-scroll fires only when the user is within 120 px of
+    //   the bottom (the "at-bottom band").
+    // * If the user is *outside* the band and new messages arrive,
+    //   bump `new_count` by the delta so the pill can surface how
+    //   many arrived while they were away.
+    // * First render auto-scrolls unconditionally (no "was away"
+    //   history yet to preserve).
+    Effect::new(move |is_first: Option<bool>| {
         let msgs = messages.get();
         let len = msgs.len();
+        let prev = prev_msg_len.get_value();
+        let delta = len.saturating_sub(prev);
+        let first_render = is_first.is_none();
 
         if let Some(el) = list_ref.get() {
             let el: &web_sys::HtmlElement = &el;
@@ -69,35 +97,63 @@ pub fn MessageList(
             let scroll_height = el.scroll_height() as f64;
             let client_height = el.client_height() as f64;
 
-            // Auto-scroll if: this is the first render, new messages arrived,
-            // OR the user was within 200px of the bottom.
-            let was_at_bottom = (scroll_height - scroll_top - client_height) < 200.0;
-            let is_new = prev_len.map(|p| len > p).unwrap_or(true);
+            // Distance from the bottom *before* this tick's DOM
+            // changes visually resolve. We use this to decide
+            // whether the user was "at bottom" immediately prior
+            // to the new content arriving.
+            let distance = scroll_height - scroll_top - client_height;
+            let near_bottom = distance < 120.0;
 
-            if was_at_bottom || is_new {
-                // Defer scroll to next microtask so DOM has updated (fixes mobile).
+            if first_render || near_bottom {
+                // Defer scroll to next microtask so DOM has
+                // updated (also fixes a mobile Safari quirk).
                 let el_clone = el.clone();
                 set_timeout(
                     move || el_clone.set_scroll_top(el_clone.scroll_height()),
                     std::time::Duration::ZERO,
                 );
+            } else if delta > 0 {
+                // User is scrolled up AND new messages arrived →
+                // accumulate unread delta onto the pill counter.
+                new_count.update(|n| *n = n.saturating_add(delta as u32));
             }
 
-            // Update scroll-to-bottom button visibility.
-            let distance = scroll_height - scroll_top - client_height;
-            set_show_scroll_btn.set(distance > 200.0);
+            // Pill visibility gate matches the auto-scroll gate
+            // exactly: outside the 120 px band → pill visible.
+            set_show_pill.set(!near_bottom);
+            if near_bottom {
+                new_count.set(0);
+            }
         }
 
-        len
+        prev_msg_len.set_value(len);
+        false
     });
 
-    let scroll_to_bottom = move |_| {
+    // Smooth-scroll-to-bottom handler, bound to the pill click.
+    // Per spec §Scroll anchoring: pill click runs
+    // `scrollIntoView({ behavior: 'smooth' })` on the last row, then
+    // clears the count. We target the list's final child element so
+    // the browser's own smooth-scroll animation carries the viewport
+    // to the newest message. When the list is empty (no last child),
+    // fall back to an instant `set_scroll_top` jump — still satisfies
+    // the "hide pill + clear count" half of the contract.
+    let jump_to_latest = move || {
         if let Some(el) = list_ref.get() {
             let el: &web_sys::HtmlElement = &el;
-            el.set_scroll_top(el.scroll_height());
-            set_show_scroll_btn.set(false);
+            if let Some(last) = el.last_element_child() {
+                let opts = web_sys::ScrollIntoViewOptions::new();
+                opts.set_behavior(web_sys::ScrollBehavior::Smooth);
+                opts.set_block(web_sys::ScrollLogicalPosition::End);
+                last.scroll_into_view_with_scroll_into_view_options(&opts);
+            } else {
+                el.set_scroll_top(el.scroll_height());
+            }
+            set_show_pill.set(false);
+            new_count.set(0);
         }
     };
+    let jump_cb = Callback::new(move |()| jump_to_latest());
 
     let on_scroll = move |_| {
         if let Some(el) = list_ref.get() {
@@ -106,7 +162,11 @@ pub fn MessageList(
             let scroll_height = el.scroll_height() as f64;
             let client_height = el.client_height() as f64;
             let distance = scroll_height - scroll_top - client_height;
-            set_show_scroll_btn.set(distance > 200.0);
+            let near_bottom = distance < 120.0;
+            set_show_pill.set(!near_bottom);
+            if near_bottom {
+                new_count.set(0);
+            }
         }
     };
 
@@ -312,11 +372,16 @@ pub fn MessageList(
                 }}
             </div>
             {move || {
-                if show_scroll_btn.get() {
+                // Mount the jump-to-latest pill only when the user
+                // is outside the 120 px bottom band. The pill reads
+                // `new_count` internally and renders ` · {N} new`
+                // when positive.
+                if show_pill.get() {
                     Some(view! {
-                        <button class="scroll-to-bottom" on:click=scroll_to_bottom>
-                            "New messages"
-                        </button>
+                        <JumpToLatestPill
+                            new_count=Signal::derive(move || new_count.get())
+                            on_click=jump_cb
+                        />
                     })
                 } else {
                     None

@@ -1699,60 +1699,14 @@ async fn reply_bar_shows_when_replying() {
     );
 }
 
-// ── Feature 3: Scroll-to-bottom Button Tests ───────────────────────────────
-
-#[wasm_bindgen_test]
-async fn scroll_to_bottom_button_hidden_at_bottom() {
-    // When the user is at the bottom, the scroll-to-bottom button should
-    // be hidden. We test the signal logic directly.
-    let (show_btn, set_show_btn) = signal(false);
-
-    let container = mount_test(move || {
-        view! {
-            <div class="message-list-container">
-                <div class="message-list" style="overflow-y: auto; height: 100px;">
-                    "short content"
-                </div>
-                {move || {
-                    if show_btn.get() {
-                        Some(view! {
-                            <button class="scroll-to-bottom">"New messages"</button>
-                        })
-                    } else {
-                        None
-                    }
-                }}
-            </div>
-        }
-    });
-
-    tick().await;
-
-    // Button should be hidden when show_btn is false (at bottom).
-    assert!(
-        query(&container, ".scroll-to-bottom").is_none(),
-        "scroll button should be hidden at bottom"
-    );
-
-    // Simulate scrolling up (set signal to true).
-    set_show_btn.set(true);
-    tick().await;
-
-    let btn = query(&container, ".scroll-to-bottom").unwrap();
-    assert_eq!(text(&btn), "New messages");
-
-    // Click it to go back to bottom (set signal to false).
-    simulate_click(&btn);
-    // In real code clicking would scroll and toggle the signal;
-    // here we just test the rendering.
-    set_show_btn.set(false);
-    tick().await;
-
-    assert!(
-        query(&container, ".scroll-to-bottom").is_none(),
-        "scroll button should hide after clicking"
-    );
-}
+// ── Feature 3: Jump-to-Latest Pill Mount/Unmount ───────────────────────────
+//
+// The pill-mount/unmount + click-callback contract is covered at the
+// component level inside `mod phase_2a_message_row` below
+// (`jump_pill_*`). This slot used to hold a pre-Phase-2a
+// `scroll-to-bottom` test; the spec-locked pill replaces that
+// button, and the spec's contract lives with the rest of the
+// message-row assertions.
 
 // ── Feature 4: Relative Timestamp Tests ─────────────────────────────────────
 
@@ -8254,6 +8208,155 @@ mod phase_2a_message_row {
         assert!(
             query(&container, ".chat-empty__headline").is_none(),
             "loading state must not render the never-had headline"
+        );
+    }
+
+    // ── Jump-to-latest pill (Task 10) ─────────────────────────────────────
+    //
+    // Spec: `docs/specs/2026-04-19-ui-design/message-row.md` §Scroll
+    // anchoring. The pill renders a chevron-down, the locked copy
+    // `jump to latest`, and — only when `new_count > 0` — the
+    // suffix ` · {N} new`. Its aria-label is locked at
+    // `jump to latest messages`.
+
+    use willow_web::components::JumpToLatestPill;
+
+    #[wasm_bindgen_test]
+    async fn jump_pill_renders_with_aria_label() {
+        let new_count = RwSignal::new(0u32);
+        let cb = Callback::new(move |()| {});
+        let container = mount_test(move || {
+            view! {
+                <JumpToLatestPill
+                    new_count=Signal::derive(move || new_count.get())
+                    on_click=cb
+                />
+            }
+        });
+        tick().await;
+
+        let pill = query(&container, ".jump-to-latest").expect("pill must render when mounted");
+        assert_eq!(
+            pill.get_attribute("aria-label").as_deref(),
+            Some("jump to latest messages"),
+            "aria-label locked by message-row.md §Accessibility"
+        );
+        // Always contains the locked label.
+        assert!(
+            text(&pill).contains("jump to latest"),
+            "pill must always include the 'jump to latest' label"
+        );
+        // Count span must be absent when new_count == 0.
+        assert!(
+            query(&container, ".jump-to-latest__count").is_none(),
+            "count span must not render when new_count == 0"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn jump_pill_shows_new_count_when_gt_zero() {
+        let new_count = RwSignal::new(3u32);
+        let cb = Callback::new(move |()| {});
+        let container = mount_test(move || {
+            view! {
+                <JumpToLatestPill
+                    new_count=Signal::derive(move || new_count.get())
+                    on_click=cb
+                />
+            }
+        });
+        tick().await;
+
+        let count = query(&container, ".jump-to-latest__count")
+            .expect("count span must render when new_count > 0");
+        let count_text = text(&count);
+        assert!(
+            count_text.contains("3"),
+            "count span must include the integer value, got {count_text:?}"
+        );
+        assert!(
+            count_text.contains("new"),
+            "count span must include the word 'new', got {count_text:?}"
+        );
+        // Full rendered pill text must include the literal ` · 3 new`
+        // suffix per spec §Scroll anchoring.
+        let pill = query(&container, ".jump-to-latest").expect(".jump-to-latest");
+        assert!(
+            text(&pill).contains("· 3 new"),
+            "pill must render ' · 3 new' suffix when new_count == 3, got {:?}",
+            text(&pill)
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn jump_pill_hides_count_when_zero() {
+        // Start with a positive count to prove the suffix can mount,
+        // then drop to zero and confirm the suffix un-mounts.
+        let new_count = RwSignal::new(5u32);
+        let cb = Callback::new(move |()| {});
+        let container = mount_test(move || {
+            view! {
+                <JumpToLatestPill
+                    new_count=Signal::derive(move || new_count.get())
+                    on_click=cb
+                />
+            }
+        });
+        tick().await;
+
+        assert!(
+            query(&container, ".jump-to-latest__count").is_some(),
+            "count span must render while new_count > 0"
+        );
+
+        new_count.set(0);
+        tick().await;
+
+        assert!(
+            query(&container, ".jump-to-latest__count").is_none(),
+            "count span must un-mount once new_count drops to zero"
+        );
+        // Pill itself still mounts (mount/unmount is gated externally
+        // by MessageList's 120 px band, not by new_count).
+        let pill = query(&container, ".jump-to-latest")
+            .expect("pill itself must still render at new_count == 0");
+        let pill_text = text(&pill);
+        assert!(
+            !pill_text.contains("new"),
+            "pill must not contain the word 'new' at new_count == 0, got {pill_text:?}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn jump_pill_click_invokes_callback() {
+        // Click handler fires the provided Callback<()>, which in
+        // `chat.rs` smooth-scrolls + resets the count. Here we wire
+        // it to a bool signal to prove the callback ran.
+        let new_count = RwSignal::new(2u32);
+        let clicked = RwSignal::new(false);
+        let cb = Callback::new(move |()| clicked.set(true));
+        let container = mount_test(move || {
+            view! {
+                <JumpToLatestPill
+                    new_count=Signal::derive(move || new_count.get())
+                    on_click=cb
+                />
+            }
+        });
+        tick().await;
+
+        let pill = query(&container, ".jump-to-latest").expect(".jump-to-latest");
+        assert!(
+            !clicked.get(),
+            "clicked latch must be false before the click event"
+        );
+
+        simulate_click(&pill);
+        tick().await;
+
+        assert!(
+            clicked.get(),
+            "on_click Callback<()> must fire when the pill is clicked"
         );
     }
 }

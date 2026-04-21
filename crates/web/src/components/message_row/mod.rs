@@ -12,8 +12,10 @@
 
 pub mod code;
 pub mod day_separator;
+pub mod jump_latest;
 pub mod mention;
 
 pub use code::{parse_code_segments, CodeSegment, FencedCodeBlock, InlineCodePill};
 pub use day_separator::{day_bucket, DayBucket, DaySeparator};
+pub use jump_latest::JumpToLatestPill;
 pub use mention::MentionPill;

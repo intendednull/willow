@@ -264,7 +264,7 @@ Replace the current `.scroll-to-bottom` "New messages" button with the spec `jum
 
 **Files:** new `crates/web/src/components/message_row/jump_latest.rs`, modify `crates/web/src/components/chat.rs`, modify `crates/web/style.css`.
 
-- [ ] **Step 10.1 — Auto-scroll gate.** In `MessageList`, tighten the "was near bottom" check from 200px → 120px per spec. Track `new_count` as the number of messages arrived since the user last scrolled to bottom.
+- [x] **Step 10.1 — Auto-scroll gate.** In `MessageList`, tighten the "was near bottom" check from 200px → 120px per spec. Track `new_count` as the number of messages arrived since the user last scrolled to bottom.
 
   ```rust
   let was_at_bottom = (scroll_height - scroll_top - client_height) < 120.0;
@@ -272,13 +272,13 @@ Replace the current `.scroll-to-bottom` "New messages" button with the spec `jum
   else if is_new { set_new_count.update(|n| *n += delta); }
   ```
 
-- [ ] **Step 10.2 — `<JumpToLatestPill>` component.** Renders `<button class="jump-to-latest" aria-label="jump to latest messages">{icon_chevron_down()} "jump to latest" {move || if n.get() > 0 { format!(" · {} new", n.get()) }}</button>`. Smooth-scroll on click; clears `new_count`.
+- [x] **Step 10.2 — `<JumpToLatestPill>` component.** Renders `<button class="jump-to-latest" aria-label="jump to latest messages">{icon_chevron_down()} "jump to latest" {move || if n.get() > 0 { format!(" · {} new", n.get()) }}</button>`. Smooth-scroll on click; clears `new_count`.
 
-- [ ] **Step 10.3 — Positioning.** CSS: desktop `bottom: 16px; right: 16px`; mobile `bottom: 80px; right: 12px` (above tab bar / composer). Auto-hide when within 120px.
+- [x] **Step 10.3 — Positioning.** CSS: desktop `bottom: 16px; right: 16px`; mobile `bottom: 80px; right: 12px` (above tab bar / composer). Auto-hide when within 120px.
 
-- [ ] **Step 10.4 — `just test-browser`** — 2 tests: pill appears >120px up, disappears on smooth-scroll. Expect green.
+- [x] **Step 10.4 — `just test-browser`** — 4 pill-level tests (aria label, count visible, count hidden, click callback) plus the repurposed `jump_to_latest_pill_hidden_when_near_bottom` mount/unmount test. 212 browser tests pass (up from 209 pre-Task-10). Smooth-scroll uses `scrollIntoView({ behavior: 'smooth' })` on the list's last child because the `ScrollToOptions` web-sys feature provokes a wasm-bindgen-test startup crash in this workspace's pinned toolchain.
 
-- [ ] **Step 10.5 — Commit** — `ui(phase-2): add jump-to-latest pill with 120px auto-scroll gate`.
+- [x] **Step 10.5 — Commit** — `ui(phase-2): add jump-to-latest pill with 120px auto-scroll gate`.
 
 ### 11. Swipe-left quote-reply
 

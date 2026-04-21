@@ -77,7 +77,7 @@ pub use member_list::*;
 pub use message::*;
 pub use message_row::{
     day_bucket, parse_code_segments, CodeSegment, DayBucket, DaySeparator, FencedCodeBlock,
-    InlineCodePill, MentionPill,
+    InlineCodePill, JumpToLatestPill, MentionPill,
 };
 pub use mobile_shell::MobileShell;
 #[allow(unused_imports)]
