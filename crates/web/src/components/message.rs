@@ -14,6 +14,25 @@ const IMAGE_EXTENSIONS: &[&str] = &[
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico",
 ];
 
+/// Read the first `Touch` from a `TouchEvent`, tolerating synthetic
+/// `Event`s (without a `touches` list) dispatched by the browser-test
+/// harness. Returns `None` when no touches are present or when the
+/// event is not a real `TouchEvent`.
+///
+/// Without this guard, `ev.touches().get(0)` panics with a JS
+/// `TypeError` when the harness dispatches a plain `Event` — see
+/// `crates/web/tests/browser.rs` `open_sheet_via_long_press`.
+fn first_touch(ev: &web_sys::TouchEvent) -> Option<web_sys::Touch> {
+    use wasm_bindgen::JsCast;
+    let target: &wasm_bindgen::JsValue = ev.as_ref();
+    let touches = js_sys::Reflect::get(target, &wasm_bindgen::JsValue::from_str("touches")).ok()?;
+    if touches.is_undefined() || touches.is_null() {
+        return None;
+    }
+    let list: web_sys::TouchList = touches.dyn_into().ok()?;
+    list.get(0)
+}
+
 /// Check if a URL points to an image based on extension.
 fn is_image_url(url: &str) -> bool {
     let lower = url.to_lowercase();
@@ -211,6 +230,11 @@ pub fn MessageView(
     /// Lives in `MessageList` so it survives message-list re-renders.
     #[prop(optional, into)]
     active_sheet_msg: Option<RwSignal<Option<String>>>,
+    /// Callback fired when the user swipes right on the row to open the
+    /// thread. If omitted, the gesture still captures but the release is
+    /// a no-op (thread pane is owned by `thread-pane.md`, not yet wired).
+    #[prop(optional, into)]
+    on_open_thread: Option<Callback<DisplayMessage>>,
 ) -> impl IntoView {
     let author_color = super::peer_color(&message.author_peer_id.to_string());
     let body_class = if message.deleted {
@@ -414,6 +438,32 @@ pub fn MessageView(
     let lp_end = long_press_timer.clone();
     let lp_move = long_press_timer.clone();
 
+    // Phase 2a Task 11: swipe-left quote-reply + swipe-right open-thread.
+    // Contract (spec §Swipe gestures):
+    // * `dx > 60` && `dx.abs() > 1.2 * dy.abs()` → open thread.
+    // * `dx < -60` && `dx.abs() > 1.2 * dy.abs()` → reply (populates
+    //    composer `replying_to` via the existing `on_click` callback).
+    // * Below threshold → snap back over 200ms (transition on
+    //   `.message`, disabled while `.message.is-dragging`). Reduced
+    //   motion collapses to an instant state change via the CSS rule.
+    // The 1.2× horizontal-dominance gate ensures vertical list-scroll
+    // wins before the row captures the gesture.
+    let drag_x = RwSignal::new(0.0f64);
+    let is_dragging = RwSignal::new(false);
+    let swipe_touch_start =
+        send_wrapper::SendWrapper::new(std::rc::Rc::new(std::cell::Cell::new((0.0f64, 0.0f64))));
+    let swipe_captured =
+        send_wrapper::SendWrapper::new(std::rc::Rc::new(std::cell::Cell::new(false)));
+    let swipe_start_for_start = swipe_touch_start.clone();
+    let swipe_cap_for_start = swipe_captured.clone();
+    let swipe_start_for_move = swipe_touch_start.clone();
+    let swipe_cap_for_move = swipe_captured.clone();
+    let swipe_cap_for_end = swipe_captured.clone();
+    let msg_for_swipe_reply = message.clone();
+    let msg_for_swipe_thread = message.clone();
+    let swipe_reply_cb = on_click;
+    let swipe_thread_cb = on_open_thread;
+
     let on_msg_touchstart = move |ev: web_sys::TouchEvent| {
         // Skip if touching the action sheet or overlay.
         if let Some(target) = ev.target() {
@@ -427,6 +477,17 @@ pub fn MessageView(
             {
                 return;
             }
+        }
+        // Record swipe start position (shared closure state below).
+        // Guarded via `first_touch` because synthetic `Event`s dispatched
+        // by the browser test harness lack a `touches` list — a plain
+        // `ev.touches().get(0)` would hit a JS `TypeError` trying to
+        // read `.get` on `undefined`.
+        if let Some(t) = first_touch(&ev) {
+            swipe_start_for_start.set((t.client_x() as f64, t.client_y() as f64));
+            swipe_cap_for_start.set(false);
+            drag_x.set(0.0);
+            is_dragging.set(true);
         }
         set_long_press_active.set(true);
         // Start 500ms timer via web_sys.
@@ -460,9 +521,28 @@ pub fn MessageView(
             lp_end.set(0);
         }
         set_long_press_active.set(false);
+        // Finalise swipe gesture. Only act on release if we actually
+        // captured the gesture (i.e. horizontal motion dominated and
+        // crossed the 8px idle band) during touchmove.
+        if swipe_cap_for_end.get() {
+            let dx = drag_x.get_untracked();
+            if dx > 60.0 {
+                if let Some(cb) = swipe_thread_cb {
+                    cb.run(msg_for_swipe_thread.clone());
+                }
+            } else if dx < -60.0 {
+                if let Some(cb) = swipe_reply_cb {
+                    cb.run(msg_for_swipe_reply.clone());
+                }
+            }
+        }
+        drag_x.set(0.0);
+        is_dragging.set(false);
+        swipe_cap_for_end.set(false);
     };
 
-    let on_msg_touchmove = move |_: web_sys::TouchEvent| {
+    let on_msg_touchmove = move |ev: web_sys::TouchEvent| {
+        // Cancel long-press on any movement.
         let id = lp_move.get();
         if id != 0 {
             if let Some(w) = web_sys::window() {
@@ -471,16 +551,55 @@ pub fn MessageView(
             lp_move.set(0);
         }
         set_long_press_active.set(false);
+        // Track swipe gesture. Capture only when horizontal motion
+        // exceeds vertical by ≥1.2× AND is at least 8px (idle band) —
+        // until then, defer so vertical scroll can win. Guarded via
+        // `first_touch` for the synthetic-Event case (see touchstart).
+        if let Some(t) = first_touch(&ev) {
+            let (sx, sy) = swipe_start_for_move.get();
+            let dx = t.client_x() as f64 - sx;
+            let dy = t.client_y() as f64 - sy;
+            if !swipe_cap_for_move.get() && dx.abs() > 1.2 * dy.abs() && dx.abs() > 8.0 {
+                swipe_cap_for_move.set(true);
+            }
+            if swipe_cap_for_move.get() {
+                // Prevent native scroll/overscroll while we drive the
+                // row transform. Safe because we only reach here after
+                // the horizontal-dominance gate has passed.
+                ev.prevent_default();
+                drag_x.set(dx);
+            }
+        }
     };
 
     let base_class = msg_class.to_string();
     view! {
         <div
             class=move || {
+                // Compose base class + long-press-active + is-dragging.
+                // `is-dragging` disables the 200ms snap-back transition
+                // while the user's finger is driving the translate;
+                // release path re-enables the transition so `drag_x`
+                // returning to 0.0 animates naturally.
+                let mut out = base_class.clone();
                 if long_press_active.get() {
-                    format!("{base_class} long-press-active")
+                    out.push_str(" long-press-active");
+                }
+                if is_dragging.get() {
+                    out.push_str(" is-dragging");
+                }
+                out
+            }
+            style=move || {
+                // Only emit a transform when there's actual horizontal
+                // displacement, so idle rows get no inline style at all
+                // (keeps the DOM diff clean and avoids clobbering other
+                // transform-based effects).
+                let dx = drag_x.get();
+                if dx != 0.0 {
+                    format!("transform: translateX({dx}px);")
                 } else {
-                    base_class.clone()
+                    String::new()
                 }
             }
             id=msg_dom_id

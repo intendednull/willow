@@ -1,5 +1,12 @@
 import { test, expect } from '@playwright/test';
-import { freshStart, createServer, sendMessage, longPress } from './helpers';
+import {
+  freshStart,
+  createServer,
+  sendMessage,
+  longPress,
+  swipeLeft,
+  visibleShell,
+} from './helpers';
 
 // Mobile action-sheet behaviour. Non-gesture sheet behaviour (cancel,
 // overlay tap, reply, react, three-dot hidden, quick-tap no-op) has
@@ -61,5 +68,24 @@ test.describe('Mobile action sheet', () => {
     }, { startX, startY, endY });
 
     await expect(page.locator('.shell-mobile .mobile-action-sheet.open').first()).toBeHidden();
+  });
+
+  test('swipe-left on message populates composer replying_to', async ({ page }) => {
+    await freshStart(page);
+    await createServer(page, 'SwipeLeft', 'Alice');
+    await sendMessage(page, 'hello swipe-left');
+
+    // Target the visible-shell's first message row to avoid hitting the
+    // hidden copy in the inactive desktop shell.
+    const row = page
+      .locator(`${visibleShell(page)} .message`, { hasText: 'hello swipe-left' })
+      .first();
+    await row.waitFor({ timeout: 5_000 });
+    await swipeLeft(page, row);
+
+    // Reply-preview bar (see `crates/web/src/components/input.rs`) is
+    // the source-of-truth for "composer is replying_to Some(..)".
+    await expect(page.locator(`${visibleShell(page)} .reply-bar`))
+      .toBeVisible({ timeout: 3_000 });
   });
 });

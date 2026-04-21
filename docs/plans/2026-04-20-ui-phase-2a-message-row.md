@@ -286,15 +286,13 @@ Add a second horizontal swipe gesture distinct from the existing swipe-right-ope
 
 **Files:** modify `crates/web/src/components/message.rs`, modify `e2e/helpers.ts`.
 
-- [ ] **Step 11.1 — Gesture handlers.** Extend the existing `on_msg_touchstart` / `touchmove` / `touchend` to track dx + dy. Require `dx.abs() > 1.2 * dy.abs()` before capturing. Commit threshold `dx.abs() > 60`. Split outcome by sign:
-  - `dx > 60` → existing thread-reveal flow (unchanged).
-  - `dx < -60` → emit `on_quote_reply(msg)` callback that `MessageList` wires to `ChatInput::set_replying_to`.
+- [x] **Step 11.1 — Gesture handlers.** `MessageView` now tracks `(dx, dy)` across touchstart/move/end via shared `Rc<Cell<(f64, f64)>>` + `Rc<Cell<bool>>` capture flag. Horizontal-dominance gate (`dx.abs() > 1.2 * dy.abs() && dx.abs() > 8.0`) keeps vertical scroll winning until the row captures. On release: `dx > 60` → new optional `on_open_thread` callback (no-op if unwired, reserving the thread-pane surface); `dx < -60` → existing `on_click` callback (reply path already wired at both `app.rs` and `mobile_shell.rs` call-sites to populate `chat.set_replying_to`). A `first_touch(ev)` helper via `js_sys::Reflect` tolerates the synthetic `Event`s dispatched by the browser-test harness (avoids a `TypeError` on `ev.touches()`).
 
-- [ ] **Step 11.2 — Snap-back.** 200ms transition on `transform: translateX(0)` when released below threshold. Reduced-motion → instant state change.
+- [x] **Step 11.2 — Snap-back.** `.message` transition extended to include `transform 200ms ease-out`; `.message.is-dragging` disables the transition so the translate tracks the finger 1:1. `@media (prefers-reduced-motion: reduce)` drops `transform` from the transition list (instant state change per spec). `touch-action: pan-y` on `.message` prevents native horizontal panning from stealing the gesture.
 
-- [ ] **Step 11.3 — E2E helper.** `swipeLeft(page, row)` mirroring `swipeRight`. Add an e2e case in `e2e/mobile-actions.spec.ts` asserting the composer's `replying_to` populates.
+- [x] **Step 11.3 — E2E helper.** `swipeLeft(page, row)` + `swipeRight(page, row)` added to `e2e/helpers.ts` (shared `dispatchSwipe` fires touchstart → 3× touchmove → touchend with four waypoints so the dominance gate trips). New mobile-chrome Playwright case in `e2e/mobile-actions.spec.ts` asserts `.reply-bar` becomes visible after `swipeLeft` on the first message row. `npx playwright test --project=mobile-chrome e2e/mobile-actions.spec.ts` → 3 passed.
 
-- [ ] **Step 11.4 — Commit** — `ui(phase-2): add swipe-left quote-reply gesture`.
+- [x] **Step 11.4 — Commit** — `ui(phase-2): add swipe-left quote-reply gesture`.
 
 ### 12. Hover toolbar rendering
 

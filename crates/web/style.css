@@ -600,8 +600,28 @@ select:focus-visible {
     position: relative;
     border-left: 2px solid transparent;
     border-radius: 6px;
-    transition: background var(--transition-fast), border-color var(--transition-fast);
+    /* `transform` here drives the 200ms snap-back for the swipe
+     * gestures (spec §Swipe gestures). `.is-dragging` disables the
+     * transition so the translate tracks the finger 1:1. Reduced
+     * motion collapses the snap-back to an instant state change. */
+    transition:
+        background var(--transition-fast),
+        border-color var(--transition-fast),
+        transform 200ms ease-out;
     cursor: pointer;
+    touch-action: pan-y;
+}
+
+.message.is-dragging {
+    transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .message {
+        transition:
+            background var(--transition-fast),
+            border-color var(--transition-fast);
+    }
 }
 
 .message:hover {

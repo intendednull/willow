@@ -1,4 +1,4 @@
-import { Page, Browser, BrowserContext, expect } from '@playwright/test';
+import { Page, Browser, BrowserContext, Locator, expect } from '@playwright/test';
 
 /** Wait for the WASM app to load (loading spinner disappears). */
 export async function waitForApp(page: Page) {
@@ -623,6 +623,58 @@ export async function longPressAvatar(page: Page, peerName: string) {
   await page.mouse.down();
   await page.waitForTimeout(500);
   await page.mouse.up();
+}
+
+// ── Swipe gestures ────────────────────────────────────────────────────
+
+/** Dispatches a horizontal swipe (touchstart → 3× touchmove → touchend)
+ *  on a message row. `dx > 0` swipes right (open thread); `dx < 0`
+ *  swipes left (quote reply). The four-step move path is required to
+ *  cross the 8 px horizontal-dominance gate inside MessageView's
+ *  touchmove handler before the row captures the gesture. */
+async function dispatchSwipe(row: Locator, dx: number): Promise<void> {
+  await row.evaluate((el, dx) => {
+    const rect = (el as HTMLElement).getBoundingClientRect();
+    // Start off-centre on the opposite side so we have room to travel
+    // `dx` pixels without leaving the row's bounding box.
+    const startX = dx > 0 ? rect.left + rect.width * 0.2 : rect.left + rect.width * 0.8;
+    const startY = rect.top + rect.height / 2;
+    const makeTouch = (x: number, y: number) => new Touch({
+      identifier: 0,
+      target: el as HTMLElement,
+      clientX: x,
+      clientY: y,
+      pageX: x,
+      pageY: y,
+    } as TouchInit);
+    const fire = (type: string, x: number) => {
+      const touch = makeTouch(x, startY);
+      (el as HTMLElement).dispatchEvent(new TouchEvent(type, {
+        cancelable: true,
+        bubbles: true,
+        touches: type === 'touchend' ? [] : [touch],
+        targetTouches: type === 'touchend' ? [] : [touch],
+        changedTouches: [touch],
+      }));
+    };
+    fire('touchstart', startX);
+    fire('touchmove', startX + dx * 0.3);
+    fire('touchmove', startX + dx * 0.7);
+    fire('touchmove', startX + dx);
+    fire('touchend', startX + dx);
+  }, dx);
+}
+
+/** Swipe left on a message row. Populates the composer's `replying_to`
+ *  context (per `message-row.md` §Swipe gestures). */
+export async function swipeLeft(_page: Page, row: Locator): Promise<void> {
+  return dispatchSwipe(row, -120);
+}
+
+/** Swipe right on a message row. Opens the thread pane (per
+ *  `message-row.md` §Swipe gestures). */
+export async function swipeRight(_page: Page, row: Locator): Promise<void> {
+  return dispatchSwipe(row, 120);
 }
 
 /** Kicks a peer by name from the member list. */
