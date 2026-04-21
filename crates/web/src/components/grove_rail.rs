@@ -215,7 +215,15 @@ pub fn GroveRail(
                                         set_menu_y.set(cy);
                                         set_show_menu.set(true);
                                         if let Some(w) = web_sys::window() {
-                                            let _ = w.navigator().vibrate_with_duration(25);
+                                            let nav = w.navigator();
+                                            if js_sys::Reflect::has(
+                                                nav.as_ref(),
+                                                &"vibrate".into(),
+                                            )
+                                            .unwrap_or(false)
+                                            {
+                                                let _ = nav.vibrate_with_duration(25);
+                                            }
                                         }
                                     });
                                     if let Ok(timer_id) =

@@ -4454,12 +4454,7 @@ async fn desktop_shell_main_pane_header_four_buttons_in_order() {
         .collect();
     assert_eq!(
         labels,
-        vec![
-            "members",
-            "pinned",
-            "search (⌘K)",
-            "more",
-        ],
+        vec!["members", "pinned", "search (⌘K)", "more",],
         "action-bar labels are in the fixed order from layout-primitives"
     );
 }
@@ -4539,8 +4534,7 @@ async fn channel_sidebar_add_button_says_new_tree_with_glyph() {
         query(&container, ".channel-add-btn .icon-tree").is_some(),
         "add button carries tree glyph"
     );
-    let label =
-        query(&container, ".channel-add-btn .channel-add-btn__label").expect("label span");
+    let label = query(&container, ".channel-add-btn .channel-add-btn__label").expect("label span");
     assert_eq!(label.text_content().unwrap_or_default(), "new tree");
 }
 
@@ -6924,11 +6918,17 @@ mod worker_nodes_css {
         create_server_flow(&container, "Section Test", "Alice").await;
         open_member_rail(&container).await;
 
-        // Members heading.
-        let heading = query_text(&container, ".shell-desktop .member-list h3").unwrap_or_default();
+        // Members section title (vibe pass replaced `<h3>` with a
+        // `<details><summary>` per section; members is the one marked
+        // with `rail-section--members`).
+        let heading = query_text(
+            &container,
+            ".shell-desktop .member-list .rail-section--members .rail-section__title",
+        )
+        .unwrap_or_default();
         assert!(
             heading.contains("Members"),
-            "member-list h3 should read 'Members', got: {heading:?}"
+            "members section title should read 'Members', got: {heading:?}"
         );
 
         // Owner badge for the creator.

@@ -45,9 +45,15 @@ pub fn LongPressAvatar(
         let on_trigger_inner = on_trigger;
         let cb = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
             set_ring_for_timer.set(Some(true));
-            // Light haptic + fire the callback.
+            // Light haptic + fire the callback. Headless browsers
+            // (wasm-bindgen-test) lack `navigator.vibrate`, so
+            // feature-detect before calling.
             if let Some(nav) = web_sys::window().map(|w| w.navigator()) {
-                nav.vibrate_with_duration(8);
+                if js_sys::Reflect::has(nav.as_ref(), &"vibrate".into())
+                    .unwrap_or(false)
+                {
+                    nav.vibrate_with_duration(8);
+                }
             }
             on_trigger_inner.get_value().run(());
         });

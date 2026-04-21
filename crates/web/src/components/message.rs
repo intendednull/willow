@@ -516,10 +516,15 @@ pub fn MessageView(
             let cb = wasm_bindgen::closure::Closure::once(move || {
                 set_long_press_active.set(false);
                 open_sheet();
-                // Haptic feedback.
+                // Haptic feedback. Headless test browsers lack
+                // `navigator.vibrate`, so feature-detect first.
                 if let Some(w) = web_sys::window() {
                     let nav = w.navigator();
-                    let _ = nav.vibrate_with_duration(25);
+                    if js_sys::Reflect::has(nav.as_ref(), &"vibrate".into())
+                        .unwrap_or(false)
+                    {
+                        let _ = nav.vibrate_with_duration(25);
+                    }
                 }
             });
             if let Ok(id) = window.set_timeout_with_callback_and_timeout_and_arguments_0(

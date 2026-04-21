@@ -109,8 +109,7 @@ pub fn ChannelSidebar(
     //   - `pending_kind`: user picked a kind; slot with name input is
     //     shown and auto-focused.
     let (picker_open, set_picker_open) = signal(false);
-    let (pending_kind, set_pending_kind) =
-        signal(Option::<willow_state::ChannelKind>::None);
+    let (pending_kind, set_pending_kind) = signal(Option::<willow_state::ChannelKind>::None);
     let (new_name, set_new_name) = signal(String::new());
     let name_input_ref: NodeRef<leptos::html::Input> = NodeRef::new();
 
@@ -146,7 +145,7 @@ pub fn ChannelSidebar(
 
     let handle_create = handle.clone();
     let on_create_submit = {
-        let reset = reset_create.clone();
+        let reset = reset_create;
         move || {
             let name = new_name.get_untracked();
             let name = name.trim().to_string();
@@ -174,7 +173,7 @@ pub fn ChannelSidebar(
 
     let on_create_keydown = {
         let submit = on_create_submit.clone();
-        let reset = reset_create.clone();
+        let reset = reset_create;
         move |ev: web_sys::KeyboardEvent| {
             if ev.key() == "Enter" {
                 ev.prevent_default();
@@ -193,7 +192,7 @@ pub fn ChannelSidebar(
     };
 
     let on_plant_click = {
-        let reset = reset_create.clone();
+        let reset = reset_create;
         move |_| {
             if pending_kind.get_untracked().is_some() {
                 // Already filling a slot — cancel.
@@ -250,10 +249,9 @@ pub fn ChannelSidebar(
             // ── Channel scroll region ──────────────────────────────
             <div class="channel-list scroll" role="list">
                 {move || can_manage_channels().then(|| {
-                    let on_plant_click = on_plant_click.clone();
-                    let pick_kind_a = pick_kind.clone();
-                    let pick_kind_b = pick_kind.clone();
-                    let cancel = reset_create.clone();
+                    let pick_kind_a = pick_kind;
+                    let pick_kind_b = pick_kind;
+                    let cancel = reset_create;
                     let on_kd = on_create_keydown.clone();
                     let submit_save = on_create_submit.clone();
                     view! {
@@ -277,8 +275,8 @@ pub fn ChannelSidebar(
                                 <span class="channel-add-btn__label">"new"</span>
                             </button>
                             {move || picker_open.get().then(|| {
-                                let pick_t = pick_kind_a.clone();
-                                let pick_v = pick_kind_b.clone();
+                                let pick_t = pick_kind_a;
+                                let pick_v = pick_kind_b;
                                 view! {
                                     <div class="tree-kind-picker" role="menu" aria-label="choose tree type">
                                         <button
@@ -305,7 +303,6 @@ pub fn ChannelSidebar(
                                 }
                             })}
                             {move || pending_kind.get().map(|kind| {
-                                let cancel = cancel.clone();
                                 let on_kd = on_kd.clone();
                                 let save = submit_save.clone();
                                 let glyph_view = match kind {
