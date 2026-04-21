@@ -245,18 +245,18 @@ Replace the current `"No messages yet. Say hello!"` + spinner with the spec's le
 
 **Files:** modify `crates/web/src/components/chat.rs`, modify `crates/web/src/icons.rs`, modify `crates/web/style.css`.
 
-- [ ] **Step 9.1 — Leaf icon.** `icon_leaf()` — 48×48, stroke 1.5, `currentColor=var(--willow)`. Placeholder path if asset not ready; flag `TODO(illustration)` if the designer hasn't shipped the final SVG.
+- [x] **Step 9.1 — Leaf icon.** `icon_leaf()` — 48×48, stroke 1.5, `currentColor=var(--willow)`. Placeholder path if asset not ready; flag `TODO(illustration)` if the designer hasn't shipped the final SVG.
 
-- [ ] **Step 9.2 — Empty variants.** In `MessageList`, split the current empty branch into three:
+- [x] **Step 9.2 — Empty variants.** In `MessageList`, split the current empty branch into three:
   - Never-had-messages → leaf + `this channel is quiet. say hi?` + subtext `messages here are sealed to everyone in the grove.`.
   - All-deleted (messages was non-empty last tick, now empty) → `cleared — nothing here yet.`. Track via a local `prev_len` signal.
   - Loading → five `<div class="chat-skeleton-row">` with 32px circle + 2 shimmer bars; uses `shimmer` keyframes from foundation. Reduced-motion → static `--bg-2` rectangles.
 
-- [ ] **Step 9.3 — Cross-fade.** First real message cross-fades skeletons out over 180ms via `opacity` transition; no-op under reduced motion.
+- [x] **Step 9.3 — Cross-fade.** First real message cross-fades skeletons out over 180ms via `opacity` transition; no-op under reduced motion.
 
-- [ ] **Step 9.4 — `just test-browser`** — 3 new tests (empty-never, cleared, loading skeleton count = 5). Expect green.
+- [x] **Step 9.4 — `just test-browser`** — 3 new tests (empty-never, cleared, loading skeleton count = 5). Expect green.
 
-- [ ] **Step 9.5 — Commit** — `ui(phase-2): add spec-compliant empty/cleared/loading states`.
+- [x] **Step 9.5 — Commit** — `ui(phase-2): add spec-compliant empty/cleared/loading states`.
 
 ### 10. Jump-to-latest pill
 

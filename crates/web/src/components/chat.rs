@@ -3,6 +3,7 @@ use willow_client::DisplayMessage;
 
 use super::message_row::{day_bucket, DaySeparator};
 use super::MessageView;
+use crate::icons;
 
 /// Scrollable message list for the current channel.
 /// Auto-scrolls to bottom when new messages arrive if the user
@@ -42,6 +43,20 @@ pub fn MessageList(
     // Lives here (outside the reactive closure) so it survives
     // message-list re-renders caused by sync events.
     let active_sheet_msg = RwSignal::new(Option::<String>::None);
+
+    // `has_been_populated` flips to true the first time `messages` is
+    // non-empty and stays true forever. Combined with the live emptiness
+    // check below, it lets us distinguish the never-had-messages empty
+    // state from the all-deleted / all-cleared empty state without
+    // tracking a sliding `prev_len` (which would race with the render
+    // memo). See `docs/specs/2026-04-19-ui-design/message-row.md`
+    // §Empty / loading states.
+    let has_been_populated = RwSignal::new(false);
+    Effect::new(move |_| {
+        if !messages.get().is_empty() {
+            has_been_populated.set(true);
+        }
+    });
 
     // When messages change, check if we should auto-scroll.
     Effect::new(move |prev_len: Option<usize>| {
@@ -134,18 +149,55 @@ pub fn MessageList(
                     let msgs = messages.get();
                     let is_loading = loading.get();
                     if is_loading && msgs.is_empty() {
+                        // Loading skeleton: five rows, 32 px circle +
+                        // two shimmer bars (name + body). Reduced motion
+                        // is handled by `foundation.css` which disables
+                        // the shimmer animation globally; the bars
+                        // remain visible as static `--bg-2` rectangles.
+                        // Contract: `docs/specs/2026-04-19-ui-design/\
+                        // message-row.md` §Loading.
+                        let rows: Vec<_> = (0..5).map(|_| view! {
+                            <div class="chat-skeleton-row">
+                                <div class="chat-skeleton__avatar"></div>
+                                <div class="chat-skeleton__bars">
+                                    <div class="chat-skeleton__bar chat-skeleton__bar--name"></div>
+                                    <div class="chat-skeleton__bar chat-skeleton__bar--body"></div>
+                                </div>
+                            </div>
+                        }.into_any()).collect();
                         view! {
-                            <div class="loading-spinner" role="status">
-                                <div class="spinner"></div>
-                                <span>"Connecting..."</span>
+                            <div class="chat-skeleton" aria-hidden="true">
+                                {rows}
                             </div>
                         }.into_any()
                     } else if msgs.is_empty() {
-                        view! {
-                            <div class="empty-state">
-                                "No messages yet. Say hello!"
-                            </div>
-                        }.into_any()
+                        // Split empty into "never-had" vs "cleared" via
+                        // the `has_been_populated` latch — see field
+                        // comment above. Spec §Empty channel (no
+                        // messages ever) vs §Empty after deletions.
+                        if has_been_populated.get() {
+                            view! {
+                                <div class="chat-cleared" role="status">
+                                    <h2 class="chat-cleared__headline">
+                                        "cleared — nothing here yet."
+                                    </h2>
+                                </div>
+                            }.into_any()
+                        } else {
+                            view! {
+                                <div class="chat-empty" role="status">
+                                    <div class="chat-empty__art">
+                                        {icons::icon_leaf()}
+                                    </div>
+                                    <h2 class="chat-empty__headline">
+                                        "this channel is quiet. say hi?"
+                                    </h2>
+                                    <p class="chat-empty__subtext">
+                                        "messages here are sealed to everyone in the grove."
+                                    </p>
+                                </div>
+                            }.into_any()
+                        }
                     } else {
                         // Build grouped message views: consecutive messages from
                         // the same author collapse the header.

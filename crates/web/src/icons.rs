@@ -538,6 +538,20 @@ pub fn icon_hourglass_sm() -> impl IntoView {
     }
 }
 
+/// Single leaf glyph (24 viewBox, stroke 1.5) — rendered at 48 × 48 for
+/// the never-had-messages empty state in the message list.
+///
+/// TODO(illustration): replace with the final designer leaf SVG when it
+/// ships. The path below is a placeholder shaped like a closed-tip
+/// leaf with a central vein — spec calls for "open-leaf SVG", but the
+/// real asset hasn't landed yet.
+pub fn icon_leaf() -> impl IntoView {
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 3C7 3 4 6 4 10c0 6 5 11 11 11 0-4-3-7-7-7"/><path d="M4 10c4 0 8 4 8 8"/></svg>"#;
+    view! {
+        <span class="icon icon-leaf" inner_html=svg.to_string()></span>
+    }
+}
+
 /// Willow brand mark — three drooping fronds with leaf tips.
 /// Rendered with its own viewBox (48) and stroke width (1.5) to match the
 /// foundation iconography rules for brand surfaces.

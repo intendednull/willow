@@ -4581,3 +4581,112 @@ select:focus-visible {
         display: flex;
     }
 }
+
+/* ── Phase 2a — Empty / cleared / loading states ─────────────────────
+   Message-list empty surfaces, per
+   `docs/specs/2026-04-19-ui-design/message-row.md` §Empty / loading
+   states. Three variants: never-had-messages (leaf + copy), cleared
+   (after deletions), and the loading skeleton. The `shimmer` keyframe
+   lives in `foundation.css` and is auto-disabled under reduced motion
+   so skeletons degrade to static `--bg-2` rectangles. */
+
+.chat-empty,
+.chat-cleared {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 60vh;
+    padding: 32px 24px;
+    text-align: center;
+    color: var(--ink-2);
+}
+
+.chat-empty__art {
+    color: var(--willow);
+    margin-bottom: 20px;
+    line-height: 0;
+}
+.chat-empty__art .icon-leaf svg {
+    width: 48px;
+    height: 48px;
+}
+
+.chat-empty__headline,
+.chat-cleared__headline {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 18px;
+    color: var(--ink-0);
+    margin: 0 0 8px 0;
+    font-weight: 500;
+}
+
+.chat-empty__subtext {
+    font-size: 13px;
+    color: var(--ink-2);
+    margin: 0;
+    max-width: 36ch;
+}
+
+.chat-skeleton {
+    padding: 12px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    /* First real message fades the skeleton out over 180 ms per spec.
+       Removed from the DOM on the next render tick, so the opacity
+       transition only fires when the loading branch itself is about
+       to unmount — reduced-motion honours foundation's blanket 0ms
+       transition override. */
+    transition: opacity 180ms ease-out;
+}
+
+.chat-skeleton-row {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+}
+
+.chat-skeleton__avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--bg-2);
+    flex-shrink: 0;
+}
+
+.chat-skeleton__bars {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-top: 4px;
+}
+
+.chat-skeleton__bar {
+    height: 10px;
+    background: var(--bg-2);
+    border-radius: 4px;
+}
+
+.chat-skeleton__bar--name { width: 18%; }
+.chat-skeleton__bar--body { width: 74%; }
+
+/* Shimmer animation: only enabled when motion is allowed. The
+   `shimmer` keyframe is defined in `foundation.css`. Reduced-motion
+   users see the static `--bg-2` rectangles defined above. */
+@media (prefers-reduced-motion: no-preference) {
+    .chat-skeleton__avatar,
+    .chat-skeleton__bar {
+        background: linear-gradient(
+            90deg,
+            var(--bg-2) 0%,
+            var(--bg-3) 40%,
+            var(--bg-2) 80%
+        );
+        background-size: 400px 100%;
+        background-repeat: no-repeat;
+        animation: shimmer 1.6s linear infinite;
+    }
+}

@@ -8112,4 +8112,148 @@ mod phase_2a_message_row {
             "non-whisper row must not render a .whisper-badge"
         );
     }
+
+    // ── Empty / cleared / loading states (Task 9) ─────────────────────────
+    //
+    // Spec: `docs/specs/2026-04-19-ui-design/message-row.md` §Empty /
+    // loading states. Three variants — never-had-messages, cleared (all
+    // deleted), and loading skeleton — each with locked copy and
+    // locked structure.
+
+    #[wasm_bindgen_test]
+    async fn empty_channel_shows_never_had_copy() {
+        // No prior messages, not loading → never-had-messages variant.
+        let container = mount_message_list(vec![]);
+        tick().await;
+
+        let headline = query(&container, ".chat-empty__headline")
+            .expect("empty (never-had) state must render .chat-empty__headline");
+        assert_eq!(
+            text(&headline),
+            "this channel is quiet. say hi?",
+            ".chat-empty__headline copy is locked by message-row.md §Empty state"
+        );
+        let subtext = query(&container, ".chat-empty__subtext")
+            .expect("empty (never-had) state must render .chat-empty__subtext");
+        assert_eq!(
+            text(&subtext),
+            "messages here are sealed to everyone in the grove.",
+            ".chat-empty__subtext copy is locked by message-row.md §Empty state"
+        );
+        // Cleared headline must NOT render when messages never existed.
+        assert!(
+            query(&container, ".chat-cleared__headline").is_none(),
+            "never-had-messages must not render the cleared headline"
+        );
+        // Leaf illustration lives in the art slot.
+        assert!(
+            query(&container, ".chat-empty__art .icon-leaf").is_some(),
+            ".chat-empty__art must contain the leaf glyph"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn cleared_channel_shows_cleared_copy() {
+        // Seed with one message, then drain it — MessageList must
+        // latch `has_been_populated` on the first non-empty tick and
+        // swap to the cleared variant once drained.
+        use willow_web::components::MessageList;
+        use willow_web::state::{create_signals, InitialSignals};
+
+        let (msgs, set_msgs) = signal(vec![make_msg("Mira", "hi", 1000)]);
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <MessageList messages=msgs /> }
+        });
+        tick().await;
+
+        // First tick: populated, so neither empty variant shows.
+        assert!(
+            query(&container, ".chat-empty__headline").is_none(),
+            "populated list must not render .chat-empty__headline"
+        );
+
+        // Drain: messages goes back to empty. `has_been_populated`
+        // latch is now true → cleared variant wins.
+        set_msgs.set(vec![]);
+        tick().await;
+
+        let headline = query(&container, ".chat-cleared__headline")
+            .expect("cleared state must render .chat-cleared__headline");
+        assert_eq!(
+            text(&headline),
+            "cleared — nothing here yet.",
+            ".chat-cleared__headline copy is locked by message-row.md §Empty state"
+        );
+        // Never-had headline must NOT render once we've seen messages.
+        assert!(
+            query(&container, ".chat-empty__headline").is_none(),
+            "cleared variant must not render the never-had headline"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn loading_shows_five_skeleton_rows() {
+        // `loading=true` with no messages → skeleton. Spec locks the
+        // row count at five.
+        use willow_web::components::MessageList;
+        use willow_web::state::{create_signals, InitialSignals};
+
+        let (msgs, _set_msgs) = signal(Vec::<willow_client::DisplayMessage>::new());
+        let (loading, _set_loading) = signal(true);
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <MessageList messages=msgs loading=loading /> }
+        });
+        tick().await;
+
+        let rows = query_all(&container, ".chat-skeleton-row");
+        assert_eq!(
+            rows.len(),
+            5,
+            "loading skeleton must render exactly five rows per message-row.md §Loading"
+        );
+        // Wrapper carries aria-hidden so the shimmer doesn't leak into
+        // screen readers.
+        let skeleton = query(&container, ".chat-skeleton")
+            .expect("loading state must render .chat-skeleton wrapper");
+        assert_eq!(
+            skeleton.get_attribute("aria-hidden").as_deref(),
+            Some("true"),
+            ".chat-skeleton must be aria-hidden so shimmer rows are ignored by AT"
+        );
+        // Each row owns one avatar + two shimmer bars (name + body).
+        assert_eq!(
+            query_all(&container, ".chat-skeleton__avatar").len(),
+            5,
+            "each skeleton row owns a 32px avatar circle"
+        );
+        assert_eq!(
+            query_all(&container, ".chat-skeleton__bar--name").len(),
+            5,
+            "each skeleton row owns a name shimmer bar"
+        );
+        assert_eq!(
+            query_all(&container, ".chat-skeleton__bar--body").len(),
+            5,
+            "each skeleton row owns a body shimmer bar"
+        );
+        // Empty-state copy must NOT render while loading.
+        assert!(
+            query(&container, ".chat-empty__headline").is_none(),
+            "loading state must not render the never-had headline"
+        );
+    }
 }
