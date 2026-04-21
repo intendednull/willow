@@ -428,9 +428,20 @@ mod tests {
             ClientEvent::JoinLinkDenied {
                 reason: "no".into(),
             },
+            ClientEvent::MuteChanged {
+                scope: willow_client::events::MuteScope::Grove,
+                muted: true,
+            },
+            ClientEvent::QueueChanged(willow_client::views::QueueView::default()),
+            ClientEvent::RelayStatusChanged(willow_client::RelayStatus::Reachable),
+            ClientEvent::DeviceOnlineChanged(true),
         ];
-        // All 27 events
-        assert_eq!(events.len(), 27, "should test all 27 event variants");
+        // One entry per `ClientEvent` variant — mirrors `EVENT_TYPE_NAMES`.
+        assert_eq!(
+            events.len(),
+            EVENT_TYPE_NAMES.len(),
+            "should test every ClientEvent variant"
+        );
         for event in &events {
             let json = event_to_json(event);
             assert!(json.is_object(), "expected object for {event:?}");
