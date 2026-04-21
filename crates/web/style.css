@@ -4315,7 +4315,7 @@ select:focus-visible {
     overflow: hidden;
     font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
     font-size: 10px;
-    color: var(--text-muted);
+    color: var(--ink-3);
     opacity: 0;
     transition: opacity var(--transition-fast);
     pointer-events: none;
