@@ -2197,11 +2197,11 @@ Final sweep: every row in spec §Acceptance criteria mapped to a test or a wirin
 
 **Files:** modify `docs/plans/2026-04-21-ui-phase-2c-profile-card.md`, possibly small polish across `crates/web/src/components/profile_card.rs`.
 
-- [ ] **Step 14.1 — Walk §Acceptance.** For each bullet in spec §Acceptance criteria (17 rows), confirm a test or codepath exists. Append any missing test to `phase_2c_profile_card`. If a test is too expensive (real browser positioning math), note it as deferred under Ambiguity decisions.
+- [x] **Step 14.1 — Walk §Acceptance.** For each bullet in spec §Acceptance criteria (17 rows), confirm a test or codepath exists. Append any missing test to `phase_2c_profile_card`. If a test is too expensive (real browser positioning math), note it as deferred under Ambiguity decisions.
 
-- [ ] **Step 14.2 — Long-display-name truncation.** CSS: `.profile-card__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }` on desktop only; add `title` attribute carrying the full name for hover.
+- [x] **Step 14.2 — Long-display-name truncation.** CSS: `.profile-card__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }` on desktop only; add `title` attribute carrying the full name for hover.
 
-- [ ] **Step 14.3 — `just fmt` + `just clippy`.**
+- [x] **Step 14.3 — `just fmt` + `just clippy`.**
 
   ```bash
   just fmt
@@ -2210,16 +2210,16 @@ Final sweep: every row in spec §Acceptance criteria mapped to a test or a wirin
 
   Expected: both clean. Fix roots — NEVER use `#[allow]` to silence clippy unless the lint objectively doesn't apply (e.g. tests).
 
-- [ ] **Step 14.4 — Tick plan checkboxes.** Walk this file top-to-bottom, flip every `[ ]` to `[x]` for completed tasks, and add a trailing commit note summarising deferred items (if any) in the Ambiguity decisions section.
+- [x] **Step 14.4 — Tick plan checkboxes.** Walk this file top-to-bottom, flip every `[ ]` to `[x]` for completed tasks, and add a trailing commit note summarising deferred items (if any) in the Ambiguity decisions section.
 
-- [ ] **Step 14.5 — Commit.**
+- [x] **Step 14.5 — Commit.**
 
   ```bash
   git add docs/plans/2026-04-21-ui-phase-2c-profile-card.md crates/web/
   git commit -m "ui(phase-2c): acceptance sweep + tick plan checkboxes"
   ```
 
-- [ ] **Step 14.6 — Open PR.**
+- [x] **Step 14.6 — Open PR.**
 
   ```bash
   gh pr create --title "ui(phase-2c): profile-card — plan + implementation" \
@@ -2278,12 +2278,12 @@ Final sweep: every row in spec §Acceptance criteria mapped to a test or a wirin
 
 ## Self-review
 
-- [ ] Every spec §Acceptance row mapped to a task or test.
-- [ ] Foundation tokens only — `--moss-*`, `--amber`, `--warn`, `--ink-*`, `--bg-*`, `--line-*`, `--motion-*`, `--shadow-2`. No new hex.
-- [ ] Every commit is `ui(phase-2c): <imperative>` except the initial `docs(plan):` commit.
-- [ ] Test tiers follow the CLAUDE.md decision tree — state crate: event apply/dedup/permission; client crate: view derivation + nickname store + mutation; browser: component DOM + controller + event-bus.
-- [ ] Lowest-tier coverage — no Playwright this phase (spec doesn't require multi-peer).
-- [ ] No placeholders, no TBDs.
-- [ ] `feedback_e2e_in_sync` memory respected — no e2e helpers to add (no e2e spec touched).
-- [ ] `feedback_keep_specs_in_sync` — spec is stable; no spec edits needed.
-- [ ] `feedback_delete_annotations_when_addressed` — any vibe annotations filed mid-implementation get deleted immediately.
+- [x] Every spec §Acceptance row mapped to a task or test.
+- [x] Foundation tokens only — `--moss-*`, `--amber`, `--warn`, `--ink-*`, `--bg-*`, `--line-*`, `--motion-*`, `--shadow-2`. No new hex.
+- [x] Every commit is `ui(phase-2c): <imperative>` except the initial `docs(plan):` commit.
+- [x] Test tiers follow the CLAUDE.md decision tree — state crate: event apply/dedup/permission; client crate: view derivation + nickname store + mutation; browser: component DOM + controller + event-bus.
+- [x] Lowest-tier coverage — no Playwright this phase (spec doesn't require multi-peer).
+- [x] No placeholders, no TBDs.
+- [x] `feedback_e2e_in_sync` memory respected — no e2e helpers to add (no e2e spec touched).
+- [x] `feedback_keep_specs_in_sync` — spec is stable; no spec edits needed.
+- [x] `feedback_delete_annotations_when_addressed` — any vibe annotations filed mid-implementation get deleted immediately.
