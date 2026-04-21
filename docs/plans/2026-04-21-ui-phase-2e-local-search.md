@@ -2107,7 +2107,7 @@ git commit -m "ui(phase-2e): SearchInput + ScopeChip with keyboard + a11y"
 - Modify: `crates/web/style.css` — results + row CSS.
 - Modify: `crates/web/tests/browser.rs` — append 4 more tests.
 
-- [ ] **Step 10.1 — Failing tests.** Append to `phase_2e_local_search`:
+- [ ] **Step 10.1 — Failing tests.** Browser tests deferred to Task 14's sweep. Steps 10.2–10.6 land implementation + CSS now.
 
 ```rust
 #[wasm_bindgen_test]
@@ -2123,7 +2123,7 @@ async fn streaming_banner_renders_during_build() { /* set status to Indexing {do
 async fn privacy_footer_always_visible() { /* assert `.search-privacy-footer` has exact text */ }
 ```
 
-- [ ] **Step 10.2 — Implement `<ResultRow>`.**
+- [x] **Step 10.2 — Implement `<ResultRow>`.**
 
 ```rust
 // crates/web/src/components/search/row.rs
@@ -2185,7 +2185,7 @@ fn render_spans(text: &str, ranges: &[(usize, usize)]) -> Vec<AnyView> {
 }
 ```
 
-- [ ] **Step 10.3 — Implement `<ResultsList>`.**
+- [x] **Step 10.3 — Implement `<ResultsList>`.**
 
 ```rust
 // crates/web/src/components/search/results.rs
@@ -2266,7 +2266,7 @@ fn group_results(rows: &[SearchResult], scope: &SearchScope) -> Vec<(String, Vec
 }
 ```
 
-- [ ] **Step 10.4 — Implement `<RecentsList>`.**
+- [x] **Step 10.4 — Implement `<RecentsList>`.**
 
 ```rust
 // crates/web/src/components/search/recents.rs
@@ -2302,7 +2302,7 @@ pub fn RecentsList(
 }
 ```
 
-- [ ] **Step 10.5 — CSS.** Append:
+- [x] **Step 10.5 — CSS.** Appended results + row + recents + footer + empty-state CSS.
 
 ```css
 .search-results { flex: 1; overflow-y: auto; padding: 8px 0; }
@@ -2382,7 +2382,7 @@ pub fn RecentsList(
 }
 ```
 
-- [ ] **Step 10.6 — Add `icon_arrow_up_right` to `icons.rs`.**
+- [x] **Step 10.6 — Add `icon_arrow_up_right` to `icons.rs`.**
 
 ```rust
 pub fn icon_arrow_up_right() -> impl IntoView {
@@ -2396,9 +2396,9 @@ pub fn icon_arrow_up_right() -> impl IntoView {
 }
 ```
 
-- [ ] **Step 10.7 — Verify.** `cargo check --target wasm32-unknown-unknown -p willow-web`. Plan the `just test-browser` runs to CI.
+- [x] **Step 10.7 — Verify.** WASM check + clippy clean.
 
-- [ ] **Step 10.8 — Commit.**
+- [x] **Step 10.8 — Commit.**
 
 ```bash
 git add crates/web/src/components/search/ crates/web/src/icons.rs crates/web/style.css crates/web/tests/browser.rs
@@ -2414,7 +2414,7 @@ git commit -m "ui(phase-2e): render results list + row + highlight + recents"
 - Modify: `crates/web/src/components/search/mod.rs` — re-export `SearchSurface`.
 - Modify: `crates/web/src/app.rs` — mount `<SearchSurface>`, hydrate index.
 
-- [ ] **Step 11.1 — Implement `<SearchSurface>`.**
+- [x] **Step 11.1 — Implement `<SearchSurface>`.** Landed in Task 10.
 
 ```rust
 // crates/web/src/components/search/surface.rs

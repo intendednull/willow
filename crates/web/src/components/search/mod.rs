@@ -8,7 +8,15 @@
 //! - Task 13: mobile pull-down reveal.
 
 pub mod input;
+pub mod recents;
+pub mod results;
+pub mod row;
 pub mod scope_chip;
+pub mod surface;
 
 pub use input::SearchInput;
+pub use recents::RecentsList;
+pub use results::ResultsList;
+pub use row::ResultRow;
 pub use scope_chip::ScopeChip;
+pub use surface::SearchSurface;

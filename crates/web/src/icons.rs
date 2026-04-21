@@ -562,6 +562,17 @@ pub fn icon_leaf() -> impl IntoView {
     }
 }
 
+/// Arrow-up-right glyph — 12 × 12, stroke 1.5 — used by the search
+/// results surface's right-column affordance (spec §Row anatomy:
+/// "signalling open-in-place"). Rendered at 1em so the caller can
+/// size via font-size.
+pub fn icon_arrow_up_right() -> impl IntoView {
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17L17 7"/><path d="M7 7h10v10"/></svg>"#;
+    view! {
+        <span class="icon icon-arrow-up-right" inner_html=svg.to_string()></span>
+    }
+}
+
 /// Willow brand mark — three drooping fronds with leaf tips.
 /// Rendered with its own viewBox (48) and stroke width (1.5) to match the
 /// foundation iconography rules for brand surfaces.

@@ -92,7 +92,7 @@ pub use right_rail::*;
 pub use roles::*;
 pub use sas::sas_copy;
 pub use sas::*;
-pub use search::{SearchInput, ScopeChip};
+pub use search::{ResultRow, ResultsList, RecentsList, SearchInput, SearchSurface, ScopeChip};
 pub use settings::*;
 pub use status_dot::*;
 pub use tab_bar::*;
