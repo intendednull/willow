@@ -183,15 +183,15 @@ Add `pinned: bool` to `DisplayMessage` and render a 1px amber left rule + badge.
 
 **Files:** modify `crates/client/src/state.rs`, modify `crates/client/src/views.rs`, modify `crates/web/src/components/message.rs`, modify `crates/web/style.css`.
 
-- [ ] **Step 6.1 — Extend `DisplayMessage`.** Add `pub pinned: bool`. During projection, stamp each message with `pinned = server_state.pinned_messages(channel_id).contains(&msg.id)`.
+- [x] **Step 6.1 — Extend `DisplayMessage`.** Added `pub pinned: bool`; the projection in `views::compute_messages_view` stamps each message with `pinned = events.channels[cid].pinned_messages.contains(&msg.id)`.
 
-- [ ] **Step 6.2 — Row class + badge.** Append `message--pinned` when `pinned`. CSS: `box-shadow: inset 1px 0 0 var(--amber);` (1px, not 2px — per spec `pin is a quiet mark`). In the `.meta` row add `<span class="pinned-badge" aria-label="pinned"><icon_pin/> pinned</span>` first-of-run only.
+- [x] **Step 6.2 — Row class + badge.** `.message--pinned` appended via the pinned branch of `msg_class`; CSS at `crates/web/style.css` uses `inset 1px 0 0 var(--amber)` per spec "pin is a quiet mark". The `.meta` row renders `<span class="pinned-badge" aria-label="pinned">{icon_pin()} pinned</span>` when `pinned` (first-of-run only; pinned rows always break a run via the chat.rs predicate). A `.message--pinned.message--mention` override lets the 2 px mention rule win the left-rule stack.
 
-- [ ] **Step 6.3 — Client test.** `crates/client/src/tests/display_message.rs` — assert `pinned` flips true when a `PinMessage` event is applied and flips false on `UnpinMessage`.
+- [x] **Step 6.3 — Client test.** Three projection tests in `crates/client/src/views.rs` `tests` mod (`projection_pinned_false_when_not_pinned`, `projection_pinned_true_when_channel_lists_message`, `projection_pinned_flips_back_false_on_unpin`). Two browser tests in `phase_2a_message_row` (`row_has_pinned_class_when_pinned`, `row_has_no_pinned_class_when_unpinned`).
 
-- [ ] **Step 6.4 — `just test-client`** — expect green.
+- [x] **Step 6.4 — `just test-client`** — 7 `views::tests` green (3 new + 4 pre-existing).
 
-- [ ] **Step 6.5 — Commit** — `ui(phase-2): render pinned marker + badge on DisplayMessage.pinned`.
+- [x] **Step 6.5 — Commit** — `ui(phase-2): render pinned marker + badge on DisplayMessage.pinned`.
 
 ### 7. Queue notes (LateArrival + Pending)
 

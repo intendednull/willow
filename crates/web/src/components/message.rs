@@ -219,8 +219,11 @@ pub fn MessageView(
         "body"
     };
     let timestamp = format_relative_time(message.timestamp_ms);
-    // TODO(phase-2a-task-6): gate run-break predicate on msg.pinned /
-    // msg.whisper / msg.queue_note once DisplayMessage carries them.
+    // Phase 2a Task 6: `message.pinned` gates the row marker + badge
+    // and also feeds the run-break predicate in `MessageList` (see
+    // `chat.rs`). Whisper + queue_note join the predicate in tasks 7
+    // + 8; for now `pinned` is the only cue carried by DisplayMessage.
+    let is_pinned = message.pinned;
 
     let reply_preview = message.reply_preview.clone();
     let reply_to_id = message.reply_to.clone();
@@ -251,13 +254,21 @@ pub fn MessageView(
         .map(|lp| willow_client::mentions::mentions_me(&message, lp))
         .unwrap_or(false);
 
-    let msg_class = match (show_header, is_mention, is_self_mention) {
+    let base_msg_class = match (show_header, is_mention, is_self_mention) {
         (true, _, true) => "message message--mention",
         (true, true, false) => "message mentioned",
         (true, false, false) => "message",
         (false, _, true) => "message grouped message--mention",
         (false, true, false) => "message grouped mentioned",
         (false, false, false) => "message grouped",
+    };
+    // Append `message--pinned` when the projection flagged this row
+    // pinned. Pinned rows always break a run (see `chat.rs`), so a
+    // pinned row always lands in a first-of-run branch above.
+    let msg_class = if is_pinned {
+        std::borrow::Cow::Owned(format!("{base_msg_class} message--pinned"))
+    } else {
+        std::borrow::Cow::Borrowed(base_msg_class)
     };
     let msg_dom_id = format!("msg-{}", message.id);
 
@@ -503,6 +514,12 @@ pub fn MessageView(
                         } else {
                             None
                         }}
+                        {is_pinned.then(|| view! {
+                            <span class="pinned-badge" aria-label="pinned">
+                                {icons::icon_pin()}
+                                " pinned"
+                            </span>
+                        })}
                     </div>
                 }.into_any()
             } else {

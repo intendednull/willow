@@ -137,6 +137,7 @@ fn make_msg(author: &str, body: &str, timestamp_ms: u64) -> willow_client::Displ
         reply_to: None,
         reply_preview: None,
         mentions: Vec::new(),
+        pinned: false,
     }
 }
 
@@ -7766,6 +7767,88 @@ mod phase_2a_message_row {
         assert!(
             preview.query_selector(".code-inline").unwrap().is_none(),
             "reply preview must NOT run through the code-segment parser"
+        );
+    }
+
+    // ── Pinned marker (phase 2a task 6) ─────────────────────────────────
+    //
+    // Contract pinned by `docs/specs/2026-04-19-ui-design/message-row.md`
+    // §Pins — row marker and §Row states:
+    //   * pinned row carries a `.message--pinned` class (1 px amber
+    //     left rule via CSS — not the 2 px accent, "pin is a quiet
+    //     mark")
+    //   * author meta row exposes a `<span class="pinned-badge"
+    //     aria-label="pinned">` with the pin icon + " pinned" text
+    //     (first-of-run only)
+    //   * when `pinned=false` neither the class nor the badge render.
+
+    #[wasm_bindgen_test]
+    async fn row_has_pinned_class_when_pinned() {
+        use willow_client::DisplayMessage;
+        use willow_web::state::{create_signals, InitialSignals};
+        let msg = DisplayMessage {
+            pinned: true,
+            ..make_msg("Mira", "pin me", FIXTURE_TS_MS)
+        };
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <MessageView message=msg.clone() show_header=true /> }
+        });
+        tick().await;
+
+        let row = query(&container, ".message.message--pinned")
+            .expect("pinned message must carry .message--pinned class");
+        let badge = row
+            .query_selector(".pinned-badge")
+            .unwrap()
+            .expect(".message--pinned must carry a .pinned-badge in the meta row");
+        assert_eq!(
+            badge.get_attribute("aria-label").as_deref(),
+            Some("pinned"),
+            ".pinned-badge aria-label must be 'pinned' per spec §Badges"
+        );
+        assert!(
+            text(&badge).contains("pinned"),
+            ".pinned-badge must carry the literal 'pinned' text, got: {:?}",
+            text(&badge)
+        );
+        assert!(
+            badge.query_selector("svg").unwrap().is_some(),
+            ".pinned-badge must render the pin icon"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn row_has_no_pinned_class_when_unpinned() {
+        use willow_web::state::{create_signals, InitialSignals};
+        // Default pinned=false — neither the row class nor the badge
+        // should render.
+        let msg = make_msg("Mira", "regular message", FIXTURE_TS_MS);
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <MessageView message=msg.clone() show_header=true /> }
+        });
+        tick().await;
+
+        assert!(
+            query(&container, ".message.message--pinned").is_none(),
+            "unpinned row must not carry .message--pinned"
+        );
+        assert!(
+            query(&container, ".pinned-badge").is_none(),
+            "unpinned row must not render a .pinned-badge"
         );
     }
 }

@@ -246,6 +246,7 @@ mod tests {
             reply_to: None,
             reply_preview: None,
             mentions,
+            pinned: false,
         }
     }
 

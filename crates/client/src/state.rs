@@ -81,6 +81,14 @@ pub struct DisplayMessage {
     /// resolver path produced a peer id; unresolved tokens stay in the
     /// body as plain text and are not reflected here.
     pub mentions: Vec<EndpointId>,
+    /// Whether this message is currently pinned in its channel.
+    ///
+    /// Derived at projection time from
+    /// `ServerState::channels[cid].pinned_messages`. The pin event
+    /// stream is owned by `reactions-pins.md`; Phase 2a Task 6 consumes
+    /// the projection to drive the row marker + badge + run-break rule
+    /// per `docs/specs/2026-04-19-ui-design/message-row.md` §Pins.
+    pub pinned: bool,
 }
 
 /// Maps EndpointId -> display names. Updated from profile broadcasts.

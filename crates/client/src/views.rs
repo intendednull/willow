@@ -345,6 +345,16 @@ pub fn compute_messages_view(
                 .collect();
             let mention_segments = parse_mentions(&m.body, &peer_refs, &local_peer_id);
             let mentions = extract_mention_peers(&mention_segments);
+            // Stamp pinned from the channel's pinned-message set.
+            // `ServerState::channels[cid].pinned_messages` is a
+            // `BTreeSet<EventHash>` owned by the pin-event projection in
+            // willow-state; message-row.md §Pins consumes it here as a
+            // quiet 1 px amber row marker + `pinned` badge.
+            let pinned = events
+                .channels
+                .get(&m.channel_id)
+                .map(|ch| ch.pinned_messages.contains(&m.id))
+                .unwrap_or(false);
             DisplayMessage {
                 id: m.id.to_string(),
                 channel_id: m.channel_id.clone(),
@@ -359,6 +369,7 @@ pub fn compute_messages_view(
                 reply_to: m.reply_to.as_ref().map(|h| h.to_string()),
                 reply_preview,
                 mentions,
+                pinned,
             }
         })
         .collect();
@@ -696,7 +707,7 @@ mod tests {
         author: EndpointId,
         body: &str,
         ts_ms: u64,
-    ) {
+    ) -> willow_state::EventHash {
         // Derive a unique-ish EventHash from message index + body so
         // repeat calls within one test don't collide.
         let seed = format!("test-msg-{}-{}", state.messages.len(), body);
@@ -712,6 +723,7 @@ mod tests {
             reactions: BTreeMap::new(),
             reply_to: None,
         });
+        id
     }
 
     #[test]
@@ -820,5 +832,92 @@ mod tests {
             .get(&SurfaceId::Channel("general".into()))
             .expect("general surface must exist");
         assert!(!stats.mentioned);
+    }
+
+    // ── Phase 2a Task 6 — pinned projection ────────────────────────────
+
+    #[test]
+    fn projection_pinned_false_when_not_pinned() {
+        // A message with no corresponding entry in
+        // `Channel::pinned_messages` must project to `pinned: false`.
+        let owner = Identity::generate().endpoint_id();
+        let mut state = fresh_state(owner);
+        push_channel(&mut state, "ch-1", "general");
+        push_message(&mut state, "ch-1", owner, "hello world", 1_000);
+
+        let events = Arc::new(state);
+        let registry = Arc::new(ServerRegistry::default());
+        let chat = Arc::new(ChatMeta {
+            current_channel: "general".into(),
+            peers: Vec::new(),
+        });
+        let profiles = Arc::new(ProfileState::default());
+        let view = compute_messages_view(&events, &registry, &chat, &profiles, owner);
+        assert_eq!(view.messages.len(), 1);
+        assert!(
+            !view.messages[0].pinned,
+            "unpinned messages must project to `pinned: false`"
+        );
+    }
+
+    #[test]
+    fn projection_pinned_true_when_channel_lists_message() {
+        // Spec (message-row.md §Pins / §Data dependencies): `pinned` is
+        // `true` whenever the channel's `pinned_messages` set contains
+        // this message's id. The projection reads straight off the
+        // server state — no separate pin-projection cache.
+        let owner = Identity::generate().endpoint_id();
+        let mut state = fresh_state(owner);
+        push_channel(&mut state, "ch-1", "general");
+        let msg_hash = push_message(&mut state, "ch-1", owner, "pin me", 1_000);
+        // Simulate the PinMessage event's effect on ServerState.
+        state
+            .channels
+            .get_mut("ch-1")
+            .unwrap()
+            .pinned_messages
+            .insert(msg_hash);
+
+        let events = Arc::new(state);
+        let registry = Arc::new(ServerRegistry::default());
+        let chat = Arc::new(ChatMeta {
+            current_channel: "general".into(),
+            peers: Vec::new(),
+        });
+        let profiles = Arc::new(ProfileState::default());
+        let view = compute_messages_view(&events, &registry, &chat, &profiles, owner);
+        assert_eq!(view.messages.len(), 1);
+        assert!(
+            view.messages[0].pinned,
+            "messages in `channel.pinned_messages` must project to `pinned: true`"
+        );
+    }
+
+    #[test]
+    fn projection_pinned_flips_back_false_on_unpin() {
+        // Unpinning (UnpinMessage) removes the hash from
+        // `channel.pinned_messages`, which must flip `pinned` back to
+        // false on the next projection pass.
+        let owner = Identity::generate().endpoint_id();
+        let mut state = fresh_state(owner);
+        push_channel(&mut state, "ch-1", "general");
+        let msg_hash = push_message(&mut state, "ch-1", owner, "pin me", 1_000);
+        let ch = state.channels.get_mut("ch-1").unwrap();
+        ch.pinned_messages.insert(msg_hash);
+        ch.pinned_messages.remove(&msg_hash);
+
+        let events = Arc::new(state);
+        let registry = Arc::new(ServerRegistry::default());
+        let chat = Arc::new(ChatMeta {
+            current_channel: "general".into(),
+            peers: Vec::new(),
+        });
+        let profiles = Arc::new(ProfileState::default());
+        let view = compute_messages_view(&events, &registry, &chat, &profiles, owner);
+        assert_eq!(view.messages.len(), 1);
+        assert!(
+            !view.messages[0].pinned,
+            "UnpinMessage must flip `pinned` back to false on projection"
+        );
     }
 }

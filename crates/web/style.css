@@ -4396,6 +4396,39 @@ select:focus-visible {
     box-shadow: inset 2px 0 0 var(--amber);
 }
 
+/* Phase 2a Task 6 — Pinned row marker.
+   Per `docs/specs/2026-04-19-ui-design/message-row.md` §Pins — "pin is
+   a quiet mark": a 1px amber left rule (not the 2px accent used by
+   mentions / whispers) plus a `pinned` badge in the author meta row.
+   Pinned rows always break a run so the badge is visible (see
+   `components/chat.rs` run-break predicate). */
+.message.message--pinned {
+    box-shadow: inset 1px 0 0 var(--amber);
+}
+/* When a row is both a self-mention and pinned, let the mention's
+   2 px rule win (stronger cue). The amber colour is shared, so the
+   visual is a single uninterrupted amber rule. */
+.message.message--pinned.message--mention {
+    box-shadow: inset 2px 0 0 var(--amber);
+}
+
+.pinned-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 6px;
+    font-size: 11px;
+    color: var(--amber);
+    border: 1px solid var(--amber-soft);
+    border-radius: 9999px;
+    line-height: 1.6;
+    vertical-align: middle;
+}
+.pinned-badge svg {
+    width: 12px;
+    height: 12px;
+}
+
 /* ── Code — inline + fenced (phase 2a task 5) ───────────────────────
    Spec: `docs/specs/2026-04-19-ui-design/message-row.md` §Inline
    artefacts (fenced code + inline code paragraphs) and §Code.
