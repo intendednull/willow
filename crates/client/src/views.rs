@@ -240,6 +240,8 @@ pub struct ClientViewHandle {
     pub network: willow_actor::state::StateRef<NetworkMeta>,
     pub voice: willow_actor::state::StateRef<VoiceState>,
     pub presence_meta: willow_actor::state::StateRef<PresenceMeta>,
+    /// Sync-queue meta (Phase 2b). Feeds `compute_queue_view`.
+    pub queue_meta: willow_actor::state::StateRef<crate::state_actors::QueueMeta>,
 }
 
 impl Clone for ClientViewHandle {
@@ -260,6 +262,7 @@ impl Clone for ClientViewHandle {
             network: self.network.clone(),
             voice: self.voice.clone(),
             presence_meta: self.presence_meta.clone(),
+            queue_meta: self.queue_meta.clone(),
         }
     }
 }

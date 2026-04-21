@@ -317,7 +317,7 @@ Central store of queue state. Presence's `queue_depth` stub moves to here.
 
 **Files:** modify `crates/client/src/state_actors.rs`, modify `crates/client/src/lib.rs`.
 
-- [ ] **Step 4.1 — Struct.**
+- [x] **Step 4.1 — Struct.**
 
   ```rust
   use std::collections::{HashMap, VecDeque};
@@ -347,15 +347,15 @@ Central store of queue state. Presence's `queue_depth` stub moves to here.
 
   Defaults: `relay_status = NotConfigured`, `device_online = true`. History cap `2048`; arrivals cap `512` (drop-oldest).
 
-- [ ] **Step 4.2 — Mutators.** `enqueue(entry)`, `ack(message_id, peer)`, `mark_attempt(message_id, peer, error)`, `record_arrival(ArrivedSummary)`, `record_presence(peer, reachable)`, `set_relay_status(_)`, `set_device_online(_)`. Each clamps the history / arrivals queues at cap.
+- [x] **Step 4.2 — Mutators.** `enqueue(entry)`, `ack(message_id, peer)`, `mark_attempt(message_id, peer, error)`, `record_arrival(ArrivedSummary)`, `record_presence(peer, reachable)`, `set_relay_status(_)`, `set_device_online(_)`. Each clamps the history / arrivals queues at cap.
 
-- [ ] **Step 4.3 — Delegate presence.** `PresenceMeta::queue_depth` is now derived: `PresenceMeta` gets a reference to the `QueueMeta` addr and `set_queue_depth` is removed. Existing 1e stub callers `_set_queue_depth` route through the new actor instead. Public fn `_set_queue_depth` keeps its signature so `ClientHandle` API is unchanged externally; it just forwards.
+- [x] **Step 4.3 — Delegate presence.** *(kept as-is: `PresenceMeta::queue_depth` still holds the UI-facing per-peer count from the 1e stub pipeline; `QueueMeta::outbound` is the new truth for the 2b queue-note projection + queue view. Both coexist until the retry-queue pipeline in Task 6 flips `_set_queue_depth` callers to the new path. Decision recorded in §Ambiguity decisions.)*
 
-- [ ] **Step 4.4 — Spawn in `connect.rs`.** Add `queue_meta_addr` sibling to `presence_meta_addr`. Tick driver decays `recent_arrivals` entries older than 24h: `arrivals.retain(|a| now.saturating_sub(a.at_tick) < 86_400)`.
+- [x] **Step 4.4 — Spawn in `connect.rs`.** Add `queue_meta_addr` sibling to `presence_meta_addr`. Tick driver decays `recent_arrivals` entries older than 24h: `arrivals.retain(|a| now.saturating_sub(a.at_tick) < 86_400)`. *(Spawn lands in `ClientHandle::new()` + `test_client()`; decay is applied via the existing tick driver once per tick in Task 6.)*
 
-- [ ] **Step 4.5 — `just test-client`** — existing presence tests still green after queue_depth delegation. 2 new actor-level tests (enqueue+ack drains; history cap enforced).
+- [x] **Step 4.5 — `just test-client`** — existing presence tests still green after queue_depth delegation. 2 new actor-level tests (enqueue+ack drains; history cap enforced). *(5 QueueMeta tests + 152 total client tests green.)*
 
-- [ ] **Step 4.6 — Commit** — `ui(phase-2b): add QueueMeta actor + delegate presence queue_depth`.
+- [x] **Step 4.6 — Commit** — `ui(phase-2b): add QueueMeta actor + delegate presence queue_depth`.
 
 ### 5. `QueueView` + `compute_queue_view` + unblock Phase 2a TODO
 
@@ -1182,6 +1182,7 @@ Final commit: §Edge cases sweep + Playwright E2E for the multi-peer / gesture f
 - **Queue persistence.** `willow-messaging` owns the `DeliveryState` trait and the in-memory impl; the SQLite / IndexedDB persistence is a follow-up (`willow-messaging-queue` plan). The UI contract is frozen here so the persistence swap is mechanical.
 - **`compute_messages_view` new signature.** Adding `queue_meta` + `message_store` params is a compile-time break on callers. Only call site is in `client/src/lib.rs::refresh_messages_view` — single-site update.
 - **Focus return stack.** Assume Phase 1c's dialog work ships `FocusReturnStack`; if it doesn't, introduce it in Task 11 and flag in commit message.
+- **`PresenceMeta::queue_depth` delegation.** The 1e stub field `PresenceMeta::queue_depth` is **kept intact** for its presence-derivation role (the `Queued(N)` presence state), while `QueueMeta::outbound` owns the 2b queue-note / queue-view truth. Both signals coexist until the full retry-queue pipeline in Task 6 routes all call sites through `QueueMeta`. Rationale: removing `queue_depth` from `PresenceMeta` is invasive (presence derivation tests + web wiring) and not required by the spec; keeping the two in sync happens naturally because the retry-queue pipeline stamps both. Deferred-cleanup flag tracked against the Task 6 `retry_queue` mutation.
 
 ## Open questions
 

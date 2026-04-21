@@ -217,6 +217,11 @@ pub struct ClientHandle<N: willow_network::Network> {
     /// Presence meta (tick counter, last-seen, queue depth, self-override).
     pub(crate) presence_meta_addr:
         willow_actor::Addr<willow_actor::StateActor<state_actors::PresenceMeta>>,
+    /// Sync-queue meta (Phase 2b). Owns per-peer outbound tracking,
+    /// relay/device signals, and peer-presence history used by the
+    /// queue-note projection.
+    pub(crate) queue_meta_addr:
+        willow_actor::Addr<willow_actor::StateActor<state_actors::QueueMeta>>,
     /// Persistence actor (owns rusqlite).
     pub(crate) persistence_addr: willow_actor::Addr<persistence_actor::PersistenceActor>,
     /// Whether persistence to disk is enabled.
@@ -260,6 +265,7 @@ impl<N: willow_network::Network> Clone for ClientHandle<N> {
             network_meta_addr: self.network_meta_addr.clone(),
             voice_state_addr: self.voice_state_addr.clone(),
             presence_meta_addr: self.presence_meta_addr.clone(),
+            queue_meta_addr: self.queue_meta_addr.clone(),
             persistence_addr: self.persistence_addr.clone(),
             persistence_enabled: self.persistence_enabled,
             join_links: Arc::clone(&self.join_links),
@@ -595,6 +601,9 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let presence_meta_addr = system.spawn(willow_actor::StateActor::new(
             state_actors::PresenceMeta::default(),
         ));
+        let queue_meta_addr = system.spawn(willow_actor::StateActor::new(
+            state_actors::QueueMeta::default(),
+        ));
         let persistence_enabled = config.persistence;
         let persistence_addr = system.spawn(persistence_actor::PersistenceActor::new(
             persistence_enabled,
@@ -627,6 +636,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let network_ref = willow_actor::state::StateRef::from(&network_meta_addr);
         let voice_ref = willow_actor::state::StateRef::from(&voice_state_addr);
         let presence_meta_ref = willow_actor::state::StateRef::from(&presence_meta_addr);
+        let queue_meta_ref = willow_actor::state::StateRef::from(&queue_meta_addr);
 
         // Spawn Layer 2 derived view actors.
         let local_pid = identity_clone.endpoint_id();
@@ -736,6 +746,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             network: network_ref,
             voice: voice_ref,
             presence_meta: presence_meta_ref,
+            queue_meta: queue_meta_ref,
         };
 
         let mutation_handle = mutations::ClientMutations {
@@ -767,6 +778,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             network_meta_addr,
             voice_state_addr,
             presence_meta_addr,
+            queue_meta_addr,
             persistence_addr,
             persistence_enabled,
             join_links,
@@ -933,6 +945,9 @@ pub fn test_client() -> (
     let presence_meta_addr = sys.spawn(willow_actor::StateActor::new(
         state_actors::PresenceMeta::default(),
     ));
+    let queue_meta_addr = sys.spawn(willow_actor::StateActor::new(
+        state_actors::QueueMeta::default(),
+    ));
     let persistence_addr = sys.spawn(persistence_actor::PersistenceActor::new(false));
     let event_broker = sys.spawn(willow_actor::Broker::<ClientEvent>::new());
     let dag_addr = sys.spawn(willow_actor::StateActor::new(dag_state));
@@ -952,6 +967,7 @@ pub fn test_client() -> (
     let network_ref = willow_actor::state::StateRef::from(&network_meta_addr);
     let voice_ref = willow_actor::state::StateRef::from(&voice_state_addr);
     let presence_meta_ref = willow_actor::state::StateRef::from(&presence_meta_addr);
+    let queue_meta_ref = willow_actor::state::StateRef::from(&queue_meta_addr);
     let sh = sys.handle();
 
     let local_pid = identity_clone.endpoint_id();
@@ -1053,6 +1069,7 @@ pub fn test_client() -> (
         network: network_ref,
         voice: voice_ref,
         presence_meta: presence_meta_ref,
+        queue_meta: queue_meta_ref,
     };
     let mutation_handle = mutations::ClientMutations {
         event_state: event_state_addr.clone(),
@@ -1086,6 +1103,7 @@ pub fn test_client() -> (
         network_meta_addr,
         voice_state_addr,
         presence_meta_addr,
+        queue_meta_addr,
         persistence_addr,
         persistence_enabled: false,
         join_links,
