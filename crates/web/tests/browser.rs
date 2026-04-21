@@ -8562,4 +8562,183 @@ mod phase_2a_message_row {
             "callback emoji must equal the button's rendered glyph"
         );
     }
+
+    // ── Phase 2a Task 14 — copy pass (exact strings) ────────────────────
+    //
+    // Spec: docs/specs/2026-04-19-ui-design/message-row.md §Copy /
+    // Delete confirmation, Deleted placeholder, Edge cases (empty body).
+
+    #[wasm_bindgen_test]
+    async fn delete_confirm_copy_is_byte_exact() {
+        // Opening the delete-confirm dialog must render the four
+        // spec strings byte-exact: title, body, confirm, cancel.
+        let mut msg = make_msg("Me", "to be withdrawn", FIXTURE_TS_MS);
+        msg.is_local = true;
+
+        let on_delete = Callback::new(|_: willow_client::DisplayMessage| {});
+
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            use willow_web::state::{create_signals, InitialSignals};
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! {
+                <MessageView
+                    message=msg
+                    is_own=true
+                    on_delete=on_delete
+                />
+            }
+        });
+        tick().await;
+
+        // Open the hover toolbar's "more actions" dropdown, then click
+        // the Delete item. The dropdown item with class
+        // `dropdown-danger` carries the Delete action.
+        let more_btn = query(&container, ".action-trigger")
+            .expect("more-actions trigger must render for own messages with on_delete");
+        simulate_click(&more_btn);
+        tick().await;
+        let del_item = query(&container, ".dropdown-danger")
+            .expect("dropdown-danger (Delete item) must render after opening the menu");
+        simulate_click(&del_item);
+        tick().await;
+
+        let dialog = query(&container, ".confirm-dialog")
+            .expect("clicking Delete must mount the ConfirmDialog");
+        let title = dialog
+            .query_selector("h3")
+            .unwrap()
+            .expect("confirm-dialog must carry an h3 title");
+        assert_eq!(
+            text(&title),
+            "withdraw message?",
+            "delete confirm title must match spec §Copy byte-exact"
+        );
+        let body = dialog
+            .query_selector("p")
+            .unwrap()
+            .expect("confirm-dialog must carry a <p> body");
+        assert_eq!(
+            text(&body),
+            "this removes it from every peer's view. it was already read by some.",
+            "delete confirm body must match spec §Copy byte-exact"
+        );
+        let btn_list = dialog
+            .query_selector_all(".confirm-actions button")
+            .unwrap();
+        let buttons: Vec<web_sys::Element> = (0..btn_list.length())
+            .filter_map(|i| btn_list.item(i))
+            .filter_map(|n| n.dyn_into::<web_sys::Element>().ok())
+            .collect();
+        assert_eq!(
+            buttons.len(),
+            2,
+            "confirm-dialog must render exactly two action buttons (cancel + confirm)"
+        );
+        assert_eq!(
+            text(&buttons[0]),
+            "keep",
+            "cancel button label must be `keep` per spec §Copy"
+        );
+        assert_eq!(
+            text(&buttons[1]),
+            "withdraw",
+            "confirm button label must be `withdraw` per spec §Copy"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn deleted_message_renders_withdrawn_copy() {
+        // A withdrawn message renders the fixed italic stub
+        // `this message was withdrawn` inside `.body.body--deleted`.
+        let mut msg = make_msg("Mira", "original text (redacted)", FIXTURE_TS_MS);
+        msg.deleted = true;
+
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            use willow_web::state::{create_signals, InitialSignals};
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <MessageView message=msg /> }
+        });
+        tick().await;
+
+        let body = query(&container, ".body.body--deleted")
+            .expect("deleted message must render .body.body--deleted");
+        assert_eq!(
+            text(&body),
+            "this message was withdrawn",
+            "deleted placeholder must match spec §Copy byte-exact"
+        );
+        assert!(
+            body.query_selector("*").unwrap().is_none(),
+            "deleted placeholder must be plain text (no segment pipeline children)"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn empty_body_renders_fallback_copy() {
+        // Whitespace-only bodies that aren't deleted render the
+        // `empty message` italic stub inside `.body.body--empty`.
+        let msg = make_msg("Rin", "   \t  ", FIXTURE_TS_MS);
+
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            use willow_web::state::{create_signals, InitialSignals};
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <MessageView message=msg /> }
+        });
+        tick().await;
+
+        let body = query(&container, ".body.body--empty")
+            .expect("whitespace-only body must render .body.body--empty");
+        assert_eq!(
+            text(&body),
+            "empty message",
+            "empty-body fallback must match spec §Edge cases byte-exact"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn non_empty_body_does_not_get_empty_class() {
+        // Guard rail for the empty-body branch: a normal body must not
+        // pick up `.body--empty` nor `.body--deleted`.
+        let msg = make_msg("Rin", "hello world", FIXTURE_TS_MS);
+
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            use willow_web::state::{create_signals, InitialSignals};
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <MessageView message=msg /> }
+        });
+        tick().await;
+
+        assert!(
+            query(&container, ".body--empty").is_none(),
+            "non-empty body must not carry `.body--empty`"
+        );
+        assert!(
+            query(&container, ".body--deleted").is_none(),
+            "live body must not carry `.body--deleted`"
+        );
+    }
 }

@@ -656,6 +656,12 @@ select:focus-visible {
 
 .message .body { margin-top: 2px; line-height: 1.5; word-break: break-word; }
 .message .body.deleted { color: var(--text-muted); font-style: italic; }
+/* Phase 2a Task 14 — spec §Copy / Deleted placeholder + empty-body
+   fallback. Both variants render the same quiet italic stub in
+   `--ink-3`; keeping them as distinct classes so test selectors and
+   future copy divergence stay clean. */
+.message .body--deleted { color: var(--ink-3); font-style: italic; }
+.message .body--empty   { color: var(--ink-3); font-style: italic; }
 
 /* ── Reply Preview (Discord-style connected quote) ───────────────── */
 

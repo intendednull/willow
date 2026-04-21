@@ -673,11 +673,28 @@ pub fn resolve_display_name(
     profiles: &ProfileState,
     peer_id: &EndpointId,
 ) -> String {
-    event_state
-        .profiles
-        .get(peer_id)
-        .map(|p| p.display_name.clone())
-        .unwrap_or_else(|| profiles.display_name(peer_id))
+    // Phase 2a Task 14 — spec §Edge cases / Unknown peer fallback: when
+    // neither the server's profile registry nor the local
+    // `ProfileState.names` map carries an entry for this peer, fall
+    // back to the literal `unknown peer` stub (rendered italic
+    // `--ink-3` in the row). The previous `ProfileState::display_name`
+    // default (truncated peer id) still applies elsewhere where that
+    // reading is useful (e.g. debug tooling); this hook is scoped to
+    // the projection + any caller that routes through it, matching the
+    // spec's "display name + handle both missing" contract.
+    if let Some(profile) = event_state.profiles.get(peer_id) {
+        let name = profile.display_name.trim();
+        if !name.is_empty() {
+            return profile.display_name.clone();
+        }
+    }
+    if let Some(name) = profiles.names.get(peer_id) {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            return name.clone();
+        }
+    }
+    "unknown peer".to_string()
 }
 
 #[cfg(test)]
@@ -1034,5 +1051,65 @@ mod tests {
             QueueNote::None,
             "sync-queue.md fallback: peer-authored messages project as None today"
         );
+    }
+
+    // ── Phase 2a Task 14 — unknown-peer fallback ───────────────────────
+    //
+    // Spec §Edge cases (docs/specs/2026-04-19-ui-design/message-row.md):
+    // "No display name. Falls back to handle in body font ... If handle
+    // is also missing: `unknown peer` in `--ink-3` italic." The
+    // projection routes every author name through `resolve_display_name`
+    // so the fallback must fire there.
+
+    #[test]
+    fn projection_unknown_peer_fallback_when_profile_missing() {
+        // An author with no entry in the server's profile registry and
+        // no entry in the local `ProfileState.names` map must resolve
+        // to the literal `unknown peer` stub — not a truncated peer id.
+        let owner = Identity::generate().endpoint_id();
+        let ghost = Identity::generate().endpoint_id();
+        let mut state = fresh_state(owner);
+        push_channel(&mut state, "ch-1", "general");
+        // Author the message without registering a member or profile,
+        // mirroring a historical message whose author has no profile.
+        push_message(&mut state, "ch-1", ghost, "hello from the void", 1_000);
+
+        let events = Arc::new(state);
+        let registry = Arc::new(ServerRegistry::default());
+        let chat = Arc::new(ChatMeta {
+            current_channel: "general".into(),
+            peers: Vec::new(),
+        });
+        let profiles = Arc::new(ProfileState::default());
+        let view = compute_messages_view(&events, &registry, &chat, &profiles, owner);
+        assert_eq!(view.messages.len(), 1);
+        assert_eq!(
+            view.messages[0].author_display_name, "unknown peer",
+            "resolve_display_name must fall back to `unknown peer` when no profile is known"
+        );
+    }
+
+    #[test]
+    fn projection_uses_profile_display_name_when_present() {
+        // Guard rail for the fallback: a peer *with* a registered
+        // display name must still project that name, not `unknown
+        // peer`. Pins the "only fall back when both sources miss"
+        // contract.
+        let owner = Identity::generate().endpoint_id();
+        let rin = Identity::generate().endpoint_id();
+        let mut state = fresh_state(owner);
+        add_member(&mut state, rin, "Rin");
+        push_channel(&mut state, "ch-1", "general");
+        push_message(&mut state, "ch-1", rin, "hello", 1_000);
+
+        let events = Arc::new(state);
+        let registry = Arc::new(ServerRegistry::default());
+        let chat = Arc::new(ChatMeta {
+            current_channel: "general".into(),
+            peers: Vec::new(),
+        });
+        let profiles = Arc::new(ProfileState::default());
+        let view = compute_messages_view(&events, &registry, &chat, &profiles, owner);
+        assert_eq!(view.messages[0].author_display_name, "Rin");
     }
 }

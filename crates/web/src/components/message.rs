@@ -237,8 +237,18 @@ pub fn MessageView(
     on_open_thread: Option<Callback<DisplayMessage>>,
 ) -> impl IntoView {
     let author_color = super::peer_color(&message.author_peer_id.to_string());
+    // Phase 2a Task 14 — spec §Copy / Deleted placeholder + empty-body
+    // fallback: deleted rows render the fixed `this message was
+    // withdrawn` string inside `.body.body--deleted` (italic `--ink-3`);
+    // rows whose body is whitespace-only (migration edge case) but not
+    // deleted render `empty message` inside `.body.body--empty`. All
+    // other rows use the plain `.body` class so the normal segment
+    // pipeline runs.
+    let body_is_empty = message.body.trim().is_empty();
     let body_class = if message.deleted {
-        "body deleted"
+        "body body--deleted"
+    } else if body_is_empty {
+        "body body--empty"
     } else {
         "body"
     };
@@ -701,7 +711,19 @@ pub fn MessageView(
                     <span class="run-hover-ts" aria-hidden="true">{run_hover_ts}</span>
                 }.into_any()
             }}
-            {if let Some((filename, data)) = file_info.clone() {
+            {if message.deleted {
+                // Phase 2a Task 14 — spec §Copy / Deleted placeholder:
+                // a withdrawn message renders a fixed italic stub in
+                // `--ink-3`. Byte-exact copy comes from the spec's
+                // "deleted placeholder" bullet.
+                view! { <div class=body_class>"this message was withdrawn"</div> }.into_any()
+            } else if body_is_empty {
+                // Phase 2a Task 14 — spec §Edge cases: empty /
+                // whitespace-only bodies (migration edge case) render
+                // `empty message` instead of an invisible row. Same
+                // italic `--ink-3` treatment as the deleted path.
+                view! { <div class=body_class>"empty message"</div> }.into_any()
+            } else if let Some((filename, data)) = file_info.clone() {
                 if is_image_file(&filename) {
                     // Render uploaded images inline as embeds.
                     let mime = mime_for_image(&filename);
@@ -1351,9 +1373,10 @@ pub fn MessageView(
                 Some(view! {
                     <ConfirmDialog
                         visible=show_del_confirm
-                        title="Delete Message"
-                        message=Signal::derive(|| "Are you sure you want to delete this message?".to_string())
-                        confirm_text="Delete"
+                        title="withdraw message?"
+                        message=Signal::derive(|| "this removes it from every peer's view. it was already read by some.".to_string())
+                        confirm_text="withdraw"
+                        cancel_text="keep"
                         danger=true
                         on_confirm=Callback::new(move |_| {
                             if let Some(ref cb) = del_cb {
