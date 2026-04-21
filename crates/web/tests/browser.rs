@@ -10333,3 +10333,170 @@ mod phase_2b_sync_queue {
             .expect("request_animation_frame");
     }
 }
+
+// ── Foundation tokens (Phase 0) ─────────────────────────────────────────────
+//
+// Closes Task 14 of `docs/plans/2026-04-19-ui-phase-0-foundation.md`.
+// Verifies the foundation design-token layer is live at the `:root` level
+// and that the legacy `style.css` alias layer forwards to it correctly.
+//
+// The wasm-pack test harness does NOT pull in the app's stylesheets
+// through Trunk, so each test injects `foundation.css` + `style.css`
+// manually (dedupe-guarded via element ids) before reading computed
+// styles on the document root.
+
+#[cfg(test)]
+mod foundation_tokens {
+    use super::*;
+
+    /// Inject `foundation.css` into the test document once per page load
+    /// so `:root` design tokens resolve under `getComputedStyle`. Dedupes
+    /// via a fixed element id.
+    fn ensure_foundation_css_loaded() {
+        const STYLE_ID: &str = "willow-test-foundation-css";
+        let doc = web_sys::window().unwrap().document().unwrap();
+        if doc.get_element_by_id(STYLE_ID).is_some() {
+            return;
+        }
+        let style = doc.create_element("style").unwrap();
+        style.set_id(STYLE_ID);
+        style.set_text_content(Some(include_str!("../foundation.css")));
+        let head = doc.head().expect("document has <head>");
+        head.append_child(&style).unwrap();
+    }
+
+    /// Inject `style.css` (legacy alias layer) into the test document.
+    /// Required for the `--bg-main` → `--bg-0` alias assertion. Dedupes
+    /// via a fixed element id.
+    fn ensure_style_css_loaded() {
+        const STYLE_ID: &str = "willow-test-style-css";
+        let doc = web_sys::window().unwrap().document().unwrap();
+        if doc.get_element_by_id(STYLE_ID).is_some() {
+            return;
+        }
+        let style = doc.create_element("style").unwrap();
+        style.set_id(STYLE_ID);
+        style.set_text_content(Some(include_str!("../style.css")));
+        let head = doc.head().expect("document has <head>");
+        head.append_child(&style).unwrap();
+    }
+
+    /// Read the computed value of `prop` on the document root (`<html>`).
+    fn computed_root_prop(prop: &str) -> String {
+        let window = web_sys::window().unwrap();
+        let document = window.document().unwrap();
+        let root: web_sys::Element = document.document_element().unwrap();
+        let style = window.get_computed_style(&root).unwrap().unwrap();
+        style.get_property_value(prop).unwrap_or_default()
+    }
+
+    /// Set `data-accent="<value>"` on the document root so the accent
+    /// override block in `foundation.css` takes effect.
+    fn set_data_accent(value: &str) {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let root: web_sys::Element = document.document_element().unwrap();
+        root.set_attribute("data-accent", value).unwrap();
+    }
+
+    /// Clear `data-accent` from the document root so later tests start
+    /// from the inherited default.
+    fn clear_data_accent() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let root: web_sys::Element = document.document_element().unwrap();
+        let _ = root.remove_attribute("data-accent");
+    }
+
+    #[wasm_bindgen_test]
+    fn foundation_palette_tokens_defined() {
+        ensure_foundation_css_loaded();
+        for var in [
+            "--bg-0",
+            "--bg-1",
+            "--bg-2",
+            "--bg-3",
+            "--bg-4",
+            "--ink-0",
+            "--ink-1",
+            "--ink-2",
+            "--ink-3",
+            "--ink-on-accent",
+            "--moss-2",
+            "--willow",
+            "--whisper",
+            "--amber",
+            "--ok",
+            "--warn",
+            "--err",
+            "--radius",
+            "--shadow-2",
+            "--focus-ring",
+            "--font-display",
+            "--font-ui",
+            "--font-mono",
+            "--motion",
+            "--motion-ease",
+        ] {
+            let v = computed_root_prop(var);
+            assert!(
+                !v.trim().is_empty(),
+                "foundation token {var} not defined on :root (computed value was empty)"
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn legacy_bg_main_aliases_bg_0() {
+        ensure_foundation_css_loaded();
+        ensure_style_css_loaded();
+        let bg_main = computed_root_prop("--bg-main");
+        let bg_0 = computed_root_prop("--bg-0");
+        assert!(
+            !bg_0.trim().is_empty(),
+            "--bg-0 not defined (foundation.css not loaded?)"
+        );
+        assert!(
+            !bg_main.trim().is_empty(),
+            "--bg-main not defined (style.css not loaded?)"
+        );
+        assert_eq!(
+            bg_main.trim(),
+            bg_0.trim(),
+            "legacy --bg-main ({bg_main:?}) drifted from --bg-0 ({bg_0:?})"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn data_accent_swap_changes_moss_2() {
+        ensure_foundation_css_loaded();
+
+        set_data_accent("moss");
+        let moss_default = computed_root_prop("--moss-2");
+        assert!(
+            !moss_default.trim().is_empty(),
+            "--moss-2 undefined after data-accent=moss"
+        );
+
+        set_data_accent("willow");
+        let moss_willow = computed_root_prop("--moss-2");
+        assert!(
+            !moss_willow.trim().is_empty(),
+            "--moss-2 undefined after data-accent=willow"
+        );
+        assert_ne!(
+            moss_default.trim(),
+            moss_willow.trim(),
+            "accent swap to willow did not change --moss-2 \
+             (default {moss_default:?}, willow {moss_willow:?})"
+        );
+
+        set_data_accent("moss");
+        let moss_reverted = computed_root_prop("--moss-2");
+        assert_eq!(
+            moss_reverted.trim(),
+            moss_default.trim(),
+            "reverting to data-accent=moss did not restore original --moss-2"
+        );
+
+        clear_data_accent();
+    }
+}
