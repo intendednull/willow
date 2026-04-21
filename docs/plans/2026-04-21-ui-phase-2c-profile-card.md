@@ -1915,9 +1915,9 @@ Inline editor on the peer card's secondary row. Reads/writes through `NicknameSt
 
 **Files:** modify `crates/web/src/components/profile_card.rs`, modify `crates/web/style.css`, modify `crates/web/src/app.rs`.
 
-- [ ] **Step 11.1 — Context plumbing.** In `<App>`, construct `let nickname_store: NicknameStoreHandle = Arc::new(WebNicknameStore::load());` and provide it via `provide_context(nickname_store.clone())` alongside the other context providers.
+- [x] **Step 11.1 — Context plumbing.** In `<App>`, construct `let nickname_store: NicknameStoreHandle = Arc::new(WebNicknameStore::load());` and provide it via `provide_context(nickname_store.clone())` alongside the other context providers.
 
-- [ ] **Step 11.2 — Editor state.** In `ProfileCardContent`:
+- [x] **Step 11.2 — Editor state.** In `ProfileCardContent`:
 
   ```rust
   let nickname_store = use_context::<willow_client::NicknameStoreHandle>()
@@ -1929,9 +1929,9 @@ Inline editor on the peer card's secondary row. Reads/writes through `NicknameSt
   });
   ```
 
-- [ ] **Step 11.3 — Handle line.** Replace the peer-variant handle row with either a plain handle (no nickname) or `{handle} · you call them {nickname}` (where `{nickname}` uses `--ink-2` and the prefix uses `--moss-3`). In self-view skip the nickname segment entirely.
+- [x] **Step 11.3 — Handle line.** Replace the peer-variant handle row with either a plain handle (no nickname) or `{handle} · you call them {nickname}` (where `{nickname}` uses `--ink-2` and the prefix uses `--moss-3`). In self-view skip the nickname segment entirely.
 
-- [ ] **Step 11.4 — Editor markup.** Secondary row button reads `set nickname` when `stored_nickname().is_none()` else `change nickname`. Click sets `editing.set(true)` + `set_draft(stored_nickname().unwrap_or_default())`. Pattern:
+- [x] **Step 11.4 — Editor markup.** Secondary row button reads `set nickname` when `stored_nickname().is_none()` else `change nickname`. Click sets `editing.set(true)` + `set_draft(stored_nickname().unwrap_or_default())`. Pattern:
 
   ```rust
   view! {
@@ -1963,7 +1963,7 @@ Inline editor on the peer card's secondary row. Reads/writes through `NicknameSt
   }
   ```
 
-- [ ] **Step 11.5 — CSS.** Append:
+- [x] **Step 11.5 — CSS.** Append:
 
   ```css
   .nickname-editor__input {
@@ -1984,7 +1984,7 @@ Inline editor on the peer card's secondary row. Reads/writes through `NicknameSt
   }
   ```
 
-- [ ] **Step 11.6 — Commit.**
+- [x] **Step 11.6 — Commit.**
 
   ```bash
   git add crates/web/src/ crates/web/style.css
@@ -1997,7 +1997,7 @@ Cover the controller, the shared leaf, the two wrappers, the crest, the nickname
 
 **Files:** modify `crates/web/tests/browser.rs`.
 
-- [ ] **Step 12.1 — Append module.** At the bottom of `browser.rs`:
+- [x] **Step 12.1 — Append module.** At the bottom of `browser.rs`:
 
   ```rust
   mod phase_2c_profile_card {
@@ -2139,7 +2139,7 @@ Cover the controller, the shared leaf, the two wrappers, the crest, the nickname
 
   Each `// ...` above is a real test to fill in — the spec's §Acceptance criteria + §Edge cases drives the set. Capture exact assertions against the copy strings from `crate::profile::copy` to make them load-bearing.
 
-- [ ] **Step 12.2 — Commit.**
+- [x] **Step 12.2 — Commit.**
 
   ```bash
   git add crates/web/tests/browser.rs

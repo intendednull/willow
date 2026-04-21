@@ -472,9 +472,7 @@ pub fn ProfileCardContent(
 ///
 /// New callers should dispatch through `open_profile` instead and let
 /// the controller render the full card.
-#[deprecated(
-    note = "Use ProfileCardContent via the profile event bus (open_profile) instead."
-)]
+#[deprecated(note = "Use ProfileCardContent via the profile event bus (open_profile) instead.")]
 #[component]
 pub fn ProfileCardStub(
     #[prop(into)] peer_id: Signal<String>,
