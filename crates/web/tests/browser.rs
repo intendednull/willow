@@ -7637,4 +7637,135 @@ mod phase_2a_message_row {
             "row must not carry .message--mention when mentions_me is false"
         );
     }
+
+    // ── Code rendering (phase 2a task 5) ────────────────────────────────
+    //
+    // Contract pinned by `docs/specs/2026-04-19-ui-design/message-row.md`
+    // §Inline artefacts (fenced code + inline code paragraphs) and §Code:
+    //   * single backtick span → mono pill (`.code-inline`)
+    //   * triple backtick fence → `<pre class="code-fenced">` with a
+    //     24×24 copy button (`.code-copy-btn`, aria-label "copy code")
+    //   * copy-button icon flips to check for 900 ms on click
+    //
+    // Together with the `parse_code_segments` unit tests in
+    // `components/message_row/code.rs`, these browser tests lock down
+    // the rendered DOM so regressions surface at the lowest tier that
+    // can see them.
+    use willow_web::components::message_row::{FencedCodeBlock, InlineCodePill};
+
+    #[wasm_bindgen_test]
+    async fn inline_code_pill_renders() {
+        let container = mount_test(|| {
+            view! { <InlineCodePill text="foo".to_string() /> }
+        });
+        tick().await;
+        let pill = query(&container, ".code-inline")
+            .expect("InlineCodePill must render a .code-inline element");
+        assert_eq!(
+            text(&pill),
+            "foo",
+            ".code-inline must carry the backtick body"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn fenced_block_renders_with_copy_btn() {
+        let container = mount_test(|| {
+            view! { <FencedCodeBlock body="x".to_string() /> }
+        });
+        tick().await;
+        assert!(
+            query(&container, ".code-fenced").is_some(),
+            "FencedCodeBlock must render a .code-fenced element"
+        );
+        let btn =
+            query(&container, ".code-copy-btn").expect("fenced block must expose a .code-copy-btn");
+        assert_eq!(
+            btn.get_attribute("aria-label").as_deref(),
+            Some("copy code"),
+            "copy button aria-label must be 'copy code'"
+        );
+        assert_eq!(
+            btn.get_attribute("type").as_deref(),
+            Some("button"),
+            "copy button must be type=button (non-submit)"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn message_body_renders_inline_and_fenced() {
+        // Guard the full pipeline: mentions → code → urls, with a
+        // body that exercises inline + fenced in the same message.
+        let msg = make_msg("Mira", "foo `bar` baz\n```\nquux\n```", FIXTURE_TS_MS);
+        let container = mount_test(move || {
+            use willow_web::state::{create_signals, InitialSignals};
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <MessageView message=msg.clone() /> }
+        });
+        tick().await;
+
+        let inline_pills = query_all(&container, ".code-inline");
+        assert_eq!(
+            inline_pills.len(),
+            1,
+            "one .code-inline expected for the single-backtick span"
+        );
+        assert_eq!(
+            text(&inline_pills[0]),
+            "bar",
+            ".code-inline text must equal the backtick body"
+        );
+
+        let fenced = query(&container, ".code-fenced")
+            .expect("fenced block must render for triple-backtick run");
+        // `<pre>` preserves the body newline, so just assert `quux`
+        // is present inside — don't pin exact whitespace.
+        assert!(
+            text(&fenced).contains("quux"),
+            ".code-fenced must contain the fence body text"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn reply_preview_stays_plain_text() {
+        // Reply previews render via `format!("> {preview}")` — no
+        // parser pipeline runs over them. This guards the separation
+        // so future refactors can't accidentally turn backticks in a
+        // reply preview into pills.
+        let mut msg = make_msg("Mira", "plain body", FIXTURE_TS_MS);
+        msg.reply_preview = Some("has `code` here".to_string());
+        msg.reply_to = Some("prev-msg".to_string());
+
+        let container = mount_test(move || {
+            use willow_web::state::{create_signals, InitialSignals};
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <MessageView message=msg.clone() /> }
+        });
+        tick().await;
+
+        let preview = query(&container, ".reply-preview").expect(".reply-preview must render");
+        // The preview itself carries the backtick literal.
+        assert!(
+            text(&preview).contains("`code`"),
+            "reply preview must carry the literal backtick characters, got: {:?}",
+            text(&preview)
+        );
+        // And no `.code-inline` must appear inside the preview.
+        assert!(
+            preview.query_selector(".code-inline").unwrap().is_none(),
+            "reply preview must NOT run through the code-segment parser"
+        );
+    }
 }

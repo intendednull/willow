@@ -5,12 +5,15 @@
 //!
 //! * `day_separator` — day-bucket labels between local-date boundaries.
 //! * `mention` — `@handle` pill rendering (peer / self variants).
+//! * `code` — inline backtick pills + fenced triple-backtick blocks.
 //!
-//! Future sub-modules land here per the Phase 2a plan (code,
-//! jump-to-latest, etc.).
+//! Future sub-modules land here per the Phase 2a plan (jump-to-latest,
+//! etc.).
 
+pub mod code;
 pub mod day_separator;
 pub mod mention;
 
+pub use code::{parse_code_segments, CodeSegment, FencedCodeBlock, InlineCodePill};
 pub use day_separator::{day_bucket, DayBucket, DaySeparator};
 pub use mention::MentionPill;

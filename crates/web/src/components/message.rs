@@ -581,11 +581,21 @@ pub fn MessageView(
                     // stage still runs over the full body.
                     vec![willow_client::mentions::Segment::Text(body.clone())]
                 };
+                // Pre-compute embeddable image URLs. Only `Text`
+                // runs can carry URLs — mention pills, inline code
+                // pills, and fenced blocks must never contribute to
+                // auto-embed, so each mention-text is first passed
+                // through `parse_code_segments` and only its `Text`
+                // children feed `extract_urls`.
                 let mut images: Vec<String> = Vec::new();
                 for seg in &mention_segments {
                     if let willow_client::mentions::Segment::Text(t) = seg {
-                        let (_, urls) = extract_urls(t);
-                        images.extend(urls);
+                        for code_seg in super::parse_code_segments(t) {
+                            if let super::CodeSegment::Text(plain) = code_seg {
+                                let (_, urls) = extract_urls(&plain);
+                                images.extend(urls);
+                            }
+                        }
                     }
                 }
                 let has_images = !images.is_empty();
@@ -599,16 +609,39 @@ pub fn MessageView(
                                     }.into_any()
                                 }
                                 willow_client::mentions::Segment::Text(t) => {
-                                    let (url_segments, _) = extract_urls(&t);
+                                    // Phase 2a Task 5: run the code
+                                    // pass *inside* each mention-text
+                                    // run so `@user` pills stay out
+                                    // of code spans and code pills
+                                    // stay out of the URL autolink
+                                    // stage (URL handling only fires
+                                    // on the remaining plain text).
+                                    let code_segments = super::parse_code_segments(&t);
                                     view! {
-                                        {url_segments.into_iter().map(|(text, is_url)| {
-                                            if is_url {
-                                                let display = text.clone();
-                                                view! {
-                                                    <a href=text target="_blank" rel="noopener noreferrer" class="message-link">{display}</a>
-                                                }.into_any()
-                                            } else {
-                                                view! { <span>{text}</span> }.into_any()
+                                        {code_segments.into_iter().map(|cs| {
+                                            match cs {
+                                                super::CodeSegment::Inline(code_text) => {
+                                                    view! { <super::InlineCodePill text=code_text /> }.into_any()
+                                                }
+                                                super::CodeSegment::Fenced { lang, body } => {
+                                                    let lang_str = lang.unwrap_or_default();
+                                                    view! { <super::FencedCodeBlock body=body lang=lang_str /> }.into_any()
+                                                }
+                                                super::CodeSegment::Text(plain) => {
+                                                    let (url_segments, _) = extract_urls(&plain);
+                                                    view! {
+                                                        {url_segments.into_iter().map(|(text, is_url)| {
+                                                            if is_url {
+                                                                let display = text.clone();
+                                                                view! {
+                                                                    <a href=text target="_blank" rel="noopener noreferrer" class="message-link">{display}</a>
+                                                                }.into_any()
+                                                            } else {
+                                                                view! { <span>{text}</span> }.into_any()
+                                                            }
+                                                        }).collect::<Vec<_>>()}
+                                                    }.into_any()
+                                                }
                                             }
                                         }).collect::<Vec<_>>()}
                                     }.into_any()

@@ -156,24 +156,24 @@ Replace the current "url-only" body pipeline with mentions → code → urls.
 
 **Files:** new `crates/web/src/components/message_row/code.rs`, modify `crates/web/src/components/message.rs`, modify `crates/web/style.css`, modify `crates/web/src/icons.rs`.
 
-- [ ] **Step 5.1 — `parse_code_segments`.** Split body on triple-backtick fences (`^```(?<lang>\w+)?\n…\n```$` on a line, non-greedy), then on single backticks (non-multiline) within remaining plain-text segments.
+- [x] **Step 5.1 — `parse_code_segments`.** Split body on triple-backtick fences (`^```(?<lang>\w+)?\n…\n```$` on a line, non-greedy), then on single backticks (non-multiline) within remaining plain-text segments.
 
-- [ ] **Step 5.2 — `<InlineCodePill>` + `<FencedCodeBlock>`.** Inline: `<code class="code-inline">{text}</code>`. Fenced: `<pre class="code-fenced">…<button class="code-copy-btn">` — copy via `navigator.clipboard.writeText`; on success swap icon to `icon_check_small` for 900 ms (re-use `set_timeout` pattern from existing `MessageView`).
+- [x] **Step 5.2 — `<InlineCodePill>` + `<FencedCodeBlock>`.** Inline: `<code class="code-inline">{text}</code>`. Fenced: `<pre class="code-fenced">…<button class="code-copy-btn">` — copy routes through the shared `crate::util::copy_to_clipboard` helper (clipboard API + textarea fallback, same surface as invite-code copy); on success swap icon to `icon_check` for 900 ms using leptos `set_timeout`. Re-uses existing `icons::icon_copy` / `icons::icon_check` — no new icon glyphs.
 
   ```rust
   view! {
       <pre class="code-fenced">
           <button class="code-copy-btn" on:click=copy aria-label="copy code">
-              { move || if copied.get() { icons::icon_check_small() } else { icons::icon_copy() } }
+              { move || if copied.get() { icons::icon_check() } else { icons::icon_copy() } }
           </button>
           <code>{text}</code>
       </pre>
   }
   ```
 
-- [ ] **Step 5.3 — Wire in `MessageView`.** Replace the existing `extract_urls` direct call with the new pipeline (mentions from task 3 → code → urls). Guard `FencedCodeBlock` to render only inside a message row, not on inline previews (`reply-preview` stays plain-text).
+- [x] **Step 5.3 — Wire in `MessageView`.** Replace the existing `extract_urls` direct call with the new pipeline (mentions from task 3 → code → urls). Reply-preview stays plain-text (renders via `format!("> {preview}")`, no parser pipeline) — guarded by `reply_preview_stays_plain_text` browser test.
 
-- [ ] **Step 5.4 — `just test-browser`** — 3 new tests: inline-backtick pill, fenced-block renders + copy button flashes, no-syntax-highlight.
+- [x] **Step 5.4 — `just test-browser`** — 4 new tests: inline-backtick pill renders, fenced-block + copy button renders, mixed inline+fenced in one body, reply-preview stays plain text. Plus 10 parser unit tests in `code.rs` (`parse_no_backticks`, `parse_inline_only`, `parse_fenced_only`, `parse_fenced_with_lang`, `parse_unmatched_backtick`, `parse_unmatched_fence`, `parse_triple_backtick_inline_is_not_fence`, `parse_inline_does_not_span_newline`, `parse_mixed_inline_and_fenced`, `parse_fence_with_junk_after_lang_falls_back_to_text`). All green.
 
 - [ ] **Step 5.5 — Commit** — `ui(phase-2): render inline + fenced code with copy button`.
 

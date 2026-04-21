@@ -4395,3 +4395,79 @@ select:focus-visible {
     background: color-mix(in oklab, var(--amber) 8%, transparent);
     box-shadow: inset 2px 0 0 var(--amber);
 }
+
+/* ── Code — inline + fenced (phase 2a task 5) ───────────────────────
+   Spec: `docs/specs/2026-04-19-ui-design/message-row.md` §Inline
+   artefacts (fenced code + inline code paragraphs) and §Code.
+   * Inline: mono pill on `--bg-2` / `--line` / `--ink-1`, 3 px radius,
+     `0 4px` padding. Parsed from single-backtick spans.
+   * Fenced: `<pre>` on `--bg-0` with `--line` border, 8 px radius,
+     `8px 12px` padding, mono M (12 px), `--ink-2`, `white-space:
+     pre-wrap`, `max-width: 520px`. Fence language parsed but unused
+     in v1 (no syntax highlighting).
+   * Copy IconBtn 24×24 pinned top-right, revealed on block hover on
+     desktop; always visible on mobile for tap surface. Icon flips to
+     a check for 900 ms after copy — driven by the `copied` signal
+     in `FencedCodeBlock`, not a CSS transition.
+   * Mobile overrides (spec §Message row — mobile): mono 11 px,
+     `6px 10px` padding. */
+.code-inline {
+    font-family: var(--font-mono, monospace);
+    font-size: 0.85em;
+    padding: 0 4px;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    color: var(--ink-1);
+}
+.code-fenced {
+    position: relative;
+    background: var(--bg-0);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 12px;
+    margin-top: 8px;
+    max-width: 520px;
+    font-family: var(--font-mono, monospace);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--ink-2);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.code-fenced > code {
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+}
+.code-copy-btn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    color: var(--ink-2);
+    cursor: pointer;
+}
+.code-fenced:hover .code-copy-btn {
+    display: flex;
+}
+@media (max-width: 720px) {
+    .code-fenced {
+        font-size: 11px;
+        padding: 6px 10px;
+    }
+    /* Mobile has no hover — expose the copy button as a tap surface. */
+    .code-copy-btn {
+        display: flex;
+    }
+}
