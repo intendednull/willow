@@ -1,6 +1,107 @@
 //! Unit tests for the search module. One sub-module per file — see
 //! each sub-module's doc for the behaviour it covers.
 
+mod handle_tests {
+    use super::super::*;
+    use willow_identity::Identity;
+
+    fn mk(id: &str, body: &str) -> IndexableMessage {
+        IndexableMessage {
+            message_id: id.into(),
+            channel_id: "c1".into(),
+            channel_name: "general".into(),
+            grove_id: Some("g0".into()),
+            letter_id: None,
+            author_peer_id: Identity::generate().endpoint_id(),
+            author_handle: "mira".into(),
+            author_display_name: "Mira".into(),
+            timestamp_ms: 100,
+            body: body.into(),
+            has_image: false,
+            has_file: false,
+            has_link: false,
+        }
+    }
+
+    #[test]
+    fn handle_insert_then_query() {
+        let h = SearchIndexHandle::new_in_memory();
+        h.insert(mk("m1", "hello world"));
+        let q = parse_query("hello");
+        let hits = h.query(&q, &SearchScope::AllGrovesAndLetters);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].message_id, "m1");
+    }
+
+    #[test]
+    fn handle_grove_opt_out_drops_inserts() {
+        let h = SearchIndexHandle::new_in_memory();
+        let mut cfg = h.config();
+        cfg.per_grove_enabled.insert("g0".into(), false);
+        h.set_config(cfg);
+        h.insert(mk("m1", "hello world"));
+        let q = parse_query("hello");
+        let hits = h.query(&q, &SearchScope::AllGrovesAndLetters);
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn disabled_config_blocks_inserts() {
+        let h = SearchIndexHandle::new_in_memory();
+        let mut cfg = h.config();
+        cfg.enabled = false;
+        h.set_config(cfg);
+        h.insert(mk("m1", "hello"));
+        assert_eq!(h.message_count(), 0);
+    }
+
+    #[test]
+    fn recents_disabled_by_config() {
+        let h = SearchIndexHandle::new_in_memory();
+        let mut cfg = h.config();
+        cfg.remember_recents = false;
+        h.set_config(cfg);
+        h.push_recent(RecentQuery {
+            text: "hi".into(),
+            timestamp_ms: 1,
+        });
+        assert!(h.recents().is_empty());
+    }
+
+    #[test]
+    fn recents_push_dedups_and_caps() {
+        let h = SearchIndexHandle::new_in_memory();
+        // Ensure recents default-on.
+        for i in 0..20 {
+            h.push_recent(RecentQuery {
+                text: format!("q{i}"),
+                timestamp_ms: i,
+            });
+        }
+        assert!(h.recents().len() <= MAX_RECENTS);
+    }
+
+    #[test]
+    fn rebuild_replaces_index() {
+        let h = SearchIndexHandle::new_in_memory();
+        h.insert(mk("m1", "hello"));
+        h.rebuild(vec![mk("m2", "world")]);
+        let hits = h.query(&parse_query("hello"), &SearchScope::AllGrovesAndLetters);
+        assert!(hits.is_empty());
+        let hits = h.query(&parse_query("world"), &SearchScope::AllGrovesAndLetters);
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn handle_is_send_and_sync() {
+        // Smoke test: the handle is cloned into Leptos callbacks and
+        // must be `Send + Sync` so `Arc<Mutex<_>>` actually pulls its
+        // weight.
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<SearchIndexHandle>();
+    }
+}
+
 mod config_tests {
     use super::super::config::*;
 

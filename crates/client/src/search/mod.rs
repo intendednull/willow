@@ -11,6 +11,7 @@
 
 pub mod config;
 pub mod execute;
+pub mod handle;
 pub mod highlight;
 pub mod index;
 pub mod query;
@@ -23,6 +24,7 @@ mod tests;
 pub use config::{clear_all_recents, forget_recent, push_recent, RecentQuery, SearchIndexConfig,
                  MAX_RECENTS};
 pub use execute::{execute, SearchResult, SearchScope};
+pub use handle::SearchIndexHandle;
 pub use highlight::{build_excerpt, match_ranges, Excerpt};
 pub use index::{IndexableMessage, Posting, SearchIndex};
 pub use query::{parse_query, QueryFilters, QueryWarning, SearchQuery};

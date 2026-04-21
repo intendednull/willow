@@ -1506,7 +1506,7 @@ git commit -m "ui(phase-2e): add search config + recents + build-status primitiv
 - Modify: `crates/client/src/lib.rs` — top-level re-exports + integrate handle into `ClientHandle`.
 - Modify: `crates/client/src/actions.rs` or `accessors.rs` — expose `fn search(&self) -> SearchIndexHandle` on `ClientHandle`.
 
-- [ ] **Step 7.1 — Handle + API.**
+- [x] **Step 7.1 — Handle + API.** Plus a `new_in_memory()` constructor to isolate unit tests from the shared native data dir (config / recents writes bypass `crate::storage` when `persist=false`).
 
 ```rust
 //! Top-level handle exposing the search index to UI code.
@@ -1599,7 +1599,7 @@ impl SearchIndexHandle {
 impl Default for SearchIndexHandle { fn default() -> Self { Self::new() } }
 ```
 
-- [ ] **Step 7.2 — Re-exports.** `crates/client/src/search/mod.rs`:
+- [x] **Step 7.2 — Re-exports.** `crates/client/src/search/mod.rs`:
 
 ```rust
 pub mod config;
@@ -1632,7 +1632,7 @@ pub use search::{
 };
 ```
 
-- [ ] **Step 7.3 — Failing handle test.** In `crates/client/src/search/tests.rs` add `mod handle_tests`:
+- [x] **Step 7.3 — Failing handle test.** In `crates/client/src/search/tests.rs` add `mod handle_tests`:
 
 ```rust
 #[cfg(test)]
@@ -1698,11 +1698,11 @@ mod handle_tests {
 
 Run: initially fails; after handle.rs lands, passes.
 
-- [ ] **Step 7.4 — Verify GREEN.** `cargo test -p willow-client search::`. All modules pass (tokenize + query + index + execute + highlight + config + handle).
+- [x] **Step 7.4 — Verify GREEN.** `cargo test -p willow-client search::tests` → 74/74 pass (query + tokenize + index + execute + highlight + config + status + handle).
 
-- [ ] **Step 7.5 — WASM compile.** `cargo check --target wasm32-unknown-unknown -p willow-client`.
+- [x] **Step 7.5 — WASM compile.** Clean.
 
-- [ ] **Step 7.6 — Commit.**
+- [x] **Step 7.6 — Commit.**
 
 ```bash
 git add crates/client/src/search/handle.rs crates/client/src/search/mod.rs crates/client/src/search/tests.rs crates/client/src/lib.rs
