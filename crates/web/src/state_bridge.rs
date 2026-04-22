@@ -2,7 +2,7 @@
 //!
 //! Bridges `StateRef<T>` into Leptos `ReadSignal<U>` via `Notify`.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use leptos::prelude::*;
 use send_wrapper::SendWrapper;
@@ -10,11 +10,17 @@ use willow_actor::state::{Notify, StateRef};
 use willow_actor::{Actor, Context, Handler, Recipient};
 
 /// A derived state actor that watches a `StateRef<T>` and updates a Leptos signal.
+///
+/// `cached` is wrapped in `Arc<Mutex<_>>` so the async handler body can both
+/// read the previous value and write the new one across `.await` points
+/// without borrowing `&mut self`. Leptos signals notify on every `set()`
+/// regardless of equality, so de-duping here is what prevents spurious
+/// re-renders of every subscribing view.
 pub struct DerivedStateActor<T: Send + Sync + 'static, U: PartialEq + Clone + Send + Sync + 'static>
 {
     source: StateRef<T>,
     selector: Arc<dyn Fn(&T) -> U + Send + Sync>,
-    cached: Option<U>,
+    cached: Arc<Mutex<Option<U>>>,
     write: SendWrapper<WriteSignal<U>>,
 }
 
@@ -30,9 +36,11 @@ impl<T: Send + Sync + 'static, U: PartialEq + Clone + Send + Sync + 'static> Act
         let selector = self.selector.clone();
         let source = self.source.clone();
         let write = self.write.clone();
+        let cached = self.cached.clone();
         async move {
             let snapshot = source.get().await;
             let result = selector(&snapshot);
+            *cached.lock().expect("cached mutex poisoned") = Some(result.clone());
             (*write).set(result);
         }
     }
@@ -54,11 +62,14 @@ impl<T: Send + Sync + 'static, U: PartialEq + Clone + Send + Sync + 'static> Han
         async move {
             let snapshot = source.get().await;
             let result = selector(&snapshot);
-            let changed = match &cached {
+            let mut guard = cached.lock().expect("cached mutex poisoned");
+            let changed = match &*guard {
                 Some(old) => old != &result,
                 None => true,
             };
             if changed {
+                *guard = Some(result.clone());
+                drop(guard);
                 (*write).set(result);
             }
         }
@@ -84,7 +95,7 @@ pub fn derived_signal<
     system.spawn(DerivedStateActor {
         source: source.clone(),
         selector: Arc::new(selector),
-        cached: None,
+        cached: Arc::new(Mutex::new(None)),
         write: SendWrapper::new(write),
     });
 
