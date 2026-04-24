@@ -53,6 +53,9 @@ mod tests_trust_flow;
 #[path = "tests/multi_peer_sync.rs"]
 mod tests_multi_peer_sync;
 
+/// How long a typing indicator remains visible after the last typing event, in milliseconds.
+pub const TYPING_INDICATOR_TTL_MS: u64 = 5_000;
+
 // Re-export key types at crate root for convenience.
 pub use event_receiver::EventReceiver;
 pub use events::ClientEvent;

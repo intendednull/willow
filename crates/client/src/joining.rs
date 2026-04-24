@@ -309,7 +309,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let profiles = willow_actor::state::get(&self.profile_state_addr).await;
         willow_actor::state::mutate(&self.network_meta_addr, move |n| {
             let now = util::current_time_ms();
-            n.typing_peers.retain(|_, (_, ts)| now - *ts < 5000);
+            n.typing_peers
+                .retain(|_, (_, ts)| now - *ts < crate::TYPING_INDICATOR_TTL_MS);
             n.typing_peers
                 .iter()
                 .filter(|(pid, (ch, _))| ch == &channel && *pid != &my_id)
