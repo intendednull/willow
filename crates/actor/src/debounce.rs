@@ -61,8 +61,10 @@ impl<M: Message<Result = ()> + Send + 'static> Handler<Enqueue<M>> for Debounce<
         ctx: &mut Context<Self>,
     ) -> impl Future<Output = ()> + Send {
         self.pending = Some(msg.0);
-        // Cancel existing timer
-        self.timer.take();
+        // Cancel existing timer explicitly
+        if let Some(t) = self.timer.take() {
+            t.cancel();
+        }
         // Start new timer
         self.timer = Some(ctx.run_after(self.delay, Flush));
         async {}
@@ -137,7 +139,10 @@ impl<M: Message<Result = ()> + Send + 'static> Handler<CooldownExpired> for Thro
         ctx: &mut Context<Self>,
     ) -> impl Future<Output = ()> + Send {
         self.cooling_down = false;
-        self._timer = None;
+        // Cancel existing timer explicitly
+        if let Some(t) = self._timer.take() {
+            t.cancel();
+        }
         if let Some(pending) = self.pending.take() {
             self.target.do_send(pending).ok();
             self.cooling_down = true;
