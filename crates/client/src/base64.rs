@@ -1,10 +1,9 @@
 //! Minimal base64 encoding/decoding. Avoids pulling in an external crate
 //! for a simple operation used by storage (WASM localStorage) and invite codes.
 
-#[allow(clippy::manual_div_ceil)]
 pub fn encode(data: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut result = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
@@ -38,8 +37,7 @@ pub fn decode(input: &str) -> Option<Vec<u8>> {
         }
     }
     let bytes = input.as_bytes();
-    #[allow(clippy::manual_is_multiple_of)]
-    if bytes.len() % 4 != 0 || bytes.is_empty() {
+    if !bytes.len().is_multiple_of(4) || bytes.is_empty() {
         return None;
     }
     let mut result = Vec::with_capacity(bytes.len() / 4 * 3);

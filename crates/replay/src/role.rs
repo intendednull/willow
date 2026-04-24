@@ -39,9 +39,6 @@ struct ServerData {
     state: ServerState,
     /// Buffer for events arriving before their chain predecessors.
     pending: PendingBuffer,
-    /// Max events per author before compaction (reserved for future use).
-    #[allow(dead_code)]
-    max_events_per_author: usize,
     /// Monotonic counter recording last access (for LRU eviction).
     last_access: u64,
 }
@@ -130,7 +127,6 @@ impl ReplayRole {
                     dag: EventDag::new(),
                     state: ServerState::new(server_id, server_id, author),
                     pending,
-                    max_events_per_author: max_per_author,
                     last_access: access_counter,
                 }
             });
