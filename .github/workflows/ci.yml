@@ -84,6 +84,16 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+      # Known advisories are tracked in dedicated issues; fail only on new ones.
+      # When each issue is resolved, remove the matching --ignore entry.
+      - name: Run cargo audit
+        run: |
+          cargo audit \
+            --ignore RUSTSEC-2026-0098 `# rustls-webpki name-constraint (#223)` \
+            --ignore RUSTSEC-2026-0099 `# rustls-webpki URI-constraint  (#223)` \
+            --ignore RUSTSEC-2026-0104 `# rustls-webpki CRL panic       (#223)` \
+            --ignore RUSTSEC-2026-0097 `# rand unsoundness              (#246)` \
+            --ignore RUSTSEC-2025-0141 `# bincode 1.x unmaintained      (#247)`
