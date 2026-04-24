@@ -1608,9 +1608,8 @@ mod tests {
                 let events_for_b = a_events.clone();
                 willow_actor::state::mutate(&client_b.dag_addr, move |ds| {
                     // Reset to an empty DAG and replay A's events.
-                    ds.managed = willow_state::ManagedDag::empty(
-                        crate::state_actors::MAX_CLIENT_PENDING,
-                    );
+                    ds.managed =
+                        willow_state::ManagedDag::empty(crate::state_actors::MAX_CLIENT_PENDING);
                     for event in events_for_b {
                         ds.managed.insert_and_apply(event).ok();
                     }
