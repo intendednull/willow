@@ -1,0 +1,256 @@
+# Epoch-Driven Channel Key Rotation
+
+> **One-sentence summary:** Derive a fresh channel encryption epoch from
+> every membership-changing state event, so compromise of a channel key
+> expires the next time someone joins, leaves, or is kicked.
+
+Lessons taken from Nostr's trajectory — NIP-04/44/17 all lack forward
+secrecy because the conversation key is a deterministic `HKDF(ECDH)`
+output, and NIP-EE/Marmot's attempt to bolt MLS on top is heavy enough
+that uptake has stalled. Willow is in the same position today: the
+per-channel `ChannelKey` in `crates/crypto/src/lib.rs:57–78` is a
+long-term symmetric secret. A compromise leaks every past and future
+message until someone manually rotates. Willow already has the trigger
+events the DAG needs — `KickMember`, `RevokePermission`, `AssignRole`,
+`RotateChannelKey` — so rotation is almost free.
+
+## Threat model
+
+**Provides:**
+
+- **Post-compromise security.** After a compromise *and* at least one
+  membership change, the old key no longer decrypts new messages.
+- **Weak forward secrecy.** Past ciphertext is safe only if every
+  member actually deletes old epoch keys after use. Willow cannot
+  enforce that — it is a client-policy matter.
+- **Partial metadata hiding.** Derived TopicIds rotate per epoch, so a
+  passive gossip observer loses membership continuity across
+  rotations.
+
+**Does not provide:**
+
+- **Full forward secrecy** of in-flight messages — that would need a
+  double-ratchet, out of scope here.
+- **Post-quantum confidentiality** — X25519 only.
+- **IP-level or timing privacy** — that is a transport concern.
+- **Protection of pre-join history** from a new member — the default
+  policy grants new members the current epoch key only. See the
+  "Joining" section.
+
+## Epoch definition
+
+An `Epoch` is `(channel_id, epoch_number: u64)`. Epoch 0 is the key
+created with the channel itself (carried in the existing
+`CreateChannel` event path). Epoch N+1 is produced by applying a
+triggering state event.
+
+| `EventKind` variant                  | Rotates? | Why                                                  |
+|--------------------------------------|----------|------------------------------------------------------|
+| `CreateChannel`                      | Genesis  | Establishes epoch 0.                                 |
+| `RotateChannelKey`                   | Yes      | Explicit rotation — today's manual path.             |
+| `ProposedAction::KickMember` → apply | Yes      | Kicked member must lose future read access.          |
+| `RevokePermission { SendMessages }`  | Yes      | Revoked writer must also lose read on same rotation. |
+| `RevokePermission { SyncProvider }`  | Yes      | Former provider must not silently keep decrypting.   |
+| `AssignRole` (adds member to channel)| Yes      | Let rotation double as the join-key handoff.         |
+| `AssignRole` (no-op / same role)     | No       | Skip to avoid chatter.                               |
+| `GrantPermission { SendMessages }`   | Yes      | Mirror of revoke.                                    |
+| `DeleteChannel`                      | N/A      | No further epochs.                                   |
+| `Message`, `Edit`, `Reaction`, …     | No       | Content events never rotate.                         |
+| `SetProfile`, pins, renames          | No       | Nothing membership-sensitive.                        |
+
+The `required_permission()` changes land alongside the enum changes in
+`crates/state/src/materialize.rs`. A rotation is *applied* when the
+triggering event is applied — determined at `apply_mutation()` time,
+not at signing time. This keeps the existing "reject before sign" flow
+(see `docs/specs/2026-04-12-state-authority-and-mutations.md`) intact.
+
+## Key derivation
+
+```text
+epoch_key[0]   = CSPRNG at channel creation (existing CreateChannel path)
+epoch_key[N+1] = HKDF-Extract(
+                   salt = b"willow-epoch-v1",
+                   ikm  = epoch_key[N] || triggering_event.hash
+                 )                                              // 32 bytes
+epoch_key_id   = HKDF-Expand(
+                   prk  = epoch_key[N+1],
+                   info = b"willow-epoch-id-v1",
+                   L    = 16
+                 )                                              // 16 bytes
+```
+
+- SHA-256 is the HKDF hash throughout — matches Willow's existing
+  `KeyRatchet` in `crates/crypto/src/lib.rs:91–174`.
+- `triggering_event.hash` is sufficient — the parent DAG context is
+  already folded in because the event hash commits to `prev` and
+  `deps`. Folding the full state hash in addition was considered and
+  rejected: it forces ordering determinism inside the derivation, and
+  HLC/DAG merge can momentarily disagree on state hash even when the
+  set of events is identical.
+- `epoch_key_id` is a public, 128-bit identifier safe to appear on
+  the wire, unlike the raw key.
+
+## Distribution
+
+Rotation needs two things on the DAG: the *fact* that rotation
+happened (so everyone increments `epoch_number`), and the *ciphertext*
+of the new key under each remaining member's public key. Willow's
+existing `EventKind::RotateChannelKey` already carries
+`encrypted_keys: Vec<(EndpointId, Vec<u8>)>`.
+
+We extend this single variant rather than introduce a new one:
+
+```rust
+RotateChannelKey {
+    channel_id: String,
+    epoch: u64,                               // new — must equal prev+1
+    trigger: Option<EventHash>,               // new — referenced event
+    encrypted_keys: Vec<(EndpointId, Vec<u8>)>,
+}
+```
+
+- `trigger` is `None` only for explicit out-of-band rotations. When
+  present, the `trigger` event hash MUST be the event that drove the
+  rotation; the state machine verifies the derivation used the same
+  hash it observes.
+- `encrypted_keys` continues to use `encrypt_channel_key_for`
+  (`crates/crypto/src/lib.rs:347–377`) — ephemeral X25519 + HKDF +
+  ChaCha20-Poly1305.
+- On a kick, the kicked peer is absent from `encrypted_keys` — this is
+  the whole point. A malicious rotator who includes the kicked peer's
+  key is detectable at `apply_event` time: reject
+  `RotateChannelKey` that encrypts to anyone not in the post-state
+  member set.
+
+Ordering: a membership event and its follow-up `RotateChannelKey` are
+separate DAG entries but logically paired. Peers SHOULD emit them
+back-to-back. If a membership event is applied without a subsequent
+rotation appearing for a configurable timeout, clients MUST surface a
+warning — the channel is running on the pre-change key.
+
+## Topic ID rotation
+
+`crates/network/src/topics.rs` currently derives `TopicId` from the
+server+channel string. That topic is stable for the channel's life, so
+passive gossip observers can correlate traffic volume with membership.
+Under this spec:
+
+```text
+TopicId(channel, epoch) = blake3(
+    b"willow-topic-v1"
+    || channel_id_bytes
+    || epoch_key_id
+)
+```
+
+Using `epoch_key_id` (not `epoch_number`) means a non-member cannot
+predict future topic IDs. Members transition topics on each epoch
+event — they already have `epoch_key[N+1]`, so they know
+`epoch_key_id[N+1]`, so they can subscribe to the new topic
+atomically. The old topic stays alive briefly for in-flight messages
+and is abandoned.
+
+## SealedContent integration
+
+`SealedContent.key_epoch` in `crates/messaging/src/lib.rs:159–172`
+already exists and is currently unused. Under this spec it becomes
+authoritative: the sender sets it to the epoch number whose key
+encrypted the payload; the receiver indexes into their local
+`BTreeMap<(ChannelId, u64), EpochKey>`.
+
+`ratchet_counter` continues to work for within-epoch per-message
+derivation via `KeyRatchet`.
+
+## Joining
+
+A member is added via `AssignRole` (direct) or via accepted
+`Propose { AddMember }` (if/when that's added). Either way:
+
+1. Membership event applied at the DAG head.
+2. The author of the membership event (or any other member with
+   `ManageChannels`) emits the follow-up `RotateChannelKey` including
+   the new member in `encrypted_keys`.
+3. The new member decrypts their entry and learns `epoch_key[N+1]`.
+4. They subscribe to the new `TopicId`.
+
+**Past-message access policy (default):** new members receive
+`epoch_key[N+1]` only. They cannot decrypt epochs 0..=N. This matches
+MLS-style "post-join confidentiality" and is the safer default. An
+opt-in `ShareHistoricalKeys` channel setting could loosen this — left
+out of scope for this spec; see open questions.
+
+## Identity-key vs signing-key separation
+
+NIP-EE's hard rule — "the MLS signing key MUST differ from the Nostr
+identity key" — is sound. Willow's Ed25519 identity currently signs
+events AND is the X25519 peer for channel-key wrapping. This spec
+does **not** split them, but recommends that a follow-up spec
+introduce a per-session signing key chained to the long-term identity
+via a `RegisterSessionKey` event. That lets rotation extend to
+signing material without losing account continuity.
+
+## Relay / worker trust
+
+Relays and storage workers never see epoch keys — only ciphertext and
+the `encrypted_keys` blobs, which are themselves encrypted to member
+public keys. A `SyncProvider` that replays events cannot read channel
+content regardless of epoch.
+
+A compromised storage worker can withhold a rotation event to keep
+clients on a stale epoch. Mitigation: the HLC cap on the state
+machine plus the "no rotation seen since membership event" client
+warning. Multi-provider query (already used for state-hash agreement)
+catches most withholding.
+
+## Tests
+
+- **Unit:** `epoch_key[N+1]` matches the `HKDF-Extract` spec vector
+  for known inputs; `epoch_key_id` derivation stable.
+- **State:** each variant in the "rotates?" table produces the
+  expected new epoch; non-rotating variants don't.
+- **State:** `RotateChannelKey` with `encrypted_keys` for a
+  not-in-member-set peer is rejected.
+- **State:** `RotateChannelKey` whose derivation input doesn't match
+  the `trigger` event hash is rejected.
+- **Integration:** kick scenario — kicked peer's pre-kick ciphertext
+  decrypts, post-kick ciphertext does not, even though they retained
+  `epoch_key[N]`.
+- **Integration:** join-and-catch-up — new member decrypts post-join
+  messages, cannot decrypt pre-join messages (default policy).
+- **Browser:** UI surfaces a warning when a membership change sits
+  unaccompanied by a rotation past the timeout.
+
+## Interaction with other specs
+
+- **Seal + gift-wrap DMs** (separate spec): DMs don't use channel
+  keys, so epoch rotation doesn't apply directly. DMs need their own
+  FS/PCS story.
+- **Negentropy history sync** (separate spec): rotation events are
+  normal DAG entries; no special sync handling.
+- **Relay capability doc**: consider advertising
+  `supports_epoch_rotation: bool` so clients can warn operators of
+  old relays.
+
+## Open questions
+
+1. **Past-message access policy.** Default is "new members cannot
+   decrypt pre-join." Some communities will want the opposite for
+   onboarding ("read the archive before joining"). Do we add an
+   opt-in `ShareHistoricalKeys` channel flag, or defer entirely?
+2. **Identity vs signing key separation.** Land the split now, or in
+   a follow-up? The sooner we split, the less churn later — but it
+   touches `willow-identity` and every signing path.
+3. **Derivation input.** `prev_key || trigger.hash` vs
+   `prev_key || server_state_hash_after_trigger`. The former is
+   simpler; the latter commits to more context but may diverge during
+   DAG merge.
+4. **Out-of-order handling.** A `RotateChannelKey` arriving before
+   its `trigger` event — hold it or reject? Willow's insert flow
+   tolerates missing deps; this spec should specify whether the
+   epoch transition is deferred until the trigger is applied.
+5. **Retention of old epoch keys.** Needed for history replay and
+   late-arriving messages; deleting them is what actually delivers
+   forward secrecy. Who decides the TTL, and is it per-client?
+6. **Rotation storm.** A rapid sequence of kicks produces a rotation
+   per kick. Do we batch — e.g., coalesce rotations within a short
+   window — or accept the overhead for clarity?
