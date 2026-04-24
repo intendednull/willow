@@ -376,6 +376,22 @@ async fn process_received_message<T: TopicHandle>(
             }
         }
         crate::ops::WireMessage::JoinRequest { link_id, peer_id } => {
+            // Security: the wire-supplied `peer_id` is attacker-controlled
+            // and must never be trusted as a grant target. The only
+            // authenticated peer identity we have is `signer`, which was
+            // verified against the envelope's Ed25519 signature by
+            // `unpack_wire`. Reject any request where the two disagree,
+            // matching the ProfileAnnounce spoof guard above. See issue
+            // #239 / SEC-A-03.
+            if peer_id != signer {
+                tracing::warn!(
+                    %peer_id,
+                    %signer,
+                    "rejecting JoinRequest: wire-supplied peer_id does not match verified signer"
+                );
+                return;
+            }
+            let _ = peer_id; // the verified `signer` is the grant target below
             let should_respond = {
                 let mut links = ctx.join_links.lock();
                 let valid = links
@@ -392,7 +408,9 @@ async fn process_received_message<T: TopicHandle>(
                 // Generate invite for the requesting peer using event_state + registry.
                 let server_registry = ctx.server_registry.clone();
                 let event_state = ctx.event_state.clone();
-                let peer_endpoint = peer_id;
+                // Use the verified signer as the grant target — never the
+                // attacker-supplied `peer_id` from the wire message.
+                let peer_endpoint = signer;
 
                 // Get server info from registry.
                 let reg_info = willow_actor::state::select(&server_registry, move |reg| {
@@ -420,7 +438,10 @@ async fn process_received_message<T: TopicHandle>(
                                     (topic, ch.name.clone())
                                 })
                                 .collect();
-                            let author = es.admins.iter().next().copied().unwrap_or(fallback_id);
+                            // Same correctness fix as in `generate_invite`
+                            // (issue #241): pick the authoritative genesis
+                            // author rather than an arbitrary admin.
+                            let author = es.genesis_author.unwrap_or(fallback_id);
                             (names, author)
                         })
                         .await;
@@ -439,7 +460,7 @@ async fn process_received_message<T: TopicHandle>(
                 };
                 if let Some(invite_data) = invite_result {
                     let msg = crate::ops::WireMessage::JoinResponse {
-                        target_peer: peer_id,
+                        target_peer: peer_endpoint,
                         invite_data,
                     };
                     if let Some(data) = crate::ops::pack_wire(&msg, &ctx.identity) {
@@ -452,7 +473,9 @@ async fn process_received_message<T: TopicHandle>(
                     // so all peers (including the new joiner) learn that
                     // the new member has send permission.
                     let identity = ctx.identity.clone();
-                    let granted_peer = peer_id;
+                    // Grant permission to the authenticated signer — never
+                    // the wire-supplied peer_id (issue #239 / SEC-A-03).
+                    let granted_peer = peer_endpoint;
                     let ts = crate::util::current_time_ms();
                     let grant_event = willow_actor::state::mutate(&ctx.dag, move |ds| {
                         ds.managed
@@ -538,5 +561,184 @@ async fn process_received_message<T: TopicHandle>(
         // Worker messages travel on the _willow_workers topic and are never
         // delivered to the client's server-ops listener.
         crate::ops::WireMessage::Worker(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Listener tests for the JoinRequest signer guard (SEC-A-03 / #239).
+    use super::*;
+    use crate::test_client;
+    use std::sync::Arc;
+    use willow_network::Network;
+
+    /// A `JoinRequest` whose wire-supplied `peer_id` disagrees with the
+    /// Ed25519 `signer` must be rejected. Concretely: no `GrantPermission`
+    /// event should be emitted for either identity, and no `JoinResponse`
+    /// should be broadcast.
+    ///
+    /// Without the fix, the listener trusts `peer_id` from the wire and
+    /// hands the authoritative invite + `SendMessages` grant to whichever
+    /// identity the attacker names — even though the packet was signed by
+    /// someone else entirely.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn join_request_with_mismatched_peer_id_is_rejected() {
+        let (client, _rx) = test_client();
+
+        // Inject a join link so the listener would otherwise be willing
+        // to respond. Expires far in the future.
+        let link_id = "test-link-id".to_string();
+        {
+            let mut links = client.join_links.lock();
+            links.push(crate::ops::JoinLink {
+                link_id: link_id.clone(),
+                server_id: "unused".into(),
+                max_uses: 10,
+                used: 0,
+                active: true,
+                expires_at: None,
+                created_at: 0,
+            });
+        }
+
+        // Construct a MemNetwork + topic handle to satisfy the
+        // TopicHandle generic expected by process_received_message.
+        let hub = willow_network::mem::MemHub::new();
+        let net = willow_network::mem::MemNetwork::new(&hub);
+        let (topic_handle, _events) = net
+            .subscribe(willow_network::topic_id("unit-test-topic"), vec![])
+            .await
+            .expect("subscribe must succeed in test");
+
+        // Build a ListenerCtx from the ClientHandle.
+        let ctx = ListenerCtx {
+            event_state: client.event_state_addr.clone(),
+            chat_meta: client.chat_meta_addr.clone(),
+            profiles: client.profile_state_addr.clone(),
+            network: client.network_meta_addr.clone(),
+            voice: client.voice_state_addr.clone(),
+            persistence: client.persistence_addr.clone(),
+            persistence_enabled: false,
+            event_broker: client.event_broker.clone(),
+            identity: client.identity.clone(),
+            join_links: Arc::clone(&client.join_links),
+            dag: client.dag_addr.clone(),
+            server_registry: client.server_registry_addr.clone(),
+            on_neighbor_up: None,
+        };
+
+        // Mallory signs the packet, but claims it's from Bob. Neither
+        // identity is the inviter/client.
+        let mallory = willow_identity::Identity::generate();
+        let bob_id = willow_identity::Identity::generate().endpoint_id();
+        let msg = crate::ops::WireMessage::JoinRequest {
+            link_id: link_id.clone(),
+            peer_id: bob_id,
+        };
+        let bytes = crate::ops::pack_wire(&msg, &mallory).expect("pack_wire must succeed");
+
+        let sender = mallory.endpoint_id();
+        process_received_message(&bytes, sender, &ctx, &topic_handle).await;
+
+        // Give any actor tasks a moment to settle.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Neither Bob (the attacker-named target) nor Mallory (the real
+        // signer) should have been granted SendMessages — the listener
+        // must drop the packet entirely on signer/peer_id mismatch.
+        let mallory_id = mallory.endpoint_id();
+        let (bob_has, mallory_has) =
+            willow_actor::state::select(&client.event_state_addr, move |es| {
+                (
+                    es.has_permission(&bob_id, &willow_state::Permission::SendMessages),
+                    es.has_permission(&mallory_id, &willow_state::Permission::SendMessages),
+                )
+            })
+            .await;
+        assert!(
+            !bob_has,
+            "spoofed peer_id must not receive SendMessages grant"
+        );
+        assert!(
+            !mallory_has,
+            "signer must not receive SendMessages grant when peer_id mismatches"
+        );
+
+        // The join link's `used` counter must not have been incremented
+        // since the request was rejected before the link was consumed.
+        let used = {
+            let links = client.join_links.lock();
+            links
+                .iter()
+                .find(|l| l.link_id == link_id)
+                .map(|l| l.used)
+                .expect("link must still be present")
+        };
+        assert_eq!(used, 0, "rejected requests must not consume the join link");
+    }
+
+    /// When signer and wire peer_id agree, the listener grants
+    /// SendMessages to that verified peer. This is the positive
+    /// counterpart of the mismatch test above.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn join_request_with_matching_signer_grants_send_messages() {
+        let (client, _rx) = test_client();
+
+        let link_id = "match-link".to_string();
+        {
+            let mut links = client.join_links.lock();
+            links.push(crate::ops::JoinLink {
+                link_id: link_id.clone(),
+                server_id: "unused".into(),
+                max_uses: 10,
+                used: 0,
+                active: true,
+                expires_at: None,
+                created_at: 0,
+            });
+        }
+
+        let hub = willow_network::mem::MemHub::new();
+        let net = willow_network::mem::MemNetwork::new(&hub);
+        let (topic_handle, _events) = net
+            .subscribe(willow_network::topic_id("unit-test-topic-2"), vec![])
+            .await
+            .expect("subscribe must succeed");
+
+        let ctx = ListenerCtx {
+            event_state: client.event_state_addr.clone(),
+            chat_meta: client.chat_meta_addr.clone(),
+            profiles: client.profile_state_addr.clone(),
+            network: client.network_meta_addr.clone(),
+            voice: client.voice_state_addr.clone(),
+            persistence: client.persistence_addr.clone(),
+            persistence_enabled: false,
+            event_broker: client.event_broker.clone(),
+            identity: client.identity.clone(),
+            join_links: Arc::clone(&client.join_links),
+            dag: client.dag_addr.clone(),
+            server_registry: client.server_registry_addr.clone(),
+            on_neighbor_up: None,
+        };
+
+        let bob = willow_identity::Identity::generate();
+        let bob_id = bob.endpoint_id();
+        let msg = crate::ops::WireMessage::JoinRequest {
+            link_id: link_id.clone(),
+            peer_id: bob_id,
+        };
+        let bytes = crate::ops::pack_wire(&msg, &bob).expect("pack_wire must succeed");
+
+        process_received_message(&bytes, bob_id, &ctx, &topic_handle).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let bob_has = willow_actor::state::select(&client.event_state_addr, move |es| {
+            es.has_permission(&bob_id, &willow_state::Permission::SendMessages)
+        })
+        .await;
+        assert!(
+            bob_has,
+            "verified signer must be granted SendMessages via join link"
+        );
     }
 }
