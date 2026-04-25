@@ -22,9 +22,9 @@ NIP-01 solves this for Nostr by prefixing OK/CLOSED messages with a
 single-word machine-readable tag (`duplicate:`, `pow:`, `blocked:`,
 `rate-limited:`, `invalid:`, `restricted:`, `mute:`, `auth-required:`,
 `error:`). Willow's wire format is binary bincode
-([`transport/lib.rs:99`](../../crates/transport/src/lib.rs)), so we can
-carry a **typed enum** — same machine-readability as Nostr, plus
-compile-time exhaustive matching and structured payloads like
+([`pack` at `transport/lib.rs:138`](../../crates/transport/src/lib.rs)),
+so we can carry a **typed enum** — same machine-readability as Nostr,
+plus compile-time exhaustive matching and structured payloads like
 `retry_after_ms` or the violated `Permission`.
 
 Concrete cases the new reason must cover, each a real rejection site:
@@ -42,7 +42,7 @@ Concrete cases the new reason must cover, each a real rejection site:
 - `unpack` above `MAX_DESER_SIZE` — chunk, don't retry
   ([`transport/lib.rs:155`](../../crates/transport/src/lib.rs)).
 - `Identity::verify` fail on a forged envelope — re-sign
-  ([`identity/lib.rs:51`](../../crates/identity/src/lib.rs)).
+  ([`identity/lib.rs:52`](../../crates/identity/src/lib.rs)).
 
 ## Proposed format
 
@@ -74,6 +74,16 @@ pub enum WireRejectReason {
 
 Each variant maps to exactly one code path that exists today; the
 spec is a rename-and-surface exercise, not a behavior change.
+
+Note that the existing `TransportError::UnsupportedVersion` and
+`InsertError::SeqGap` / `InsertError::PrevMismatch` use a `got` field
+([`transport/lib.rs:53`](../../crates/transport/src/lib.rs),
+[`dag.rs:22-32`](../../crates/state/src/dag.rs)). The new
+`WireRejectReason` variants rename `got` → `actual` to match the
+`{ expected, actual }` convention used in the rest of the
+proposed enum (e.g. `PayloadTooLarge { limit, actual }`). The
+existing internal types may either be renamed in the same change
+or kept as-is and translated at the boundary.
 
 ## Wire envelope
 
@@ -128,7 +138,7 @@ canonical, the string is never matched on.
 | `check_permission` "not an admin" | [`materialize.rs:94`](../../crates/state/src/materialize.rs) | `Restricted("admin required")` |
 | `check_permission` lacks `Permission::X` | [`materialize.rs:117`](../../crates/state/src/materialize.rs) | `PermissionDenied(X)` |
 | `ApplyResult::Rejected(String)` | [`materialize.rs:24`](../../crates/state/src/materialize.rs) | `PermissionDenied(_)` / `Restricted(_)` depending on cause |
-| `IdentityError::InvalidSignature` | [`identity/lib.rs:51`](../../crates/identity/src/lib.rs) | `SignatureInvalid` |
+| `IdentityError::InvalidSignature` | [`identity/lib.rs:52`](../../crates/identity/src/lib.rs) | `SignatureInvalid` |
 | `IdentityError::PeerMismatch` | [`identity/lib.rs:79`](../../crates/identity/src/lib.rs) | `Invalid("peer_id mismatch")` |
 | `IdentityError::Serde` | [`identity/lib.rs:48`](../../crates/identity/src/lib.rs) | `Invalid("serde: …")` |
 | `TransportError::UnsupportedVersion` | [`transport/lib.rs:53`](../../crates/transport/src/lib.rs) | `UnsupportedVersion { expected, actual }` |
@@ -136,14 +146,22 @@ canonical, the string is never matched on.
 | `TransportError::Deserialize` (shape) | [`transport/lib.rs:162`](../../crates/transport/src/lib.rs) | `Invalid("deser: …")` |
 | Relay `topic_str_is_valid` fails | [`relay/lib.rs:388`](../../crates/relay/src/lib.rs) | `TopicInvalid(topic)` |
 | Relay `MAX_TOPICS` cap reached | [`relay/lib.rs:398`](../../crates/relay/src/lib.rs) | `Capacity` |
-| Relay connection cap reached | [`relay/lib.rs:155`](../../crates/relay/src/lib.rs) | `RateLimited { retry_after_ms }` |
+| Relay connection cap reached | [`relay/lib.rs:156`](../../crates/relay/src/lib.rs) (`Err(_)` arm of `try_acquire_owned`) | `RateLimited { retry_after_ms }` |
+| `check_permission` admin-only block | [`materialize.rs:111`](../../crates/state/src/materialize.rs) | `Restricted("admin required")` |
+| Vote on missing proposal | [`materialize.rs:161`](../../crates/state/src/materialize.rs) | `Invalid("proposal not found")` |
+| `RotateChannelKey` non-member | [`materialize.rs:497`](../../crates/state/src/materialize.rs) | `Restricted("not a member")` |
 | Relay not granted `SyncProvider` | (future history-serve guard) | `NotSyncProvider` |
 | iroh gossip receive error | [`network/iroh.rs:164`](../../crates/network/src/iroh.rs) | `ServerError` (local-only; not sent) |
 
-Items marked "local-only" in the last column feed structured logs and
-metrics but are never serialised onto the wire, because the peer we
-would be telling is precisely the peer we failed to decode bytes
-from.
+The mapping table above is illustrative of the major rejection
+categories rather than exhaustive — additional defense-in-depth and
+governance branches in `materialize.rs` map onto the same
+`Restricted(_)` / `Invalid(_)` shapes shown for their cousins.
+
+The `iroh gossip receive error` row is local-only: it feeds
+structured logs and metrics but is never serialised onto the wire,
+because the peer we would be telling is precisely the peer we failed
+to decode bytes from.
 
 ## Client consumption pattern
 
