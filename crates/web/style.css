@@ -5942,3 +5942,20 @@ select:focus-visible {
     outline-offset: 2px;
     border-radius: 4px;
 }
+
+/* ── Phase 2d ephemeral kind chip ───────────────────────────────────── */
+
+.kind-chip {
+    display: inline-flex;
+    align-items: center;
+    height: 16px;
+    padding: 2px 6px;
+    border: 1px solid var(--line-soft, var(--line));
+    border-radius: var(--radius-s);
+    color: var(--ink-3);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1;
+    background: transparent;
+    user-select: none;
+}

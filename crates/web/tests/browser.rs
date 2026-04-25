@@ -11227,3 +11227,54 @@ mod phase_2b_sync_queue {
             .expect("request_animation_frame");
     }
 }
+
+// ────────────────────── Phase 2d — Ephemeral channels ──────────────────────
+
+mod phase_2d_ephemeral_channels {
+    //! Tests for `crates/web/src/components/kind_chip.rs`,
+    //! `temp_channel_create.rs`, `archives_view.rs`, and
+    //! `read_only_banner.rs`.
+    //!
+    //! Spec: `docs/specs/2026-04-19-ui-design/ephemeral-channels.md`.
+
+    use super::{mount_test, query, tick};
+    use leptos::prelude::*;
+    use wasm_bindgen_test::*;
+    use willow_web::components::{KindChip, KindChipKind};
+
+    #[wasm_bindgen_test]
+    async fn kind_chip_renders_temp_for_channel() {
+        let container = mount_test(|| view! { <KindChip kind=KindChipKind::Channel/> });
+        tick().await;
+        let chip = query(&container, ".kind-chip").expect("KindChip must render");
+        assert_eq!(chip.text_content().unwrap_or_default().trim(), "temp");
+        assert_eq!(
+            chip.get_attribute("aria-label").as_deref(),
+            Some("non-permanent — channel")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn kind_chip_renders_thread_label() {
+        let container = mount_test(|| view! { <KindChip kind=KindChipKind::Thread/> });
+        tick().await;
+        let chip = query(&container, ".kind-chip").expect("KindChip must render");
+        assert_eq!(chip.text_content().unwrap_or_default().trim(), "thread");
+        assert_eq!(
+            chip.get_attribute("aria-label").as_deref(),
+            Some("non-permanent — thread")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn kind_chip_renders_whisper_label() {
+        let container = mount_test(|| view! { <KindChip kind=KindChipKind::Whisper/> });
+        tick().await;
+        let chip = query(&container, ".kind-chip").expect("KindChip must render");
+        assert_eq!(chip.text_content().unwrap_or_default().trim(), "whisper");
+        assert_eq!(
+            chip.get_attribute("aria-label").as_deref(),
+            Some("non-permanent — whisper")
+        );
+    }
+}
