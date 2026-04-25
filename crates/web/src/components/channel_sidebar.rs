@@ -894,12 +894,28 @@ fn render_channel_row(
         }
     };
 
+    // Phase 2d dormant meta — surfaces "last activity {N} {unit} ago"
+    // via the row's `title` attribute (long-press preview on mobile,
+    // tooltip on desktop) per spec §Sidebar treatment §Mobile compact
+    // form.
+    let title_for_row = move || {
+        if is_dormant() {
+            if let Some((last, _)) = ephemeral_meta_for_row.get() {
+                let now = js_sys::Date::now() as u64;
+                let elapsed = now.saturating_sub(last.unwrap_or(0));
+                let phrase = crate::util::humanise_elapsed_ms(elapsed);
+                return format!("{} — last activity {phrase}", name_title);
+            }
+        }
+        name_title.clone()
+    };
+
     view! {
         <>
         <div
             class=class_fn
             role="listitem"
-            title=name_title
+            title=title_for_row
             aria-label=aria
             on:click=move |_| {
                 if is_voice {

@@ -11516,6 +11516,19 @@ mod phase_2d_ephemeral_channels {
     }
 
     #[wasm_bindgen_test]
+    async fn humanise_elapsed_ms_phrasing_matches_spec() {
+        // Mobile dormant rows surface "{N} {unit} ago" — verify the
+        // helper returns the spec's exact phrasing.
+        use willow_web::util::humanise_elapsed_ms;
+        assert_eq!(humanise_elapsed_ms(0), "just now");
+        assert_eq!(humanise_elapsed_ms(60_000), "1 minute ago");
+        assert_eq!(humanise_elapsed_ms(2 * 60_000), "2 minutes ago");
+        assert_eq!(humanise_elapsed_ms(60 * 60_000), "1 hour ago");
+        assert_eq!(humanise_elapsed_ms(24 * 60 * 60_000), "1 day ago");
+        assert_eq!(humanise_elapsed_ms(7 * 24 * 60 * 60_000), "1 week ago");
+    }
+
+    #[wasm_bindgen_test]
     async fn temp_kind_threshold_clamps_above_cap() {
         let container = mount_test(|| view! { <TempChannelCreateForm/> });
         tick().await;

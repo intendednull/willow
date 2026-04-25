@@ -36,3 +36,68 @@ pub fn copy_to_clipboard(text: &str) {
     }
     let _ = body.remove_child(&ta);
 }
+
+/// Render an elapsed-milliseconds duration as a humanised
+/// "{N} {unit} ago" phrase used by the dormant-row meta line.
+///
+/// Spec: `docs/specs/2026-04-19-ui-design/ephemeral-channels.md`
+/// §Sidebar treatment — no abbreviations in the visible string.
+/// Sub-minute elapsed times collapse to `just now`.
+pub fn humanise_elapsed_ms(elapsed_ms: u64) -> String {
+    const MIN: u64 = 60_000;
+    const HOUR: u64 = 60 * MIN;
+    const DAY: u64 = 24 * HOUR;
+    const WEEK: u64 = 7 * DAY;
+    if elapsed_ms < MIN {
+        return "just now".into();
+    }
+    if elapsed_ms < HOUR {
+        let n = elapsed_ms / MIN;
+        return format!("{n} minute{} ago", if n == 1 { "" } else { "s" });
+    }
+    if elapsed_ms < DAY {
+        let n = elapsed_ms / HOUR;
+        return format!("{n} hour{} ago", if n == 1 { "" } else { "s" });
+    }
+    if elapsed_ms < WEEK {
+        let n = elapsed_ms / DAY;
+        return format!("{n} day{} ago", if n == 1 { "" } else { "s" });
+    }
+    let n = elapsed_ms / WEEK;
+    format!("{n} week{} ago", if n == 1 { "" } else { "s" })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn humanise_elapsed_ms_just_now() {
+        assert_eq!(humanise_elapsed_ms(0), "just now");
+        assert_eq!(humanise_elapsed_ms(59_000), "just now");
+    }
+
+    #[test]
+    fn humanise_elapsed_ms_minutes() {
+        assert_eq!(humanise_elapsed_ms(60_000), "1 minute ago");
+        assert_eq!(humanise_elapsed_ms(2 * 60_000), "2 minutes ago");
+    }
+
+    #[test]
+    fn humanise_elapsed_ms_hours() {
+        assert_eq!(humanise_elapsed_ms(60 * 60_000), "1 hour ago");
+        assert_eq!(humanise_elapsed_ms(3 * 60 * 60_000), "3 hours ago");
+    }
+
+    #[test]
+    fn humanise_elapsed_ms_days() {
+        assert_eq!(humanise_elapsed_ms(24 * 60 * 60_000), "1 day ago");
+        assert_eq!(humanise_elapsed_ms(2 * 24 * 60 * 60_000), "2 days ago");
+    }
+
+    #[test]
+    fn humanise_elapsed_ms_weeks() {
+        assert_eq!(humanise_elapsed_ms(7 * 24 * 60 * 60_000), "1 week ago");
+        assert_eq!(humanise_elapsed_ms(2 * 7 * 24 * 60 * 60_000), "2 weeks ago");
+    }
+}
