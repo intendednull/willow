@@ -6165,6 +6165,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "willow-common",
  "willow-identity",
  "willow-network",
  "willow-state",
