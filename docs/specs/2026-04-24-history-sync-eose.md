@@ -19,13 +19,18 @@ messages today; see the explicit TODO at
 worker heads-based protocol. Until that lands, history reaches the
 client only via SERVER_OPS.)
 
-Events that arrive on `_willow_server_ops` are interleaved with live
-events that ordinary peers are publishing right now. The client has no
-way to tell historical from live. The UI therefore has to guess —
-usually with a loading spinner that stays up for a fixed debounce
-window, or that flips off the first time the event stream goes quiet
-for N ms. Both heuristics are wrong on a slow network and both waste
-milliseconds on a fast one.
+Today's history path piggybacks on the SERVER_OPS state-sync exchange
+(SERVER_OPS carries server-level mutations + `SyncRequest`/`SyncBatch`,
+not live chat — chat events flow on per-channel topics). Because chat
+events live in the same DAG as those server mutations, they ride back
+to the joiner inside the same `SyncBatch` payload as the historical
+state — interleaved with whatever new server-state events ordinary
+peers happen to be publishing on `_willow_server_ops` right now. The
+client has no way to tell historical from live. The UI therefore has
+to guess — usually with a loading spinner that stays up for a fixed
+debounce window, or that flips off the first time the event stream
+goes quiet for N ms. Both heuristics are wrong on a slow network and
+both waste milliseconds on a fast one.
 
 Nostr solved this cleanly with NIP-01's `EOSE` marker: `["EOSE",
 <subid>]` is a zero-payload frame the relay emits after all stored
@@ -52,7 +57,7 @@ established convention for no benefit, and adding a payload type at
 the transport layer would create a `willow-transport → willow-state`
 dependency cycle (transport currently has no `EventHash` access; the
 dependency graph in `CLAUDE.md` runs `client → state` and
-`state → transport`).
+`state → identity → transport` (via willow-identity)).
 
 We therefore add a new variant to `WireMessage` in `willow-common`
 (which already depends on `willow-state`):
@@ -263,17 +268,19 @@ in the current code.
   1000) and an LRU server cap of 1000 — see
   `crates/replay/src/role.rs:18,64`.
 - **Storage worker** (requires SERVER_OPS broadcast handle):
-  snapshot the watermark *first*, stream every row up to that
-  watermark via the `sync_since` path (`crates/storage/src/store.rs:289-347`,
-  `ORDER BY seq ASC`) — not the paginated `history()` path
+  snapshot the watermark *first*, then send every row matching the
+  watermark in one `WorkerResponse::SyncBatch` reply on `_willow_workers`
+  via the `sync_since` path (`crates/storage/src/store.rs:289-347`,
+  `ORDER BY seq ASC`, capped at `SYNC_BATCH_LIMIT = 10_000` rows per
+  reply) — not the paginated `history()` path
   (`store.rs:184-238`, `ORDER BY seq DESC`), which is for explicit
-  user-initiated history fetches. The streamed rows themselves still
-  ride the existing `WorkerResponse::SyncBatch` reply on
-  `_willow_workers`; the marker is emitted on `_willow_server_ops`
-  after the last row is sent so any client subscribed to SERVER_OPS
-  sees it. Events that arrive at the worker after the watermark was
-  taken are forwarded as ordinary gossip after the marker — they are
-  live, not historical.
+  user-initiated history fetches. The marker is emitted on
+  `_willow_server_ops` after the SyncBatch reply is sent so any client
+  subscribed to SERVER_OPS sees it. Events that arrive at the worker
+  after the watermark was taken are not part of this reply; once the
+  worker grows a path to forward them as ordinary gossip after the
+  marker (forward-looking — no such path exists in storage today),
+  they will be live, not historical.
 - **Peer-to-peer** (**conditional** on the per-author DAG sync wire
   protocol landing): `SyncMessage` is defined in
   `crates/state/src/sync.rs:37-44` but has zero producers or
@@ -359,9 +366,12 @@ live events.
   everything in my frontier" moment; `HistorySyncComplete` is the
   wire encoding of that moment. **Blocks-on:** the peer-to-peer
   provider class enumerated in "Multiple providers" cannot ship until
-  this spec lands a `WireMessage` variant for `SyncMessage` and the
-  per-channel-topic handshake to drive it. The replay/storage worker
-  provider classes do **not** depend on this spec and can ship first.
+  `2026-04-01-per-author-merkle-dag-state-design.md` lands a
+  `WireMessage` variant for `SyncMessage` and the per-channel-topic
+  handshake to drive it. (This spec lands only
+  `WireMessage::HistorySyncComplete`; the `SyncMessage` wire-plumbing
+  is owned by the per-author DAG spec.) The replay/storage worker
+  provider classes do **not** depend on that work and can ship first.
 - `2026-04-12-state-authority-and-mutations.md` — markers do **not**
   flow through `apply_event`. They are not authority-bearing; they
   cannot grant, revoke, or mutate `ServerState`. A malicious marker
@@ -385,9 +395,13 @@ live events.
    clients can cross-check against the "majority-agreed state"
    mechanism from `CLAUDE.md`'s trust model? This would unify history
    completion and state convergence into one signal.
-4. Per-channel vs per-server scope: today `TopicId` is per-channel,
-   but a server-wide marker ("all channels have caught up") would
-   simplify the join flow. Do we want both?
+4. Per-channel vs per-server scope: today the per-channel `TopicId`
+   is the unit of subscription a joining client sees historical chat
+   on (the same `TopicId` type is also used for SERVER_OPS, WORKERS,
+   PROFILES, and voice topics, but those are not what the UI's
+   "loading channel history" spinner gates on). A server-wide marker
+   ("all channels have caught up") would simplify the join flow. Do
+   we want both?
 5. Is `stream_generation: u64` overkill? A random `u64` (e.g. from
    `ChaCha20Rng`) would avoid the "did I remember to bump it?" bug
    class, at the cost of not being orderable.
