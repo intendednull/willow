@@ -51,7 +51,9 @@ serialized over the wire by the worker protocol. The novelty is:
 - Adding an explicit `SyncFilter` so callers can scope a sync to a
   specific server / channel set / author set / event-kind set.
 - Defining streaming termination semantics (`more: bool`) so a single
-  sync exchange can span multiple `MAX_DESER_SIZE` envelopes.
+  sync exchange can span multiple gossip envelopes (the binding cap
+  is iroh-gossip's 64 KiB `max_message_size`, **not** transport's
+  256 KB `MAX_DESER_SIZE`; see [Wire protocol](#wire-protocol)).
 - Removing the 500-event topological-sort fallback.
 
 The DAG already enforces per-author monotonicity — every author's
@@ -77,6 +79,7 @@ This unlocks:
 [storage-store-sync]: ../../crates/storage/src/store.rs
 [listeners-todo]: ../../crates/client/src/listeners.rs
 [heads-summary]: ../../crates/state/src/sync.rs
+[dag]: ../../crates/state/src/dag.rs
 [dag-seq-check]: ../../crates/state/src/dag.rs
 
 ## Algorithm
@@ -85,19 +88,28 @@ A single round trip with streaming response.
 
 **Phase 1 — Client request.** The client computes its current
 [`HeadsSummary`][heads-summary] from its local DAG (already exposed
-via `EventDag::heads_summary()` in
-[`crates/state/src/sync.rs`][heads-summary]) scoped to a `SyncFilter`,
-and sends a `SyncRequest`.
+via `EventDag::heads_summary()` at
+[`crates/state/src/dag.rs:267`][dag]; the `HeadsSummary` /
+`AuthorHead` types themselves live in
+[`crates/state/src/sync.rs:21-33`][heads-summary]) scoped to a
+`SyncFilter`, and sends a `SyncRequest`.
 
 **Phase 2 — Responder stream.** The responder, for each author whose
 `our_max_seq > requester.heads[author].seq` (or absent from the
 requester's `heads`), streams the missing events in `(author, seq)`
 ascending order via the existing per-author tail query
-(`EventDag::events_since` or `StorageEventStore::sync_since`). Authors
-not mentioned in the requester's `heads` default to `known_max = 0`
-(the requester has nothing for that author yet). Events are batched
-into one or more `SyncBatch { events, more: true }` envelopes, each
-fitting `MAX_DESER_SIZE = 256 KB`.
+([`EventDag::events_since`][dag] at `crates/state/src/dag.rs:282` or
+[`StorageEventStore::sync_since`][store-schema] at
+`crates/storage/src/store.rs:289-381`). Authors not mentioned in the
+requester's `heads` default to `known_max = 0` (the requester has
+nothing for that author yet). Authors the requester *does* list but
+that we don't know locally are silently ignored — we cannot serve what
+we don't have (matches the existing
+[`events_since_unknown_author` test][heads-summary] at
+`crates/state/src/sync.rs:464-476`). Events are batched into one or
+more `SyncBatch { events, more: true }` envelopes, each sized to fit
+within the gossip transport's 64 KiB limit (see
+[Wire protocol](#wire-protocol)).
 
 **Phase 3 — Termination.** The final envelope carries
 `SyncBatch { events: …, more: false }`. The client emits a
@@ -185,12 +197,40 @@ pub struct SyncFilter {
 }
 ```
 
-Each `SyncBatch` payload (post-Serde, post-`Envelope`) is bounded by
-`MAX_DESER_SIZE = 256 KB`
-([`crates/transport/src/lib.rs:36`][message-type]). Responders pack
-events greedily until the next event would overflow, emit
-`SyncBatch { request_id, events, more: true }`, and continue. The
-final batch sets `more: false`.
+Each `SyncBatch` payload is bounded by the **gossip layer's 64 KiB
+`max_message_size`**, not transport's deserialization safety cap.
+Concretely:
+
+- iroh-gossip is built with `max_message_size(65536)` at
+  [`crates/network/src/iroh.rs:270`][iroh-gossip-cap]. Frames exceeding
+  64 KiB are dropped at the gossip layer before they ever reach
+  transport.
+- Transport's `MAX_DESER_SIZE = 256 KB`
+  ([`crates/transport/src/lib.rs:36`][message-type]) is only a
+  deserialization-time anti-DoS cap and is **deliberately set above**
+  the gossip ceiling so the framing overhead can't trip it. The
+  comment at `transport/lib.rs:33-35` makes this explicit.
+- Therefore the responder's per-envelope budget is the gossip cap minus
+  envelope + signature framing — roughly **~57-60 KiB usable** for the
+  serialized `Vec<Event>` payload after `Envelope`, `WireMessage`
+  variant tag, and bincode framing are accounted for. Responders pack
+  events greedily until the next event would push the serialized
+  envelope past that usable budget, emit
+  `SyncBatch { request_id, events, more: true }`, and continue. The
+  final batch sets `more: false`.
+
+This aligns the new gossip-side `SyncBatch` budget with how the
+existing worker `WorkerResponse::SyncBatch` already operates today
+(also gossip-bound — see [`crates/worker/src/actors/sync.rs:79-87`][worker-sync]
+and the `topic.broadcast(...)` path), and supersedes the existing
+`SYNC_BATCH_LIMIT = 10_000` event count cap at
+[`crates/storage/src/store.rs:287`][store-schema], which can already
+overflow the gossip cap in practice for non-trivial event sizes. A
+storage-side per-call cap stays useful as an OOM guard, but the
+authoritative bound for sync streaming is the gossip envelope budget.
+
+[iroh-gossip-cap]: ../../crates/network/src/iroh.rs
+[worker-sync]: ../../crates/worker/src/actors/sync.rs
 
 The worker-side `WorkerRequest::Sync { server_id, heads: HeadsSummary }`
 in [`crates/common/src/worker_types.rs:88-95`][worker-types] is already
@@ -270,10 +310,18 @@ multiple servers. The migration plan:
 2. Drop the old `idx_events_author_seq` after the new index is
    verified in production (a separate migration so the rollout is
    reversible).
-3. Update `sync_since` to use the new index (the existing
+3. Update `sync_since` to use the new index. The existing
    implementation in [`crates/storage/src/store.rs:289-381`][store-schema]
-   already filters by `server_id` and `author`, just over a less
-   selective index today).
+   has two branches: an empty-heads branch
+   (`store.rs:290-318`) that issues `SELECT … WHERE server_id = ?
+   ORDER BY seq ASC LIMIT ?` (no author filter, server scan), and a
+   non-empty branch (`store.rs:323-349`) that builds an OR-joined
+   disjunction `(author = ? AND seq > ?)` per requester-known author
+   plus an `author NOT IN (...)` fanout for authors the requester
+   never mentioned. Both branches benefit from the new compound
+   `(server_id, author, seq)` index; the disjunctive query in
+   particular goes from a per-server scan with author predicate to a
+   per-(server, author) range scan.
 
 [store-schema]: ../../crates/storage/src/store.rs
 
@@ -292,10 +340,14 @@ The responder iterates the union of `(authors in requester.heads ∪
 authors known locally)` filtered by `SyncFilter.authors`, paging the
 above query per author and packing into `SyncBatch` envelopes.
 
-The in-memory replay worker maintains
-`HashMap<EndpointId, BTreeMap<u64, Arc<Event>>>` (effectively, via
-`EventDag::events_since` in [`crates/state/src/sync.rs`][heads-summary])
-to support the same query shape with a `range((known_max + 1)..)` scan.
+The in-memory replay worker holds the same `EventDag` clients use:
+per-author chains are `HashMap<EndpointId, Vec<EventHash>>` plus an
+`events: HashMap<EventHash, Event>` map (see
+[`crates/state/src/dag.rs:88-98`][dag]). Position in the per-author
+`Vec` is the seq index, so
+[`EventDag::events_since`][dag] (`crates/state/src/dag.rs:282-302`)
+serves the per-author tail query as a `chain.iter().skip(known_max)`
+linear scan rather than a BTreeMap range scan.
 
 ### Per-author tail query helpers
 
@@ -308,7 +360,7 @@ clients and replay workers.
 The per-author tail query already exists in both:
 
 - `EventDag::events_since(&BTreeMap<EndpointId, u64>, Option<usize>)
-  -> Vec<&Event>` ([`crates/state/src/sync.rs`][heads-summary])
+  -> Vec<&Event>` ([`crates/state/src/dag.rs:282`][dag])
 - `StorageEventStore::sync_since(&str, &HeadsSummary) ->
   anyhow::Result<Vec<Event>>`
   ([`crates/storage/src/store.rs:289-381`][store-schema])
@@ -337,19 +389,23 @@ trivially (`EventDag` from its `chains` map; `StorageEventStore` from
 Browser-only clients implement these against IndexedDB but only need
 to *serve* if they ever respond to peer requests; pure leaf clients
 just need their own `HeadsSummary` (already produced by
-`EventDag::heads_summary()`) to build the request.
+[`EventDag::heads_summary()`][dag] at `crates/state/src/dag.rs:267`)
+to build the request.
 
 ## Termination + EOSE
 
 `SyncBatch { request_id, more: false }` is the canonical end-of-stream
 marker. Upon receipt the client:
 
-1. Applies the batch via the public materialize entry point. The
-   primary path is `EventDag::insert(event)`
-   ([`crates/state/src/dag.rs`][dag-insert]), which validates per-author
-   `seq` and `prev`, followed by `apply_incremental(state, &event)`
-   ([`crates/state/src/materialize.rs:61`][materialize]) to update
-   `ServerState`. The internal `apply_event` (line 130 in
+1. Applies the batch via the client's existing per-event entry point
+   `try_insert_event(ctx, event)`
+   ([`crates/client/src/listeners.rs:276-278`][listeners-todo]), which
+   wraps `EventDag::insert(event)`
+   ([`crates/state/src/dag.rs:115`][dag-insert]) and the
+   `apply_incremental(state, &event)` step
+   ([`crates/state/src/materialize.rs:61`][materialize]) through
+   `ManagedDag`. Conceptually: validate per-author `seq` and `prev`,
+   then advance `ServerState`. The internal `apply_event` (line 130 in
    `materialize.rs`) is private and not part of the public API.
 2. Emits a `HistorySyncComplete` client event consumed by the UI per
    the EOSE spec (#214), which owns the user-visible "history loaded"
@@ -419,9 +475,15 @@ quo.
 
 - `SyncRequest.heads` size: `O(authors_known)` × ~72 bytes (32-byte
   `EndpointId` + 8-byte `u64` seq + 32-byte head hash). 1000 authors
-  ≈ 72 KB; well within `MAX_DESER_SIZE`.
-- `SyncBatch` is bounded per envelope; total bytes are bounded by the
-  actual diff, never by `|history|`.
+  ≈ 72 KB — this **exceeds the 64 KiB gossip cap**. Servers with
+  > ~800 known authors will need to chunk the `SyncRequest` itself or
+  fall back to a non-gossip ALPN. For all expected near-term
+  deployments (single- or double-digit author counts per server) this
+  is non-binding; the chunking design is deferred to the implementation
+  PR and called out as an open question below.
+- `SyncBatch` is bounded per envelope by the ~57-60 KiB gossip-usable
+  budget (see [Wire protocol](#wire-protocol)); total bytes are bounded
+  by the actual diff, never by `|history|`.
 - Responders enforce a per-peer concurrency cap (e.g. 2 in-flight
   responses) and a per-session wall-clock budget to bound memory.
 - **Serving SHOULD be gated by `SyncProvider`**
@@ -443,8 +505,8 @@ quo.
 | unit | `EventDag::events_since` returns contiguous `(author, seq)` ranges, empty when up-to-date (already covered) | `crates/state/src/sync.rs` (existing tests at lines 418–501) |
 | unit | `StorageEventStore::sync_since` for known and unknown server IDs (already covered) | `crates/storage/src/store.rs` (existing tests at lines 998–1085) |
 | unit | New: `events_since` accepts a `SyncFilter` and respects `channels` / `authors` / `event_kinds` / `since_ms` | `crates/state/src/sync.rs` (extend existing module) |
-| unit | New: `WireMessage::SyncRequest { heads, filter }` and `SyncBatch { request_id, events, more }` Serde round-trip; envelope size bound | `crates/common/src/wire.rs` (extend inline `#[cfg(test)]` module that already covers `SyncRequest` / `SyncBatch` round-trip) |
-| unit | New: Batching: 5 KB events × 100 authors split correctly across `SyncBatch` envelopes with `more` flag and consistent `request_id` | `crates/state/src/sync.rs` or a new `crates/network/src/sync.rs` (location TBD by implementer) |
+| unit | New: `WireMessage::SyncRequest { heads, filter }` and `SyncBatch { request_id, events, more }` Serde round-trip; serialized envelope ≤ 64 KiB gossip cap | `crates/common/src/wire.rs` (extend inline `#[cfg(test)]` module that already covers `SyncRequest` / `SyncBatch` round-trip) |
+| unit | New: Batching: 5 KB events × 100 authors split correctly across `SyncBatch` envelopes (each ≤ ~60 KiB usable budget) with `more` flag and consistent `request_id` | `crates/state/src/sync.rs` or a new `crates/network/src/sync.rs` (location TBD by implementer) |
 | integration | Three-peer convergence: A has authors {x:1..100}, B has {y:1..100}, C empty; C syncs from A then B and ends with both chains complete | `crates/client/src/tests/` against `willow_network::mem::MemNetwork` |
 | integration | Edge cases: empty store, requester already up-to-date (zero-event response with `more: false`), single missing event, author entirely unknown to requester | same crate |
 | integration | Authority events sync identically (server-create, grant, kick reach client without special-casing) | same crate |
@@ -495,3 +557,11 @@ monotonicity invariant.
    to `MessageType::Sync = 8` (slot 7 reserved by EOSE spec #214)
    would let middleboxes route sync traffic without parsing the
    inner envelope. Defer until the consolidation lands.
+4. **Chunking the request itself.** A single `SyncRequest.heads`
+   payload of `>~ 800` known authors crosses the 64 KiB gossip cap.
+   Options: (a) split the request across multiple envelopes correlated
+   by `request_id` and processed atomically by the responder; (b) move
+   the entire sync exchange to a dedicated iroh ALPN protocol where
+   gossip's framing limit doesn't apply; (c) accept the soft cap and
+   defer until production deployments approach it. Option (c) is
+   chosen for v1; (b) is the natural escape hatch.
