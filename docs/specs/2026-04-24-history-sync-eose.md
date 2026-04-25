@@ -8,30 +8,31 @@
 
 ## Motivation
 
-Today a joining client picks up history through two different paths:
+Today a joining client picks up history through a single client-visible
+path: a `WireMessage::SyncRequest` / `SyncBatch` exchange on
+`_willow_server_ops` (the SERVER_OPS topic), where peers and the replay
+worker stream missing events back to the joiner. (A second path exists
+strictly between workers — `WorkerRequest::Sync` / `WorkerResponse::SyncBatch`
+on `_willow_workers` — but clients neither send nor subscribe to those
+messages today; see the explicit TODO at
+`crates/client/src/listeners.rs:294-295` to migrate clients onto the
+worker heads-based protocol. Until that lands, history reaches the
+client only via SERVER_OPS.)
 
-1. A `WireMessage::SyncRequest` / `SyncBatch` exchange on
-   `_willow_server_ops` (the SERVER_OPS topic), where peers and the
-   replay worker stream missing events back to the joiner.
-2. Targeted `WorkerRequest::Sync` / `WorkerRequest::History` requests
-   on `_willow_workers` (the WORKERS topic), answered with
-   `WorkerResponse::SyncBatch`, `Snapshot`, or `HistoryPage`.
-
-In both paths the events that arrive on `_willow_server_ops` (or are
-re-broadcast there after a worker hands them over) are interleaved
-with live events that ordinary peers are publishing right now. The
-client has no way to tell historical from live. The UI therefore has
-to guess — usually with a loading spinner that stays up for a fixed
-debounce window, or that flips off the first time the event stream
-goes quiet for N ms. Both heuristics are wrong on a slow network and
-both waste milliseconds on a fast one.
+Events that arrive on `_willow_server_ops` are interleaved with live
+events that ordinary peers are publishing right now. The client has no
+way to tell historical from live. The UI therefore has to guess —
+usually with a loading spinner that stays up for a fixed debounce
+window, or that flips off the first time the event stream goes quiet
+for N ms. Both heuristics are wrong on a slow network and both waste
+milliseconds on a fast one.
 
 Nostr solved this cleanly with NIP-01's `EOSE` marker: `["EOSE",
 <subid>]` is a zero-payload frame the relay emits after all stored
 events for a subscription have been flushed, drawing a bright line
 between backfill and live tail. We want the same property in Willow.
 The details differ — Willow has no subscription ids, no single
-authoritative relay, and history is served by three concurrent
+authoritative relay, and history is (or will be) served by multiple
 provider classes (see "Multiple providers" below) — but the user-
 visible invariant we need is identical: **after the client has seen
 one of these markers from a trusted provider, it knows the loading
@@ -40,8 +41,9 @@ state has resolved and the UI can commit.**
 ## Wire format
 
 The existing transport-layer enum `MessageType` in
-`crates/transport/src/lib.rs` (variants `Chat=0` … `Ping=6`, declared
-on line 64) is bypassed by every production code path: all current
+`crates/transport/src/lib.rs` (declared on line 64; variants `Chat=0`
+… `Ping=6` on lines 66-78) is bypassed by every production code path:
+all current
 gossipsub traffic is dispatched through the single
 `MessageType::Channel` envelope and routed by the inner
 `WireMessage` enum at `crates/common/src/wire.rs:13`. Adding a new
@@ -79,7 +81,7 @@ single audit log can correlate markers across topics. The provider's
 identity is deliberately **not** carried in the payload: like every
 other `WireMessage`, the marker rides the same Ed25519-signed
 envelope built by `pack_wire` / verified by `unpack_wire`
-(`crates/common/src/wire.rs:104-119`), so the receiver derives the
+(`crates/common/src/wire.rs:105-120`), so the receiver derives the
 provider's `EndpointId` from the verified envelope signer at unpack
 time. This forecloses a class of relay-rewrite / MITM attacks where a
 separate `provider_peer` field could be edited to attribute the
@@ -119,13 +121,42 @@ unpack time:
 ### Which gossip topic carries the marker
 
 In current code the workers do **not** subscribe to per-channel
-topics: `crates/worker/src/runtime.rs` only joins `WORKERS_TOPIC`
-(`_willow_workers`) and `SERVER_OPS_TOPIC` (`_willow_server_ops`).
-Per-channel topics are joined only by clients. The marker therefore
-travels on `_willow_server_ops` for server-state backfill (where the
-joining client is already subscribed alongside the workers) and on
-the per-channel topic for any peer-to-peer history that streams
-directly between clients on that channel topic. A worker that did not
+topics: `crates/worker/src/runtime.rs:30-34` joins only
+`WORKERS_TOPIC` (`_willow_workers`) and `SERVER_OPS_TOPIC`
+(`_willow_server_ops`). Per-channel topics are joined only by
+clients. **Worker → SERVER_OPS is currently ingest-only.** The
+runtime binds the SERVER_OPS subscription handle as
+`let (_ops_sender, ops_events) = ...` (note the underscore), and all
+worker outbound traffic (`HeartbeatActor`, `SyncActor`, the request
+reply path in `crates/worker/src/actors/network.rs:141-149`) goes out
+on `workers_sender`, the WORKERS topic. Worker replies are
+`WorkerWireMessage::Response` frames on WORKERS — they are not
+re-broadcast onto SERVER_OPS today.
+
+This spec selects, of the two transports a worker-emitted marker
+could ride, **option (a): extend the worker runtime to broadcast on
+SERVER_OPS**. The alternative (b) — ride the existing
+`WorkerWireMessage::Response` path on WORKERS and require clients to
+subscribe to that topic — was rejected because it inverts the topic's
+semantics (WORKERS today carries worker-to-worker control traffic
+only; clients are intentionally absent), it forces every client onto
+a mesh sized for workers, and it couples the marker's lifetime to a
+specific `WorkerRequest`/`Response` correlation rather than a
+broadcast event any subscriber on the channel/server topic can see.
+
+**Prerequisite (in scope of the implementing PR, not this spec):**
+both the replay worker and the storage worker must add an outbound
+broadcast handle for `_willow_server_ops`. Concretely, change the
+runtime binding from `let (_ops_sender, ops_events) = ...` to a named
+sender and thread it into whichever actor emits the marker. No new
+network primitive is required — `TopicHandle::broadcast` already
+exists; only the binding does not.
+
+With that prerequisite in place, the marker travels on
+`_willow_server_ops` for server-state backfill (where the joining
+client is already subscribed alongside the workers) and on the
+per-channel topic for any peer-to-peer history that streams directly
+between clients on that channel topic. A worker that did not
 previously broadcast on the channel topic is **not** required to do
 so by this spec; if a future worker grows direct channel-topic
 backfill it must subscribe to that topic first.
@@ -138,7 +169,7 @@ marker; existing peers ignore markers whose
 `(provider, stream_generation)` they have already observed. Relays
 forward the marker by their existing topic-routing rules: see the
 `Scope: transport only` section in the module-level documentation of
-`crates/relay/src/lib.rs:9-22`, which establishes the relay as
+`crates/relay/src/lib.rs:8-22`, which establishes the relay as
 content-agnostic at the wire level.
 
 Using `broadcast` rather than `broadcast_neighbors` is a deliberate
@@ -152,14 +183,16 @@ same effect with no new primitives.
 
 ## Multiple providers
 
-A single server has, in the current architecture, three candidate
-provider classes for history:
+A single server has, in the architecture this spec targets, three
+candidate provider classes for history. The first two exist today;
+the third is **conditional on the per-author Merkle-DAG sync protocol
+landing** (see "Interaction with existing specs"):
 
-| Provider | Source | Completeness |
-|----------|--------|--------------|
-| **Replay worker** | per-author DAG with `max_events_per_author` cap (default 1000, see `crates/replay/src/role.rs:64`); LRU-evicted at `MAX_SERVERS = 1000` per node (`crates/replay/src/role.rs:18`) | lossy, recent |
-| **Storage worker** | SQLite archival log | authoritative, long tail |
-| **Peer** | any peer with more state than us | opportunistic |
+| Provider | Source | Completeness | Status |
+|----------|--------|--------------|--------|
+| **Replay worker** | per-author DAG with `max_events_per_author` cap (default 1000, see `crates/replay/src/role.rs:64`); LRU-evicted at `MAX_SERVERS = 1000` per node (`crates/replay/src/role.rs:18`) | lossy, recent | exists today |
+| **Storage worker** | SQLite archival log | authoritative, long tail | exists today |
+| **Peer** | any peer with more state than us | opportunistic | **conditional** — requires `SyncMessage` wire plumbing (see below) |
 
 A joining client can receive up to three `HistorySyncComplete`
 markers for the same topic (one per provider class). We define
@@ -212,29 +245,48 @@ Both are kept — they answer different questions.
 Emission is triggered by `NeighborUp` events on the provider's
 `TopicEvents` stream (`GossipEvent::NeighborUp` variant at
 `crates/network/src/traits.rs:56`; the `TopicEvents` trait at
-`crates/network/src/traits.rs:84`):
+`crates/network/src/traits.rs:84`). All worker-side emissions
+described below are gated on the broadcast-handle prerequisite
+recorded in "Which gossip topic carries the marker" — neither the
+replay nor the storage worker can broadcast on `_willow_server_ops`
+in the current code.
 
-- **Replay worker**: after responding to a peer's
-  `WorkerRequest::Sync` with the computed delta (or `Snapshot`),
-  emit a marker on `_willow_server_ops` with the hash of the last
-  event in that response, or `None` when it had nothing to send.
-  The replay worker today uses a per-author DAG (max-events-per-author
-  default 1000) and an LRU server cap of 1000 — see
+- **Replay worker** (requires SERVER_OPS broadcast handle): after
+  responding to a peer's `WorkerRequest::Sync` with the computed
+  delta (or `Snapshot`), emit a marker on `_willow_server_ops` with
+  the hash of the last event in that response, or `None` when it had
+  nothing to send. The reply itself still goes back as
+  `WorkerWireMessage::Response` on `_willow_workers` (worker-to-worker
+  RPC); only the `HistorySyncComplete` marker is broadcast on
+  SERVER_OPS, where the joining client is subscribed. The replay
+  worker today uses a per-author DAG (max-events-per-author default
+  1000) and an LRU server cap of 1000 — see
   `crates/replay/src/role.rs:18,64`.
-- **Storage worker**: snapshot the watermark *first*, stream every
-  row up to that watermark via the `sync_since` path
-  (`crates/storage/src/store.rs:289-347`, `ORDER BY seq ASC`) — not
-  the paginated `history()` path (`store.rs:184-238`,
-  `ORDER BY seq DESC`), which is for explicit user-initiated history
-  fetches. Emit the marker after the last row is sent. Events that
-  arrive at the worker after the watermark was taken are forwarded as
-  ordinary gossip after the marker — they are live, not historical.
-- **Peer-to-peer**: emit after the
+- **Storage worker** (requires SERVER_OPS broadcast handle):
+  snapshot the watermark *first*, stream every row up to that
+  watermark via the `sync_since` path (`crates/storage/src/store.rs:289-347`,
+  `ORDER BY seq ASC`) — not the paginated `history()` path
+  (`store.rs:184-238`, `ORDER BY seq DESC`), which is for explicit
+  user-initiated history fetches. The streamed rows themselves still
+  ride the existing `WorkerResponse::SyncBatch` reply on
+  `_willow_workers`; the marker is emitted on `_willow_server_ops`
+  after the last row is sent so any client subscribed to SERVER_OPS
+  sees it. Events that arrive at the worker after the watermark was
+  taken are forwarded as ordinary gossip after the marker — they are
+  live, not historical.
+- **Peer-to-peer** (**conditional** on the per-author DAG sync wire
+  protocol landing): `SyncMessage` is defined in
+  `crates/state/src/sync.rs:37-44` but has zero producers or
+  consumers anywhere on the network today — there is no
+  `WireMessage::Advertise`/`Request`/`Response` variant, no handler.
+  When that protocol is wired up per
+  `2026-04-01-per-author-merkle-dag-state-design.md`, peer providers
+  emit a marker after the
   `SyncMessage::Advertise(HeadsSummary)` →
   `SyncMessage::Request(Vec<AuthorRequest>)` →
-  `SyncMessage::Response(Vec<Event>)` exchange from
-  `2026-04-01-per-author-merkle-dag-state-design.md` completes and
-  before relaying any live events to the new neighbour.
+  `SyncMessage::Response(Vec<Event>)` exchange completes and before
+  relaying any live events to the new neighbour. Until then, only
+  the worker-emitted markers exist.
 
 The provider tracks which neighbours it has already sent a marker to
 in this `stream_generation` so a reconnect loop cannot spam the UI.
@@ -245,7 +297,8 @@ in this `stream_generation` so a reconnect loop cannot spam the UI.
   completeness against `max_limit` truncation; clients are expected to
   consume a partial reply silently. Willow's contract is intentionally
   stronger: `last_event_hash` lets clients detect truncation against
-  the 1000-event replay buffer or any other ring-buffered source. If
+  the per-author 1000-event chain cap or any other ring-buffered
+  source. If
   the DAG cursor the client was tracking does not link to
   `last_event_hash` through a known parent chain, the client SHOULD
   fall back to the storage worker or a peer with a deeper history
@@ -290,7 +343,7 @@ size bounds.
 **Relay-level** (`crates/relay/tests/`, `just test-relay`): verify the
 relay forwards `WireMessage::HistorySyncComplete`-bearing envelopes
 unchanged (it should already — the relay is opaque at the wire level,
-see `crates/relay/src/lib.rs:9-22` — but the test pins that contract
+see `crates/relay/src/lib.rs:8-22` — but the test pins that contract
 so a future size-bounded filter does not silently drop the marker).
 
 **Browser-level** (`crates/web/tests/browser.rs`, `just test-browser`):
@@ -304,14 +357,19 @@ live events.
   `SyncMessage::Advertise` / `Request` / `Response` exchange (over
   per-author `HeadsSummary`) produces a natural "I have sent you
   everything in my frontier" moment; `HistorySyncComplete` is the
-  wire encoding of that moment.
+  wire encoding of that moment. **Blocks-on:** the peer-to-peer
+  provider class enumerated in "Multiple providers" cannot ship until
+  this spec lands a `WireMessage` variant for `SyncMessage` and the
+  per-channel-topic handshake to drive it. The replay/storage worker
+  provider classes do **not** depend on this spec and can ship first.
 - `2026-04-12-state-authority-and-mutations.md` — markers do **not**
   flow through `apply_event`. They are not authority-bearing; they
   cannot grant, revoke, or mutate `ServerState`. A malicious marker
   is a UX bug at worst, never a state bug.
 - `2026-03-27-worker-nodes-design.md` — replay and storage workers
-  gain a new emission obligation documented above; no change to their
-  trust status.
+  gain a new emission obligation documented above plus a new outbound
+  broadcast handle for `_willow_server_ops` (see "Which gossip topic
+  carries the marker"); no change to their trust status.
 
 ## Open questions
 
@@ -330,9 +388,9 @@ live events.
 4. Per-channel vs per-server scope: today `TopicId` is per-channel,
    but a server-wide marker ("all channels have caught up") would
    simplify the join flow. Do we want both?
-5. Is `stream_generation: u64` overkill? A simple `ChaCha20`-derived
-   nonce would avoid the "did I remember to bump it?" bug class, at
-   the cost of not being orderable.
+5. Is `stream_generation: u64` overkill? A random `u64` (e.g. from
+   `ChaCha20Rng`) would avoid the "did I remember to bump it?" bug
+   class, at the cost of not being orderable.
 6. Should markers be rate-limited at the relay? Today the relay is
    content-agnostic, but a compromised provider could emit markers
    in a tight loop and force every subscribed UI to re-render.
