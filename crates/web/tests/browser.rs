@@ -10364,15 +10364,37 @@ mod phase_2b_sync_queue {
         tick().await;
 
         let strip = query(&container, ".offline-strip").expect("strip must render");
+        // Native `<button>` already carries an implicit `button` role —
+        // an explicit `role="button"` is redundant and double-announces
+        // on some screen readers. Verify the element is a `<button>`
+        // and no explicit role attribute is set.
         assert_eq!(
-            strip.get_attribute("role").as_deref(),
-            Some("button"),
-            "strip must carry role=button for assistive tech"
+            strip.tag_name().to_ascii_uppercase(),
+            "BUTTON",
+            "strip must be a native <button> for the implicit button role"
+        );
+        assert!(
+            strip.get_attribute("role").is_none(),
+            "strip must not carry an explicit role=button (redundant with the native element)"
         );
         assert_eq!(
             strip.get_attribute("aria-label").as_deref(),
             Some("open sync queue"),
             "strip aria-label must match spec verbatim"
+        );
+        // The `aria-live="polite"` cue belongs on the summary span so
+        // peer-count changes announce on update — buttons themselves
+        // are not live regions.
+        let summary = query(&container, ".offline-strip__summary")
+            .expect("strip must contain the summary span");
+        assert_eq!(
+            summary.get_attribute("aria-live").as_deref(),
+            Some("polite"),
+            "summary span must carry aria-live=polite so peer-count changes announce"
+        );
+        assert!(
+            strip.get_attribute("aria-live").is_none(),
+            "the button itself must not carry aria-live (live cue belongs on the summary)"
         );
     }
 

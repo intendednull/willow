@@ -63,14 +63,12 @@ pub fn OfflineStrip() -> impl IntoView {
         <Show when=show>
             <button
                 class="offline-strip"
-                role="button"
                 aria-label="open sync queue"
-                aria-live="polite"
                 on:click=move |_| queue_open.set(true)
             >
                 {move || (relay.get() == RelayStatus::Unreachable).then(icons::icon_signal)}
                 {icons::icon_hourglass_sm()}
-                <span class="offline-strip__summary">
+                <span class="offline-strip__summary" aria-live="polite">
                     {text}
                     {relay_suffix}
                 </span>
