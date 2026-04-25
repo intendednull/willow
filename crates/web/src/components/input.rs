@@ -94,8 +94,8 @@ pub fn ChatInput(
                     let msg = sig.get();
                     let cancel = on_cancel_edit;
                     msg.map(|m| {
-                        let preview = if m.body.len() > 60 {
-                            format!("{}...", &m.body[..60])
+                        let preview = if m.body.chars().count() > 60 {
+                            format!("{}...", m.body.chars().take(60).collect::<String>())
                         } else {
                             m.body.clone()
                         };
@@ -131,8 +131,8 @@ pub fn ChatInput(
                     let msg = sig.get();
                     let cancel = on_cancel_reply;
                     msg.map(|m| {
-                        let preview = if m.body.len() > 60 {
-                            format!("{}...", &m.body[..60])
+                        let preview = if m.body.chars().count() > 60 {
+                            format!("{}...", m.body.chars().take(60).collect::<String>())
                         } else {
                             m.body.clone()
                         };
