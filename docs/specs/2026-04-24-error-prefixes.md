@@ -30,8 +30,8 @@ plus compile-time exhaustive matching and structured payloads like
 
 Concrete cases the new reason must cover, each a real rejection site:
 
-- Relay topic-announce with an invalid string — dropped silently today,
-  so the sender keeps republishing
+- Relay topic-announce with an invalid string — logged-only and not
+  signaled to the sender today, so the sender keeps republishing
   ([`relay/lib.rs:388`](../../crates/relay/src/lib.rs)).
 - `InsertError::Duplicate` on a re-gossiped event — sender should stop
   retransmitting ([`dag.rs:34`](../../crates/state/src/dag.rs)).
@@ -47,21 +47,35 @@ Concrete cases the new reason must cover, each a real rejection site:
   re-sign
   ([`identity/lib.rs:391`](../../crates/identity/src/lib.rs)).
 
+## Relationship to PR #214
+
+This spec is **co-proposed alongside PR #214**
+([`2026-04-24-history-sync-eose.md`](2026-04-24-history-sync-eose.md)),
+which independently proposes adding `WireMessage::HistorySyncComplete`
+to `willow-common` for the EOSE-equivalent signal. Both specs reach
+the same architectural conclusion (new variants on the existing
+`WireMessage` enum in `willow-common`, not new `MessageType`
+discriminants), but neither has landed yet. They do not depend on
+each other and may merge in either order; whichever ships second
+inherits a single trivial conflict in `crates/common/src/wire.rs`
+where both add a new variant.
+
 ## Proposed format
 
 The enum lives in `willow-common` rather than `willow-transport`. The
 fields require `Permission` and `EventHash` (defined in
-`willow-state`) and `TopicId` (re-exported from iroh-gossip via
-`willow-network`); putting the type in `willow-transport` would
-introduce a `transport → state` cycle that the existing dependency
-graph forbids (`state → transport`, `client → state`,
-`common → state`). `willow-common` already depends on `willow-state`,
-`willow-identity`, and `willow-transport`
+`willow-state`) and `TopicId` (from iroh-gossip — not currently
+re-exported by `willow-network`, so the wire payload uses the raw
+`[u8; 32]` shape, see "Wire envelope" below). Putting the type in
+`willow-transport` would introduce a `transport → state` cycle that
+the existing dependency graph forbids (`state → identity → transport`,
+`client → state`, `common → state`, `transport` is a leaf).
+`willow-common` already depends on `willow-state`, `willow-identity`,
+and `willow-transport`
 ([`crates/common/Cargo.toml`](../../crates/common/Cargo.toml)) and is
 the natural home for any type that mixes state-layer and transport-
-layer references — exactly the rationale PR #214 used to land
-`WireMessage::HistorySyncComplete` in this same crate
-(see [`2026-04-24-history-sync-eose.md`](2026-04-24-history-sync-eose.md)).
+layer references — the same conclusion PR #214 reaches for
+`HistorySyncComplete`.
 
 The new types are added to `crates/common/src/wire.rs`:
 
@@ -88,8 +102,29 @@ pub enum WireRejectReason {
 }
 ```
 
-Each variant maps to exactly one code path that exists today; the
-spec is a rename-and-surface exercise, not a behavior change.
+Most variants map to exactly one code path that exists today; the
+bulk of the work is a surface-level rename-and-translate exercise.
+**One variant requires an upstream type change**: today
+`InsertError::PermissionDenied` carries a `String`
+([`dag.rs:43`](../../crates/state/src/dag.rs)) constructed by
+`check_permission`'s `format!("author '{}' lacks {:?} permission", …)`
+([`materialize.rs:117`](../../crates/state/src/materialize.rs)) and
+threaded through `managed.rs:187`'s
+`.map_err(InsertError::PermissionDenied)`. Producing
+`PermissionDenied(Permission)` on the wire requires:
+
+1. Threading a typed `Permission` value out of `check_permission`
+   (return `Result<(), CheckPermissionError>` where the error variant
+   carries the violated `Permission`), and
+2. Changing `InsertError::PermissionDenied(String)` →
+   `InsertError::PermissionDenied { author: EndpointId, missing: Permission }`
+   (or similar), updating the `.map_err` site in `managed.rs`.
+
+This is an in-scope part of this work, not a follow-up — parsing the
+typed value back out of the formatted string would be fragile and
+would defeat the purpose of having a machine-readable reason. The
+old `Display` text remains available via the `Permission`'s own
+`Debug` impl for human-readable logs.
 
 Note that the existing `TransportError::UnsupportedVersion` and
 `InsertError::SeqGap` / `InsertError::PrevMismatch` use a `got` field
@@ -115,9 +150,9 @@ hard-code `MessageType::Channel` on both sides; receive paths
 (e.g. `topic_announce_listener` at
 [`crates/relay/src/lib.rs:382-386`](../../crates/relay/src/lib.rs))
 match on `WireMessage` variants after `unpack_wire`, never on the
-underlying `MessageType` discriminant. The same constraint forced
-PR #214 to land `HistorySyncComplete` as a `WireMessage` variant
-rather than a new `MessageType`; we follow that precedent here.
+underlying `MessageType` discriminant. PR #214 reaches the same
+conclusion for `HistorySyncComplete`; both specs add their new variant
+to `WireMessage` for the same reason.
 
 We therefore add a new variant to `WireMessage` in
 `crates/common/src/wire.rs`:
@@ -134,26 +169,46 @@ pub enum WireMessage {
 ```
 
 The payload carries the reason plus enough context for the receiver
-to correlate the rejection with the event it sent:
+to correlate the rejection with the event it sent. It also carries an
+explicit `target_peer` so receivers on the same broadcast topic can
+filter rejects intended for someone else (the same pattern used by
+`JoinResponse`, `JoinDenied`, and `VoiceSignal` at
+[`crates/common/src/wire.rs:49-71`](../../crates/common/src/wire.rs)):
 
 ```rust
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RejectPayload {
+    /// The peer this reject is meant for. Recipients whose own
+    /// `EndpointId` does not match this field MUST drop the message
+    /// without surfacing it to the application layer.
+    pub target_peer: EndpointId,
     pub reason: WireRejectReason,
     pub context: RejectContext,
     pub human: Option<String>,        // logs/UI only; never parsed
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RejectContext {
     Event(willow_state::EventHash),
-    Topic([u8; 32]),                  // raw TopicId bytes — same shape
-                                      // used by HistorySyncComplete
-                                      // to avoid an iroh-gossip dep
-                                      // leaking into willow-common
+    Topic([u8; 32]),                  // raw TopicId bytes — willow-common
+                                      // does not depend on iroh-gossip,
+                                      // so the wire payload uses the
+                                      // raw 32-byte form rather than
+                                      // the iroh-gossip `TopicId`
+                                      // newtype.
     Envelope,                         // predates any event hash
 }
 ```
+
+Routing semantics: every `WireMessage::Reject` arrives at every
+subscriber of the topic it is gossiped on. Clients MUST compare
+`payload.target_peer` against their own `EndpointId` and drop
+non-matching rejects before any further processing, mirroring how
+`VoiceSignal` is filtered in voice-channel listeners. This (a) keeps
+`PermissionDenied`'s `Permission` payload from leaking to third-party
+subscribers (cf. open question 3 below), (b) makes "rejects per peer"
+a well-defined log/metric dimension, and (c) leaves bandwidth
+proportional to the rejection rate (rare).
 
 `human` is the existing free-form `Display` output of the underlying
 error (e.g. the current `InsertError` message); the reason variant is
@@ -188,12 +243,17 @@ the gossip listeners in each crate:
   module-level docs at `relay/src/lib.rs:9-22`) and forwards
   `WireMessage::Reject` envelopes verbatim by its existing topic-
   routing rules. The relay also **emits** rejects directly for the
-  cases it owns: invalid `TopicAnnounce` strings (currently dropped
-  silently at `relay/src/lib.rs:388`), `MAX_TOPICS` cap hits at
-  `relay/src/lib.rs:398`, and connection-cap saturation at
-  `relay/src/lib.rs:156` — each replaces today's silent-drop or
-  log-only path with a `pack_wire`-encoded `WireMessage::Reject` sent
-  back to the offending peer on the same topic.
+  cases it owns: invalid `TopicAnnounce` strings (currently
+  logged-only and not signaled to the sender at
+  `relay/src/lib.rs:388`) and `MAX_TOPICS` cap hits at
+  `relay/src/lib.rs:398` — each replaces today's logged-only path with
+  a `pack_wire`-encoded `WireMessage::Reject` carrying the offending
+  peer in `target_peer`, sent on the same topic. The
+  connection-cap-saturation site at `relay/src/lib.rs:156` is special:
+  the connection has already been dropped before any topic
+  subscription is in place, so a same-topic reject cannot reach the
+  peer; that path stays logged-only and is excluded from the wire
+  mapping.
 - **Replay**
   ([`crates/replay/src/role.rs`](../../crates/replay/src/role.rs)):
   emits rejects from the same code paths that surface
@@ -222,10 +282,10 @@ decision; every other crate's only change is the new `match` arm.
 | `InsertError::SeqGap` | [`dag.rs:22`](../../crates/state/src/dag.rs) | `SeqGap { expected, actual }` |
 | `InsertError::PrevMismatch` | [`dag.rs:28`](../../crates/state/src/dag.rs) | `ParentHashMismatch { expected, actual }` |
 | `InsertError::MissingGovernanceDep` | [`dag.rs:38`](../../crates/state/src/dag.rs) | `Invalid("vote missing proposal dep")` |
-| `InsertError::PermissionDenied(_)` | [`dag.rs:43`](../../crates/state/src/dag.rs) | `PermissionDenied(perm)` |
+| `InsertError::PermissionDenied(_)` | [`dag.rs:43`](../../crates/state/src/dag.rs) | `PermissionDenied(perm)` (requires upstream `String → Permission` thread, see "Proposed format") |
 | `check_permission` "not an admin" | [`materialize.rs:94`](../../crates/state/src/materialize.rs) | `Restricted("admin required")` |
-| `check_permission` lacks `Permission::X` | [`materialize.rs:117`](../../crates/state/src/materialize.rs) | `PermissionDenied(X)` |
-| `ApplyResult::Rejected(String)` | [`materialize.rs:24`](../../crates/state/src/materialize.rs) | `PermissionDenied(_)` / `Restricted(_)` depending on cause |
+| `check_permission` lacks `Permission::X` | [`materialize.rs:117`](../../crates/state/src/materialize.rs) | `PermissionDenied(X)` (requires upstream type change, see "Proposed format") |
+| `ApplyResult::Rejected(String)` | [`materialize.rs:24`](../../crates/state/src/materialize.rs) | `PermissionDenied(_)` / `Restricted(_)` depending on cause (requires the same upstream typing) |
 | `IdentityError::InvalidSignature` | [`identity/lib.rs:52`](../../crates/identity/src/lib.rs) | `SignatureInvalid` |
 | `IdentityError::PeerMismatch` | [`identity/lib.rs:79`](../../crates/identity/src/lib.rs) | `Invalid("peer_id mismatch")` |
 | `IdentityError::Serde` | [`identity/lib.rs:48`](../../crates/identity/src/lib.rs) | `Invalid("serde: …")` |
@@ -234,12 +294,22 @@ decision; every other crate's only change is the new `match` arm.
 | `TransportError::Deserialize` (shape) | [`transport/lib.rs:162`](../../crates/transport/src/lib.rs) | `Invalid("deser: …")` |
 | Relay `topic_str_is_valid` fails | [`relay/lib.rs:388`](../../crates/relay/src/lib.rs) | `TopicInvalid(topic)` |
 | Relay `MAX_TOPICS` cap reached | [`relay/lib.rs:398`](../../crates/relay/src/lib.rs) | `Capacity` |
-| Relay connection cap reached | [`relay/lib.rs:156`](../../crates/relay/src/lib.rs) (`Err(_)` arm of `try_acquire_owned`) | `RateLimited { retry_after_ms }` |
+| Relay connection-cap saturation | [`relay/lib.rs:156`](../../crates/relay/src/lib.rs) (`Err(_)` arm of `try_acquire_owned`) | `Capacity` (logged-only; cannot be sent — see Receiver-side wiring) |
 | `check_permission` admin-only block | [`materialize.rs:111`](../../crates/state/src/materialize.rs) | `Restricted("admin required")` |
 | Vote on missing proposal | [`materialize.rs:161`](../../crates/state/src/materialize.rs) | `Invalid("proposal not found")` |
 | `RotateChannelKey` non-member | [`materialize.rs:497`](../../crates/state/src/materialize.rs) | `Restricted("not a member")` |
-| Relay not granted `SyncProvider` | (future history-serve guard) | `NotSyncProvider` |
 | iroh gossip receive error | [`network/iroh.rs:164`](../../crates/network/src/iroh.rs) | `ServerError` (local-only; not sent) |
+
+### Future producers
+
+Rejection sites that don't exist in the codebase yet but motivate
+particular variants — kept separate from the table above so the
+"existing rejection sites" list stays grounded in current code.
+
+| Future source | New variant |
+|---|---|
+| Relay refuses history-serve when not granted `SyncProvider` (future guard) | `NotSyncProvider` |
+| Connection-pool back-pressure with advisory backoff (currently a hard semaphore drop) | `RateLimited { retry_after_ms }` |
 
 The mapping table above is illustrative of the major rejection
 categories rather than exhaustive — additional defense-in-depth and
@@ -333,27 +403,25 @@ serialised, consumed.
 
 ## Open questions
 
-1. Should `RejectPayload` be authenticated? A relay that forges
-   `PermissionDenied` against a peer's legitimate event could
-   suppress that peer's messaging UI. Probably yes — sign the
-   payload with the rejecting peer's identity so clients can decide
-   whether to trust it.
-2. How do we correlate `RejectContext::Envelope` with the offending
+1. How do we correlate `RejectContext::Envelope` with the offending
    send when the envelope never carried a hash? Option: stamp an
    outbound `send_id` (u64) in every `Envelope` and echo it in the
    reject.
-3. Is `PermissionDenied` leaking too much to an untrusted relay?
+2. Is `PermissionDenied` leaking too much to an untrusted relay?
    Telling the rejector which `Permission` they lack is fine;
    telling a third party could help an attacker enumerate roles.
-   Route: relays forward rejections verbatim, clients filter.
-4. Should `RateLimited.retry_after_ms` be advisory (client may
+   The `target_peer` filter at the receiver side ensures only the
+   intended recipient processes the payload, but a malicious relay
+   that reads the gossip stream still observes it; if that becomes a
+   threat, encrypt `PermissionDenied`'s payload to the recipient.
+3. Should `RateLimited.retry_after_ms` be advisory (client may
    ignore) or enforced (peer drops earlier retries)? Nostr leaves
    this implementation-defined; we probably should too.
-5. Do we need a separate `MessageType::Ack` for the positive case,
+4. Do we need a separate `MessageType::Ack` for the positive case,
    or is "no reject within N seconds" enough? Nostr requires both
    OK (accept) and OK (reject); we currently rely on gossip delivery
    as implicit ACK. Worth revisiting once `Reject` ships.
-6. Does the state machine itself grow a new `EventKind` to record
+5. Does the state machine itself grow a new `EventKind` to record
    rejections for audit, or do they stay ephemeral? Audit is
    tempting but contradicts the "rejected events never enter the
    DAG" rule from
