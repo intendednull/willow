@@ -5977,7 +5977,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
- "willow-actor",
  "willow-client",
  "willow-identity",
  "willow-network",
