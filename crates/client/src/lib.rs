@@ -31,6 +31,7 @@ pub mod nickname;
 pub mod ops;
 pub mod persistence_actor;
 pub mod presence;
+pub mod queue;
 pub mod search;
 pub mod state;
 pub mod state_actors;
@@ -56,6 +57,10 @@ mod tests_trust_flow;
 mod tests_multi_peer_sync;
 
 #[cfg(test)]
+#[path = "tests/queue.rs"]
+mod tests_queue;
+
+#[cfg(test)]
 #[path = "tests/profile_view.rs"]
 mod tests_profile_view;
 
@@ -68,6 +73,7 @@ pub use events::ClientEvent;
 pub use mentions::mentions_me;
 pub use nickname::{MemNicknameStore, NicknameStore, NicknameStoreHandle, NICKNAME_CAP};
 pub use ops::{pack_wire, unpack_wire, VoiceSignalPayload, WireMessage};
+pub use queue::{ArrivedSummary, QueueSummary, RelayStatus};
 pub use search::{
     IndexableMessage, RecentQuery, SearchIndex, SearchIndexBuildStatus, SearchIndexConfig,
     SearchIndexHandle, SearchQuery, SearchResult, SearchScope,
@@ -232,6 +238,11 @@ pub struct ClientHandle<N: willow_network::Network> {
     /// Presence meta (tick counter, last-seen, queue depth, self-override).
     pub(crate) presence_meta_addr:
         willow_actor::Addr<willow_actor::StateActor<state_actors::PresenceMeta>>,
+    /// Sync-queue meta (Phase 2b). Owns per-peer outbound tracking,
+    /// relay/device signals, and peer-presence history used by the
+    /// queue-note projection.
+    pub(crate) queue_meta_addr:
+        willow_actor::Addr<willow_actor::StateActor<state_actors::QueueMeta>>,
     /// Persistence actor (owns rusqlite).
     pub(crate) persistence_addr: willow_actor::Addr<persistence_actor::PersistenceActor>,
     /// Whether persistence to disk is enabled.
@@ -275,6 +286,7 @@ impl<N: willow_network::Network> Clone for ClientHandle<N> {
             network_meta_addr: self.network_meta_addr.clone(),
             voice_state_addr: self.voice_state_addr.clone(),
             presence_meta_addr: self.presence_meta_addr.clone(),
+            queue_meta_addr: self.queue_meta_addr.clone(),
             persistence_addr: self.persistence_addr.clone(),
             persistence_enabled: self.persistence_enabled,
             join_links: Arc::clone(&self.join_links),
@@ -421,6 +433,65 @@ impl<N: willow_network::Network> ClientHandle<N> {
             }
         })
         .await;
+    }
+
+    // ── Phase 2b — sync-queue API ──────────────────────────────────────
+
+    /// Return a `QueueView` snapshot computed off the current
+    /// `QueueMeta`. The web layer usually subscribes to the reactive
+    /// `ClientViewHandle::queue_meta` signal + runs `compute_queue_view`
+    /// through a derived actor; this accessor is primarily for
+    /// integration tests + ad-hoc callers.
+    pub async fn queue_view(&self) -> views::QueueView {
+        let snap = willow_actor::state::get(&self.queue_meta_addr).await;
+        views::compute_queue_view(&Arc::new((*snap).clone()))
+    }
+
+    /// Trigger a best-effort retry of every pending outbound message.
+    /// See [`ClientMutations::retry_queue`].
+    pub async fn retry_queue(&self) -> anyhow::Result<()> {
+        self.mutation_handle.retry_queue().await
+    }
+
+    /// Stamp a local `mark as read` annotation for `peer_id`'s inbound
+    /// queue. Never reveals message bodies.
+    pub async fn mark_queue_read(
+        &self,
+        peer_id: willow_identity::EndpointId,
+    ) -> anyhow::Result<()> {
+        self.mutation_handle.mark_queue_read(peer_id).await
+    }
+
+    /// Seed a queue entry for testing — `(message_id, recipient)` pair
+    /// enters `QueueMeta::outbound`. Only exposed under
+    /// `#[cfg(any(test, feature = "test-utils"))]`; production code
+    /// hits this through the retry-queue pipeline.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn _enqueue_outbound(
+        &self,
+        message_id: willow_messaging::MessageId,
+        recipient: willow_identity::EndpointId,
+        authored_at: u64,
+    ) {
+        willow_actor::state::mutate(&self.queue_meta_addr, move |qm| {
+            qm.enqueue(state_actors::QueueEntry {
+                message_id,
+                recipient,
+                authored_at,
+                last_attempt_at: None,
+                last_attempt_error: None,
+            });
+        })
+        .await;
+    }
+
+    /// Expose the [`QueueMeta`] address so internal tests can observe
+    /// the actor state directly.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn _queue_meta_addr(
+        &self,
+    ) -> &willow_actor::Addr<willow_actor::StateActor<state_actors::QueueMeta>> {
+        &self.queue_meta_addr
     }
 }
 
@@ -610,6 +681,9 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let presence_meta_addr = system.spawn(willow_actor::StateActor::new(
             state_actors::PresenceMeta::default(),
         ));
+        let queue_meta_addr = system.spawn(willow_actor::StateActor::new(
+            state_actors::QueueMeta::default(),
+        ));
         let persistence_enabled = config.persistence;
         let persistence_addr = system.spawn(persistence_actor::PersistenceActor::new(
             persistence_enabled,
@@ -642,6 +716,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let network_ref = willow_actor::state::StateRef::from(&network_meta_addr);
         let voice_ref = willow_actor::state::StateRef::from(&voice_state_addr);
         let presence_meta_ref = willow_actor::state::StateRef::from(&presence_meta_addr);
+        let queue_meta_ref = willow_actor::state::StateRef::from(&queue_meta_addr);
 
         // Spawn Layer 2 derived view actors.
         let local_pid = identity_clone.endpoint_id();
@@ -652,9 +727,10 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 registry_ref.clone(),
                 chat_ref.clone(),
                 profile_ref.clone(),
+                queue_meta_ref.clone(),
             ),
-            move |(es, reg, chat, prof)| {
-                views::compute_messages_view(es, reg, chat, prof, local_pid)
+            move |(es, reg, chat, prof, qm)| {
+                views::compute_messages_view(es, reg, chat, prof, qm, local_pid)
             },
         );
         let local_pid2 = identity_clone.endpoint_id();
@@ -751,6 +827,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             network: network_ref,
             voice: voice_ref,
             presence_meta: presence_meta_ref,
+            queue_meta: queue_meta_ref,
         };
 
         let mutation_handle = mutations::ClientMutations {
@@ -767,6 +844,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             join_links: Arc::clone(&join_links),
             topics: Arc::clone(&topics),
             dag: dag_addr.clone(),
+            queue_meta: queue_meta_addr.clone(),
         };
 
         let handle = ClientHandle {
@@ -782,6 +860,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             network_meta_addr,
             voice_state_addr,
             presence_meta_addr,
+            queue_meta_addr,
             persistence_addr,
             persistence_enabled,
             join_links,
@@ -953,6 +1032,9 @@ pub fn test_client() -> (
     let presence_meta_addr = sys.spawn(willow_actor::StateActor::new(
         state_actors::PresenceMeta::default(),
     ));
+    let queue_meta_addr = sys.spawn(willow_actor::StateActor::new(
+        state_actors::QueueMeta::default(),
+    ));
     let persistence_addr = sys.spawn(persistence_actor::PersistenceActor::new(false));
     let event_broker = sys.spawn(willow_actor::Broker::<ClientEvent>::new());
     let dag_addr = sys.spawn(willow_actor::StateActor::new(dag_state));
@@ -972,6 +1054,7 @@ pub fn test_client() -> (
     let network_ref = willow_actor::state::StateRef::from(&network_meta_addr);
     let voice_ref = willow_actor::state::StateRef::from(&voice_state_addr);
     let presence_meta_ref = willow_actor::state::StateRef::from(&presence_meta_addr);
+    let queue_meta_ref = willow_actor::state::StateRef::from(&queue_meta_addr);
     let sh = sys.handle();
 
     let local_pid = identity_clone.endpoint_id();
@@ -982,8 +1065,11 @@ pub fn test_client() -> (
             registry_ref.clone(),
             chat_ref.clone(),
             profile_ref.clone(),
+            queue_meta_ref.clone(),
         ),
-        move |(es, reg, chat, prof)| views::compute_messages_view(es, reg, chat, prof, local_pid),
+        move |(es, reg, chat, prof, qm)| {
+            views::compute_messages_view(es, reg, chat, prof, qm, local_pid)
+        },
     );
     let local_pid2 = identity_clone.endpoint_id();
     let members_view = willow_actor::derived(
@@ -1073,6 +1159,7 @@ pub fn test_client() -> (
         network: network_ref,
         voice: voice_ref,
         presence_meta: presence_meta_ref,
+        queue_meta: queue_meta_ref,
     };
     let mutation_handle = mutations::ClientMutations {
         event_state: event_state_addr.clone(),
@@ -1088,6 +1175,7 @@ pub fn test_client() -> (
         join_links: Arc::clone(&join_links),
         topics: Arc::clone(&topics),
         dag: dag_addr.clone(),
+        queue_meta: queue_meta_addr.clone(),
     };
 
     // Leak the system so actors stay alive for the test duration.
@@ -1106,6 +1194,7 @@ pub fn test_client() -> (
         network_meta_addr,
         voice_state_addr,
         presence_meta_addr,
+        queue_meta_addr,
         persistence_addr,
         persistence_enabled: false,
         join_links,
@@ -1421,6 +1510,7 @@ mod tests {
             dag: alice.dag_addr.clone(),
             join_links: Arc::clone(&alice.join_links),
             topics: Arc::clone(&alice.topics),
+            queue_meta: alice.queue_meta_addr.clone(),
         };
 
         // Bob attempts to create a channel — must fail (PermissionDenied).

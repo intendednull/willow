@@ -669,6 +669,12 @@ pub fn App() -> impl IntoView {
             <crate::components::ProfilePopover/>
             <crate::components::ProfileSheet/>
             <ToastStackView/>
+            // Phase 2b sync-queue overlays. All three self-hide when
+            // their gating condition is false; none reserve layout
+            // space when absent.
+            <crate::components::OfflineStrip/>
+            <crate::components::ReconnectionToast/>
+            <crate::components::WelcomeBackBanner/>
             {move || {
                 // Join link takes priority over everything.
                 if join_token_signal.get().is_some() {
@@ -961,9 +967,13 @@ pub fn App() -> impl IntoView {
                                             pin_handler(msg);
                                         })
                                     };
-                                    // Derive one-of-three right-rail state from existing UI signals.
+                                    // Derive one-of-four right-rail state from existing UI signals.
+                                    // Phase 2b — sync queue takes precedence over members/pinned
+                                    // when `app.queue.open == true` (mounted desktop right-pane).
+                                    let queue_open = app_state.queue.open;
                                     let which_signal = Signal::derive(move || {
-                                        if show_members.get() { RightRailWhich::Members }
+                                        if queue_open.get() { RightRailWhich::SyncQueue }
+                                        else if show_members.get() { RightRailWhich::Members }
                                         else if show_pinned.get() { RightRailWhich::Pinned }
                                         else { RightRailWhich::None }
                                     });
@@ -971,6 +981,7 @@ pub fn App() -> impl IntoView {
                                         // Exactly one rail pane at a time.
                                         write.ui.set_show_members.set(matches!(next, RightRailWhich::Members));
                                         write.ui.set_show_pinned.set(matches!(next, RightRailWhich::Pinned));
+                                        queue_open.set(matches!(next, RightRailWhich::SyncQueue));
                                     });
                                     let chat_channel = current_channel;
                                     view! {
@@ -1070,15 +1081,18 @@ pub fn App() -> impl IntoView {
                             }}
                         </div>
                         {
-                            // Right rail — one of members / pinned / thread.
+                            // Right rail — one of members / pinned / thread / sync-queue.
+                            let queue_open_rail = app_state.queue.open;
                             let rail_which = Signal::derive(move || {
-                                if show_members.get() { RightRailWhich::Members }
+                                if queue_open_rail.get() { RightRailWhich::SyncQueue }
+                                else if show_members.get() { RightRailWhich::Members }
                                 else if show_pinned.get() { RightRailWhich::Pinned }
                                 else { RightRailWhich::None }
                             });
                             let on_rail_close = Callback::new(move |_: ()| {
                                 write.ui.set_show_members.set(false);
                                 write.ui.set_show_pinned.set(false);
+                                queue_open_rail.set(false);
                             });
                             let on_pinned_jump = Callback::new(move |msg_id: String| {
                                 js_sys::eval(&format!(

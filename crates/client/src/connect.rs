@@ -60,6 +60,87 @@ async fn tick_once(
     .await;
 }
 
+/// Phase 2b — queue tick driver. 1 tick / s. Advances
+/// `QueueMeta::now`, then decays `recent_arrivals` entries older than
+/// 24 h.
+fn spawn_queue_tick(
+    queue_meta_addr: willow_actor::Addr<willow_actor::StateActor<state_actors::QueueMeta>>,
+) {
+    const DECAY_TICKS: crate::presence::Tick = 86_400; // 24 h in seconds
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    queue_tick_once(&queue_meta_addr, DECAY_TICKS).await;
+                }
+            });
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        wasm_bindgen_futures::spawn_local(async move {
+            loop {
+                gloo_timers::future::TimeoutFuture::new(1_000).await;
+                queue_tick_once(&queue_meta_addr, DECAY_TICKS).await;
+            }
+        });
+    }
+}
+
+async fn queue_tick_once(
+    queue_meta_addr: &willow_actor::Addr<willow_actor::StateActor<state_actors::QueueMeta>>,
+    decay_ticks: crate::presence::Tick,
+) {
+    willow_actor::state::mutate(queue_meta_addr, move |qm| {
+        qm.now = qm.now.saturating_add(1);
+        qm.decay_arrivals(decay_ticks);
+    })
+    .await;
+}
+
+/// WASM-only: listen for `window.online` + `window.offline` events and
+/// route them through `ClientMutations::set_device_online`. Called from
+/// [`ClientHandle::connect`] once per connection.
+#[cfg(target_arch = "wasm32")]
+fn spawn_wasm_online_listener<N: willow_network::Network>(
+    mutations: crate::mutations::ClientMutations<N>,
+) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    // Prime from `navigator.onLine`.
+    let online_now = window.navigator().on_line();
+    {
+        let mutations = mutations.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            mutations.set_device_online(online_now).await;
+        });
+    }
+    // Online listener.
+    let online_mutations = mutations.clone();
+    let online_cb = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
+        let mutations = online_mutations.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            mutations.set_device_online(true).await;
+        });
+    });
+    // Offline listener.
+    let offline_mutations = mutations;
+    let offline_cb = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
+        let mutations = offline_mutations.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            mutations.set_device_online(false).await;
+        });
+    });
+    use wasm_bindgen::JsCast;
+    let _ = window.add_event_listener_with_callback("online", online_cb.as_ref().unchecked_ref());
+    let _ = window.add_event_listener_with_callback("offline", offline_cb.as_ref().unchecked_ref());
+    online_cb.forget();
+    offline_cb.forget();
+}
+
 impl<N: willow_network::Network> ClientHandle<N> {
     /// Connect to the P2P network.
     pub async fn connect(
@@ -246,6 +327,19 @@ impl<N: willow_network::Network> ClientHandle<N> {
         // their last_seen stays frozen so elapsed = now - last_seen
         // climbs past the idle / gone thresholds in due course.
         spawn_presence_tick(self.presence_meta_addr.clone(), self.chat_meta_addr.clone());
+
+        // Sync-queue tick driver (Phase 2b). Advances `QueueMeta::now`
+        // and decays `recent_arrivals` entries older than 24 h so the
+        // sync-queue screen's Recent section rolls forward even when
+        // nothing else mutates the actor.
+        spawn_queue_tick(self.queue_meta_addr.clone());
+
+        // WASM-only: bridge `window.online` / `window.offline` events to
+        // `QueueMeta::set_device_online`. Native iroh doesn't expose a
+        // connectivity probe yet; `Network::device_online` default-stays
+        // `true` there.
+        #[cfg(target_arch = "wasm32")]
+        spawn_wasm_online_listener(self.mutation_handle.clone());
 
         self.broadcast_profile_via_network();
         // Also announce via SERVER_OPS_TOPIC for peers that have a sync path

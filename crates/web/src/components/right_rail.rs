@@ -8,7 +8,7 @@
 use leptos::prelude::*;
 use willow_client::DisplayMessage;
 
-use crate::components::{MemberList, PinnedPanel, RightRailWhich};
+use crate::components::{MemberList, PinnedPanel, RightRailWhich, SyncQueueView};
 
 /// Wrapper that mounts exactly one of MemberList / PinnedPanel /
 /// thread-stub based on `which`.
@@ -34,6 +34,7 @@ pub fn RightRail(
         RightRailWhich::Members => "members",
         RightRailWhich::Pinned => "pinned",
         RightRailWhich::Thread => "thread",
+        RightRailWhich::SyncQueue => "sync queue",
         RightRailWhich::None => "",
     };
 
@@ -82,6 +83,11 @@ pub fn RightRail(
                                 <div class="state-empty__headline">"no thread yet"</div>
                                 <div class="state-empty__hint">"open a thread from any message."</div>
                             </div>
+                        </div>
+                    }.into_any(),
+                    RightRailWhich::SyncQueue => view! {
+                        <div class="right-rail-pane" data-pane="sync-queue">
+                            <SyncQueueView/>
                         </div>
                     }.into_any(),
                     RightRailWhich::None => view! { <div class="right-rail-pane right-rail-pane--empty"></div> }.into_any(),

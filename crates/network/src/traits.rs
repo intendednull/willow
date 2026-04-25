@@ -114,6 +114,23 @@ pub trait BlobStore: Send + Sync {
 
 // ───── Network ──────────────────────────────────────────────────────────────
 
+/// Relay-reachability snapshot exposed by [`Network::relay_status`].
+///
+/// Consumed by the sync-queue UI (Phase 2b) to drive the relay signal
+/// button + the optional ` · relay unreachable` suffix on the offline
+/// strip. See [`docs/specs/2026-04-19-ui-design/sync-queue.md`] §Relay
+/// awareness.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RelayStatus {
+    /// Relay session had a recent successful ping (< 30 s).
+    Reachable,
+    /// Relay configured but the last ping was > 30 s ago.
+    Unreachable,
+    /// No relay configured (or relay support disabled).
+    #[default]
+    NotConfigured,
+}
+
 /// Top-level network handle. Assembled once, passed to client/workers.
 ///
 /// Production: [`IrohNetwork`](crate::iroh::IrohNetwork).
@@ -144,6 +161,20 @@ pub trait Network: Send + Sync + 'static {
     // TODO(#119): add connection_events() — stream relay up/down and direct
     // peer connect/disconnect events so the client can surface connectivity
     // status in the UI.
+
+    /// Reachability of the configured relay, or [`RelayStatus::NotConfigured`]
+    /// when none is set. Default impl returns `NotConfigured`; the real
+    /// iroh / mem implementations override.
+    fn relay_status(&self) -> RelayStatus {
+        RelayStatus::NotConfigured
+    }
+
+    /// Whether this device believes it has network connectivity. Default
+    /// impl returns `true` so implementations without a connectivity
+    /// channel behave as "always online".
+    fn device_online(&self) -> bool {
+        true
+    }
 
     /// Gracefully shut down the network.
     async fn shutdown(&self) -> Result<()>;

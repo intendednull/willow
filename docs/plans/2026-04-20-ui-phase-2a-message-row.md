@@ -487,7 +487,7 @@ Consolidate the §Edge cases sweep + fill out the `phase_2a_message_row` browser
 - [x] Long-press ≥ 500 ms opens the bottom action sheet; swipe-down at 80 px *or* velocity > 200 px/s dismisses; haptic fires on open.
 - [x] Pinned messages render with a 1 px amber left rule and a `pinned` badge.
 - [x] Fenced code renders in mono with `--bg-0` + `--line` border; a copy button appears on hover (desktop).
-- [ ] Queue notes render the inline hint + badge; pending messages dim to 0.7 opacity until delivered; delivery flashes `sent`. _(Task 7 hint/badge/opacity rendering covered; the delivery `sent` flash transition is wired in CSS but the projection's Pending → None state-flip is TODO-gated in `views.rs` pending sync-queue presence history — see Task 7 ambiguity decisions.)_
+- [x] Queue notes render the inline hint + badge; pending messages dim to 0.7 opacity until delivered; delivery flashes `sent`. _(Phase 2b Task 5 closed the Pending→None state-flip gate: `views.rs::compute_messages_view` now derives `QueueNote::Pending` / `LateArrival` / `None` via `queue::derive_pending` + `queue::derive_late_arrival` off `QueueMeta`.)_
 - [x] Whisper rows carry the violet left rule, tinted background, and whisper badge (full styling in `whisper-mode.md`).
 - [x] Empty channel shows the leaf illustration and the copy in §Copy.
 - [x] Scroll anchoring: auto-scroll only when within 120 px of bottom; otherwise a `jump to latest` pill with unread count appears.

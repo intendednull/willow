@@ -1,0 +1,84 @@
+//! Reconnection toast — Phase 2b sync queue.
+//!
+//! Spec: `docs/specs/2026-04-19-ui-design/sync-queue.md` §Reconnection
+//! toast.
+//!
+//! Listens to `app.queue.device_online` transitions. Fires only when
+//! the preceding offline window was ≥ 60 s — read from
+//! `QueueView::last_offline_ticks` which the client stamps on every
+//! offline → online flip. This suppresses the toast on initial connect
+//! and on brief reconnect blips. Auto-hides after 4 s; dismissible via
+//! the `x` button.
+//!
+//! When the welcome-back banner is also visible the toast yields to it
+//! (spec §Open questions §5 — `sync_queue_copy::BANNER_TAKES_PRECEDENCE`).
+
+use leptos::prelude::*;
+
+use crate::components::sync_queue_copy;
+use crate::icons;
+use crate::state::AppState;
+
+/// How long to keep the toast visible, in milliseconds.
+const AUTO_HIDE_MS: i32 = 4_000;
+
+/// Reconnection toast component. Mounted once near the root.
+#[component]
+pub fn ReconnectionToast() -> impl IntoView {
+    let app =
+        use_context::<AppState>().expect("<ReconnectionToast> mounted outside an AppState context");
+    let device_online = app.queue.device_online;
+    let queue_view = app.queue.view;
+
+    let visible = RwSignal::new(false);
+    let queued_count = RwSignal::new(0u32);
+
+    // Track last-seen state so the effect only fires on transitions.
+    let last_online = StoredValue::new(true);
+
+    Effect::new(move |_| {
+        let online = device_online.get();
+        let prev = last_online.get_value();
+        last_online.set_value(online);
+        if !prev && online {
+            // Transitioned offline → online. Read the 60 s gate from
+            // the freshly stamped `last_offline_ticks` — if the offline
+            // window was shorter, keep the toast suppressed (first-
+            // connect + brief blip behaviour, spec §Reconnection toast).
+            let (offline_ticks, depth) = queue_view.with(|v| (v.last_offline_ticks, v.depth));
+            if offline_ticks.is_none_or(|t| t < sync_queue_copy::RECONNECT_GATE_TICKS) {
+                return;
+            }
+            queued_count.set(depth);
+            visible.set(true);
+            let vis = visible;
+            let handle = gloo_timers::callback::Timeout::new(AUTO_HIDE_MS as u32, move || {
+                vis.set(false);
+            });
+            handle.forget();
+        }
+    });
+
+    let label = move || sync_queue_copy::toast_reconnected(queued_count.get());
+
+    view! {
+        <Show when=move || visible.get()>
+            <div
+                class="reconnection-toast"
+                role="status"
+                aria-live="polite"
+            >
+                <span class="reconnection-toast__icon">{icons::icon_check_small()}</span>
+                <span class="reconnection-toast__label">{label}</span>
+                <button
+                    type="button"
+                    class="reconnection-toast__dismiss"
+                    aria-label="dismiss reconnection toast"
+                    on:click=move |_| visible.set(false)
+                >
+                    "×"
+                </button>
+            </div>
+        </Show>
+    }
+}

@@ -36,8 +36,19 @@ dirs = "6"
 rusqlite = { version = "0.31", features = ["bundled"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# `wasm-bindgen` (alongside `web-sys` / `wasm-bindgen-futures`) is required
+# by the Phase 2b online / offline listener in `connect.rs` — the whole
+# block is `#[cfg(target_arch = "wasm32")]`-gated so the dep stays
+# WASM-only. Matches the pattern already established for `gloo-timers`
+# and the presence / queue tick drivers.
+wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Window", "Storage"] }
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Storage",
+    "Navigator",
+    "EventTarget",
+] }
 js-sys = "0.3"
 gloo-timers = { version = "0.3", features = ["futures"] }
 

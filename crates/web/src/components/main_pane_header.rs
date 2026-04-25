@@ -25,6 +25,8 @@ pub enum RightRailWhich {
     Members,
     Pinned,
     Thread,
+    /// Phase 2b sync-queue screen (mutually exclusive with the others).
+    SyncQueue,
 }
 
 /// Six-button action bar + channel title strip.
