@@ -1,253 +1,287 @@
-# Outbox-style Relay Discovery
+# Relay Discovery — composing iroh pkarr with capability negotiation
 
-> **One-sentence summary:** each peer publishes a signed, replaceable
-> `RelayList` event advertising which relays and workers carry its
-> data, so clients can discover the rest of the network from a single
-> bootstrap URL — no global DHT, no hardcoded relay fleet, and no trust
-> promotion beyond the existing `SyncProvider` grant.
+> **One-sentence summary:** Willow does **not** introduce a new
+> `EventKind::RelayList`. NodeId → addresses is solved by iroh's
+> existing pkarr discovery, EndpointId → role/capability is solved by
+> PR #215's `/.well-known/willow` capability document, and EndpointId
+> → trust is solved by the `SyncProvider` grants already in the server
+> event DAG. This spec is the explicit composition of those three
+> layers, not a new event kind.
+
+## Status — what changed
+
+This spec originally proposed an `EventKind::RelayList` event with
+replaceable per-author semantics, modelled on Nostr's NIP-65 outbox.
+Two rounds of review (recorded on intendednull/willow#221) converged
+on the conclusion that the proposed event is unnecessary and would
+introduce a new state-machine concept (replaceable kinds, breaking
+the current single-pass `apply_event` replay) for capabilities iroh
+and PR #215 already provide.
+
+**This revision drops `EventKind::RelayList` entirely.** The spec
+now describes the composition of existing primitives. Sections that
+previously specified the event have been replaced; sections that
+remain useful (privacy, share-link bootstrap, anti-centralization
+realism) have been retained and rewritten to fit.
 
 ## Motivation
 
 Willow's share links today carry a single bootstrap relay URL (see
 `docs/specs/2026-03-27-shareable-join-links-design.md`) and
 `IrohNetwork` otherwise relies on a hardcoded relay list baked into
-`crates/network/src/iroh.rs`. This has three failure modes:
+`crates/network/src/iroh.rs`. The failure modes:
 
-1. **Centralization.** If the hardcoded relay is down, new joiners
-   cannot complete the `JoinRequest`/`JoinResponse` handshake.
-2. **No graceful migration.** An owner who moves their worker fleet
-   (e.g. Linode → Fly.io) must reissue every share link.
-3. **No worker discovery.** A server can have a `SyncProvider`-granted
+1. **No graceful migration.** An owner who moves their worker fleet
+   (e.g. Linode → Fly.io) must reissue every share link if the URL is
+   the only addressing mechanism.
+2. **No worker discovery.** A server can have a `SyncProvider`-granted
    replay or storage worker, but a joining client has no way to learn
    its network address short of the owner encoding it manually.
+3. **Bootstrap fragility.** A single hardcoded relay is a single
+   point of failure for new joiners.
 
-Nostr solves an analogous problem with NIP-65 "outbox model" relay
-lists: each user publishes a `kind:10002` replaceable event listing
-their read/write relays. Willow already has the substrate to do
-this — signed events on `_willow_profiles`, an HLC for ordering,
-and a cryptographic trust chain rooted at the server owner.
+These are real problems, but the solutions already exist in our
+dependency graph. We just need to compose them.
 
-## Relationship to `SyncProvider`
+## Architecture: three independent layers
 
-The outbox is a **routing hint, not a capability grant.** Authority
-still flows exclusively through `EventKind::GrantPermission { permission: SyncProvider }`
-as defined in `crates/state/src/event.rs:22` and enforced by
-`apply_event` in `crates/state/src/materialize.rs:130`. A `RelayList`
-advertising `wss://evil.example` as a replay worker does not make
-that host trusted — it's only a *candidate address* that clients
-attempt to connect to. Once connected, the usual authority check
-applies: the peer at that address must sign state updates with a key
-that has a live `SyncProvider` grant in the server DAG.
+| Layer | Mechanism | Source of truth |
+|-------|-----------|-----------------|
+| `NodeId` → addresses | iroh pkarr (signed DNS packets over BitTorrent mainline DHT) | DHT, signed by the node's own key |
+| `EndpointId` → role / capabilities | PR #215 `/.well-known/willow` capability document | served by the endpoint itself over HTTPS |
+| `EndpointId` → trusted to sync | `SyncProvider` grant in the server event DAG | `crates/state/src/event.rs` + `apply_event` |
 
-| Layer | Who decides | Enforced where |
-|-------|-------------|----------------|
-| "Which addresses might serve this server?" | Any peer's `RelayList` | Client connection code (advisory) |
-| "Is this peer allowed to sync state?" | Owner / admin via `GrantPermission` | `required_permission()` + `apply_event` |
-| "Should I prefer this address?" | Client heuristics (weight, latency, trust intersection) | `willow-client` discovery loop |
+These three layers are independent: each has its own trust anchor,
+its own update cadence, and its own failure mode. The job of this
+spec is to nail down how a Willow client traverses them in order.
 
-Clients **SHOULD** prefer outbox entries whose advertised `EndpointId`
-is also the target of a current `SyncProvider` grant in the server's
-DAG. This is what turns the outbox from a bare hint into a
-trust-weighted routing table.
+## Layer 1: pkarr for NodeId → addresses
 
-## New event kind
+iroh ships [pkarr-based node discovery](https://www.iroh.computer/blog/iroh-global-node-discovery)
+out of the box (see `iroh-pkarr-node-discovery`). A Willow node's
+`NodeId` is its long-term Ed25519 public key; the node publishes a
+signed DNS packet to the BitTorrent mainline DHT containing its
+current relay URL and direct addresses, and any client that knows
+the `NodeId` can resolve those addresses by querying the DHT.
 
-Add a variant to `EventKind` (`crates/state/src/event.rs:70`):
+Implications for Willow:
+
+- **Willow does not need to encode addresses anywhere durable.**
+  Every `EndpointId` in the server DAG (peers with `SyncProvider`
+  grants, the inviter, ordinary members) is already a `NodeId`.
+  Clients resolve those `NodeId`s on demand.
+- **Owner relay migration is automatic.** Moving from one hosting
+  provider to another causes the operator's iroh node to republish
+  its pkarr packet. Existing clients pick up the new addresses on
+  their next discovery cycle. No share-link reissue.
+- **No new wire format, no new state, no new replay semantics.**
+- **Failure mode.** DHT queries can fail in restricted networks. The
+  fallback is the same set of hardcoded bootstrap relays already
+  baked into `IrohNetwork` — clients try direct pkarr first, fall
+  back to the bootstrap fleet for relay-mediated connection.
+
+## Layer 2: PR #215 capability doc for role/capability
+
+PR #215 ([capability negotiation](https://github.com/intendednull/willow/pull/215))
+introduces a `/.well-known/willow` document served by every endpoint
+that runs Willow infrastructure. It describes what the endpoint
+runs: `Relay`, `ReplayWorker`, `StorageWorker`, supported protocol
+versions, rate-limit hints, and operator metadata.
+
+This is the right place — and the only place — for role/capability
+information:
+
+- It's served by the endpoint itself, so an endpoint can change its
+  role at any time without rewriting state held by other peers.
+- It's not signed into the DAG, so a relay rebooting in `Relay`-only
+  mode after running as `StorageWorker` doesn't require a state
+  mutation.
+- It composes naturally with HTTPS-backed PKI for transport trust;
+  Willow-specific authority still flows through `SyncProvider`.
+
+This is structurally identical to what Matrix's
+`/.well-known/matrix/server` does for federation discovery, which is
+the most-deployed federated-discovery cascade on the internet. We
+should copy the shape.
+
+## Layer 3: `SyncProvider` for trust
+
+Authority is unchanged. `EventKind::GrantPermission { permission: SyncProvider }`
+in `crates/state/src/event.rs` and the enforcement site in
+`apply_event` (`crates/state/src/materialize.rs`) remain the only
+mechanism for declaring "this `EndpointId` may serve this server's
+state." The composition rule is straightforward:
+
+> An endpoint is a candidate sync source for server S if and only if
+> its `EndpointId` is the target of a live (un-revoked)
+> `SyncProvider` grant in S's event DAG.
+
+Resolution of that `EndpointId` to addresses happens via Layer 1.
+Resolution of "what does it run" happens via Layer 2. Trust is
+strictly Layer 3.
+
+## Per-server "trusted workers" hint — already present
+
+The original spec proposed a per-server `RelayList` to nominate the
+workers a server prefers. This is **already encoded** by the existing
+set of `SyncProvider` grants in the server DAG. A client computing
+"who carries this server's state" enumerates the grants — the answer
+is the list of `EndpointId`s authorized to sync. No new event kind
+required, no list of URLs, no per-entry weight.
+
+If we ever want a softer hint (e.g. "prefer this worker over that
+one"), the right place to add it is on the existing `GrantPermission`
+record (an optional `priority: u8`), not as a parallel event stream.
+That extension is out of scope for this spec.
+
+## Bootstrap flow for share links
+
+`JoinToken` (per `docs/specs/2026-03-27-shareable-join-links-design.md`)
+currently carries `inviter_peer_id`, `server_id`, `link_id`,
+`server_name`, `inviter_name`. **It carries no addressing
+information**, implicitly relying on the hardcoded relay fleet.
+
+This spec proposes a one-line extension: add a small list of
+bootstrap **`NodeId`s** (not URLs):
 
 ```rust
-EventKind::RelayList {
-    entries: Vec<RelayEntry>,
-    replaces: Option<EventHash>, // previous RelayList by same author
+JoinToken {
+    inviter_peer_id: String,
+    server_id: String,
+    link_id: String,
+    server_name: String,
+    inviter_name: String,
+    bootstrap_node_ids: Vec<NodeId>, // 2-3 entries; resolved via pkarr
 }
-
-pub struct RelayEntry {
-    /// Wire address. Accepts `ws://`, `wss://`, `tcp://`, `quic://`,
-    /// or a bare iroh `NodeId` ("iroh:<base32-nodeid>").
-    pub url: String,
-    /// What direction the relay is useful for (NIP-65 analog).
-    pub role: RelayRole,
-    /// What the remote peer actually runs.
-    pub capability: RelayCapability,
-    /// Client-side ranking hint. 0 = lowest, 255 = highest. None = default.
-    pub weight: Option<u8>,
-}
-
-pub enum RelayRole { Read, Write, ReadWrite }
-pub enum RelayCapability { Relay, ReplayWorker, StorageWorker }
 ```
 
-Authority tier: **unrestricted.** Any member may publish their own
-`RelayList`. Trust comes from the signature + existing
-`SyncProvider` grants, not from membership in a new permission tier.
-Add to the intentionally-unrestricted comment block in
-`required_permission()` (`crates/state/src/materialize.rs:283`).
+Joining flow:
 
-## Replaceable semantics
+1. Client decodes `JoinToken` and obtains `bootstrap_node_ids` and
+   `inviter_peer_id`.
+2. For each bootstrap `NodeId` (and the inviter's `NodeId`), resolve
+   addresses via iroh pkarr.
+3. Connect to the first responsive endpoint and complete the
+   `JoinRequest` / `JoinResponse` handshake from the share-link spec.
+4. Replay the server DAG and read the set of `SyncProvider` grants.
+5. Resolve those `EndpointId`s via pkarr; fetch their capability
+   docs (Layer 2) to learn which run replay vs storage roles; connect
+   to the top N (default N=3) prioritised by latency.
 
-NIP-65 treats `kind:10002` as a replaceable event: the newest
-`created_at` from a given author supersedes older ones. Willow's
-per-author Merkle DAG already gives us something stronger — a
-monotonic `seq` (`crates/state/src/event.rs:191`) plus HLC-ordered
-`timestamp_hint_ms`. The rule is:
-
-> For any `(author, EventKind::RelayList)`, the event with the
-> **highest `seq`** in that author's chain is authoritative. Older
-> `RelayList` events are retained in the DAG for audit but are
-> ignored by `apply_mutation`.
-
-This is the first "replaceable kind" in `willow-state`. **Flag for
-reviewers:** we either (a) introduce a generic `ReplaceableKind` trait
-keyed on `(author, discriminant)` so future additions (e.g.
-`SetProfile` arguably belongs here) share the machinery, or (b) just
-add a `state.relay_lists: HashMap<EndpointId, RelayList>` and special-
-case it. Option (a) is cleaner but a wider change; option (b) is the
-minimum viable path and is what this spec recommends shipping first.
-
-Because `seq` is totally ordered within an author chain, replaceable
-semantics in Willow are **not** vulnerable to the clock-skew
-last-write-wins pathology that NIP-65 inherits.
-
-## Scope: per-peer-global vs per-server
-
-| Axis | Per-peer-global (`_willow_profiles`) | Per-server (inside server DAG) |
-|------|--------------------------------------|--------------------------------|
-| Discoverable from a share link alone | Yes — single lookup by owner PeerId | No — client must already have genesis event |
-| Doxxes your worker fleet to the world | Yes | No — visible only to members |
-| Follows key rotations | Yes, tied to peer identity | Yes, but requires DAG access |
-| Natural fit for `SyncProvider` nominations | No — grants are per-server | Yes |
-| Bootstrap-before-membership usable | Yes | No |
-
-**Recommendation:** publish two `RelayList` streams.
-
-1. A **public per-peer-global** `RelayList` on `_willow_profiles`,
-   used by joiners who only have a share link and need to find the
-   owner. Entries here are treated as hints about the *peer*, not
-   about any specific server.
-2. A **per-server** `RelayList` inside the server DAG (so it merges
-   with the rest of server state), used to nominate the server's
-   `SyncProvider` workers. Members read this after joining.
-
-The per-server stream MAY be published encrypted (see Privacy
-below); the per-peer-global stream is inherently public because its
-job is to bootstrap strangers.
-
-## Discovery flow
-
-New joiner clicks a share link (`JoinToken` per
-`2026-03-27-shareable-join-links-design.md`):
-
-1. Connect to the bootstrap relay embedded in the link.
-2. Subscribe to `_willow_profiles` (`crates/network/src/topics.rs:29`)
-   and request the owner's latest `RelayList` event by
-   `(author = inviter_peer_id, kind = RelayList)`.
-3. In parallel, request the server DAG from the bootstrap relay and
-   replay to obtain the set of current `SyncProvider` grants.
-4. **Intersect:** compute the set of `RelayEntry` whose advertised
-   `EndpointId` also holds a live `SyncProvider` grant. These are
-   trust-weighted candidates.
-5. Rank candidates by `(is_trusted, weight, observed_latency)` and
-   connect to the top N (default N=3, following NIP-65's "2–4 each"
-   guidance).
-6. Subscribe to `_willow_profiles` with a long-lived watch so that
-   new `RelayList` events from the owner (key rotation, fleet
-   migration) update the candidate set without a restart.
-7. When a peer publishes a new message, `willow-network` MUST push to
-   its *own* write relays and also opportunistically to the
-   recipient's read relays — mirroring NIP-65's "publish to both
-   sides" rule so discovery spreads without a central indexer.
-
-## Liveness
-
-Two options, analogous to NIP-66:
-
-- **Client-side probing (ship first).** Clients track connect
-  success/failure per entry in memory, decay weights on failure, and
-  write nothing back to the network. Simple, private, fully
-  distributed. Downside: every joiner re-learns the hard way.
-- **`EventKind::RelayLiveness { target: EndpointId, observed_ms: u64, ok: bool }`.**
-  Signed attestations from *any* peer about any relay. Consumers
-  weight attestations by signer trust. Same trap NIP-66 hit: not
-  many people run the checker. Recommended only if client-side
-  probing proves insufficient in practice.
-
-This spec recommends **client-side probing in v1** and deferring
-`RelayLiveness` until there's evidence we need it.
+Steps 1-3 use only Layer 1. Step 4 uses Layer 3. Step 5 uses Layers
+1 + 2 + 3 in combination. **At no point does the client read a
+"relay list event."**
 
 ## Privacy
 
-Publishing a `RelayList` doxxes which relays you use — NIP-65 has
-been criticized for this, since public lists enable targeted DoS.
-Mitigations, in order of strength:
+The original concern — that a public outbox doxxes a server's worker
+fleet — does not arise in this design. Worker `EndpointId`s appear
+only inside the server's own event DAG (via `SyncProvider` grants),
+which is encrypted to members under PR #220's epoch keys. Public
+discovery resolves `NodeId`s via pkarr packets the operator chooses
+to publish, and only members ever see the server-membership list.
 
-- **Per-server encryption.** The per-server `RelayList` is encrypted
-  to the current channel-key membership set
-  (`willow-crypto::seal_content`), so only admitted members see
-  worker addresses. Non-members joining via share link never see it.
-- **Public outbox is intentionally minimal.** The per-peer-global
-  `RelayList` on `_willow_profiles` SHOULD list only public relays
-  (the willow.intendednull.com fleet, community relays) — not
-  self-hosted workers. Members discover private workers after they
-  join.
-- **Rotation.** Because replaceable semantics are free, users can
-  churn their `RelayList` on any timescale without side effects.
+## Composition notes
 
-## Bootstrap
+- **PR #220 (epoch rotation).** No interaction. Per-server worker
+  lists are simply the existing `SyncProvider` grants inside the DAG;
+  they ride whatever encryption already protects server events.
+- **PR #217 (bech32 identifiers).** Pkarr packets contain raw
+  `NodeId` bytes, not bech32. Display surfaces (UI, logs, share-link
+  text) use the `wpeer` / `wrelay` HRPs from #217 for human-readable
+  rendering. There is no wire-format collision.
+- **PR #215 (capability negotiation).** This spec depends on #215.
+  It is consumed, not duplicated.
 
-The first fetch still needs a starting address. Share links
-continue to carry a bootstrap relay URL per
-`2026-03-27-shareable-join-links-design.md`. Once any one relay is
-reachable, the outbox takes over immediately. Share links MAY carry
-a small list (2–3) of bootstrap relays so a single down relay does
-not block joining — a one-line extension of `JoinToken`.
+## Anti-centralization — honest scope
 
-## Anti-centralization
+The original spec claimed protocol-level mitigations would prevent
+relay centralization. The empirical record from comparable systems
+contradicts that:
 
-NIP-65 converged on three de-facto indexer relays (relay.damus.io,
-nos.lol, purplepag.es). Client heuristics to resist this:
+- **Matrix:** matrix.org dominates federation traffic despite ~10K
+  federateable servers (TWIM 2025-10-03: only 28.6% of servers
+  publish room directories).
+- **ActivityPub:** mastodon.social retains years-running dominance
+  discussion.
+- **Nostr:** damus.relay and a handful of others dominate; the
+  Nostrify outbox docs explicitly cite "everyone picking the same
+  few relays" as the unsolved problem.
+- **SSB:** Pubs centralized; the project moved to Rooms (no feed
+  storage) precisely because the load model invited centralization.
 
-- **Never greedy-pick the most common entry.** If 80% of observed
-  `RelayList`s cite the same URL, *reduce* its weight on the margin.
-- **Weight by observed latency, not popularity.** A nearby relay
-  with 20ms RTT outranks a global giant with 200ms RTT.
-- **Diversify by operator.** Prefer candidates whose advertised
-  `EndpointId` is distinct from those already connected.
-- **Rotate periodically.** Every N hours, re-rank and drop the
-  lowest-performing connection even if it still works, to give other
-  relays a chance.
+Users pick the most-available endpoint regardless of protocol
+affordances. **This spec drops anti-centralization as a claim.** The
+honest scope is "graceful migration + worker discovery", which is
+what the iroh-pkarr + #215 composition delivers.
 
-These heuristics live in `willow-client`, not in the state machine —
-the DAG stays neutral.
+Client-side ranking heuristics (latency-weighted retry, dead-server
+backoff, periodic re-ranking) belong in `willow-client` as ordinary
+quality-of-service code. They are not protocol features.
+
+## Liveness — not a Willow concern
+
+Liveness is a TCP/QUIC connection-attempt concern (the OS gives us
+connect timeouts) plus a client retry-and-decay concern. Encoding
+liveness into a signed DAG event would be a category error: it
+would write transient network state into the permanent log, with no
+authoritative prober to serve as ground truth. **No
+`EventKind::RelayLiveness` will be introduced.** The original open
+question is closed.
+
+## Mandatory publication — voluntary
+
+Should peers with a live `SyncProvider` grant be required to
+participate in any discovery mechanism? **No.** Operators may
+legitimately run private/mesh deployments. Discovery participation
+remains voluntary; pkarr publication is opt-in (and is iroh's
+default for nodes that have a relay configured). The original open
+question is closed.
 
 ## Tests
 
 | Layer | Test | Where |
 |-------|------|-------|
-| State | Two `RelayList` events from same author → only the higher-`seq` one is reflected in `ServerState` / profile view | `crates/state/src/tests.rs` |
-| State | `RelayList` from non-member is still applied (unrestricted) and does not fail `required_permission` | `crates/state/src/tests.rs` |
-| Client | Discovery flow: stub `_willow_profiles`, feed a `RelayList`, assert top-N connection attempts | `crates/client/src/lib.rs` tests |
-| Client | Intersection: `RelayList` entry with no `SyncProvider` grant is ranked below one that has it | `crates/client/src/lib.rs` tests |
-| Integration | Share-link join where bootstrap relay serves only `RelayList` + DAG and client completes handshake via discovered worker | `e2e/multi-peer-sync.spec.ts` |
+| Client | Resolve owner `NodeId` via stub pkarr, connect via discovered address | `crates/client/src/lib.rs` tests |
+| Client | Enumerate `SyncProvider` grants from a replayed DAG; resolve each via pkarr; rank by latency | `crates/client/src/lib.rs` tests |
+| Client | Capability-doc fetch is gated by trust check (refuse to use a non-`SyncProvider` endpoint as authoritative) | `crates/client/src/lib.rs` tests |
+| Integration | Share-link join with extended `JoinToken` carrying `bootstrap_node_ids`, fallback when first bootstrap is unreachable | `e2e/multi-peer-sync.spec.ts` |
+| Integration | Owner migrates relay provider mid-session; existing clients re-resolve via pkarr without restart | `e2e/multi-peer-sync.spec.ts` |
+
+State-machine tests are deliberately absent: no new `EventKind` is
+introduced, so the state machine is unchanged.
 
 ## Open questions
 
-1. **Both scopes or one?** Should we ship only per-peer-global first
-   and defer per-server until workers are a real feature, or build
-   both simultaneously since the schema is the same?
-2. **Public vs encrypted.** Is the privacy cost of a public
-   per-peer-global `RelayList` acceptable, or should even the
-   bootstrap list be encrypted to a rotating "join-link key"
-   carried in the share URL?
-3. **Liveness.** Client probing v1, or bite the bullet and design
-   `EventKind::RelayLiveness` now so the schema is stable?
-4. **Anti-centralization floor.** Should the client *refuse* to
-   connect to a relay that appears in >X% of observed `RelayList`s,
-   or only demote it?
-5. **Mandatory publication.** Should peers with a live
-   `SyncProvider` grant be *required* to publish a `RelayList`
-   (enforced how? a warning? a soft demotion?), or is publication
-   purely opt-in?
-6. **Replaceable-event concept.** Is `RelayList` the forcing
-   function to introduce a general replaceable-kinds mechanism in
-   `willow-state` (retrofit `SetProfile`, anticipate future
-   per-author settings), or is a one-off `relay_lists` map on
-   `ServerState` enough for now?
+Most of the original open questions are resolved by dropping the
+event kind. What remains:
+
+1. **Bootstrap NodeId signing.** Should the `bootstrap_node_ids`
+   carried in `JoinToken` be signed by the inviter's key (so a
+   tampered share link can be detected at the time of join, before
+   any peer connection)? The token itself is base64-packed; we
+   could either sign the whole token with the inviter's key or rely
+   on first-connection identity verification. Concrete design
+   pending input on `JoinToken`'s threat model.
+2. **Pkarr fallback policy.** When the DHT is unreachable (e.g.
+   restrictive corporate network), should the client fall back to
+   resolving via the hardcoded bootstrap relays' caches, or fail
+   fast and surface the error to the user? The behaviour matters
+   for share-link UX and is genuinely unsettled.
+
+These are the only questions worth keeping open. Replaceable-event
+semantics, multi-device writes to the same author chain, anti-
+centralization algorithms, and `RelayLiveness` are all rendered
+moot by the layering above.
+
+## References
+
+- iroh pkarr: <https://www.iroh.computer/blog/iroh-global-node-discovery>
+- iroh DNS dial-by-NodeID: <https://www.iroh.computer/blog/iroh-dns>
+- PR #215: capability negotiation
+- PR #217: bech32 identifiers
+- PR #220: epoch key rotation
+- Matrix Server-Server API: <https://spec.matrix.org/latest/server-server-api/>
+- did:plc spec: <https://github.com/did-method-plc/did-method-plc>
+- SSB Rooms: <https://www.manyver.se/blog/announcing-ssb-rooms/>
+- Existing share-link design: `docs/specs/2026-03-27-shareable-join-links-design.md`
