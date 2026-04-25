@@ -13,3 +13,4 @@ playwright-report/
 
 # Local dev data
 .dev/
+.claude/worktrees/
