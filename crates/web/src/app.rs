@@ -7,8 +7,8 @@ use willow_client::{ClientConfig, ClientEvent, ClientHandle, DisplayMessage, Voi
 
 use crate::components::{
     AddServerPanel, CallPage, ChannelSidebar, ChatInput, CommandPalette, FileShareButton,
-    GroveRail, JoinPage, MainPaneHeader, MessageList, MobileShell, RightRail, RightRailWhich,
-    SettingsPanel, ToastStackView, WelcomeScreen,
+    GroveRail, JoinPage, MainPaneHeader, MessageList, MobileShell, ReadOnlyBanner, RightRail,
+    RightRailWhich, SettingsPanel, ToastStackView, WelcomeScreen,
 };
 use crate::event_processing::process_event_batch;
 use crate::handlers;
@@ -984,6 +984,32 @@ pub fn App() -> impl IntoView {
                                         queue_open.set(matches!(next, RightRailWhich::SyncQueue));
                                     });
                                     let chat_channel = current_channel;
+                                    // Phase 2d: when the current channel is an
+                                    // archived ephemeral, render a read-only
+                                    // banner and hide the composer until the
+                                    // user taps `post`.
+                                    let ephemeral_meta = app_state.server.ephemeral_meta;
+                                    let archived_band = Signal::derive(move || {
+                                        let name = current_channel.get();
+                                        let entries = ephemeral_meta.get();
+                                        let Some((_, _, last, threshold)) = entries
+                                            .iter()
+                                            .find(|(n, _, _, _)| n == &name)
+                                        else {
+                                            return false;
+                                        };
+                                        let frontier = js_sys::Date::now() as u64;
+                                        let band = willow_state::derive_ephemeral_state(
+                                            *last, *threshold, frontier,
+                                        );
+                                        band == willow_state::EphemeralState::Archived
+                                    });
+                                    let (composer_revealed, set_composer_revealed) = signal(false);
+                                    // Reset reveal when switching channels.
+                                    Effect::new(move |_| {
+                                        let _ = current_channel.get();
+                                        set_composer_revealed.set(false);
+                                    });
                                     view! {
                                         <main
                                             class="chat-container main-pane"
@@ -1007,6 +1033,24 @@ pub fn App() -> impl IntoView {
                                                                 "add a channel from the grove menu."
                                                             </div>
                                                         </div>
+                                                    })
+                                                } else {
+                                                    None
+                                                }
+                                            }}
+                                            // Phase 2d read-only banner: surfaces
+                                            // above the message list when the
+                                            // current channel is an archived
+                                            // ephemeral and the composer hasn't
+                                            // been manually revealed yet.
+                                            {move || {
+                                                if archived_band.get() && !composer_revealed.get() {
+                                                    Some(view! {
+                                                        <ReadOnlyBanner
+                                                            on_expand=Callback::new(move |_| {
+                                                                set_composer_revealed.set(true);
+                                                            })
+                                                        />
                                                     })
                                                 } else {
                                                     None
@@ -1057,7 +1101,22 @@ pub fn App() -> impl IntoView {
                                                     }
                                                 }}
                                             </div>
-                                            <div class="input-row">
+                                            // Phase 2d: hide the composer entirely
+                                            // for archived ephemerals until the
+                                            // user taps `post` from the banner.
+                                            // Uses a class toggle (CSS
+                                            // `.input-row--hidden`) rather than
+                                            // unmounting so the FileShareButton
+                                            // and ChatInput state stays.
+                                            <div
+                                                class=move || {
+                                                    if archived_band.get() && !composer_revealed.get() {
+                                                        "input-row input-row--hidden"
+                                                    } else {
+                                                        "input-row"
+                                                    }
+                                                }
+                                            >
                                                 <FileShareButton
                                                     channel=current_channel
                                                 />

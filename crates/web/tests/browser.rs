@@ -11243,7 +11243,9 @@ mod phase_2d_ephemeral_channels {
     use wasm_bindgen_test::*;
     use willow_client::{ArchivedChannelSummary, ArchivesView};
     use willow_state::EphemeralKind;
-    use willow_web::components::{ArchivesPane, KindChip, KindChipKind, TempChannelCreateForm};
+    use willow_web::components::{
+        ArchivesPane, KindChip, KindChipKind, ReadOnlyBanner, TempChannelCreateForm,
+    };
 
     #[wasm_bindgen_test]
     async fn kind_chip_renders_temp_for_channel() {
@@ -11431,6 +11433,48 @@ mod phase_2d_ephemeral_channels {
         assert!(
             captured.load(Ordering::Relaxed),
             "on_revive callback must fire with the row's name"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn archived_channel_banner_renders_with_role_status() {
+        let on_expand = Callback::new(|_: ()| {});
+        let container = mount_test(move || {
+            view! { <ReadOnlyBanner on_expand=on_expand/> }
+        });
+        tick().await;
+        let banner = query(&container, ".read-only-banner").expect("banner mounts");
+        assert_eq!(banner.get_attribute("role").as_deref(), Some("status"));
+        let txt = banner.text_content().unwrap_or_default();
+        assert!(
+            txt.contains("archived — read-only · post or tap revive to bring it back"),
+            "banner text must match spec verbatim, got {txt:?}"
+        );
+        assert!(
+            query(&container, ".read-only-banner-expand").is_some(),
+            "post button must render"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn read_only_banner_post_button_invokes_on_expand() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let captured = Arc::new(AtomicBool::new(false));
+        let captured_for_cb = captured.clone();
+        let on_expand = Callback::new(move |_: ()| {
+            captured_for_cb.store(true, Ordering::Relaxed);
+        });
+        let container = mount_test(move || {
+            view! { <ReadOnlyBanner on_expand=on_expand/> }
+        });
+        tick().await;
+        let btn = query(&container, ".read-only-banner-expand").expect("post button");
+        simulate_click(&btn);
+        tick().await;
+        assert!(
+            captured.load(Ordering::Relaxed),
+            "on_expand must fire on post click"
         );
     }
 

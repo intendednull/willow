@@ -6000,6 +6000,35 @@ select:focus-visible {
 }
 .archives-revive-link:hover { text-decoration: underline; }
 
+/* ── Phase 2d read-only banner inside archived channel ──────────────── */
+.read-only-banner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--line);
+    color: var(--ink-2);
+    font-family: var(--font-ui);
+    font-size: 13px;
+}
+.read-only-banner-text {
+    flex: 1;
+}
+.read-only-banner-expand {
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--moss);
+    padding: 4px 12px;
+    border-radius: var(--radius-s);
+    font-family: var(--font-ui);
+    font-size: 12px;
+    cursor: pointer;
+}
+.input-row--hidden {
+    display: none;
+}
+
 /* ── Phase 2d temp-channel create form ──────────────────────────────── */
 .temp-create {
     display: grid;
