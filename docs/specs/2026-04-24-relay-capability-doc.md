@@ -8,13 +8,16 @@
 
 ## Motivation
 
-Today a Willow client opens a TCP or WebSocket connection to the relay
-listener in `crates/relay/src/main.rs:128` and *only then* discovers
-whether the relay supports its wire version, whether it gates access on
-`SyncProvider` permission, whether it happens to be storage-degraded,
-or whether its topic cap has been reached. Failure is silent or shows
-up as a confusing disconnect — exactly the "why did that connection
-fail?" problem that NIP-11 was designed to solve for Nostr.
+Today a Willow client opens a connection to the relay listener in
+`crates/relay/src/main.rs:128` — a single public TCP port (default
+`3340`) that multiplexes `/bootstrap-id` plus an HTTP/WebSocket-upgrade
+proxy to the loopback iroh-relay — and *only then* discovers whether
+the relay supports its wire version, whether it happens to be
+storage-degraded, or whether its topic cap has been reached. Failure
+is silent or shows up as a confusing disconnect — exactly the "why
+did that connection fail?" problem that NIP-11 was designed to solve
+for Nostr. The capability document is served on the **same** port as
+the relay handshake, not a sidecar port.
 
 A sidecar capability document lets clients pick the right wire
 version before the handshake (see `PROTOCOL_VERSION` in
@@ -22,6 +25,30 @@ version before the handshake (see `PROTOCOL_VERSION` in
 invite or payment proof before dialling; surface a "degraded / full"
 banner; display operator name, contact, and ToS in a settings sheet;
 and filter a relay directory without connecting to each candidate.
+
+## Dispatch surgery (relay)
+
+Today `dispatch_connection` in `crates/relay/src/lib.rs` carves out
+exactly one path — `BOOTSTRAP_ID_PATH = "/bootstrap-id"` — and
+forwards everything else to the loopback iroh-relay. As written, a
+naive `GET /.well-known/willow` would land in the upstream and 404
+(or be misread as a relay handshake and dropped). Implementation
+MUST add:
+
+1. An explicit branch in `dispatch_connection` matching
+   `GET /.well-known/willow` and `OPTIONS /.well-known/willow`
+   *before* the iroh-relay fallthrough.
+2. A new handler analogous to `handle_bootstrap_request_after_line`
+   that emits the JSON body, ETag, and CORS headers (GET) or returns
+   `204` with full ACAO/ACAM/ACAH (OPTIONS preflight).
+3. Reuse of `BOOTSTRAP_IO_TIMEOUT` for socket reads/writes and the
+   existing `MAX_CONCURRENT_BOOTSTRAP_CONNECTIONS` semaphore for
+   admission control. No new tuning knobs in v1.
+
+This is an **extension** of the `handle_bootstrap_connection` pattern,
+not a mirror: that handler currently emits ACAO only (no ACAM/ACAH)
+and does not respond to `OPTIONS` preflights. Both gaps are closed
+here.
 
 ## Endpoint
 
@@ -62,24 +89,33 @@ pub struct WillowRelayInfo {
     pub contact: Option<String>,          // mailto: / https: / matrix:
     pub admin_pubkey: Option<String>,     // hex Ed25519, operator DM key
     pub pubkey: Option<String>,           // hex Ed25519, relay's own key
-    pub software: Option<String>,         // project URL
-    pub version: Option<String>,          // semver or git SHA
+    pub software: Option<String>,         // project name; operators MAY omit
+    pub version: Option<String>,          // coarse semver (e.g. "0.3.x");
+                                          // operators MAY omit; never a git SHA
     pub terms_of_service: Option<String>,
     pub privacy_policy: Option<String>,
     pub icon: Option<String>,             // square, ≥ 64×64
 
-    /// REQUIRED. Wire-protocol versions the relay accepts, highest-
-    /// preference first. Mirrors `willow_transport::PROTOCOL_VERSION`.
+    /// REQUIRED. Wire-protocol versions the relay accepts, sorted
+    /// highest-first, no duplicates. Mirrors
+    /// `willow_transport::PROTOCOL_VERSION`.
     pub protocol_versions: Vec<u16>,
 
     /// Short string feature tags. Initial set: "gossip", "history",
-    /// "blobs", "voice-signal", "invite-gate", "payment-gate".
+    /// "blobs", "voice-signal", "invite-gate", "payment-gate". See
+    /// "Cross-spec coordination" below for the canonical tag table.
     #[serde(default)]
     pub supported_features: Vec<String>,
 
-    /// Supported `EventKind` schema range `[min, max]` from
-    /// `crates/state/src/event.rs`. Absent = assume `[1, 1]`.
-    pub event_schema_range: Option<[u16; 2]>,
+    /// REQUIRED. Detached Ed25519 signature over the canonical JSON
+    /// (RFC 8785 JCS) of this object with the `signature` field
+    /// removed. Encoded as lowercase hex. Signed with the relay's
+    /// own Ed25519 key (the same `identity` constructed in
+    /// `crates/relay/src/main.rs:104`); the public half is published
+    /// in `pubkey`. Closes the "Clients MUST NOT cache across
+    /// `pubkey` changes" gap and prevents on-path rewrites of
+    /// `payment_required`, `min_client_version`, etc.
+    pub signature: String,
 
     pub limitation: Option<Limitation>,
     pub retention: Option<Retention>,
@@ -106,10 +142,6 @@ pub struct Limitation {
     pub max_blob_bytes: Option<u64>,      // 0 = blob pinning off
     #[serde(default)] pub invite_required: bool,
     #[serde(default)] pub payment_required: bool,
-    /// Relay drops traffic whose author isn't in its SyncProvider
-    /// allowlist. The relay CAN'T enforce the state-level grant (it
-    /// has no DAG), so this is a best-effort operator allowlist.
-    #[serde(default)] pub sync_provider_only: bool,
     pub hlc_lower_limit: Option<u64>,     // oldest accepted HLC ms
     pub min_client_version: Option<u16>,  // reject older handshakes
 }
@@ -128,17 +160,57 @@ pub struct Retention {
 
 ## Versioning
 
-Two independent version axes travel in this document:
+`protocol_versions: Vec<u16>` is the sole negotiated axis in v1.
+Client picks the highest integer in both its list and the relay's.
+Empty intersection → refuse to connect, surface a "version mismatch"
+error. The list MUST be sorted highest-first and MUST NOT contain
+duplicates so the negotiation rule is unambiguous.
 
-| Axis | Field | Negotiation rule |
-|---|---|---|
-| Wire framing (`Envelope`) | `protocol_versions: Vec<u16>` | Client picks the highest integer in both its list and the relay's. Empty intersection → refuse to connect, surface a "version mismatch" error. |
-| Event schema | `event_schema_range: [min, max]` | Client's active schema MUST lie within `[min, max]`. Outside the range the client either upgrades or treats the relay as a byte-forwarder and disables state replay through it. |
+**WebSocket clients SHOULD also send `Sec-WebSocket-Protocol`** (e.g.
+`willow.v2, willow.v1`) in the WS opening handshake. The JSON
+document is *advisory* — useful for pre-connect filtering and
+directory listings — but version selection at handshake time via
+RFC 6455 subprotocol negotiation is authoritative, and gracefully
+handles the case where a sidecar doc and the relay binary drift
+(operator forgot to redeploy the JSON).
+
+Event-schema versioning is **deferred**: `willow-state` defines
+`EventKind` as a Rust enum with no numeric tag and no
+`EVENT_SCHEMA_VERSION` constant. Advertising a range here would be
+vapor. Listed as future work below.
 
 The capability document itself is unversioned: compatibility comes from
 "add fields, never repurpose" plus the mandatory ignore-unknown-fields
 rule. A deprecated field graduates to a fresh name; peers that only
 understand the old name keep working.
+
+## Signing
+
+The capability document MUST be signed. Without a signature, an
+on-path attacker (or hostile CDN/reverse proxy fronting the relay)
+could flip `payment_required: true`, downgrade `protocol_versions`
+to `[1]`, or rewrite `pubkey` to a key the attacker controls. The
+relay already has an Ed25519 key (`identity` in
+`crates/relay/src/main.rs:104`); a detached signature is ~15 lines
+of code and ~88 hex characters in the document.
+
+- **Algorithm:** Ed25519 over the canonical JSON serialisation of
+  the document with the `signature` field removed.
+- **Canonicalisation:** RFC 8785 JSON Canonicalization Scheme (JCS).
+  Two relays running the same software with the same metadata MUST
+  produce byte-identical canonical bytes — this is what makes
+  cross-relay caching possible (see "Caching" below).
+- **Encoding:** lowercase hex in the `signature` field.
+- **Verification:** clients verify against the `pubkey` field. A
+  document whose signature does not verify MUST be treated as if
+  the endpoint returned `404`. Clients MUST NOT cache an
+  unverified document — this preserves the XEP-0115 → XEP-0390
+  lesson that an unverified capability blob can poison cache
+  entries keyed by content hash.
+- **Key rotation:** clients MUST NOT cache a document across a
+  `pubkey` change. The signature plus the publication of
+  `pubkey` together let clients pin a relay's identity across
+  CDN proxies and infrastructure migrations.
 
 ## CORS
 
@@ -152,19 +224,32 @@ Access-Control-Allow-Methods: GET, OPTIONS
 Access-Control-Allow-Headers: Accept, Content-Type, If-None-Match
 ```
 
-This mirrors the pattern already in `handle_bootstrap_connection`
-(`crates/relay/src/lib.rs:114`).
+This **extends** the pattern in `handle_bootstrap_connection`
+(`crates/relay/src/lib.rs:102`, ACAO emitted at line 116) — that
+handler currently sends ACAO only and does not respond to `OPTIONS`
+preflights at all, so the new dispatch branch must add ACAM/ACAH
+*and* an explicit `OPTIONS → 204` path in `dispatch_connection`.
 
 ## Caching
 
-- Response SHOULD carry a weak `ETag` derived from SHA-256 over the
-  canonical JSON serialisation, and SHOULD honour `If-None-Match`
-  with `304 Not Modified`.
-- Default `Cache-Control: public, max-age=60` — low enough that
-  operational-status transitions propagate within a minute, high
-  enough for a relay directory to fan out cheaply.
+- Response SHOULD carry a strong `ETag` derived from SHA-256 over
+  the RFC 8785 canonical JSON serialisation (the same bytes the
+  signature covers, with `signature` included). The ETag is strong,
+  not weak, because canonical JSON gives byte-equality semantics —
+  this is what enables cross-relay caching keyed by content hash,
+  XEP-0115/0390 style. Honour `If-None-Match` with
+  `304 Not Modified`.
+- **Two-tier `Cache-Control` keyed on `status`:**
+  - Steady-state (`status == "ok"` or absent):
+    `Cache-Control: public, max-age=300` — directories and clients
+    appreciate the longer TTL.
+  - Transitional (`status == "degraded"` or `"read_only"`):
+    `Cache-Control: public, max-age=5, must-revalidate` — clients
+    see the recovery quickly. The relay knows its own status and
+    varies the header per response.
 - Clients MUST NOT cache across `pubkey` changes; the relay's key
-  is part of the cache identity.
+  is part of the cache identity. Combined with the mandatory
+  signature this lets clients pin a relay across CDN proxies.
 
 ## Error modes
 
@@ -197,6 +282,23 @@ risk" so the endpoint is purely additive.
   `MAX_CONCURRENT_BOOTSTRAP_CONNECTIONS` semaphore
   (`crates/relay/src/lib.rs:59`).
 
+## Cross-spec coordination
+
+This document is the natural advertising surface for sibling specs in
+the #214–#221 set. To prevent tag-name drift (`hist-eose` here vs.
+`history_eose` somewhere else), the canonical `supported_features`
+strings are pinned here:
+
+| Sibling | Feature tag | Notes |
+|---|---|---|
+| #214 (history EOSE) | `history-eose` | Set when relay emits an end-of-stored-events sentinel. |
+| #216 (machine-readable rejections) | `rejection-codes-v1` | Bumped tag if/when codes evolve. May also bump `protocol_versions`. |
+| #217 (bech32 pubkey HRP) | bech32-pubkey-format (no tag yet) | Coordinate `pubkey` / `admin_pubkey` encoding with #217; v1 here keeps hex but #217 may extend the schema. |
+| #218 (gift-wrap DM) | `gift-wrap-dm` | Informational only — relays cannot tell whether traffic is gift-wrapped, so the tag advertises operator intent rather than a checked capability. |
+| #219 (sync algorithm) | `negentropy` or `seq-vector-sync` | One tag per algorithm the relay implements; client picks. |
+| #220 (epoch key rotation) | (none) | No relay impact — omit. |
+| #221 (outbox / no `EventKind::RelayList`) | (none) | No relay impact in this doc; `suggested_relays` (future) overlaps and should be resolved jointly with #221. |
+
 ## Tests
 
 **Unit (serde, in `crates/relay/src/`):** (1) round-trip a fully
@@ -219,25 +321,66 @@ document whose `protocol_versions` does not intersect the client's;
 mount the connect flow; assert the "connect" button is disabled and a
 mismatch banner is rendered.
 
+## Resolved during review
+
+- **Signing.** Resolved in favour of MUST-sign in v1 with an inline
+  `signature` field excluded from the canonical bytes. See "Signing"
+  above.
+- **Multi-tenant relays.** Resolved in favour of **one shared
+  document per host**. The relay in this codebase is topic-agnostic
+  (`crates/relay/src/lib.rs:8-23`: "All routines in this crate
+  operate at the transport layer") — it does not know what servers
+  it relays for, only `TopicAnnounce` strings. Per-server
+  `/.well-known/willow/{server_id}` would require teaching the
+  relay to enumerate servers it has no semantic knowledge of, which
+  contradicts the trust-model layering.
+- **Operator-metadata leakage.** `version` and `software` softened to
+  coarse semver and project name respectively; both MAY be omitted.
+- **`sync_provider_only`.** Dropped from v1. The relay has no DAG
+  and the field reduces to "operator vibes" without a concrete
+  pre-handshake check. If resurrected later, it must be tied to a
+  typed-error pre-handshake rejection so a client reading the field
+  can do something actionable.
+- **`event_schema_range`.** Dropped from v1; see "Future work".
+
 ## Open questions
 
-1. **Signed documents.** Ship an Ed25519 signature over the canonical
-   JSON so clients can pin a relay by key across CDN proxies? Sibling
-   `/.well-known/willow.sig`, HTTP header, or inline `signature` field
-   over a canonicalised hash?
-2. **Multi-tenant relays.** One host can serve many Willow servers;
-   per-server document at `/.well-known/willow/{server_id}`, or one
-   shared document since the relay is topic-agnostic?
-3. **Relay discovery.** Advertise `suggested_relays: Vec<Url>` so
-   clients discover siblings after connecting, à la Nostr relay
-   exchange?
-4. **Payment proof format.** Willow has no payments primitive yet — if
-   we keep `payment_required`, either spec the token format now or
-   gate the field behind a build flag so operators don't advertise
-   something no client can satisfy.
-5. **`supported_features` registry.** Strings are friendlier than
-   NIP-11 integers but drift; pin the tag set in `crates/transport`
-   as an enum, or keep it free-form?
-6. **Utilisation signalling.** Advertise current load (e.g. "9 998 /
-   10 000 topics used") for client load balancing, or omit to avoid
-   telemetry leakage? Worth a follow-up spec either way.
+1. **Payment proof format.** Willow has no payments primitive yet.
+   `payment_required` ships as a boolean hint with no token format
+   — clients can surface it but cannot satisfy it. Either spec the
+   token format in a sibling doc or gate the field behind a build
+   flag in a follow-up.
+2. **Utilisation telemetry.** Advertise current load (e.g.
+   `served_topics: u32`, "9998 / 10000 topics used") for client
+   load balancing, or omit to avoid fingerprinting? A counted
+   number (not list) avoids leaking server IDs but still gives
+   clients something to balance on. Worth a follow-up spec either
+   way.
+3. **Relay discovery / `suggested_relays`.** Advertise sibling
+   relays so clients discover alternates after connecting, à la
+   Nostr relay exchange? Resolve jointly with #221 (outbox), since
+   the shapes overlap.
+4. **`supported_features` registry.** The cross-spec table above
+   pins the v1 tags, but should the set be promoted to a Rust enum
+   in `crates/transport` so unknown tags fail to compile, or stay
+   free-form to allow out-of-tree operators to advertise local
+   features?
+
+## Future work
+
+- **Event schema versioning.** Once `willow-state` introduces an
+  `EVENT_SCHEMA_VERSION: u16` constant and a documented bump rule
+  (additive variants vs. breaking changes), add an
+  `event_schema_range: [min, max]` field to this document. Until
+  then, advertising a range would be vapor.
+- **DNS SVCB/HTTPS hints (RFC 9460).** A `willow-versions=1,2`
+  SvcParam would let clients decide whether to dial at all with
+  zero HTTP round-trips. Complementary to this document, not a
+  replacement: SVCB cannot carry `terms_of_service`,
+  `description`, or `status_detail`.
+- **Per-peer capabilities.** Matrix split `/versions` (public,
+  cacheable) from `/capabilities` (authenticated, per-user) at
+  v1.10. If/when Willow grows per-peer capability answers, route
+  them at a *new* path (e.g. `/willow/peer-capabilities`) rather
+  than overloading `/.well-known/willow` — Matrix's v1.10 retrofit
+  is a cautionary tale.
