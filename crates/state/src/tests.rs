@@ -4082,6 +4082,110 @@ fn channel_with_ephemeral_config_serializes() {
 }
 
 #[test]
+fn channel_revive_advances_last_activity_hlc() {
+    use crate::ephemeral::{EphemeralConfig, EphemeralKind, DEFAULT_CHANNEL_THRESHOLD_MS};
+
+    let owner = Identity::generate();
+    let mut dag = test_dag(&owner);
+    do_emit(
+        &mut dag,
+        &owner,
+        EventKind::CreateChannel {
+            name: "side-room".into(),
+            channel_id: "c1".into(),
+            kind: crate::types::ChannelKind::Text,
+            ephemeral: Some(EphemeralConfig {
+                kind: EphemeralKind::Channel,
+                idle_threshold_ms: DEFAULT_CHANNEL_THRESHOLD_MS,
+            }),
+        },
+    );
+
+    let revive_event = dag.create_event(
+        &owner,
+        EventKind::ChannelRevive {
+            channel_id: "c1".into(),
+        },
+        vec![],
+        1_700_000_000_000,
+    );
+    dag.insert(revive_event.clone()).unwrap();
+
+    let state = materialize(&dag);
+    let ch = state.channels.get("c1").expect("channel should exist");
+    assert_eq!(ch.last_activity_hlc, Some(revive_event.timestamp_hint_ms));
+}
+
+#[test]
+fn channel_revive_rejected_for_non_member() {
+    use crate::ephemeral::{EphemeralConfig, EphemeralKind, DEFAULT_CHANNEL_THRESHOLD_MS};
+    use crate::managed::ManagedDag;
+    use crate::materialize::ApplyResult;
+
+    let owner = Identity::generate();
+    let stranger = Identity::generate();
+
+    // Use ManagedDag so we can observe per-event apply outcomes.
+    let mut managed = ManagedDag::new(&owner, "Test Server", 5000).unwrap();
+    let create_ev = managed.dag().create_event(
+        &owner,
+        EventKind::CreateChannel {
+            name: "side-room".into(),
+            channel_id: "c1".into(),
+            kind: crate::types::ChannelKind::Text,
+            ephemeral: Some(EphemeralConfig {
+                kind: EphemeralKind::Channel,
+                idle_threshold_ms: DEFAULT_CHANNEL_THRESHOLD_MS,
+            }),
+        },
+        vec![],
+        10,
+    );
+    managed.insert_and_apply(create_ev).unwrap();
+
+    // Stranger has not joined the server — no Member entry exists
+    // for them. ChannelRevive must be rejected.
+    let revive_ev = managed.dag().create_event(
+        &stranger,
+        EventKind::ChannelRevive {
+            channel_id: "c1".into(),
+        },
+        vec![],
+        20,
+    );
+    let outcome = managed.insert_and_apply(revive_ev).unwrap();
+    assert!(
+        matches!(outcome.apply_result, Some(ApplyResult::Rejected(_))),
+        "non-member revive must be rejected: {:?}",
+        outcome.apply_result
+    );
+}
+
+#[test]
+fn channel_revive_unknown_channel_rejected() {
+    use crate::managed::ManagedDag;
+    use crate::materialize::ApplyResult;
+
+    let owner = Identity::generate();
+    let mut managed = ManagedDag::new(&owner, "Test Server", 5000).unwrap();
+
+    let ev = managed.dag().create_event(
+        &owner,
+        EventKind::ChannelRevive {
+            channel_id: "does-not-exist".into(),
+        },
+        vec![],
+        10,
+    );
+    let outcome = managed.insert_and_apply(ev).unwrap();
+    assert!(
+        matches!(outcome.apply_result, Some(ApplyResult::Rejected(_))),
+        "revive of unknown channel must be rejected: {:?}",
+        outcome.apply_result
+    );
+}
+
+#[test]
 fn message_advances_last_activity_hlc() {
     use crate::ephemeral::{EphemeralConfig, EphemeralKind, DEFAULT_CHANNEL_THRESHOLD_MS};
 

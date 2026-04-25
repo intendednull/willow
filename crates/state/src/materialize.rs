@@ -306,6 +306,9 @@ fn required_permission(kind: &EventKind) -> Option<Permission> {
         //                         is the only identity check)
         //   PinMessage,
         //   UnpinMessage        — unrestricted (any member)
+        //   ChannelRevive       — membership check lives in apply_mutation
+        //                         (does not require SendMessages so a muted
+        //                         member can still un-archive)
         //   MuteChannel,
         //   MuteGrove           — per-identity preference, never gated
         //
@@ -623,6 +626,31 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
             if let Some(ch) = state.channels.get_mut(channel_id) {
                 ch.pinned_messages.remove(message_id);
             }
+        }
+
+        EventKind::ChannelRevive { channel_id } => {
+            // Member gate — same contract as Message emission, but
+            // without the SendMessages permission requirement. A
+            // muted member can still revive a channel they belong to,
+            // even if they cannot post.
+            if !state.members.contains_key(&event.author) {
+                return ApplyResult::Rejected(format!(
+                    "ChannelRevive: author '{}' is not a member",
+                    event.author,
+                ));
+            }
+            let ch = match state.channels.get_mut(channel_id) {
+                Some(ch) => ch,
+                None => {
+                    return ApplyResult::Rejected(format!(
+                        "ChannelRevive: channel '{channel_id}' not found"
+                    ));
+                }
+            };
+            // Idempotent on already-active channels — still advances
+            // last_activity_hlc, which is a harmless no-op when the
+            // channel was already active.
+            ch.last_activity_hlc = Some(event.timestamp_hint_ms);
         }
 
         EventKind::RenameServer { new_name } => {

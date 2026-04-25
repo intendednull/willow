@@ -113,6 +113,11 @@ pub enum EventKind {
         channel_id: String,
         new_name: String,
     },
+    /// Revive an auto-archived ephemeral channel without posting a
+    /// message. Author must be a member of the server (same gate as
+    /// `Message`), but no `SendMessages` permission is required —
+    /// a muted member can still un-archive a room they belong to.
+    ChannelRevive { channel_id: String },
     /// Create a new role.
     CreateRole { name: String, role_id: String },
     /// Delete a role by ID.
