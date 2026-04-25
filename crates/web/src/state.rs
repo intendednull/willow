@@ -82,6 +82,7 @@ pub struct AppState {
     pub presence: PresenceUiState,
     /// Phase 2b sync-queue state bucket.
     pub queue: QueueUiState,
+    pub profile: ProfileUiState,
 }
 
 /// Tightened connection state companion to `NetworkState::connection_status`.
@@ -132,6 +133,13 @@ pub struct QueueUiState {
     /// When `true`, the sync-queue screen is mounted (desktop right-pane
     /// or mobile route).
     pub open: RwSignal<bool>,
+}
+
+/// Reactive profile-card bucket. `open` carries the currently-visible
+/// profile card's state (merged view + anchor). `None` means "closed".
+#[derive(Clone, Copy)]
+pub struct ProfileUiState {
+    pub open: ReadSignal<Option<crate::profile::ProfileState>>,
 }
 
 /// Reactive presence bucket. `per_peer` maps a peer's string id to the
@@ -257,6 +265,12 @@ pub struct AppWriteSignals {
     pub trust: TrustWriteSignals,
     pub presence: PresenceWriteSignals,
     pub queue: QueueWriteSignals,
+    pub profile: ProfileWriteSignals,
+}
+
+#[derive(Clone, Copy)]
+pub struct ProfileWriteSignals {
+    pub set_open: WriteSignal<Option<crate::profile::ProfileState>>,
 }
 
 #[derive(Clone, Copy)]
@@ -479,6 +493,9 @@ pub fn create_signals() -> InitialSignals {
     let queue_open = RwSignal::new(false);
     let (connection_state, set_connection_state) = signal(ConnectionState::Connecting);
 
+    // Profile-card signals (phase 2c)
+    let (profile_open, set_profile_open) = signal(Option::<crate::profile::ProfileState>::None);
+
     let app_state = AppState {
         chat: ChatState {
             messages,
@@ -552,6 +569,7 @@ pub fn create_signals() -> InitialSignals {
             device_online: queue_device_online,
             open: queue_open,
         },
+        profile: ProfileUiState { open: profile_open },
     };
 
     let write_signals = AppWriteSignals {
@@ -625,6 +643,9 @@ pub fn create_signals() -> InitialSignals {
             set_view: set_queue_view,
             set_relay_status: set_queue_relay_status,
             set_device_online: set_queue_device_online,
+        },
+        profile: ProfileWriteSignals {
+            set_open: set_profile_open,
         },
     };
 

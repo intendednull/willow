@@ -27,6 +27,7 @@ pub mod invite;
 pub mod listeners;
 pub mod mentions;
 pub mod mutations;
+pub mod nickname;
 pub mod ops;
 pub mod persistence_actor;
 pub mod presence;
@@ -58,6 +59,10 @@ mod tests_multi_peer_sync;
 #[path = "tests/queue.rs"]
 mod tests_queue;
 
+#[cfg(test)]
+#[path = "tests/profile_view.rs"]
+mod tests_profile_view;
+
 /// How long a typing indicator remains visible after the last typing event, in milliseconds.
 pub const TYPING_INDICATOR_TTL_MS: u64 = 5_000;
 
@@ -65,6 +70,7 @@ pub const TYPING_INDICATOR_TTL_MS: u64 = 5_000;
 pub use event_receiver::EventReceiver;
 pub use events::ClientEvent;
 pub use mentions::mentions_me;
+pub use nickname::{MemNicknameStore, NicknameStore, NicknameStoreHandle, NICKNAME_CAP};
 pub use ops::{pack_wire, unpack_wire, VoiceSignalPayload, WireMessage};
 pub use queue::{ArrivedSummary, QueueSummary, RelayStatus};
 pub use trust::{
@@ -150,6 +156,8 @@ pub mod event_receiver {
     }
 }
 pub use state::{DisplayMessage, QueueNote};
+pub use views::{since_hint, ProfileDelta, ProfileView};
+pub use willow_state::{CrestPattern, PinnedFragment, PinnedKind};
 
 // ClientState, ServerContext, ChatState, ProfileStore are used internally
 // during initialization only (loading from storage → populating domain actors).

@@ -13,7 +13,21 @@ use crate::dag::EventDag;
 use crate::event::{Event, EventKind, Permission, ProposedAction};
 use crate::hash::EventHash;
 use crate::server::{PendingProposal, ServerState};
-use crate::types::{Channel, ChatMessage, Member, Profile};
+use crate::types::{
+    Channel, ChatMessage, Member, PinnedFragment, Profile, PROFILE_CAP_BIO,
+    PROFILE_CAP_CREST_COLOR, PROFILE_CAP_ELSEWHERE_ENTRY, PROFILE_CAP_ELSEWHERE_LEN,
+    PROFILE_CAP_PINNED_BODY, PROFILE_CAP_PRONOUNS, PROFILE_CAP_SINCE, PROFILE_CAP_TAGLINE,
+};
+
+/// Truncate `s` to at most `cap` UTF-8 characters.
+///
+/// Walks char boundaries so multi-byte graphemes are never split mid-
+/// codepoint. Used on `UpdateProfile` apply to cap each field without
+/// rejecting the entire event — misbehaving clients are rate-limited
+/// rather than divergent.
+fn truncate_chars(s: &str, cap: usize) -> String {
+    s.chars().take(cap).collect()
+}
 
 /// Result of applying an event to state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -288,6 +302,8 @@ fn required_permission(kind: &EventKind) -> Option<Permission> {
         //   RenameServer,
         //   SetServerDescription — admin-only, checked in the admin block above
         //   SetProfile          — unrestricted (any member)
+        //   UpdateProfile       — unrestricted (any member; self-authorship
+        //                         is the only identity check)
         //   PinMessage,
         //   UnpinMessage        — unrestricted (any member)
         //   MuteChannel,
@@ -472,15 +488,77 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
         }
 
         EventKind::SetProfile { display_name } => {
-            state.profiles.insert(
-                event.author,
-                Profile {
-                    peer_id: event.author,
-                    display_name: display_name.clone(),
-                },
-            );
+            let entry = state
+                .profiles
+                .entry(event.author)
+                .or_insert_with(|| Profile::new(event.author));
+            entry.display_name = display_name.clone();
             if let Some(member) = state.members.get_mut(&event.author) {
                 member.display_name = Some(display_name.clone());
+            }
+        }
+
+        EventKind::UpdateProfile(delta) => {
+            let crate::types::ProfileDelta {
+                display_name,
+                pronouns,
+                bio,
+                tagline,
+                crest_pattern,
+                crest_color,
+                pinned,
+                elsewhere,
+                since,
+            } = delta.as_ref();
+            let entry = state
+                .profiles
+                .entry(event.author)
+                .or_insert_with(|| Profile::new(event.author));
+            if let Some(name) = display_name {
+                entry.display_name = name.clone();
+                if let Some(member) = state.members.get_mut(&event.author) {
+                    member.display_name = Some(name.clone());
+                }
+            }
+            if let Some(v) = pronouns {
+                entry.pronouns = v.as_ref().map(|s| truncate_chars(s, PROFILE_CAP_PRONOUNS));
+            }
+            if let Some(v) = bio {
+                entry.bio = v.as_ref().map(|s| truncate_chars(s, PROFILE_CAP_BIO));
+            }
+            if let Some(v) = tagline {
+                entry.tagline = v.as_ref().map(|s| truncate_chars(s, PROFILE_CAP_TAGLINE));
+            }
+            if let Some(v) = crest_pattern {
+                entry.crest_pattern = *v;
+            }
+            if let Some(v) = crest_color {
+                // Only accept valid `#RRGGBB` shapes; everything else drops
+                // to `None` so the banner falls back to `--moss-2`.
+                entry.crest_color = v.as_ref().and_then(|s| {
+                    let t = truncate_chars(s, PROFILE_CAP_CREST_COLOR);
+                    if t.len() == PROFILE_CAP_CREST_COLOR && t.starts_with('#') {
+                        Some(t)
+                    } else {
+                        None
+                    }
+                });
+            }
+            if let Some(v) = pinned {
+                entry.pinned = v.as_ref().map(|p| PinnedFragment {
+                    kind: p.kind,
+                    body: truncate_chars(&p.body, PROFILE_CAP_PINNED_BODY),
+                });
+            }
+            if let Some(v) = elsewhere {
+                entry.elsewhere = v
+                    .iter()
+                    .take(PROFILE_CAP_ELSEWHERE_LEN)
+                    .map(|s| truncate_chars(s, PROFILE_CAP_ELSEWHERE_ENTRY))
+                    .collect();
+            }
+            if let Some(v) = since {
+                entry.since = v.as_ref().map(|s| truncate_chars(s, PROFILE_CAP_SINCE));
             }
         }
 

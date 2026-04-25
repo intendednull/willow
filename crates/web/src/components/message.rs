@@ -692,6 +692,18 @@ pub fn MessageView(
                 // default button chrome so the visual is unchanged.
                 let author_for_aria = author.clone();
                 let author_aria = format!("{author_for_aria} — open profile");
+                let author_pid_for_click = author_pid.clone();
+                let on_author_click = move |ev: web_sys::MouseEvent| {
+                    // Spec §Event-bus API: every avatar surface dispatches
+                    // `open_profile(user_id, anchor)` — the anchor is the
+                    // clicked button so the desktop popover can position
+                    // itself against it.
+                    use wasm_bindgen::JsCast as _;
+                    let target = ev
+                        .current_target()
+                        .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok());
+                    crate::profile::open_profile(&author_pid_for_click, target);
+                };
                 view! {
                     <div class="meta">
                         <button
@@ -699,6 +711,7 @@ pub fn MessageView(
                             type="button"
                             aria-label=author_aria
                             style=format!("color: {author_color}")
+                            on:click=on_author_click
                         >{author}</button>
                         <super::TrustBadge
                             peer_id=author_pid.clone()

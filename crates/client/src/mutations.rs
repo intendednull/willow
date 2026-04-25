@@ -687,6 +687,23 @@ impl<N: willow_network::Network> ClientMutations<N> {
             .ok();
     }
 
+    /// Build + apply + broadcast an [`EventKind::UpdateProfile`].
+    ///
+    /// Spec: `docs/specs/2026-04-19-ui-design/profile-card.md`
+    /// §Editing — self. Called from the Settings Profile tab; the
+    /// popover itself never inlines edits.
+    pub async fn update_profile_fields(
+        &self,
+        delta: crate::views::ProfileDelta,
+    ) -> anyhow::Result<()> {
+        let event = self
+            .build_event(EventKind::UpdateProfile(Box::new(delta)))
+            .await?;
+        self.apply_event(&event).await;
+        self.broadcast_event(&event);
+        Ok(())
+    }
+
     /// Update a peer's display name from a profile broadcast.
     pub async fn update_profile(&self, peer_id: EndpointId, display_name: String) {
         let name = display_name.clone();
