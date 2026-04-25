@@ -44,7 +44,7 @@ async fn create_two_nodes() -> (TestNode, TestNode) {
     let id_a = Identity::generate();
     let id_b = Identity::generate();
 
-    let ep_a = iroh::Endpoint::builder(presets::Empty)
+    let ep_a = iroh::Endpoint::builder(presets::Minimal)
         .secret_key(id_a.secret_key().clone())
         .relay_mode(iroh::RelayMode::Disabled)
         .address_lookup(discovery.clone())
@@ -52,7 +52,7 @@ async fn create_two_nodes() -> (TestNode, TestNode) {
         .await
         .unwrap();
 
-    let ep_b = iroh::Endpoint::builder(presets::Empty)
+    let ep_b = iroh::Endpoint::builder(presets::Minimal)
         .secret_key(id_b.secret_key().clone())
         .relay_mode(iroh::RelayMode::Disabled)
         .address_lookup(discovery.clone())

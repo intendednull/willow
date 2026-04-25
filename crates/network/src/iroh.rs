@@ -223,7 +223,13 @@ impl IrohNetwork {
     /// sets up the protocol router, and returns a ready-to-use network.
     pub async fn new(config: Config) -> Result<Self> {
         // 1. Build the iroh endpoint.
-        let mut builder = Endpoint::builder(presets::Empty).secret_key(config.secret_key);
+        // Use `presets::Minimal` so iroh installs its rustls crypto
+        // provider (ring, via the iroh `tls-ring` default feature). The
+        // earlier 0.97 `empty_builder()` call set this implicitly; in
+        // 0.98 the only mandatory builder option is `crypto_provider`,
+        // and `Minimal` is the smallest preset that satisfies it without
+        // pulling in DNS/relay defaults.
+        let mut builder = Endpoint::builder(presets::Minimal).secret_key(config.secret_key);
 
         // Configure relay mode and seed bootstrap peer addresses.
         if let Some(relay_url) = &config.relay_url {
