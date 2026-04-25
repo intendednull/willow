@@ -629,7 +629,9 @@ deserialization.
 - Insert "Agents" section into the member list (between Infrastructure and
   Members).
 - Add bot badge and "Agent" tag to message rendering.
-- Add collapsible long messages (already shipped).
+- Add collapsible long messages: auto-collapse messages over 20 lines with
+  a "Show more" toggle in `crates/web/src/components/message.rs` (no
+  collapse logic exists today; this is net-new UI).
 
 ### Phase 2: Interaction (Core Loop)
 
