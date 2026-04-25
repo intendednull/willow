@@ -44,6 +44,7 @@ pub fn WelcomeScreen(on_done: impl Fn(()) + Send + Clone + 'static) -> impl Into
                                 class="welcome-name-input"
                                 type="text"
                                 autofocus
+                                aria-label="Your display name"
                                 placeholder="enter your name (optional)"
                                 prop:value=move || display_name.get()
                                 on:input=move |ev| set_display_name.set(event_target_value(&ev))
