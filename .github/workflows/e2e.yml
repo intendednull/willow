@@ -13,21 +13,22 @@ jobs:
   e2e:
     name: Playwright E2E
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # Manual / scheduled only: the full stack run takes 15+ min and the
     # multi-peer suite still has known flakes. Promote to `pull_request`
     # once the suite is stable.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           targets: wasm32-unknown-unknown
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '20'
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -37,7 +38,9 @@ jobs:
           restore-keys: e2e-
 
       - name: Install just
-        uses: taiki-e/install-action@just
+        uses: taiki-e/install-action@899b013517f9e7774591216672bf75a46bb9a481 # v2.9.4 just
+        with:
+          tool: just
 
       - name: Run full E2E flow (setup + tests + teardown)
         run: just test-e2e-full
