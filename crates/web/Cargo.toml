@@ -41,6 +41,7 @@ web-sys = { version = "0.3", features = [
     "ServiceWorkerContainer", "MessageEvent", "Event", "EventInit",
     "CustomEvent", "CustomEventInit",
     "History", "DomRect",
+    "Notification", "NotificationPermission",
 ] }
 js-sys = "0.3"
 wasm-bindgen-futures = "0.4"
