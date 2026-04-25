@@ -90,6 +90,94 @@ pub enum WireMessage {
     Worker(crate::WorkerWireMessage),
 }
 
+/// Per-variant size cap for small signaling messages: 4 KB.
+///
+/// Used by tiny control-plane messages whose payload is just an EndpointId,
+/// a short channel id, and maybe a short reason string. A few hundred bytes
+/// is typical; 4 KB leaves headroom for future fields without inviting abuse.
+const SIGNALING_CAP: usize = 4 * 1024;
+
+/// Default per-variant size cap: 64 KB.
+///
+/// Lines up with the gossip layer's `max_message_size`. Used as the
+/// fall-through for variants that don't have a dedicated cap.
+const DEFAULT_CAP: usize = 64 * 1024;
+
+impl WireMessage {
+    /// Returns the maximum permitted serialized size, in bytes, for this
+    /// variant when it appears on the wire.
+    ///
+    /// Per-variant caps are layered *on top of* the transport-level
+    /// [`willow_transport::MAX_DESER_SIZE`] (256 KB) cap which gates every
+    /// envelope before deserialization. The per-variant cap is enforced
+    /// post-decode by [`unpack_wire`] as defense-in-depth: a peer who tries
+    /// to ship a 200 KB `TypingIndicator` is misbehaving even though the
+    /// payload fits inside the transport envelope.
+    ///
+    /// Caps are sized to the variant's actual payload shape:
+    ///
+    /// - **Body-carrying variants** (`Event`, `SyncBatch`, `Worker`,
+    ///   `TopicAnnounce`): `MAX_DESER_SIZE` (256 KB). `Event`, `SyncBatch`,
+    ///   and `Worker` carry user-generated message bodies, batched event
+    ///   payloads, or worker sync responses, so they need the full envelope
+    ///   budget. `TopicAnnounce` is also sized at the envelope budget
+    ///   because the relay's per-topic limits (`MAX_TOPICS = 10_000`,
+    ///   `MAX_TOPIC_LEN = 256`) already permit announces well beyond any
+    ///   tighter cap, and the relay's loop does the real per-topic
+    ///   validation; the per-variant cap would only fight legitimate
+    ///   traffic.
+    /// - **`ProfileAnnounce`**: `DEFAULT_CAP` (64 KB). Display name has no
+    ///   formal length limit yet, but 64 KB is wildly more than any
+    ///   reasonable display name.
+    /// - **Signaling variants** (`TypingIndicator`, `VoiceJoin`,
+    ///   `VoiceLeave`, `VoiceSignal`, `JoinRequest`, `JoinResponse`,
+    ///   `JoinDenied`, `SyncRequest`): `SIGNALING_CAP` (4 KB). These
+    ///   carry only ids, short strings, and SDP/ICE blobs — all small.
+    pub fn max_size(&self) -> usize {
+        match self {
+            // User-generated bodies, batched payloads, and topic announces:
+            // full envelope budget. (TopicAnnounce's own per-topic limits live
+            // in the relay's `topic_announce_listener`, not here.)
+            WireMessage::Event(_)
+            | WireMessage::SyncBatch { .. }
+            | WireMessage::Worker(_)
+            | WireMessage::TopicAnnounce { .. } => willow_transport::MAX_DESER_SIZE as usize,
+            // Profile announce: display_name is unbounded today; allow 64 KB.
+            WireMessage::ProfileAnnounce { .. } => DEFAULT_CAP,
+            // Signaling / control plane: tiny payloads only.
+            WireMessage::SyncRequest { .. }
+            | WireMessage::TypingIndicator { .. }
+            | WireMessage::VoiceJoin { .. }
+            | WireMessage::VoiceLeave { .. }
+            | WireMessage::VoiceSignal { .. }
+            | WireMessage::JoinRequest { .. }
+            | WireMessage::JoinResponse { .. }
+            | WireMessage::JoinDenied { .. } => SIGNALING_CAP,
+        }
+    }
+
+    /// Short, stable name for the variant — used in tracing logs so we can
+    /// see which variant tripped a per-variant cap without dumping the
+    /// whole payload.
+    fn variant_name(&self) -> &'static str {
+        match self {
+            WireMessage::Event(_) => "Event",
+            WireMessage::SyncRequest { .. } => "SyncRequest",
+            WireMessage::SyncBatch { .. } => "SyncBatch",
+            WireMessage::TypingIndicator { .. } => "TypingIndicator",
+            WireMessage::VoiceJoin { .. } => "VoiceJoin",
+            WireMessage::VoiceLeave { .. } => "VoiceLeave",
+            WireMessage::VoiceSignal { .. } => "VoiceSignal",
+            WireMessage::JoinRequest { .. } => "JoinRequest",
+            WireMessage::JoinResponse { .. } => "JoinResponse",
+            WireMessage::JoinDenied { .. } => "JoinDenied",
+            WireMessage::TopicAnnounce { .. } => "TopicAnnounce",
+            WireMessage::ProfileAnnounce { .. } => "ProfileAnnounce",
+            WireMessage::Worker(_) => "Worker",
+        }
+    }
+}
+
 /// WebRTC signaling payload for voice chat negotiation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum VoiceSignalPayload {
@@ -109,6 +197,12 @@ pub fn pack_wire(msg: &WireMessage, identity: &willow_identity::Identity) -> Opt
 }
 
 /// Verify and deserialize a [`WireMessage`] from a signed envelope.
+///
+/// Beyond signature verification and the transport-level
+/// [`willow_transport::MAX_DESER_SIZE`] cap, this enforces per-variant size
+/// caps via [`WireMessage::max_size`] as defense-in-depth: messages whose
+/// re-serialized size exceeds the variant's cap are dropped with a
+/// `tracing::warn!` and the function returns `None`.
 pub fn unpack_wire(data: &[u8]) -> Option<(WireMessage, willow_identity::EndpointId)> {
     let (envelope_bytes, signer) = willow_identity::unpack::<Vec<u8>>(data).ok()?;
     let (msg, willow_transport::MessageType::Channel) =
@@ -116,6 +210,27 @@ pub fn unpack_wire(data: &[u8]) -> Option<(WireMessage, willow_identity::Endpoin
     else {
         return None;
     };
+
+    // Per-variant size cap: defense-in-depth on top of the transport-level
+    // MAX_DESER_SIZE cap. Computing serialized_size is O(payload) but cheap
+    // — bincode just walks the structure without allocating. If the size
+    // can't be computed (shouldn't happen for already-decoded messages),
+    // err on the side of letting it through; the transport cap already
+    // bounds the worst case.
+    let cap = msg.max_size() as u64;
+    if let Ok(size) = bincode::serialized_size(&msg) {
+        if size > cap {
+            tracing::warn!(
+                variant = msg.variant_name(),
+                size,
+                cap,
+                signer = %signer,
+                "dropping wire message exceeding per-variant size cap"
+            );
+            return None;
+        }
+    }
+
     Some((msg, signer))
 }
 
@@ -417,6 +532,58 @@ mod tests {
             }
             _ => panic!("expected VoiceSignal"),
         }
+    }
+
+    #[test]
+    fn per_variant_caps_are_sized_appropriately() {
+        // Sanity: caps should be ordered signaling < profile <= body, and
+        // body-carrying variants (Event, SyncBatch, Worker, TopicAnnounce)
+        // all sit at the full envelope budget (MAX_DESER_SIZE).
+        let signaling = WireMessage::TypingIndicator {
+            channel: String::new(),
+        }
+        .max_size();
+        let topic_announce = WireMessage::TopicAnnounce { topics: vec![] }.max_size();
+        let profile = WireMessage::ProfileAnnounce {
+            display_name: String::new(),
+        }
+        .max_size();
+        let id = Identity::generate();
+        let event = WireMessage::Event(make_event(
+            &id,
+            EventKind::Message {
+                channel_id: "c".into(),
+                body: "b".into(),
+                reply_to: None,
+            },
+        ));
+        let event_cap = event.max_size();
+
+        assert!(signaling < profile, "signaling cap < profile cap");
+        assert!(profile < event_cap, "profile cap < event cap");
+        assert_eq!(event_cap, willow_transport::MAX_DESER_SIZE as usize);
+        assert_eq!(
+            topic_announce, event_cap,
+            "TopicAnnounce sits at the full envelope budget alongside other body-carrying variants"
+        );
+    }
+
+    #[test]
+    fn oversize_signaling_message_is_rejected() {
+        // Build a TypingIndicator whose channel string blows past the
+        // 4 KB signaling cap. The transport-level MAX_DESER_SIZE cap
+        // (256 KB) still accepts it, so this exercises the per-variant
+        // post-decode rejection path.
+        let id = Identity::generate();
+        let big_channel = "x".repeat(8 * 1024); // 8 KB > 4 KB signaling cap
+        let msg = WireMessage::TypingIndicator {
+            channel: big_channel,
+        };
+        let data = pack_wire(&msg, &id).unwrap();
+        assert!(
+            unpack_wire(&data).is_none(),
+            "oversize signaling variant should be rejected by per-variant cap"
+        );
     }
 
     #[test]
