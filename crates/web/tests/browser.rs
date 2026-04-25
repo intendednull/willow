@@ -11239,8 +11239,9 @@ mod phase_2d_ephemeral_channels {
 
     use super::{mount_test, query, tick};
     use leptos::prelude::*;
+    use wasm_bindgen::JsCast;
     use wasm_bindgen_test::*;
-    use willow_web::components::{KindChip, KindChipKind};
+    use willow_web::components::{KindChip, KindChipKind, TempChannelCreateForm};
 
     #[wasm_bindgen_test]
     async fn kind_chip_renders_temp_for_channel() {
@@ -11276,5 +11277,44 @@ mod phase_2d_ephemeral_channels {
             chip.get_attribute("aria-label").as_deref(),
             Some("non-permanent — whisper")
         );
+    }
+
+    #[wasm_bindgen_test]
+    async fn temp_kind_form_renders_threshold_field() {
+        let container = mount_test(|| view! { <TempChannelCreateForm/> });
+        tick().await;
+
+        let threshold_input = query(&container, "input[name='temp-idle-threshold-days']")
+            .expect("threshold field must render");
+        let input = threshold_input
+            .clone()
+            .dyn_into::<web_sys::HtmlInputElement>()
+            .unwrap();
+        assert_eq!(input.value(), "14", "default threshold is 14 days");
+
+        let helper = query(&container, ".temp-create-helper").expect("helper copy must render");
+        let txt = helper.text_content().unwrap_or_default();
+        assert!(
+            txt.contains("archives if no one posts for"),
+            "helper copy must match spec verbatim; got {txt:?}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn temp_kind_threshold_clamps_above_cap() {
+        let container = mount_test(|| view! { <TempChannelCreateForm/> });
+        tick().await;
+
+        let input = query(&container, "input[name='temp-idle-threshold-days']")
+            .unwrap()
+            .dyn_into::<web_sys::HtmlInputElement>()
+            .unwrap();
+        input.set_value("200");
+        let evt_init = web_sys::EventInit::new();
+        evt_init.set_bubbles(true);
+        let ev = web_sys::Event::new_with_event_init_dict("input", &evt_init).unwrap();
+        input.dispatch_event(&ev).unwrap();
+        tick().await;
+        assert_eq!(input.value(), "90", "must clamp at 90-day cap");
     }
 }

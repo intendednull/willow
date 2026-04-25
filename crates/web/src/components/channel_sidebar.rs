@@ -14,7 +14,8 @@ use leptos::prelude::*;
 
 use crate::app::WebClientHandle;
 use crate::components::{
-    ConfirmDialog, ContextMenu, StatusDot, StatusDotBorder, StatusDotSize, VoiceControls,
+    ConfirmDialog, ContextMenu, StatusDot, StatusDotBorder, StatusDotSize, TempChannelCreateForm,
+    VoiceControls, TEMP_DEFAULT_DAYS,
 };
 use crate::icons;
 
@@ -119,6 +120,8 @@ pub fn ChannelSidebar(
     //     shown and auto-focused.
     let (picker_open, set_picker_open) = signal(false);
     let (pending_kind, set_pending_kind) = signal(Option::<willow_state::ChannelKind>::None);
+    let (pending_temp, set_pending_temp) = signal(false);
+    let (temp_days, set_temp_days) = signal(TEMP_DEFAULT_DAYS);
     let (new_name, set_new_name) = signal(String::new());
     let name_input_ref: NodeRef<leptos::html::Input> = NodeRef::new();
 
@@ -126,7 +129,7 @@ pub fn ChannelSidebar(
     // Fires once per None → Some(kind) transition so typing doesn't
     // keep retriggering focus.
     Effect::new(move |prev: Option<bool>| {
-        let is_some = pending_kind.get().is_some();
+        let is_some = pending_kind.get().is_some() || pending_temp.get();
         let was_some = prev.unwrap_or(false);
         if is_some && !was_some {
             let input_ref = name_input_ref;
@@ -149,6 +152,8 @@ pub fn ChannelSidebar(
     let reset_create = move || {
         set_picker_open.set(false);
         set_pending_kind.set(None);
+        set_pending_temp.set(false);
+        set_temp_days.set(TEMP_DEFAULT_DAYS);
         set_new_name.set(String::new());
     };
 
@@ -159,8 +164,24 @@ pub fn ChannelSidebar(
             let name = new_name.get_untracked();
             let name = name.trim().to_string();
             let kind = pending_kind.get_untracked();
-            if let Some(kind) = kind {
-                if !name.is_empty() {
+            let is_temp = pending_temp.get_untracked();
+            if !name.is_empty() {
+                if is_temp {
+                    let h = handle_create.clone();
+                    let name_owned = name.clone();
+                    let days = temp_days.get_untracked() as u64;
+                    let threshold_ms = days.saturating_mul(24 * 3_600_000);
+                    wasm_bindgen_futures::spawn_local(async move {
+                        let _ = h
+                            .create_ephemeral_channel(
+                                &name_owned,
+                                willow_state::EphemeralKind::Channel,
+                                threshold_ms,
+                            )
+                            .await;
+                    });
+                    on_channel_created(());
+                } else if let Some(kind) = kind {
                     let h = handle_create.clone();
                     let name_owned = name.clone();
                     wasm_bindgen_futures::spawn_local(async move {
@@ -196,14 +217,23 @@ pub fn ChannelSidebar(
     let pick_kind = move |kind: willow_state::ChannelKind| {
         set_picker_open.set(false);
         set_pending_kind.set(Some(kind));
+        set_pending_temp.set(false);
         set_new_name.set("new-tree".to_string());
         // Focus + select-all happens via the Effect above.
+    };
+
+    let pick_temp = move |_| {
+        set_picker_open.set(false);
+        set_pending_kind.set(None);
+        set_pending_temp.set(true);
+        set_temp_days.set(TEMP_DEFAULT_DAYS);
+        set_new_name.set("new-tree".to_string());
     };
 
     let on_plant_click = {
         let reset = reset_create;
         move |_| {
-            if pending_kind.get_untracked().is_some() {
+            if pending_kind.get_untracked().is_some() || pending_temp.get_untracked() {
                 // Already filling a slot — cancel.
                 reset();
             } else {
@@ -286,6 +316,7 @@ pub fn ChannelSidebar(
                             {move || picker_open.get().then(|| {
                                 let pick_t = pick_kind_a;
                                 let pick_v = pick_kind_b;
+                                let pick_e = pick_temp;
                                 view! {
                                     <div class="tree-kind-picker" role="menu" aria-label="choose tree type">
                                         <button
@@ -308,12 +339,24 @@ pub fn ChannelSidebar(
                                             <span class="tree-kind-picker__label">"voice"</span>
                                             <span class="tree-kind-picker__hint">"call + audio"</span>
                                         </button>
+                                        <button
+                                            class="tree-kind-picker__item"
+                                            role="menuitem"
+                                            on:click=move |_| pick_e(())
+                                        >
+                                            <span class="tree-kind-picker__glyph">"~"</span>
+                                            <span class="tree-kind-picker__label">"temp"</span>
+                                            <span class="tree-kind-picker__hint">"auto-archives"</span>
+                                        </button>
                                     </div>
                                 }
                             })}
-                            {move || pending_kind.get().map(|kind| {
-                                let on_kd = on_kd.clone();
-                                let save = submit_save.clone();
+                            {
+                                let on_kd_a = on_kd.clone();
+                                let save_a = submit_save.clone();
+                                move || pending_kind.get().map(|kind| {
+                                let on_kd = on_kd_a.clone();
+                                let save = save_a.clone();
                                 let glyph_view = match kind {
                                     willow_state::ChannelKind::Voice => {
                                         icons::icon_volume_2().into_any()
@@ -360,7 +403,57 @@ pub fn ChannelSidebar(
                                         >"×"</button>
                                     </div>
                                 }
-                            })}
+                            })
+                            }
+                            {
+                                let on_kd_b = on_kd.clone();
+                                let save_b = submit_save.clone();
+                                move || pending_temp.get().then(|| {
+                                let on_kd = on_kd_b.clone();
+                                let save = save_b.clone();
+                                let on_days = Callback::new(move |d: u32| set_temp_days.set(d));
+                                view! {
+                                    <div class="tree-slot tree-slot--temp" data-kind="temp">
+                                        <span class="tree-slot__glyph">
+                                            <span class="tree-slot__hash">"~"</span>
+                                        </span>
+                                        <input
+                                            type="text"
+                                            class="tree-slot__input"
+                                            node_ref=name_input_ref
+                                            aria-label="Name temp channel"
+                                            placeholder="tree name"
+                                            prop:value=move || new_name.get()
+                                            on:input=move |ev| set_new_name.set(event_target_value(&ev))
+                                            on:keydown=on_kd
+                                        />
+                                        <button
+                                            class="tree-slot__save"
+                                            title="plant temp tree"
+                                            aria-label="plant temp tree"
+                                            on:mousedown=move |ev: web_sys::MouseEvent| {
+                                                ev.prevent_default();
+                                                save();
+                                            }
+                                        >
+                                            {icons::icon_tree()}
+                                        </button>
+                                        <button
+                                            class="tree-slot__cancel"
+                                            title="cancel"
+                                            aria-label="cancel"
+                                            on:mousedown=move |ev: web_sys::MouseEvent| {
+                                                ev.prevent_default();
+                                                cancel();
+                                            }
+                                        >"×"</button>
+                                        <TempChannelCreateForm
+                                            on_change=on_days
+                                        />
+                                    </div>
+                                }
+                            })
+                            }
                         </div>
                     }
                 })}
