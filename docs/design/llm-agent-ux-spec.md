@@ -27,9 +27,10 @@ a human member is a new `PeerKind` field. **NEW:** `PeerKind` does not currently
 exist. The canonical `Profile` (`crates/state/src/types.rs:94-128`) carries 10
 fields today (`peer_id`, `display_name`, `pronouns`, `bio`, `tagline`,
 `crest_pattern`, `crest_color`, `pinned`, `elsewhere`, `since`) and is mutated
-via two events: a legacy `EventKind::SetProfile { display_name }` and the
-canonical `EventKind::UpdateProfile(Box<ProfileDelta>)`
-(`crates/state/src/event.rs:148-168`) — a partial-field overlay with explicit
+via two events: a legacy `EventKind::SetProfile { display_name }` (at
+`crates/state/src/event.rs:148`) and the canonical
+`EventKind::UpdateProfile(Box<ProfileDelta>)`
+(`crates/state/src/event.rs:150-168`) — a partial-field overlay with explicit
 "unchanged / clear / set" semantics. This proposal extends both `Profile` and
 `ProfileDelta` with `peer_kind` and `data_policy`, following the same
 `#[serde(default)]` additive pattern already used for `pronouns`, `bio`,
@@ -142,11 +143,17 @@ pin, delete) with one addition:
   1. `EventKind::DeleteMessage { message_id }`, where `message_id` is the
      `EventHash` of the agent's previous response. This is a soft-delete
      tombstone, not a hard delete — replay still sees the original event.
-     **Author-only:** the current state machine permits delete from any
-     `SendMessages` holder, but the spec contract is that only the
-     original author may delete its own message. If a stricter
-     authorship gate is desired, tighten `apply_event(DeleteMessage)`
-     before shipping Regenerate.
+     **Author-only is already enforced:** `apply_event(DeleteMessage)`
+     in `crates/state/src/materialize.rs:467-477` only flips the
+     `deleted` flag when `msg.author == event.author` (the same gate
+     `EditMessage` applies at L453-465); a non-author DeleteMessage is
+     silently ignored at the apply layer (it is not surfaced as
+     `Rejected(_)`). Regenerate (delete-own + new-message) type-checks
+     against this existing rule with no state-machine change required.
+     A separate, looser proposal — letting moderators delete *others'*
+     messages, gated by a NEW `ModerateMessages` permission — is
+     tracked in §4 under "Delete others' messages" and is out of scope
+     for shipping Regenerate.
   2. A new `EventKind::Message { channel_id, body, reply_to }` carrying
      the regenerated response. `reply_to` references the same parent
      event as the deleted response so threading is preserved.
@@ -294,7 +301,10 @@ friction for dangerous capabilities. Specifically:
   2. Other admins emit `EventKind::Vote { proposal, accept: true }` until
      the configured `VoteThreshold` is met (the server owner can push
      unilaterally per the owner-override path in
-     `apply_proposed_action` — `crates/state/src/materialize.rs:188-209`).
+     `check_and_apply_proposal` —
+     `crates/state/src/materialize.rs:188-209`, owner-override check
+     at L197-201; `apply_proposed_action` at L212-245 contains no
+     owner-override).
   3. Once the proposal applies, the proposing admin (or any
      `ManageChannels` holder) emits
      `EventKind::RotateChannelKey { channel_id, encrypted_keys }` for
@@ -568,8 +578,9 @@ This proposal adds:
 
    - Updating `WorkerRoleInfo::role_name()`
      (`crates/common/src/worker_types.rs:40-46`) — the match is
-     non-exhaustive, so a new arm `WorkerRoleInfo::Bot { .. } => "bot"`
-     must be added or the build breaks.
+     exhaustive today (no `_` catch-all), so adding the `Bot` variant
+     requires a matching arm `WorkerRoleInfo::Bot { .. } => "bot"` or
+     the build breaks.
    - Considering `PartialEq` / serde round-trips: `WorkerRoleInfo`
      derives both `PartialEq` and `Serialize`/`Deserialize`, so existing
      round-trip tests in `crates/common/src/worker_types.rs` should
