@@ -8,8 +8,9 @@
 
 ## Motivation
 
-Today a Willow client opens a connection to the relay listener in
-`crates/relay/src/main.rs:128` — a single public TCP port (default
+Today a Willow client opens a connection to the relay listener bound
+in `crates/relay/src/main.rs:129` and spawned via `run_proxy_listener`
+at `crates/relay/src/main.rs:202` — a single public TCP port (default
 `3340`) that multiplexes `/bootstrap-id` plus an HTTP/WebSocket-upgrade
 proxy to the loopback iroh-relay — and *only then* discovers whether
 the relay supports its wire version, whether it happens to be
@@ -30,9 +31,15 @@ and filter a relay directory without connecting to each candidate.
 
 Today `dispatch_connection` in `crates/relay/src/lib.rs` carves out
 exactly one path — `BOOTSTRAP_ID_PATH = "/bootstrap-id"` — and
-forwards everything else to the loopback iroh-relay. As written, a
-naive `GET /.well-known/willow` would land in the upstream and 404
-(or be misread as a relay handshake and dropped). Implementation
+forwards everything else to the loopback iroh-relay. The active
+production handler is `handle_bootstrap_request_after_line`
+(`crates/relay/src/lib.rs:266-314`), reached through
+`run_proxy_listener` → `dispatch_connection`; the older
+`handle_bootstrap_connection` (`crates/relay/src/lib.rs:102`) is now
+only exercised by the test-only `run_bootstrap_listener` path used in
+`crates/relay/tests/bootstrap_endpoint.rs`. As written, a naive
+`GET /.well-known/willow` would land in the upstream iroh-relay and
+404 (or be misread as a relay handshake and dropped). Implementation
 MUST add:
 
 1. An explicit branch in `dispatch_connection` matching
@@ -43,12 +50,17 @@ MUST add:
    `204` with full ACAO/ACAM/ACAH (OPTIONS preflight).
 3. Reuse of `BOOTSTRAP_IO_TIMEOUT` for socket reads/writes and the
    existing `MAX_CONCURRENT_BOOTSTRAP_CONNECTIONS` semaphore for
-   admission control. No new tuning knobs in v1.
+   admission control. No new tuning knobs in v1. Note: the constant
+   name is already stale — it gates the public proxy semaphore in
+   `crates/relay/src/main.rs:201-207`, not just bootstrap-id traffic
+   — and SHOULD be renamed (e.g. `MAX_CONCURRENT_PROXY_CONNECTIONS`)
+   in the same change that introduces this endpoint.
 
-This is an **extension** of the `handle_bootstrap_connection` pattern,
-not a mirror: that handler currently emits ACAO only (no ACAM/ACAH)
-and does not respond to `OPTIONS` preflights. Both gaps are closed
-here.
+This is an **extension** of the existing proxy-handler pattern (both
+`handle_bootstrap_request_after_line` in production and
+`handle_bootstrap_connection` in tests), not a mirror: both handlers
+currently emit ACAO only (no ACAM/ACAH) and neither responds to
+`OPTIONS` preflights. Both gaps are closed here.
 
 ## Endpoint
 
@@ -138,7 +150,11 @@ pub struct Limitation {
     pub max_topics: Option<u32>,          // MAX_TOPICS,
                                           // `crates/relay/src/lib.rs:80`
     pub max_connections: Option<u32>,     // MAX_CONCURRENT_BOOTSTRAP_
-                                          // CONNECTIONS, lib.rs:59
+                                          // CONNECTIONS, lib.rs:59 —
+                                          // misnamed; gates the
+                                          // public proxy semaphore.
+                                          // Rename in the same change
+                                          // (see "Dispatch surgery").
     pub max_blob_bytes: Option<u64>,      // 0 = blob pinning off
     #[serde(default)] pub invite_required: bool,
     #[serde(default)] pub payment_required: bool,
@@ -148,10 +164,14 @@ pub struct Limitation {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Retention {
-    /// "replay" (in-memory, 1000-event cap per server) or "storage"
-    /// (SQLite). See `docs/specs/2026-03-27-worker-nodes-design.md`.
+    /// "replay" (in-memory; per-author cap, default 1000 events per
+    /// author per server — see `ReplayConfig::max_events_per_author`
+    /// in `crates/replay/src/role.rs:49,64`) or "storage" (SQLite).
+    /// See `docs/specs/2026-03-27-worker-nodes-design.md`.
     pub mode: String,
-    pub max_events_per_server: Option<u32>,  // null = unbounded
+    pub max_events_per_author: Option<u32>,  // null = unbounded;
+                                             // mirrors the replay
+                                             // role's per-author cap
     pub max_age_seconds: Option<u64>,        // null = keep everything
     /// Willow default: false. Sealed channel keys stay peer-to-peer.
     #[serde(default)] pub channel_key_escrow: bool,
@@ -200,6 +220,13 @@ of code and ~88 hex characters in the document.
   Two relays running the same software with the same metadata MUST
   produce byte-identical canonical bytes — this is what makes
   cross-relay caching possible (see "Caching" below).
+- **Two canonical forms.** Be careful: the bytes the *signature*
+  covers exclude the `signature` field (`CANON_SIGNED`), but the
+  bytes the `ETag` covers include it (`CANON_ETAG`). Both subsections
+  must be implemented in lockstep — sign first, then re-canonicalise
+  the document with `signature` populated to derive the ETag. A
+  shared helper that takes a `include_signature: bool` parameter
+  keeps the two paths from drifting.
 - **Encoding:** lowercase hex in the `signature` field.
 - **Verification:** clients verify against the `pubkey` field. A
   document whose signature does not verify MUST be treated as if
@@ -224,21 +251,25 @@ Access-Control-Allow-Methods: GET, OPTIONS
 Access-Control-Allow-Headers: Accept, Content-Type, If-None-Match
 ```
 
-This **extends** the pattern in `handle_bootstrap_connection`
-(`crates/relay/src/lib.rs:102`, ACAO emitted at line 116) — that
-handler currently sends ACAO only and does not respond to `OPTIONS`
-preflights at all, so the new dispatch branch must add ACAM/ACAH
-*and* an explicit `OPTIONS → 204` path in `dispatch_connection`.
+This **extends** the pattern used by both proxy handlers — the
+production-active `handle_bootstrap_request_after_line`
+(`crates/relay/src/lib.rs:266-314`, ACAO emitted at line 298) and the
+test-only `handle_bootstrap_connection`
+(`crates/relay/src/lib.rs:102`, ACAO emitted at line 116). Both
+currently send ACAO only and neither responds to `OPTIONS` preflights,
+so the new dispatch branch must add ACAM/ACAH *and* an explicit
+`OPTIONS → 204` path in `dispatch_connection`.
 
 ## Caching
 
 - Response SHOULD carry a strong `ETag` derived from SHA-256 over
-  the RFC 8785 canonical JSON serialisation (the same bytes the
-  signature covers, with `signature` included). The ETag is strong,
-  not weak, because canonical JSON gives byte-equality semantics —
-  this is what enables cross-relay caching keyed by content hash,
-  XEP-0115/0390 style. Honour `If-None-Match` with
-  `304 Not Modified`.
+  the `CANON_ETAG` form: the RFC 8785 canonical JSON serialisation
+  with `signature` **included**. (The signature itself covers
+  `CANON_SIGNED`, the same canonicalisation with `signature`
+  **removed**; see "Signing".) The ETag is strong, not weak,
+  because canonical JSON gives byte-equality semantics — this is
+  what enables cross-relay caching keyed by content hash, XEP-0115
+  / 0390 style. Honour `If-None-Match` with `304 Not Modified`.
 - **Two-tier `Cache-Control` keyed on `status`:**
   - Steady-state (`status == "ok"` or absent):
     `Cache-Control: public, max-age=300` — directories and clients
@@ -280,7 +311,10 @@ risk" so the endpoint is purely additive.
   client MUST escape them as text, never HTML.
 - Rate-limit the endpoint by reusing the existing
   `MAX_CONCURRENT_BOOTSTRAP_CONNECTIONS` semaphore
-  (`crates/relay/src/lib.rs:59`).
+  (`crates/relay/src/lib.rs:59`), which already gates every
+  connection accepted by `run_proxy_listener`. The constant's name
+  is stale — see "Dispatch surgery" — and SHOULD be renamed
+  alongside the new endpoint.
 
 ## Cross-spec coordination
 
@@ -328,8 +362,8 @@ mismatch banner is rendered.
   above.
 - **Multi-tenant relays.** Resolved in favour of **one shared
   document per host**. The relay in this codebase is topic-agnostic
-  (`crates/relay/src/lib.rs:8-23`: "All routines in this crate
-  operate at the transport layer") — it does not know what servers
+  (`crates/relay/src/lib.rs:8-22`: "All routines in this crate
+  operate at the transport layer", line 10) — it does not know what servers
   it relays for, only `TopicAnnounce` strings. Per-server
   `/.well-known/willow/{server_id}` would require teaching the
   relay to enumerate servers it has no semantic knowledge of, which
