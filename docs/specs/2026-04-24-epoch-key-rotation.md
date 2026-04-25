@@ -8,7 +8,7 @@ Lessons taken from Nostr's trajectory — NIP-04/44/17 all lack forward
 secrecy because the conversation key is a deterministic `HKDF(ECDH)`
 output, and NIP-EE/Marmot's attempt to bolt MLS on top is heavy enough
 that uptake has stalled. Willow's `ChannelKey`
-(`crates/crypto/src/lib.rs:91–112`) is a long-term symmetric secret
+(`crates/crypto/src/lib.rs:96–112`) is a long-term symmetric secret
 intended for distribution at invite time. Production code does not yet
 call `seal_content` — `Content::Encrypted` is never produced today —
 nor does any production path emit `RotateChannelKey` or call
@@ -18,7 +18,9 @@ modules, and the `#[cfg(test)]` helpers in
 `crates/client/src/invite.rs:171` and
 `crates/client/src/lib.rs:1261`). The state-machine handler, the wire variant, and the crypto
 primitive all exist as plumbing; what is missing is a producer in
-`willow-client` (e.g. `create_server` /`create_channel` /invite-flow)
+`willow-client` (in the channel-creation path —
+`Client::create_server` / `Client::create_channel` — and the
+invite-issuance path — `generate_invite` / `accept_invite`)
 that actually generates and distributes a key. So the PCS gap is
 currently latent: once message encryption *and* the channel-key
 producer are wired up, a compromise of any member's `ChannelKey` would
@@ -94,8 +96,12 @@ purposes of this spec, an `AssignRole` is "membership-changing" iff it
 results in the assignee newly satisfying the role-permission predicate
 for `SendMessages` on this channel (analogous logic for new
 `SyncProvider`s). A no-op assignment of a role the peer already holds
-is not a valid `trigger`. Once a richer per-channel ACL lands, this
-predicate moves to the new ACL surface.
+is not a valid `trigger`. Note that `AssignRole` is itself a no-op for
+any peer not already in `state.members`
+(`crates/state/src/materialize.rs:381–387`) — only `GrantPermission`
+auto-creates a `Member` entry today — so the predicate is well-defined
+on the post-state. Once a richer per-channel ACL lands, this predicate
+moves to the new ACL surface.
 
 **Event model: rotation is its own DAG event.** A
 `RotateChannelKeyV2` is a normal author-signed, content-addressed
@@ -117,9 +123,11 @@ joins the DAG.
 flow makes "the event that drove the kick" ambiguous: threshold can
 be met by the original Vote, can be re-met retroactively after a
 `RevokeAdmin` shrinks the admin set
-(`crates/state/src/materialize.rs:174–195` —
-`reevaluate_all_proposals`), and an owner-override may apply on
-`Propose` itself. To avoid that ambiguity, **`trigger` for any
+(`crates/state/src/materialize.rs:242–258` —
+`reevaluate_all_proposals`, reached via the
+`apply_proposed_action` → `cleanup_votes_and_reevaluate`
+chain at `crates/state/src/materialize.rs:234–239`), and an
+owner-override may apply on `Propose` itself. To avoid that ambiguity, **`trigger` for any
 vote-driven rotation MUST be the `Propose` event hash, never a
 specific Vote**. The Propose hash is:
 
@@ -151,12 +159,15 @@ versioned `info` convention as the existing `HKDF_*_DOMAIN` constants
 `HKDF_KEYWRAP_DOMAIN`) and the Extract→Expand discipline in
 `KeyRatchet::next_key` (`crates/crypto/src/lib.rs:158–190`). The
 explicit Extract `salt` (`b"willow-crypto/v1/epoch/salt"`) is **new**
-to this spec — every existing `Hkdf::<Sha256>::new(...)` call in
-`crates/crypto` passes `None` as salt
-(`crates/crypto/src/lib.rs:159, 180, 403, 435`). Using a non-empty,
-versioned salt for epoch derivation is a deliberate hardening: even
-if `epoch_key[N]` is ever reused as IKM in another context, the
-domain-separated PRK will not collide. The salt convention follows
+to this spec — all four existing `Hkdf::<Sha256>::new(...)` call sites
+in `crates/crypto` use either `None` (`crates/crypto/src/lib.rs:159,
+403, 435`) or an unkeyed advance label (`crates/crypto/src/lib.rs:180`,
+which passes `Some(&info)` — the same `info` bytes already used as the
+Expand label) as salt; this is the first use of an explicit, versioned,
+fixed-string salt. Using a non-empty, versioned salt for epoch
+derivation is a deliberate hardening: even if `epoch_key[N]` is ever
+reused as IKM in another context, the domain-separated PRK will not
+collide. The salt convention follows
 the same `willow-crypto/v1/...` versioning so a future semantic change
 bumps the `v1` segment, exactly like the `info` strings.
 
@@ -283,8 +294,10 @@ handler):
   silently bypassing the trigger requirement.
 - Every `(peer_id, key_bytes)` in `encrypted_keys` MUST have
   `peer_id` in the post-state member set. (The legacy handler at
-  `crates/state/src/materialize.rs:487–505` inserts unconditionally;
-  this is a NEW validation introduced by this spec.)
+  `crates/state/src/materialize.rs:487–505` checks that the *author*
+  is a member but does not validate each `(peer_id, key_bytes)`
+  recipient against the post-state member set; per-recipient
+  validation is the new check this spec introduces.)
 - `encrypted_keys` continues to use `encrypt_channel_key_for`
   (`crates/crypto/src/lib.rs:388–422`) — ephemeral X25519 + HKDF +
   ChaCha20-Poly1305.
@@ -425,8 +438,11 @@ different state hashes.
   applies once the trigger applies; the same rotation past the
   timeout is dropped.
 - **State:** `RotateChannelKeyV2` whose `trigger` references a
-  `Propose { KickMember }` whose proposal is `Rejected` (or still
-  `Pending`) is rejected.
+  `Propose { KickMember }` that is still in `state.pending_proposals`
+  (i.e. not yet ratified) is rejected. (Note: there is no `Rejected`
+  terminal state for proposals — proposals that fail to cross the
+  threshold simply remain pending until they do, or forever if they
+  never do.)
 - **State:** `epoch` monotonicity — a `RotateChannelKeyV2` with
   `epoch != prev + 1` is rejected; the genesis rotation is rejected
   if applied to a channel that already has any
