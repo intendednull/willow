@@ -284,6 +284,9 @@ impl StorageEventStore {
     /// doesn't know the author at all), return events with seq > their_seq.
     /// If heads is empty, returns all events for the server.
     /// Maximum events returned in a single sync batch to prevent OOM.
+    // TODO(#207): promote to ClientConfig (or workspace const) so deployments can tune.
+    // Mirror lives at crates/client/src/listeners.rs (MAX_SYNC_BATCH_SIZE) — keep in sync
+    // or fold both into a single source of truth.
     const SYNC_BATCH_LIMIT: usize = 10_000;
 
     pub fn sync_since(&self, server_id: &str, heads: &HeadsSummary) -> anyhow::Result<Vec<Event>> {
