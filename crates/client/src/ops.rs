@@ -107,6 +107,7 @@ mod tests {
                 name: "general".to_string(),
                 channel_id: "ch-1".to_string(),
                 kind: willow_state::ChannelKind::Text,
+                ephemeral: None,
             },
         );
 
@@ -154,6 +155,7 @@ mod tests {
                 name: "ch1".to_string(),
                 channel_id: "cid1".to_string(),
                 kind: willow_state::ChannelKind::Text,
+                ephemeral: None,
             },
         );
         let e2 = willow_state::Event::new(

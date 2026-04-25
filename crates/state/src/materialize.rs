@@ -324,7 +324,23 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
             name,
             channel_id,
             kind,
+            ephemeral,
         } => {
+            // Bound check on idle threshold — `[1h, 90d]`. Reject
+            // out-of-range events so the wire cap and the create
+            // dialog clamp share the same enforcement.
+            if let Some(cfg) = ephemeral.as_ref() {
+                if cfg.idle_threshold_ms < crate::ephemeral::IDLE_THRESHOLD_MIN_MS
+                    || cfg.idle_threshold_ms > crate::ephemeral::IDLE_THRESHOLD_MAX_MS
+                {
+                    return ApplyResult::Rejected(format!(
+                        "ephemeral idle_threshold_ms {} out of range [{}, {}]",
+                        cfg.idle_threshold_ms,
+                        crate::ephemeral::IDLE_THRESHOLD_MIN_MS,
+                        crate::ephemeral::IDLE_THRESHOLD_MAX_MS,
+                    ));
+                }
+            }
             if !state.channels.contains_key(channel_id) {
                 state.channels.insert(
                     channel_id.clone(),
@@ -333,7 +349,7 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
                         name: name.clone(),
                         pinned_messages: BTreeSet::new(),
                         kind: kind.clone(),
-                        ephemeral: None,
+                        ephemeral: ephemeral.clone(),
                         last_activity_hlc: None,
                     },
                 );
@@ -696,6 +712,7 @@ mod tests {
                 name: "general".into(),
                 channel_id: "ch-1".into(),
                 kind: crate::types::ChannelKind::Text,
+                ephemeral: None,
             },
         );
         let state = materialize(&dag);
@@ -736,6 +753,7 @@ mod tests {
                 name: "evil".into(),
                 channel_id: "ch-evil".into(),
                 kind: crate::types::ChannelKind::Text,
+                ephemeral: None,
             },
         );
         let state = materialize(&dag);
@@ -765,6 +783,7 @@ mod tests {
                 name: "general".into(),
                 channel_id: "ch-1".into(),
                 kind: crate::types::ChannelKind::Text,
+                ephemeral: None,
             },
         );
         let state = materialize(&dag);
@@ -947,6 +966,7 @@ mod tests {
                 name: "doomed".into(),
                 channel_id: "ch-d".into(),
                 kind: crate::types::ChannelKind::Text,
+                ephemeral: None,
             },
         );
         emit(

@@ -151,6 +151,7 @@ fn stress_concurrent_channel_creates() {
                 name: format!("channel-{i}"),
                 channel_id: format!("ch-{i}"),
                 kind: crate::types::ChannelKind::Text,
+                ephemeral: None,
             },
             vec![],
             0,
@@ -190,6 +191,7 @@ fn stress_concurrent_channel_creates() {
                 name: format!("ch2-{i}"),
                 channel_id: format!("ch2-{i}"),
                 kind: crate::types::ChannelKind::Text,
+                ephemeral: None,
             },
             vec![admin_head],
             0,
@@ -369,6 +371,7 @@ fn duplicate_create_channel_preserves_original() {
             name: "general".to_string(),
             channel_id: "ch-1".to_string(),
             kind: crate::types::ChannelKind::Text,
+            ephemeral: None,
         },
     );
     // Duplicate channel_id — should be ignored.
@@ -379,6 +382,7 @@ fn duplicate_create_channel_preserves_original() {
             name: "different-name".to_string(),
             channel_id: "ch-1".to_string(),
             kind: crate::types::ChannelKind::Voice,
+            ephemeral: None,
         },
     );
 
@@ -743,6 +747,7 @@ fn channel_kind_is_preserved() {
             name: "voice-chat".to_string(),
             channel_id: "vc-1".to_string(),
             kind: crate::types::ChannelKind::Voice,
+            ephemeral: None,
         },
     );
 
@@ -785,6 +790,7 @@ fn delete_channel_messages_not_from_other_channels() {
             name: "ch1".to_string(),
             channel_id: "ch-1".to_string(),
             kind: crate::types::ChannelKind::Text,
+            ephemeral: None,
         },
     );
     do_emit(
@@ -794,6 +800,7 @@ fn delete_channel_messages_not_from_other_channels() {
             name: "ch2".to_string(),
             channel_id: "ch-2".to_string(),
             kind: crate::types::ChannelKind::Text,
+            ephemeral: None,
         },
     );
     do_emit(
@@ -1826,6 +1833,7 @@ fn rotate_channel_key_by_outsider_is_rejected() {
             name: "general".to_string(),
             channel_id: "ch-general".to_string(),
             kind: crate::types::ChannelKind::Text,
+            ephemeral: None,
         },
     );
 
@@ -1875,6 +1883,7 @@ fn rotate_channel_key_by_member_without_manage_channels_is_rejected() {
             name: "general".into(),
             channel_id: "ch1".into(),
             kind: crate::types::ChannelKind::Text,
+            ephemeral: None,
         },
         vec![],
         10,
@@ -1934,6 +1943,7 @@ fn rotate_channel_key_by_admin_still_works() {
             name: "general".to_string(),
             channel_id: "ch-general".to_string(),
             kind: crate::types::ChannelKind::Text,
+            ephemeral: None,
         },
     );
 
@@ -1974,6 +1984,7 @@ fn managed_dag_insert_and_apply_keeps_state_in_sync() {
                 channel_id: "ch1".into(),
                 name: "general".into(),
                 kind: crate::types::ChannelKind::Text,
+                ephemeral: None,
             },
             1000,
         )
@@ -2047,6 +2058,7 @@ fn joined_peer_needs_grant_permission_to_send_messages() {
                 name: "general".to_string(),
                 channel_id: "ch-general".to_string(),
                 kind: crate::types::ChannelKind::Text,
+                ephemeral: None,
             },
             vec![],
             10,
@@ -2150,6 +2162,7 @@ fn sync_batch_with_grant_permission_allows_new_peer_to_send() {
             name: "general".into(),
             channel_id: "ch1".into(),
             kind: crate::types::ChannelKind::Text,
+            ephemeral: None,
         },
         vec![],
         10,
@@ -2339,6 +2352,7 @@ fn pin_and_unpin_message() {
             name: "general".into(),
             channel_id: ch_id.clone(),
             kind: crate::types::ChannelKind::Text,
+            ephemeral: None,
         },
     );
 
@@ -2545,6 +2559,7 @@ fn check_permission_admin_implicitly_has_all() {
             name: "dev".into(),
             channel_id: "ch2".into(),
             kind: crate::types::ChannelKind::Text,
+            ephemeral: None,
         },
         EventKind::CreateRole {
             name: "mod".into(),
@@ -2786,6 +2801,7 @@ fn message_index_stable_after_delete_channel() {
             name: "ch1".into(),
             channel_id: "ch-1".into(),
             kind: crate::types::ChannelKind::Text,
+            ephemeral: None,
         },
     );
     do_emit(
@@ -2795,6 +2811,7 @@ fn message_index_stable_after_delete_channel() {
             name: "ch2".into(),
             channel_id: "ch-2".into(),
             kind: crate::types::ChannelKind::Text,
+            ephemeral: None,
         },
     );
 
@@ -2952,6 +2969,7 @@ fn member_cannot_edit_other_members_message() {
             name: "general".to_string(),
             channel_id: "ch-1".to_string(),
             kind: crate::types::ChannelKind::Text,
+            ephemeral: None,
         },
     );
 
@@ -3034,6 +3052,7 @@ fn member_cannot_delete_other_members_message() {
             name: "general".to_string(),
             channel_id: "ch-1".to_string(),
             kind: crate::types::ChannelKind::Text,
+            ephemeral: None,
         },
     );
 
@@ -3402,6 +3421,7 @@ fn stress_concurrent_channel_creates_count_is_stable() {
                 name: format!("ch-{i}"),
                 channel_id: format!("ch-{i}"),
                 kind: crate::types::ChannelKind::Text,
+                ephemeral: None,
             },
             vec![],
             0,
@@ -3433,6 +3453,7 @@ fn stress_concurrent_channel_creates_count_is_stable() {
                 name: format!("ch2-{i}"),
                 channel_id: format!("ch2-{i}"),
                 kind: crate::types::ChannelKind::Text,
+                ephemeral: None,
             },
             vec![admin_head],
             0,
@@ -3479,6 +3500,7 @@ fn deserialized_state_accepts_edit_delete_reaction_via_apply_incremental() {
             name: "general".into(),
             channel_id: "ch-1".into(),
             kind: crate::types::ChannelKind::Text,
+            ephemeral: None,
         },
     );
     let msg_edit = do_emit(
@@ -4057,6 +4079,87 @@ fn channel_with_ephemeral_config_serializes() {
     let bytes = bincode::serialize(&ch).unwrap();
     let back: Channel = bincode::deserialize(&bytes).unwrap();
     assert_eq!(ch, back);
+}
+
+#[test]
+fn create_channel_with_ephemeral_config_records_it() {
+    use crate::ephemeral::{EphemeralConfig, EphemeralKind, DEFAULT_CHANNEL_THRESHOLD_MS};
+
+    let owner = Identity::generate();
+    let mut dag = test_dag(&owner);
+    do_emit(
+        &mut dag,
+        &owner,
+        EventKind::CreateChannel {
+            name: "side-room".into(),
+            channel_id: "c1".into(),
+            kind: crate::types::ChannelKind::Text,
+            ephemeral: Some(EphemeralConfig {
+                kind: EphemeralKind::Channel,
+                idle_threshold_ms: DEFAULT_CHANNEL_THRESHOLD_MS,
+            }),
+        },
+    );
+    let state = materialize(&dag);
+    let ch = state.channels.get("c1").expect("channel should exist");
+    assert!(ch.ephemeral.is_some());
+    assert_eq!(
+        ch.ephemeral.as_ref().unwrap().idle_threshold_ms,
+        DEFAULT_CHANNEL_THRESHOLD_MS
+    );
+}
+
+#[test]
+fn create_channel_rejects_threshold_below_minimum() {
+    use crate::ephemeral::{EphemeralConfig, EphemeralKind};
+
+    let owner = Identity::generate();
+    let mut dag = test_dag(&owner);
+    do_emit(
+        &mut dag,
+        &owner,
+        EventKind::CreateChannel {
+            name: "too-fast".into(),
+            channel_id: "c2".into(),
+            kind: crate::types::ChannelKind::Text,
+            ephemeral: Some(EphemeralConfig {
+                kind: EphemeralKind::Channel,
+                idle_threshold_ms: 60_000, // 1 minute — below 1h floor
+            }),
+        },
+    );
+    let state = materialize(&dag);
+    // Below-floor threshold rejected by apply → no channel created.
+    assert!(
+        !state.channels.contains_key("c2"),
+        "below-floor threshold must be rejected"
+    );
+}
+
+#[test]
+fn create_channel_rejects_threshold_above_cap() {
+    use crate::ephemeral::{EphemeralConfig, EphemeralKind};
+
+    let owner = Identity::generate();
+    let mut dag = test_dag(&owner);
+    do_emit(
+        &mut dag,
+        &owner,
+        EventKind::CreateChannel {
+            name: "too-long".into(),
+            channel_id: "c3".into(),
+            kind: crate::types::ChannelKind::Text,
+            ephemeral: Some(EphemeralConfig {
+                kind: EphemeralKind::Channel,
+                idle_threshold_ms: 200 * 24 * 3_600_000, // 200 days — above 90d cap
+            }),
+        },
+    );
+    let state = materialize(&dag);
+    assert!(
+        !state.channels.contains_key("c3"),
+        "above-cap threshold must be rejected"
+    );
 }
 
 #[test]

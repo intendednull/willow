@@ -978,6 +978,7 @@ pub fn test_client() -> (
                 channel_id: ch_id_str,
                 name: "general".to_string(),
                 kind: willow_state::ChannelKind::Text,
+                ephemeral: None,
             },
             0,
         )
@@ -1564,6 +1565,7 @@ mod tests {
             channel_id: uuid::Uuid::new_v4().to_string(),
             name: "dev".to_string(),
             kind: willow_state::ChannelKind::Text,
+            ephemeral: None,
         });
         let events = derive_client_events(&ev);
         assert_eq!(events.len(), 1);

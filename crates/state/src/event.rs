@@ -99,6 +99,12 @@ pub enum EventKind {
         channel_id: String,
         #[serde(default)]
         kind: crate::types::ChannelKind,
+        /// `Some` when the channel is non-permanent (auto-archives
+        /// after the configured idle threshold). Absence means
+        /// permanent. See
+        /// `docs/specs/2026-04-19-ui-design/ephemeral-channels.md`.
+        #[serde(default)]
+        ephemeral: Option<crate::ephemeral::EphemeralConfig>,
     },
     /// Delete a channel by ID.
     DeleteChannel { channel_id: String },

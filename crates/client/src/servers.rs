@@ -137,6 +137,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 name: "general".to_string(),
                 channel_id: ch_id_str,
                 kind: willow_state::ChannelKind::Text,
+                ephemeral: None,
             })
             .await?;
         self.mutation_handle.apply_event(&event).await;

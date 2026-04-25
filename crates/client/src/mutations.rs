@@ -365,6 +365,7 @@ impl<N: willow_network::Network> ClientMutations<N> {
                 name: name.clone(),
                 channel_id: ch_id_str,
                 kind: willow_state::ChannelKind::Text,
+                ephemeral: None,
             })
             .await?;
         self.apply_event(&event).await;
