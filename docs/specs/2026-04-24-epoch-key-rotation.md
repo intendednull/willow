@@ -13,8 +13,10 @@ intended for distribution at invite time. Production code does not yet
 call `seal_content` — `Content::Encrypted` is never produced today —
 nor does any production path emit `RotateChannelKey` or call
 `generate_channel_key()` (today the only callers are tests; see
-`crates/state/src/tests.rs` and `crates/crypto/src/lib.rs` test
-modules). The state-machine handler, the wire variant, and the crypto
+`crates/state/src/tests.rs`, `crates/crypto/src/lib.rs` test
+modules, and the `#[cfg(test)]` helpers in
+`crates/client/src/invite.rs:171` and
+`crates/client/src/lib.rs:1261`). The state-machine handler, the wire variant, and the crypto
 primitive all exist as plumbing; what is missing is a producer in
 `willow-client` (e.g. `create_server` /`create_channel` /invite-flow)
 that actually generates and distributes a key. So the PCS gap is
@@ -67,7 +69,7 @@ event itself carries no key material — only `name`, `channel_id`, and
 |------------------------------------------------------------------|----------|------------------------------------------------------|
 | Channel creation (out-of-band key gen + first `RotateChannelKey`)| Genesis  | Establishes epoch 0.                                 |
 | `EventKind::RotateChannelKey`                                    | Yes      | Explicit rotation — the only direct-rotation event.  |
-| `EventKind::Propose { KickMember } + threshold-satisfying Vote`  | Yes      | Kicked member must lose future read access. Kicks are governance-only — no direct `KickMember` EventKind exists; the rotation is triggered by the Vote whose application crosses threshold. |
+| `EventKind::Propose { action: ProposedAction::KickMember { .. } } + threshold-satisfying Vote` | Yes | Kicked member must lose future read access. Kicks are governance-only — no direct `KickMember` EventKind exists; the rotation is triggered by the Vote whose application crosses threshold. |
 | `EventKind::RevokePermission { SendMessages }`                   | Yes      | Revoked writer must also lose read on same rotation. |
 | `EventKind::RevokePermission { SyncProvider }`                   | Yes      | Former provider must not silently keep decrypting.   |
 | `EventKind::AssignRole` (membership-changing — see below)        | Yes      | Let rotation double as the join-key handoff.         |
@@ -95,21 +97,38 @@ not at signing time. This keeps the existing "reject before sign" flow
 
 ## Key derivation
 
+Both derivations use the standard HKDF Extract+Expand flow with an
+explicit, versioned domain separator in `info` — matching the
+established pattern in `crates/crypto/src/lib.rs:55–63` (e.g.
+`HKDF_RATCHET_MSG_DOMAIN`, `HKDF_KEYWRAP_DOMAIN`) and the
+Extract→Expand discipline in `KeyRatchet::next_key`
+(`crates/crypto/src/lib.rs:158–189`):
+
 ```text
 epoch_key[0]   = CSPRNG at channel creation (existing CreateChannel path)
-epoch_key[N+1] = HKDF-Extract(
-                   salt = b"willow-epoch-v1",
+
+prk            = HKDF-Extract(
+                   salt = b"willow-crypto/v1/epoch/salt",
                    ikm  = epoch_key[N] || triggering_event.hash
                  )                                              // 32 bytes
+epoch_key[N+1] = HKDF-Expand(
+                   prk  = prk,
+                   info = b"willow-crypto/v1/epoch/key",
+                   L    = 32
+                 )                                              // 32 bytes
 epoch_key_id   = HKDF-Expand(
-                   prk  = epoch_key[N+1],
-                   info = b"willow-epoch-id-v1",
+                   prk  = prk,
+                   info = b"willow-crypto/v1/epoch/id",
                    L    = 16
                  )                                              // 16 bytes
 ```
 
 - SHA-256 is the HKDF hash throughout — matches Willow's existing
   `KeyRatchet` in `crates/crypto/src/lib.rs:136–208`.
+- The `info` strings live alongside the existing
+  `HKDF_*_DOMAIN` constants and follow the same `willow-crypto/v1/...`
+  versioning convention so a future semantic change bumps the `v1`
+  segment.
 - `triggering_event.hash` is sufficient — the parent DAG context is
   already folded in because the event hash commits to `prev` and
   `deps`. Folding the full state hash in addition was considered and
@@ -127,21 +146,54 @@ of the new key under each remaining member's public key. Willow's
 existing `EventKind::RotateChannelKey` already carries
 `encrypted_keys: Vec<(EndpointId, Vec<u8>)>`.
 
-We extend this single variant rather than introduce a new one:
+We extend this single variant rather than introduce a new one. Events
+are content-addressed (the `hash` covers `kind` — see
+`crates/state/src/event.rs:220–229`) and signed, so naively adding
+fields would invalidate every previously serialized event. The two new
+fields are therefore annotated `#[serde(default)]`, matching the
+existing convention for additive field rollouts (`CreateChannel.kind`
+at `crates/state/src/event.rs:100` and `SealedContent.ratchet_counter`
+at `crates/messaging/src/lib.rs:170`):
 
 ```rust
 RotateChannelKey {
     channel_id: String,
-    epoch: u32,                               // new — must equal prev+1; matches SealedContent.key_epoch
-    trigger: Option<EventHash>,               // new — referenced event
+    /// Epoch this rotation establishes. MUST equal prev_epoch + 1.
+    /// Matches `SealedContent.key_epoch` width.
+    /// Defaults to 0 for legacy events that predate the field.
+    #[serde(default)]
+    epoch: u32,
+    /// Hash of the membership event that triggered this rotation.
+    /// `None` for explicit out-of-band rotations *and* for legacy
+    /// events that predate the field.
+    #[serde(default)]
+    trigger: Option<EventHash>,
     encrypted_keys: Vec<(EndpointId, Vec<u8>)>,
 }
 ```
 
-- `trigger` is `None` only for explicit out-of-band rotations. When
-  present, the `trigger` event hash MUST be the event that drove the
-  rotation; the state machine verifies the derivation used the same
-  hash it observes.
+**Legacy interpretation.** A `RotateChannelKey` deserialized with the
+defaults (`epoch == 0`, `trigger == None`) is treated as the
+**genesis rotation** — i.e. the first rotation a channel ever sees,
+establishing epoch 0. The state machine rejects any non-genesis
+rotation that arrives with `epoch == 0`: once a channel has reached
+epoch ≥ 1, every subsequent rotation must carry an explicit
+`epoch = prev + 1` and (for trigger-driven rotations) a `trigger`
+hash. This keeps content-addressing stable for any pre-spec events
+already serialized while preventing replay/downgrade.
+
+**Genesis convention.** The first `RotateChannelKey` for a freshly
+created channel carries `epoch = 0` (the genesis key produced by
+`generate_channel_key()` at channel-creation time). The next rotation
+caused by a membership event carries `epoch = 1`, and so on. The
+"rotates?" table's "Genesis" row corresponds to `epoch = 0`; every
+"Yes" row corresponds to `epoch = prev + 1`.
+
+- `trigger` is `None` only for the genesis rotation and for explicit
+  out-of-band rotations (e.g. `epoch ≥ 1` with no membership event,
+  initiated manually by an admin). When present, the `trigger` event
+  hash MUST be the event that drove the rotation; the state machine
+  verifies the derivation used the same hash it observes.
 - `encrypted_keys` continues to use `encrypt_channel_key_for`
   (`crates/crypto/src/lib.rs:388–422`) — ephemeral X25519 + HKDF +
   ChaCha20-Poly1305.
@@ -163,8 +215,12 @@ warning — the channel is running on the pre-change key.
 
 ## Topic ID rotation
 
-`crates/network/src/topics.rs` currently derives `TopicId` from the
-server+channel string. That topic is stable for the channel's life, so
+The runtime topic string is built by `make_topic` at
+`crates/client/src/util.rs:55–58` (`format!("{}/{}", server_id,
+channel_name)`) and then hashed by `topic_id` at
+`crates/network/src/topics.rs:12` (BLAKE3 over the resulting string).
+The defined-but-unused `channel_topic` helper at `topics.rs:42` shows
+the same shape. That topic is stable for the channel's life, so
 passive gossip observers can correlate traffic volume with membership.
 Under this spec:
 
@@ -185,11 +241,13 @@ and is abandoned.
 
 ## SealedContent integration
 
-`SealedContent.key_epoch: u32` in `crates/messaging/src/lib.rs:160–172`
+`SealedContent.key_epoch: u32` in `crates/messaging/src/lib.rs:159–172`
 already exists and is plumbed through `seal_content` /
-`open_content_bounded` (sender writes it at
-`crates/crypto/src/lib.rs:281`; receiver reads it at
-`crates/crypto/src/lib.rs:330` to call `derive_message_key`). It is
+`seal_content_with_counter` / `open_content_bounded`
+(`crates/crypto/src/lib.rs:251–284`). The sender writes `key_epoch`
+inside `seal_content_with_counter` (`crates/crypto/src/lib.rs:281`);
+the receiver reads it at `crates/crypto/src/lib.rs:330` to call
+`derive_message_key`. It is
 always zero in production today only because no production caller
 currently invokes `seal_content` — the field is wired but unused.
 Under this spec the field becomes authoritative once message
@@ -255,6 +313,12 @@ different state hashes.
   not-in-member-set peer is rejected.
 - **State:** `RotateChannelKey` whose derivation input doesn't match
   the `trigger` event hash is rejected.
+- **State:** a non-genesis `RotateChannelKey` arriving with the
+  `#[serde(default)]` shape (`epoch == 0`, `trigger == None`) on a
+  channel already at epoch ≥ 1 is rejected.
+- **Wire:** a legacy `RotateChannelKey` payload missing the new
+  fields round-trips cleanly through serde and is interpreted as the
+  genesis rotation.
 - **Integration:** kick scenario — kicked peer's pre-kick ciphertext
   decrypts, post-kick ciphertext does not, even though they retained
   `epoch_key[N]`.
