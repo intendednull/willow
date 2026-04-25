@@ -47,8 +47,13 @@ impl ManagedDag {
     /// Create a new ManagedDag by seeding genesis.
     ///
     /// The genesis `CreateServer` event is immediately inserted and applied,
-    /// so `state()` is ready to use after construction.
-    pub fn new(identity: &Identity, server_name: &str, max_pending: usize) -> Self {
+    /// so `state()` is ready to use after construction. Returns an
+    /// [`InsertError`] if the synthesised genesis event fails to insert.
+    pub fn new(
+        identity: &Identity,
+        server_name: &str,
+        max_pending: usize,
+    ) -> Result<Self, InsertError> {
         let mut dag = EventDag::new();
         let genesis = dag.create_event(
             identity,
@@ -58,15 +63,14 @@ impl ManagedDag {
             vec![],
             0,
         );
-        dag.insert(genesis.clone())
-            .expect("genesis insert must succeed");
+        dag.insert(genesis)?;
         let state = crate::materialize::materialize(&dag);
-        Self {
+        Ok(Self {
             dag,
             state,
             pending: PendingBuffer::with_capacity(max_pending),
             synced: true,
-        }
+        })
     }
 
     /// Create an empty ManagedDag (no genesis yet).

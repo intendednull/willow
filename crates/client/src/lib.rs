@@ -871,7 +871,8 @@ pub fn test_client() -> (
             &identity,
             "Test Server",
             crate::state_actors::MAX_CLIENT_PENDING,
-        ),
+        )
+        .expect("genesis insert must succeed in test helper"),
         stashed: HashMap::new(),
     };
 
