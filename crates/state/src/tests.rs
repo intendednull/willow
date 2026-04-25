@@ -4034,3 +4034,64 @@ fn update_profile_pinned_round_trip() {
     assert_eq!(pinned.kind, PinnedKind::Quote);
     assert_eq!(pinned.body, "quiet is a kind of music");
 }
+
+// ─────────────── Phase 2d — Ephemeral channels ────────────────────
+
+#[test]
+fn channel_with_ephemeral_config_serializes() {
+    use crate::ephemeral::{EphemeralConfig, EphemeralKind};
+    use crate::types::{Channel, ChannelKind};
+
+    let ch = Channel {
+        id: "c1".into(),
+        name: "side-room".into(),
+        pinned_messages: Default::default(),
+        kind: ChannelKind::Text,
+        ephemeral: Some(EphemeralConfig {
+            kind: EphemeralKind::Channel,
+            idle_threshold_ms: 14 * 24 * 3_600_000,
+        }),
+        last_activity_hlc: Some(1_700_000_000_000),
+    };
+
+    let bytes = bincode::serialize(&ch).unwrap();
+    let back: Channel = bincode::deserialize(&bytes).unwrap();
+    assert_eq!(ch, back);
+}
+
+#[test]
+fn derive_ephemeral_state_bands() {
+    use crate::ephemeral::{derive_ephemeral_state, EphemeralState};
+
+    let threshold = 100;
+    // 0 elapsed → active
+    assert_eq!(
+        derive_ephemeral_state(Some(100), threshold, 100),
+        EphemeralState::Active
+    );
+    // 24 % elapsed → active (just inside the active band)
+    assert_eq!(
+        derive_ephemeral_state(Some(76), threshold, 100),
+        EphemeralState::Active
+    );
+    // 26 % elapsed → dormant
+    assert_eq!(
+        derive_ephemeral_state(Some(74), threshold, 100),
+        EphemeralState::Dormant
+    );
+    // 100 % elapsed → dormant (boundary stays in dormant)
+    assert_eq!(
+        derive_ephemeral_state(Some(0), threshold, 100),
+        EphemeralState::Dormant
+    );
+    // > 100 % elapsed → archived
+    assert_eq!(
+        derive_ephemeral_state(Some(0), threshold, 101),
+        EphemeralState::Archived
+    );
+    // No activity yet → uses 0; archived if frontier > threshold.
+    assert_eq!(
+        derive_ephemeral_state(None, threshold, 200),
+        EphemeralState::Archived
+    );
+}

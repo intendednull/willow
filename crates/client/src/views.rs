@@ -1003,6 +1003,8 @@ mod tests {
                 name: name.into(),
                 pinned_messages: Default::default(),
                 kind: ChannelKind::Text,
+                ephemeral: None,
+                last_activity_hlc: None,
             },
         );
     }

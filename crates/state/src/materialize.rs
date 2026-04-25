@@ -333,6 +333,8 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
                         name: name.clone(),
                         pinned_messages: BTreeSet::new(),
                         kind: kind.clone(),
+                        ephemeral: None,
+                        last_activity_hlc: None,
                     },
                 );
             }

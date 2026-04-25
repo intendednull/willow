@@ -9,6 +9,7 @@
 mod tests;
 
 pub mod dag;
+pub mod ephemeral;
 pub mod event;
 pub mod hash;
 pub mod managed;
@@ -19,6 +20,11 @@ pub mod types;
 
 // Re-exports for convenience.
 pub use dag::{EventDag, InsertError};
+pub use ephemeral::{
+    derive_ephemeral_state, EphemeralConfig, EphemeralKind, EphemeralState,
+    DEFAULT_CHANNEL_THRESHOLD_MS, DEFAULT_THREAD_THRESHOLD_MS, DEFAULT_WHISPER_THRESHOLD_MS,
+    IDLE_THRESHOLD_MAX_MS, IDLE_THRESHOLD_MIN_MS,
+};
 pub use event::{Event, EventKind, Permission, ProposedAction, VoteThreshold};
 pub use hash::EventHash;
 pub use managed::ManagedDag;
