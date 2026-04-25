@@ -38,29 +38,34 @@ The payload is a new struct:
 pub struct HistorySyncComplete {
     /// The TopicId (blake3 of the canonical topic string) this marker applies to.
     pub topic_id: [u8; 32],
-    /// The Ed25519 PeerId of the provider emitting the marker.
-    pub provider_peer: EndpointId,
     /// Hash of the last event the provider streamed before emitting the marker,
     /// or `None` if the provider had zero stored events for this topic.
     pub last_event_hash: Option<EventHash>,
-    /// Monotonically-increasing cursor scoped to (topic_id, provider_peer).
+    /// Monotonically-increasing cursor scoped to (topic_id, provider).
     /// Incremented when the provider restarts and re-streams from zero.
-    pub epoch: u64,
+    pub stream_generation: u64,
 }
 ```
 
 `topic_id` is carried explicitly (rather than implicit in the gossip
 topic) so that the marker survives relay-bridge forwarding and so a
-single audit log can correlate markers across topics. `provider_peer`
-is the provider's `EndpointId`, **not** a signed field — the signature
-lives on the Ed25519-wrapped envelope the way ordinary chat events are
-wrapped in `crates/identity/src/lib.rs`. `last_event_hash` lets the
-client detect truncation: if the last event the client *received* from
-that provider does not match the hash in the marker, the client MUST
-treat the sync as incomplete (see "Sharp edges" below). `epoch` exists
-so a provider that crashes and restarts mid-stream cannot confuse a
-client still holding a stale marker from the previous run — mirroring
-Nostr's one-EOSE-per-REQ guarantee without needing a subscription id.
+single audit log can correlate markers across topics. The provider's
+identity is deliberately **not** carried in the payload: the marker
+rides the same Ed25519-wrapped envelope as ordinary events
+(`crates/identity/src/lib.rs`), so the receiver derives the provider's
+`EndpointId` from the verified envelope signer at unpack time. This
+forecloses a class of relay-rewrite / MITM attacks where a separate
+`provider_peer` field could be edited to attribute the marker to a
+different trusted provider, and saves the bytes besides.
+`last_event_hash` lets the client detect truncation: if the last event
+the client *received* from that provider does not match the hash in
+the marker, the client MUST treat the sync as incomplete (see "Sharp
+edges" below). `stream_generation` exists so a provider that crashes
+and restarts mid-stream cannot confuse a client still holding a stale
+marker from the previous run. The semantics are inspired by Nostr's
+one-EOSE-per-REQ pattern; the actual contract is adapted to Willow's
+subscription-less topic gossip and is intentionally stronger than
+NIP-01's (see "Sharp edges").
 
 The struct serialises well under the existing 256 KB
 `MAX_DESER_SIZE` ceiling in `crates/transport/src/lib.rs:36` — it is
@@ -74,20 +79,35 @@ explicitly requested a filtered view. Willow has no such structure:
 gossip mesh by `TopicId`, and from that point every peer in the mesh
 sees every event. There is nothing to "close."
 
-We therefore scope the marker to `(topic_id, provider_peer, epoch)`:
+We therefore scope the marker to `(topic_id, provider, stream_generation)`,
+where `provider` is recovered from the verified envelope signer at
+unpack time:
 
 - **Topic** is the unit of subscription a client actually has.
 - **Provider** is needed because, unlike Nostr, Willow has multiple
   concurrent providers per topic (see next section).
-- **Epoch** distinguishes fresh streams from a restarted provider.
+- **Stream generation** distinguishes fresh streams from a restarted
+  provider.
 
-Critically, `HistorySyncComplete` is **not** broadcast to the whole
-mesh. It is sent as a direct `broadcast_neighbors`-style frame from a
-provider to a newly-joined peer, so non-joining peers don't see
-redundant traffic. The relay forwards these frames verbatim (it
-already forwards opaque bytes by topic; the new `MessageType` tag is
-invisible to relay-side logic, which is deliberately stateless per
-`crates/relay/src/lib.rs:13`).
+The marker is sent as a regular `TopicHandle::broadcast` frame on the
+topic's gossip mesh — the same path ordinary events take. This costs
+one mesh-wide message per `NeighborUp` on the provider, which is
+acceptable overhead for a per-(topic, provider, generation) deduped
+marker; existing peers ignore markers whose
+`(provider, stream_generation)` they have already observed. Relays
+forward the marker by their existing topic-routing rules: see the
+`Trust model` section in the module-level documentation of
+`crates/relay/src/lib.rs`, which establishes the relay as
+content-agnostic at the wire level.
+
+Using `broadcast` rather than `broadcast_neighbors` is a deliberate
+trade. `broadcast_neighbors` (`crates/network/src/traits.rs:72`) is
+documented as not forwarded by gossip relays, and there is no per-peer
+direct-send primitive in the `Network` trait — so a "send only to the
+new joiner" frame would either fail to traverse the relay bridge or
+require new transport plumbing. Mesh broadcast plus
+`(provider, stream_generation)` deduplication at receivers gives the
+same effect with no new primitives.
 
 ## Multiple providers
 
@@ -160,17 +180,19 @@ Emission is triggered by `NeighborUp` events on the provider's
   before relaying any live events to the new neighbour.
 
 The provider tracks which neighbours it has already sent a marker to
-in this `epoch` so a reconnect loop cannot spam the UI.
+in this `stream_generation` so a reconnect loop cannot spam the UI.
 
 ## Sharp edges
 
-- **Silent truncation.** Nostr's EOSE does not guarantee completeness
-  against `max_limit` truncation, and the 1000-event replay buffer
-  has the same problem. The `last_event_hash` field lets clients
-  detect this: if the DAG cursor the client was tracking does not
-  link to `last_event_hash` through a known parent chain, the client
-  SHOULD fall back to the storage worker or a peer with a deeper
-  history before flipping the UI flag.
+- **Silent truncation.** Nostr's EOSE deliberately does *not* guarantee
+  completeness against `max_limit` truncation; clients are expected to
+  consume a partial reply silently. Willow's contract is intentionally
+  stronger: `last_event_hash` lets clients detect truncation against
+  the 1000-event replay buffer or any other ring-buffered source. If
+  the DAG cursor the client was tracking does not link to
+  `last_event_hash` through a known parent chain, the client SHOULD
+  fall back to the storage worker or a peer with a deeper history
+  before flipping the UI flag.
 - **Provider lies.** A compromised `SyncProvider` can emit a marker
   before actually flushing its history. The worst-case effect is a
   stale UI; it cannot forge events (signatures still verify). Clients
@@ -183,9 +205,10 @@ in this `epoch` so a reconnect loop cannot spam the UI.
   precisely *because* Willow is topic-scoped.
 - **Offline peers and resumption.** A client that disconnects and
   reconnects requests history again; providers emit a new marker with
-  a new `epoch`. The client SHOULD discard markers whose
-  `(provider_peer, epoch)` is older than one it has already seen
-  since the last `NeighborUp` for that provider.
+  a new `stream_generation`. The client SHOULD discard markers whose
+  `(provider, stream_generation)` is older than one it has already
+  seen since the last `NeighborUp` for that provider — where
+  `provider` is the verified envelope signer.
 
 ## Testing
 
@@ -200,8 +223,8 @@ message, not an `EventKind`. A single round-trip test in
 - emitting a marker from `MemNetwork` produces exactly one
   `ClientEvent::HistorySynced` per `(topic, provider)` pair;
 - a marker from an untrusted peer produces **no** event;
-- reconnect with a new `epoch` re-emits; reconnect with the same
-  `epoch` does not;
+- reconnect with a new `stream_generation` re-emits; reconnect with
+  the same `stream_generation` does not;
 - a `last_event_hash` mismatch between the marker and the last
   received event produces a `HistorySynced { still_pending: _ }`
   with a warning logged but no false-positive completion.
@@ -248,9 +271,9 @@ live events.
 4. Per-channel vs per-server scope: today `TopicId` is per-channel,
    but a server-wide marker ("all channels have caught up") would
    simplify the join flow. Do we want both?
-5. Is `epoch: u64` overkill? A simple `ChaCha20`-derived nonce would
-   avoid the "did I remember to bump it?" bug class, at the cost of
-   not being orderable.
+5. Is `stream_generation: u64` overkill? A simple `ChaCha20`-derived
+   nonce would avoid the "did I remember to bump it?" bug class, at
+   the cost of not being orderable.
 6. Should markers be rate-limited at the relay? Today the relay is
    content-agnostic, but a compromised provider could emit markers
    in a tight loop and force every subscribed UI to re-render.
