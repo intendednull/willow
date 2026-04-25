@@ -1,14 +1,16 @@
 # LLM Agent UX Spec
 
-> **Status (round 2 audit):** This spec has been updated to reflect the
-> post-state-machine refactor architecture. References to legacy
-> `willow-channel`/`willow-messaging` paths have been replaced with the
-> canonical `willow-state` event-sourced path where applicable. Items
-> labeled **NEW** below are proposals that do not yet exist in the
-> codebase; items labeled **EXISTING** are present today on `main`.
-> Cross-cutting changes still required for this design (forward-compat
-> for `EventKind`, additional `Permission` variants, atomic Kick+Rotate)
-> are flagged inline.
+> **Status (round 3 audit):** This spec has been re-aligned against the
+> post-state-machine refactor and the 2026-04-19 profile-card work. The
+> canonical `Profile` and `ProfileDelta` schemas now carry rich identity
+> fields, and admin/kick semantics live entirely in the governance / vote
+> path (`ProposedAction::GrantAdmin` / `KickMember`). Items labeled
+> **NEW** below are proposals that do not yet exist in the codebase;
+> items labeled **EXISTING** are present today on `main`. Cross-cutting
+> changes still required for this design (forward-compat envelope for
+> `EventKind` + `WireMessage`, additional `Permission` variants, atomic
+> Kick+Rotate, naming relationship to the existing `willow-agent` MCP
+> crate) are flagged inline.
 
 Design specification for LLM-powered agents in Willow. Agents are first-class
 participants in servers — they join channels, read messages, and reply like any
@@ -22,10 +24,16 @@ other member, but their identity, capabilities, and UI treatment are distinct.
 
 An agent is a peer with a standard Ed25519 keypair. What distinguishes it from
 a human member is a new `PeerKind` field. **NEW:** `PeerKind` does not currently
-exist; the canonical `Profile` (`crates/state/src/types.rs`) only carries
-`peer_id` and `display_name`, and `EventKind::SetProfile`
-(`crates/state/src/lib.rs`) only carries `display_name`. This proposal adds the
-field to both.
+exist. The canonical `Profile` (`crates/state/src/types.rs:94-128`) carries 10
+fields today (`peer_id`, `display_name`, `pronouns`, `bio`, `tagline`,
+`crest_pattern`, `crest_color`, `pinned`, `elsewhere`, `since`) and is mutated
+via two events: a legacy `EventKind::SetProfile { display_name }` and the
+canonical `EventKind::UpdateProfile(Box<ProfileDelta>)`
+(`crates/state/src/event.rs:148-168`) — a partial-field overlay with explicit
+"unchanged / clear / set" semantics. This proposal extends both `Profile` and
+`ProfileDelta` with `peer_kind` and `data_policy`, following the same
+`#[serde(default)]` additive pattern already used for `pronouns`, `bio`,
+`tagline`, `crest_*`, `pinned`, `elsewhere`, and `since`.
 
 ```rust
 enum PeerKind {
@@ -34,21 +42,34 @@ enum PeerKind {
 }
 ```
 
-To carry `PeerKind` (and the richer agent metadata in §8), this spec proposes
-extending `EventKind::SetProfile` with optional fields:
+The additive extensions are:
 
 ```rust
-EventKind::SetProfile {
-    display_name: String,
-    // NEW (additive, optional for backward compat — see §11):
-    peer_kind: Option<PeerKind>,
-    data_policy: Option<DataPolicy>,
+// In crates/state/src/types.rs:
+pub struct Profile {
+    // ... existing 10 fields ...
+    #[serde(default)]
+    pub peer_kind: Option<PeerKind>,
+    #[serde(default)]
+    pub data_policy: Option<DataPolicy>,
+}
+
+// In crates/state/src/types.rs (ProfileDelta — used by UpdateProfile):
+pub struct ProfileDelta {
+    // ... existing fields ...
+    pub peer_kind: Option<Option<PeerKind>>,    // outer = "unchanged",
+    pub data_policy: Option<Option<DataPolicy>>, // inner = "clear vs set"
 }
 ```
 
+New writes go through `EventKind::UpdateProfile(Box<ProfileDelta>)` —
+that is the canonical extend-pattern. `EventKind::SetProfile { display_name }`
+is retained for legacy display-name-only writes; this spec does NOT add
+fields to it.
+
 - Agents MUST set a display name (e.g. "Claude", "Summary Bot").
-- Agents MAY set an avatar and bio describing their capabilities (avatar/bio
-  would also be additive optional fields on `SetProfile`).
+- `bio` and `tagline` already exist on `Profile` — agents can describe their
+  capabilities there with no schema change.
 - The `provider` string is informational — it tells other peers what model
   or service backs the agent, but has no protocol-level enforcement.
 
@@ -116,9 +137,19 @@ Agent messages render like human messages with these differences:
 Agent messages support the same actions as human messages (reply, react,
 pin, delete) with one addition:
 
-- **"Regenerate"**: Available on the agent's most recent response in a thread.
-  Sends a `RegenerateRequest` to the agent, which deletes the old response
-  and produces a new one.
+- **"Regenerate"**: Available on the agent's most recent response in a
+  thread. Sends a `RegenerateRequest` to the agent. The agent then emits:
+  1. `EventKind::DeleteMessage { message_id }`, where `message_id` is the
+     `EventHash` of the agent's previous response. This is a soft-delete
+     tombstone, not a hard delete — replay still sees the original event.
+     **Author-only:** the current state machine permits delete from any
+     `SendMessages` holder, but the spec contract is that only the
+     original author may delete its own message. If a stricter
+     authorship gate is desired, tighten `apply_event(DeleteMessage)`
+     before shipping Regenerate.
+  2. A new `EventKind::Message { channel_id, body, reply_to }` carrying
+     the regenerated response. `reply_to` references the same parent
+     event as the deleted response so threading is preserved.
 
 ---
 
@@ -139,20 +170,39 @@ The default mode is **@mention only**. Auto-respond is opt-in per channel.
 ### Threading
 
 When an agent responds to a message, it sets the `reply_to` field on its
-`EventKind::Message` event (`crates/state/src/lib.rs`):
+`EventKind::Message` event (`crates/state/src/event.rs:128-132`):
 
 ```rust
 EventKind::Message {
     channel_id: String,
     body: String,
-    reply_to: Option<String>,  // points at the invoking message's event ID
+    reply_to: Option<EventHash>,  // 32-byte SHA-256 of the invoking event
 }
 ```
 
-(There is also a legacy `Content::Reply { parent, body }` in
-`crates/messaging/src/lib.rs`, but the canonical event-sourced path uses the
-flat `reply_to` field on `EventKind::Message`. This spec uses the canonical
-form.)
+`reply_to` is `Option<EventHash>` — not `Option<String>`. `EventHash` is the
+content-addressed hash of the parent `Event` (see
+`crates/state/src/hash.rs`). Threading is structural: the agent
+references the invoking message's event hash directly, and clients walk
+the `reply_to` chain to reconstruct thread context.
+
+Note on the parallel `willow-messaging` API: `Content::Reply { parent, body }`
+in `crates/messaging/src/lib.rs:124-130` is **not legacy** — it is the live
+encrypted-content path that drives `Content::Encrypted(SealedContent)` and
+the E2E pipeline (`crates/crypto`). The two paths coexist:
+
+- `EventKind::Message.body: String` is plaintext today and travels in the
+  state DAG.
+- `Content::*` (including `Reply`) travels through `Message` → `SealedContent`
+  for E2E channels.
+
+This spec assumes agent messages flow on the `EventKind::Message` path.
+**Open design question (Phase 4 / §8):** if `EventKind::Message.body` must
+be encrypted on E2E channels, either (a) the body must itself be a
+`SealedContent`-style ciphertext blob (a breaking schema change) or
+(b) agents must publish via the `Content`-based message path and the
+event-sourced `body` must be reserved for an opaque envelope. Pick one
+before shipping encryption-aware agents — see §8.
 
 - The agent receives the full thread context when replying within a thread.
 - Thread-scoped context avoids the agent responding to unrelated messages.
@@ -179,55 +229,87 @@ prefixed with the command string — no new wire protocol needed.
 ### Agent Permissions
 
 Agents use the existing role-based permission system in
-`willow_state::Permission` (`crates/state/src/types.rs`). The canonical enum
-currently has these 7 variants:
+`willow_state::Permission` (`crates/state/src/event.rs:21-33`). The
+canonical enum has exactly **5 variants** today:
 
-`SyncProvider`, `ManageChannels`, `ManageRoles`, `KickMembers`,
-`SendMessages`, `CreateInvite`, `Administrator`.
+`SyncProvider`, `ManageChannels`, `ManageRoles`, `SendMessages`, `CreateInvite`.
+
+**There is no `Administrator` permission and no `KickMembers` permission.**
+Admin status and member removal both flow through the governance / vote path:
+
+- **Admin status** is conferred via
+  `EventKind::Propose { action: ProposedAction::GrantAdmin { peer_id } }`
+  followed by `EventKind::Vote` events that meet the configured
+  `VoteThreshold` (Majority / Unanimous / Count(n))
+  (`crates/state/src/event.rs:43-64`). It is checked at runtime via
+  `state.is_admin(author)`, NOT via a `Permission` enum variant. The
+  server owner (genesis author) has implicit unilateral override.
+- **Member removal** is
+  `EventKind::Propose { action: ProposedAction::KickMember { peer_id } }`
+  + votes (same threshold rules). There is no direct `EventKind::KickMember`.
 
 Note: there is no `ReadMessages` permission today. Read access is implicit
 for any peer that has joined the server and decrypted the channel key —
 event delivery is at the gossip layer, not gated by a permission. Likewise
-there is no `ManageMessages`, `AttachFiles`, or `BanMembers` permission in
-the canonical enum (those names exist only in the deprecated
-`willow_channel::Permission`).
+there is no `ManageMessages`, `AttachFiles`, or `BanMembers` permission.
+The `willow_channel` crate referenced in earlier drafts no longer exists.
 
 **Mapping agent capabilities to canonical permissions:**
 
-| Agent capability | Canonical permission(s) |
+| Agent capability | Canonical mechanism |
 |---|---|
 | Read channel messages for context | (implicit — no permission needed) |
-| Post responses | `SendMessages` |
-| Pin / unpin messages | **NEW**: requires adding `ManagePins` permission, or reuse `ManageChannels` |
-| Delete own messages | (implicit — author may always delete own) |
-| Delete others' messages | **NEW**: requires adding `ModerateMessages` permission |
+| Post responses | `Permission::SendMessages` |
+| Pin / unpin messages | (implicit today — `PinMessage`/`UnpinMessage` are unrestricted in `required_permission()`; tighten by adding a `ManagePins` permission if needed) |
+| Delete own messages | (implicit — `DeleteMessage` requires `SendMessages`; only the author should be able to delete their own message — see §5/§9) |
+| Delete others' messages | **NEW**: requires adding a `ModerateMessages` permission and gating `DeleteMessage` by author-or-moderator |
 | Share generated files | **NEW**: file attachment is not yet a state event; would require an `EventKind::AttachFile` and an associated permission |
 
-**Spec implication:** if agents need pin/moderate/attach capabilities, this
+**Spec implication:** if agents need moderate/attach capabilities, this
 design depends on adding the corresponding `Permission` variants and the
-matching event handlers in `apply_event` /
-`required_permission()`. Those additions are out of scope for the agent
-spec itself but must land before the corresponding agent capabilities ship.
+matching event handlers in `apply_event` / `required_permission()`
+(`crates/state/src/materialize.rs:280-318`). Those additions are out of
+scope for the agent spec itself but must land before the corresponding
+agent capabilities ship.
 
-Agents CAN be granted any permission, but the UI applies heavy friction
-for dangerous permissions (`Administrator`, `ManageRoles`, `KickMembers`).
-Attempting to grant these shows a confirmation dialog explaining the
-risks, requiring the owner to explicitly acknowledge.
+Agents CAN be granted any of the 5 permissions, but the UI applies heavy
+friction for dangerous capabilities. Specifically:
+
+- Granting `ManageRoles` shows a confirmation dialog (the agent could
+  re-grant other permissions to itself or third parties).
+- Proposing `ProposedAction::GrantAdmin { peer_id: <agent> }` shows an
+  even stronger confirmation — admin status enables proposing kicks and
+  changing the vote threshold.
+- The UI also surfaces the multi-vote nature of these proposals so the
+  owner understands a single click is not enough on multi-admin servers.
 
 ### Trust Model
 
 - Agents are added to a server via the standard invite flow.
 - The server owner (or admin) must explicitly trust the agent peer.
-- Agent trust can be revoked at any time. Revocation is a two-event
-  sequence emitted by the client: an `EventKind::KickMember` followed
-  by an `EventKind::RotateChannelKey` for each affected channel.
-  These are **not atomic at the state-machine layer** —
-  `KickMember` only removes the member and their permissions
-  (`crates/state/src/lib.rs`); key rotation is a separate event.
-  The client is responsible for emitting both. (Future work: an
-  atomic `EventKind::KickAndRotate` could enforce the linkage at the
-  state machine layer; flagged but out of scope here.)
-- Agents cannot trust other peers or grant permissions.
+- Agent trust can be revoked. Revocation is a multi-event sequence:
+  1. An admin emits
+     `EventKind::Propose { action: ProposedAction::KickMember { peer_id } }`
+     (`crates/state/src/event.rs:43-49`).
+  2. Other admins emit `EventKind::Vote { proposal, accept: true }` until
+     the configured `VoteThreshold` is met (the server owner can push
+     unilaterally per the owner-override path in
+     `apply_proposed_action` — `crates/state/src/materialize.rs:188-209`).
+  3. Once the proposal applies, the proposing admin (or any
+     `ManageChannels` holder) emits
+     `EventKind::RotateChannelKey { channel_id, encrypted_keys }` for
+     each channel the kicked agent had access to.
+
+  These steps are **not atomic at the state-machine layer**: the kick
+  removes membership/permissions; key rotation is a separate event the
+  client must emit. Future work: a new `ProposedAction::KickAndRotate`
+  variant (or a top-level `EventKind::KickAndRotate`) could enforce the
+  linkage in the state machine — see Phase 6. Pick exactly one shape
+  before implementing; mixing both adds two ways to express the same
+  thing.
+- Agents cannot trust other peers or grant permissions, and cannot
+  themselves be admins unless explicitly elected via
+  `ProposedAction::GrantAdmin`.
 
 ### Rate Limiting
 
@@ -253,30 +335,39 @@ through `WireMessage` (`crates/common/src/wire.rs`) — the same envelope used
 for `TypingIndicator` — and are not appended to the event store. Only the
 final completed message is recorded as an `EventKind::Message`.
 
-**NEW** variants on `WireMessage`:
+**NEW** variants on `WireMessage` (`crates/common/src/wire.rs:13`).
+Existing variants today: `Event`, `SyncRequest`, `SyncBatch`,
+`TypingIndicator`, `VoiceJoin`, `VoiceLeave`, `VoiceSignal`, `JoinRequest`,
+`JoinResponse`, `JoinDenied`, `TopicAnnounce`, `ProfileAnnounce`, `Worker`.
 
 ```rust
 enum WireMessage {
-    // ... existing variants (Event, SyncRequest, SyncBatch, TypingIndicator,
-    //     VoiceJoin, VoiceLeave, VoiceSignal, JoinRequest, JoinResponse,
-    //     JoinDenied) ...
-    StreamStart  { stream_id: Uuid, channel: String, reply_to: Option<String> },
+    // ... existing variants ...
+    StreamStart  { stream_id: Uuid, channel: String, reply_to: Option<EventHash> },
     StreamChunk  { stream_id: Uuid, body: String },
-    StreamEnd    { stream_id: Uuid, final_event_id: String },
+    StreamEnd    { stream_id: Uuid, final_event_id: EventHash },
     StreamCancel { stream_id: Uuid },
 }
 ```
 
+`reply_to` and `final_event_id` are `EventHash` — matching
+`EventKind::Message.reply_to` (`crates/state/src/event.rs:131`) and event
+identity throughout the state machine.
+
 - `StreamStart` opens an ephemeral message bubble in the receiving UI.
 - `StreamChunk` appends text to the in-progress bubble. Chunks are ordered
   by HLC. Clients buffer and display in order.
-- `StreamEnd` closes the stream and references `final_event_id` — the ID of
-  the `EventKind::Message` event that the agent has now broadcast carrying
-  the complete body. Receivers replace the ephemeral bubble with the
-  materialized event.
-- `StreamCancel` is sent by a user to interrupt; the agent responds by
-  emitting `StreamEnd` with whatever has been generated so far (along with
-  the corresponding `EventKind::Message`).
+- `StreamEnd` closes the stream and references `final_event_id` — the
+  `EventHash` of the `EventKind::Message` event the agent has now
+  broadcast carrying the complete body. Receivers replace the
+  ephemeral bubble with the materialized event.
+- `StreamCancel` is sent by a user to interrupt. On cancel, the agent
+  emits `StreamEnd` along with an `EventKind::Message` carrying
+  **whatever was generated so far** — i.e. the partial body becomes a
+  permanent state event. (Alternative considered: drop the partial
+  output entirely so cancel produces no state event. Rejected because
+  the user has already seen the partial text on screen and a silent
+  history erase is more confusing than a truncated message.)
 
 ### UI Behavior
 
@@ -359,7 +450,9 @@ A dedicated section in server settings for managing agents:
 - "Add Agent" button → generates an invite link.
 - Per-agent configuration: display name override, default channels,
   system prompt (visible to the agent as context).
-- "Remove Agent" → emits `EventKind::KickMember` followed by
+- "Remove Agent" → emits
+  `EventKind::Propose { action: ProposedAction::KickMember { peer_id } }`,
+  collects vote events to threshold, then emits
   `EventKind::RotateChannelKey` for each affected channel (see §4
   Trust Model — the linkage lives in the client, not the state machine).
 
@@ -395,10 +488,23 @@ agent may send decrypted content to an external API for inference (see
 agent keeps everything on-device. This is a deployment concern, not a
 protocol concern.
 
+> **Open design question (cross-references §3).** Today
+> `EventKind::Message.body` is a plain `String` and travels in the state
+> DAG. Encrypted human messages travel through the parallel
+> `Content`/`SealedContent` API in `crates/messaging` + `crates/crypto`.
+> For agent messages on E2E channels, the spec must decide between:
+> (a) treating `EventKind::Message.body` as opaque ciphertext (e.g. base64
+> SealedContent) and decrypting in the rendering layer, or (b) routing
+> agent output through the `Content`-based path and reserving
+> `EventKind::Message` for plaintext-only channels. (a) keeps the
+> event-sourced path uniform but requires schema changes; (b) preserves
+> the existing encryption pipeline but bifurcates how agents and humans
+> publish. Pick before shipping Phase 4.
+
 ### Data Handling Disclosure
 
-The agent's profile carries a `data_policy` field (added via the extended
-`SetProfile` proposed in §1):
+The agent's profile carries a `data_policy` field (added via
+`Profile`/`ProfileDelta` in §1):
 
 ```rust
 enum DataPolicy {
@@ -421,10 +527,23 @@ enum DataPolicy {
 
 ### Implementation
 
-`WorkerRole` (`crates/common/src/worker_types.rs`) is a **trait**, and
-`WorkerRoleInfo` is a **separate enum** carrying capacity-only data. The
-existing comment in that file flags `Bot` (not `Agent`) as a future variant —
-this spec adopts the `Bot` naming for consistency.
+`WorkerRole` (`crates/common/src/worker_types.rs:131`) is a **trait**, and
+`WorkerRoleInfo` (`crates/common/src/worker_types.rs:20`) is a **separate
+enum** carrying capacity-only data. The comment at line 35 of that file
+already flags `Bot` (not `Agent`) as a future variant — this spec adopts
+the `Bot` naming for the in-protocol LLM worker.
+
+> **Naming note (resolves round 3 collision).** The existing crate
+> `crates/agent/` ships the `willow-agent` binary, an MCP server that
+> exposes a Willow `ClientHandle` to AI agents over JSON-RPC
+> (`crates/agent/Cargo.toml`). It is **not** an in-protocol LLM bot — it
+> is a host-side bridge for external LLMs. To avoid collision, this spec
+> introduces a **new** crate `crates/bot/` shipping a `willow-bot`
+> binary that implements `WorkerRole`. The runner-up was reusing
+> `crates/agent/` and adding a second binary inside it, but that
+> conflates two very different scopes (MCP transport vs in-protocol
+> participation) and forces shared dependencies that the MCP server
+> doesn't need (e.g. inference SDKs).
 
 This proposal adds:
 
@@ -443,9 +562,20 @@ This proposal adds:
 
    Following the existing pattern, `Bot` carries **capacity only** —
    identity (`display_name`, `provider`, `data_policy`, capabilities) lives
-   on the agent's `Profile`/`SetProfile`, not on `WorkerRoleInfo`.
+   on the agent's `Profile`/`UpdateProfile`, not on `WorkerRoleInfo`.
 
-2. **A new `WorkerRole` trait implementer** — e.g. `BotWorker` — owned by
+   Adding the variant requires:
+
+   - Updating `WorkerRoleInfo::role_name()`
+     (`crates/common/src/worker_types.rs:40-46`) — the match is
+     non-exhaustive, so a new arm `WorkerRoleInfo::Bot { .. } => "bot"`
+     must be added or the build breaks.
+   - Considering `PartialEq` / serde round-trips: `WorkerRoleInfo`
+     derives both `PartialEq` and `Serialize`/`Deserialize`, so existing
+     round-trip tests in `crates/common/src/worker_types.rs` should
+     gain a `Bot` round-trip case.
+
+2. **A new `WorkerRole` trait implementer** — `BotWorker` — owned by
    the bot binary:
 
    ```rust
@@ -468,26 +598,40 @@ This proposal adds:
 
 This plugs into the existing worker node runtime. The data flow:
 
-1. The worker subscribes to the well-known gossipsub topics
-   `_willow_workers` and `_willow_server_ops` (`crates/common/src/worker_types.rs`).
-   There is no per-channel topic; channel scoping is achieved by inspecting
-   the `channel_id` field on `EventKind::Message` events.
+1. The worker subscribes to the well-known topics
+   `network::topics::SERVER_OPS_TOPIC` and `network::topics::WORKERS_TOPIC`
+   for membership / governance / sync coordination, **and** to
+   `network::topics::channel_topic(server_id, channel_id)` for each
+   channel it participates in
+   (`crates/network/src/topics.rs:17-49`). Per-channel topics DO exist
+   today: `channel_topic(server_id, channel_id)` and
+   `voice_topic(server_id, channel_id)` are how channel-scoped gossip
+   already flows. The earlier draft of this spec wrongly claimed
+   per-channel topics did not exist.
+
+   The spec prefers the typed `network::topics::*` re-exports (or the
+   `*_TOPIC` `LazyLock<TopicId>` statics) over the string constants
+   `WORKERS_TOPIC` / `SERVER_OPS_TOPIC` in
+   `common::worker_types`.
 2. Incoming `WireMessage::Event` envelopes are unpacked and the inner
    `willow_state::Event` is delivered to `WorkerRole::on_event(&Event)`.
-   The bot filters `EventKind::Message { channel_id, body, reply_to }` events
-   for @mentions and auto-respond channels.
-3. The bot builds a prompt from thread context + system prompt.
+   The bot filters `EventKind::Message { channel_id, body, reply_to }`
+   events for @mentions and auto-respond channels.
+3. The bot builds a prompt from thread context (walking the `reply_to`
+   chain) plus the per-server system prompt (see §10).
 4. Calls `inference.generate()` and emits chunks back via
-   `WireMessage::StreamChunk` plus a final `EventKind::Message` event when
-   complete (see §5).
+   `WireMessage::StreamChunk` plus a final `EventKind::Message` event
+   when complete (see §5). The final event flows on the appropriate
+   `channel_topic`, not on `_willow_server_ops`.
 
 ### Worker Announcement
 
-`WorkerAnnouncement` (`crates/common/src/worker_types.rs`) carries the
-`WorkerRoleInfo` (capacity only) plus the `servers: Vec<String>` the worker
-is participating in. Identity / display info lives on the agent's
-`SetProfile` event, **not** on the announcement. This matches the existing
-Replay/Storage pattern and avoids duplicating identity data.
+`WorkerAnnouncement` (`crates/common/src/worker_types.rs:50-55`) carries
+the `WorkerRoleInfo` (capacity only) plus the `servers: Vec<String>` the
+worker is participating in. Identity / display info lives on the agent's
+`Profile` (mutated via `EventKind::UpdateProfile`), **not** on the
+announcement. This matches the existing Replay/Storage pattern and avoids
+duplicating identity data.
 
 ### Configuration
 
@@ -513,11 +657,11 @@ rate_limit = 10  # messages per minute
 max_context_messages = 50
 ```
 
-Note: at the time this spec branch was authored, no agent crate or binary
-exists in this PR's worktree (`crates/`) — this design predates any agent
-implementation. (`main` may have introduced a `crates/agent/` crate for an
-unrelated MCP server; that crate, if present, has a different scope and
-should not be conflated with the LLM-agent worker described here.)
+Note: `crates/agent/` (the `willow-agent` MCP server binary) exists today
+on the rebased branch. It is **not** the in-protocol LLM bot described
+here — see the naming-note callout above. This spec proposes a separate
+`crates/bot/` crate shipping `willow-bot`, leaving `willow-agent` for the
+MCP/JSON-RPC bridge to external agents.
 
 ---
 
@@ -531,7 +675,7 @@ enum EventKind {
 
     /// Configure an agent's behavior in this server.
     SetAgentConfig {
-        peer_id: String,
+        peer_id: EndpointId,                  // 32-byte Ed25519 pubkey
         system_prompt: Option<String>,
         auto_respond_channels: Vec<String>,
         rate_limit: Option<u32>,
@@ -539,20 +683,35 @@ enum EventKind {
 }
 ```
 
+`peer_id` is `EndpointId` (re-exported from iroh-base via
+`willow-identity`), matching the rest of the state machine — not `String`.
+
 ### Streaming Is Not a State Event
 
 Stream chunks are **wire-only** (`WireMessage::StreamStart` /
 `StreamChunk` / `StreamEnd` / `StreamCancel`, see §5). They do not appear
-on `EventKind`. Only the final `EventKind::Message` carrying the full body
-is recorded in the event store. This avoids polluting the canonical event
-log with thousands of token-sized events and keeps replay cheap.
+on `EventKind`. Only the final `EventKind::Message` carrying the body
+the agent committed to (full or, on cancel, partial) is recorded in the
+event store. This keeps the canonical event log free of thousands of
+token-sized events and keeps replay cheap.
 
 ### Permission Check
 
-`SetAgentConfig` requires `Administrator` or server ownership. Agents
-themselves cannot modify their own config. (Add this row to
-`required_permission()` in `crates/state/src/materialize.rs` when
-implementing.)
+`SetAgentConfig` is an **admin-only event**. There is no `Administrator`
+permission in `Permission`; the gate is `state.is_admin(author)`, which
+lives in the dedicated admin-only block of `check_permission`
+(`crates/state/src/materialize.rs:117-126`) — NOT in
+`required_permission()` (which is for fine-grained `Permission`-gated
+events only, lines 280-318). Implementation:
+
+- Add `EventKind::SetAgentConfig { .. }` to the `matches!` arm at
+  `crates/state/src/materialize.rs:117-123`, alongside `GrantPermission`,
+  `RevokePermission`, `RenameServer`, `SetServerDescription`.
+- Do **not** add it to `required_permission()`; that table only maps
+  variants to `Permission` enum values.
+- Agents themselves cannot modify their own config — they are not
+  admins by default, and even if elected admin via
+  `ProposedAction::GrantAdmin` the UX surfaces this clearly.
 
 ---
 
@@ -561,54 +720,90 @@ implementing.)
 ### State events
 
 `EventKind` is bincode-serialized as a tagged enum
-(`crates/transport/src/lib.rs`). Old peers therefore **fail at the
+(`crates/transport/src/lib.rs`). Old peers **fail at the
 deserialization layer** when they encounter a new variant — they never
-reach `apply_event`, and there is no `ApplyResult::Skipped` (the actual
-variants are `Applied`, `AlreadySeen`, `ParentHashMismatch`, `Rejected`).
-
-To allow new `EventKind` variants without breaking old peers, this spec
-proposes adding a forward-compat catch-all:
+reach `apply_event`. `ApplyResult`
+(`crates/state/src/materialize.rs:33-41`) has exactly **3 variants**:
 
 ```rust
-enum EventKind {
-    // ... existing variants ...
-
-    /// Forward-compat: an unknown event variant. Old peers
-    /// deserialize-then-skip; new peers may understand it.
-    Unknown { kind: String, payload: Vec<u8> },
+pub enum ApplyResult {
+    Applied,
+    Rejected(String),
+    AlreadyApplied,
 }
 ```
 
-The transport-layer deserializer would fall back to `Unknown` when the
-tag is not recognized, and `apply_event` would treat `Unknown` as a no-op.
-This is a **prerequisite** for shipping `SetAgentConfig` (and any other new
-variant) without forcing a flag-day upgrade. If we choose not to add this,
-the spec must accept that `SetAgentConfig` is a breaking change that
-requires all peers to upgrade simultaneously.
+There is no `AlreadySeen`, no `ParentHashMismatch`, no `Skipped`.
+Per-author chain mismatches (the `prev` field on `Event`) are caught in
+the DAG layer before `apply_event` runs, not represented in
+`ApplyResult`.
+
+To allow new `EventKind` variants without forcing a flag-day upgrade,
+this spec needs a forward-compat catch-all. **Important:** bincode's
+default tagged-enum format does **not** support a "catch-all unknown
+variant" out of the box — encountering an unrecognized discriminant
+returns `Err`, and `unpack_wire` returns `None` with no fallback
+opportunity. Two viable approaches:
+
+**Option A: Custom `Deserialize` impl with explicit fallback.**
+Hand-write `Deserialize` for `EventKind` that reads the tag manually,
+attempts the per-variant payload, and falls through to a synthetic
+`EventKind::Unknown { tag: u32, payload: Vec<u8> }` when the tag is not
+recognized. Brittle — any future re-ordering of variants silently
+shifts tag numbers, so this requires explicit `#[serde(rename = "...")]`
+or a hand-managed tag table.
+
+**Option B: Versioned envelope (preferred).** Wrap every event payload
+in a stable outer envelope so the transport layer knows the variant tag
+without deserializing the payload:
+
+```rust
+struct VersionedEvent {
+    kind_tag: u32,           // stable, hand-assigned per EventKind variant
+    payload: Vec<u8>,        // bincode-serialized variant body
+}
+```
+
+Old peers deserialize the envelope, recognize unknown `kind_tag`, and
+keep the raw `payload` in an `EventKind::Unknown { kind_tag, payload }`
+they treat as a no-op. New peers route on `kind_tag` to the correct
+variant. This trades one extra round-trip of bincode framing per event
+for clean forward-compat — worth it. (The same shape extends to
+`WireMessage` for ephemeral types.)
+
+`apply_event` would treat `EventKind::Unknown` as a no-op
+(`ApplyResult::Applied`) so the DAG link is preserved but no state
+mutates.
+
+This is a **prerequisite** for shipping `SetAgentConfig` (and any other
+new variant) without a coordinated flag-day upgrade. Without it,
+`SetAgentConfig` is a breaking schema change.
 
 ### Wire messages
 
-`WireMessage` is also a bincode tagged enum. New ephemeral variants
+`WireMessage` is also a bincode tagged enum
+(`crates/common/src/wire.rs`). New ephemeral variants
 (`StreamStart`/`Chunk`/`End`/`Cancel`, `Thinking`, `StoppedThinking`)
-likewise need either:
+hit the same bincode limitation as above. Two options:
 
-1. A `WireMessage::Unknown { tag: u32, payload: Vec<u8> }` catch-all (older
-   peers ignore unknown wire messages silently — acceptable since they're
-   ephemeral); or
-2. A flag-day upgrade.
+1. Apply Option B (versioned envelope) to `WireMessage` as well:
+   `{ wire_tag: u32, payload: Vec<u8> }`. Old peers ignore unknown
+   `wire_tag` values silently, which is acceptable for ephemeral
+   traffic.
+2. Flag-day upgrade.
 
-Old clients silently drop unknown `WireMessage` envelopes today; there is
-**no** "[unsupported message type]" UI fallback — that string does not
-exist in `crates/web/src/components/message.rs` or anywhere else in the
-codebase. This spec does not propose adding such a fallback (ephemeral
-streaming chunks have no UI representation in old clients, which is fine —
-they'll just see the final materialized message).
+Old clients silently drop unknown `WireMessage` envelopes today — there
+is **no** "[unsupported message type]" UI fallback. This spec does not
+propose adding one; ephemeral streaming chunks have no UI representation
+in old clients, which is fine — they'll just see the final materialized
+message rendered from the `EventKind::Message` event.
 
 ### No silent breakage
 
-All additions in this spec are designed to be additive: new optional fields
-on `SetProfile`, new tagged variants behind an `Unknown` catch-all, new
-ephemeral wire messages. With the `Unknown` fallback in place, old clients
+All additions in this spec are designed to be additive: new optional
+fields on `Profile` and `ProfileDelta` (already `#[serde(default)]`),
+new tagged variants behind a versioned-envelope `Unknown` fallback, new
+ephemeral wire messages. With the envelope in place, old clients
 continue to function with reduced capability rather than panicking on
 deserialization.
 
@@ -618,30 +813,38 @@ deserialization.
 
 ### Phase 0: Forward-compat foundation (Prerequisite)
 
-- Add `EventKind::Unknown` and `WireMessage::Unknown` catch-all variants
-  with custom deserializer fallback (see §11). Without this, every later
-  phase is a breaking wire change.
+- Adopt the versioned-envelope approach (Option B in §11) for both
+  `EventKind` and `WireMessage`, with `Unknown` no-op fallbacks. Without
+  this, every later phase is a breaking wire change.
 
 ### Phase 1: Identity & UI (Foundation)
 
-- Extend `EventKind::SetProfile` with optional `peer_kind` and `data_policy`.
-- Add `PeerKind` to profile broadcasts.
-- Insert "Agents" section into the member list (between Infrastructure and
-  Members).
+- Extend `Profile` and `ProfileDelta` with `peer_kind: Option<PeerKind>`
+  and `data_policy: Option<DataPolicy>` (both `#[serde(default)]` on
+  `Profile`; nested `Option<Option<_>>` on `ProfileDelta` per the
+  established pattern). Update `apply_event(UpdateProfile)` to overlay
+  the new fields.
+- Wire `PeerKind` and `DataPolicy` through the profile UI (member list,
+  profile card).
+- Insert "Agents" section into the member list (between Infrastructure
+  and Members).
 - Add bot badge and "Agent" tag to message rendering.
-- Add collapsible long messages: auto-collapse messages over 20 lines with
-  a "Show more" toggle in `crates/web/src/components/message.rs` (no
-  collapse logic exists today; this is net-new UI).
+- Add collapsible long messages: auto-collapse messages over 20 lines
+  with a "Show more" toggle in `crates/web/src/components/message.rs`
+  (no collapse logic exists today; this is net-new UI). Applies to all
+  long messages, not only agent ones.
 
 ### Phase 2: Interaction (Core Loop)
 
-- Implement @mention detection and routing.
+- Create new `crates/bot/` crate shipping `willow-bot` binary (separate
+  from the existing `crates/agent/` MCP crate — see §9 naming-note).
 - Add `BotWorker` implementing `WorkerRole`, with `InferenceBackend` trait
-  and a new `WorkerRoleInfo::Bot` variant.
-- Add agent configuration TOML loader and a new `willow-bot` binary
-  (note: this PR worktree has no agent/bot crate yet — see §9).
-- Thread-scoped context building (uses `reply_to` chain on
-  `EventKind::Message`).
+  and a new `WorkerRoleInfo::Bot` variant. Update
+  `WorkerRoleInfo::role_name()` for the new arm.
+- Implement @mention detection and routing.
+- Add agent configuration TOML loader.
+- Thread-scoped context building (walks the `reply_to: Option<EventHash>`
+  chain on `EventKind::Message`).
 
 ### Phase 3: Streaming (Polish)
 
@@ -667,7 +870,18 @@ deserialization.
 
 ### Phase 6 (optional): Atomic Kick+Rotate
 
-- If two-event Kick→Rotate proves error-prone in practice, add an atomic
-  `EventKind::KickAndRotate { peer_id, encrypted_keys: Vec<(channel_id,
-  Vec<(peer_id, Vec<u8>)>)> }` to enforce the linkage at the state-machine
-  layer.
+If the multi-event sequence (`Propose KickMember` → votes →
+`RotateChannelKey` per channel) proves error-prone in practice, add an
+atomic kick-with-rotation. Pick exactly one shape:
+
+1. New `ProposedAction::KickAndRotate { peer_id, rotations: Vec<(channel_id,
+   Vec<(EndpointId, Vec<u8>)>)> }` that, on threshold, removes the member
+   AND rotates each listed channel key in a single state transition. This
+   keeps everything inside the existing governance / vote machinery.
+2. New top-level `EventKind::KickAndRotate { peer_id, rotations: ... }`
+   that bypasses governance and only requires `state.is_admin(author)`.
+   Shorter latency but loses the multi-admin checkpoint that the vote
+   path provides.
+
+Option 1 is preferred because it preserves the structural invariant that
+member removal is governed; Option 2 is documented for completeness.
