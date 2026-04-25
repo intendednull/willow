@@ -70,7 +70,7 @@ currently emit ACAO only (no ACAM/ACAH) and neither responds to
 | Method | `GET` (plus `OPTIONS` for preflight) |
 | Response Content-Type | `application/willow+json; charset=utf-8` |
 | CORS | required — `Access-Control-Allow-Origin: *` |
-| Served on | the public relay HTTP port (default `3340`, configurable via `--relay-port`; see `crates/relay/src/main.rs:87`) |
+| Served on | the public relay HTTP port (default `3340`, configurable via `--relay-port`; see `crates/relay/src/main.rs:87-88`) |
 
 **Why `/.well-known/willow` over `/willow-info`?** The relay proxy in
 `crates/relay/src/lib.rs:186` already dispatches on request path.
@@ -87,9 +87,13 @@ suffix still opts us into generic JSON tooling.
 ## Field schema
 
 The document is a single JSON object. All fields are optional except
-`protocol_versions`; a minimal compliant document is
-`{"protocol_versions":[1]}`. **Clients MUST ignore unknown top-level
-fields** so additions remain forward-compatible.
+`protocol_versions`, `pubkey`, and `signature` (the last two are required
+because v1 mandates signing — see "Signing" below). The unsigned core of
+a minimal compliant document is `{"protocol_versions":[1]}`; the on-wire
+form additionally carries `pubkey` and `signature`, e.g.
+`{"protocol_versions":[1],"pubkey":"<hex>","signature":"<hex>"}`.
+**Clients MUST ignore unknown top-level fields** so additions remain
+forward-compatible.
 
 ```rust
 /// Capability document served at GET /.well-known/willow.
@@ -100,7 +104,10 @@ pub struct WillowRelayInfo {
     pub description: Option<String>,      // plain text, no markup
     pub contact: Option<String>,          // mailto: / https: / matrix:
     pub admin_pubkey: Option<String>,     // hex Ed25519, operator DM key
-    pub pubkey: Option<String>,           // hex Ed25519, relay's own key
+    /// REQUIRED. Hex Ed25519 public half of the relay's own key —
+    /// the verifier for `signature`. Mandatory in v1 because signing
+    /// is mandatory; see "Signing" below.
+    pub pubkey: String,
     pub software: Option<String>,         // project name; operators MAY omit
     pub version: Option<String>,          // coarse semver (e.g. "0.3.x");
                                           // operators MAY omit; never a git SHA
@@ -338,10 +345,12 @@ strings are pinned here:
 **Unit (serde, in `crates/relay/src/`):** (1) round-trip a fully
 populated `WillowRelayInfo` through `serde_json` with byte-for-byte
 equality after canonical re-serialisation; (2) parse the minimum
-document `{"protocol_versions":[1]}` and assert all other fields are
-`None`/empty; (3) parse a document with an unknown top-level key and
-assert it is ignored; (4) reject a document missing
-`protocol_versions` with a typed error.
+on-wire document
+`{"protocol_versions":[1],"pubkey":"<hex>","signature":"<hex>"}` and
+assert all other fields are `None`/empty; (3) parse a document with an
+unknown top-level key and assert it is ignored; (4) reject a document
+missing any of `protocol_versions`, `pubkey`, or `signature` with a
+typed error.
 
 **Integration** (new `crates/relay/tests/capability_endpoint.rs`,
 alongside `bootstrap_endpoint.rs`): (1) `GET /.well-known/willow` →
