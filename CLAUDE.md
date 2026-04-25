@@ -5,6 +5,35 @@
 Willow is a P2P Discord replacement built in Rust. It uses iroh for
 networking, Leptos for the web UI, and Ed25519 cryptography for identity.
 
+## Dev Guidelines
+
+Quality and longevity beat speed and convenience.
+
+- **Choose the right solution, not the easy one.** Ask: which approach makes most
+  sense long-term, causes least future confusion, lasts? Pick that one.
+- **No hacky workarounds, no shortcuts.** If the obvious fix is a band-aid,
+  keep digging until you find the real fix.
+- **Root-cause every bug.** Don't patch symptoms. Don't disable failing tests.
+  Don't swallow errors. Find why, fix why.
+- **Scope creep is acceptable when warranted, not when speculative.** If doing it
+  right means touching more files or refactoring an abstraction — do it. But
+  don't add features, abstractions, or error handling the task didn't ask for.
+- **When the answer isn't obvious, stop and design.** Two+ reasonable approaches?
+  Write a brief note in `docs/superpowers/specs/YYYY-MM-DD-<name>.md` before coding.
+  Cheap up front, expensive later.
+- **Surface tradeoffs explicitly.** When picking between approaches, name the
+  runner-up and why rejected. Commit body or PR description. Future-you needs
+  the reasoning, not just the result.
+- **Mechanical rigor: `just check` before commit.** Fmt, clippy, tests, WASM.
+  Zero warnings.
+- **Semantic rigor: verify before claiming done.** Run the actual test, hit the
+  actual UI, read the actual output. No "should work" assertions. See
+  `superpowers:verification-before-completion`.
+- **Process skills before implementation skills.** Brainstorming and debugging
+  determine *how* to approach. Don't skip them to feel productive.
+- **Tests at the lowest tier that covers the behavior.** State > client >
+  browser > Playwright. See `## Which test tier to use`.
+
 ## Repository Structure
 
 ```
