@@ -38,7 +38,7 @@ jobs:
           restore-keys: e2e-
 
       - name: Install just
-        uses: taiki-e/install-action@899b013517f9e7774591216672bf75a46bb9a481 # v2.9.4 just
+        uses: taiki-e/install-action@787505cde8a44ea468a00478fe52baf23b15bccd # v2.9.4 just
         with:
           tool: just
 
