@@ -26,7 +26,7 @@
           },
           {
             "type": "command",
-            "command": "echo '{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": \"Invoke the caveman skill before any other action in this session.\"}}'"
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/caveman-session-start.sh\""
           }
         ]
       }
