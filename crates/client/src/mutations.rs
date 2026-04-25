@@ -377,6 +377,51 @@ impl<N: willow_network::Network> ClientMutations<N> {
         Ok(())
     }
 
+    /// Create a non-permanent ("ephemeral") channel that
+    /// auto-archives after `idle_threshold_ms` of inactivity.
+    ///
+    /// Spec: `docs/specs/2026-04-19-ui-design/ephemeral-channels.md`.
+    pub async fn create_ephemeral_channel(
+        &self,
+        name: &str,
+        kind: willow_state::EphemeralKind,
+        idle_threshold_ms: u64,
+    ) -> anyhow::Result<()> {
+        let name = name.to_string();
+        let name_for_switch = name.clone();
+        let ch_id_str = uuid::Uuid::new_v4().to_string();
+
+        let event = self
+            .build_event(EventKind::CreateChannel {
+                name: name.clone(),
+                channel_id: ch_id_str,
+                kind: willow_state::ChannelKind::Text,
+                ephemeral: Some(willow_state::EphemeralConfig {
+                    kind,
+                    idle_threshold_ms,
+                }),
+            })
+            .await?;
+        self.apply_event(&event).await;
+        self.switch_channel(&name_for_switch).await;
+        self.broadcast_event(&event);
+        Ok(())
+    }
+
+    /// Revive an auto-archived ephemeral channel by name without
+    /// posting a message.
+    pub async fn revive_channel(&self, name: &str) -> anyhow::Result<()> {
+        let ch_id_str = self.resolve_channel_id(name).await?;
+        let event = self
+            .build_event(EventKind::ChannelRevive {
+                channel_id: ch_id_str,
+            })
+            .await?;
+        self.apply_event(&event).await;
+        self.broadcast_event(&event);
+        Ok(())
+    }
+
     /// Delete a channel.
     pub async fn delete_channel(&self, name: &str) -> anyhow::Result<()> {
         let name = name.to_string();

@@ -66,6 +66,15 @@ impl<N: willow_network::Network> ClientHandle<N> {
         view.channels.into_iter().map(|c| c.name).collect()
     }
 
+    /// Snapshot of the current materialized server state.
+    ///
+    /// Useful for assertion-style tests that need to inspect channel
+    /// metadata (kinds, ephemeral config, last-activity HLC).
+    pub async fn state_snapshot(&self) -> willow_state::ServerState {
+        let arc = willow_actor::state::get(&self.event_state_addr).await;
+        (*arc).clone()
+    }
+
     pub async fn event_messages(&self, channel_id: &str) -> Vec<willow_state::ChatMessage> {
         let cid = channel_id.to_string();
         let addr = self.event_state_addr.clone();
