@@ -808,6 +808,15 @@ pub fn wire_derived_signals<N: willow_network::Network>(
     let messages_sig = derived_signal(&views.messages, system, |mv| mv.messages.clone());
     leptos::prelude::Effect::new(move || write.chat.set_messages.set(messages_sig.get()));
 
+    let pinned_sig = derived_signal(&views.messages, system, |mv| {
+        mv.messages
+            .iter()
+            .filter(|m| m.pinned)
+            .cloned()
+            .collect::<Vec<_>>()
+    });
+    leptos::prelude::Effect::new(move || write.chat.set_pinned_messages.set(pinned_sig.get()));
+
     // ── Presence derived signals (phase 1e) ──────────────────────────
     let presence_per_peer_sig = derived_signal(&views.presence, system, |pv| {
         pv.per_peer

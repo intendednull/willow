@@ -755,7 +755,7 @@ select:focus-visible {
 
 /* First message in a group gets extra top rounding */
 .message:not(.grouped) {
-    margin-top: 8px;
+    margin-top: 4px;
     border-radius: 6px 6px 4px 4px;
 }
 
@@ -4096,10 +4096,10 @@ select:focus-visible {
     font-size: 10px;
 }
 .trust-badge--new {
-    color: var(--ink-3);
-    font-size: 11px;
-    padding: 0 4px;
+    background: color-mix(in oklab, var(--moss-1) 60%, transparent);
+    color: var(--moss-3);
 }
+.trust-badge--new svg { color: var(--moss-3); }
 .trust-badge--downgrade {
     background: transparent;
     border: 1.5px dashed var(--warn);
@@ -4504,19 +4504,24 @@ select:focus-visible {
  * MessageView where the avatar column would be; CSS hides it off-hover
  * so it only surfaces when the user targets the row. */
 .message .run-hover-ts {
-    display: inline-block;
-    width: 0;
-    overflow: hidden;
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
     font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
     font-size: 10px;
+    line-height: 1;
     color: var(--ink-3);
+    background: color-mix(in oklab, var(--bg-0) 85%, transparent);
+    padding: 2px 6px;
+    border-radius: 4px;
     opacity: 0;
     transition: opacity var(--transition-fast);
     pointer-events: none;
     user-select: none;
+    z-index: 1;
 }
 .message.grouped:hover .run-hover-ts {
-    width: auto;
     opacity: 1;
 }
 @media (prefers-reduced-motion: reduce) {
