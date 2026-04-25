@@ -23,6 +23,10 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/using-superpowers-session-start.sh\""
+          },
+          {
+            "type": "command",
+            "command": "echo '{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": \"Invoke the caveman skill before any other action in this session.\"}}'"
           }
         ]
       }
