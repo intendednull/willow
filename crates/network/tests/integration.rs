@@ -9,6 +9,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures_lite::StreamExt;
 use iroh::address_lookup::memory::MemoryLookup;
+use iroh::endpoint::presets;
 use tokio::time::timeout;
 use willow_identity::Identity;
 use willow_network::iroh::{Config, IrohNetwork};
@@ -43,7 +44,7 @@ async fn create_two_nodes() -> (TestNode, TestNode) {
     let id_a = Identity::generate();
     let id_b = Identity::generate();
 
-    let ep_a = iroh::Endpoint::empty_builder()
+    let ep_a = iroh::Endpoint::builder(presets::Empty)
         .secret_key(id_a.secret_key().clone())
         .relay_mode(iroh::RelayMode::Disabled)
         .address_lookup(discovery.clone())
@@ -51,7 +52,7 @@ async fn create_two_nodes() -> (TestNode, TestNode) {
         .await
         .unwrap();
 
-    let ep_b = iroh::Endpoint::empty_builder()
+    let ep_b = iroh::Endpoint::builder(presets::Empty)
         .secret_key(id_b.secret_key().clone())
         .relay_mode(iroh::RelayMode::Disabled)
         .address_lookup(discovery.clone())
