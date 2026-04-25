@@ -90,6 +90,41 @@ pub enum WireMessage {
     Worker(crate::WorkerWireMessage),
 }
 
+impl WireMessage {
+    /// Returns the maximum permitted serialized size, in bytes, for this
+    /// variant when it appears on the wire.
+    ///
+    /// Currently this is a stub that returns the global envelope cap
+    /// ([`willow_transport::MAX_DESER_SIZE`], 256 KB) for every variant —
+    /// i.e. it is a no-op relative to today's behavior. The intent is to
+    /// give decode sites (relay, worker, client) a single hook they can
+    /// consult before allocating, so that we can later tighten the cap on a
+    /// per-variant basis without touching every call site again.
+    ///
+    /// TODO(#233 SEC-V-02): replace the blanket `MAX_DESER_SIZE` with
+    /// per-variant caps. Open questions to resolve before wiring this up:
+    ///
+    /// - **Body cap**: 32 KB, 64 KB, or fixed % of envelope (256 KB)?
+    ///   64 KB likely lines up with the gossip `max_message_size`; 32 KB
+    ///   is more conservative and leaves headroom for envelope/framing
+    ///   overhead.
+    /// - **`SyncBatch.events` cap**: should it match the outbound 500
+    ///   limit or be larger to absorb burst traffic (e.g. 2000)? Note this
+    ///   is a *count* cap, distinct from the byte-size cap above.
+    /// - **API shape**: keep this as a single associated fn that returns
+    ///   bytes, or split into `max_bytes()` / `max_items()` helpers per
+    ///   variant? Or pile on case-by-case at each decode site instead of
+    ///   centralizing here?
+    /// - **Enforcement point**: at `unpack_wire` (post-deserialize) or
+    ///   inside `unpack_envelope` (pre-deserialize)? The latter requires
+    ///   plumbing the variant tag earlier.
+    pub fn max_size(&self) -> usize {
+        // Stub: defer to the envelope-wide cap until per-variant caps are
+        // chosen. See TODO above.
+        willow_transport::MAX_DESER_SIZE as usize
+    }
+}
+
 /// WebRTC signaling payload for voice chat negotiation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum VoiceSignalPayload {
