@@ -32,6 +32,7 @@ pub mod ops;
 pub mod persistence_actor;
 pub mod presence;
 pub mod queue;
+pub mod search;
 pub mod state;
 pub mod state_actors;
 pub mod storage;
@@ -73,6 +74,10 @@ pub use mentions::mentions_me;
 pub use nickname::{MemNicknameStore, NicknameStore, NicknameStoreHandle, NICKNAME_CAP};
 pub use ops::{pack_wire, unpack_wire, VoiceSignalPayload, WireMessage};
 pub use queue::{ArrivedSummary, QueueSummary, RelayStatus};
+pub use search::{
+    IndexableMessage, RecentQuery, SearchIndex, SearchIndexBuildStatus, SearchIndexConfig,
+    SearchIndexHandle, SearchQuery, SearchResult, SearchScope,
+};
 pub use trust::{
     ComparePreview, InMemoryTrustStore, PeerTrust, TrustStore, TrustStoreHandle, UnverifiedReason,
 };

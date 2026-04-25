@@ -111,6 +111,43 @@ pub fn load_settings() -> Option<NetworkSettings> {
     willow_transport::unpack(&load_raw("settings")?).ok()
 }
 
+// ---- Local-search persistence (see `crate::search::config`) -----------------
+//
+// Per docs/specs/2026-04-19-ui-design/local-search.md §Privacy: recents
+// and config are per-device and NEVER sync over the event stream. The
+// index itself is never persisted — it's rebuilt from decrypted
+// messages at session start.
+
+/// Persist the user's `SearchIndexConfig`. Called from
+/// `SearchIndexHandle::set_config`.
+pub fn save_search_config(c: &crate::search::SearchIndexConfig) {
+    if let Ok(bytes) = willow_transport::pack(c) {
+        save_raw("search_config", &bytes);
+    }
+}
+
+/// Load the persisted `SearchIndexConfig` (returns `None` on first run
+/// or on parse failure — caller falls back to defaults).
+pub fn load_search_config() -> Option<crate::search::SearchIndexConfig> {
+    load_raw("search_config").and_then(|b| willow_transport::unpack(&b).ok())
+}
+
+/// Persist the recent-queries ring buffer. Guarded by the caller on
+/// `config.remember_recents`.
+pub fn save_search_recents(list: &[crate::search::RecentQuery]) {
+    if let Ok(bytes) = willow_transport::pack(&list.to_vec()) {
+        save_raw("search_recents", &bytes);
+    }
+}
+
+/// Load the recent-queries ring buffer (empty on first run or when
+/// `remember_recents` is off).
+pub fn load_search_recents() -> Vec<crate::search::RecentQuery> {
+    load_raw("search_recents")
+        .and_then(|b| willow_transport::unpack::<Vec<crate::search::RecentQuery>>(&b).ok())
+        .unwrap_or_default()
+}
+
 // ---- Multi-server persistence -----------------------------------------------
 
 /// Save a single server context by ID.

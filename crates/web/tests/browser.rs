@@ -9300,6 +9300,904 @@ mod phase_2a_message_row {
     }
 }
 
+// ── Phase 2e — local search (spec: local-search.md) ─────────────────────────
+//
+// Mounts raw markup (same pattern as phase 1a / 1b / 1c) so these tests
+// assert the ARIA + copy contracts without needing the full AppState
+// context.
+
+#[wasm_bindgen_test]
+async fn phase_2e_search_form_has_role_search_landmark() {
+    let container = mount_test(|| {
+        view! {
+            <form role="search" aria-label="local search" class="search-form">
+                <input class="search-input" placeholder="search groves + letters" />
+            </form>
+        }
+    });
+    tick().await;
+
+    let form = query(&container, "form[role='search']").expect("form[role=search]");
+    assert_eq!(
+        form.get_attribute("aria-label").as_deref(),
+        Some("local search"),
+        "form must carry the spec's aria-label"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn phase_2e_search_input_placeholder_matches_spec() {
+    // Widest scope placeholder per §Copy.
+    let container = mount_test(|| {
+        view! {
+            <input
+                class="search-input"
+                placeholder="search groves + letters"
+                aria-label="local search input"
+                aria-autocomplete="list"
+                aria-controls="search-results-list"
+            />
+        }
+    });
+    tick().await;
+
+    let input = query(&container, ".search-input").expect("search-input present");
+    assert_eq!(
+        input.get_attribute("placeholder").as_deref(),
+        Some("search groves + letters")
+    );
+    assert_eq!(
+        input.get_attribute("aria-autocomplete").as_deref(),
+        Some("list")
+    );
+    assert_eq!(
+        input.get_attribute("aria-controls").as_deref(),
+        Some("search-results-list")
+    );
+}
+
+#[wasm_bindgen_test]
+async fn phase_2e_results_listbox_has_aria_live_polite() {
+    let container = mount_test(|| {
+        view! {
+            <div
+                id="search-results-list"
+                class="search-results"
+                role="listbox"
+                aria-label="search results"
+                aria-live="polite"
+            ></div>
+        }
+    });
+    tick().await;
+
+    let listbox = query(&container, "#search-results-list").expect("results listbox present");
+    assert_eq!(listbox.get_attribute("role").as_deref(), Some("listbox"));
+    assert_eq!(
+        listbox.get_attribute("aria-live").as_deref(),
+        Some("polite")
+    );
+    assert_eq!(
+        listbox.get_attribute("aria-label").as_deref(),
+        Some("search results")
+    );
+}
+
+#[wasm_bindgen_test]
+async fn phase_2e_match_marker_carries_aria_label() {
+    let container = mount_test(|| {
+        view! {
+            <div class="search-result-excerpt">
+                <span>"hello "</span>
+                <mark aria-label="match">"world"</mark>
+            </div>
+        }
+    });
+    tick().await;
+
+    let mark = query(&container, "mark").expect("<mark> present");
+    assert_eq!(
+        mark.get_attribute("aria-label").as_deref(),
+        Some("match"),
+        "every matched span must carry `aria-label=\"match\"` per spec §Accessibility"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn phase_2e_privacy_footer_has_exact_copy() {
+    let container = mount_test(|| {
+        view! {
+            <div class="search-privacy-footer">
+                "search runs on this device only. queries never leave your device."
+            </div>
+        }
+    });
+    tick().await;
+
+    let footer = query(&container, ".search-privacy-footer").expect("footer present");
+    assert_eq!(
+        text(&footer).trim(),
+        "search runs on this device only. queries never leave your device.",
+        "privacy footer copy must be byte-exact per spec §Copy"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn phase_2e_scope_chip_aria_haspopup() {
+    let container = mount_test(|| {
+        view! {
+            <button class="scope-chip" aria-haspopup="listbox" aria-expanded="false">
+                <span class="scope-chip-label">"all groves + letters"</span>
+            </button>
+        }
+    });
+    tick().await;
+
+    let chip = query(&container, ".scope-chip").expect("scope chip present");
+    assert_eq!(
+        chip.get_attribute("aria-haspopup").as_deref(),
+        Some("listbox")
+    );
+    assert_eq!(
+        chip.get_attribute("aria-expanded").as_deref(),
+        Some("false")
+    );
+    let t = text(&chip);
+    assert!(t.contains("all groves + letters"));
+}
+
+#[wasm_bindgen_test]
+async fn phase_2e_streaming_banner_copy_format() {
+    // `searching… · {n} matches so far` — `{n}` is `42` here.
+    let container = mount_test(|| {
+        view! {
+            <div class="search-streaming-banner" role="status" aria-live="polite">
+                "searching… · 42 matches so far"
+            </div>
+        }
+    });
+    tick().await;
+
+    let banner = query(&container, ".search-streaming-banner").expect("banner present");
+    assert_eq!(banner.get_attribute("role").as_deref(), Some("status"));
+    assert_eq!(banner.get_attribute("aria-live").as_deref(), Some("polite"));
+    let t = text(&banner);
+    assert!(t.starts_with("searching… · "));
+    assert!(t.ends_with(" matches so far"));
+}
+
+#[wasm_bindgen_test]
+async fn phase_2e_result_row_renders_context_excerpt_and_mark() {
+    let container = mount_test(|| {
+        view! {
+            <button class="search-result-row" role="option" aria-selected="false">
+                <div class="search-result-context">
+                    <em class="search-result-container">"general"</em>
+                    " "
+                    <span class="search-result-author">"Mira"</span>
+                    " · "
+                    <span class="search-result-ts">"14:30"</span>
+                </div>
+                <div class="search-result-excerpt">
+                    <span>"and then "</span>
+                    <mark aria-label="match">"hello"</mark>
+                    <span>" world"</span>
+                </div>
+            </button>
+        }
+    });
+    tick().await;
+
+    let row = query(&container, ".search-result-row").expect("result row present");
+    assert_eq!(row.get_attribute("role").as_deref(), Some("option"));
+    assert!(query(&container, ".search-result-container").is_some());
+    assert!(query(&container, ".search-result-author").is_some());
+    assert!(query(&container, ".search-result-ts").is_some());
+    let mark = query(&container, "mark").expect("<mark> inside excerpt");
+    assert_eq!(mark.get_attribute("aria-label").as_deref(), Some("match"));
+    assert_eq!(text(&mark).trim(), "hello");
+}
+
+#[wasm_bindgen_test]
+async fn phase_2e_scope_chip_disabled_option_has_tooltip() {
+    let container = mount_test(|| {
+        view! {
+            <button
+                class="scope-chip-popover-option"
+                role="option"
+                disabled=true
+                title="open a channel first"
+            >
+                "this channel"
+            </button>
+        }
+    });
+    tick().await;
+
+    let option = query(&container, ".scope-chip-popover-option").expect("option present");
+    assert!(option.has_attribute("disabled"));
+    assert_eq!(
+        option.get_attribute("title").as_deref(),
+        Some("open a channel first"),
+        "unreachable scopes must carry the `open a {{…}} first` tooltip per spec §Scope ladder"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn phase_2e_recent_chip_has_listitem_role() {
+    let container = mount_test(|| {
+        view! {
+            <div class="search-recents" role="list" aria-label="recent searches">
+                <button class="search-recent-chip" role="listitem">
+                    <span>"hello world"</span>
+                </button>
+                <button class="search-recent-clear">"clear all recents"</button>
+            </div>
+        }
+    });
+    tick().await;
+
+    let list = query(&container, ".search-recents").expect("recents list present");
+    assert_eq!(list.get_attribute("role").as_deref(), Some("list"));
+    let chip = query(&container, ".search-recent-chip").expect("chip present");
+    assert_eq!(chip.get_attribute("role").as_deref(), Some("listitem"));
+    let clear = query(&container, ".search-recent-clear").expect("clear-all present");
+    assert_eq!(text(&clear).trim(), "clear all recents");
+}
+
+// ── Foundation tokens (Phase 0) ─────────────────────────────────────────────
+//
+// Closes Task 14 of `docs/plans/2026-04-19-ui-phase-0-foundation.md`.
+// Verifies the foundation design-token layer is live at the `:root` level
+// and that the legacy `style.css` alias layer forwards to it correctly.
+//
+// The wasm-pack test harness does NOT pull in the app's stylesheets
+// through Trunk, so each test injects `foundation.css` + `style.css`
+// manually (dedupe-guarded via element ids) before reading computed
+// styles on the document root.
+
+#[cfg(test)]
+mod foundation_tokens {
+    use super::*;
+
+    /// Inject `foundation.css` into the test document once per page load
+    /// so `:root` design tokens resolve under `getComputedStyle`. Dedupes
+    /// via a fixed element id.
+    fn ensure_foundation_css_loaded() {
+        const STYLE_ID: &str = "willow-test-foundation-css";
+        let doc = web_sys::window().unwrap().document().unwrap();
+        if doc.get_element_by_id(STYLE_ID).is_some() {
+            return;
+        }
+        let style = doc.create_element("style").unwrap();
+        style.set_id(STYLE_ID);
+        style.set_text_content(Some(include_str!("../foundation.css")));
+        let head = doc.head().expect("document has <head>");
+        head.append_child(&style).unwrap();
+    }
+
+    /// Inject `style.css` (legacy alias layer) into the test document.
+    /// Required for the `--bg-main` → `--bg-0` alias assertion. Dedupes
+    /// via a fixed element id.
+    fn ensure_style_css_loaded() {
+        const STYLE_ID: &str = "willow-test-style-css";
+        let doc = web_sys::window().unwrap().document().unwrap();
+        if doc.get_element_by_id(STYLE_ID).is_some() {
+            return;
+        }
+        let style = doc.create_element("style").unwrap();
+        style.set_id(STYLE_ID);
+        style.set_text_content(Some(include_str!("../style.css")));
+        let head = doc.head().expect("document has <head>");
+        head.append_child(&style).unwrap();
+    }
+
+    /// Read the computed value of `prop` on the document root (`<html>`).
+    fn computed_root_prop(prop: &str) -> String {
+        let window = web_sys::window().unwrap();
+        let document = window.document().unwrap();
+        let root: web_sys::Element = document.document_element().unwrap();
+        let style = window.get_computed_style(&root).unwrap().unwrap();
+        style.get_property_value(prop).unwrap_or_default()
+    }
+
+    /// Set `data-accent="<value>"` on the document root so the accent
+    /// override block in `foundation.css` takes effect.
+    fn set_data_accent(value: &str) {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let root: web_sys::Element = document.document_element().unwrap();
+        root.set_attribute("data-accent", value).unwrap();
+    }
+
+    /// Clear `data-accent` from the document root so later tests start
+    /// from the inherited default.
+    fn clear_data_accent() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let root: web_sys::Element = document.document_element().unwrap();
+        let _ = root.remove_attribute("data-accent");
+    }
+
+    #[wasm_bindgen_test]
+    fn foundation_palette_tokens_defined() {
+        // Sanity — foundation.css is loaded and every palette/ink/state
+        // token the shell depends on resolves to a non-empty value.
+        ensure_foundation_css_loaded();
+        for var in [
+            "--bg-0",
+            "--bg-1",
+            "--bg-2",
+            "--bg-3",
+            "--bg-4",
+            "--ink-0",
+            "--ink-1",
+            "--ink-2",
+            "--ink-3",
+            "--ink-on-accent",
+            "--moss-2",
+            "--willow",
+            "--whisper",
+            "--amber",
+            "--ok",
+            "--warn",
+            "--err",
+            "--radius",
+            "--shadow-2",
+            "--focus-ring",
+            "--font-display",
+            "--font-ui",
+            "--font-mono",
+            "--motion",
+            "--motion-ease",
+        ] {
+            let v = computed_root_prop(var);
+            assert!(
+                !v.trim().is_empty(),
+                "foundation token {var} not defined on :root (computed value was empty)"
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn legacy_bg_main_aliases_bg_0() {
+        // style.css remaps --bg-main to var(--bg-0). Both must resolve to
+        // the same computed colour, proving the reskin alias layer is live.
+        ensure_foundation_css_loaded();
+        ensure_style_css_loaded();
+        let bg_main = computed_root_prop("--bg-main");
+        let bg_0 = computed_root_prop("--bg-0");
+        assert!(
+            !bg_0.trim().is_empty(),
+            "--bg-0 not defined (foundation.css not loaded?)"
+        );
+        assert!(
+            !bg_main.trim().is_empty(),
+            "--bg-main not defined (style.css not loaded?)"
+        );
+        assert_eq!(
+            bg_main.trim(),
+            bg_0.trim(),
+            "legacy --bg-main ({bg_main:?}) drifted from --bg-0 ({bg_0:?})"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn data_accent_swap_changes_moss_2() {
+        // Swap the accent attribute on document element and verify
+        // --moss-2 updates synchronously (CSS-only, no Rust side effects).
+        // Moss is the default; willow is a distinct accent with a
+        // different --moss-2 value (see foundation.css accent block).
+        ensure_foundation_css_loaded();
+
+        set_data_accent("moss");
+        let moss_default = computed_root_prop("--moss-2");
+        assert!(
+            !moss_default.trim().is_empty(),
+            "--moss-2 undefined after data-accent=moss"
+        );
+
+        set_data_accent("willow");
+        let moss_willow = computed_root_prop("--moss-2");
+        assert!(
+            !moss_willow.trim().is_empty(),
+            "--moss-2 undefined after data-accent=willow"
+        );
+        assert_ne!(
+            moss_default.trim(),
+            moss_willow.trim(),
+            "accent swap to willow did not change --moss-2 \
+             (default {moss_default:?}, willow {moss_willow:?})"
+        );
+
+        // Revert to moss and confirm --moss-2 swaps back to the default.
+        set_data_accent("moss");
+        let moss_reverted = computed_root_prop("--moss-2");
+        assert_eq!(
+            moss_reverted.trim(),
+            moss_default.trim(),
+            "reverting to data-accent=moss did not restore original --moss-2"
+        );
+
+        // Leave the document root in a neutral state for later tests.
+        clear_data_accent();
+    }
+}
+// ────────────────────────── Phase 2c — Profile card ─────────────────────────
+
+mod phase_2c_profile_card {
+    //! Tests for `crates/web/src/components/profile_card.rs` +
+    //! `crates/web/src/profile/*`.
+    //!
+    //! Spec: `docs/specs/2026-04-19-ui-design/profile-card.md`.
+
+    use super::{mount_test, query, tick};
+    use leptos::prelude::*;
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_test::*;
+    use willow_client::ProfileView;
+    use willow_state::{CrestPattern, PinnedFragment, PinnedKind};
+    use willow_web::components::{ProfileCardContent, ProfileVariant};
+    use willow_web::profile::{copy as pcopy, CrestBanner};
+    use willow_web::state::create_signals;
+
+    fn sample_peer_view() -> std::sync::Arc<ProfileView> {
+        std::sync::Arc::new(ProfileView {
+            peer_id: "1111111111111111111111111111111111111111111111111111111111111111".into(),
+            handle: "mira.sage".into(),
+            display_name: "mira".into(),
+            pronouns: Some("she/her".into()),
+            bio: Some("gardener".into()),
+            tagline: Some("tending the moss".into()),
+            crest_pattern: Some(CrestPattern::Leaf),
+            crest_color: Some("#6b8e4e".into()),
+            pinned: Some(PinnedFragment {
+                kind: PinnedKind::Quote,
+                body: "quiet is a kind of music".into(),
+            }),
+            elsewhere: vec!["coast · west".into()],
+            since: Some("spring · yr 2".into()),
+            fingerprint_short: "one · two · three".into(),
+            fingerprint_full: "one · two · three · four · five · six".into(),
+            is_self: false,
+        })
+    }
+
+    fn provide_signals() {
+        let signals = create_signals();
+        provide_context(signals.app_state);
+        provide_context(signals.write);
+        provide_context(signals.trust_store);
+        // Nickname store: WebNicknameStore::load() falls back to
+        // in-memory on native test, so every test gets a fresh empty
+        // store.
+        let nick_store: willow_client::NicknameStoreHandle =
+            std::sync::Arc::new(willow_web::profile::WebNicknameStore::load());
+        provide_context(nick_store);
+    }
+
+    #[wasm_bindgen_test]
+    async fn leaf_renders_all_peer_fields() {
+        let container = mount_test(|| {
+            provide_signals();
+            let v = sample_peer_view();
+            let view_sig = Signal::derive(move || v.clone());
+            view! {
+                <ProfileCardContent
+                    view=view_sig
+                    variant=ProfileVariant::Peer
+                    on_close=Callback::new(|_| {})
+                />
+            }
+        });
+        tick().await;
+        let text = container.text_content().unwrap_or_default();
+        assert!(text.contains("mira"), "display name missing from {text:?}");
+        assert!(text.contains("she/her"), "pronouns missing");
+        assert!(text.contains("mira.sage"), "handle missing");
+        assert!(text.contains("gardener"), "bio missing");
+        assert!(text.contains("tending the moss"), "tagline missing");
+        assert!(
+            text.contains("quiet is a kind of music"),
+            "pinned body missing from {text:?}"
+        );
+        assert!(text.contains("coast · west"), "elsewhere chip missing");
+        assert!(text.contains("spring · yr 2"), "since missing");
+        assert!(text.contains(pcopy::MESSAGE), "primary action missing");
+        assert!(text.contains(pcopy::CALL), "call button missing");
+        assert!(text.contains(pcopy::WHISPER), "whisper button missing");
+        assert!(
+            text.contains(pcopy::COPY_FINGERPRINT),
+            "secondary row missing"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn leaf_self_variant_shows_edit_profile() {
+        let container = mount_test(|| {
+            provide_signals();
+            let mut v = (*sample_peer_view()).clone();
+            v.is_self = true;
+            let v = std::sync::Arc::new(v);
+            let view_sig = Signal::derive(move || v.clone());
+            view! {
+                <ProfileCardContent
+                    view=view_sig
+                    variant=ProfileVariant::Self_
+                    on_close=Callback::new(|_| {})
+                />
+            }
+        });
+        tick().await;
+        let text = container.text_content().unwrap_or_default();
+        assert!(
+            text.contains(pcopy::EDIT_PROFILE),
+            "self variant missing `edit profile`: {text:?}"
+        );
+        assert!(
+            text.contains(pcopy::SELF_CAPTION),
+            "self caption missing: {text:?}"
+        );
+        assert!(
+            !text.contains(pcopy::COPY_FINGERPRINT),
+            "self variant must not show `copy fingerprint` in secondary row"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn leaf_omits_missing_peer_fields_on_peer_variant() {
+        let container = mount_test(|| {
+            provide_signals();
+            let bare = std::sync::Arc::new(ProfileView {
+                peer_id: "2222222222222222222222222222222222222222222222222222222222222222".into(),
+                handle: "bare".into(),
+                display_name: "bare".into(),
+                fingerprint_short: "a · b · c".into(),
+                fingerprint_full: "a · b · c · d · e · f".into(),
+                ..ProfileView::default()
+            });
+            let view_sig = Signal::derive(move || bare.clone());
+            view! {
+                <ProfileCardContent
+                    view=view_sig
+                    variant=ProfileVariant::Peer
+                    on_close=Callback::new(|_| {})
+                />
+            }
+        });
+        tick().await;
+        // Empty-pinned prompt is only on the self card per spec §Copy.
+        let text = container.text_content().unwrap_or_default();
+        assert!(
+            !text.contains(pcopy::EMPTY_PINNED),
+            "peer variant must omit `no pinned fragment`"
+        );
+        // But the primary action row is always present.
+        assert!(text.contains(pcopy::MESSAGE));
+    }
+
+    #[wasm_bindgen_test]
+    async fn leaf_has_role_dialog_and_aria_label() {
+        let container = mount_test(|| {
+            provide_signals();
+            let v = sample_peer_view();
+            let view_sig = Signal::derive(move || v.clone());
+            view! {
+                <ProfileCardContent
+                    view=view_sig
+                    variant=ProfileVariant::Peer
+                    on_close=Callback::new(|_| {})
+                />
+            }
+        });
+        tick().await;
+        let root = query(&container, ".profile-card").expect("card root present");
+        assert_eq!(root.get_attribute("role").as_deref(), Some("dialog"));
+        assert_eq!(
+            root.get_attribute("aria-label").as_deref(),
+            Some("profile — mira"),
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn crest_defaults_to_leaf_moss_when_unset() {
+        let container = mount_test(|| {
+            provide_signals();
+            view! {
+                <CrestBanner
+                    pattern=Signal::derive(|| None::<CrestPattern>)
+                    color=Signal::derive(|| None::<String>)
+                    peer_id=Signal::derive(|| "abc".to_string())
+                />
+            }
+        });
+        tick().await;
+        let svg = query(&container, "svg.profile-card__crest").expect("crest SVG rendered");
+        // The fallback color is the foundation token `var(--moss-2)`;
+        // scan the SVG for at least one element whose fill/stroke
+        // references it.
+        let xml = svg.outer_html();
+        assert!(
+            xml.contains("var(--moss-2)"),
+            "crest must render with --moss-2 fallback when color is None: {xml}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn crest_is_deterministic_for_same_peer_id() {
+        // Mount two banners with the same pattern + peer id and
+        // compare their serialized SVG.
+        let a = mount_test(|| {
+            provide_signals();
+            view! {
+                <CrestBanner
+                    pattern=Signal::derive(|| Some(CrestPattern::Leaf))
+                    color=Signal::derive(|| Some("#6b8e4e".to_string()))
+                    peer_id=Signal::derive(|| "peer-xyz".to_string())
+                />
+            }
+        });
+        let b = mount_test(|| {
+            provide_signals();
+            view! {
+                <CrestBanner
+                    pattern=Signal::derive(|| Some(CrestPattern::Leaf))
+                    color=Signal::derive(|| Some("#6b8e4e".to_string()))
+                    peer_id=Signal::derive(|| "peer-xyz".to_string())
+                />
+            }
+        });
+        tick().await;
+        let sa = query(&a, "svg.profile-card__crest").unwrap().outer_html();
+        let sb = query(&b, "svg.profile-card__crest").unwrap().outer_html();
+        assert_eq!(sa, sb, "same peer id must produce identical crest SVG");
+    }
+
+    #[wasm_bindgen_test]
+    async fn badge_click_sets_compare_target() {
+        // When the user taps the badge, the card pushes the peer id
+        // into `AppState::trust::compare_target` (triggering the
+        // existing <AddFriendDialog>) and closes the card.
+        let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let closed_for_cb = closed.clone();
+        let target_signal_value: std::sync::Arc<std::sync::Mutex<Option<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let target_for_effect = target_signal_value.clone();
+
+        let container = mount_test(move || {
+            let signals = create_signals();
+            provide_context(signals.app_state);
+            provide_context(signals.write);
+            provide_context(signals.trust_store);
+            let nick: willow_client::NicknameStoreHandle =
+                std::sync::Arc::new(willow_web::profile::WebNicknameStore::load());
+            provide_context(nick);
+            // Mirror compare_target into the arc so the test can assert.
+            let compare_target = signals.app_state.trust.compare_target;
+            Effect::new(move || {
+                if let Some(v) = compare_target.get() {
+                    *target_for_effect.lock().unwrap() = Some(v);
+                }
+            });
+            let v = sample_peer_view();
+            let view_sig = Signal::derive(move || v.clone());
+            let closed_inner = closed_for_cb.clone();
+            view! {
+                <ProfileCardContent
+                    view=view_sig
+                    variant=ProfileVariant::Peer
+                    on_close=Callback::new(move |_| {
+                        closed_inner.store(true, std::sync::atomic::Ordering::SeqCst);
+                    })
+                />
+            }
+        });
+        tick().await;
+        let badge = query(&container, ".profile-card__badge").unwrap();
+        let click = web_sys::MouseEvent::new("click").unwrap();
+        badge.dispatch_event(&click).unwrap();
+        tick().await;
+        let got = target_signal_value.lock().unwrap().clone();
+        assert!(got.is_some(), "compare_target must be populated");
+        assert!(
+            closed.load(std::sync::atomic::Ordering::SeqCst),
+            "on_close must fire"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn nickname_editor_save_on_enter() {
+        // 1. Click "set nickname", 2. type "mira", 3. press Enter,
+        // 4. assert the store now carries "mira" for the peer id.
+        let store: willow_client::NicknameStoreHandle =
+            std::sync::Arc::new(willow_web::profile::WebNicknameStore::load());
+        let pid = "3333333333333333333333333333333333333333333333333333333333333333";
+        let store_for_ctx = store.clone();
+        let container = mount_test(move || {
+            let signals = create_signals();
+            provide_context(signals.app_state);
+            provide_context(signals.write);
+            provide_context(signals.trust_store);
+            provide_context(store_for_ctx);
+            let v = std::sync::Arc::new(ProfileView {
+                peer_id: pid.to_string(),
+                handle: "ghost".into(),
+                display_name: "ghost".into(),
+                fingerprint_short: "a · b · c".into(),
+                fingerprint_full: "a · b · c · d · e · f".into(),
+                ..ProfileView::default()
+            });
+            let view_sig = Signal::derive(move || v.clone());
+            view! {
+                <ProfileCardContent
+                    view=view_sig
+                    variant=ProfileVariant::Peer
+                    on_close=Callback::new(|_| {})
+                />
+            }
+        });
+        tick().await;
+
+        // Find the set-nickname button via its text.
+        let buttons = container.query_selector_all(".profile-card__link").unwrap();
+        let mut toggle: Option<web_sys::HtmlElement> = None;
+        for i in 0..buttons.length() {
+            let el = buttons.item(i).unwrap();
+            if el
+                .text_content()
+                .unwrap_or_default()
+                .contains(pcopy::SET_NICKNAME)
+            {
+                toggle = Some(el.dyn_into().unwrap());
+                break;
+            }
+        }
+        let toggle = toggle.expect("set-nickname toggle present");
+        let click = web_sys::MouseEvent::new("click").unwrap();
+        toggle.dispatch_event(&click).unwrap();
+        tick().await;
+
+        let input: web_sys::HtmlInputElement = query(&container, ".nickname-editor__input")
+            .expect("editor mounted")
+            .dyn_into()
+            .unwrap();
+        input.set_value("mira");
+        // Fire `input` so prop:value reflects the draft.
+        let init = web_sys::EventInit::new();
+        init.set_bubbles(true);
+        let ev = web_sys::Event::new_with_event_init_dict("input", &init).unwrap();
+        input.dispatch_event(&ev).unwrap();
+        tick().await;
+
+        // Dispatch Enter.
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_key("Enter");
+        init.set_bubbles(true);
+        let kd =
+            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        input.dispatch_event(&kd).unwrap();
+        tick().await;
+
+        assert_eq!(
+            store.get(pid).as_deref(),
+            Some("mira"),
+            "Enter must save the nickname"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn nickname_editor_escape_cancels() {
+        let store: willow_client::NicknameStoreHandle =
+            std::sync::Arc::new(willow_web::profile::WebNicknameStore::load());
+        let pid = "4444444444444444444444444444444444444444444444444444444444444444";
+        let store_for_ctx = store.clone();
+        let container = mount_test(move || {
+            let signals = create_signals();
+            provide_context(signals.app_state);
+            provide_context(signals.write);
+            provide_context(signals.trust_store);
+            provide_context(store_for_ctx);
+            let v = std::sync::Arc::new(ProfileView {
+                peer_id: pid.to_string(),
+                handle: "ghost".into(),
+                display_name: "ghost".into(),
+                fingerprint_short: "a · b · c".into(),
+                fingerprint_full: "a · b · c · d · e · f".into(),
+                ..ProfileView::default()
+            });
+            let view_sig = Signal::derive(move || v.clone());
+            view! {
+                <ProfileCardContent
+                    view=view_sig
+                    variant=ProfileVariant::Peer
+                    on_close=Callback::new(|_| {})
+                />
+            }
+        });
+        tick().await;
+        let buttons = container.query_selector_all(".profile-card__link").unwrap();
+        let mut toggle: Option<web_sys::HtmlElement> = None;
+        for i in 0..buttons.length() {
+            let el = buttons.item(i).unwrap();
+            if el
+                .text_content()
+                .unwrap_or_default()
+                .contains(pcopy::SET_NICKNAME)
+            {
+                toggle = Some(el.dyn_into().unwrap());
+                break;
+            }
+        }
+        toggle.unwrap().click();
+        tick().await;
+        let input: web_sys::HtmlInputElement = query(&container, ".nickname-editor__input")
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        input.set_value("foo");
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_key("Escape");
+        init.set_bubbles(true);
+        let kd =
+            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        input.dispatch_event(&kd).unwrap();
+        tick().await;
+        assert!(store.get(pid).is_none(), "Escape must not save a nickname");
+    }
+
+    #[wasm_bindgen_test]
+    async fn open_profile_and_close_profile_dispatch_window_events() {
+        // Listen on the window for both events, dispatch, assert fired.
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let open_fired = Rc::new(Cell::new(false));
+        let close_fired = Rc::new(Cell::new(false));
+        let win = web_sys::window().unwrap();
+        let of = open_fired.clone();
+        let cb_open =
+            wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(move |_| of.set(true));
+        win.add_event_listener_with_callback(
+            willow_web::profile::PROFILE_OPEN_EVENT,
+            cb_open.as_ref().unchecked_ref(),
+        )
+        .unwrap();
+        let cf = close_fired.clone();
+        let cb_close =
+            wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(move |_| cf.set(true));
+        win.add_event_listener_with_callback(
+            willow_web::profile::PROFILE_CLOSE_EVENT,
+            cb_close.as_ref().unchecked_ref(),
+        )
+        .unwrap();
+
+        willow_web::profile::open_profile(
+            "5555555555555555555555555555555555555555555555555555555555555555",
+            None,
+        );
+        willow_web::profile::close_profile();
+        tick().await;
+        assert!(
+            open_fired.get(),
+            "open_profile must dispatch PROFILE_OPEN_EVENT"
+        );
+        assert!(
+            close_fired.get(),
+            "close_profile must dispatch PROFILE_CLOSE_EVENT"
+        );
+        // Clean up listeners so they don't bleed into other tests.
+        win.remove_event_listener_with_callback(
+            willow_web::profile::PROFILE_OPEN_EVENT,
+            cb_open.as_ref().unchecked_ref(),
+        )
+        .ok();
+        win.remove_event_listener_with_callback(
+            willow_web::profile::PROFILE_CLOSE_EVENT,
+            cb_close.as_ref().unchecked_ref(),
+        )
+        .ok();
+        drop(cb_open);
+        drop(cb_close);
+    }
+}
+
 // ── Phase 2b — Sync queue ───────────────────────────────────────────────────
 //
 // Spec: `docs/specs/2026-04-19-ui-design/sync-queue.md`. Single-client
@@ -10327,648 +11225,5 @@ mod phase_2b_sync_queue {
         window
             .request_animation_frame(closure.as_ref().unchecked_ref())
             .expect("request_animation_frame");
-    }
-}
-
-// ── Foundation tokens (Phase 0) ─────────────────────────────────────────────
-//
-// Closes Task 14 of `docs/plans/2026-04-19-ui-phase-0-foundation.md`.
-// Verifies the foundation design-token layer is live at the `:root` level
-// and that the legacy `style.css` alias layer forwards to it correctly.
-//
-// The wasm-pack test harness does NOT pull in the app's stylesheets
-// through Trunk, so each test injects `foundation.css` + `style.css`
-// manually (dedupe-guarded via element ids) before reading computed
-// styles on the document root.
-
-#[cfg(test)]
-mod foundation_tokens {
-    use super::*;
-
-    /// Inject `foundation.css` into the test document once per page load
-    /// so `:root` design tokens resolve under `getComputedStyle`. Dedupes
-    /// via a fixed element id.
-    fn ensure_foundation_css_loaded() {
-        const STYLE_ID: &str = "willow-test-foundation-css";
-        let doc = web_sys::window().unwrap().document().unwrap();
-        if doc.get_element_by_id(STYLE_ID).is_some() {
-            return;
-        }
-        let style = doc.create_element("style").unwrap();
-        style.set_id(STYLE_ID);
-        style.set_text_content(Some(include_str!("../foundation.css")));
-        let head = doc.head().expect("document has <head>");
-        head.append_child(&style).unwrap();
-    }
-
-    /// Inject `style.css` (legacy alias layer) into the test document.
-    /// Required for the `--bg-main` → `--bg-0` alias assertion. Dedupes
-    /// via a fixed element id.
-    fn ensure_style_css_loaded() {
-        const STYLE_ID: &str = "willow-test-style-css";
-        let doc = web_sys::window().unwrap().document().unwrap();
-        if doc.get_element_by_id(STYLE_ID).is_some() {
-            return;
-        }
-        let style = doc.create_element("style").unwrap();
-        style.set_id(STYLE_ID);
-        style.set_text_content(Some(include_str!("../style.css")));
-        let head = doc.head().expect("document has <head>");
-        head.append_child(&style).unwrap();
-    }
-
-    /// Read the computed value of `prop` on the document root (`<html>`).
-    fn computed_root_prop(prop: &str) -> String {
-        let window = web_sys::window().unwrap();
-        let document = window.document().unwrap();
-        let root: web_sys::Element = document.document_element().unwrap();
-        let style = window.get_computed_style(&root).unwrap().unwrap();
-        style.get_property_value(prop).unwrap_or_default()
-    }
-
-    /// Set `data-accent="<value>"` on the document root so the accent
-    /// override block in `foundation.css` takes effect.
-    fn set_data_accent(value: &str) {
-        let document = web_sys::window().unwrap().document().unwrap();
-        let root: web_sys::Element = document.document_element().unwrap();
-        root.set_attribute("data-accent", value).unwrap();
-    }
-
-    /// Clear `data-accent` from the document root so later tests start
-    /// from the inherited default.
-    fn clear_data_accent() {
-        let document = web_sys::window().unwrap().document().unwrap();
-        let root: web_sys::Element = document.document_element().unwrap();
-        let _ = root.remove_attribute("data-accent");
-    }
-
-    #[wasm_bindgen_test]
-    fn foundation_palette_tokens_defined() {
-        ensure_foundation_css_loaded();
-        for var in [
-            "--bg-0",
-            "--bg-1",
-            "--bg-2",
-            "--bg-3",
-            "--bg-4",
-            "--ink-0",
-            "--ink-1",
-            "--ink-2",
-            "--ink-3",
-            "--ink-on-accent",
-            "--moss-2",
-            "--willow",
-            "--whisper",
-            "--amber",
-            "--ok",
-            "--warn",
-            "--err",
-            "--radius",
-            "--shadow-2",
-            "--focus-ring",
-            "--font-display",
-            "--font-ui",
-            "--font-mono",
-            "--motion",
-            "--motion-ease",
-        ] {
-            let v = computed_root_prop(var);
-            assert!(
-                !v.trim().is_empty(),
-                "foundation token {var} not defined on :root (computed value was empty)"
-            );
-        }
-    }
-
-    #[wasm_bindgen_test]
-    fn legacy_bg_main_aliases_bg_0() {
-        ensure_foundation_css_loaded();
-        ensure_style_css_loaded();
-        let bg_main = computed_root_prop("--bg-main");
-        let bg_0 = computed_root_prop("--bg-0");
-        assert!(
-            !bg_0.trim().is_empty(),
-            "--bg-0 not defined (foundation.css not loaded?)"
-        );
-        assert!(
-            !bg_main.trim().is_empty(),
-            "--bg-main not defined (style.css not loaded?)"
-        );
-        assert_eq!(
-            bg_main.trim(),
-            bg_0.trim(),
-            "legacy --bg-main ({bg_main:?}) drifted from --bg-0 ({bg_0:?})"
-        );
-    }
-
-    #[wasm_bindgen_test]
-    fn data_accent_swap_changes_moss_2() {
-        ensure_foundation_css_loaded();
-
-        set_data_accent("moss");
-        let moss_default = computed_root_prop("--moss-2");
-        assert!(
-            !moss_default.trim().is_empty(),
-            "--moss-2 undefined after data-accent=moss"
-        );
-
-        set_data_accent("willow");
-        let moss_willow = computed_root_prop("--moss-2");
-        assert!(
-            !moss_willow.trim().is_empty(),
-            "--moss-2 undefined after data-accent=willow"
-        );
-        assert_ne!(
-            moss_default.trim(),
-            moss_willow.trim(),
-            "accent swap to willow did not change --moss-2 \
-             (default {moss_default:?}, willow {moss_willow:?})"
-        );
-
-        set_data_accent("moss");
-        let moss_reverted = computed_root_prop("--moss-2");
-        assert_eq!(
-            moss_reverted.trim(),
-            moss_default.trim(),
-            "reverting to data-accent=moss did not restore original --moss-2"
-        );
-
-        clear_data_accent();
-    }
-}
-// ────────────────────────── Phase 2c — Profile card ─────────────────────────
-
-mod phase_2c_profile_card {
-    //! Tests for `crates/web/src/components/profile_card.rs` +
-    //! `crates/web/src/profile/*`.
-    //!
-    //! Spec: `docs/specs/2026-04-19-ui-design/profile-card.md`.
-
-    use super::{mount_test, query, tick};
-    use leptos::prelude::*;
-    use wasm_bindgen::JsCast;
-    use wasm_bindgen_test::*;
-    use willow_client::ProfileView;
-    use willow_state::{CrestPattern, PinnedFragment, PinnedKind};
-    use willow_web::components::{ProfileCardContent, ProfileVariant};
-    use willow_web::profile::{copy as pcopy, CrestBanner};
-    use willow_web::state::create_signals;
-
-    fn sample_peer_view() -> std::sync::Arc<ProfileView> {
-        std::sync::Arc::new(ProfileView {
-            peer_id: "1111111111111111111111111111111111111111111111111111111111111111".into(),
-            handle: "mira.sage".into(),
-            display_name: "mira".into(),
-            pronouns: Some("she/her".into()),
-            bio: Some("gardener".into()),
-            tagline: Some("tending the moss".into()),
-            crest_pattern: Some(CrestPattern::Leaf),
-            crest_color: Some("#6b8e4e".into()),
-            pinned: Some(PinnedFragment {
-                kind: PinnedKind::Quote,
-                body: "quiet is a kind of music".into(),
-            }),
-            elsewhere: vec!["coast · west".into()],
-            since: Some("spring · yr 2".into()),
-            fingerprint_short: "one · two · three".into(),
-            fingerprint_full: "one · two · three · four · five · six".into(),
-            is_self: false,
-        })
-    }
-
-    fn provide_signals() {
-        let signals = create_signals();
-        provide_context(signals.app_state);
-        provide_context(signals.write);
-        provide_context(signals.trust_store);
-        // Nickname store: WebNicknameStore::load() falls back to
-        // in-memory on native test, so every test gets a fresh empty
-        // store.
-        let nick_store: willow_client::NicknameStoreHandle =
-            std::sync::Arc::new(willow_web::profile::WebNicknameStore::load());
-        provide_context(nick_store);
-    }
-
-    #[wasm_bindgen_test]
-    async fn leaf_renders_all_peer_fields() {
-        let container = mount_test(|| {
-            provide_signals();
-            let v = sample_peer_view();
-            let view_sig = Signal::derive(move || v.clone());
-            view! {
-                <ProfileCardContent
-                    view=view_sig
-                    variant=ProfileVariant::Peer
-                    on_close=Callback::new(|_| {})
-                />
-            }
-        });
-        tick().await;
-        let text = container.text_content().unwrap_or_default();
-        assert!(text.contains("mira"), "display name missing from {text:?}");
-        assert!(text.contains("she/her"), "pronouns missing");
-        assert!(text.contains("mira.sage"), "handle missing");
-        assert!(text.contains("gardener"), "bio missing");
-        assert!(text.contains("tending the moss"), "tagline missing");
-        assert!(
-            text.contains("quiet is a kind of music"),
-            "pinned body missing from {text:?}"
-        );
-        assert!(text.contains("coast · west"), "elsewhere chip missing");
-        assert!(text.contains("spring · yr 2"), "since missing");
-        assert!(text.contains(pcopy::MESSAGE), "primary action missing");
-        assert!(text.contains(pcopy::CALL), "call button missing");
-        assert!(text.contains(pcopy::WHISPER), "whisper button missing");
-        assert!(
-            text.contains(pcopy::COPY_FINGERPRINT),
-            "secondary row missing"
-        );
-    }
-
-    #[wasm_bindgen_test]
-    async fn leaf_self_variant_shows_edit_profile() {
-        let container = mount_test(|| {
-            provide_signals();
-            let mut v = (*sample_peer_view()).clone();
-            v.is_self = true;
-            let v = std::sync::Arc::new(v);
-            let view_sig = Signal::derive(move || v.clone());
-            view! {
-                <ProfileCardContent
-                    view=view_sig
-                    variant=ProfileVariant::Self_
-                    on_close=Callback::new(|_| {})
-                />
-            }
-        });
-        tick().await;
-        let text = container.text_content().unwrap_or_default();
-        assert!(
-            text.contains(pcopy::EDIT_PROFILE),
-            "self variant missing `edit profile`: {text:?}"
-        );
-        assert!(
-            text.contains(pcopy::SELF_CAPTION),
-            "self caption missing: {text:?}"
-        );
-        assert!(
-            !text.contains(pcopy::COPY_FINGERPRINT),
-            "self variant must not show `copy fingerprint` in secondary row"
-        );
-    }
-
-    #[wasm_bindgen_test]
-    async fn leaf_omits_missing_peer_fields_on_peer_variant() {
-        let container = mount_test(|| {
-            provide_signals();
-            let bare = std::sync::Arc::new(ProfileView {
-                peer_id: "2222222222222222222222222222222222222222222222222222222222222222".into(),
-                handle: "bare".into(),
-                display_name: "bare".into(),
-                fingerprint_short: "a · b · c".into(),
-                fingerprint_full: "a · b · c · d · e · f".into(),
-                ..ProfileView::default()
-            });
-            let view_sig = Signal::derive(move || bare.clone());
-            view! {
-                <ProfileCardContent
-                    view=view_sig
-                    variant=ProfileVariant::Peer
-                    on_close=Callback::new(|_| {})
-                />
-            }
-        });
-        tick().await;
-        // Empty-pinned prompt is only on the self card per spec §Copy.
-        let text = container.text_content().unwrap_or_default();
-        assert!(
-            !text.contains(pcopy::EMPTY_PINNED),
-            "peer variant must omit `no pinned fragment`"
-        );
-        // But the primary action row is always present.
-        assert!(text.contains(pcopy::MESSAGE));
-    }
-
-    #[wasm_bindgen_test]
-    async fn leaf_has_role_dialog_and_aria_label() {
-        let container = mount_test(|| {
-            provide_signals();
-            let v = sample_peer_view();
-            let view_sig = Signal::derive(move || v.clone());
-            view! {
-                <ProfileCardContent
-                    view=view_sig
-                    variant=ProfileVariant::Peer
-                    on_close=Callback::new(|_| {})
-                />
-            }
-        });
-        tick().await;
-        let root = query(&container, ".profile-card").expect("card root present");
-        assert_eq!(root.get_attribute("role").as_deref(), Some("dialog"));
-        assert_eq!(
-            root.get_attribute("aria-label").as_deref(),
-            Some("profile — mira"),
-        );
-    }
-
-    #[wasm_bindgen_test]
-    async fn crest_defaults_to_leaf_moss_when_unset() {
-        let container = mount_test(|| {
-            provide_signals();
-            view! {
-                <CrestBanner
-                    pattern=Signal::derive(|| None::<CrestPattern>)
-                    color=Signal::derive(|| None::<String>)
-                    peer_id=Signal::derive(|| "abc".to_string())
-                />
-            }
-        });
-        tick().await;
-        let svg = query(&container, "svg.profile-card__crest").expect("crest SVG rendered");
-        // The fallback color is the foundation token `var(--moss-2)`;
-        // scan the SVG for at least one element whose fill/stroke
-        // references it.
-        let xml = svg.outer_html();
-        assert!(
-            xml.contains("var(--moss-2)"),
-            "crest must render with --moss-2 fallback when color is None: {xml}"
-        );
-    }
-
-    #[wasm_bindgen_test]
-    async fn crest_is_deterministic_for_same_peer_id() {
-        // Mount two banners with the same pattern + peer id and
-        // compare their serialized SVG.
-        let a = mount_test(|| {
-            provide_signals();
-            view! {
-                <CrestBanner
-                    pattern=Signal::derive(|| Some(CrestPattern::Leaf))
-                    color=Signal::derive(|| Some("#6b8e4e".to_string()))
-                    peer_id=Signal::derive(|| "peer-xyz".to_string())
-                />
-            }
-        });
-        let b = mount_test(|| {
-            provide_signals();
-            view! {
-                <CrestBanner
-                    pattern=Signal::derive(|| Some(CrestPattern::Leaf))
-                    color=Signal::derive(|| Some("#6b8e4e".to_string()))
-                    peer_id=Signal::derive(|| "peer-xyz".to_string())
-                />
-            }
-        });
-        tick().await;
-        let sa = query(&a, "svg.profile-card__crest").unwrap().outer_html();
-        let sb = query(&b, "svg.profile-card__crest").unwrap().outer_html();
-        assert_eq!(sa, sb, "same peer id must produce identical crest SVG");
-    }
-
-    #[wasm_bindgen_test]
-    async fn badge_click_sets_compare_target() {
-        // When the user taps the badge, the card pushes the peer id
-        // into `AppState::trust::compare_target` (triggering the
-        // existing <AddFriendDialog>) and closes the card.
-        let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let closed_for_cb = closed.clone();
-        let target_signal_value: std::sync::Arc<std::sync::Mutex<Option<String>>> =
-            std::sync::Arc::new(std::sync::Mutex::new(None));
-        let target_for_effect = target_signal_value.clone();
-
-        let container = mount_test(move || {
-            let signals = create_signals();
-            provide_context(signals.app_state);
-            provide_context(signals.write);
-            provide_context(signals.trust_store);
-            let nick: willow_client::NicknameStoreHandle =
-                std::sync::Arc::new(willow_web::profile::WebNicknameStore::load());
-            provide_context(nick);
-            // Mirror compare_target into the arc so the test can assert.
-            let compare_target = signals.app_state.trust.compare_target;
-            Effect::new(move || {
-                if let Some(v) = compare_target.get() {
-                    *target_for_effect.lock().unwrap() = Some(v);
-                }
-            });
-            let v = sample_peer_view();
-            let view_sig = Signal::derive(move || v.clone());
-            let closed_inner = closed_for_cb.clone();
-            view! {
-                <ProfileCardContent
-                    view=view_sig
-                    variant=ProfileVariant::Peer
-                    on_close=Callback::new(move |_| {
-                        closed_inner.store(true, std::sync::atomic::Ordering::SeqCst);
-                    })
-                />
-            }
-        });
-        tick().await;
-        let badge = query(&container, ".profile-card__badge").unwrap();
-        let click = web_sys::MouseEvent::new("click").unwrap();
-        badge.dispatch_event(&click).unwrap();
-        tick().await;
-        let got = target_signal_value.lock().unwrap().clone();
-        assert!(got.is_some(), "compare_target must be populated");
-        assert!(
-            closed.load(std::sync::atomic::Ordering::SeqCst),
-            "on_close must fire"
-        );
-    }
-
-    #[wasm_bindgen_test]
-    async fn nickname_editor_save_on_enter() {
-        // 1. Click "set nickname", 2. type "mira", 3. press Enter,
-        // 4. assert the store now carries "mira" for the peer id.
-        let store: willow_client::NicknameStoreHandle =
-            std::sync::Arc::new(willow_web::profile::WebNicknameStore::load());
-        let pid = "3333333333333333333333333333333333333333333333333333333333333333";
-        let store_for_ctx = store.clone();
-        let container = mount_test(move || {
-            let signals = create_signals();
-            provide_context(signals.app_state);
-            provide_context(signals.write);
-            provide_context(signals.trust_store);
-            provide_context(store_for_ctx);
-            let v = std::sync::Arc::new(ProfileView {
-                peer_id: pid.to_string(),
-                handle: "ghost".into(),
-                display_name: "ghost".into(),
-                fingerprint_short: "a · b · c".into(),
-                fingerprint_full: "a · b · c · d · e · f".into(),
-                ..ProfileView::default()
-            });
-            let view_sig = Signal::derive(move || v.clone());
-            view! {
-                <ProfileCardContent
-                    view=view_sig
-                    variant=ProfileVariant::Peer
-                    on_close=Callback::new(|_| {})
-                />
-            }
-        });
-        tick().await;
-
-        // Find the set-nickname button via its text.
-        let buttons = container.query_selector_all(".profile-card__link").unwrap();
-        let mut toggle: Option<web_sys::HtmlElement> = None;
-        for i in 0..buttons.length() {
-            let el = buttons.item(i).unwrap();
-            if el
-                .text_content()
-                .unwrap_or_default()
-                .contains(pcopy::SET_NICKNAME)
-            {
-                toggle = Some(el.dyn_into().unwrap());
-                break;
-            }
-        }
-        let toggle = toggle.expect("set-nickname toggle present");
-        let click = web_sys::MouseEvent::new("click").unwrap();
-        toggle.dispatch_event(&click).unwrap();
-        tick().await;
-
-        let input: web_sys::HtmlInputElement = query(&container, ".nickname-editor__input")
-            .expect("editor mounted")
-            .dyn_into()
-            .unwrap();
-        input.set_value("mira");
-        // Fire `input` so prop:value reflects the draft.
-        let init = web_sys::EventInit::new();
-        init.set_bubbles(true);
-        let ev = web_sys::Event::new_with_event_init_dict("input", &init).unwrap();
-        input.dispatch_event(&ev).unwrap();
-        tick().await;
-
-        // Dispatch Enter.
-        let init = web_sys::KeyboardEventInit::new();
-        init.set_key("Enter");
-        init.set_bubbles(true);
-        let kd =
-            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
-        input.dispatch_event(&kd).unwrap();
-        tick().await;
-
-        assert_eq!(
-            store.get(pid).as_deref(),
-            Some("mira"),
-            "Enter must save the nickname"
-        );
-    }
-
-    #[wasm_bindgen_test]
-    async fn nickname_editor_escape_cancels() {
-        let store: willow_client::NicknameStoreHandle =
-            std::sync::Arc::new(willow_web::profile::WebNicknameStore::load());
-        let pid = "4444444444444444444444444444444444444444444444444444444444444444";
-        let store_for_ctx = store.clone();
-        let container = mount_test(move || {
-            let signals = create_signals();
-            provide_context(signals.app_state);
-            provide_context(signals.write);
-            provide_context(signals.trust_store);
-            provide_context(store_for_ctx);
-            let v = std::sync::Arc::new(ProfileView {
-                peer_id: pid.to_string(),
-                handle: "ghost".into(),
-                display_name: "ghost".into(),
-                fingerprint_short: "a · b · c".into(),
-                fingerprint_full: "a · b · c · d · e · f".into(),
-                ..ProfileView::default()
-            });
-            let view_sig = Signal::derive(move || v.clone());
-            view! {
-                <ProfileCardContent
-                    view=view_sig
-                    variant=ProfileVariant::Peer
-                    on_close=Callback::new(|_| {})
-                />
-            }
-        });
-        tick().await;
-        let buttons = container.query_selector_all(".profile-card__link").unwrap();
-        let mut toggle: Option<web_sys::HtmlElement> = None;
-        for i in 0..buttons.length() {
-            let el = buttons.item(i).unwrap();
-            if el
-                .text_content()
-                .unwrap_or_default()
-                .contains(pcopy::SET_NICKNAME)
-            {
-                toggle = Some(el.dyn_into().unwrap());
-                break;
-            }
-        }
-        toggle.unwrap().click();
-        tick().await;
-        let input: web_sys::HtmlInputElement = query(&container, ".nickname-editor__input")
-            .unwrap()
-            .dyn_into()
-            .unwrap();
-        input.set_value("foo");
-        let init = web_sys::KeyboardEventInit::new();
-        init.set_key("Escape");
-        init.set_bubbles(true);
-        let kd =
-            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
-        input.dispatch_event(&kd).unwrap();
-        tick().await;
-        assert!(store.get(pid).is_none(), "Escape must not save a nickname");
-    }
-
-    #[wasm_bindgen_test]
-    async fn open_profile_and_close_profile_dispatch_window_events() {
-        // Listen on the window for both events, dispatch, assert fired.
-        use std::cell::Cell;
-        use std::rc::Rc;
-        let open_fired = Rc::new(Cell::new(false));
-        let close_fired = Rc::new(Cell::new(false));
-        let win = web_sys::window().unwrap();
-        let of = open_fired.clone();
-        let cb_open =
-            wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(move |_| of.set(true));
-        win.add_event_listener_with_callback(
-            willow_web::profile::PROFILE_OPEN_EVENT,
-            cb_open.as_ref().unchecked_ref(),
-        )
-        .unwrap();
-        let cf = close_fired.clone();
-        let cb_close =
-            wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(move |_| cf.set(true));
-        win.add_event_listener_with_callback(
-            willow_web::profile::PROFILE_CLOSE_EVENT,
-            cb_close.as_ref().unchecked_ref(),
-        )
-        .unwrap();
-
-        willow_web::profile::open_profile(
-            "5555555555555555555555555555555555555555555555555555555555555555",
-            None,
-        );
-        willow_web::profile::close_profile();
-        tick().await;
-        assert!(
-            open_fired.get(),
-            "open_profile must dispatch PROFILE_OPEN_EVENT"
-        );
-        assert!(
-            close_fired.get(),
-            "close_profile must dispatch PROFILE_CLOSE_EVENT"
-        );
-        // Clean up listeners so they don't bleed into other tests.
-        win.remove_event_listener_with_callback(
-            willow_web::profile::PROFILE_OPEN_EVENT,
-            cb_open.as_ref().unchecked_ref(),
-        )
-        .ok();
-        win.remove_event_listener_with_callback(
-            willow_web::profile::PROFILE_CLOSE_EVENT,
-            cb_close.as_ref().unchecked_ref(),
-        )
-        .ok();
-        drop(cb_open);
-        drop(cb_close);
     }
 }

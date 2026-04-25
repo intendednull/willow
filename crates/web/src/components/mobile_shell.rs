@@ -182,8 +182,20 @@ where
     // Drawer close wiring.
     let on_drawer_close = Callback::new(move |_: ()| set_drawer_open.set(false));
 
-    // Search-button opens the command palette.
-    let on_search = Callback::new(move |_: ()| write.ui.set_show_palette.set(true));
+    // Search-button opens the local-search surface directly on mobile
+    // (per `local-search.md` §Mobile — top-bar overflow search).
+    // Scope defaults to `this channel` when a channel is focused; the
+    // scope chip lets the user widen.
+    let on_search = Callback::new(move |_: ()| {
+        let ch = app_state.chat.current_channel.get_untracked();
+        if !ch.is_empty() {
+            write
+                .search
+                .set_scope
+                .set(willow_client::SearchScope::ThisChannel(ch));
+        }
+        write.search.set_open.set(true);
+    });
 
     // Grove-drawer grove-select handler — switches the active grove
     // and closes the drawer.

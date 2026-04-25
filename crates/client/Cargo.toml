@@ -21,6 +21,7 @@ willow-common = { path = "../common" }
 anyhow = { workspace = true }
 blake3 = { workspace = true }
 bytes = { workspace = true }
+chrono = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
