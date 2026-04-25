@@ -1,11 +1,12 @@
 # Machine-Readable Wire-Rejection Reasons
 
 > **One-sentence summary:** introduce a typed `WireRejectReason` enum,
-> carried in a new `MessageType::Reject` envelope, so peers can react
-> programmatically to rejections — retry on rate-limit, re-auth on
-> `AuthRequired`, drop silently on `Duplicate`, surface a permission
-> prompt on `PermissionDenied` — instead of matching on free-form error
-> strings that are only fit for logs.
+> carried in a new `WireMessage::Reject(RejectPayload)` variant in
+> `willow-common`, so peers can react programmatically to rejections —
+> retry on rate-limit, re-auth on `AuthRequired`, drop silently on
+> `Duplicate`, surface a permission prompt on `PermissionDenied` —
+> instead of matching on free-form error strings that are only fit
+> for logs.
 
 ## Motivation
 
@@ -41,13 +42,28 @@ Concrete cases the new reason must cover, each a real rejection site:
   ([`transport/lib.rs:120`](../../crates/transport/src/lib.rs)).
 - `unpack` above `MAX_DESER_SIZE` — chunk, don't retry
   ([`transport/lib.rs:155`](../../crates/transport/src/lib.rs)).
-- `Identity::verify` fail on a forged envelope — re-sign
-  ([`identity/lib.rs:52`](../../crates/identity/src/lib.rs)).
+- `SignedMessage::verify` fail (i.e. `IdentityError::InvalidSignature`
+  surfaced through `unpack` / `unpack_profile`) on a forged envelope —
+  re-sign
+  ([`identity/lib.rs:391`](../../crates/identity/src/lib.rs)).
 
 ## Proposed format
 
-A new enum lives in `willow-transport` so every crate above it can
-produce the type without depending on `willow-state`:
+The enum lives in `willow-common` rather than `willow-transport`. The
+fields require `Permission` and `EventHash` (defined in
+`willow-state`) and `TopicId` (re-exported from iroh-gossip via
+`willow-network`); putting the type in `willow-transport` would
+introduce a `transport → state` cycle that the existing dependency
+graph forbids (`state → transport`, `client → state`,
+`common → state`). `willow-common` already depends on `willow-state`,
+`willow-identity`, and `willow-transport`
+([`crates/common/Cargo.toml`](../../crates/common/Cargo.toml)) and is
+the natural home for any type that mixes state-layer and transport-
+layer references — exactly the rationale PR #214 used to land
+`WireMessage::HistorySyncComplete` in this same crate
+(see [`2026-04-24-history-sync-eose.md`](2026-04-24-history-sync-eose.md)).
+
+The new types are added to `crates/common/src/wire.rs`:
 
 ```rust
 #[non_exhaustive]
@@ -56,8 +72,8 @@ pub enum WireRejectReason {
     Duplicate,
     Invalid(String),
     RateLimited { retry_after_ms: u64 },
-    PermissionDenied(Permission),     // re-exported from willow-state
-    ParentHashMismatch { expected: EventHash, actual: EventHash },
+    PermissionDenied(willow_state::Permission),
+    ParentHashMismatch { expected: willow_state::EventHash, actual: willow_state::EventHash },
     SeqGap { expected: u64, actual: u64 },
     SignatureInvalid,
     PayloadTooLarge { limit: u64, actual: u64 },
@@ -87,21 +103,38 @@ or kept as-is and translated at the boundary.
 
 ## Wire envelope
 
-Add a new variant to `MessageType` in
-[`crates/transport/src/lib.rs:64`](../../crates/transport/src/lib.rs):
+Adding `MessageType::Reject = 7` to
+[`crates/transport/src/lib.rs:64`](../../crates/transport/src/lib.rs)
+would not surface to any consumer: every gossipsub frame in production
+is packed under `MessageType::Channel` and dispatched through the
+single `WireMessage` enum at
+[`crates/common/src/wire.rs:13`](../../crates/common/src/wire.rs).
+`pack_wire` / `unpack_wire`
+([`crates/common/src/wire.rs:105-120`](../../crates/common/src/wire.rs))
+hard-code `MessageType::Channel` on both sides; receive paths
+(e.g. `topic_announce_listener` at
+[`crates/relay/src/lib.rs:382-386`](../../crates/relay/src/lib.rs))
+match on `WireMessage` variants after `unpack_wire`, never on the
+underlying `MessageType` discriminant. The same constraint forced
+PR #214 to land `HistorySyncComplete` as a `WireMessage` variant
+rather than a new `MessageType`; we follow that precedent here.
+
+We therefore add a new variant to `WireMessage` in
+`crates/common/src/wire.rs`:
 
 ```rust
-#[repr(u8)]
-pub enum MessageType {
-    Chat = 0, Channel = 1, Identity = 2, File = 3,
-    Signal = 4, Presence = 5, Ping = 6,
-    Reject = 7,
+pub enum WireMessage {
+    // ... existing variants ...
+
+    /// A peer is informing the sender that one of their previously
+    /// gossiped events or envelopes has been rejected, with a
+    /// machine-readable reason.
+    Reject(RejectPayload),
 }
 ```
 
-The payload is a new `RejectPayload` carrying the reason plus enough
-context for the receiver to correlate the rejection with the event it
-sent:
+The payload carries the reason plus enough context for the receiver
+to correlate the rejection with the event it sent:
 
 ```rust
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -113,8 +146,11 @@ pub struct RejectPayload {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum RejectContext {
-    Event(EventHash),
-    Topic(TopicId),
+    Event(willow_state::EventHash),
+    Topic([u8; 32]),                  // raw TopicId bytes — same shape
+                                      // used by HistorySyncComplete
+                                      // to avoid an iroh-gossip dep
+                                      // leaking into willow-common
     Envelope,                         // predates any event hash
 }
 ```
@@ -122,6 +158,58 @@ pub enum RejectContext {
 `human` is the existing free-form `Display` output of the underlying
 error (e.g. the current `InsertError` message); the reason variant is
 canonical, the string is never matched on.
+
+The rejecting peer's identity is **not** carried in the payload —
+exactly like every other `WireMessage`, the reject rides the same
+Ed25519-signed envelope built by `pack_wire` / verified by
+`unpack_wire`, so the receiver derives the rejector's `EndpointId`
+from the verified signer at unpack time. This forecloses MITM
+attribution attacks and matches the rationale documented for
+`HistorySyncComplete` in
+[`2026-04-24-history-sync-eose.md`](2026-04-24-history-sync-eose.md).
+
+## Receiver-side wiring
+
+A `WireMessage::Reject` is delivered through the same
+`unpack_wire` → match pipeline that already dispatches every other
+`WireMessage` variant. The receiver-side changes are confined to
+the gossip listeners in each crate:
+
+- **Client** (`crates/client/src/...`): the gossip listener that
+  matches on `WireMessage` variants gains a new arm that maps
+  `WireMessage::Reject(payload)` (with the verified signer from
+  `unpack_wire`) to a new `ClientEvent::Rejected { from: EndpointId,
+  payload: RejectPayload }` variant on `ClientEvent` in
+  [`crates/client/src/events.rs`](../../crates/client/src/events.rs).
+  The UI subscribes the same way it already subscribes to
+  `MessageReceived` / `SyncCompleted`.
+- **Relay** ([`crates/relay/src/lib.rs`](../../crates/relay/src/lib.rs)):
+  the relay is content-agnostic (see the `Scope: transport only`
+  module-level docs at `relay/src/lib.rs:9-22`) and forwards
+  `WireMessage::Reject` envelopes verbatim by its existing topic-
+  routing rules. The relay also **emits** rejects directly for the
+  cases it owns: invalid `TopicAnnounce` strings (currently dropped
+  silently at `relay/src/lib.rs:388`), `MAX_TOPICS` cap hits at
+  `relay/src/lib.rs:398`, and connection-cap saturation at
+  `relay/src/lib.rs:156` — each replaces today's silent-drop or
+  log-only path with a `pack_wire`-encoded `WireMessage::Reject` sent
+  back to the offending peer on the same topic.
+- **Replay**
+  ([`crates/replay/src/role.rs`](../../crates/replay/src/role.rs)):
+  emits rejects from the same code paths that surface
+  `InsertError` today (DAG-insert failures during sync streaming),
+  carrying the resulting `WireRejectReason` back to the upstream
+  source on `_willow_server_ops`.
+- **Storage**
+  ([`crates/storage/src/role.rs`](../../crates/storage/src/role.rs)):
+  emits rejects when a streamed event fails to apply or fails the
+  archival-write path; mirrors the replay-side wiring above.
+
+In all four crates the receive path stays the same — a
+`WireMessage::Reject` arriving for the local peer is forwarded to the
+client's event stream as `ClientEvent::Rejected`. The only crate that
+gains a new producer code path is whichever one owns the rejecting
+decision; every other crate's only change is the new `match` arm.
 
 ## Mapping table
 
@@ -133,7 +221,7 @@ canonical, the string is never matched on.
 | `InsertError::NotGenesis` | [`dag.rs:19`](../../crates/state/src/dag.rs) | `Invalid("first event must be CreateServer")` |
 | `InsertError::SeqGap` | [`dag.rs:22`](../../crates/state/src/dag.rs) | `SeqGap { expected, actual }` |
 | `InsertError::PrevMismatch` | [`dag.rs:28`](../../crates/state/src/dag.rs) | `ParentHashMismatch { expected, actual }` |
-| `InsertError::MissingGovernanceDep` | [`dag.rs:37`](../../crates/state/src/dag.rs) | `Invalid("vote missing proposal dep")` |
+| `InsertError::MissingGovernanceDep` | [`dag.rs:38`](../../crates/state/src/dag.rs) | `Invalid("vote missing proposal dep")` |
 | `InsertError::PermissionDenied(_)` | [`dag.rs:43`](../../crates/state/src/dag.rs) | `PermissionDenied(perm)` |
 | `check_permission` "not an admin" | [`materialize.rs:94`](../../crates/state/src/materialize.rs) | `Restricted("admin required")` |
 | `check_permission` lacks `Permission::X` | [`materialize.rs:117`](../../crates/state/src/materialize.rs) | `PermissionDenied(X)` |
@@ -165,10 +253,12 @@ to decode bytes from.
 
 ## Client consumption pattern
 
-The client event loop gains one arm. This is the payoff:
+The client event loop gains one arm, dispatching the new
+`ClientEvent::Rejected` introduced in "Receiver-side wiring" above.
+This is the payoff:
 
 ```rust
-ClientEvent::Rejected(RejectPayload { reason, context, .. }) => match reason {
+ClientEvent::Rejected { from, payload: RejectPayload { reason, context, .. } } => match reason {
     WireRejectReason::Duplicate            => { /* peer caught up, drop */ }
     WireRejectReason::RateLimited { retry_after_ms }
                                            => backoff.schedule(retry_after_ms),
@@ -181,7 +271,7 @@ ClientEvent::Rejected(RejectPayload { reason, context, .. }) => match reason {
     WireRejectReason::PayloadTooLarge { .. }
                                            => outbox.chunk_and_retry(context),
     WireRejectReason::SignatureInvalid     => log::error!("own signature failed — bug"),
-    _                                      => log::warn!(?reason, ?context, "rejected"),
+    _                                      => log::warn!(?from, ?reason, ?context, "rejected"),
 }
 ```
 
@@ -190,8 +280,9 @@ ClientEvent::Rejected(RejectPayload { reason, context, .. }) => match reason {
 - `#[non_exhaustive]` forces downstream `match` to carry a wildcard,
   so adding a variant is never a SemVer break.
 - bincode encodes enums with a `u32` discriminant. A receiver that
-  hits an unknown discriminant fails `unpack_envelope` cleanly; the
-  client treats the failed decode as a local `ServerError` with
+  hits an unknown discriminant fails `unpack_wire` cleanly (the
+  `unpack_envelope` call inside it returns `Err`); the client treats
+  the failed decode as a local `ServerError` with
   `human = Some("unknown reason variant")`, logs the raw bytes at
   `debug!`, and leaves the original outbound event in its retry
   queue — safe default, because a newer peer that accepts is still
@@ -220,9 +311,11 @@ parsing.
 Coverage hits the three places a reason can go wrong — produced,
 serialised, consumed.
 
-- **Round-trip** (`transport/src/lib.rs` tests): every variant
-  survives `pack` → `unpack` equality, driven by a macro that
-  iterates a representative value per variant.
+- **Round-trip** (`crates/common/src/wire.rs` test module, alongside
+  the existing `pack_unpack_*_round_trip` cases): every
+  `WireRejectReason` variant survives `pack_wire` → `unpack_wire`
+  equality wrapped in `WireMessage::Reject(RejectPayload)`, driven by
+  a macro that iterates a representative value per variant.
 - **Exhaustive mapping** (`state/src/tests.rs`): for each
   `InsertError` variant, build a DAG that triggers it and assert the
   expected `WireRejectReason`.
