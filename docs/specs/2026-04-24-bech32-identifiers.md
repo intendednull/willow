@@ -12,10 +12,10 @@ Willow currently displays identifiers in three incompatible encodings:
 
 | Identifier | Current encoding | Source |
 |---|---|---|
-| `EndpointId` (Ed25519 pubkey) | 64-char lowercase hex | `iroh_base::EndpointId` re-export (`crates/identity/src/lib.rs:39`) |
+| `EndpointId` (Ed25519 pubkey) | 64-char lowercase hex on `Display`; `FromStr` upstream also accepts base32-no-pad (we don't control the latter) | `iroh_base::EndpointId` re-export (`crates/identity/src/lib.rs:39`) |
 | `EventHash` (SHA-256 digest) | 64-char lowercase hex | `crates/state/src/hash.rs:52` |
 | `TopicId` (blake3 of topic name) | never displayed; internal | `crates/network/src/topics.rs:12` |
-| Invite code | base64 of `pack()`ed `Invite` struct | `crates/client/src/invite.rs:99` |
+| Invite code | base64 of `willow_transport::pack(&InvitePayload)` | `crates/client/src/invite.rs:98-99` |
 | Join link | base64 `JoinToken` in URL fragment | `docs/specs/2026-03-27-shareable-join-links-design.md:42` |
 
 Three problems:
@@ -123,7 +123,8 @@ extractable.
 
 ## Concrete encodings
 
-- `wpeer1<52 chars>` — 32 B key + 6-char checksum, ~62 chars total.
+- `wpeer1<52 chars>` — `wpeer` HRP (5) + separator `1` (1) + 52 data
+  chars (32 B encoded at 5 bits/char) + 6-char checksum = ~64 chars total.
 - `wserver1<52 chars>` — same length, different HRP. The payload is
   the genesis `EventHash` of the server (32 bytes). This is stable
   across ownership transfers and is the canonical server identifier.
@@ -150,19 +151,30 @@ caps each value at 255 bytes regardless; 64 is a sensible UI cap).
 
 ## Where the boundary lives
 
-Bech32 strings appear at four surfaces only:
+Bech32 strings appear at user-visible PeerId / EventHash copy and
+display surfaces only:
 
 | Surface | Direction | File |
 |---|---|---|
-| Settings "Invite Links" list | encode | `crates/web/src/components/settings.rs:69` |
+| Settings profile-tab "copy peer id" | encode | `crates/web/src/components/settings.rs:64-68` |
+| Settings server-tab "copy peer id" | encode | `crates/web/src/components/settings.rs:107-111` |
+| Settings "Invite Links" list (URL construction + section) | encode | `crates/web/src/components/settings.rs:253` (URL) and `:271` (section heading) |
+| Welcome / Add Server "copy your peer id" | encode | `crates/web/src/components/add_server.rs:223` |
 | Join page fragment parser | decode | join link handler (replaces `JoinToken` base64 at `docs/specs/2026-03-27-shareable-join-links-design.md:42`) |
-| Message "copy id" UI | encode | `crates/web/src/components/message.rs` |
+| Message "copy id" UI (NEW — added by this proposal; today only `copy text` exists at `crates/web/src/components/message.rs:1353`) | encode | `crates/web/src/components/message.rs` |
 | Debug/logging `Display` impls | encode | `crates/state/src/hash.rs:52`, `EndpointId` |
 
 Everything behind those surfaces — `Event.author`, `Event.hash`,
 gossip payloads, storage keys, the Merkle DAG — stays raw bytes.
-`FromStr` impls on `EndpointId` and `EventHash` accept bech32 with
-the correct HRP, and (during migration) hex as a fallback.
+For owned types (`EventHash`), `FromStr` accepts bech32 with the
+correct HRP, and (during migration) hex as a fallback. For
+re-exported foreign types (`EndpointId` from `iroh_base`), the orphan
+rule prevents us from extending `FromStr` *or* adding inherent
+methods; bech32 input goes through the
+`willow_identity::endpoint_id_from_bech32(s)` free function (or its
+extension-trait shortcut `EndpointIdBech32::from_bech32` — see "API
+surface" below) while the upstream `FromStr` continues to accept
+hex / base32 as iroh defines.
 
 ## API surface: the `willow-ids` crate
 
@@ -173,14 +185,29 @@ WASM-clean) and nothing else in the Willow graph. **Truly leaf**:
 `[u8; N]` arrays, an `Hrp` enum, and TLV byte slices — it does not
 know what an `EndpointId` or `EventHash` is.
 
-Per-type ergonomic wrappers (`EndpointId::to_bech32()`,
-`EventHash::to_bech32()`, `EndpointId::from_bech32(s)`) live in their
-owning crates (`willow-identity`, `willow-state`) and call into
-`willow-ids` free functions. This avoids the orphan-rule problem
-(can't `impl Display for EndpointId` from a foreign crate, and we
-don't want to override the upstream `iroh_base::EndpointId::Display`
-hex anyway). It also keeps the arrow one-way: `identity`, `state`,
-`messaging`, `network` all depend on `willow-ids`, never the reverse.
+Per-type ergonomic wrappers live in their owning crates and call into
+`willow-ids` free functions. The shape differs by type because the
+orphan rule applies to inherent impls as well as trait impls — a
+foreign `pub use` re-export cannot grow inherent methods in our
+crate:
+
+- `EventHash` is owned by `willow-state`, so it gets inherent methods:
+  `EventHash::to_bech32(&self) -> String` and
+  `EventHash::from_bech32(s: &str) -> Result<Self, DecodeError>`.
+- `EndpointId` is `pub use iroh_base::EndpointId` — we cannot add
+  inherent methods or implement `Display` / `FromStr` for it. Instead
+  `willow-identity` exposes free functions
+  `pub fn endpoint_id_to_bech32(id: &EndpointId) -> String` and
+  `pub fn endpoint_id_from_bech32(s: &str) -> Result<EndpointId, DecodeError>`,
+  plus an extension trait `EndpointIdBech32` providing `.to_bech32()`
+  / `::from_bech32(s)` as ergonomic shortcuts (a sealed extension
+  trait is allowed because we own the trait).
+
+This avoids the orphan-rule problem (can't `impl Display for EndpointId`
+from a foreign crate, and we don't want to override the upstream
+`iroh_base::EndpointId::Display` hex anyway). It also keeps the arrow
+one-way: `identity`, `state`, `messaging`, `network` all depend on
+`willow-ids`, never the reverse.
 
 ### `EndpointId::Display` policy
 
@@ -246,18 +273,30 @@ pub fn sniff(s: &str) -> Result<Hrp, DecodeError>;
 Per-type wrappers (in their owning crates) look like:
 
 ```rust
-// in willow-identity
-impl EndpointId {
-    pub fn to_bech32(&self) -> String {
-        willow_ids::encode_raw(Hrp::Peer, self.as_bytes())
-    }
-    pub fn from_bech32(s: &str) -> Result<Self, DecodeError> {
-        let bytes = willow_ids::decode_raw(Hrp::Peer, s)?;
-        // … into [u8; 32] → EndpointId
+// in willow-identity — EndpointId is a foreign re-export, so the
+// orphan rule blocks both inherent impls and FromStr/Display impls.
+// Provide free functions and a sealed extension trait instead.
+pub fn endpoint_id_to_bech32(id: &EndpointId) -> String {
+    willow_ids::encode_raw(Hrp::Peer, id.as_bytes())
+}
+pub fn endpoint_id_from_bech32(s: &str) -> Result<EndpointId, DecodeError> {
+    let bytes = willow_ids::decode_raw(Hrp::Peer, s)?;
+    // … into [u8; 32] → EndpointId
+}
+
+pub trait EndpointIdBech32: sealed::Sealed {
+    fn to_bech32(&self) -> String;
+    fn from_bech32(s: &str) -> Result<EndpointId, DecodeError>;
+}
+impl EndpointIdBech32 for EndpointId {
+    fn to_bech32(&self) -> String { endpoint_id_to_bech32(self) }
+    fn from_bech32(s: &str) -> Result<EndpointId, DecodeError> {
+        endpoint_id_from_bech32(s)
     }
 }
 
-// in willow-state
+// in willow-state — EventHash is owned locally, so inherent impls
+// (and FromStr) are fine.
 impl EventHash {
     pub fn to_bech32(&self) -> String { … }
     pub fn from_bech32(s: &str) -> Result<Self, DecodeError> { … }
@@ -280,8 +319,11 @@ The decoder precedence is:
    `nevent`, `naddr`) → reject with `LooksLikeNostr` for a useful
    error message.
 3. Pure hex, length 64 → legacy `EndpointId` / `EventHash` (accepted
-   indefinitely on input via `EndpointId::from_str`; this is the
-   path most external tooling will use and it costs us nothing).
+   indefinitely on input — for `EndpointId` via the upstream
+   `iroh_base` `FromStr`, which also accepts base32-no-pad as a
+   side-effect we do not control; for `EventHash` via our own
+   `FromStr`. This is the path most external tooling will use and it
+   costs us nothing).
 4. Base64-looking → legacy invite / join token (deprecated, see
    below).
 5. Otherwise: reject.
@@ -300,8 +342,8 @@ integration. This closes open question 5.
 
 | Old format | Status on input | Hard-removal pin |
 |---|---|---|
-| 64-char hex `EndpointId` / `EventHash` | accepted indefinitely | never |
-| base64 invite code (`Invite::pack` blob) | `#[deprecated]` on the decoder, accepted on input | removed in `v0.5.0` |
+| 64-char hex `EndpointId` / `EventHash` (and base32-no-pad for `EndpointId`, which the upstream `iroh_base` `FromStr` accepts; we don't control that path) | accepted indefinitely | never |
+| base64 invite code (`willow_transport::pack(&InvitePayload)` blob, `crates/client/src/invite.rs:98-99`) | `#[deprecated]` on the decoder, accepted on input | removed in `v0.5.0` |
 | base64 `JoinToken` URL fragment | `#[deprecated]` on the decoder, accepted on input | removed in `v0.5.0` |
 
 `EndpointId::Display` continues to emit upstream hex (we don't own
@@ -328,7 +370,7 @@ the consuming crates.
 | TLV unknown-type ignore | `decode_tlv` with a type-99 TLV returns Ok and ignores it |
 | Length bounds | >5000-char input rejected early |
 | Malformed TLV — length byte overruns | a TLV where the length byte declares more bytes than remain in the payload returns `MalformedTlv`. Specifically tests a 3-byte payload `[0x00, 0xff, 0x42]` (type 0, length 255, but only 1 value byte present) — exercises the length byte itself, not just truncation |
-| Legacy hex fallback | 64-char hex still decodes via `EndpointId::from_str` (no grace period, indefinite) |
+| Legacy hex fallback | 64-char hex still decodes via the upstream `iroh_base` `FromStr for EndpointId` and our own `FromStr for EventHash` (no grace period, indefinite). The same upstream path also accepts base32-no-pad for `EndpointId` — this is upstream behavior we don't control and a passthrough test pins it so a future iroh upgrade can't silently regress it |
 | Legacy base64 deprecated | the base64 invite/join-token decoders are still callable but emit a `#[deprecated]` warning naming the `v0.5.0` removal tag |
 | Property test | random bytes → encode → decode → round-trip |
 
