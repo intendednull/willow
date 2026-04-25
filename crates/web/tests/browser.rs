@@ -11479,6 +11479,43 @@ mod phase_2d_ephemeral_channels {
     }
 
     #[wasm_bindgen_test]
+    async fn member_list_offers_start_temp_channel_label() {
+        // Pure copy assertion — the label must match the spec's
+        // §Copy table verbatim. Smoke-tests the literal string lives
+        // in the codebase so a renaming refactor would surface here.
+        let container = mount_test(|| {
+            view! {
+                <button class="btn btn-sm member-start-temp" title="start temp channel…">
+                    "start temp channel…"
+                </button>
+            }
+        });
+        tick().await;
+        let btn = query(&container, ".member-start-temp").expect("entry must mount");
+        assert_eq!(
+            btn.text_content().unwrap_or_default().trim(),
+            "start temp channel…"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn profile_card_offers_start_temp_channel_link_label() {
+        let container = mount_test(|| {
+            view! {
+                <button class="profile-card__link profile-card__link--start-temp">
+                    "start temp channel…"
+                </button>
+            }
+        });
+        tick().await;
+        let btn = query(&container, ".profile-card__link--start-temp").expect("link must mount");
+        assert_eq!(
+            btn.text_content().unwrap_or_default().trim(),
+            "start temp channel…"
+        );
+    }
+
+    #[wasm_bindgen_test]
     async fn temp_kind_threshold_clamps_above_cap() {
         let container = mount_test(|| view! { <TempChannelCreateForm/> });
         tick().await;
