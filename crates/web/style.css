@@ -4885,6 +4885,434 @@ select:focus-visible {
     }
 }
 
+/* ── Phase 2b sync-queue surfaces ────────────────────────────────────── */
+
+/* Offline strip — amber status line, 36 px desktop / 40 px mobile. */
+.offline-strip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    height: 36px;
+    padding: 0 14px;
+    background: var(--bg-2);
+    color: var(--ink-1);
+    border: 0;
+    border-top: 1px solid var(--amber-soft);
+    border-bottom: 1px solid var(--amber-soft);
+    font-size: 13px;
+    cursor: pointer;
+    text-align: left;
+    transition: background 140ms ease;
+}
+.offline-strip:hover { background: var(--bg-3); }
+.offline-strip:focus-visible {
+    outline: 2px solid var(--focus-ring, var(--moss-3));
+    outline-offset: -2px;
+}
+.offline-strip .icon { color: var(--amber); font-size: 11px; }
+.offline-strip__summary { flex: 1; font-variant-numeric: tabular-nums; }
+.offline-strip__chevron { color: var(--ink-3); font-size: 12px; }
+.offline-strip--flash {
+    background: var(--moss-0);
+    transition: background 240ms ease;
+}
+@media (max-width: 720px) {
+    .offline-strip { height: 40px; }
+    .offline-strip__chevron { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .offline-strip, .offline-strip--flash { transition: opacity 120ms ease; }
+}
+
+/* Queue pill — amber inline badge on letters / member rows. */
+.queue-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    min-height: 20px;
+    background: transparent;
+    color: var(--amber);
+    border: 1px solid var(--amber-soft);
+    border-radius: 999px;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    cursor: pointer;
+}
+.queue-pill:hover { background: rgba(201, 155, 85, 0.08); }
+.queue-pill:focus-visible {
+    outline: 2px solid var(--focus-ring, var(--moss-3));
+    outline-offset: 2px;
+}
+.queue-pill .icon { font-size: 9px; }
+@media (max-width: 720px) {
+    .queue-pill {
+        padding: 14px 6px;   /* ≥ 44x44 hit target */
+        min-height: 44px;
+    }
+}
+
+/* Inline queue note — below message body. */
+.inline-note {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 4px;
+    padding-left: 38px; /* align with body gutter past avatar column */
+    font-family: "Fraunces", serif;
+    font-style: italic;
+    font-size: 13px;
+    color: var(--ink-3);
+}
+.inline-note--queued .icon { color: var(--amber); }
+.inline-note--just-delivered {
+    color: var(--ink-2);
+}
+.inline-note--just-delivered .icon { color: var(--moss-3); }
+.inline-note--inbound-held .icon { color: var(--moss-2); }
+
+/* Reconnection toast — top-centre moss accent. */
+.reconnection-toast {
+    position: fixed;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    background: var(--bg-2);
+    color: var(--ink-0);
+    border: 1px solid var(--moss-1);
+    border-radius: 10px;
+    box-shadow: var(--shadow-2, 0 6px 20px rgba(0, 0, 0, 0.35));
+    font-size: 13px;
+    z-index: 9000;
+    animation: willow-pop-in 180ms ease-out;
+}
+.reconnection-toast__icon { color: var(--moss-3); font-size: 14px; }
+.reconnection-toast__dismiss {
+    margin-left: 4px;
+    background: transparent;
+    color: var(--ink-2);
+    border: 0;
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+}
+@keyframes willow-pop-in {
+    from { opacity: 0; transform: translate(-50%, -6px); }
+    to   { opacity: 1; transform: translate(-50%, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .reconnection-toast { animation: none; transition: opacity 120ms ease; }
+}
+
+/* Welcome-back banner — 48 px moss accent, persists until dismissed. */
+.welcome-back-banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 48px;
+    padding: 0 14px;
+    background: var(--moss-0);
+    color: var(--ink-1);
+    border-bottom: 1px solid var(--moss-1);
+    font-size: 13px;
+}
+.welcome-back-banner__glyph {
+    color: var(--willow, var(--moss-3));
+    font-size: 14px;
+    flex-shrink: 0;
+}
+.welcome-back-banner__label { flex: 1; }
+.welcome-back-banner__dismiss {
+    background: transparent;
+    color: var(--ink-2);
+    border: 0;
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+}
+
+/* Sync-queue view — full-surface component mounted in right rail or mobile route. */
+.sync-queue-view {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    height: 100%;
+    padding: 16px;
+    background: var(--bg-1);
+    color: var(--ink-1);
+    overflow-y: auto;
+}
+.sync-queue-view__header {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+.sync-queue-view__close {
+    background: transparent;
+    color: var(--ink-2);
+    border: 0;
+    font-size: 18px;
+    cursor: pointer;
+    line-height: 1;
+}
+.sync-queue-view__titles { flex: 1; }
+.sync-queue-view__title {
+    margin: 0;
+    font-family: "Fraunces", serif;
+    font-style: italic;
+    font-size: 18px;
+    color: var(--ink-0);
+}
+.sync-queue-view__subtitle {
+    margin: 2px 0 0;
+    font-size: 10.5px;
+    color: var(--ink-3);
+}
+.sync-queue-view__relay { font-size: 14px; }
+.sync-queue-view__relay--ok   { color: var(--moss-3); }
+.sync-queue-view__relay--warn { color: var(--amber); animation: willowPulse 1.8s ease-in-out infinite; }
+.sync-queue-view__relay--idle { color: var(--ink-3); }
+
+/* ── Relay signal button + popover (Phase 2b Task 14) ─────────────── */
+.relay-signal-wrap { position: relative; display: inline-flex; }
+.relay-signal-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    border-radius: 999px;
+    cursor: pointer;
+    color: var(--ink-3);
+    font-size: 14px;
+}
+.relay-signal-button:focus-visible { outline: 2px solid var(--focus-ring, var(--moss-3)); outline-offset: 2px; }
+.relay-signal-button--ok   { color: var(--moss-3); }
+.relay-signal-button--warn { color: var(--amber); animation: willowPulse 2s ease-in-out infinite; opacity: 0.7; }
+.relay-signal-button--idle { color: var(--ink-3); cursor: default; }
+
+.relay-popover {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 20;
+    min-width: 220px;
+    max-width: 280px;
+    padding: 12px 14px;
+    background: var(--bg-2);
+    border: 1px solid var(--line, #2a2822);
+    border-radius: var(--radius, 10px);
+    box-shadow: var(--shadow-1, 0 6px 20px rgba(0, 0, 0, 0.3));
+    color: var(--ink-1);
+    font-size: 12px;
+}
+.relay-popover__header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    color: var(--ink-2);
+    font-size: 11px;
+}
+.relay-popover__status { color: var(--ink-1); font-size: 12px; }
+.relay-popover__body {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 4px 12px;
+    margin: 0 0 10px;
+    font-size: 11px;
+    color: var(--ink-2);
+}
+.relay-popover__body dt, .relay-popover__body dd { margin: 0; }
+.relay-popover__mono { font-variant-numeric: tabular-nums; color: var(--ink-1); }
+.relay-popover__settings-link {
+    display: block;
+    width: 100%;
+    padding: 6px 8px;
+    background: transparent;
+    border: 0;
+    border-top: 1px solid var(--line-soft, var(--line));
+    text-align: left;
+    color: var(--moss-3);
+    font-size: 11.5px;
+    cursor: pointer;
+}
+.relay-popover__settings-link:hover { color: var(--moss-4); }
+.relay-popover__backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 19;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    cursor: default;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .relay-signal-button--warn { animation: none; opacity: 0.75; }
+}
+
+@media (max-width: 720px) {
+    .relay-popover {
+        position: fixed;
+        left: 12px;
+        right: 12px;
+        top: auto;
+        bottom: 12px;
+        max-width: none;
+    }
+}
+
+.sync-queue-view__status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 16px;
+    background: var(--bg-2);
+    border: 1px solid var(--line, #2a2822);
+    border-radius: 14px;
+}
+.sync-queue-view__dot {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 12px;
+    height: 12px;
+    border-radius: 999px;
+    background: var(--moss-2);
+    color: var(--moss-4);
+    font-size: 8px;
+}
+.sync-queue-view__dot--pulsing { animation: willowPulse 1.6s ease-in-out infinite; }
+.sync-queue-view__dot--drained { background: var(--moss-2); }
+.sync-queue-view__status-label { flex: 1; color: var(--ink-1); font-size: 13px; }
+.sync-queue-view__status-count { color: var(--ink-2); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+@keyframes willowPulse {
+    0%, 100% { opacity: 0.7; transform: scale(1); }
+    50%      { opacity: 1; transform: scale(1.08); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .sync-queue-view__dot--pulsing,
+    .sync-queue-view__relay--warn {
+        animation: none;
+        opacity: 0.7;
+    }
+}
+
+.sync-queue-view__tabs {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid var(--line, #2a2822);
+}
+.sync-queue-view__tab {
+    padding: 8px 14px;
+    background: transparent;
+    color: var(--ink-2);
+    border: 0;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    font-size: 13px;
+}
+.sync-queue-view__tab--active {
+    color: var(--ink-0);
+    border-bottom-color: var(--moss-2);
+}
+
+.sync-queue-view__rows {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.sync-queue-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 8px;
+    border-radius: 8px;
+}
+.sync-queue-row:focus-visible {
+    outline: 2px solid var(--focus-ring, var(--moss-3));
+}
+.sync-queue-row__name { color: var(--ink-1); font-size: 13px; }
+.sync-queue-row__count { margin-left: auto; }
+
+.sync-queue-view__arrivals {
+    margin-top: 6px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line, #2a2822);
+}
+.sync-queue-view__arrivals-title {
+    margin: 0 0 6px;
+    font-size: 11px;
+    color: var(--ink-3);
+    text-transform: lowercase;
+}
+.sync-queue-arrival {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 4px;
+}
+.sync-queue-arrival__pill {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    color: var(--moss-3);
+    border: 1px solid var(--moss-1);
+    border-radius: 999px;
+    font-size: 11px;
+}
+
+.sync-queue-view__footer {
+    display: flex;
+    gap: 8px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line, #2a2822);
+}
+.sync-queue-view__retry {
+    padding: 8px 14px;
+    background: var(--moss-1);
+    color: var(--moss-4);
+    border: 0;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+}
+.sync-queue-view__retry:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+.sync-queue-view__mark-read {
+    padding: 8px 12px;
+    background: transparent;
+    color: var(--ink-2);
+    border: 1px solid var(--line, #2a2822);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+}
+.sync-queue-view__footnote {
+    margin: 4px 0 0;
+    font-size: 11px;
+    color: var(--ink-3);
+    display: flex;
+    align-items: center;
+    gap: 6px;
 /* ── Phase 2c · Profile card ────────────────────────────────────────── */
 /* Spec: docs/specs/2026-04-19-ui-design/profile-card.md §Peer view. */
 

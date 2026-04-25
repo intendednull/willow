@@ -225,10 +225,32 @@ pub fn event_to_json(event: &ClientEvent) -> serde_json::Value {
                 "muted": muted,
             }),
         }),
+        ClientEvent::QueueChanged(view) => to_value(&NotificationPayload {
+            r#type: "QueueChanged",
+            data: serde_json::json!({
+                "depth": view.depth,
+                "peer_count": view.peer_count,
+                "device_online": view.device_online,
+            }),
+        }),
+        ClientEvent::RelayStatusChanged(status) => to_value(&NotificationPayload {
+            r#type: "RelayStatusChanged",
+            data: serde_json::json!({
+                "status": match status {
+                    willow_client::RelayStatus::Reachable => "reachable",
+                    willow_client::RelayStatus::Unreachable => "unreachable",
+                    willow_client::RelayStatus::NotConfigured => "not_configured",
+                },
+            }),
+        }),
+        ClientEvent::DeviceOnlineChanged(online) => to_value(&NotificationPayload {
+            r#type: "DeviceOnlineChanged",
+            data: serde_json::json!({ "online": online }),
+        }),
     }
 }
 
-/// All 28 event type names for validation.
+/// All 31 event type names for validation.
 pub const EVENT_TYPE_NAMES: &[&str] = &[
     "MessageReceived",
     "MessageEdited",
@@ -258,6 +280,10 @@ pub const EVENT_TYPE_NAMES: &[&str] = &[
     "JoinLinkResponse",
     "JoinLinkDenied",
     "MuteChanged",
+    // Phase 2b sync-queue variants.
+    "QueueChanged",
+    "RelayStatusChanged",
+    "DeviceOnlineChanged",
 ];
 
 #[derive(Serialize)]
@@ -276,8 +302,8 @@ mod tests {
     use willow_identity::Identity;
 
     #[test]
-    fn all_28_event_types_listed() {
-        assert_eq!(EVENT_TYPE_NAMES.len(), 28);
+    fn all_31_event_types_listed() {
+        assert_eq!(EVENT_TYPE_NAMES.len(), 31);
     }
 
     #[test]
@@ -402,9 +428,20 @@ mod tests {
             ClientEvent::JoinLinkDenied {
                 reason: "no".into(),
             },
+            ClientEvent::MuteChanged {
+                scope: willow_client::events::MuteScope::Grove,
+                muted: true,
+            },
+            ClientEvent::QueueChanged(willow_client::views::QueueView::default()),
+            ClientEvent::RelayStatusChanged(willow_client::RelayStatus::Reachable),
+            ClientEvent::DeviceOnlineChanged(true),
         ];
-        // All 27 events
-        assert_eq!(events.len(), 27, "should test all 27 event variants");
+        // One entry per `ClientEvent` variant — mirrors `EVENT_TYPE_NAMES`.
+        assert_eq!(
+            events.len(),
+            EVENT_TYPE_NAMES.len(),
+            "should test every ClientEvent variant"
+        );
         for event in &events {
             let json = event_to_json(event);
             assert!(json.is_object(), "expected object for {event:?}");

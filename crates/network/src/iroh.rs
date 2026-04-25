@@ -20,7 +20,10 @@
 //! ```
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -194,6 +197,22 @@ pub struct IrohNetwork {
     subscriptions: Mutex<HashMap<TopicId, TopicSubscription>>,
     /// Bootstrap peers merged into every topic subscription.
     bootstrap_peers: Vec<EndpointId>,
+    /// Whether a relay was configured at startup. When `false`,
+    /// `relay_status` returns `NotConfigured` unconditionally; when
+    /// `true` we report `Reachable` iff the endpoint reported itself
+    /// online at boot (see `Config::new`). Richer live-probe support is
+    /// tracked in Phase 2b Open Questions §4.
+    relay_configured: bool,
+    /// Snapshot of the endpoint's online signal at startup. Flipped to
+    /// `true` after the boot `endpoint.online()` future resolves. The
+    /// field is read by `relay_status` via atomic load so the Network
+    /// trait method stays lock-free.
+    relay_online_at_boot: AtomicBool,
+    /// Instant at which the boot-time online signal was observed (native
+    /// only). Used by Phase 2b Task 7 to decide whether the 30 s
+    /// `Reachable` window has elapsed.
+    #[cfg(not(target_arch = "wasm32"))]
+    relay_online_since: Mutex<Option<Instant>>,
 }
 
 impl IrohNetwork {
@@ -280,6 +299,15 @@ impl IrohNetwork {
 
         debug!("iroh protocol router spawned");
 
+        let relay_configured = config.relay_url.is_some();
+        let relay_online_at_boot = AtomicBool::new(relay_configured);
+        #[cfg(not(target_arch = "wasm32"))]
+        let relay_online_since = if relay_configured {
+            Mutex::new(Some(Instant::now()))
+        } else {
+            Mutex::new(None)
+        };
+
         Ok(Self {
             endpoint,
             gossip,
@@ -287,6 +315,10 @@ impl IrohNetwork {
             router: Mutex::new(Some(router)),
             subscriptions: Mutex::new(HashMap::new()),
             bootstrap_peers: config.bootstrap_peers,
+            relay_configured,
+            relay_online_at_boot,
+            #[cfg(not(target_arch = "wasm32"))]
+            relay_online_since,
         })
     }
 }
@@ -356,6 +388,39 @@ impl Network for IrohNetwork {
 
     fn blobs(&self) -> &dyn BlobStore {
         &self.blob_store
+    }
+
+    fn relay_status(&self) -> RelayStatus {
+        if !self.relay_configured {
+            return RelayStatus::NotConfigured;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let since = self.relay_online_since.lock().unwrap();
+            match *since {
+                Some(t) if t.elapsed() < std::time::Duration::from_secs(30) => {
+                    RelayStatus::Reachable
+                }
+                Some(_) => RelayStatus::Unreachable,
+                None => RelayStatus::Unreachable,
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            if self.relay_online_at_boot.load(Ordering::Relaxed) {
+                RelayStatus::Reachable
+            } else {
+                RelayStatus::Unreachable
+            }
+        }
+    }
+
+    fn device_online(&self) -> bool {
+        // Native: iroh does not yet expose a device-level online probe;
+        // surface `true` unless the endpoint is closed (tracked via the
+        // boot signal). Web callers layer `window.online/offline` on top
+        // per Phase 2b Task 7.
+        self.relay_online_at_boot.load(Ordering::Relaxed) || !self.relay_configured
     }
 
     async fn shutdown(&self) -> Result<()> {

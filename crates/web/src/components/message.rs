@@ -925,27 +925,38 @@ pub fn MessageView(
                     }}
                 }.into_any()
             }}
-            // Phase 2a Task 7: inline queue-note hint below the body.
-            // Spec §Queue notes / §Copy queue notes: italic 11.5 px,
-            // `--amber` for LateArrival (with hourglass glyph), `--ink-3`
-            // for Pending (no glyph). The hint complements the
-            // `queued` badge in the meta row (shown first-of-run via
-            // the run-break predicate) so the state is legible with or
-            // without the badge.
-            {match queue_note {
-                QueueNote::LateArrival => view! {
-                    <span class="queue-note queue-note--late">
-                        {icons::icon_hourglass()}
-                        " sent earlier · arrived now"
-                    </span>
-                }.into_any(),
-                QueueNote::Pending => view! {
-                    <span class="queue-note queue-note--pending">
-                        " queued · will send on reconnect"
-                    </span>
-                }.into_any(),
-                QueueNote::None => view! { <span class="queue-note-empty"/> }.into_any(),
-            }}
+            // Phase 2b Task 10: inline queue-note hint below the body.
+            // Replaces the Phase 2a static strings with the shared
+            // <InlineQueueNote> component so copy + ARIA live in one
+            // place. `QueueNote::None` intentionally renders nothing
+            // (zero layout contribution).
+            {
+                let msg_id = message.id.clone();
+                // Peer-or-grove placeholder — spec ships with the peer
+                // display name for direct messages; grove fan-out uses
+                // the grove name. The projection currently only
+                // surfaces the author, so we fall back to the author
+                // display name in all variants. Replace with proper
+                // recipient resolution when `letters-dms.md` lands.
+                let peer_or_grove = message.author_display_name.clone();
+                match queue_note {
+                    QueueNote::Pending => view! {
+                        <crate::components::InlineQueueNote
+                            state=Signal::derive(|| crate::components::InlineState::Queued)
+                            peer_or_grove=Signal::derive(move || peer_or_grove.clone())
+                            message_id=Signal::derive(move || msg_id.clone())
+                        />
+                    }.into_any(),
+                    QueueNote::LateArrival => view! {
+                        <crate::components::InlineQueueNote
+                            state=Signal::derive(|| crate::components::InlineState::InboundHeld)
+                            peer_or_grove=Signal::derive(move || peer_or_grove.clone())
+                            message_id=Signal::derive(move || msg_id.clone())
+                        />
+                    }.into_any(),
+                    QueueNote::None => view! { <span class="queue-note-empty"/> }.into_any(),
+                }
+            }
             // Action bar -- single dropdown triggered by "..." button.
             {if show_actions {
                 let edit_cb = on_edit;

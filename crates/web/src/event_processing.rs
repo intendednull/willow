@@ -36,6 +36,42 @@ pub fn process_event_batch(
                     .network
                     .set_connection_status
                     .set("reconnecting".to_string());
+                write
+                    .network
+                    .set_connection_state
+                    .set(crate::state::ConnectionState::Reconnecting);
+            }
+            // Phase 2b sync-queue pipeline.
+            ClientEvent::QueueChanged(view) => {
+                write.queue.set_view.set(view.clone());
+            }
+            ClientEvent::RelayStatusChanged(status) => {
+                write.queue.set_relay_status.set(*status);
+            }
+            ClientEvent::DeviceOnlineChanged(online) => {
+                write.queue.set_device_online.set(*online);
+                // Keep the legacy `connection_status` string + tight
+                // `connection_state` enum in lockstep with the
+                // device-online transition.
+                if *online {
+                    write
+                        .network
+                        .set_connection_status
+                        .set("connected".to_string());
+                    write
+                        .network
+                        .set_connection_state
+                        .set(crate::state::ConnectionState::Connected);
+                } else {
+                    write
+                        .network
+                        .set_connection_status
+                        .set("offline".to_string());
+                    write
+                        .network
+                        .set_connection_state
+                        .set(crate::state::ConnectionState::Offline);
+                }
             }
             ClientEvent::VoiceJoined {
                 channel_id,

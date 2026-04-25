@@ -46,6 +46,10 @@ pub struct ClientMutations<N: willow_network::Network> {
     pub(crate) dag: Addr<StateActor<DagState>>,
     pub(crate) join_links: Arc<Mutex<Vec<crate::ops::JoinLink>>>,
     pub(crate) topics: Arc<RwLock<HashMap<String, N::Topic>>>,
+    /// Phase 2b: shared handle to the sync-queue actor, so mutations
+    /// that touch the outbound queue / inbound marks flow through the
+    /// same bus as everything else.
+    pub(crate) queue_meta: Addr<StateActor<QueueMeta>>,
 }
 
 impl<N: willow_network::Network> Clone for ClientMutations<N> {
@@ -64,6 +68,7 @@ impl<N: willow_network::Network> Clone for ClientMutations<N> {
             dag: self.dag.clone(),
             join_links: Arc::clone(&self.join_links),
             topics: Arc::clone(&self.topics),
+            queue_meta: self.queue_meta.clone(),
         }
     }
 }
@@ -767,6 +772,81 @@ impl<N: willow_network::Network> ClientMutations<N> {
                 channel_id,
                 peer_id,
             }))
+            .ok();
+    }
+}
+
+// ───── Sync-queue mutations (Phase 2b) ──────────────────────────────────
+
+impl<N: willow_network::Network> ClientMutations<N> {
+    /// Attempt a best-effort retry of every queued outbound message.
+    ///
+    /// Today this walks `QueueMeta::outbound` and stamps a fresh
+    /// `last_attempt_at` tick on every entry. A real retry schedules a
+    /// reconnect ping against each unique recipient via the network
+    /// layer — that plumbing lands with the retry-schedule follow-up
+    /// (plan §Scope — *Out: reachability probing / retry scheduling
+    /// wire protocol*).
+    ///
+    /// No-op when the queue is empty. Always emits a `QueueChanged`
+    /// event so the UI re-renders and the spinner clears.
+    pub async fn retry_queue(&self) -> anyhow::Result<()> {
+        willow_actor::state::mutate(&self.queue_meta, |qm| {
+            let now = qm.now;
+            for entry in qm.outbound.values_mut() {
+                entry.last_attempt_at = Some(now);
+                entry.last_attempt_error = None;
+            }
+        })
+        .await;
+        let view = willow_actor::state::get(&self.queue_meta).await;
+        let snapshot = crate::views::compute_queue_view(&Arc::new((*view).clone()));
+        self.event_broker
+            .do_send(Publish(ClientEvent::QueueChanged(snapshot)))
+            .ok();
+        Ok(())
+    }
+
+    /// Stamp the `mark as read locally` marker for a single peer's
+    /// inbound queue (Phase 2b sync-queue screen, inbound tab footer).
+    ///
+    /// Never touches message bodies — the stamp is a local-only tick
+    /// annotation used by the UI to hide the inbound-hint badge.
+    pub async fn mark_queue_read(&self, peer_id: EndpointId) -> anyhow::Result<()> {
+        willow_actor::state::mutate(&self.queue_meta, move |qm| {
+            qm.mark_read(peer_id);
+        })
+        .await;
+        let view = willow_actor::state::get(&self.queue_meta).await;
+        let snapshot = crate::views::compute_queue_view(&Arc::new((*view).clone()));
+        self.event_broker
+            .do_send(Publish(ClientEvent::QueueChanged(snapshot)))
+            .ok();
+        Ok(())
+    }
+
+    /// Update the relay-reachability snapshot. Called by the network
+    /// layer + the (future) relay-probe listener.
+    pub async fn set_relay_status(&self, status: crate::queue::RelayStatus) {
+        willow_actor::state::mutate(&self.queue_meta, move |qm| {
+            qm.set_relay_status(status);
+        })
+        .await;
+        self.event_broker
+            .do_send(Publish(ClientEvent::RelayStatusChanged(status)))
+            .ok();
+    }
+
+    /// Update the device-online signal. Called by the WASM
+    /// `window.addEventListener('online'/'offline')` path in
+    /// `connect.rs`.
+    pub async fn set_device_online(&self, online: bool) {
+        willow_actor::state::mutate(&self.queue_meta, move |qm| {
+            qm.set_device_online(online);
+        })
+        .await;
+        self.event_broker
+            .do_send(Publish(ClientEvent::DeviceOnlineChanged(online)))
             .ok();
     }
 }

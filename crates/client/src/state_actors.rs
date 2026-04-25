@@ -10,12 +10,14 @@
 //! 2. Add a `StateRef<YourType>` field to [`SourceState`]
 //! 3. Spawn the actor in `ClientHandle::new()` and register it
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use willow_crypto::ChannelKey;
 use willow_identity::EndpointId;
+use willow_messaging::MessageId;
 
 use crate::presence::{PresenceOverride, Tick, DEFAULT_GONE_TICKS, DEFAULT_IDLE_TICKS};
+use crate::queue::{ArrivedSummary, RelayStatus};
 
 // ───── Layer 1: Source state types ──────────────────────────────────────
 
@@ -179,6 +181,209 @@ impl Default for PresenceMeta {
     }
 }
 
+/// Maximum number of peer-presence-history entries retained by
+/// [`QueueMeta`]. Drop-oldest on overflow; cap enforced by
+/// [`QueueMeta::record_presence`].
+pub const QUEUE_HISTORY_CAP: usize = 2048;
+
+/// Maximum number of `recent_arrivals` entries retained by
+/// [`QueueMeta`]. Drop-oldest on overflow.
+pub const QUEUE_ARRIVALS_CAP: usize = 512;
+
+/// A single pending outbound message destined for a specific recipient.
+///
+/// Keyed by `(MessageId, EndpointId)` inside
+/// [`QueueMeta::outbound`] so a fan-out message (one `MessageId`, N
+/// recipients) occupies N entries — one per recipient awaiting
+/// acknowledgement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueueEntry {
+    /// Identifier of the outbound message.
+    pub message_id: MessageId,
+    /// Recipient we are still waiting to ack the message.
+    pub recipient: EndpointId,
+    /// Wall-clock milliseconds at which the message was authored (HLC
+    /// wall component).
+    pub authored_at: u64,
+    /// Tick at which the last retry attempt happened, if any.
+    pub last_attempt_at: Option<Tick>,
+    /// Human-readable last-attempt error, if any.
+    pub last_attempt_error: Option<String>,
+}
+
+/// Central sync-queue state — owned by a dedicated state actor so the
+/// message-row projection, offline strip, sync-queue screen, and queue
+/// pill all read from one truth.
+///
+/// `PresenceMeta::queue_depth` delegates to this actor via
+/// [`ClientHandle::_set_queue_depth`](crate::ClientHandle::_set_queue_depth)
+/// so the two signals stay in lockstep without duplicate tracking.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct QueueMeta {
+    /// Monotonic tick counter shared with [`PresenceMeta`]. The
+    /// tick-driver increments both.
+    pub now: Tick,
+    /// Pending outbound messages keyed by `(MessageId, Recipient)`.
+    pub outbound: HashMap<(MessageId, EndpointId), QueueEntry>,
+    /// Best-effort inbound-queue hints per peer — populated from peer
+    /// heartbeat payloads when the heartbeat extension lands (`§Open
+    /// questions §1`). Stays empty until then.
+    pub inbound_hint_per_peer: HashMap<EndpointId, u32>,
+    /// Rolling 24 h window of `ArrivedSummary` rows for the sync-queue
+    /// screen's Recent section.
+    pub recent_arrivals: VecDeque<ArrivedSummary>,
+    /// Relay reachability snapshot fed from `Network::relay_status`.
+    pub relay_status: RelayStatus,
+    /// Device connectivity snapshot fed from `Network::device_online`
+    /// + (on WASM) `window.addEventListener('online'/'offline')`.
+    pub device_online: bool,
+    /// Bounded `(peer, tick, reachable)` log used by
+    /// [`derive_late_arrival`](crate::queue::derive_late_arrival).
+    pub peer_presence_history: VecDeque<(EndpointId, Tick, bool)>,
+    /// Per-peer `mark as read locally` markers. Keyed by peer ID and
+    /// stamped with the tick at which the user pressed the button.
+    pub marks: HashMap<EndpointId, Tick>,
+    /// Tick at which the device last transitioned to offline. Drives
+    /// the reconnection toast + welcome-back banner (Phase 2b Task 16):
+    /// both gate on `offline_since_tick >= 60 s`. `None` while online.
+    pub offline_since_tick: Option<Tick>,
+    /// Duration (in ticks ≈ seconds) of the most recent completed
+    /// offline → online transition. Populated by `set_device_online`
+    /// on the offline-to-online flip and exposed verbatim via
+    /// `QueueView::last_offline_ticks` so the reconnection toast +
+    /// welcome-back banner can gate on "≥ 60 s offline" without having
+    /// to observe the pre-clear `offline_since_tick`. `None` until the
+    /// first offline window completes.
+    pub last_offline_ticks: Option<Tick>,
+}
+
+impl QueueMeta {
+    /// Enqueue a new outbound entry. No-op if the `(message_id,
+    /// recipient)` pair already exists — duplicate enqueue is benign,
+    /// the first wins and its retry bookkeeping is preserved.
+    pub fn enqueue(&mut self, entry: QueueEntry) {
+        let key = (entry.message_id.clone(), entry.recipient);
+        self.outbound.entry(key).or_insert(entry);
+    }
+
+    /// Mark `peer` as having acknowledged `message_id`. Drops the entry
+    /// from `outbound` if present.
+    pub fn ack(&mut self, message_id: &MessageId, peer: EndpointId) {
+        self.outbound.remove(&(message_id.clone(), peer));
+    }
+
+    /// Stamp the most-recent retry attempt for `(message_id, peer)`.
+    /// Updates `last_attempt_at` + `last_attempt_error`. No-op if the
+    /// entry no longer exists.
+    pub fn mark_attempt(
+        &mut self,
+        message_id: &MessageId,
+        peer: EndpointId,
+        error: Option<String>,
+    ) {
+        if let Some(entry) = self.outbound.get_mut(&(message_id.clone(), peer)) {
+            entry.last_attempt_at = Some(self.now);
+            entry.last_attempt_error = error;
+        }
+    }
+
+    /// Record an arrival bucket. Enforces [`QUEUE_ARRIVALS_CAP`] by
+    /// dropping the oldest entry when full.
+    pub fn record_arrival(&mut self, arrival: ArrivedSummary) {
+        self.recent_arrivals.push_back(arrival);
+        while self.recent_arrivals.len() > QUEUE_ARRIVALS_CAP {
+            self.recent_arrivals.pop_front();
+        }
+    }
+
+    /// Log a peer presence transition used by
+    /// [`derive_late_arrival`](crate::queue::derive_late_arrival).
+    /// Enforces [`QUEUE_HISTORY_CAP`] by dropping the oldest entry when
+    /// full.
+    pub fn record_presence(&mut self, peer: EndpointId, reachable: bool) {
+        self.peer_presence_history
+            .push_back((peer, self.now, reachable));
+        while self.peer_presence_history.len() > QUEUE_HISTORY_CAP {
+            self.peer_presence_history.pop_front();
+        }
+    }
+
+    /// Decay arrivals older than `older_than_ticks` (default: 24 h).
+    /// Called by the tick driver once per tick.
+    pub fn decay_arrivals(&mut self, older_than_ticks: Tick) {
+        self.recent_arrivals
+            .retain(|a| self.now.saturating_sub(a.at_tick) < older_than_ticks);
+    }
+
+    /// Mark a peer's inbound queue as "read locally" at the current
+    /// tick.
+    pub fn mark_read(&mut self, peer: EndpointId) {
+        self.marks.insert(peer, self.now);
+    }
+
+    /// Update the relay-reachability snapshot. Plain setter.
+    pub fn set_relay_status(&mut self, status: RelayStatus) {
+        self.relay_status = status;
+    }
+
+    /// Update the device-online snapshot. Stamps
+    /// `offline_since_tick` on a transition to offline and clears it on
+    /// transition to online, capturing the elapsed offline duration in
+    /// `last_offline_ticks` so the reconnection toast + welcome-back
+    /// banner can gate on "≥ 60 s offline" (spec §Reconnection toast).
+    pub fn set_device_online(&mut self, online: bool) {
+        if self.device_online && !online {
+            self.offline_since_tick = Some(self.now);
+        } else if !self.device_online && online {
+            if let Some(since) = self.offline_since_tick {
+                self.last_offline_ticks = Some(self.now.saturating_sub(since));
+            }
+            self.offline_since_tick = None;
+        }
+        self.device_online = online;
+    }
+
+    /// Aggregate per-peer outbound count — helper used by the queue
+    /// view projection.
+    pub fn peer_outbound_counts(&self) -> HashMap<EndpointId, u32> {
+        let mut out: HashMap<EndpointId, u32> = HashMap::new();
+        for (_, entry) in self.outbound.iter() {
+            *out.entry(entry.recipient).or_insert(0) += 1;
+        }
+        out
+    }
+
+    /// Derive a [`DeliveryState`](willow_messaging::DeliveryState) for
+    /// the given message-id string from the in-memory `outbound` map.
+    ///
+    /// This is the projection-facing shim used by
+    /// [`compute_messages_view`](crate::views::compute_messages_view)
+    /// while the real `MessageStore::delivery_state` plumbing is
+    /// deferred (see plan §Open questions §3). Implements the
+    /// `MessageStore::delivery_state` *contract* using QueueMeta's
+    /// outbound tracking:
+    ///
+    /// - No entries for `message_id` → `Delivered` (permissive default).
+    /// - One or more entries → `PendingAllRecipients` keyed on the
+    ///   recipient set.
+    pub fn delivery_state_by_id_str(
+        &self,
+        message_id_str: &str,
+    ) -> willow_messaging::DeliveryState {
+        let mut pending: HashSet<EndpointId> = HashSet::new();
+        for ((mid, _), entry) in self.outbound.iter() {
+            if mid.to_string() == message_id_str {
+                pending.insert(entry.recipient);
+            }
+        }
+        if pending.is_empty() {
+            willow_messaging::DeliveryState::Delivered
+        } else {
+            willow_messaging::DeliveryState::PendingAllRecipients(pending)
+        }
+    }
+}
+
 /// Voice call state.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VoiceState {
@@ -262,6 +467,8 @@ pub struct SourceState {
     pub network: willow_actor::state::StateRef<NetworkMeta>,
     /// Voice call state.
     pub voice: willow_actor::state::StateRef<VoiceState>,
+    /// Sync-queue state (Phase 2b).
+    pub queue_meta: willow_actor::state::StateRef<QueueMeta>,
 }
 
 impl Clone for SourceState {
@@ -273,6 +480,117 @@ impl Clone for SourceState {
             profiles: self.profiles.clone(),
             network: self.network.clone(),
             voice: self.voice.clone(),
+            queue_meta: self.queue_meta.clone(),
         }
+    }
+}
+
+// ───── Tests ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use willow_identity::Identity;
+
+    fn peer() -> EndpointId {
+        Identity::generate().endpoint_id()
+    }
+
+    #[test]
+    fn queue_meta_enqueue_and_ack_drain() {
+        let mut qm = QueueMeta::default();
+        let alice = peer();
+        let bob = peer();
+        let msg = MessageId::new();
+        qm.enqueue(QueueEntry {
+            message_id: msg.clone(),
+            recipient: alice,
+            authored_at: 1_000,
+            last_attempt_at: None,
+            last_attempt_error: None,
+        });
+        qm.enqueue(QueueEntry {
+            message_id: msg.clone(),
+            recipient: bob,
+            authored_at: 1_000,
+            last_attempt_at: None,
+            last_attempt_error: None,
+        });
+        assert_eq!(qm.outbound.len(), 2);
+        qm.ack(&msg, alice);
+        assert_eq!(qm.outbound.len(), 1);
+        qm.ack(&msg, bob);
+        assert!(qm.outbound.is_empty());
+    }
+
+    #[test]
+    fn queue_meta_history_cap_enforced() {
+        let mut qm = QueueMeta::default();
+        for _ in 0..QUEUE_HISTORY_CAP + 5 {
+            qm.record_presence(peer(), true);
+        }
+        assert_eq!(qm.peer_presence_history.len(), QUEUE_HISTORY_CAP);
+    }
+
+    #[test]
+    fn queue_meta_arrivals_cap_enforced() {
+        let mut qm = QueueMeta::default();
+        for _ in 0..QUEUE_ARRIVALS_CAP + 5 {
+            qm.record_arrival(ArrivedSummary {
+                peer_id: peer(),
+                at_tick: 0,
+                count: 1,
+                preview: None,
+            });
+        }
+        assert_eq!(qm.recent_arrivals.len(), QUEUE_ARRIVALS_CAP);
+    }
+
+    #[test]
+    fn queue_meta_set_device_online_stamps_offline_since() {
+        let mut qm = QueueMeta {
+            now: 10,
+            ..QueueMeta::default()
+        };
+        qm.set_device_online(true); // idempotent: already online by default
+        assert_eq!(qm.offline_since_tick, None);
+        qm.set_device_online(false);
+        assert_eq!(qm.offline_since_tick, Some(10));
+        qm.now = 42;
+        qm.set_device_online(true);
+        assert_eq!(qm.offline_since_tick, None);
+    }
+
+    #[test]
+    fn queue_meta_peer_outbound_counts() {
+        let mut qm = QueueMeta::default();
+        let alice = peer();
+        let bob = peer();
+        let m1 = MessageId::new();
+        let m2 = MessageId::new();
+        qm.enqueue(QueueEntry {
+            message_id: m1,
+            recipient: alice,
+            authored_at: 1,
+            last_attempt_at: None,
+            last_attempt_error: None,
+        });
+        qm.enqueue(QueueEntry {
+            message_id: m2.clone(),
+            recipient: alice,
+            authored_at: 2,
+            last_attempt_at: None,
+            last_attempt_error: None,
+        });
+        qm.enqueue(QueueEntry {
+            message_id: m2,
+            recipient: bob,
+            authored_at: 2,
+            last_attempt_at: None,
+            last_attempt_error: None,
+        });
+        let counts = qm.peer_outbound_counts();
+        assert_eq!(counts.get(&alice), Some(&2));
+        assert_eq!(counts.get(&bob), Some(&1));
     }
 }
