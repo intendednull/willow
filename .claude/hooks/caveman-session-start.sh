@@ -2,8 +2,10 @@
 # SessionStart hook — nudges Claude to invoke the caveman skill at the start
 # of every new/cleared/compacted session.
 #
-# Skips emission if the caveman plugin is already enabled at the user level
-# (so we don't double-prompt) or if WILLOW_SKIP_VENDORED_SKILLS=1.
+# The nudge is self-suppressing: if `caveman` is not in the available-skills
+# list (no plugin, no vendored copy), Claude is told to ignore the
+# instruction. If it is in the list, the source (plugin vs vendored) doesn't
+# matter — invoking the skill is idempotent.
 
 set -euo pipefail
 
@@ -18,20 +20,9 @@ if [ "${WILLOW_SKIP_VENDORED_SKILLS:-}" = "1" ]; then
     exit 0
 fi
 
-USER_SETTINGS="${HOME}/.claude/settings.json"
-if [ -f "$USER_SETTINGS" ] && command -v jq >/dev/null 2>&1; then
-    if jq -e '
-        (.enabledPlugins // {})
-        | to_entries
-        | any(.[]; (.key | startswith("caveman@")) and .value == true)
-    ' "$USER_SETTINGS" >/dev/null 2>&1; then
-        exit 0
-    fi
-fi
-
 jq -n '{
   hookSpecificOutput: {
     hookEventName: "SessionStart",
-    additionalContext: "Invoke the caveman skill before any other action in this session."
+    additionalContext: "If a `caveman` skill appears in your available-skills list, invoke it before any other action in this session. If no such skill is available, ignore this instruction."
   }
 }'
