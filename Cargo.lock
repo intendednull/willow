@@ -6024,6 +6024,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "serde",
+ "tracing",
  "willow-identity",
  "willow-state",
  "willow-transport",
