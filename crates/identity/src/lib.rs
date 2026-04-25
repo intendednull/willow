@@ -114,7 +114,7 @@ impl Identity {
     /// Generate a fresh random Ed25519 identity.
     pub fn generate() -> Self {
         Self {
-            secret_key: SecretKey::generate(&mut rand::rng()),
+            secret_key: SecretKey::generate(),
         }
     }
 

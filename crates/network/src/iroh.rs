@@ -29,6 +29,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_lite::StreamExt;
+use iroh::endpoint::presets;
 use iroh::protocol::Router;
 use iroh::{Endpoint, RelayMode};
 use iroh_base::{EndpointId, SecretKey};
@@ -222,7 +223,7 @@ impl IrohNetwork {
     /// sets up the protocol router, and returns a ready-to-use network.
     pub async fn new(config: Config) -> Result<Self> {
         // 1. Build the iroh endpoint.
-        let mut builder = Endpoint::empty_builder().secret_key(config.secret_key);
+        let mut builder = Endpoint::builder(presets::Empty).secret_key(config.secret_key);
 
         // Configure relay mode and seed bootstrap peer addresses.
         if let Some(relay_url) = &config.relay_url {
