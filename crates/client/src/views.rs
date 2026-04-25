@@ -183,7 +183,7 @@ pub fn derive_archives_view(
         })
         .collect();
     // Newest archive first.
-    entries.sort_by(|a, b| b.archived_at_ms.cmp(&a.archived_at_ms));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.archived_at_ms));
     ArchivesView { entries }
 }
 
