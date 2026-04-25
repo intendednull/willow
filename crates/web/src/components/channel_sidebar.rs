@@ -471,8 +471,30 @@ pub fn ChannelSidebar(
                             kind_map.insert(n, k);
                         }
 
+                        // Phase 2d: skip ephemeral channels that have
+                        // crossed their idle threshold — they live in
+                        // the archives pane, not the active sidebar.
+                        let eph_meta = app_state.server.ephemeral_meta.get();
+                        let frontier = js_sys::Date::now() as u64;
+                        let archived: std::collections::HashSet<String> = eph_meta
+                            .iter()
+                            .filter_map(|(name, _, last, threshold)| {
+                                let band = willow_state::derive_ephemeral_state(
+                                    *last, *threshold, frontier,
+                                );
+                                if band == willow_state::EphemeralState::Archived {
+                                    Some(name.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+
                         let mut grouped: HashMap<ChannelGroup, Vec<String>> = HashMap::new();
                         for name in &ch_list {
+                            if archived.contains(name) {
+                                continue;
+                            }
                             let default_kind = willow_state::ChannelKind::Text;
                             let kind = kind_map.get(name).unwrap_or(&default_kind);
                             grouped.entry(ChannelGroup::classify(name, kind)).or_default().push(name.clone());

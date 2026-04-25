@@ -11237,11 +11237,13 @@ mod phase_2d_ephemeral_channels {
     //!
     //! Spec: `docs/specs/2026-04-19-ui-design/ephemeral-channels.md`.
 
-    use super::{mount_test, query, tick};
+    use super::{mount_test, query, query_all, simulate_click, tick};
     use leptos::prelude::*;
     use wasm_bindgen::JsCast;
     use wasm_bindgen_test::*;
-    use willow_web::components::{KindChip, KindChipKind, TempChannelCreateForm};
+    use willow_client::{ArchivedChannelSummary, ArchivesView};
+    use willow_state::EphemeralKind;
+    use willow_web::components::{ArchivesPane, KindChip, KindChipKind, TempChannelCreateForm};
 
     #[wasm_bindgen_test]
     async fn kind_chip_renders_temp_for_channel() {
@@ -11352,6 +11354,83 @@ mod phase_2d_ephemeral_channels {
         assert!(
             cls.contains("channel-item--dormant"),
             "dormant class must be present, got {cls:?}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn archives_view_lists_auto_archived_under_subgroup() {
+        let view = ArchivesView {
+            entries: vec![ArchivedChannelSummary {
+                channel_id: "c-1".into(),
+                name: "expired-room".into(),
+                kind: EphemeralKind::Channel,
+                last_activity_ms: Some(1_700_000_000_000),
+                archived_at_ms: 1_700_000_000_000 + 14 * 24 * 3_600_000,
+            }],
+        };
+        let view_sig = Signal::derive(move || view.clone());
+        let on_revive = Callback::new(|_: String| {});
+        let container = mount_test(move || {
+            view! { <ArchivesPane view=view_sig on_revive=on_revive/> }
+        });
+        tick().await;
+        let pane = query(&container, ".archives-pane").expect("pane mounts");
+        let subgroup = query(
+            &pane.dyn_into::<web_sys::HtmlElement>().unwrap(),
+            ".archives-subgroup--auto",
+        )
+        .expect("auto-archived subgroup must exist");
+        let rows = query_all(
+            &subgroup.dyn_into::<web_sys::HtmlElement>().unwrap(),
+            ".archives-row",
+        );
+        assert_eq!(rows.len(), 1, "exactly one archived row");
+        let row_name = rows[0]
+            .query_selector(".archives-row-name")
+            .unwrap()
+            .unwrap()
+            .text_content()
+            .unwrap_or_default();
+        assert_eq!(row_name, "expired-room");
+        assert!(
+            rows[0]
+                .query_selector(".archives-revive-link")
+                .unwrap()
+                .is_some(),
+            "revive link must render next to row"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn revive_link_invokes_on_revive_callback() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let captured = Arc::new(AtomicBool::new(false));
+        let captured_for_cb = captured.clone();
+        let on_revive = Callback::new(move |name: String| {
+            assert_eq!(name, "expired-room");
+            captured_for_cb.store(true, Ordering::Relaxed);
+        });
+        let view = ArchivesView {
+            entries: vec![ArchivedChannelSummary {
+                channel_id: "c-1".into(),
+                name: "expired-room".into(),
+                kind: EphemeralKind::Channel,
+                last_activity_ms: Some(1_700_000_000_000),
+                archived_at_ms: 1_700_000_000_000 + 14 * 24 * 3_600_000,
+            }],
+        };
+        let view_sig = Signal::derive(move || view.clone());
+        let container = mount_test(move || {
+            view! { <ArchivesPane view=view_sig on_revive=on_revive/> }
+        });
+        tick().await;
+        let link = query(&container, ".archives-revive-link").expect("revive link must render");
+        simulate_click(&link);
+        tick().await;
+        assert!(
+            captured.load(Ordering::Relaxed),
+            "on_revive callback must fire with the row's name"
         );
     }
 

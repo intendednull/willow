@@ -17,6 +17,7 @@ pub fn peer_color(peer_id: &str) -> String {
 
 mod add_friend;
 mod add_server;
+mod archives_view;
 mod bottom_sheet;
 mod call_page;
 mod channel_sidebar;
@@ -70,6 +71,7 @@ mod welcome_back_banner;
 
 pub use add_friend::*;
 pub use add_server::*;
+pub use archives_view::ArchivesPane;
 pub use bottom_sheet::*;
 pub use call_page::*;
 pub use channel_sidebar::*;

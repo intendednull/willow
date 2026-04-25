@@ -5965,6 +5965,41 @@ select:focus-visible {
     color: var(--ink-2);
 }
 
+/* ── Phase 2d archives surface ──────────────────────────────────────── */
+.archives-pane { padding: 8px; }
+.archives-subgroup-header {
+    color: var(--ink-3);
+    font-family: var(--font-ui);
+    font-size: 11.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin: 4px 0;
+}
+.archives-subgroup { list-style: none; padding: 0; margin: 0; }
+.archives-row {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 8px;
+    align-items: center;
+    padding: 6px 8px;
+    color: var(--ink-2);
+}
+.archives-row-name {
+    font-family: var(--font-ui);
+    font-size: 13px;
+    color: var(--ink-2);
+}
+.archives-revive-link {
+    background: transparent;
+    border: none;
+    color: var(--moss);
+    font-family: var(--font-ui);
+    font-size: 12px;
+    cursor: pointer;
+    padding: 0;
+}
+.archives-revive-link:hover { text-decoration: underline; }
+
 /* ── Phase 2d temp-channel create form ──────────────────────────────── */
 .temp-create {
     display: grid;
