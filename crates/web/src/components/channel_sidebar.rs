@@ -19,24 +19,27 @@ use crate::components::{
 };
 use crate::icons;
 
-/// Canonical channel groups — four labels in this render order when
+/// Canonical channel groups — three labels in this render order when
 /// non-empty. Unknown-prefix channels fall into `Commons`.
+///
+/// Per Phase 2d (`docs/specs/2026-04-19-ui-design/ephemeral-channels.md`),
+/// ephemerals share the `Commons` group with permanent channels — the
+/// kind chip on the row carries the "non-permanent" signal, not group
+/// membership. The legacy `_ephemeral-` name-prefix heuristic was
+/// dropped at the same time.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum ChannelGroup {
     Commons,
     Voice,
-    Ephemeral,
     Archives,
 }
 
 impl ChannelGroup {
-    /// Classify a channel by name + kind. Uses the name-prefix heuristic
-    /// (see plan §Ambiguity decisions) for ephemeral / archive since no
-    /// first-class `ChannelKind` exists yet.
+    /// Classify a channel by name + kind. Voice channels go to `Voice`;
+    /// the legacy `_archive-` name prefix still routes to `Archives`;
+    /// everything else (including ephemerals) lands in `Commons`.
     pub fn classify(name: &str, kind: &willow_state::ChannelKind) -> Self {
-        if name.starts_with("_ephemeral-") {
-            Self::Ephemeral
-        } else if name.starts_with("_archive-") {
+        if name.starts_with("_archive-") {
             Self::Archives
         } else if matches!(kind, willow_state::ChannelKind::Voice) {
             Self::Voice
@@ -49,7 +52,6 @@ impl ChannelGroup {
         match self {
             Self::Commons => "commons",
             Self::Voice => "voice",
-            Self::Ephemeral => "ephemeral",
             Self::Archives => "archives",
         }
     }
@@ -58,13 +60,12 @@ impl ChannelGroup {
         match self {
             Self::Commons => "commons",
             Self::Voice => "voice",
-            Self::Ephemeral => "ephemeral",
             Self::Archives => "archives",
         }
     }
 
     /// Render order used by ChannelSidebar.
-    pub const ORDER: [Self; 4] = [Self::Commons, Self::Voice, Self::Ephemeral, Self::Archives];
+    pub const ORDER: [Self; 3] = [Self::Commons, Self::Voice, Self::Archives];
 }
 
 /// Channel sidebar — grove header + channel groups + me strip + footer.
@@ -518,11 +519,6 @@ pub fn ChannelSidebar(
                                             }}
                                         </span>
                                         <span class="channel-group-name">{group_copy.label()}</span>
-                                        {matches!(group_copy, ChannelGroup::Ephemeral).then(|| view! {
-                                            <span class="channel-group-meta" aria-hidden="true">
-                                                {icons::icon_hourglass()}
-                                            </span>
-                                        })}
                                     </button>
                                     {move || {
                                         if is_collapsed() {
@@ -677,7 +673,49 @@ fn render_channel_row(
     let name_render = name.clone();
     let name_ctx = name.clone();
     let is_voice = matches!(group, ChannelGroup::Voice);
-    let is_ephemeral = matches!(group, ChannelGroup::Ephemeral);
+
+    // Phase 2d: ephemeral status comes from the channel's
+    // EphemeralConfig, no longer from the legacy `_ephemeral-` prefix
+    // / sidebar-group heuristic. Pull the kind + threshold + last
+    // activity from AppState so each row signals non-permanence with
+    // the correct kind chip.
+    let app_state_for_eph = use_context::<crate::state::AppState>().unwrap();
+    let name_for_eph = name.clone();
+    let ephemeral_kind = Signal::derive(move || {
+        app_state_for_eph
+            .server
+            .ephemeral_meta
+            .get()
+            .into_iter()
+            .find(|(n, _, _, _)| n == &name_for_eph)
+            .map(|(_, k, _, _)| k)
+    });
+    let name_for_eph_meta = name.clone();
+    let ephemeral_meta_for_row = Signal::derive(move || {
+        app_state_for_eph
+            .server
+            .ephemeral_meta
+            .get()
+            .into_iter()
+            .find(|(n, _, _, _)| n == &name_for_eph_meta)
+            .map(|(_, _, last, threshold)| (last, threshold))
+    });
+    let is_ephemeral = move || ephemeral_kind.get().is_some();
+    // Dormant when activity has elapsed past 25% of the threshold but
+    // has not yet crossed it. Uses `js_sys::Date::now()` as the
+    // frontier on WASM — close enough to the real HLC frontier for UI
+    // styling purposes; archived rows are filtered out by the active
+    // sidebar (Task 10) so we only need to differentiate active vs
+    // dormant here.
+    let is_dormant = move || {
+        if let Some((last, threshold)) = ephemeral_meta_for_row.get() {
+            let frontier = js_sys::Date::now() as u64;
+            let band = willow_state::derive_ephemeral_state(last, threshold, frontier);
+            band == willow_state::EphemeralState::Dormant
+        } else {
+            false
+        }
+    };
 
     // Per-row context menu for mute / unmute.
     let (show_menu, set_show_menu) = signal(false);
@@ -698,12 +736,17 @@ fn render_channel_row(
     let on_text = on_channel_click.clone();
     let on_vc = on_voice_join.clone();
 
-    let kind_icon_view = if is_voice {
-        icons::icon_volume_1().into_any()
-    } else if is_ephemeral {
-        icons::icon_hourglass().into_any()
-    } else {
-        icons::icon_hash().into_any()
+    // The kind icon needs to be reactive to the ephemeral signal —
+    // wrap it in a `move ||` so subsequent ephemeral-state changes
+    // re-render the row glyph.
+    let kind_icon_view = move || -> AnyView {
+        if is_voice {
+            icons::icon_volume_1().into_any()
+        } else if is_ephemeral() {
+            icons::icon_hourglass().into_any()
+        } else {
+            icons::icon_hash().into_any()
+        }
     };
 
     // Listener count — voice channels read the voice_participants_map
@@ -728,7 +771,7 @@ fn render_channel_row(
     // Aria label: "<kind> channel <name>" plus suffix.
     let aria_kind = if is_voice {
         "voice"
-    } else if is_ephemeral {
+    } else if is_ephemeral() {
         "ephemeral"
     } else {
         "text"
@@ -742,8 +785,11 @@ fn render_channel_row(
         if is_voice {
             cls.push_str(" channel-item--voice voice-channel");
         }
-        if is_ephemeral {
+        if is_ephemeral() {
             cls.push_str(" channel-item--ephemeral");
+        }
+        if is_dormant() {
+            cls.push_str(" channel-item--dormant");
         }
         if matches!(group, ChannelGroup::Archives) {
             cls.push_str(" channel-item--archive");
@@ -778,8 +824,20 @@ fn render_channel_row(
             } else {
                 None
             }
-        } else if is_ephemeral {
-            Some(view! { <span class="ephemeral-timer">"--h --m"</span> }.into_any())
+        } else if is_ephemeral() {
+            // Phase 2d: render the kind chip + (when dormant) a meta
+            // line. Spec: §Sidebar treatment.
+            let kind_for_chip = ephemeral_kind.get().map(|k| match k {
+                willow_state::EphemeralKind::Channel => crate::components::KindChipKind::Channel,
+                willow_state::EphemeralKind::Thread => crate::components::KindChipKind::Thread,
+                willow_state::EphemeralKind::Whisper => crate::components::KindChipKind::Whisper,
+            });
+            Some(
+                view! {
+                    {kind_for_chip.map(|k| view! { <crate::components::KindChip kind=k/> })}
+                }
+                .into_any(),
+            )
         } else {
             let trailing_name_inner = trailing_name.clone();
             let stats_signal: Signal<willow_client::views::UnreadStats> =

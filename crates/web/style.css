@@ -5960,6 +5960,11 @@ select:focus-visible {
     user-select: none;
 }
 
+/* ── Phase 2d dormant ephemeral row ─────────────────────────────────── */
+.channel-item--dormant .channel-row-name {
+    color: var(--ink-2);
+}
+
 /* ── Phase 2d temp-channel create form ──────────────────────────────── */
 .temp-create {
     display: grid;

@@ -55,6 +55,12 @@ pub enum CryptoVisibility {
 /// Phase 1d and the slot is reserved for a future change.
 pub const V1_ALLOW_UNSURE_CTA: bool = false;
 
+/// Phase 2d ephemeral-channel metadata row:
+/// `(channel_name, kind, last_activity_hlc, idle_threshold_ms)`.
+pub type EphemeralMetaRow = (String, willow_state::EphemeralKind, Option<u64>, u64);
+/// All ephemerals in the active server.
+pub type EphemeralMetaList = Vec<EphemeralMetaRow>;
+
 /// Per-channel UI state. Extensible for future needs (drafts, scroll pos).
 #[derive(Clone, Default, PartialEq)]
 pub struct ChannelViewState {
@@ -249,6 +255,9 @@ pub struct ServerState {
     pub display_name: ReadSignal<String>,
     pub server_owner: ReadSignal<String>,
     pub channel_kinds: ReadSignal<Vec<(String, willow_state::ChannelKind)>>,
+    /// Phase 2d ephemeral metadata: (name, kind, last_activity_hlc,
+    /// idle_threshold_ms). One entry per ephemeral channel.
+    pub ephemeral_meta: ReadSignal<EphemeralMetaList>,
     /// Peer IDs that have the SyncProvider permission.
     pub sync_provider_ids: ReadSignal<HashSet<String>>,
     /// Peer IDs that have the Administrator permission.
@@ -383,6 +392,7 @@ pub struct ServerWriteSignals {
     pub set_display_name: WriteSignal<String>,
     pub set_server_owner: WriteSignal<String>,
     pub set_channel_kinds: WriteSignal<Vec<(String, willow_state::ChannelKind)>>,
+    pub set_ephemeral_meta: WriteSignal<EphemeralMetaList>,
     pub set_sync_provider_ids: WriteSignal<HashSet<String>>,
     pub set_admin_ids: WriteSignal<HashSet<String>>,
 }
@@ -483,6 +493,9 @@ pub fn create_signals() -> InitialSignals {
     let (server_owner, set_server_owner) = signal(String::new());
     let (channel_kinds, set_channel_kinds) =
         signal(Vec::<(String, willow_state::ChannelKind)>::new());
+    // Phase 2d ephemeral metadata: (name, kind, last_activity_hlc,
+    // idle_threshold_ms). One entry per ephemeral channel.
+    let (ephemeral_meta, set_ephemeral_meta) = signal(EphemeralMetaList::new());
     let (sync_provider_ids, set_sync_provider_ids) = signal(HashSet::<String>::new());
     let (admin_ids, set_admin_ids) = signal(HashSet::<String>::new());
 
@@ -600,6 +613,7 @@ pub fn create_signals() -> InitialSignals {
             display_name,
             server_owner,
             channel_kinds,
+            ephemeral_meta,
             sync_provider_ids,
             admin_ids,
         },
@@ -685,6 +699,7 @@ pub fn create_signals() -> InitialSignals {
             set_display_name,
             set_server_owner,
             set_channel_kinds,
+            set_ephemeral_meta,
             set_sync_provider_ids,
             set_admin_ids,
         },
@@ -886,6 +901,23 @@ pub fn wire_derived_signals<N: willow_network::Network>(
             .collect::<Vec<_>>()
     });
     leptos::prelude::Effect::new(move || write.server.set_channel_kinds.set(channel_kinds.get()));
+
+    // Ephemeral metadata — only channels carrying an EphemeralConfig.
+    let ephemeral_meta = derived_signal(&views.event_state, system, |es| {
+        es.channels
+            .values()
+            .filter_map(|ch| {
+                let cfg = ch.ephemeral.as_ref()?;
+                Some((
+                    ch.name.clone(),
+                    cfg.kind,
+                    ch.last_activity_hlc,
+                    cfg.idle_threshold_ms,
+                ))
+            })
+            .collect::<Vec<_>>()
+    });
+    leptos::prelude::Effect::new(move || write.server.set_ephemeral_meta.set(ephemeral_meta.get()));
 
     let peers_sig = derived_signal(&views.members, system, |mv| {
         mv.members
