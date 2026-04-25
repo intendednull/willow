@@ -61,10 +61,20 @@ Out of scope:
 ## Inactivity ladder
 
 A single signal drives every ephemeral surface: time since last
-activity. "Activity" is **a new message** (or thread reply, or
-whisper utterance). Reactions, typing indicators, presence changes,
-and edits do **not** count — those would keep dead chats artificially
-alive.
+activity. **Activity is a new message only** (or thread reply, or
+whisper utterance). The following do **not** count:
+
+- Reactions on existing messages
+- Pin / unpin on existing messages
+- Typing indicators
+- Presence changes
+- Membership changes (joins, leaves, kicks)
+- Edits to existing messages
+
+The reasoning: ephemeral surfaces archive when conversation stops.
+Reactions on a stale thread are residue; they should not artificially
+extend the room's life. Only a new utterance counts as "this room is
+still being used."
 
 The state machine derives the ladder from the channel's
 `last_activity_hlc` against the merge frontier's HLC:
@@ -113,10 +123,25 @@ When the surface enters the dormant phase, the row dims:
 - Channel name colour: `--ink-2` (one step muted from `--ink-1`).
 - Trailing chip: gains a meta line "*N days ago*" (or `*N hours
   ago*`, `*N minutes ago*`) in `--ink-3`. The chip wraps to two
-  lines on desktop sidebars wide enough to allow it; on narrow
-  layouts the meta line replaces the kind token while the chip
-  shape stays the same.
+  lines on desktop sidebars wide enough to allow it.
 - No badges, no glow. Dormant is calm, not alarming.
+
+**Mobile compact form.** The mobile sidebar (≤ 640 px viewport) is
+too narrow to carry the meta line without pushing rows to two lines
+and breaking the channel-list rhythm. On mobile the dormant state
+is signalled by:
+
+- Dimmed name colour (`--ink-2`) — same as desktop.
+- Kind chip remains (`temp` / `thread` / `whisper`) — no meta line
+  appended.
+- Long-pressing the row opens the standard row preview overlay
+  (existing pattern from `mobile-shell.md`); the preview header
+  carries the meta string `"last activity {N} {unit} ago"` so the
+  user can still read it on demand.
+
+This keeps the row at single-line height regardless of dormancy and
+matches the existing mobile pattern of pushing extra metadata into
+long-press surfaces rather than the row itself.
 
 ### Archived
 
@@ -182,10 +207,14 @@ here.
 
 Whispers spawn from a peer interaction (`whisper-mode.md`). Whispers
 inherit the auto-archive mechanic with a 24-hour default. Archived
-whispers do **not** appear in the global archives surface; they
-appear only inside the originating peer's profile card under a
-"recent whispers" section, since whispers are a peer-scoped
-construct, not a grove-scoped one.
+whispers **never** appear in the global grove archives surface — they
+are peer-scoped, not grove-scoped, and surfacing them in a grove
+view would leak the side-channel back into the public structure
+they were created to escape. Archived whispers are listed only
+inside the originating peer's profile card under a "recent whispers"
+section. This applies even when the whisper occurred inside the
+context of a grove channel: the artifact still belongs to the peers,
+not the grove.
 
 ## Archive surface
 
@@ -200,6 +229,14 @@ channel in read-only review mode (composer hidden); the user can
 read the conversation without un-archiving. Tapping `revive` brings
 the channel back to the sidebar without posting a message — useful
 for "I want to keep this around for now" without performing activity.
+
+Read-only access is gated to **prior participants of the channel
+only**. A grove steward who never joined the ephemeral cannot read
+its archive — the archives surface lists only ephemerals the
+viewing peer was a member of. This matches active-channel access
+(you cannot read a private channel you are not in); archiving does
+not lower the access bar. State enforces this via the existing
+"is the actor a member of the channel?" check.
 
 Revived channels reappear in the sidebar in the active state. The
 revive itself is a state event (see Data dependencies).
@@ -292,7 +329,13 @@ default for each ephemeral kind (see `governance.md` §Grove
 defaults). Per-channel overrides at creation respect the grove
 default as the *cap* for that grove (so a grove that mandates
 short-lived rooms cannot be subverted by a long per-channel
-threshold).
+threshold). When the grove cap is **lowered after** a channel was
+created with a longer threshold, the channel's effective threshold
+clamps to the new cap on the next materialize derivation pass — no
+grandfathering. The reasoning: governance changes are a deliberate
+act and should take effect immediately; storing per-channel "exempt
+from cap" flags would complicate state for a corner case nobody
+asked for.
 
 **Member count drops to zero on an ephemeral channel.** The channel
 auto-archives on the next derivation pass regardless of idle
@@ -380,24 +423,13 @@ duplicate `ChannelRevive` for an already-active channel is a no-op
 
 ## Open questions
 
-- **Activity definition.** Spec says "new message only". Should
-  reactions or pins count? Probably no — reactions on a stale thread
-  shouldn't keep it alive. Confirm with state team.
-- **Per-grove cap semantics.** When a grove caps idle thresholds
-  shorter than an existing channel's setting, should the existing
-  channel's threshold be clamped immediately, or grandfathered? Spec
-  proposes clamp-on-next-derivation; flag for review.
-- **Whispers in archives.** Whispers do not appear in the global
-  archives surface (peer-scoped, not grove-scoped). Confirm with the
-  whisper-mode spec author that this is the desired UX.
-- **Read-only review of archived channels.** Should it be available
-  to non-members who can see grove archives? Spec says no — only
-  prior participants can open archived ephemerals. Confirm with
-  governance.
-- **Thread + whisper specs need updates** to cross-reference this
-  spec for their shared auto-archive mechanic. Tracked separately.
-- **Mobile representation of dormant state.** Sidebar is much
-  narrower on mobile; the meta line may push the row to two lines.
-  Need a mobile-specific compact form — likely just the dim colour,
-  no meta line on the row, with the meta surfaced in the row's long-
-  press preview.
+- **Cross-spec updates.** `thread-pane.md` and `whisper-mode.md`
+  must each gain a §Auto-archive section that references this spec
+  for the inheritance contract (kind chip, dormant/archived states,
+  default thresholds, revive). Tracked separately; not blocking the
+  Phase 2d plan but required before the thread / whisper plans are
+  written in Phase 3.
+- **Storage retention coupling.** Auto-archived channels share the
+  same storage retention rules as permanent channels. If a future
+  retention policy diverges (e.g. "auto-archived ephemerals expire
+  faster"), this spec needs an addendum. Out of scope for v1.
