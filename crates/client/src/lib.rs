@@ -165,7 +165,10 @@ pub mod event_receiver {
     }
 }
 pub use state::{DisplayMessage, QueueNote};
-pub use views::{since_hint, ProfileDelta, ProfileView};
+pub use views::{
+    derive_archives_view, since_hint, ArchivedChannelSummary, ArchivesView, ProfileDelta,
+    ProfileView,
+};
 pub use willow_state::{CrestPattern, PinnedFragment, PinnedKind};
 
 // ClientState, ServerContext, ChatState, ProfileStore are used internally
