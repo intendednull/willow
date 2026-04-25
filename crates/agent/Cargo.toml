@@ -17,7 +17,6 @@ path = "src/main.rs"
 willow-client = { path = "../client" }
 willow-identity = { path = "../identity" }
 willow-network = { path = "../network" }
-willow-actor = { path = "../actor" }
 willow-state = { path = "../state" }
 
 rmcp = { version = "1.3", features = ["server", "transport-io", "transport-streamable-http-server"] }
