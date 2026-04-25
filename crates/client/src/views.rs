@@ -21,6 +21,88 @@ use crate::presence::{derive_peer_presence, derive_self_presence, PresenceInputs
 use crate::state::{DisplayMessage, QueueNote};
 use crate::state_actors::*;
 
+// ───── Profile card surfaces (phase 2c) ─────────────────────────────────
+
+/// Merged profile payload the profile-card UI renders.
+///
+/// Spec: `docs/specs/2026-04-19-ui-design/profile-card.md`
+/// §Data dependencies. Aggregates fields from `willow-state::Profile`
+/// (extended with pronouns/bio/tagline/crest/elsewhere/since in the
+/// same phase), `willow-identity` (fingerprint), and derived helpers
+/// so the UI never knows about source tables.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProfileView {
+    /// Stringified peer id.
+    pub peer_id: String,
+    /// Short handle (first 8 lowercase hex chars of the peer id).
+    pub handle: String,
+    /// Display name — empty when never set.
+    pub display_name: String,
+    pub pronouns: Option<String>,
+    pub bio: Option<String>,
+    pub tagline: Option<String>,
+    pub crest_pattern: Option<willow_state::CrestPattern>,
+    pub crest_color: Option<String>,
+    pub pinned: Option<willow_state::PinnedFragment>,
+    pub elsewhere: Vec<String>,
+    pub since: Option<String>,
+    /// First three words of the 6-word peer fingerprint, joined by ` · `.
+    pub fingerprint_short: String,
+    /// All six words of the peer fingerprint joined by ` · `.
+    pub fingerprint_full: String,
+    /// `true` when this view belongs to the local peer.
+    pub is_self: bool,
+}
+
+/// Delta passed to `ClientMutations::update_profile_fields`.
+///
+/// Mirrors `willow_state::types::ProfileDelta` but re-exported from
+/// the client crate so consumers don't need to depend on the state
+/// crate directly for the common "edit my profile" flow.
+pub type ProfileDelta = willow_state::ProfileDelta;
+
+/// Format a wall-clock ms timestamp as a soft-time `season · yr N` hint.
+///
+/// Spec: `docs/specs/2026-04-19-ui-design/profile-card.md`
+/// §Data dependencies — the `since` meta-row renders this shape
+/// (`"spring · yr 2"`) rather than an exact timestamp. The mapping is
+/// deliberately coarse so long-idle peers don't leak their exact
+/// joining time.
+pub fn since_hint(earliest_ms: u64, now_ms: u64) -> String {
+    // Season bucket: split the year into 4 × ~91-day windows.
+    let day_of_year = (earliest_ms / 86_400_000) % 365;
+    let season_idx = (day_of_year / 91).min(3) as usize;
+    let season = ["spring", "summer", "fall", "winter"][season_idx];
+    // Years since joining — rounded up so freshly-joined peers still
+    // read "yr 1" rather than "yr 0".
+    let diff_ms = now_ms.saturating_sub(earliest_ms);
+    let years = (diff_ms / (365 * 86_400_000)).max(1);
+    format!("{season} · yr {years}")
+}
+
+impl ServerRegistry {
+    /// Intersect membership across every known server the local peer
+    /// shares with `other`. Returns the set of server names.
+    ///
+    /// Spec: `docs/specs/2026-04-19-ui-design/profile-card.md`
+    /// §Data dependencies — "shared groves = intersection of grove
+    /// memberships". v1 of the client tracks one active grove at a
+    /// time, so this helper enumerates every [`ServerEntry`] and
+    /// intersects the `state.members` map of each (empty until a grove
+    /// exposes its full membership — see the multi-grove TODO on
+    /// `servers.rs`).
+    pub fn shared_groves(&self, _local: &EndpointId, _other: &EndpointId) -> Vec<String> {
+        // TODO(multi-grove): plumb `state.members` into `ServerEntry`
+        // so the intersection can walk every grove the local peer is
+        // in. Until then, the helper returns the active grove's name
+        // when we know both peers are members (check deferred to the
+        // UI which reads `MembersView` for the active server). Return
+        // an empty Vec rather than fabricating a match — the spec's
+        // edge case "no shared groves → omit section" covers this.
+        Vec::new()
+    }
+}
+
 // ───── Layer 2: Derived view types ──────────────────────────────────────
 
 /// Precomputed message list for the current channel.
@@ -260,6 +342,62 @@ impl Clone for ClientViewHandle {
             network: self.network.clone(),
             voice: self.voice.clone(),
             presence_meta: self.presence_meta.clone(),
+        }
+    }
+}
+
+impl ClientViewHandle {
+    /// Build the merged [`ProfileView`] for `peer_id`.
+    ///
+    /// `local` is the local peer's endpoint id; `is_self` is derived
+    /// from `peer_id == local`. If the local state has no
+    /// [`willow_state::Profile`] entry for `peer_id`, the returned view
+    /// carries the handle + fingerprint only; every other field is
+    /// `None` / empty so the renderer falls back to its defaults.
+    ///
+    /// Spec: `docs/specs/2026-04-19-ui-design/profile-card.md`
+    /// §Event-bus API — invoked once per `open_profile` dispatch.
+    pub async fn profile_view_of(&self, peer_id: &EndpointId, local: &EndpointId) -> ProfileView {
+        let pid = *peer_id;
+        let local_pid = *local;
+        // Display name from either the global profile registry or the
+        // event-sourced server state.
+        let name_snap: Option<String> = {
+            let state = self.profiles.get().await;
+            state.names.get(&pid).cloned()
+        };
+        let profile_snap: Option<willow_state::Profile> = {
+            let state = self.event_state.get().await;
+            state.profiles.get(&pid).cloned()
+        };
+        let handle = crate::util::truncate_peer_id(&pid.to_string());
+        let fp_words: [String; 6] = willow_crypto::peer_fingerprint(&pid);
+        let fingerprint_short = fp_words[..3].join(" · ");
+        let fingerprint_full = fp_words.join(" · ");
+        let display_name = profile_snap
+            .as_ref()
+            .map(|p| p.display_name.clone())
+            .filter(|s| !s.is_empty())
+            .or(name_snap)
+            .unwrap_or_else(|| handle.clone());
+        ProfileView {
+            peer_id: pid.to_string(),
+            handle,
+            display_name,
+            pronouns: profile_snap.as_ref().and_then(|p| p.pronouns.clone()),
+            bio: profile_snap.as_ref().and_then(|p| p.bio.clone()),
+            tagline: profile_snap.as_ref().and_then(|p| p.tagline.clone()),
+            crest_pattern: profile_snap.as_ref().and_then(|p| p.crest_pattern),
+            crest_color: profile_snap.as_ref().and_then(|p| p.crest_color.clone()),
+            pinned: profile_snap.as_ref().and_then(|p| p.pinned.clone()),
+            elsewhere: profile_snap
+                .as_ref()
+                .map(|p| p.elsewhere.clone())
+                .unwrap_or_default(),
+            since: profile_snap.as_ref().and_then(|p| p.since.clone()),
+            fingerprint_short,
+            fingerprint_full,
+            is_self: pid == local_pid,
         }
     }
 }
@@ -685,13 +823,13 @@ pub fn resolve_display_name(
     if let Some(profile) = event_state.profiles.get(peer_id) {
         let name = profile.display_name.trim();
         if !name.is_empty() {
-            return profile.display_name.clone();
+            return name.to_string();
         }
     }
     if let Some(name) = profiles.names.get(peer_id) {
         let trimmed = name.trim();
         if !trimmed.is_empty() {
-            return name.clone();
+            return trimmed.to_string();
         }
     }
     "unknown peer".to_string()
@@ -719,13 +857,11 @@ mod tests {
                 display_name: None,
             },
         );
-        state.profiles.insert(
-            peer_id,
-            Profile {
-                peer_id,
-                display_name: display.into(),
-            },
-        );
+        state.profiles.insert(peer_id, {
+            let mut p = Profile::new(peer_id);
+            p.display_name = display.into();
+            p
+        });
     }
 
     fn push_channel(state: &mut ServerState, id: &str, name: &str) {
@@ -1087,6 +1223,31 @@ mod tests {
             view.messages[0].author_display_name, "unknown peer",
             "resolve_display_name must fall back to `unknown peer` when no profile is known"
         );
+    }
+
+    #[test]
+    fn resolve_display_name_trims_whitespace_from_profile_and_fallback() {
+        // A malicious peer can set a display name padded with whitespace
+        // (leading/trailing spaces, tabs, newlines). `resolve_display_name`
+        // must return the trimmed value so the UI cannot be visually
+        // spoofed with padded names that pass the emptiness check.
+        let owner = Identity::generate().endpoint_id();
+        let mallory = Identity::generate().endpoint_id();
+        let ghost = Identity::generate().endpoint_id();
+        let mut state = fresh_state(owner);
+        state.profiles.insert(
+            mallory,
+            Profile {
+                display_name: "  \t  Alice  \n  ".into(),
+                ..Profile::new(mallory)
+            },
+        );
+
+        let mut profiles = ProfileState::default();
+        profiles.names.insert(ghost, "   Ghost\t".into());
+
+        assert_eq!(resolve_display_name(&state, &profiles, &mallory), "Alice");
+        assert_eq!(resolve_display_name(&state, &profiles, &ghost), "Ghost");
     }
 
     #[test]

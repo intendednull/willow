@@ -76,6 +76,10 @@ pub fn ChannelSidebar(
     unread: ReadSignal<HashMap<String, willow_client::views::UnreadStats>>,
     server_name: ReadSignal<String>,
     on_channel_click: impl Fn(String) + Send + Clone + 'static,
+    // Phase 2c: the me-strip now opens the profile card (self variant)
+    // instead of Settings directly; the card's `edit profile` button
+    // takes over that hand-off. The prop is retained so call sites in
+    // `app.rs` and `mobile_shell.rs` compile unchanged.
     on_settings_click: impl Fn(()) + Send + Clone + 'static,
     on_server_settings_click: impl Fn(()) + Send + Clone + 'static,
     on_voice_join: impl Fn(String) + Send + Clone + 'static,
@@ -96,6 +100,11 @@ pub fn ChannelSidebar(
     #[prop(optional)] on_voice_deafen: Option<Callback<()>>,
     #[prop(optional)] on_voice_disconnect: Option<Callback<()>>,
 ) -> impl IntoView {
+    // Phase 2c: `on_settings_click` is superseded by the profile-card
+    // `edit profile` button. Bind it to suppress the unused-variable
+    // warning while keeping the prop in the public API.
+    let _ = on_settings_click;
+
     let handle = use_context::<WebClientHandle>().unwrap();
     let app_state = use_context::<crate::state::AppState>().unwrap();
 
@@ -323,6 +332,7 @@ pub fn ChannelSidebar(
                                             type="text"
                                             class="tree-slot__input"
                                             node_ref=name_input_ref
+                                            aria-label="Rename channel"
                                             placeholder="tree name"
                                             prop:value=move || new_name.get()
                                             on:input=move |ev| set_new_name.set(event_target_value(&ev))
@@ -457,11 +467,24 @@ pub fn ChannelSidebar(
             </div>
 
             // ── Me strip — profile link ───────────────────────────
+            // Spec §Event-bus API: the me-strip avatar opens the
+            // profile card with the self variant. The old behaviour
+            // (open settings directly) is now served by the card's
+            // `edit profile` button.
             <button
                 class="me-strip"
                 title="open profile"
                 aria-label="open profile"
-                on:click=move |_| on_settings_click(())
+                on:click={
+                    let peer_id_sig = app_state.network.peer_id;
+                    move |ev: web_sys::MouseEvent| {
+                        use wasm_bindgen::JsCast as _;
+                        let anchor = ev
+                            .current_target()
+                            .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok());
+                        crate::profile::open_profile(&peer_id_sig.get(), anchor);
+                    }
+                }
             >
                 <div class="me-avatar">
                     <div class="me-avatar-glyph">

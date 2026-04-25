@@ -13,7 +13,7 @@ fmt-check:
 
 # Run clippy with warnings as errors
 clippy:
-    cargo clippy --workspace -- -D warnings
+    cargo clippy --workspace --all-targets -- -D warnings
 
 # Run all cargo tests (unit + integration, excludes browser)
 test:

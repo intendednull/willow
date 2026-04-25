@@ -169,6 +169,13 @@ pub fn App() -> impl IntoView {
     write.search.set_recents.set(search_index.recents());
     provide_context(search_index.clone());
 
+    // Phase 2c — local-only nickname store. Loaded from localStorage on
+    // wasm32, in-memory otherwise. Provided in context so the profile
+    // card reads/writes without touching the client handle.
+    let nickname_store: willow_client::NicknameStoreHandle =
+        std::sync::Arc::new(crate::profile::WebNicknameStore::load());
+    provide_context(nickname_store);
+
     // Create the VoiceManager.
     let local_peer_id = handle.peer_id();
     let voice_signal_handle = handle.clone();
@@ -656,6 +663,11 @@ pub fn App() -> impl IntoView {
             // they survive any sub-route remount.
             <div id="trust-live-region" class="sr-only" aria-live="assertive" aria-atomic="true"></div>
             <crate::components::AddFriendDialog/>
+            // Phase 2c — profile-card wrappers. Mounted once at root.
+            // CSS media queries ensure only the breakpoint-appropriate
+            // one renders.
+            <crate::components::ProfilePopover/>
+            <crate::components::ProfileSheet/>
             <ToastStackView/>
             {move || {
                 // Join link takes priority over everything.

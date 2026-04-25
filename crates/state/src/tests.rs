@@ -1864,7 +1864,7 @@ fn rotate_channel_key_by_member_without_manage_channels_is_rejected() {
     let alice = Identity::generate();
     let bob = Identity::generate();
 
-    let mut managed = ManagedDag::new(&alice, "Test Server", 5000);
+    let mut managed = ManagedDag::new(&alice, "Test Server", 5000).unwrap();
 
     // Alice creates a channel and grants Bob SendMessages (which also
     // adds him to `members`). Bob is a legitimate member but lacks
@@ -1960,7 +1960,7 @@ fn managed_dag_insert_and_apply_keeps_state_in_sync() {
     use crate::managed::ManagedDag;
 
     let id = Identity::generate();
-    let mut managed = ManagedDag::new(&id, "Test Server", 5000);
+    let mut managed = ManagedDag::new(&id, "Test Server", 5000).unwrap();
 
     // State should have genesis author as member.
     assert!(managed.state().members.contains_key(&id.endpoint_id()));
@@ -1995,7 +1995,7 @@ fn managed_dag_insert_remote_event_applies_to_state() {
     use crate::managed::ManagedDag;
 
     let owner = Identity::generate();
-    let mut managed = ManagedDag::new(&owner, "Test", 5000);
+    let mut managed = ManagedDag::new(&owner, "Test", 5000).unwrap();
 
     // Simulate a remote event from a different peer.
     let peer = Identity::generate();
@@ -2039,7 +2039,7 @@ fn joined_peer_needs_grant_permission_to_send_messages() {
     let bob = Identity::generate();
 
     // Alice creates the server. She's the sole admin.
-    let mut managed = ManagedDag::new(&alice, "Test Server", 5000);
+    let mut managed = ManagedDag::new(&alice, "Test Server", 5000).unwrap();
     let general_id = {
         let event = managed.dag().create_event(
             &alice,
@@ -2143,7 +2143,7 @@ fn sync_batch_with_grant_permission_allows_new_peer_to_send() {
 
     // Alice creates server, channel, and grants Bob SendMessages.
     // These are the events that would normally be sent to Bob via SyncBatch.
-    let mut alice_state = ManagedDag::new(&alice, "Test", 5000);
+    let mut alice_state = ManagedDag::new(&alice, "Test", 5000).unwrap();
     let create_channel = alice_state.dag().create_event(
         &alice,
         EventKind::CreateChannel {
@@ -2241,7 +2241,7 @@ fn managed_dag_buffers_gap_events_and_resolves() {
 
     let owner = Identity::generate();
     let peer = Identity::generate();
-    let mut managed = ManagedDag::new(&owner, "Test", 5000);
+    let mut managed = ManagedDag::new(&owner, "Test", 5000).unwrap();
 
     // Create peer's seq=1 event.
     let e1 = managed.dag().create_event(
@@ -2287,7 +2287,7 @@ fn managed_dag_rejects_duplicate() {
     use crate::managed::ManagedDag;
 
     let owner = Identity::generate();
-    let mut managed = ManagedDag::new(&owner, "Test", 5000);
+    let mut managed = ManagedDag::new(&owner, "Test", 5000).unwrap();
 
     let peer = Identity::generate();
     let event = managed.dag().create_event(
@@ -2412,7 +2412,7 @@ fn deep_pending_chain_does_not_stack_overflow() {
     use crate::managed::ManagedDag;
 
     let id = Identity::generate();
-    let mut managed = ManagedDag::new(&id, "Deep Chain Test", 100_000);
+    let mut managed = ManagedDag::new(&id, "Deep Chain Test", 100_000).unwrap();
 
     let genesis_hash = managed.dag().genesis().unwrap().hash;
 
@@ -2610,7 +2610,7 @@ fn create_and_insert_rejects_without_permission() {
 
     let owner = Identity::generate();
     let peer = Identity::generate();
-    let mut managed = ManagedDag::new(&owner, "Test", 5000);
+    let mut managed = ManagedDag::new(&owner, "Test", 5000).unwrap();
 
     // Peer has no grants — should be rejected.
     let result = managed.create_and_insert(
@@ -2635,7 +2635,7 @@ fn create_and_insert_does_not_advance_seq_on_rejection() {
 
     let owner = Identity::generate();
     let peer = Identity::generate();
-    let mut managed = ManagedDag::new(&owner, "Test", 5000);
+    let mut managed = ManagedDag::new(&owner, "Test", 5000).unwrap();
 
     let seq_before = managed.dag().latest_seq(&peer.endpoint_id());
 
@@ -2663,7 +2663,7 @@ fn create_and_insert_succeeds_with_permission() {
 
     let owner = Identity::generate();
     let peer = Identity::generate();
-    let mut managed = ManagedDag::new(&owner, "Test", 5000);
+    let mut managed = ManagedDag::new(&owner, "Test", 5000).unwrap();
 
     // Grant SendMessages to peer.
     managed
@@ -3723,4 +3723,314 @@ fn mute_not_admin_gated() {
         .expect("stranger's mute entry must exist — no admin check");
     assert!(ms.channels.contains("ch-1"));
     assert!(ms.grove_muted);
+}
+
+// ───────────────────── Phase 2c — UpdateProfile ─────────────────────
+//
+// Spec: docs/specs/2026-04-19-ui-design/profile-card.md
+// §Data dependencies — the profile card's new optional fields land as
+// a single `EventKind::UpdateProfile` carrying a delta. Below tests
+// cover the six contract rows from the plan: merge / clear / preserve /
+// idempotent / caps / creates-on-missing.
+
+use crate::types::{CrestPattern, PinnedFragment, PinnedKind, ProfileDelta, PROFILE_CAP_BIO};
+
+#[test]
+fn update_profile_merges_fields() {
+    let alice = Identity::generate();
+    let mut dag = test_dag(&alice);
+    // Seed a display name via the legacy event so we can confirm
+    // UpdateProfile merges with existing state rather than wiping it.
+    do_emit(
+        &mut dag,
+        &alice,
+        EventKind::SetProfile {
+            display_name: "alice".into(),
+        },
+    );
+    do_emit(
+        &mut dag,
+        &alice,
+        EventKind::UpdateProfile(Box::new(ProfileDelta {
+            display_name: None,
+            pronouns: Some(Some("she/her".into())),
+            bio: Some(Some("gardener".into())),
+            tagline: None,
+            crest_pattern: Some(Some(CrestPattern::Fronds)),
+            crest_color: Some(Some("#6b8e4e".into())),
+            pinned: None,
+            elsewhere: Some(vec!["west coast".into()]),
+            since: Some(Some("spring · yr 2".into())),
+        })),
+    );
+    let state = materialize(&dag);
+    let p = state
+        .profiles
+        .get(&alice.endpoint_id())
+        .expect("profile present");
+    assert_eq!(p.display_name, "alice");
+    assert_eq!(p.pronouns.as_deref(), Some("she/her"));
+    assert_eq!(p.bio.as_deref(), Some("gardener"));
+    assert_eq!(p.crest_pattern, Some(CrestPattern::Fronds));
+    assert_eq!(p.crest_color.as_deref(), Some("#6b8e4e"));
+    assert_eq!(p.elsewhere, vec!["west coast".to_string()]);
+    assert_eq!(p.since.as_deref(), Some("spring · yr 2"));
+    // Untouched field stays its prior value (None).
+    assert!(p.tagline.is_none());
+}
+
+#[test]
+fn update_profile_clears_field_with_inner_none() {
+    let alice = Identity::generate();
+    let mut dag = test_dag(&alice);
+    do_emit(
+        &mut dag,
+        &alice,
+        EventKind::UpdateProfile(Box::new(ProfileDelta {
+            display_name: None,
+            pronouns: None,
+            bio: Some(Some("old bio".into())),
+            tagline: None,
+            crest_pattern: None,
+            crest_color: None,
+            pinned: None,
+            elsewhere: None,
+            since: None,
+        })),
+    );
+    do_emit(
+        &mut dag,
+        &alice,
+        EventKind::UpdateProfile(Box::new(ProfileDelta {
+            display_name: None,
+            pronouns: None,
+            bio: Some(None),
+            tagline: None,
+            crest_pattern: None,
+            crest_color: None,
+            pinned: None,
+            elsewhere: None,
+            since: None,
+        })),
+    );
+    let state = materialize(&dag);
+    assert!(state.profiles[&alice.endpoint_id()].bio.is_none());
+}
+
+#[test]
+fn update_profile_preserves_untouched_fields() {
+    let alice = Identity::generate();
+    let mut dag = test_dag(&alice);
+    do_emit(
+        &mut dag,
+        &alice,
+        EventKind::UpdateProfile(Box::new(ProfileDelta {
+            display_name: None,
+            pronouns: Some(Some("she/her".into())),
+            bio: Some(Some("hello".into())),
+            tagline: None,
+            crest_pattern: None,
+            crest_color: None,
+            pinned: None,
+            elsewhere: None,
+            since: None,
+        })),
+    );
+    do_emit(
+        &mut dag,
+        &alice,
+        EventKind::UpdateProfile(Box::new(ProfileDelta {
+            display_name: None,
+            pronouns: None,
+            bio: None,
+            tagline: Some(Some("tending the moss".into())),
+            crest_pattern: None,
+            crest_color: None,
+            pinned: None,
+            elsewhere: None,
+            since: None,
+        })),
+    );
+    let state = materialize(&dag);
+    let p = &state.profiles[&alice.endpoint_id()];
+    assert_eq!(p.bio.as_deref(), Some("hello"));
+    assert_eq!(p.pronouns.as_deref(), Some("she/her"));
+    assert_eq!(p.tagline.as_deref(), Some("tending the moss"));
+}
+
+#[test]
+fn update_profile_reapply_is_idempotent() {
+    let alice = Identity::generate();
+    let mut dag = test_dag(&alice);
+    // Replaying the same delta twice must produce the same state as
+    // replaying it once — the event hash dedupes on the DAG side.
+    let kind = EventKind::UpdateProfile(Box::new(ProfileDelta {
+        display_name: Some("alice".into()),
+        pronouns: Some(Some("she/her".into())),
+        bio: None,
+        tagline: None,
+        crest_pattern: None,
+        crest_color: None,
+        pinned: None,
+        elsewhere: None,
+        since: None,
+    }));
+    let e1 = do_emit(&mut dag, &alice, kind.clone());
+    // Re-inserting the *same* event is a DAG-level dedup; re-creating
+    // via `create_event` would bump the seq and hash, so we re-insert
+    // `e1` directly and confirm the insert is a no-op.
+    assert!(dag.insert(e1.clone()).is_err());
+    let state = materialize(&dag);
+    let p = &state.profiles[&alice.endpoint_id()];
+    assert_eq!(p.display_name, "alice");
+    assert_eq!(p.pronouns.as_deref(), Some("she/her"));
+}
+
+#[test]
+fn update_profile_caps_enforced_on_apply() {
+    let alice = Identity::generate();
+    let mut dag = test_dag(&alice);
+    let long_bio = "a".repeat(500);
+    do_emit(
+        &mut dag,
+        &alice,
+        EventKind::UpdateProfile(Box::new(ProfileDelta {
+            display_name: None,
+            pronouns: None,
+            bio: Some(Some(long_bio)),
+            tagline: None,
+            crest_pattern: None,
+            crest_color: None,
+            pinned: None,
+            elsewhere: None,
+            since: None,
+        })),
+    );
+    let state = materialize(&dag);
+    let p = &state.profiles[&alice.endpoint_id()];
+    assert_eq!(
+        p.bio.as_ref().map(|s| s.chars().count()),
+        Some(PROFILE_CAP_BIO)
+    );
+}
+
+#[test]
+fn update_profile_creates_profile_if_missing() {
+    let alice = Identity::generate();
+    let mut dag = test_dag(&alice);
+    // alice has genesis + no SetProfile yet. Before the UpdateProfile,
+    // her profile entry does not exist.
+    let state_pre = materialize(&dag);
+    assert!(!state_pre.profiles.contains_key(&alice.endpoint_id()));
+    do_emit(
+        &mut dag,
+        &alice,
+        EventKind::UpdateProfile(Box::new(ProfileDelta {
+            display_name: None,
+            pronouns: Some(Some("they/them".into())),
+            bio: None,
+            tagline: None,
+            crest_pattern: None,
+            crest_color: None,
+            pinned: None,
+            elsewhere: None,
+            since: None,
+        })),
+    );
+    let state = materialize(&dag);
+    let p = state
+        .profiles
+        .get(&alice.endpoint_id())
+        .expect("profile upserted by UpdateProfile");
+    assert_eq!(p.pronouns.as_deref(), Some("they/them"));
+    // display_name never set — empty string is the "unset" marker.
+    assert_eq!(p.display_name, "");
+}
+
+#[test]
+fn update_profile_invalid_crest_color_drops_to_none() {
+    let alice = Identity::generate();
+    let mut dag = test_dag(&alice);
+    // "red" is 3 chars + no leading '#' — apply_event should reject it
+    // to None so the UI falls back to --moss-2.
+    do_emit(
+        &mut dag,
+        &alice,
+        EventKind::UpdateProfile(Box::new(ProfileDelta {
+            display_name: None,
+            pronouns: None,
+            bio: None,
+            tagline: None,
+            crest_pattern: None,
+            crest_color: Some(Some("red".into())),
+            pinned: None,
+            elsewhere: None,
+            since: None,
+        })),
+    );
+    let state = materialize(&dag);
+    let p = &state.profiles[&alice.endpoint_id()];
+    assert!(p.crest_color.is_none());
+}
+
+#[test]
+fn update_profile_elsewhere_caps_length() {
+    let alice = Identity::generate();
+    let mut dag = test_dag(&alice);
+    do_emit(
+        &mut dag,
+        &alice,
+        EventKind::UpdateProfile(Box::new(ProfileDelta {
+            display_name: None,
+            pronouns: None,
+            bio: None,
+            tagline: None,
+            crest_pattern: None,
+            crest_color: None,
+            pinned: None,
+            elsewhere: Some(vec![
+                "one".into(),
+                "two".into(),
+                "three".into(),
+                "four".into(),
+                "five".into(),
+            ]),
+            since: None,
+        })),
+    );
+    let state = materialize(&dag);
+    let p = &state.profiles[&alice.endpoint_id()];
+    // Cap is 4 entries — fifth is dropped.
+    assert_eq!(p.elsewhere.len(), 4);
+    assert_eq!(p.elsewhere[0], "one");
+    assert_eq!(p.elsewhere[3], "four");
+}
+
+#[test]
+fn update_profile_pinned_round_trip() {
+    let alice = Identity::generate();
+    let mut dag = test_dag(&alice);
+    do_emit(
+        &mut dag,
+        &alice,
+        EventKind::UpdateProfile(Box::new(ProfileDelta {
+            display_name: None,
+            pronouns: None,
+            bio: None,
+            tagline: None,
+            crest_pattern: None,
+            crest_color: None,
+            pinned: Some(Some(PinnedFragment {
+                kind: PinnedKind::Quote,
+                body: "quiet is a kind of music".into(),
+            })),
+            elsewhere: None,
+            since: None,
+        })),
+    );
+    let state = materialize(&dag);
+    let p = &state.profiles[&alice.endpoint_id()];
+    let pinned = p.pinned.as_ref().expect("pinned present");
+    assert_eq!(pinned.kind, PinnedKind::Quote);
+    assert_eq!(pinned.body, "quiet is a kind of music");
 }

@@ -84,6 +84,7 @@ pub struct AppState {
     pub presence: PresenceUiState,
     /// Local-search UI state (phase 2e — `local-search.md`).
     pub search: SearchUiState,
+    pub profile: ProfileUiState,
 }
 
 /// Reactive local-search bucket. All writes flow through
@@ -115,6 +116,13 @@ pub struct SearchUiState {
     /// True while a 120 ms debounce timer is outstanding — UI dims the
     /// stale results row by 15 % per spec §Performance envelope.
     pub debouncing: ReadSignal<bool>,
+}
+
+/// Reactive profile-card bucket. `open` carries the currently-visible
+/// profile card's state (merged view + anchor). `None` means "closed".
+#[derive(Clone, Copy)]
+pub struct ProfileUiState {
+    pub open: ReadSignal<Option<crate::profile::ProfileState>>,
 }
 
 /// Reactive presence bucket. `per_peer` maps a peer's string id to the
@@ -236,6 +244,7 @@ pub struct AppWriteSignals {
     pub trust: TrustWriteSignals,
     pub presence: PresenceWriteSignals,
     pub search: SearchUiWriteSignals,
+    pub profile: ProfileWriteSignals,
 }
 
 /// Writes for the local-search UI state.
@@ -248,6 +257,11 @@ pub struct SearchUiWriteSignals {
     pub set_status: WriteSignal<SearchIndexBuildStatus>,
     pub set_recents: WriteSignal<Vec<RecentQuery>>,
     pub set_debouncing: WriteSignal<bool>,
+}
+
+#[derive(Clone, Copy)]
+pub struct ProfileWriteSignals {
+    pub set_open: WriteSignal<Option<crate::profile::ProfileState>>,
 }
 
 #[derive(Clone, Copy)]
@@ -476,6 +490,9 @@ pub fn create_signals() -> InitialSignals {
         }
     });
 
+    // Profile-card signals (phase 2c)
+    let (profile_open, set_profile_open) = signal(Option::<crate::profile::ProfileState>::None);
+
     let app_state = AppState {
         chat: ChatState {
             messages,
@@ -551,6 +568,7 @@ pub fn create_signals() -> InitialSignals {
             recents: search_recents,
             debouncing: search_debouncing,
         },
+        profile: ProfileUiState { open: profile_open },
     };
 
     let write_signals = AppWriteSignals {
@@ -627,6 +645,9 @@ pub fn create_signals() -> InitialSignals {
             set_status: set_search_status,
             set_recents: set_search_recents,
             set_debouncing: set_search_debouncing,
+        },
+        profile: ProfileWriteSignals {
+            set_open: set_profile_open,
         },
     };
 

@@ -31,15 +31,6 @@ pub fn remember_enabled() -> bool {
         .unwrap_or(true)
 }
 
-/// Flip the remember-recents preference. Consumed by the settings UI
-/// (landing in settings-tweaks.md).
-#[allow(dead_code)]
-pub fn set_remember_enabled(v: bool) {
-    if let Some(s) = storage() {
-        let _ = s.set_item(TOGGLE_KEY, if v { "true" } else { "false" });
-    }
-}
-
 /// Load all recents (up to `MAX_RECENTS`). Returns empty when the
 /// remember-recents toggle is off or when localStorage is unavailable.
 pub fn load() -> Vec<Recent> {

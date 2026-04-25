@@ -195,7 +195,7 @@ pub struct VoiceState {
 /// Maximum number of events the client will buffer while waiting for
 /// missing predecessors. Prevents unbounded memory growth from malicious
 /// or misbehaving peers sending events with chain gaps.
-const MAX_CLIENT_PENDING: usize = 5_000;
+pub(crate) const MAX_CLIENT_PENDING: usize = 5_000;
 
 /// Combined EventDag + ServerState + PendingBuffer, held in a single
 /// StateActor via [`ManagedDag`](willow_state::ManagedDag).

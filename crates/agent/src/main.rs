@@ -151,7 +151,6 @@ async fn main() -> anyhow::Result<()> {
             server::serve_stdio(client).await?;
         }
         "http" => {
-            eprintln!("Bearer token: {token}");
             tracing::info!("starting MCP HTTP server on {}", cli.bind);
             server::serve_http(client, &cli.bind, Default::default(), token).await?;
         }

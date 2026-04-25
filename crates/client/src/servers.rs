@@ -27,7 +27,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
             if let Some(restored) = ds.stashed.remove(&tid) {
                 ds.managed = restored;
             } else {
-                ds.managed = willow_state::ManagedDag::empty(5000);
+                ds.managed =
+                    willow_state::ManagedDag::empty(crate::state_actors::MAX_CLIENT_PENDING);
             }
             ds.managed.state().clone()
         })
@@ -117,7 +118,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
             willow_actor::state::mutate(&self.dag_addr, move |ds| {
                 ds.stashed.insert(oid, ds.managed.clone());
                 // Reset managed to empty so seed_genesis creates fresh state.
-                ds.managed = willow_state::ManagedDag::empty(5000);
+                ds.managed =
+                    willow_state::ManagedDag::empty(crate::state_actors::MAX_CLIENT_PENDING);
             })
             .await;
         }
