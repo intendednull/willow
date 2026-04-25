@@ -55,6 +55,14 @@ use crate::sas_wordlist::{SAS_WORDLIST_LEN, SAS_WORDS};
 /// version SAS compatibility; bump the suffix if the derivation changes.
 pub const SAS_DS_TAG: &[u8] = b"willow-sas-v1";
 
+/// Domain-separation tag for the per-peer fingerprint used by the
+/// profile card and trust badges.
+///
+/// Distinct from [`SAS_DS_TAG`] so fingerprints never collide with SAS
+/// codes — seeing `verified: four small stars rising moon garden` on
+/// one peer's card must not match the SAS code from a compare flow.
+pub const PEER_FINGERPRINT_DS_TAG: &[u8] = b"willow-peer-fingerprint-v1";
+
 /// How many words make up a SAS fingerprint. Fixed at 6 per spec.
 pub const SAS_WORD_COUNT: usize = 6;
 
@@ -106,6 +114,34 @@ pub fn sas_words(session_key: &[u8], a: &EndpointId, b: &EndpointId) -> [String;
             .get(idx)
             .copied()
             .unwrap_or_else(|| panic!("SAS index {idx} out of range"));
+        *slot = word.to_string();
+    }
+    out
+}
+
+/// Derive the six-word per-peer fingerprint for a single endpoint.
+///
+/// Used by the profile card to render a stable, verifiable identity
+/// hash that the peer can read aloud or copy from their own card. Not
+/// a secret — the 66-bit output is a commitment over the public key
+/// and the [`PEER_FINGERPRINT_DS_TAG`], nothing more.
+///
+/// Spec: `docs/specs/2026-04-19-ui-design/profile-card.md`
+/// §Data dependencies — the meta-row fingerprint rendered in mono-S.
+pub fn peer_fingerprint(peer: &EndpointId) -> [String; SAS_WORD_COUNT] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(PEER_FINGERPRINT_DS_TAG);
+    hasher.update(peer.as_bytes());
+    let hash = hasher.finalize();
+
+    let bytes = hash.as_bytes();
+    let mut out: [String; SAS_WORD_COUNT] = Default::default();
+    for (i, slot) in out.iter_mut().enumerate() {
+        let idx = extract_11bit_window(bytes, i);
+        let word = SAS_WORDS
+            .get(idx)
+            .copied()
+            .unwrap_or_else(|| panic!("peer fingerprint index {idx} out of range"));
         *slot = word.to_string();
     }
     out
@@ -265,4 +301,40 @@ mod tests {
     const STABLE_VECTOR: [&str; SAS_WORD_COUNT] = [
         "forcible", "parent", "vinifera", "unarmed", "utilize", "fraud",
     ];
+
+    // ─── Peer fingerprint (per-peer, no session key) ────────────────────
+
+    #[test]
+    fn peer_fingerprint_deterministic_for_same_peer() {
+        let (a, _b) = peer_pair();
+        let w1 = peer_fingerprint(&a);
+        let w2 = peer_fingerprint(&a);
+        assert_eq!(w1, w2);
+    }
+
+    #[test]
+    fn peer_fingerprint_differs_across_peers() {
+        let (a, b) = peer_pair();
+        assert_ne!(peer_fingerprint(&a), peer_fingerprint(&b));
+    }
+
+    #[test]
+    fn peer_fingerprint_distinct_from_sas() {
+        // A per-peer fingerprint using `a` must not collide with the
+        // SAS words for `(a, a)` at any plausible session key — the
+        // distinct DS tag prevents reuse across the two domains.
+        let (a, _b) = peer_pair();
+        let sas = sas_words(&[0u8; 32], &a, &a);
+        assert_ne!(peer_fingerprint(&a), sas);
+    }
+
+    #[test]
+    fn peer_fingerprint_has_six_words() {
+        let (a, _b) = peer_pair();
+        let words = peer_fingerprint(&a);
+        assert_eq!(words.len(), SAS_WORD_COUNT);
+        for w in &words {
+            assert!(!w.is_empty());
+        }
+    }
 }

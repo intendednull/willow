@@ -137,8 +137,25 @@ pub fn ParticipantTile(
                     />
                 }.into_any()
             } else {
+                let pid_for_profile = peer_id.clone();
                 view! {
-                    <div class="tile-avatar" style=format!("background: {gradient}")>
+                    <div
+                        class="tile-avatar"
+                        style=format!("background: {gradient}")
+                        on:click=move |ev: web_sys::MouseEvent| {
+                            // Open profile card; stop propagation so the
+                            // tile's focus-switch handler still runs for
+                            // the rest of the tile surface only (spec
+                            // §Event-bus API — avatar click opens the
+                            // card; tile click switches voice focus).
+                            ev.stop_propagation();
+                            use wasm_bindgen::JsCast as _;
+                            let anchor = ev
+                                .current_target()
+                                .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok());
+                            crate::profile::open_profile(&pid_for_profile, anchor);
+                        }
+                    >
                         {initial}
                     </div>
                 }.into_any()

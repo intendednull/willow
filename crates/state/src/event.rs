@@ -147,6 +147,26 @@ pub enum EventKind {
     /// Set or update the author's display name.
     SetProfile { display_name: String },
 
+    /// Overlay one or more profile fields in-place.
+    ///
+    /// Each *outer* `Option` on [`crate::types::ProfileDelta`] means
+    /// "unchanged when `None`", "overwrite when `Some`". For nullable
+    /// fields (`pronouns`, `bio`, `tagline`, `crest_pattern`,
+    /// `crest_color`, `pinned`, `since`), the inner `Option`
+    /// distinguishes "clear when `None`" from "set when `Some(value)`".
+    ///
+    /// The delta is [`Box`]ed because [`EventKind`] is stored inline in
+    /// `WireMessage::Event` and clippy's `large_enum_variant` lint
+    /// keeps the enum below the 200-byte threshold.
+    ///
+    /// Permission: self-authorship only (same contract as
+    /// [`EventKind::SetProfile`]). No permission check is performed —
+    /// the author signs for themselves.
+    ///
+    /// Spec: `docs/specs/2026-04-19-ui-design/profile-card.md`
+    /// §Data dependencies.
+    UpdateProfile(Box<crate::types::ProfileDelta>),
+
     // -- Encryption --
     /// Rotate a channel's encryption key.
     RotateChannelKey {

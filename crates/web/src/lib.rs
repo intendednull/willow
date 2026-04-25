@@ -16,6 +16,7 @@ pub mod icons;
 pub mod keybindings;
 pub mod notifications;
 pub mod palette_recents;
+pub mod profile;
 pub mod state;
 pub mod state_bridge;
 pub mod trust_store;

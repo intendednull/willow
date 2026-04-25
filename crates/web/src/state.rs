@@ -80,6 +80,14 @@ pub struct AppState {
     pub voice: VoiceState,
     pub trust: TrustState,
     pub presence: PresenceUiState,
+    pub profile: ProfileUiState,
+}
+
+/// Reactive profile-card bucket. `open` carries the currently-visible
+/// profile card's state (merged view + anchor). `None` means "closed".
+#[derive(Clone, Copy)]
+pub struct ProfileUiState {
+    pub open: ReadSignal<Option<crate::profile::ProfileState>>,
 }
 
 /// Reactive presence bucket. `per_peer` maps a peer's string id to the
@@ -200,6 +208,12 @@ pub struct AppWriteSignals {
     pub voice: VoiceWriteSignals,
     pub trust: TrustWriteSignals,
     pub presence: PresenceWriteSignals,
+    pub profile: ProfileWriteSignals,
+}
+
+#[derive(Clone, Copy)]
+pub struct ProfileWriteSignals {
+    pub set_open: WriteSignal<Option<crate::profile::ProfileState>>,
 }
 
 #[derive(Clone, Copy)]
@@ -401,6 +415,9 @@ pub fn create_signals() -> InitialSignals {
     let (presence_self_override, set_presence_self_override) =
         signal(willow_client::presence::PresenceOverride::Auto);
 
+    // Profile-card signals (phase 2c)
+    let (profile_open, set_profile_open) = signal(Option::<crate::profile::ProfileState>::None);
+
     let app_state = AppState {
         chat: ChatState {
             messages,
@@ -467,6 +484,7 @@ pub fn create_signals() -> InitialSignals {
             self_state: presence_self_state,
             self_override: presence_self_override,
         },
+        profile: ProfileUiState { open: profile_open },
     };
 
     let write_signals = AppWriteSignals {
@@ -534,6 +552,9 @@ pub fn create_signals() -> InitialSignals {
             set_per_peer: set_presence_per_peer,
             set_self_state: set_presence_self_state,
             set_self_override: set_presence_self_override,
+        },
+        profile: ProfileWriteSignals {
+            set_open: set_profile_open,
         },
     };
 
