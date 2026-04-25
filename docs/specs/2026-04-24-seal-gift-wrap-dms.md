@@ -115,8 +115,8 @@ external test vector.
 
 ### Multi-device must be designed in from day one
 
-Willow currently uses one Ed25519 key for signing, peer ID, and (via
-conversion) DH. The future MLS spec must split:
+Willow currently uses one Ed25519 key for signing, endpoint ID, and
+(via conversion) DH. The future MLS spec must split:
 
 - A long-term **identity key** that names the user across devices.
 - Per-device **session keys** that participate in MLS group state.
@@ -159,7 +159,8 @@ items to be deferred again.
 3. **Library choice.** `openmls` (Rust, RFC 9420 conformant, used by
    several production deployments) is the leading candidate. Open
    questions: WASM compatibility, ciphersuite selection, storage
-   trait fit with our `EventStore` abstraction.
+   trait fit with our `EventDag` / `ManagedDag` abstractions (the
+   legacy `EventStore` trait has been removed).
 
 4. **Ciphersuite.** RFC 9420 mandates X25519 + Ed25519 + ChaCha20-
    Poly1305 + SHA-256 as one valid option, which aligns with
@@ -205,10 +206,11 @@ Three layers, mirroring NIP-59:
    [Gift-wrap payload]                     (would have been on ephemeral author DAG)
 ```
 
-The rumor carried `author_peer_id`, a jittered timestamp hint, and a
-`willow_messaging::Content`. The seal wrapped the rumor under an X25519
-shared secret to the recipient. The gift wrap wrapped the seal under
-a fresh single-use ephemeral key.
+The rumor carried `author_endpoint_id` (Willow uses `EndpointId`, not
+`PeerId`), a jittered timestamp hint, and a `willow_messaging::Content`.
+The seal wrapped the rumor under an X25519 shared secret to the
+recipient. The gift wrap wrapped the seal under a fresh single-use
+ephemeral key.
 
 This appendix omits the originally-proposed `EventKind::DMSeal` and
 `EventKind::DMGiftWrap` variants from any implementation framing.
@@ -237,6 +239,12 @@ chacha_key = expanded[0..32]
 chacha_iv  = expanded[32..44]            // 12 bytes
 hmac_key   = expanded[44..76]
 ```
+
+> Note: `ed25519_to_x25519` above is generic NIP-44 pseudocode. In
+> the current Willow codebase the corresponding helpers are
+> `willow_crypto::identity_to_x25519` (for an `Identity`'s secret
+> key) and `willow_crypto::ed25519_public_to_x25519` (for a public
+> key); a future MLS spec should call these by their real names.
 
 Padded plaintext layout:
 
