@@ -9188,11 +9188,7 @@ mod phase_2a_message_row {
         // (no header). Uses the real MessageList predicate, not a
         // hand-rolled show_header flag.
         let now_ms = js_sys::Date::now() as u64;
-        let m0 = {
-            let mut m = make_msg("Mira", "one", now_ms);
-            m.author_peer_id = m.author_peer_id; // no-op, keep
-            m
-        };
+        let m0 = make_msg("Mira", "one", now_ms);
         let shared_author = m0.author_peer_id;
         let shared_name = m0.author_display_name.clone();
         let mut m1 = make_msg(&shared_name, "two", now_ms + 4 * 60 * 1000);

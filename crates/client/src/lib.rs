@@ -58,6 +58,9 @@ mod tests_multi_peer_sync;
 #[path = "tests/queue.rs"]
 mod tests_queue;
 
+/// How long a typing indicator remains visible after the last typing event, in milliseconds.
+pub const TYPING_INDICATOR_TTL_MS: u64 = 5_000;
+
 // Re-export key types at crate root for convenience.
 pub use event_receiver::EventReceiver;
 pub use events::ClientEvent;
@@ -943,7 +946,12 @@ pub fn test_client() -> (
     // Create a ManagedDag seeded with genesis — DAG and state are
     // atomically initialized together.
     let mut dag_state = state_actors::DagState {
-        managed: willow_state::ManagedDag::new(&identity, "Test Server", 5000),
+        managed: willow_state::ManagedDag::new(
+            &identity,
+            "Test Server",
+            crate::state_actors::MAX_CLIENT_PENDING,
+        )
+        .expect("genesis insert must succeed in test helper"),
         stashed: HashMap::new(),
     };
 
@@ -1694,7 +1702,8 @@ mod tests {
                 let events_for_b = a_events.clone();
                 willow_actor::state::mutate(&client_b.dag_addr, move |ds| {
                     // Reset to an empty DAG and replay A's events.
-                    ds.managed = willow_state::ManagedDag::empty(5000);
+                    ds.managed =
+                        willow_state::ManagedDag::empty(crate::state_actors::MAX_CLIENT_PENDING);
                     for event in events_for_b {
                         ds.managed.insert_and_apply(event).ok();
                     }

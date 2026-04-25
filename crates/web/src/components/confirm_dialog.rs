@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
 
 /// Reusable modal confirmation dialog with Cancel / Confirm buttons.
 ///
@@ -35,6 +36,25 @@ pub fn ConfirmDialog(
         "btn btn-primary"
     };
 
+    let confirm_button_ref = NodeRef::<leptos::html::Button>::new();
+    let cancel_button_ref = NodeRef::<leptos::html::Button>::new();
+
+    // Auto-focus the confirm button when the dialog becomes visible so
+    // keyboard users are pulled into the modal and Escape/Tab work as
+    // expected per WAI-ARIA APG.
+    Effect::new(move |prev: Option<bool>| {
+        let is_visible = visible.get();
+        let was_visible = prev.unwrap_or(false);
+        if is_visible && !was_visible {
+            leptos::prelude::request_animation_frame(move || {
+                if let Some(el) = confirm_button_ref.get_untracked() {
+                    let _ = el.focus();
+                }
+            });
+        }
+        is_visible
+    });
+
     view! {
         {move || {
             if !visible.get() {
@@ -47,21 +67,59 @@ pub fn ConfirmDialog(
             Some(view! {
                 <div
                     class="confirm-overlay"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="confirm-dialog-title"
                     on:keydown=move |ev: web_sys::KeyboardEvent| {
                         if ev.key() == "Escape" {
                             on_cancel.run(());
+                            return;
+                        }
+                        if ev.key() == "Tab" {
+                            // Simple focus trap: wrap between confirm and
+                            // cancel buttons so focus stays inside the
+                            // dialog while it is open.
+                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::Element>().ok());
+                            let Some(target_el) = target else { return; };
+                            if ev.shift_key() {
+                                if let Some(cancel_el) = cancel_button_ref.get_untracked() {
+                                    let cancel_node: &web_sys::Element = &cancel_el;
+                                    if cancel_node.is_same_node(Some(&target_el)) {
+                                        if let Some(confirm_el) = confirm_button_ref.get_untracked() {
+                                            ev.prevent_default();
+                                            let _ = confirm_el.focus();
+                                        }
+                                    }
+                                }
+                            } else if let Some(confirm_el) = confirm_button_ref.get_untracked() {
+                                let confirm_node: &web_sys::Element = &confirm_el;
+                                if confirm_node.is_same_node(Some(&target_el)) {
+                                    if let Some(cancel_el) = cancel_button_ref.get_untracked() {
+                                        ev.prevent_default();
+                                        let _ = cancel_el.focus();
+                                    }
+                                }
+                            }
                         }
                     }
                     tabindex="-1"
                 >
                     <div class="confirm-dialog">
-                        <h3>{title}</h3>
+                        <h3 id="confirm-dialog-title">{title}</h3>
                         <p>{msg}</p>
                         <div class="confirm-actions">
-                            <button class="btn btn-secondary" on:click=move |_| on_cancel.run(())>
+                            <button
+                                class="btn btn-secondary"
+                                node_ref=cancel_button_ref
+                                on:click=move |_| on_cancel.run(())
+                            >
                                 {cancel_text}
                             </button>
-                            <button class=confirm_class on:click=move |_| on_confirm.run(())>
+                            <button
+                                class=confirm_class
+                                node_ref=confirm_button_ref
+                                on:click=move |_| on_confirm.run(())
+                            >
                                 {confirm_text}
                             </button>
                         </div>

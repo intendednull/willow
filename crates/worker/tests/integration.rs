@@ -896,16 +896,17 @@ async fn sync_actor_broadcasts_request_when_heads_nonempty() {
             _ => break false,
         };
         if let willow_network::GossipEvent::Received(msg) = event {
-            if let Some((willow_common::WireMessage::Worker(wire), _)) =
-                willow_common::unpack_wire(&msg.content)
+            if let Some((
+                willow_common::WireMessage::Worker(willow_common::WorkerWireMessage::Request {
+                    payload: willow_common::WorkerRequest::Sync { server_id, heads },
+                    ..
+                }),
+                _,
+            )) = willow_common::unpack_wire(&msg.content)
             {
-                if let willow_common::WorkerWireMessage::Request { payload, .. } = wire {
-                    if let willow_common::WorkerRequest::Sync { server_id, heads } = payload {
-                        assert_eq!(server_id, "srv-sync");
-                        assert_eq!(heads.heads.len(), 1, "heads should have the one author");
-                        break true;
-                    }
-                }
+                assert_eq!(server_id, "srv-sync");
+                assert_eq!(heads.heads.len(), 1, "heads should have the one author");
+                break true;
             }
         }
     };
@@ -1082,29 +1083,28 @@ async fn two_workers_sync_state_via_gossip() {
         };
 
         if let willow_network::GossipEvent::Received(msg) = event {
-            if let Some((willow_common::WireMessage::Worker(wire), _)) =
-                willow_common::unpack_wire(&msg.content)
-            {
-                if let willow_common::WorkerWireMessage::Response {
+            if let Some((
+                willow_common::WireMessage::Worker(willow_common::WorkerWireMessage::Response {
                     request_id: rid,
                     target_peer,
                     payload,
-                } = wire
-                {
-                    if rid == request_id && target_peer == requester_b_id {
-                        match *payload {
-                            willow_common::WorkerResponse::SyncBatch { events } => {
-                                assert_eq!(events.len(), 2, "Worker A should send genesis + msg1");
-                                let hashes: std::collections::HashSet<_> =
-                                    events.iter().map(|e| e.hash).collect();
-                                assert!(hashes.contains(&genesis.hash));
-                                assert!(hashes.contains(&msg1.hash));
-                                found_response = true;
-                                break;
-                            }
-                            other => {
-                                panic!("expected SyncBatch in response payload, got {:?}", other)
-                            }
+                }),
+                _,
+            )) = willow_common::unpack_wire(&msg.content)
+            {
+                if rid == request_id && target_peer == requester_b_id {
+                    match *payload {
+                        willow_common::WorkerResponse::SyncBatch { events } => {
+                            assert_eq!(events.len(), 2, "Worker A should send genesis + msg1");
+                            let hashes: std::collections::HashSet<_> =
+                                events.iter().map(|e| e.hash).collect();
+                            assert!(hashes.contains(&genesis.hash));
+                            assert!(hashes.contains(&msg1.hash));
+                            found_response = true;
+                            break;
+                        }
+                        other => {
+                            panic!("expected SyncBatch in response payload, got {:?}", other)
                         }
                     }
                 }

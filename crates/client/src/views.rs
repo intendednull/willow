@@ -816,13 +816,13 @@ pub fn resolve_display_name(
     if let Some(profile) = event_state.profiles.get(peer_id) {
         let name = profile.display_name.trim();
         if !name.is_empty() {
-            return profile.display_name.clone();
+            return name.to_string();
         }
     }
     if let Some(name) = profiles.names.get(peer_id) {
         let trimmed = name.trim();
         if !trimmed.is_empty() {
-            return name.clone();
+            return trimmed.to_string();
         }
     }
     "unknown peer".to_string()
@@ -1367,6 +1367,31 @@ mod tests {
             view.messages[0].author_display_name, "unknown peer",
             "resolve_display_name must fall back to `unknown peer` when no profile is known"
         );
+    }
+
+    #[test]
+    fn resolve_display_name_trims_whitespace_from_profile_and_fallback() {
+        // A malicious peer can set a display name padded with whitespace
+        // (leading/trailing spaces, tabs, newlines). `resolve_display_name`
+        // must return the trimmed value so the UI cannot be visually
+        // spoofed with padded names that pass the emptiness check.
+        let owner = Identity::generate().endpoint_id();
+        let mallory = Identity::generate().endpoint_id();
+        let ghost = Identity::generate().endpoint_id();
+        let mut state = fresh_state(owner);
+        state.profiles.insert(
+            mallory,
+            Profile {
+                peer_id: mallory,
+                display_name: "  \t  Alice  \n  ".into(),
+            },
+        );
+
+        let mut profiles = ProfileState::default();
+        profiles.names.insert(ghost, "   Ghost\t".into());
+
+        assert_eq!(resolve_display_name(&state, &profiles, &mallory), "Alice");
+        assert_eq!(resolve_display_name(&state, &profiles, &ghost), "Ghost");
     }
 
     #[test]
