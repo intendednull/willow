@@ -19,10 +19,11 @@ do not agree:
    (replay) or `StorageEventStore::sync_since` (storage). This path
    already does what we want: it transmits only events the requester is
    missing, scoped per author.
-   *See* [`crates/replay/src/role.rs`][replay-role-sync] (lines 264–316),
+   *See* [`crates/replay/src/role.rs`][replay-role-sync]
+   (`Sync` arm, lines 266–316),
    [`crates/storage/src/role.rs`][storage-role-sync] (lines 78–85),
    [`crates/storage/src/store.rs`][storage-store-sync] (`sync_since`,
-   lines 281–381).
+   lines 289–381).
 
 2. **Gossip path (`WireMessage::SyncRequest { state_hash, topic }`)** —
    peer A asks peer B for "events I'm missing relative to state hash X."
@@ -58,7 +59,7 @@ serialized over the wire by the worker protocol. The novelty is:
 
 The DAG already enforces per-author monotonicity — every author's
 chain is a strictly increasing sequence enforced in
-[`crates/state/src/dag.rs:146-160`][dag-seq-check] (`expected_seq =
+[`crates/state/src/dag.rs:146-158`][dag-seq-check] (`expected_seq =
 self.latest_seq(&event.author) + 1`). Combined with the prev-hash
 check at lines 161–172, this makes streaming `seq > known_max` in
 ascending order delivers a contiguous chain with no gaps and no
@@ -92,7 +93,7 @@ via `EventDag::heads_summary()` at
 [`crates/state/src/dag.rs:267`][dag]; the `HeadsSummary` /
 `AuthorHead` types themselves live in
 [`crates/state/src/sync.rs:21-33`][heads-summary]) scoped to a
-`SyncFilter`, and sends a `SyncRequest`.
+`SyncFilter`, and sends a `SyncRequestV2 { request_id, heads, filter }`.
 
 **Phase 2 — Responder stream.** The responder, for each author whose
 `our_max_seq > requester.heads[author].seq` (or absent from the
@@ -107,17 +108,17 @@ that we don't know locally are silently ignored — we cannot serve what
 we don't have (matches the existing
 [`events_since_unknown_author` test][heads-summary] at
 `crates/state/src/sync.rs:464-476`). Events are batched into one or
-more `SyncBatch { events, more: true }` envelopes, each sized to fit
+more `SyncBatchV2 { events, more: true }` envelopes, each sized to fit
 within the gossip transport's 64 KiB limit (see
 [Wire protocol](#wire-protocol)).
 
 **Phase 3 — Termination.** The final envelope carries
-`SyncBatch { events: …, more: false }`. The client emits a
+`SyncBatchV2 { events: …, more: false }`. The client emits a
 `HistorySyncComplete` event for the UI per the EOSE spec (#214); see
 [Termination + EOSE](#termination--eose).
 
 Per-author monotonicity (DAG invariant at
-[`crates/state/src/dag.rs:146-160`][dag-seq-check]) guarantees that
+[`crates/state/src/dag.rs:146-158`][dag-seq-check]) guarantees that
 streaming `seq > known_max` in ascending order delivers a contiguous
 chain with no gaps and no duplicates, so **no sort key negotiation is
 required**. Authority events (e.g. `GrantPermission`, `CreateChannel`)
@@ -126,9 +127,12 @@ per-author chains.
 
 ## Wire protocol
 
-This spec replaces the existing `WireMessage::SyncRequest { state_hash,
-topic }` and clarifies the semantics of `WireMessage::SyncBatch`. Both
-are already variants of the `WireMessage` enum in
+This spec adds two new **additive** variants alongside the existing
+`WireMessage::SyncRequest { state_hash, topic }` and
+`WireMessage::SyncBatch { events }`. The legacy variants stay defined
+and decodable for one release cycle so old peers and new peers can
+co-exist on the wire (see [Migration](#migration) for the rationale).
+All four variants live inside the `WireMessage` enum in
 [`crates/common/src/wire.rs:13-28`][wire-msg], wrapped in
 `MessageType::Channel` envelopes (see [`crates/transport/src/lib.rs:62-79`][message-type]
 for the current `MessageType` allocation: `Chat=0` through `Ping=6`,
@@ -156,22 +160,41 @@ Two design choices to call out explicitly:
    for fork detection — dropping it would lose that capability for free
    on every gossip-level sync. We keep the hash.
 
+3. **Use the same `request_id` type as the worker path.** The
+   existing worker correlation field is
+   `WorkerWireMessage::Request { request_id: String, .. }` /
+   `Response { request_id: String, .. }` at
+   [`crates/common/src/worker_types.rs:73-84`][worker-types]. The new
+   gossip variants use `request_id: String` for the same reason —
+   shared demux/dispatch helpers stay monomorphic instead of needing a
+   `String`/`u64` adapter at every callsite.
+
 ```rust
-// In crates/common/src/wire.rs — replaces today's SyncRequest variant:
+// In crates/common/src/wire.rs — additive variants. The legacy
+// SyncRequest / SyncBatch variants stay untouched so old peers can
+// continue to decode envelopes from new peers (and vice versa) until
+// the legacy path is removed in a later release.
 pub enum WireMessage {
     Event(willow_state::Event),
 
-    // REPLACES the legacy `SyncRequest { state_hash, topic }`. The
-    // payload is the requester's HeadsSummary plus an optional filter.
-    SyncRequest {
-        heads:  willow_state::HeadsSummary,
-        filter: SyncFilter,
-    },
+    // Legacy variants kept verbatim for one release cycle so old peers
+    // do not see decode failures on the entire envelope:
+    SyncRequest { state_hash: willow_state::EventHash, topic: Option<String> },
+    SyncBatch   { events: Vec<willow_state::Event> },
 
-    // Existing variant; gains a `more` flag and a `request_id` so a
-    // multi-envelope response can be correlated and terminated.
-    SyncBatch {
-        request_id: u64,
+    // NEW additive variants. Old peers fail to decode just these
+    // variants (the unknown enum tag), not the whole envelope.
+    // request_id is `String` to match the worker path's correlation
+    // type (`WorkerWireMessage::Request { request_id: String, .. }`
+    // in worker_types.rs:73-78); reusing the same type lets a single
+    // demux table cover both paths.
+    SyncRequestV2 {
+        request_id: String,
+        heads:      willow_state::HeadsSummary,
+        filter:     SyncFilter,
+    },
+    SyncBatchV2 {
+        request_id: String,
         events:     Vec<willow_state::Event>,
         more:       bool,
     },
@@ -197,7 +220,7 @@ pub struct SyncFilter {
 }
 ```
 
-Each `SyncBatch` payload is bounded by the **gossip layer's 64 KiB
+Each `SyncBatchV2` payload is bounded by the **gossip layer's 64 KiB
 `max_message_size`**, not transport's deserialization safety cap.
 Concretely:
 
@@ -210,24 +233,44 @@ Concretely:
   deserialization-time anti-DoS cap and is **deliberately set above**
   the gossip ceiling so the framing overhead can't trip it. The
   comment at `transport/lib.rs:33-35` makes this explicit.
-- Therefore the responder's per-envelope budget is the gossip cap minus
-  envelope + signature framing — roughly **~57-60 KiB usable** for the
-  serialized `Vec<Event>` payload after `Envelope`, `WireMessage`
-  variant tag, and bincode framing are accounted for. Responders pack
-  events greedily until the next event would push the serialized
-  envelope past that usable budget, emit
-  `SyncBatch { request_id, events, more: true }`, and continue. The
-  final batch sets `more: false`.
+- Therefore the responder's per-envelope budget is **64 KiB minus a
+  small constant** for envelope + signature framing. The constant is
+  bounded by: `SignedMessage` adds ~104 B (32 B public key + 64 B
+  signature, each carried as `Vec<u8>` with 8 B bincode length prefix);
+  `Envelope` adds ~11 B (`u16` version + `u8` `MessageType` + 8 B `Vec<u8>`
+  length prefix); the `WireMessage` enum tag is ~4 B; and the
+  `SyncBatchV2` payload header (`request_id` String length prefix +
+  `events` Vec length prefix + `more` bool) is ~25 B. Total framing
+  overhead is well under 200 B, so responders treat the per-envelope
+  budget as **64 KiB − ~200 B ≈ 65,300 bytes** available for the
+  serialized event sequence. Responders pack events greedily until the
+  next event would push the serialized envelope past that budget, emit
+  `SyncBatchV2 { request_id, events, more: true }`, and continue. The
+  final batch sets `more: false`. Implementers SHOULD measure the actual
+  framing overhead in a unit test and tune the constant rather than
+  relying on the estimate above.
 
-This aligns the new gossip-side `SyncBatch` budget with how the
+This aligns the new gossip-side `SyncBatchV2` budget with how the
 existing worker `WorkerResponse::SyncBatch` already operates today
 (also gossip-bound — see [`crates/worker/src/actors/sync.rs:79-87`][worker-sync]
-and the `topic.broadcast(...)` path), and supersedes the existing
-`SYNC_BATCH_LIMIT = 10_000` event count cap at
-[`crates/storage/src/store.rs:287`][store-schema], which can already
-overflow the gossip cap in practice for non-trivial event sizes. A
-storage-side per-call cap stays useful as an OOM guard, but the
-authoritative bound for sync streaming is the gossip envelope budget.
+and the `topic.broadcast(...)` path), and supersedes **two** event-count
+caps that exist today:
+
+- Producer-side: `SYNC_BATCH_LIMIT = 10_000` at
+  [`crates/storage/src/store.rs:287`][store-schema], which can already
+  overflow the gossip cap in practice for non-trivial event sizes.
+  Replaced by the per-envelope byte budget above. A storage-side
+  per-call cap stays useful as an OOM guard, but the authoritative
+  bound for sync streaming is the gossip envelope budget.
+- Receiver-side: `MAX_SYNC_BATCH_SIZE = 10_000` at
+  [`crates/client/src/listeners.rs:256`][listeners-todo], which today
+  rejects oversized inbound `SyncBatch` envelopes. With per-envelope
+  byte sizing this cap becomes effectively a no-op (a 64 KiB envelope
+  cannot hold 10,000 non-trivial events). Implementers SHOULD retain
+  it explicitly as defense-in-depth against a malicious/buggy peer
+  serializing 10,000+ tiny events into a single envelope, or remove it
+  and document that the gossip cap is the sole bound — pick one and
+  call it out in the implementation PR.
 
 [iroh-gossip-cap]: ../../crates/network/src/iroh.rs
 [worker-sync]: ../../crates/worker/src/actors/sync.rs
@@ -237,9 +280,21 @@ in [`crates/common/src/worker_types.rs:88-95`][worker-types] is already
 the heads-based protocol; this spec aligns the gossip-level field
 shape with it so the same `HeadsSummary` value can drive both paths
 unchanged. Where the gossip path needs streaming + filtering, the
-worker `WorkerResponse::SyncBatch { events: Vec<Event> }` will need to
-gain matching `request_id` and `more` fields. This is a coordinated
-change to both `WireMessage` and `WorkerResponse`.
+worker `WorkerResponse::SyncBatch { events: Vec<Event> }` only needs
+to gain a `more: bool` field — request correlation already lives in
+the outer envelope as `WorkerWireMessage::Response { request_id:
+String, target_peer, payload }` (see
+[`crates/common/src/worker_types.rs:79-84`][worker-types]). Adding
+`request_id` inside the payload would duplicate it. So:
+
+- **Gossip path** (`WireMessage`): adds *both* `request_id` and `more`
+  on the new additive `SyncRequestV2` / `SyncBatchV2` variants, because
+  the outer `Envelope` carries no per-exchange correlation.
+- **Worker path** (`WorkerResponse::SyncBatch`): adds *only* `more`;
+  reuses the outer `WorkerWireMessage::Response.request_id`.
+
+This asymmetry is intentional and avoids duplicating the correlation
+ID on the worker path.
 
 [worker-types]: ../../crates/common/src/worker_types.rs
 
@@ -288,7 +343,9 @@ order, dedupe, or terminate sync. The per-author `seq` carried in
 | storage ↔ storage | either side | Geographic redundancy. Both peers SHOULD hold `SyncProvider` permission once the gate is enforced (see [Bandwidth and safety](#bandwidth-and-safety)). |
 
 The [Relay](../../crates/relay/src/lib.rs) remains a stateless bridge:
-it forwards `SyncRequest` and `SyncBatch` envelopes unchanged.
+it forwards `SyncRequestV2` and `SyncBatchV2` envelopes unchanged
+(and continues to forward the legacy `SyncRequest` / `SyncBatch`
+variants for the duration of the migration window).
 
 ## Storage requirements
 
@@ -313,15 +370,32 @@ multiple servers. The migration plan:
 3. Update `sync_since` to use the new index. The existing
    implementation in [`crates/storage/src/store.rs:289-381`][store-schema]
    has two branches: an empty-heads branch
-   (`store.rs:290-318`) that issues `SELECT … WHERE server_id = ?
+   (`store.rs:289-319`) that issues `SELECT … WHERE server_id = ?
    ORDER BY seq ASC LIMIT ?` (no author filter, server scan), and a
-   non-empty branch (`store.rs:323-349`) that builds an OR-joined
+   non-empty branch (`store.rs:321-349`) that builds an OR-joined
    disjunction `(author = ? AND seq > ?)` per requester-known author
    plus an `author NOT IN (...)` fanout for authors the requester
-   never mentioned. Both branches benefit from the new compound
-   `(server_id, author, seq)` index; the disjunctive query in
-   particular goes from a per-server scan with author predicate to a
-   per-(server, author) range scan.
+   never mentioned.
+
+   The new compound `(server_id, author, seq)` index helps **only** the
+   per-known-author `(author = ? AND seq > ?)` predicates: each becomes
+   a per-(server, author) range scan. The `author NOT IN (...)` half
+   of the disjunct still requires a per-server scan with an in-list
+   negation filter — the index gives the planner no key prefix to seek
+   on, so half the non-empty branch's query stays a server-scan
+   regardless of the new index.
+
+   **Recommended fix:** restructure `sync_since` to enumerate
+   "authors known locally but absent from `heads`" up-front (using
+   `SELECT DISTINCT author FROM events WHERE server_id = ?`, i.e. the
+   `known_authors` helper introduced in
+   [Per-author tail query helpers](#per-author-tail-query-helpers)) and
+   emit explicit `(author = ? AND seq > 0)` predicates for those
+   authors instead of `author NOT IN (...)`. After this restructuring,
+   *every* disjunct is `(author = ? AND seq > ?)` and the entire query
+   is a union of per-(server, author) range scans on the new index.
+   Without this restructuring the index addition is a partial win on
+   the disjunctive query, not a full one.
 
 [store-schema]: ../../crates/storage/src/store.rs
 
@@ -338,7 +412,7 @@ LIMIT ?;
 
 The responder iterates the union of `(authors in requester.heads ∪
 authors known locally)` filtered by `SyncFilter.authors`, paging the
-above query per author and packing into `SyncBatch` envelopes.
+above query per author and packing into `SyncBatchV2` envelopes.
 
 The in-memory replay worker holds the same `EventDag` clients use:
 per-author chains are `HashMap<EndpointId, Vec<EventHash>>` plus an
@@ -394,15 +468,15 @@ to build the request.
 
 ## Termination + EOSE
 
-`SyncBatch { request_id, more: false }` is the canonical end-of-stream
-marker. Upon receipt the client:
+`SyncBatchV2 { request_id, more: false }` is the canonical
+end-of-stream marker. Upon receipt the client:
 
 1. Applies the batch via the client's existing per-event entry point
-   `try_insert_event(ctx, event)`
-   ([`crates/client/src/listeners.rs:276-278`][listeners-todo]), which
-   wraps `EventDag::insert(event)`
-   ([`crates/state/src/dag.rs:115`][dag-insert]) and the
-   `apply_incremental(state, &event)` step
+   `try_insert_event(ctx, event)` (defined at
+   [`crates/client/src/listeners.rs:120`][listeners-todo]; the existing
+   batch loop calls it at `listeners.rs:276-278`), which wraps
+   `EventDag::insert(event)` ([`crates/state/src/dag.rs:115`][dag-insert])
+   and the `apply_incremental(state, &event)` step
    ([`crates/state/src/materialize.rs:61`][materialize]) through
    `ManagedDag`. Conceptually: validate per-author `seq` and `prev`,
    then advance `ServerState`. The internal `apply_event` (line 130 in
@@ -411,8 +485,30 @@ marker. Upon receipt the client:
    the EOSE spec (#214), which owns the user-visible "history loaded"
    signal and the `MessageType` slot 7 reservation.
 
+**Relationship to existing `ClientEvent::SyncCompleted`.** The
+`HistorySyncComplete` event is **not yet defined in code**; the EOSE
+spec (#214) is currently unmerged. Today,
+`ClientEvent::SyncCompleted { ops_applied }`
+([`crates/client/src/events.rs:57`][client-events]) is emitted from
+`listeners.rs:285-289` after **every** `SyncBatch` whose `count > 0`,
+not just at end-of-stream. The "fire only on `more: false`" semantics
+this spec proposes are a behavior change, not a no-op rename. Two
+possible reconciliations, to be picked when #214 lands:
+
+- **Option A — repurpose:** keep the existing `SyncCompleted` event
+  but change its emission point to fire only on `more: false` (i.e.
+  rename in spirit, not on the wire). Existing consumers in
+  `crates/agent/src/notifications.rs` already gracefully handle a
+  single end-of-stream signal.
+- **Option B — additive:** introduce `HistorySyncComplete` as a
+  separate `ClientEvent` variant emitted on `more: false`, and
+  deprecate `SyncCompleted` (which becomes per-batch progress) over
+  one release before removing it.
+
 This spec deliberately does not redefine `HistorySyncComplete`; it
-only triggers it.
+only triggers it. Pick A or B in the EOSE spec PR.
+
+[client-events]: ../../crates/client/src/events.rs
 
 [dag-insert]: ../../crates/state/src/dag.rs
 [materialize]: ../../crates/state/src/materialize.rs
@@ -424,7 +520,7 @@ Heads-based exchange recovers the public DAG including
 **sealed key shares** needed to decrypt historical messages (sealed
 shares are unicast, not in the DAG).
 
-After the `SyncBatch { more: false }` arrives, for every channel where
+After the `SyncBatchV2 { more: false }` arrives, for every channel where
 the client now sees a `RotateChannelKey` epoch it cannot decrypt, it
 emits the `RequestEpochKey { channel_id, epoch }` message defined by
 spec #220. Any current channel member with the unwrapped epoch key
@@ -449,41 +545,65 @@ the names `SyncRequest` / `SyncBatch`, and the spec touches both:
 
 1. **`WireMessage::SyncRequest` / `WireMessage::SyncBatch`** in
    [`crates/common/src/wire.rs:13-28`][wire-msg] — for client↔client
-   gossip. **Payload shape changes** from `{ state_hash, topic }` to
-   `{ heads, filter }`, and `SyncBatch` gains `request_id` + `more`.
-   This is a wire-incompatible change to the gossip protocol — the
-   structural change is contained inside the existing `WireMessage`
-   enum; no new `MessageType` slot is added.
+   gossip. New peers gain **additive** `WireMessage::SyncRequestV2 {
+   request_id, heads, filter }` and `WireMessage::SyncBatchV2 {
+   request_id, events, more }` variants. The legacy variants stay
+   defined for one release cycle so old peers can still decode the
+   envelope of any new message they don't understand and ignore just
+   the unknown variant. No new `MessageType` slot is added.
 
 2. **`WorkerRequest::Sync` / `WorkerResponse::SyncBatch`** in
    [`crates/common/src/worker_types.rs:88-125`][worker-types] — for
    client↔worker request/response. The `WorkerRequest::Sync` payload
    is **unchanged** (it already carries `HeadsSummary`).
-   `WorkerResponse::SyncBatch` gains `request_id` + `more` to match
-   the gossip-side `SyncBatch` and support multi-envelope streaming.
+   `WorkerResponse::SyncBatch` gains a `more: bool` field to support
+   multi-envelope streaming; `request_id` already lives on the outer
+   `WorkerWireMessage::Response` envelope and is not duplicated inside
+   the payload.
 
-Cutover: bump `PROTOCOL_VERSION` in
-[`crates/transport/src/lib.rs:30`][message-type] together with the
-wire change. Old clients see the new `SyncRequest` payload as a Serde
-decode failure and ignore it; new clients ignore old `SyncRequest`
-variants. Because the legacy gossip path was already a 500-event
-heuristic dump, the user-facing degradation during rollout is at most
-"slower bootstrap until both peers are upgraded," matching the status
-quo.
+**Why additive variants instead of bumping `PROTOCOL_VERSION`.**
+`PROTOCOL_VERSION` lives in
+[`crates/transport/src/lib.rs:30`][message-type] and is checked by
+`Envelope::validate_version` at
+[`crates/transport/src/lib.rs:120-128`][message-type]. Any version
+mismatch causes the receiver to reject the **entire envelope** with
+`UnsupportedVersion` — not just the inner message. Bumping
+`PROTOCOL_VERSION` would therefore break **every** message kind
+between an upgraded peer and an old peer, not just sync. This
+contradicts a soft rollout. By keeping the bump out and instead
+adding new `WireMessage` enum variants, the failure mode for an old
+peer receiving a new `SyncRequestV2` is a bincode "unknown enum
+variant" decode error confined to that one message — the envelope and
+all other message kinds (`Event`, `TypingIndicator`, presence, voice,
+worker requests, …) keep flowing. New peers handling an inbound
+legacy `WireMessage::SyncRequest` either ignore it (if their peer is
+new enough to send the V2 variant) or fall back to the legacy
+500-event response while the rollout completes.
+
+Cutover, then, is purely additive: ship `SyncRequestV2` /
+`SyncBatchV2` together with a new responder, leave the legacy variant
+handlers in place, and remove the legacy variants in a follow-up
+release once a measured majority of peers have upgraded. Because the
+legacy gossip path was already a 500-event heuristic dump, the
+user-facing degradation during the overlap window is at most
+"bootstrap stays on the legacy 500-event path until both peers are
+upgraded," matching the status quo.
 
 ## Bandwidth and safety
 
-- `SyncRequest.heads` size: `O(authors_known)` × ~72 bytes (32-byte
+- `SyncRequestV2.heads` size: `O(authors_known)` × ~72 bytes (32-byte
   `EndpointId` + 8-byte `u64` seq + 32-byte head hash). 1000 authors
-  ≈ 72 KB — this **exceeds the 64 KiB gossip cap**. Servers with
-  > ~800 known authors will need to chunk the `SyncRequest` itself or
-  fall back to a non-gossip ALPN. For all expected near-term
+  ≈ 72 KB — this **exceeds the 64 KiB gossip cap**. With the
+  per-envelope budget of ~65,300 bytes (see [Wire protocol](#wire-protocol)),
+  the threshold is ~900 known authors before a single `SyncRequestV2`
+  no longer fits. Servers above that will need to chunk the request
+  itself or fall back to a non-gossip ALPN. For all expected near-term
   deployments (single- or double-digit author counts per server) this
   is non-binding; the chunking design is deferred to the implementation
   PR and called out as an open question below.
-- `SyncBatch` is bounded per envelope by the ~57-60 KiB gossip-usable
-  budget (see [Wire protocol](#wire-protocol)); total bytes are bounded
-  by the actual diff, never by `|history|`.
+- `SyncBatchV2` is bounded per envelope by the ~65,300-byte
+  gossip-usable budget (see [Wire protocol](#wire-protocol)); total
+  bytes are bounded by the actual diff, never by `|history|`.
 - Responders enforce a per-peer concurrency cap (e.g. 2 in-flight
   responses) and a per-session wall-clock budget to bound memory.
 - **Serving SHOULD be gated by `SyncProvider`**
@@ -505,8 +625,9 @@ quo.
 | unit | `EventDag::events_since` returns contiguous `(author, seq)` ranges, empty when up-to-date (already covered) | `crates/state/src/sync.rs` (existing tests at lines 418–501) |
 | unit | `StorageEventStore::sync_since` for known and unknown server IDs (already covered) | `crates/storage/src/store.rs` (existing tests at lines 998–1085) |
 | unit | New: `events_since` accepts a `SyncFilter` and respects `channels` / `authors` / `event_kinds` / `since_ms` | `crates/state/src/sync.rs` (extend existing module) |
-| unit | New: `WireMessage::SyncRequest { heads, filter }` and `SyncBatch { request_id, events, more }` Serde round-trip; serialized envelope ≤ 64 KiB gossip cap | `crates/common/src/wire.rs` (extend inline `#[cfg(test)]` module that already covers `SyncRequest` / `SyncBatch` round-trip) |
-| unit | New: Batching: 5 KB events × 100 authors split correctly across `SyncBatch` envelopes (each ≤ ~60 KiB usable budget) with `more` flag and consistent `request_id` | `crates/state/src/sync.rs` or a new `crates/network/src/sync.rs` (location TBD by implementer) |
+| unit | New: `WireMessage::SyncRequestV2 { request_id, heads, filter }` and `SyncBatchV2 { request_id, events, more }` Serde round-trip; serialized envelope ≤ 64 KiB gossip cap; **legacy `SyncRequest` / `SyncBatch` variants still round-trip unchanged** so old peers stay compatible | `crates/common/src/wire.rs` (extend inline `#[cfg(test)]` module that already covers `SyncRequest` / `SyncBatch` round-trip) |
+| unit | New: Measure actual framing overhead end-to-end (Envelope + WireMessage tag + SignedMessage) so the per-envelope byte budget constant is empirical, not estimated | `crates/common/src/wire.rs` |
+| unit | New: Batching: 5 KB events × 100 authors split correctly across `SyncBatchV2` envelopes (each ≤ ~65,300-byte gossip-usable budget) with `more` flag and consistent `request_id` | `crates/state/src/sync.rs` or a new `crates/network/src/sync.rs` (location TBD by implementer) |
 | integration | Three-peer convergence: A has authors {x:1..100}, B has {y:1..100}, C empty; C syncs from A then B and ends with both chains complete | `crates/client/src/tests/` against `willow_network::mem::MemNetwork` |
 | integration | Edge cases: empty store, requester already up-to-date (zero-event response with `more: false`), single missing event, author entirely unknown to requester | same crate |
 | integration | Authority events sync identically (server-create, grant, kick reach client without special-casing) | same crate |
@@ -545,7 +666,7 @@ monotonicity invariant.
    `willow-client` (pull-based, after `HistorySyncComplete`) or in
    the channel decryption path (lazy, on first failed decrypt)?
    Pull-based is simpler; lazy is more bandwidth-friendly.
-2. **Per-author rate-limiting on `SyncRequest`.** A malicious or
+2. **Per-author rate-limiting on `SyncRequestV2`.** A malicious or
    buggy client could open many sessions with disjoint author
    subsets to amplify responder DB work. Should the responder
    maintain a per-peer token bucket keyed on
@@ -557,8 +678,8 @@ monotonicity invariant.
    to `MessageType::Sync = 8` (slot 7 reserved by EOSE spec #214)
    would let middleboxes route sync traffic without parsing the
    inner envelope. Defer until the consolidation lands.
-4. **Chunking the request itself.** A single `SyncRequest.heads`
-   payload of `>~ 800` known authors crosses the 64 KiB gossip cap.
+4. **Chunking the request itself.** A single `SyncRequestV2.heads`
+   payload of `>~ 900` known authors crosses the 64 KiB gossip cap.
    Options: (a) split the request across multiple envelopes correlated
    by `request_id` and processed atomically by the responder; (b) move
    the entire sync exchange to a dedicated iroh ALPN protocol where
