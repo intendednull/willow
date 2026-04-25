@@ -9357,7 +9357,12 @@ async fn phase_2e_search_input_placeholder_matches_spec() {
 }
 
 #[wasm_bindgen_test]
-async fn phase_2e_results_listbox_has_aria_live_polite() {
+async fn phase_2e_results_listbox_has_no_aria_live() {
+    // Composite-widget roles such as `listbox` must not also carry
+    // `aria-live`: AT either re-announces every option on update or
+    // silently drops the live cue. The streaming banner owns the
+    // polite count announcements (see
+    // `phase_2e_streaming_banner_copy_format`).
     let container = mount_test(|| {
         view! {
             <div
@@ -9365,7 +9370,6 @@ async fn phase_2e_results_listbox_has_aria_live_polite() {
                 class="search-results"
                 role="listbox"
                 aria-label="search results"
-                aria-live="polite"
             ></div>
         }
     });
@@ -9373,9 +9377,9 @@ async fn phase_2e_results_listbox_has_aria_live_polite() {
 
     let listbox = query(&container, "#search-results-list").expect("results listbox present");
     assert_eq!(listbox.get_attribute("role").as_deref(), Some("listbox"));
-    assert_eq!(
-        listbox.get_attribute("aria-live").as_deref(),
-        Some("polite")
+    assert!(
+        listbox.get_attribute("aria-live").is_none(),
+        "listbox must not carry aria-live; the streaming banner owns the polite live region"
     );
     assert_eq!(
         listbox.get_attribute("aria-label").as_deref(),
