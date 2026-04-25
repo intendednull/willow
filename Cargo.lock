@@ -356,7 +356,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cffb0e931875b666fc4fcb20fee52e9bbd1ef836fd9e9e04ec21555f9f85f7ef"
 dependencies = [
  "fastrand",
- "gloo-timers",
+ "gloo-timers 0.3.0",
  "tokio",
 ]
 
@@ -1710,6 +1710,18 @@ name = "gloo-timers"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbb143cf96099802033e0d4f4963b19fd2e0b728bcf076cd9cf7f6634f092994"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "gloo-timers"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "482ce8a491a501da4cd806bd190275363d674f2845005c6ddbd5d3e1dd54495d"
 dependencies = [
  "futures-channel",
  "futures-core",
@@ -5942,7 +5954,7 @@ dependencies = [
  "futures",
  "futures-channel",
  "futures-core",
- "gloo-timers",
+ "gloo-timers 0.4.0",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -5983,7 +5995,7 @@ dependencies = [
  "bytes",
  "dirs",
  "futures",
- "gloo-timers",
+ "gloo-timers 0.4.0",
  "js-sys",
  "parking_lot",
  "regex",
@@ -6081,7 +6093,7 @@ dependencies = [
  "blake3",
  "bytes",
  "futures-lite",
- "gloo-timers",
+ "gloo-timers 0.4.0",
  "iroh",
  "iroh-base",
  "iroh-blobs",
@@ -6179,7 +6191,7 @@ dependencies = [
  "blake3",
  "console_error_panic_hook",
  "futures",
- "gloo-timers",
+ "gloo-timers 0.4.0",
  "js-sys",
  "leptos",
  "send_wrapper",
