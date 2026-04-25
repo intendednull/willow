@@ -466,6 +466,13 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
                 reply_to: *reply_to,
             });
             state.message_index.insert(event.hash, idx);
+            // Advance the channel's last_activity_hlc on every Message.
+            // Tracked unconditionally — permanent channels carry it too —
+            // so the branch stays simple and a future feature can reuse
+            // it. Spec: ephemeral-channels.md §Inactivity ladder.
+            if let Some(ch) = state.channels.get_mut(channel_id) {
+                ch.last_activity_hlc = Some(event.timestamp_hint_ms);
+            }
         }
 
         EventKind::EditMessage {

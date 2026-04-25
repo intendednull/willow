@@ -4082,6 +4082,80 @@ fn channel_with_ephemeral_config_serializes() {
 }
 
 #[test]
+fn message_advances_last_activity_hlc() {
+    use crate::ephemeral::{EphemeralConfig, EphemeralKind, DEFAULT_CHANNEL_THRESHOLD_MS};
+
+    let owner = Identity::generate();
+    let mut dag = test_dag(&owner);
+    do_emit(
+        &mut dag,
+        &owner,
+        EventKind::CreateChannel {
+            name: "side-room".into(),
+            channel_id: "c1".into(),
+            kind: crate::types::ChannelKind::Text,
+            ephemeral: Some(EphemeralConfig {
+                kind: EphemeralKind::Channel,
+                idle_threshold_ms: DEFAULT_CHANNEL_THRESHOLD_MS,
+            }),
+        },
+    );
+
+    // Use a non-zero timestamp on the message so we can verify the
+    // channel's last_activity_hlc advances to it.
+    let msg_event = dag.create_event(
+        &owner,
+        EventKind::Message {
+            channel_id: "c1".into(),
+            body: "hi".into(),
+            reply_to: None,
+        },
+        vec![],
+        1_700_000_000_000,
+    );
+    dag.insert(msg_event.clone()).unwrap();
+
+    let state = materialize(&dag);
+    let ch = state.channels.get("c1").expect("channel should exist");
+    assert_eq!(ch.last_activity_hlc, Some(msg_event.timestamp_hint_ms));
+}
+
+#[test]
+fn message_on_permanent_channel_also_advances_hlc() {
+    // Tracking is unconditional — non-ephemeral channels can carry
+    // the field too. Cheap, simplifies the materialize branch, and
+    // a future feature might use it.
+    let owner = Identity::generate();
+    let mut dag = test_dag(&owner);
+    do_emit(
+        &mut dag,
+        &owner,
+        EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: "g1".into(),
+            kind: crate::types::ChannelKind::Text,
+            ephemeral: None,
+        },
+    );
+
+    let msg_event = dag.create_event(
+        &owner,
+        EventKind::Message {
+            channel_id: "g1".into(),
+            body: "hi".into(),
+            reply_to: None,
+        },
+        vec![],
+        1_700_000_000_000,
+    );
+    dag.insert(msg_event.clone()).unwrap();
+
+    let state = materialize(&dag);
+    let ch = state.channels.get("g1").expect("channel should exist");
+    assert_eq!(ch.last_activity_hlc, Some(msg_event.timestamp_hint_ms));
+}
+
+#[test]
 fn create_channel_with_ephemeral_config_records_it() {
     use crate::ephemeral::{EphemeralConfig, EphemeralKind, DEFAULT_CHANNEL_THRESHOLD_MS};
 
