@@ -97,13 +97,6 @@ pub enum WireMessage {
 /// is typical; 4 KB leaves headroom for future fields without inviting abuse.
 const SIGNALING_CAP: usize = 4 * 1024;
 
-/// Per-variant size cap for small announcement messages: 16 KB.
-///
-/// `TopicAnnounce` carries a list of topic strings whose count is capped at
-/// the relay (`MAX_TOPICS`). 16 KB comfortably fits hundreds of topic
-/// strings while still being far below the envelope cap.
-const ANNOUNCE_CAP: usize = 16 * 1024;
-
 /// Default per-variant size cap: 64 KB.
 ///
 /// Lines up with the gossip layer's `max_message_size`. Used as the
@@ -123,29 +116,34 @@ impl WireMessage {
     ///
     /// Caps are sized to the variant's actual payload shape:
     ///
-    /// - **Body-carrying variants** (`Event`, `SyncBatch`, `Worker`):
-    ///   `MAX_DESER_SIZE` (256 KB). These carry user-generated message
-    ///   bodies, batched event payloads, or worker sync responses, so they
-    ///   need the full envelope budget.
+    /// - **Body-carrying variants** (`Event`, `SyncBatch`, `Worker`,
+    ///   `TopicAnnounce`): `MAX_DESER_SIZE` (256 KB). `Event`, `SyncBatch`,
+    ///   and `Worker` carry user-generated message bodies, batched event
+    ///   payloads, or worker sync responses, so they need the full envelope
+    ///   budget. `TopicAnnounce` is also sized at the envelope budget
+    ///   because the relay's per-topic limits (`MAX_TOPICS = 10_000`,
+    ///   `MAX_TOPIC_LEN = 256`) already permit announces well beyond any
+    ///   tighter cap, and the relay's loop does the real per-topic
+    ///   validation; the per-variant cap would only fight legitimate
+    ///   traffic.
     /// - **`ProfileAnnounce`**: `DEFAULT_CAP` (64 KB). Display name has no
     ///   formal length limit yet, but 64 KB is wildly more than any
     ///   reasonable display name.
-    /// - **`TopicAnnounce`**: `ANNOUNCE_CAP` (16 KB). Sized to comfortably
-    ///   hold the relay's `MAX_TOPICS` worth of topic strings.
     /// - **Signaling variants** (`TypingIndicator`, `VoiceJoin`,
     ///   `VoiceLeave`, `VoiceSignal`, `JoinRequest`, `JoinResponse`,
     ///   `JoinDenied`, `SyncRequest`): `SIGNALING_CAP` (4 KB). These
     ///   carry only ids, short strings, and SDP/ICE blobs — all small.
     pub fn max_size(&self) -> usize {
         match self {
-            // User-generated bodies and batched payloads: full envelope budget.
-            WireMessage::Event(_) | WireMessage::SyncBatch { .. } | WireMessage::Worker(_) => {
-                willow_transport::MAX_DESER_SIZE as usize
-            }
+            // User-generated bodies, batched payloads, and topic announces:
+            // full envelope budget. (TopicAnnounce's own per-topic limits live
+            // in the relay's `topic_announce_listener`, not here.)
+            WireMessage::Event(_)
+            | WireMessage::SyncBatch { .. }
+            | WireMessage::Worker(_)
+            | WireMessage::TopicAnnounce { .. } => willow_transport::MAX_DESER_SIZE as usize,
             // Profile announce: display_name is unbounded today; allow 64 KB.
             WireMessage::ProfileAnnounce { .. } => DEFAULT_CAP,
-            // Topic announce: up to MAX_TOPICS short strings.
-            WireMessage::TopicAnnounce { .. } => ANNOUNCE_CAP,
             // Signaling / control plane: tiny payloads only.
             WireMessage::SyncRequest { .. }
             | WireMessage::TypingIndicator { .. }
@@ -538,12 +536,14 @@ mod tests {
 
     #[test]
     fn per_variant_caps_are_sized_appropriately() {
-        // Sanity: caps should be ordered signaling < announce < default < event.
+        // Sanity: caps should be ordered signaling < profile <= body, and
+        // body-carrying variants (Event, SyncBatch, Worker, TopicAnnounce)
+        // all sit at the full envelope budget (MAX_DESER_SIZE).
         let signaling = WireMessage::TypingIndicator {
             channel: String::new(),
         }
         .max_size();
-        let announce = WireMessage::TopicAnnounce { topics: vec![] }.max_size();
+        let topic_announce = WireMessage::TopicAnnounce { topics: vec![] }.max_size();
         let profile = WireMessage::ProfileAnnounce {
             display_name: String::new(),
         }
@@ -559,10 +559,13 @@ mod tests {
         ));
         let event_cap = event.max_size();
 
-        assert!(signaling < announce, "signaling cap < announce cap");
-        assert!(announce < profile, "announce cap < default cap");
-        assert!(profile < event_cap, "default cap < event cap");
+        assert!(signaling < profile, "signaling cap < profile cap");
+        assert!(profile < event_cap, "profile cap < event cap");
         assert_eq!(event_cap, willow_transport::MAX_DESER_SIZE as usize);
+        assert_eq!(
+            topic_announce, event_cap,
+            "TopicAnnounce sits at the full envelope budget alongside other body-carrying variants"
+        );
     }
 
     #[test]
