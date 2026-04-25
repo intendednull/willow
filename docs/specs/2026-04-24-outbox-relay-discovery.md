@@ -1,12 +1,18 @@
 # Relay Discovery — composing iroh pkarr with capability negotiation
 
 > **One-sentence summary:** Willow does **not** introduce a new
-> `EventKind::RelayList`. NodeId → addresses is solved by iroh's
-> existing pkarr discovery, EndpointId → role/capability is solved by
+> `EventKind::RelayList`. EndpointId → addresses is solved by enabling
+> iroh's pkarr discovery, EndpointId → role/capability is solved by
 > PR #215's `/.well-known/willow` capability document, and EndpointId
 > → trust is solved by the `SyncProvider` grants already in the server
 > event DAG. This spec is the explicit composition of those three
 > layers, not a new event kind.
+>
+> **Terminology.** Iroh's documentation uses `NodeId`; Willow re-exports
+> the same type as `EndpointId` (`crates/identity/src/lib.rs`). They
+> refer to the same long-term Ed25519 public key. This spec uses
+> `EndpointId` for consistency with the Willow codebase, except when
+> quoting iroh's APIs.
 
 ## Status — what changed
 
@@ -15,8 +21,9 @@ replaceable per-author semantics, modelled on Nostr's NIP-65 outbox.
 Two rounds of review (recorded on intendednull/willow#221) converged
 on the conclusion that the proposed event is unnecessary and would
 introduce a new state-machine concept (replaceable kinds, breaking
-the current single-pass `apply_event` replay) for capabilities iroh
-and PR #215 already provide.
+the current single-pass `apply_event` semantics in
+`crates/state/src/materialize.rs`) for capabilities iroh and PR #215
+already provide.
 
 **This revision drops `EventKind::RelayList` entirely.** The spec
 now describes the composition of existing primitives. Sections that
@@ -26,14 +33,23 @@ realism) have been retained and rewritten to fit.
 
 ## Motivation
 
-Willow's share links today carry a single bootstrap relay URL (see
-`docs/specs/2026-03-27-shareable-join-links-design.md`) and
-`IrohNetwork` otherwise relies on a hardcoded relay list baked into
-`crates/network/src/iroh.rs`. The failure modes:
+Willow's share links today carry no addressing information (see
+`docs/specs/2026-03-27-shareable-join-links-design.md` and
+`crates/client/src/ops.rs:27`); joiners depend on a single hardcoded
+relay URL compiled into the web UI (`DEFAULT_RELAY_URL` in
+`crates/web/src/app.rs:66`, currently
+`https://willow.intendednull.com:9443`). `IrohNetwork`
+(`crates/network/src/iroh.rs:43-52`) accepts that URL as
+`Config { relay_url: Option<RelayUrl>, ... }` — a single optional URL,
+not a list — and the iroh `Endpoint` is built with
+`Endpoint::empty_builder()` (line 206), which starts with **no**
+discovery services configured. The failure modes:
 
 1. **No graceful migration.** An owner who moves their worker fleet
    (e.g. Linode → Fly.io) must reissue every share link if the URL is
-   the only addressing mechanism.
+   the only addressing mechanism — and today, since `JoinToken`
+   carries no URL at all, the only escape hatch is to recompile the
+   web UI with a new `DEFAULT_RELAY_URL`.
 2. **No worker discovery.** A server can have a `SyncProvider`-granted
    replay or storage worker, but a joining client has no way to learn
    its network address short of the owner encoding it manually.
@@ -47,38 +63,49 @@ dependency graph. We just need to compose them.
 
 | Layer | Mechanism | Source of truth |
 |-------|-----------|-----------------|
-| `NodeId` → addresses | iroh pkarr (signed DNS packets over BitTorrent mainline DHT) | DHT, signed by the node's own key |
+| `EndpointId` → addresses | iroh pkarr (signed DNS packets over BitTorrent mainline DHT) — to be enabled in `IrohNetwork` | DHT, signed by the endpoint's own key |
 | `EndpointId` → role / capabilities | PR #215 `/.well-known/willow` capability document | served by the endpoint itself over HTTPS |
-| `EndpointId` → trusted to sync | `SyncProvider` grant in the server event DAG | `crates/state/src/event.rs` + `apply_event` |
+| `EndpointId` → trusted to sync | `SyncProvider` grant in the server event DAG | `crates/state/src/event.rs` + `apply_event` in `crates/state/src/materialize.rs` |
 
 These three layers are independent: each has its own trust anchor,
 its own update cadence, and its own failure mode. The job of this
 spec is to nail down how a Willow client traverses them in order.
 
-## Layer 1: pkarr for NodeId → addresses
+## Layer 1: pkarr for EndpointId → addresses
 
-iroh ships [pkarr-based node discovery](https://www.iroh.computer/blog/iroh-global-node-discovery)
-out of the box (see `iroh-pkarr-node-discovery`). A Willow node's
-`NodeId` is its long-term Ed25519 public key; the node publishes a
-signed DNS packet to the BitTorrent mainline DHT containing its
-current relay URL and direct addresses, and any client that knows
-the `NodeId` can resolve those addresses by querying the DHT.
+iroh provides [pkarr-based node discovery](https://www.iroh.computer/blog/iroh-global-node-discovery)
+as a pluggable discovery service (see `iroh-pkarr-node-discovery`).
+With pkarr enabled, an iroh node publishes a signed DNS packet to the
+BitTorrent mainline DHT containing its current relay URL and direct
+addresses; any client that knows the node's `EndpointId` (its
+long-term Ed25519 public key, what iroh's docs call `NodeId`) can
+resolve those addresses by querying the DHT.
 
-Implications for Willow:
+Today Willow does **not** enable pkarr. `crates/network/src/iroh.rs:206`
+constructs the iroh endpoint with `Endpoint::empty_builder()`, which
+ships zero discovery services; the only address resolution that works
+is the explicit `MemoryLookup` populated from `Config::bootstrap_peers`
+when a relay URL is configured. Enabling pkarr on the iroh builder is
+part of the proposal here.
+
+Once pkarr is wired in, the implications for Willow are:
 
 - **Willow does not need to encode addresses anywhere durable.**
   Every `EndpointId` in the server DAG (peers with `SyncProvider`
-  grants, the inviter, ordinary members) is already a `NodeId`.
-  Clients resolve those `NodeId`s on demand.
+  grants, the inviter, ordinary members) can be resolved on demand
+  via pkarr.
 - **Owner relay migration is automatic.** Moving from one hosting
   provider to another causes the operator's iroh node to republish
   its pkarr packet. Existing clients pick up the new addresses on
   their next discovery cycle. No share-link reissue.
 - **No new wire format, no new state, no new replay semantics.**
-- **Failure mode.** DHT queries can fail in restricted networks. The
-  fallback is the same set of hardcoded bootstrap relays already
-  baked into `IrohNetwork` — clients try direct pkarr first, fall
-  back to the bootstrap fleet for relay-mediated connection.
+- **Failure mode.** DHT queries can fail in restricted networks.
+  Fallback is the existing single configured relay URL
+  (`Config::relay_url`); clients try pkarr resolution first and fall
+  back to the configured relay for relay-mediated connection. There is
+  no "bootstrap fleet" today — Layer 1 enables pkarr on a single-relay
+  baseline, and any future fleet/multi-relay design is out of scope
+  for this spec.
 
 ## Layer 2: PR #215 capability doc for role/capability
 
@@ -130,37 +157,53 @@ is the list of `EndpointId`s authorized to sync. No new event kind
 required, no list of URLs, no per-entry weight.
 
 If we ever want a softer hint (e.g. "prefer this worker over that
-one"), the right place to add it is on the existing `GrantPermission`
-record (an optional `priority: u8`), not as a parallel event stream.
-That extension is out of scope for this spec.
+one"), the right place to add it is on the existing
+`EventKind::GrantPermission` variant
+(`crates/state/src/event.rs:84-93`, currently
+`{ peer_id, permission }`) — by adding an optional `priority: u8`
+field, not by introducing a parallel event stream. That extension is
+out of scope for this spec.
 
 ## Bootstrap flow for share links
 
-`JoinToken` (per `docs/specs/2026-03-27-shareable-join-links-design.md`)
-currently carries `inviter_peer_id`, `server_id`, `link_id`,
-`server_name`, `inviter_name`. **It carries no addressing
-information**, implicitly relying on the hardcoded relay fleet.
-
-This spec proposes a one-line extension: add a small list of
-bootstrap **`NodeId`s** (not URLs):
+`JoinToken` (`crates/client/src/ops.rs:27-36`, per
+`docs/specs/2026-03-27-shareable-join-links-design.md`) currently has
+this shape:
 
 ```rust
-JoinToken {
-    inviter_peer_id: String,
-    server_id: String,
-    link_id: String,
-    server_name: String,
-    inviter_name: String,
-    bootstrap_node_ids: Vec<NodeId>, // 2-3 entries; resolved via pkarr
+pub struct JoinToken {
+    pub inviter_peer_id: EndpointId,
+    pub server_id: String,
+    pub link_id: String,
+    pub server_name: String,
+    pub inviter_name: String,
+}
+```
+
+**It carries no addressing information**, implicitly relying on the
+joining web client's compiled-in `DEFAULT_RELAY_URL` for both the
+relay hop and (today, with no pkarr) any address resolution at all.
+
+This spec proposes a one-line extension: add a small list of
+bootstrap **`EndpointId`s** (not URLs):
+
+```rust
+pub struct JoinToken {
+    pub inviter_peer_id: EndpointId,
+    pub server_id: String,
+    pub link_id: String,
+    pub server_name: String,
+    pub inviter_name: String,
+    pub bootstrap_endpoint_ids: Vec<EndpointId>, // 2-3 entries; resolved via pkarr
 }
 ```
 
 Joining flow:
 
-1. Client decodes `JoinToken` and obtains `bootstrap_node_ids` and
+1. Client decodes `JoinToken` and obtains `bootstrap_endpoint_ids` and
    `inviter_peer_id`.
-2. For each bootstrap `NodeId` (and the inviter's `NodeId`), resolve
-   addresses via iroh pkarr.
+2. For each bootstrap `EndpointId` (and the inviter's `EndpointId`),
+   resolve addresses via iroh pkarr.
 3. Connect to the first responsive endpoint and complete the
    `JoinRequest` / `JoinResponse` handshake from the share-link spec.
 4. Replay the server DAG and read the set of `SyncProvider` grants.
@@ -176,10 +219,14 @@ Steps 1-3 use only Layer 1. Step 4 uses Layer 3. Step 5 uses Layers
 
 The original concern — that a public outbox doxxes a server's worker
 fleet — does not arise in this design. Worker `EndpointId`s appear
-only inside the server's own event DAG (via `SyncProvider` grants),
-which is encrypted to members under PR #220's epoch keys. Public
-discovery resolves `NodeId`s via pkarr packets the operator chooses
-to publish, and only members ever see the server-membership list.
+only inside the server's own event DAG (via `SyncProvider` grants).
+Today those events are broadcast in cleartext on the
+`_willow_server_ops` gossip topic (only message bodies are encrypted,
+via `Content::Encrypted`); once PR #220's epoch-key rotation lands,
+server events **will be** encrypted to members under those epoch keys.
+Public discovery resolves `EndpointId`s via pkarr packets the operator
+chooses to publish, and (post-#220) only members will ever see the
+server-membership list.
 
 ## Composition notes
 
@@ -187,9 +234,10 @@ to publish, and only members ever see the server-membership list.
   lists are simply the existing `SyncProvider` grants inside the DAG;
   they ride whatever encryption already protects server events.
 - **PR #217 (bech32 identifiers).** Pkarr packets contain raw
-  `NodeId` bytes, not bech32. Display surfaces (UI, logs, share-link
-  text) use the `wpeer` / `wrelay` HRPs from #217 for human-readable
-  rendering. There is no wire-format collision.
+  `EndpointId` bytes (the iroh-side "NodeId" representation), not
+  bech32. Display surfaces (UI, logs, share-link text) use the
+  `wpeer` / `wrelay` HRPs from #217 for human-readable rendering.
+  There is no wire-format collision.
 - **PR #215 (capability negotiation).** This spec depends on #215.
   It is consumed, not duplicated.
 
@@ -242,10 +290,10 @@ question is closed.
 
 | Layer | Test | Where |
 |-------|------|-------|
-| Client | Resolve owner `NodeId` via stub pkarr, connect via discovered address | `crates/client/src/lib.rs` tests |
+| Client | Resolve owner `EndpointId` via stub pkarr, connect via discovered address | `crates/client/src/lib.rs` tests |
 | Client | Enumerate `SyncProvider` grants from a replayed DAG; resolve each via pkarr; rank by latency | `crates/client/src/lib.rs` tests |
 | Client | Capability-doc fetch is gated by trust check (refuse to use a non-`SyncProvider` endpoint as authoritative) | `crates/client/src/lib.rs` tests |
-| Integration | Share-link join with extended `JoinToken` carrying `bootstrap_node_ids`, fallback when first bootstrap is unreachable | `e2e/multi-peer-sync.spec.ts` |
+| Integration | Share-link join with extended `JoinToken` carrying `bootstrap_endpoint_ids`, fallback when first bootstrap is unreachable | `e2e/multi-peer-sync.spec.ts` |
 | Integration | Owner migrates relay provider mid-session; existing clients re-resolve via pkarr without restart | `e2e/multi-peer-sync.spec.ts` |
 
 State-machine tests are deliberately absent: no new `EventKind` is
@@ -256,18 +304,19 @@ introduced, so the state machine is unchanged.
 Most of the original open questions are resolved by dropping the
 event kind. What remains:
 
-1. **Bootstrap NodeId signing.** Should the `bootstrap_node_ids`
-   carried in `JoinToken` be signed by the inviter's key (so a
-   tampered share link can be detected at the time of join, before
-   any peer connection)? The token itself is base64-packed; we
-   could either sign the whole token with the inviter's key or rely
-   on first-connection identity verification. Concrete design
-   pending input on `JoinToken`'s threat model.
+1. **Bootstrap EndpointId signing.** Should the
+   `bootstrap_endpoint_ids` carried in `JoinToken` be signed by the
+   inviter's key (so a tampered share link can be detected at the
+   time of join, before any peer connection)? The token itself is
+   base64-packed; we could either sign the whole token with the
+   inviter's key or rely on first-connection identity verification.
+   Concrete design pending input on `JoinToken`'s threat model.
 2. **Pkarr fallback policy.** When the DHT is unreachable (e.g.
    restrictive corporate network), should the client fall back to
-   resolving via the hardcoded bootstrap relays' caches, or fail
-   fast and surface the error to the user? The behaviour matters
-   for share-link UX and is genuinely unsettled.
+   relay-mediated dialing via the configured `Config::relay_url`
+   (which today is a single URL), or fail fast and surface the error
+   to the user? The behaviour matters for share-link UX and is
+   genuinely unsettled.
 
 These are the only questions worth keeping open. Replaceable-event
 semantics, multi-device writes to the same author chain, anti-
