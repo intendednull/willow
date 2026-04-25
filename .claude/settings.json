@@ -14,5 +14,18 @@
       },
       "autoUpdate": false
     }
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/using-superpowers-session-start.sh\""
+          }
+        ]
+      }
+    ]
   }
 }
