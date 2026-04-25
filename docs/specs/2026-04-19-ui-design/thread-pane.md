@@ -493,3 +493,34 @@ behind a feature flag backed by a local-only cache.
 - **Typing indicators in threads:** must be encrypted under the thread
   key if shown. Confirm during messaging plan.
 - **Cross-channel thread links:** not in v1; note for a future spec.
+
+## Auto-archive
+
+Threads are non-permanent surfaces and inherit the auto-archive
+mechanic defined in
+[`ephemeral-channels.md`](ephemeral-channels.md). Specifics for
+threads:
+
+- **Default idle threshold:** 7 days. Override at thread creation
+  is not supported in v1 — threads always use the grove's
+  configured thread default (governance) or the spec default if
+  the grove has no override.
+- **Kind chip:** the `thread` chip from `kind_chip.rs` renders on
+  the thread row in the side rail. Dormant threads dim the row
+  name to `--ink-2`. Archived threads disappear from the side
+  rail and appear in the grove archives surface under the
+  `auto-archived` subgroup.
+- **Revive:** any thread participant can revive the thread by
+  posting in it (implicit) or by tapping the `revive` link from
+  the archives surface. The same `ChannelRevive` event is used —
+  thread revival is a special case of channel revival because
+  threads are stored as channel-like records in `willow-state`.
+- **Parent ephemeral channels:** when a thread's parent channel
+  archives, the thread's `last_activity_hlc` is bounded by the
+  parent's, so threads under an archived parent appear archived
+  by derivation. Reviving the parent revives all threads
+  simultaneously.
+
+See `ephemeral-channels.md` §Inactivity ladder for the band
+definitions and §Spawn flows §Thread for the entry point.
+
