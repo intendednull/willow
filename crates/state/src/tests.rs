@@ -1864,7 +1864,7 @@ fn rotate_channel_key_by_member_without_manage_channels_is_rejected() {
     let alice = Identity::generate();
     let bob = Identity::generate();
 
-    let mut managed = ManagedDag::new(&alice, "Test Server", 5000);
+    let mut managed = ManagedDag::new(&alice, "Test Server", 5000).unwrap();
 
     // Alice creates a channel and grants Bob SendMessages (which also
     // adds him to `members`). Bob is a legitimate member but lacks
@@ -1960,7 +1960,7 @@ fn managed_dag_insert_and_apply_keeps_state_in_sync() {
     use crate::managed::ManagedDag;
 
     let id = Identity::generate();
-    let mut managed = ManagedDag::new(&id, "Test Server", 5000);
+    let mut managed = ManagedDag::new(&id, "Test Server", 5000).unwrap();
 
     // State should have genesis author as member.
     assert!(managed.state().members.contains_key(&id.endpoint_id()));
@@ -1995,7 +1995,7 @@ fn managed_dag_insert_remote_event_applies_to_state() {
     use crate::managed::ManagedDag;
 
     let owner = Identity::generate();
-    let mut managed = ManagedDag::new(&owner, "Test", 5000);
+    let mut managed = ManagedDag::new(&owner, "Test", 5000).unwrap();
 
     // Simulate a remote event from a different peer.
     let peer = Identity::generate();
@@ -2039,7 +2039,7 @@ fn joined_peer_needs_grant_permission_to_send_messages() {
     let bob = Identity::generate();
 
     // Alice creates the server. She's the sole admin.
-    let mut managed = ManagedDag::new(&alice, "Test Server", 5000);
+    let mut managed = ManagedDag::new(&alice, "Test Server", 5000).unwrap();
     let general_id = {
         let event = managed.dag().create_event(
             &alice,
@@ -2143,7 +2143,7 @@ fn sync_batch_with_grant_permission_allows_new_peer_to_send() {
 
     // Alice creates server, channel, and grants Bob SendMessages.
     // These are the events that would normally be sent to Bob via SyncBatch.
-    let mut alice_state = ManagedDag::new(&alice, "Test", 5000);
+    let mut alice_state = ManagedDag::new(&alice, "Test", 5000).unwrap();
     let create_channel = alice_state.dag().create_event(
         &alice,
         EventKind::CreateChannel {
@@ -2241,7 +2241,7 @@ fn managed_dag_buffers_gap_events_and_resolves() {
 
     let owner = Identity::generate();
     let peer = Identity::generate();
-    let mut managed = ManagedDag::new(&owner, "Test", 5000);
+    let mut managed = ManagedDag::new(&owner, "Test", 5000).unwrap();
 
     // Create peer's seq=1 event.
     let e1 = managed.dag().create_event(
@@ -2287,7 +2287,7 @@ fn managed_dag_rejects_duplicate() {
     use crate::managed::ManagedDag;
 
     let owner = Identity::generate();
-    let mut managed = ManagedDag::new(&owner, "Test", 5000);
+    let mut managed = ManagedDag::new(&owner, "Test", 5000).unwrap();
 
     let peer = Identity::generate();
     let event = managed.dag().create_event(
@@ -2412,7 +2412,7 @@ fn deep_pending_chain_does_not_stack_overflow() {
     use crate::managed::ManagedDag;
 
     let id = Identity::generate();
-    let mut managed = ManagedDag::new(&id, "Deep Chain Test", 100_000);
+    let mut managed = ManagedDag::new(&id, "Deep Chain Test", 100_000).unwrap();
 
     let genesis_hash = managed.dag().genesis().unwrap().hash;
 
@@ -2610,7 +2610,7 @@ fn create_and_insert_rejects_without_permission() {
 
     let owner = Identity::generate();
     let peer = Identity::generate();
-    let mut managed = ManagedDag::new(&owner, "Test", 5000);
+    let mut managed = ManagedDag::new(&owner, "Test", 5000).unwrap();
 
     // Peer has no grants — should be rejected.
     let result = managed.create_and_insert(
@@ -2635,7 +2635,7 @@ fn create_and_insert_does_not_advance_seq_on_rejection() {
 
     let owner = Identity::generate();
     let peer = Identity::generate();
-    let mut managed = ManagedDag::new(&owner, "Test", 5000);
+    let mut managed = ManagedDag::new(&owner, "Test", 5000).unwrap();
 
     let seq_before = managed.dag().latest_seq(&peer.endpoint_id());
 
@@ -2663,7 +2663,7 @@ fn create_and_insert_succeeds_with_permission() {
 
     let owner = Identity::generate();
     let peer = Identity::generate();
-    let mut managed = ManagedDag::new(&owner, "Test", 5000);
+    let mut managed = ManagedDag::new(&owner, "Test", 5000).unwrap();
 
     // Grant SendMessages to peer.
     managed

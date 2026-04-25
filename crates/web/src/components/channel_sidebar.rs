@@ -332,6 +332,7 @@ pub fn ChannelSidebar(
                                             type="text"
                                             class="tree-slot__input"
                                             node_ref=name_input_ref
+                                            aria-label="Rename channel"
                                             placeholder="tree name"
                                             prop:value=move || new_name.get()
                                             on:input=move |ev| set_new_name.set(event_target_value(&ev))

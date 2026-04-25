@@ -606,7 +606,7 @@ pub fn CommandPalette(
                     class="palette-input"
                     type="text"
                     placeholder="jump or search…"
-                    aria-label="command palette input"
+                    aria-label="Search commands"
                     aria-autocomplete="list"
                     aria-controls="palette-listbox"
                     aria-activedescendant=move || active_row_id.get()
