@@ -396,30 +396,39 @@ duplicate `ChannelRevive` for an already-active channel is a no-op
 
 ## Acceptance criteria
 
-- [ ] Channel creation flow exposes a `temp` kind option with an
+- [x] Channel creation flow exposes a `temp` kind option with an
       inactivity-threshold field defaulting to 14 days, capped at 90.
-- [ ] Sidebar rows render the kind chip (`temp` / `thread` /
+- [x] Sidebar rows render the kind chip (`temp` / `thread` /
       `whisper`) for ephemeral surfaces.
-- [ ] Dormant state dims the row name to `--ink-2` and shows the
+- [x] Dormant state dims the row name to `--ink-2` and shows the
       "{N} {unit} ago" meta when activity is in the 25–100 % window.
-- [ ] When `last_activity_hlc + idle_threshold_ms < frontier_hlc`,
+      *(meta surfaces via row `title` attribute — desktop tooltip +
+      mobile long-press preview both read it; the dedicated row-
+      preview overlay referenced in the spec is deferred.)*
+- [x] When `last_activity_hlc + idle_threshold_ms < frontier_hlc`,
       the channel archives: row leaves the active sidebar; archives
       surface gains a new entry under the `auto-archived` subgroup.
-- [ ] Tapping `revive` on an archived row emits a `ChannelRevive`
+- [x] Tapping `revive` on an archived row emits a `ChannelRevive`
       event and the channel returns to the active sidebar without
       posting a message.
-- [ ] Posting a message inside an archived channel is allowed and
+- [x] Posting a message inside an archived channel is allowed and
       acts as an implicit revive (`last_activity_hlc` advances).
-- [ ] Threads inherit the mechanic with a 7-day default; whispers
-      inherit it with a 24-hour default.
+- [x] Threads inherit the mechanic with a 7-day default; whispers
+      inherit it with a 24-hour default. *(constants + cross-spec
+      sections in `thread-pane.md` + `whisper-mode.md`; thread +
+      whisper UI surfaces ship in their own phase plans.)*
 - [ ] Per-grove governance can override the per-kind default and the
       cap; per-channel overrides at creation respect the grove cap.
-- [ ] Archived ephemerals retain their channel key; messages remain
+      *(deferred — governance.md plan owns the override path.)*
+- [x] Archived ephemerals retain their channel key; messages remain
       readable when the archive entry is opened in review mode.
-- [ ] Read-only banner displays inside an archived channel and the
+- [x] Read-only banner displays inside an archived channel and the
       composer is hidden by default.
 - [ ] Screen-reader announcements fire on dormant entry and on
-      revive, but never on auto-archive.
+      revive, but never on auto-archive. *(banner role=status
+      delivers the "archived — read-only" announce; the
+      explicit dormant + revive aria-live channels are deferred to
+      the accessibility pass.)*
 
 ## Open questions
 
