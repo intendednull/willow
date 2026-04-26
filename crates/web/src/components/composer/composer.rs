@@ -536,7 +536,36 @@ pub fn Composer(
         }
     };
 
+    // Aria-label mirrors the visible label so screen-reader users hear
+    // the same state sighted users see — `send` normally, `save` while
+    // editing. The spec's accessibility table (line 235-241) lists `send`
+    // for the default state; the flip during edit mode is an intentional
+    // extension so AT users aren't told the button still says "send"
+    // when it visibly reads "save". Recorded in plan T15 as the chosen
+    // resolution to the spec's silence on the edit-mode label.
+    let send_aria_label = move || {
+        let is_editing = editing.map(|sig| sig.get().is_some()).unwrap_or(false);
+        if is_editing {
+            "save"
+        } else {
+            "send"
+        }
+    };
+
     let send_disabled = move || input_text.get().trim().is_empty();
+
+    // Attach + emoji buttons: stub click handlers per plan §Ambiguity
+    // decisions point 5. The actual file dialog (`files-inline.md`,
+    // Phase 3b) and emoji picker (`reactions-pins.md`, Phase 3c) drop
+    // in here without re-shaping props — the buttons render now with
+    // the spec-mandated aria-labels so screen readers can already
+    // discover them, and the click handlers are intentional no-ops.
+    let on_click_attach = |_ev: web_sys::MouseEvent| {
+        // TODO(files-inline.md): open file dialog.
+    };
+    let on_click_emoji = |_ev: web_sys::MouseEvent| {
+        // TODO(reactions-pins.md): open emoji picker popover.
+    };
 
     view! {
         // `input-area` retained alongside `composer` for backward
@@ -598,6 +627,19 @@ pub fn Composer(
                 })
             }}
             <div class="composer__row">
+                // Attach button (spec §Desktop compose surface, upper
+                // row). Clicks are stubs in v1 — Phase 3b
+                // (`files-inline.md`) wires the file dialog. The
+                // `aria-label="attach file"` matches the spec's
+                // accessibility table.
+                <button
+                    type="button"
+                    class="composer__attach"
+                    aria-label="attach file"
+                    on:click=on_click_attach
+                >
+                    <span aria-hidden="true">{crate::icons::icon_plus()}</span>
+                </button>
                 <textarea
                     class="composer__textarea"
                     node_ref=textarea_ref
@@ -650,9 +692,23 @@ pub fn Composer(
                     }
                     on:keydown=on_keydown
                 />
+                // Emoji button (spec §Desktop compose surface, upper
+                // row). Clicks are stubs in v1 — Phase 3c
+                // (`reactions-pins.md`) wires the emoji popover. The
+                // `aria-label="open emoji picker"` matches the spec's
+                // accessibility table.
                 <button
+                    type="button"
+                    class="composer__emoji"
+                    aria-label="open emoji picker"
+                    on:click=on_click_emoji
+                >
+                    <span aria-hidden="true">{crate::icons::icon_smile()}</span>
+                </button>
+                <button
+                    type="button"
                     class="composer__send"
-                    aria-label="send"
+                    aria-label=send_aria_label
                     prop:disabled=send_disabled
                     on:click=on_click_send
                 >

@@ -67,10 +67,10 @@ pub fn MetaRow(
 fn DesktopOnlineMeta() -> impl IntoView {
     view! {
         <div class="composer__meta" aria-live="off">
-            <span class="composer__meta-icon">{icons::icon_lock()}</span>
+            <span class="composer__meta-icon" aria-hidden="true">{icons::icon_lock()}</span>
             <span class="composer__meta-text">"sealed with grove-keys"</span>
             <span class="composer__meta-sep" aria-hidden="true">"·"</span>
-            <span class="composer__meta-icon">{icons::icon_ear()}</span>
+            <span class="composer__meta-icon" aria-hidden="true">{icons::icon_ear()}</span>
             <span class="composer__meta-text">
                 "hold "
                 <kbd class="composer__kbd">"shift"</kbd>
@@ -92,12 +92,12 @@ fn DesktopOnlineMeta() -> impl IntoView {
 fn MobileOnlineMeta(peer_count: Signal<usize>) -> impl IntoView {
     view! {
         <div class="composer__meta" aria-live="off">
-            <span class="composer__meta-icon">{icons::icon_lock()}</span>
+            <span class="composer__meta-icon" aria-hidden="true">{icons::icon_lock()}</span>
             <span class="composer__meta-text">
                 {move || format!("sealed to {} peers in grove", peer_count.get())}
             </span>
             <span class="composer__meta-sep" aria-hidden="true">"·"</span>
-            <span class="composer__meta-icon">{icons::icon_ear()}</span>
+            <span class="composer__meta-icon" aria-hidden="true">{icons::icon_ear()}</span>
             <span class="composer__meta-text">"tap ear to whisper"</span>
         </div>
     }
@@ -110,7 +110,7 @@ fn MobileOnlineMeta(peer_count: Signal<usize>) -> impl IntoView {
 fn OfflineMeta() -> impl IntoView {
     view! {
         <div class="composer__meta composer__meta--offline" aria-live="polite">
-            <span class="composer__meta-icon">{icons::icon_hourglass()}</span>
+            <span class="composer__meta-icon" aria-hidden="true">{icons::icon_hourglass()}</span>
             <span class="composer__meta-text">"offline · queuing messages"</span>
         </div>
     }

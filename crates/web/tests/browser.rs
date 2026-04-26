@@ -11262,6 +11262,7 @@ mod phase_2b_sync_queue {
 
 mod phase_3a_composer {
     use super::*;
+    use willow_client::DisplayMessage;
     use willow_web::components::Composer;
     use willow_web::state::ConnectionState;
 
@@ -13085,4 +13086,144 @@ mod phase_3a_composer {
             "query `c` prefixes `channel` — synthetic row must surface"
         );
     }
+
+    // ── T15 — ARIA labels audit ───────────────────────────────────────────
+    //
+    // AGs covered:
+    //   AG-14: Every interactive element has the ARIA label the spec
+    //          dictates.
+    //
+    // Spec: `composer.md` §Accessibility, table at lines 235-241:
+    //   | reply bar cancel | `cancel reply`        |
+    //   | edit bar cancel  | `cancel edit`         |
+    //   | send button      | `send`                |
+    //   | attach button    | `attach file`         |
+    //   | emoji button     | `open emoji picker`   |
+    //
+    // Plus the spec-extension we elected for the send button: the
+    // aria-label flips to `save` while editing so AT users hear the
+    // same state sighted users see (the visible label flips too —
+    // see `send_aria_label` in `composer.rs`).
+    //
+    // Decorative meta-row icons (lock, ear, hourglass) carry
+    // `aria-hidden="true"` on their wrapping span — they are visual
+    // sugar, not affordances.
+
+    #[wasm_bindgen_test]
+    async fn composer_aria_labels_match_spec_table() {
+        reset_shell();
+        let (replying_to, _set_replying_to) =
+            signal::<Option<DisplayMessage>>(Some(make_msg("alex", "the parent message", 1_000)));
+        // We deliberately leave `editing` unset for this assertion so
+        // the reply bar renders (the composer suppresses the reply bar
+        // while edit mode is active). The edit-mode bar + label flip
+        // get their own assertions below.
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    replying_to=replying_to
+                    on_cancel_reply=Callback::new(|_| ())
+                />
+            }
+        });
+        tick().await;
+
+        // ── Send button (default state — `send`).
+        let send =
+            query(&container, ".composer__send").expect("send button must render under <Composer>");
+        assert_eq!(
+            send.get_attribute("aria-label").as_deref(),
+            Some("send"),
+            "send button must carry aria-label=`send` per spec accessibility table"
+        );
+        // ── Attach button (`attach file`).
+        let attach = query(&container, ".composer__attach")
+            .expect("attach button must render under <Composer>");
+        assert_eq!(
+            attach.get_attribute("aria-label").as_deref(),
+            Some("attach file"),
+            "attach button must carry aria-label=`attach file` per spec accessibility table"
+        );
+        // ── Emoji button (`open emoji picker`).
+        let emoji = query(&container, ".composer__emoji")
+            .expect("emoji button must render under <Composer>");
+        assert_eq!(
+            emoji.get_attribute("aria-label").as_deref(),
+            Some("open emoji picker"),
+            "emoji button must carry aria-label=`open emoji picker` per spec accessibility table"
+        );
+        // ── Reply bar cancel (`cancel reply`).
+        let reply_cancel = query(&container, ".composer__reply-bar-cancel")
+            .expect("reply-bar cancel must render when replying_to is Some");
+        assert_eq!(
+            reply_cancel.get_attribute("aria-label").as_deref(),
+            Some("cancel reply"),
+            "reply-bar cancel must carry aria-label=`cancel reply` per spec accessibility table"
+        );
+
+        // ── Decorative meta-row icons must be aria-hidden so screen
+        //    readers don't announce the SVG glyphs separately from the
+        //    meta-text label that already conveys the affordance.
+        let meta_icons = container
+            .query_selector_all(".composer__meta-icon")
+            .unwrap();
+        assert!(
+            meta_icons.length() > 0,
+            "meta-row must render at least one icon span"
+        );
+        for i in 0..meta_icons.length() {
+            let node = meta_icons.item(i).unwrap();
+            let el: web_sys::Element = node.dyn_into().unwrap();
+            assert_eq!(
+                el.get_attribute("aria-hidden").as_deref(),
+                Some("true"),
+                ".composer__meta-icon[{i}] must carry aria-hidden=true; \
+                 decorative SVGs would otherwise be announced redundantly"
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_edit_bar_cancel_aria_label_matches_spec() {
+        // The reply-bar test above can't also exercise edit mode
+        // because the composer suppresses the reply bar when editing
+        // is active. Mount a second composer with `editing = Some(_)`
+        // so the edit-bar branch renders, then assert the cancel
+        // control's aria-label.
+        reset_shell();
+        let (editing, _set_editing) =
+            signal::<Option<DisplayMessage>>(Some(make_msg("self", "draft body", 2_000)));
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    editing=editing
+                    on_cancel_edit=Callback::new(|_| ())
+                />
+            }
+        });
+        tick().await;
+
+        let edit_cancel = query(&container, ".composer__edit-bar-cancel")
+            .expect("edit-bar cancel must render when editing is Some");
+        assert_eq!(
+            edit_cancel.get_attribute("aria-label").as_deref(),
+            Some("cancel edit"),
+            "edit-bar cancel must carry aria-label=`cancel edit` per spec accessibility table"
+        );
+
+        // Send button label + aria-label both flip to `save` while
+        // editing — the visible text (covered in T8 tests) and the
+        // aria-label must agree so screen-reader users hear the same
+        // state sighted users see.
+        let send = query(&container, ".composer__send").unwrap();
+        assert_eq!(
+            send.get_attribute("aria-label").as_deref(),
+            Some("save"),
+            "send button aria-label must flip to `save` while editing so it \
+             matches the visible label"
+        );
+    }
+
 }

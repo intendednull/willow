@@ -6014,6 +6014,34 @@ select:focus-visible {
     cursor: not-allowed;
 }
 
+/* Attach + emoji buttons (Phase 3a, T15 — spec §Desktop compose
+ * surface upper row). Stub clicks in v1; the real file dialog and
+ * emoji picker drop in via Phases 3b / 3c. Visually unobtrusive so
+ * they don't fight the textarea for attention — `--ink-3` like the
+ * meta-row icons. The buttons live before / after the textarea in
+ * the row so the spec's "Attach → textarea → emoji → send" order
+ * holds. */
+.composer__attach,
+.composer__emoji {
+    background: transparent;
+    border: 0;
+    color: var(--ink-3);
+    padding: 4px;
+    cursor: pointer;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    line-height: 0;
+    transition: color var(--motion-fast, 120ms) ease;
+}
+
+.composer__attach:hover,
+.composer__emoji:hover {
+    color: var(--ink-1);
+}
+
 /* ── Composer reply bar (Phase 3a, T7) ────────────────────────────────
  *
  * Spec: `docs/specs/2026-04-19-ui-design/composer.md` §Reply preview.
