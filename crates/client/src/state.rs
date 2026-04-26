@@ -176,8 +176,6 @@ pub struct ClientState {
     pub profiles: ProfileStore,
     /// Emoji shortcode expansion registry.
     pub emoji: crate::emoji::EmojiRegistry,
-    /// Persistent message database (native-only SQLite, WASM localStorage).
-    pub message_db: Option<std::sync::Arc<std::sync::Mutex<crate::storage::MessageDb>>>,
 
     // --- Event-sourced state (willow-state) ---
     /// Event-sourced server state — the single source of truth.
@@ -194,7 +192,6 @@ impl ClientState {
             active_server: None,
             profiles: ProfileStore::default(),
             emoji: crate::emoji::EmojiRegistry::new(),
-            message_db: None,
             event_state: willow_state::ServerState::new("", "", owner),
         }
     }

@@ -561,12 +561,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
 
         let mut state = ClientState::new(identity.endpoint_id());
 
-        // Open message database.
-        if config.persistence {
-            if let Some(db) = storage::open_message_db() {
-                state.message_db = Some(std::sync::Arc::new(std::sync::Mutex::new(db)));
-            }
-        }
+        // Persistence is owned by `PersistenceActor` (see persistence_actor.rs);
+        // no client-handle-level message database exists.
 
         // Load servers. Try multi-server list first, fall back to legacy single server.
         let server_ids = storage::load_server_list();
