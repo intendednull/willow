@@ -7,11 +7,19 @@
 //! still tests without a browser.
 
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::Mutex;
 
 use willow_client::{NicknameStore, NICKNAME_CAP};
 
 const KEY_PREFIX: &str = "willow.profile.nickname.";
+
+/// Inner state under the [`WebNicknameStore`] guard. Held as a single
+/// unit so cache writes and version bumps stay atomic.
+#[derive(Default)]
+struct WebNicknameInner {
+    cache: HashMap<String, String>,
+    version: u64,
+}
 
 /// localStorage-backed nickname store.
 ///
@@ -20,8 +28,11 @@ const KEY_PREFIX: &str = "willow.profile.nickname.";
 /// mirrored to `localStorage` so a page reload rehydrates it.
 #[derive(Default)]
 pub struct WebNicknameStore {
-    cache: RwLock<HashMap<String, String>>,
-    version: RwLock<u64>,
+    // state: lock-ok — `NicknameStore` trait is sync; trait elimination
+    // tracked in docs/specs/2026-04-26-state-management-model-design.md
+    // § Follow-up work F1. Single guard groups cache + version for
+    // cross-field atomicity.
+    inner: Mutex<WebNicknameInner>,
 }
 
 impl WebNicknameStore {
@@ -42,7 +53,9 @@ impl WebNicknameStore {
                             }
                         }
                     }
-                    *store.cache.write().unwrap() = cache;
+                    if let Ok(mut guard) = store.inner.lock() {
+                        guard.cache = cache;
+                    }
                 }
             }
         }
@@ -52,7 +65,7 @@ impl WebNicknameStore {
 
 impl NicknameStore for WebNicknameStore {
     fn get(&self, peer_id: &str) -> Option<String> {
-        self.cache.read().ok()?.get(peer_id).cloned()
+        self.inner.lock().ok()?.cache.get(peer_id).cloned()
     }
 
     fn set(&self, peer_id: &str, value: &str) {
@@ -61,8 +74,9 @@ impl NicknameStore for WebNicknameStore {
             self.clear(peer_id);
             return;
         }
-        if let Ok(mut cache) = self.cache.write() {
-            cache.insert(peer_id.to_string(), trimmed.clone());
+        if let Ok(mut guard) = self.inner.lock() {
+            guard.cache.insert(peer_id.to_string(), trimmed.clone());
+            guard.version += 1;
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -77,15 +91,13 @@ impl NicknameStore for WebNicknameStore {
         {
             let _ = &trimmed; // silence unused warning on native
         }
-        if let Ok(mut v) = self.version.write() {
-            *v += 1;
-        }
     }
 
     fn clear(&self, peer_id: &str) {
-        let mut did_remove = false;
-        if let Ok(mut cache) = self.cache.write() {
-            did_remove = cache.remove(peer_id).is_some();
+        if let Ok(mut guard) = self.inner.lock() {
+            if guard.cache.remove(peer_id).is_some() {
+                guard.version += 1;
+            }
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -95,21 +107,16 @@ impl NicknameStore for WebNicknameStore {
                 }
             }
         }
-        if did_remove {
-            if let Ok(mut v) = self.version.write() {
-                *v += 1;
-            }
-        }
     }
 
     fn version(&self) -> u64 {
-        self.version.read().map(|g| *g).unwrap_or(0)
+        self.inner.lock().map(|g| g.version).unwrap_or(0)
     }
 
     fn snapshot(&self) -> Vec<(String, String)> {
-        self.cache
-            .read()
-            .map(|g| g.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        self.inner
+            .lock()
+            .map(|g| g.cache.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
             .unwrap_or_default()
     }
 }

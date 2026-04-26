@@ -43,6 +43,10 @@ fn default_version() -> u32 {
 /// Peer-trust store backed by the browser `localStorage` API (wasm32)
 /// or an in-memory mutex (native).
 pub struct WebTrustStore {
+    // state: lock-ok — `TrustStore` trait is sync; trait elimination
+    // tracked in docs/specs/2026-04-26-state-management-model-design.md
+    // § Follow-up work F1. `Inner` already groups peers + version under
+    // one guard, so cross-field atomicity is intact.
     inner: Mutex<Inner>,
 }
 
