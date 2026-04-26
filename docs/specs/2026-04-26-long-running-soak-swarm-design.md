@@ -184,10 +184,20 @@ cheaper test as a follow-up is part of the standard triage response.
    process from `swarm-runner` so a bot crash doesn't blind the checker.
 
 3. **Log layer** — JSONL on disk under `/var/log/willow-soak/`, rotated
-   daily, schema-versioned. Single source of truth for everything downstream.
-   Streams: `bot.events`, `bot.actions`, `bot.self-reports`,
-   `invariant.findings`, `process.metrics`, `opus.decisions`,
-   `critical-events`.
+   daily, schema-versioned. Single source of truth for everything
+   downstream. Streams:
+   - `bot.events.jsonl` — bot's view of grove events
+   - `bot.actions.jsonl` — every Haiku tool call (request + result)
+   - `bot.self-reports.jsonl` — bot-perspective reports (§3)
+   - `bot.delivery-audits.jsonl` — sender-side `(SendAudit)`
+     records emitted by `send_message_with_audit` (§4)
+   - `invariant.findings.jsonl` — observer findings
+   - `process.metrics.jsonl` — service lifecycle, restarts, chaos,
+     Anthropic spend, cache hit rate
+   - `opus.decisions.jsonl` — opus-reviewer decisions, prompts, tool
+     calls
+   - `critical-events.jsonl` — `severity:critical` events for the
+     webhook
 
 4. **`opus-reviewer`** — long-running service with an internal scheduler
    (default 06:00 and 18:00 UTC; configurable). On each tick: reads JSONL
@@ -346,8 +356,11 @@ Mitigations the spec adopts:
   prefix, not the 5-min default.
 - Optionally: a low-cost cache-warming ping on a 4-minute schedule
   (cheaper than missing the cache repeatedly during active periods,
-  noisier than just paying full price during quiet periods — defaults
-  off, enabled by `soak.toml`).
+  noisier than just paying full price during quiet periods).
+  **Day-zero state: off.** Phase 1 burn-in runs without warming so
+  the measured cache hit rate is honest. If the measured rate is
+  below 30%, warming is enabled in `soak.toml` before Phase 2 starts
+  (per §7 Phase 1 exit).
 
 Bounded by a hard daily cap in `soak.toml` (default $40/day, well
 above the realistic top); if exceeded, swarm pauses Haiku calls
@@ -453,24 +466,48 @@ are framed against the actual model.
 
 The current public `ClientHandle` API exposes `state_snapshot() ->
 ServerState` (`crates/client/src/accessors.rs:69`) but does **not**
-expose `HeadsSummary` or per-author chains. The `Dag` is `pub(crate)
-dag_addr` (`crates/client/src/lib.rs:271`). The check catalog requires
-two new public accessors, added as part of Phase 0a (§7):
+expose `HeadsSummary`, per-author chains, or the `EventHash` of a
+just-sent message. The `Dag` is `pub(crate) dag_addr`
+(`crates/client/src/lib.rs:271`); `send_message` returns `()`
+(`crates/client/src/mutations.rs:246-258`) and discards the
+constructed event hash. The check catalog requires three new public
+accessors, added as part of Phase 0a (§7):
 
 1. **`ClientHandle::heads_summary() -> HeadsSummary`** — wraps
    `Dag::heads_summary()`. Returns the per-author frontier. Cheap,
    immutable snapshot.
 2. **`ClientHandle::author_chain(author: &EndpointId, since: Option<EventHash>)
-   -> Vec<EventHash>`** — returns the author's full chain (or a
-   suffix from `since`). Used by the "every position 0..=s"
-   comparison in `per-author event-content equality`. Note: this is
-   the *hash chain*, not full event payloads — payloads are looked up
-   via existing accessors when needed (and only in the divergent case,
-   keeping the steady-state cost low).
+   -> Vec<EventHash>`** — returns the author's hash chain (or a
+   suffix from `since`). Wraps `Dag::author_events()`
+   (`crates/state/src/dag.rs:222`) plus a `since` filter — ~10 lines.
+   Used by the "every position 0..=s" comparison in `per-author
+   event-content equality`. This is the *hash chain*, not full
+   payloads — payloads are looked up via existing accessors when
+   needed, only in the divergent case.
+3. **`ClientHandle::send_message_with_audit(...) -> SendAudit`** —
+   the existing `send_message` API plus an audit-record return:
+   ```
+   pub struct SendAudit {
+       pub event_hash: EventHash,
+       pub heads_at_send: HeadsSummary,
+       pub channel_membership_at_send: BTreeSet<EndpointId>,
+   }
+   ```
+   The bot loop calls this instead of `send_message` for any send it
+   wants the message-delivery audit to track. The audit fields are
+   captured atomically with the send (inside the same actor message
+   handler), so the snapshot is causally consistent — no race window
+   between "send happened" and "snapshot taken." The bot loop writes
+   the `SendAudit` to `delivery-audits.jsonl` (§4 stream).
 
-Both accessors are pure reads of the local DAG, do not require
-network I/O, and are safe to call from the invariant checker on any
-bot's `ClientHandle`. Phase 0a's exit gate includes these accessors.
+   Existing `send_message` keeps its `()` return for backward
+   compatibility — only call sites that want audit tracking switch
+   over.
+
+All three accessors are pure reads of the local DAG (or atomic with a
+mutation in case of #3), do not require network I/O, and are safe to
+call from the invariant checker on any bot's `ClientHandle`. Phase 0a's
+exit gate includes all three.
 
 #### Tier annotations
 
@@ -498,7 +535,7 @@ delivery timing, or wall-clock duration).
 | **bot event-store integrity** `[soak-only]` | daily | For each bot, walk the local event store and verify (a) every event signature verifies, (b) every event's parent hash is present in-store, (c) the `apply()` of the store from genesis produces the same `ServerState` as the running bot's `state_snapshot()`. Detects torn writes, fsync-ordering bugs, and any silent corruption in `PersistenceActor`. | Any signature/parent/apply-equality failure = `critical`. |
 | **disk-utilization** `[soak-only]` | every 5min | `/var/log` and `/var/lib` utilization on the test VPS. | 70% / 85% / 95% thresholds → `info` / `warning` / `critical`. |
 | **cross-session continuity** `[soak-only]` | daily | Chaos-driver spawns a fresh peer (new keypair, given an invite). After sync settles, observer verifies that for every (author, seq) reachable from any established peer's HeadsSummary, the fresh peer holds the same `EventHash` at that position. The fresh peer's derived `ServerState` is structurally equal to established peers'. | Any (author, seq)-position the fresh peer is missing or disagrees on after 5min = `critical`. Any structural difference in derived `ServerState` = `critical`. |
-| **restart-survival** `[soak-only]` | every 4h (Phase 2+); **a stripped-down "single soft-restart" form runs once during Phase 1's burn-in** to gate Phase 1 exit | Chaos-driver picks a random bot, drops its task (which gracefully drops the `ClientHandle` and its actor runtime), then re-creates a fresh `ClientHandle` for that persona using the same persistent identity and `data_dir`. Once sync settles, observer verifies the post-resync HeadsSummary is a superset of the pre-restart HeadsSummary (no events lost) and the post-resync materialized `ServerState` is structurally equal to a peer that did not restart. **Implementation detail:** with multi-tenant `ClientHandle` (Phase 0a), this is an in-process operation in `swarm-runner`, driven by an admin-channel signal from the checker — no cross-process IPC needed. | Any pre-event missing post-resync = `critical`. Any structural state mismatch with a non-restarted peer = `critical`. |
+| **restart-survival** `[mem-net-ci]` | every 4h (Phase 2+); **a stripped-down "single soft-restart" form runs once during Phase 1's burn-in** to gate Phase 1 exit | Chaos-driver picks a random bot, drops its task (which gracefully drops the `ClientHandle` and its actor runtime), then re-creates a fresh `ClientHandle` for that persona using the same persistent identity and `data_dir`. Once sync settles, observer verifies the post-resync HeadsSummary is a superset of the pre-restart HeadsSummary (no events lost) and the post-resync materialized `ServerState` is structurally equal to a peer that did not restart. **Implementation detail:** with multi-tenant `ClientHandle` (Phase 0a), this is an in-process operation in `swarm-runner`, driven by an admin-channel signal from the checker — no cross-process IPC needed. **Tier:** the *core invariant* (pre-restart heads ⊆ post-resync heads, structural state match) is testable with `MemNetwork` + a synthetic restart, hence `[mem-net-ci]`. The soak version adds wall-clock duration and unscripted state buildup. | Any pre-event missing post-resync = `critical`. Any structural state mismatch with a non-restarted peer = `critical`. |
 | **cross-grove isolation (best-effort, disabled by default)** `[soak-only]` | every 1h | Bot grove's CPU/bandwidth/memory share on the prod relay should not grow as a fraction of total when bot activity is steady. | Best-effort signal pending per-grove relay metrics. **Disabled** in `soak.toml` until the relay exposes per-grove counters (out of scope for this spec). When enabled: unbounded growth = `warning`. |
 
 ### Finding schema
@@ -538,13 +575,19 @@ Every check that fires writes one record to
 independent string** keyed by check name and check-specific evidence
 keys. Per-check definitions:
 
+**Terminology.** `seq` and `position` are the same concept — a 0-indexed
+position in a per-author DAG chain. The table uses both interchangeably
+(historic naming); both refer to the index returned by
+`Dag::author_events(author)[i]`.
+
 | Check | Fingerprint keys |
 |---|---|
-| `heads_summary_divergence` | `check + author + position` |
+| `heads_summary_divergence` | `check + author + seq` |
 | `event_content_inequality` | `check + author + seq` |
 | `message_delivery_miss` | `check + send_event_hash` (independent of which recipient missed it) |
 | `panic` | `check + first 80 chars of panic message` (no container — same panic in different containers is one bug) |
 | `level_error` | `check + tracing_target + first 60 chars of message` |
+| `process_liveness_miss` | `check + service_name` (e.g. `swarm-runner`, `bot:alice`) |
 | `hlc_decrease` | `check + author` |
 | `dedup_zero` | `check` (the bug is global) |
 | `resource_slope` | `check + metric_name` |
@@ -554,6 +597,11 @@ keys. Per-check definitions:
 | `event_store_integrity` | `check + persona + failure_class` (signature/parent/apply) |
 | `restart_survival_mismatch` | `check + persona` |
 | `cross_session_mismatch` | `check + author` |
+| `disk_utilization` | `check + mountpoint` (`/var/log` vs `/var/lib`) |
+| `cross_grove_isolation` | `check + metric_name` (`cpu`/`bandwidth`/`memory` share) |
+| `coverage_gap` | `check + start_ts + end_ts` (gap window) |
+| `findings_storm` | `check + dominant_underlying_check` |
+| `reviewer_runaway` | `check` (singleton bug) |
 | `auto_resolve_pattern` | `check + underlying_check + underlying_fingerprint` |
 
 Fingerprints are **the deduplication key** for opus-reviewer (§5) — Opus
@@ -599,8 +647,17 @@ bugs. Three guardrails:
      `open_findings.jsonl` companion file (in `/var/lib/willow-soak/`,
      not `/var/log/`) that holds the live state of each unresolved
      finding (`fingerprint`, `first_observed`, `last_observed`,
-     `auto_resolve_count_24h_window`). Updated atomically (write-to-tmp,
-     rename) on every check tick. Survives observer restarts.
+     `auto_resolve_count_24h_window`). **Write discipline:** a
+     single dedicated writer task within the observer process owns
+     the file. Each *observer tick* (not each check) batches all
+     resolution-state updates from every check that ran in that tick
+     and emits **one** atomic write-to-tmp-then-rename
+     (`open_findings.jsonl.tmp` → `open_findings.jsonl`) at the end
+     of the tick. The other JSONL streams (`invariant.findings`,
+     `delivery-audits`, etc.) are append-only files written by their
+     own dedicated writer tasks — no shared writer, no lock-file
+     dance, just one writer task per file. Survives observer
+     restarts (the file is durable on `/var/lib/`).
    - **Window tracking.** The `auto_resolve_count_24h_window` is a
      sliding window of resolution timestamps; the observer prunes
      entries older than 24h on every check tick. When a count reaches
@@ -631,8 +688,18 @@ bugs. Three guardrails:
      which is **insufficient** for these self-tests. The spec adds a
      `DelayedMemNetwork` test wrapper that imposes per-peer
      configurable delivery delays and exposes a deterministic
-     "advance time by N seconds" hook. Used only by these self-tests.
-     Implementation lives in
+     "advance time by N seconds" hook. **Implementation honesty:**
+     `Network` (`crates/network/src/traits.rs:139-181`) has
+     associated types `Topic` and `Events`, not trait objects. A
+     wrapper `DelayedMemNetwork<N: Network>` requires defining new
+     `DelayedTopic`/`DelayedEvents` types that wrap `N::Topic` /
+     `N::Events` and re-implement the `#[async_trait]` surfaces
+     (`broadcast`, `broadcast_neighbors`, `neighbors`, `next`,
+     `joined`). The per-peer delay scheduler also requires a
+     deterministic time source threaded into the broadcast path
+     inside `MemHub` (`crates/network/src/mem.rs:128`'s broadcast
+     channel has no insertion-time hook today). **Realistic effort:
+     3–5 days**, not "a small adapter." Lives in
      `crates/network/src/mem_delayed.rs` (new file, `test-utils`
      feature).
    - **Resource-trends and convergence-lag baselines** are not
@@ -686,6 +753,17 @@ On each tick:
 
 ### Triage rubric (in Opus's system prompt)
 
+**The triage rubric Opus actually receives is the concatenation of
+this section's rules with the contents of `docs/runbooks/soak-triage.md`
+(the calibration rubric written during Phase 1 — see §7).** This
+section defines the *static* parts of the rubric (the rules every
+finding goes through). The runbook contains the *calibrated* parts —
+real false-positive patterns, real worked examples drawn from Phase 1.
+opus-reviewer reads the runbook from disk on every tick (so updates
+to the runbook take effect on the next tick without redeploying the
+service).
+
+
 A finding gets a **new** GitHub issue only if all hold:
 
 1. Severity is `critical`, OR same `warning` fingerprint has fired ≥3
@@ -700,6 +778,32 @@ A finding gets a **new** GitHub issue only if all hold:
 
 Otherwise: comment on the existing issue with the new occurrence (counts
 go up, log pointers extend), or do nothing (logged as "below threshold").
+
+#### Mandatory `[mem-net-ci]` follow-up
+
+When a soak finding fires for a check tagged `[mem-net-ci]` in §4 and a
+GitHub issue is filed (per the rubric above), Opus is **also required**
+to file a *separate* `mem-net-ci-followup` issue if no open issue
+labeled `mem-net-ci-followup:<check_name>` already exists. The
+follow-up is a placeholder asking for a deterministic property test in
+the cheaper tier; the body links back to the soak issue and to the
+finding's evidence range.
+
+This is the wire from §1's "cheap-tier-first discipline" claim to an
+actual obligation. Without it, the `[mem-net-ci]` annotation is
+inert. Caps:
+
+- `max_mem_net_ci_followups_per_day` (default **3**) — same kill-switch
+  semantics as `max_new_issues_per_day`.
+- Followups are *not counted* against `max_new_issues_per_day` —
+  they're a separate budget. They use a separate label so the digest's
+  cumulative-coverage view (§5 "What success at 6 months") can count
+  them without conflating with primary findings.
+
+The digest writer's coverage report includes a row per
+`[mem-net-ci]`-tagged check showing whether a follow-up issue exists,
+is open, or is closed — making the follow-up obligation visible at the
+weekly cadence.
 
 **Hypotheses are restricted to a tagged comment, not the issue body.**
 Empirical weakness of "clearly labeled" hypotheses is that engineers
@@ -769,12 +873,23 @@ local MCP server**, `willow-soak-gh-proxy`, which:
 5. Logs every intercepted call (allowed or denied) to
    `opus.decisions.jsonl`.
 
-`willow-soak-gh-proxy` is a new binary in `crates/soak/`, ~200 lines
-of Rust using the rmcp server SDK. It wraps the upstream MCP server's
-tool list verbatim — no schema translation needed — and only the
-`issue_write`, `add_issue_comment`, and `add_reply_to_pull_request_comment`
-methods carry rate-limit logic; everything else (search, read) is
-forwarded unmodified.
+`willow-soak-gh-proxy` is a new binary in `crates/soak/`. The proxy
+needs both an rmcp **server** (to expose to Opus, currently the only
+rmcp surface used in the repo via `crates/agent/`) and an rmcp
+**client** (to call upstream — *not* currently enabled in
+`crates/agent/Cargo.toml`, which only has
+`["server", "transport-io", "transport-streamable-http-server"]`).
+Phase 0b adds the `client` rmcp feature plus a forwarding pattern:
+`initialize`, `list_tools`, `call_tool`, capability negotiation, all
+forwarded transparently except where the rate-limit gate intercepts
+the write methods. **Realistic size: ~500 lines, plus rmcp client
+feature enablement and an integration test that exercises the
+forward path.** Earlier "200 lines" estimate was for the gate logic
+only and ignored the proxy plumbing.
+
+Only the `issue_write`, `add_issue_comment`, and
+`add_reply_to_pull_request_comment` methods carry rate-limit logic;
+everything else (search, read) is forwarded unmodified.
 
 This **closes the "asserted but not designed" gap** earlier drafts had:
 the gate has a concrete implementation surface — a local MCP server
@@ -807,23 +922,34 @@ The input side needs symmetric protection. A flapping check during
 mass divergence could produce thousands of `invariant.findings` records
 per hour, blowing Opus's context window before the rubric ever runs.
 
-opus-reviewer enforces an **input-volume cap** on the slice it sends
-to Opus:
+opus-reviewer applies a **deterministic, ordered three-stage pipeline**
+on the input slice before calling Opus:
 
-- **Per-tick max:** `max_findings_per_tick` (default **500**) raw
-  findings included in the slice; if the window has more, the
-  reviewer pre-clusters by `fingerprint` *before* calling Opus and
-  sends one representative + count + first/last timestamps for each
-  cluster. This is a deterministic cluster-by-equality pass, not an
-  LLM step.
-- **Per-fingerprint max:** within the slice, no single fingerprint
-  contributes more than `max_per_fingerprint_per_tick` (default
-  **10**) records — additional are summarized as `... + N more
-  identical occurrences`.
+**Stage 1 — Per-fingerprint cap.** Each fingerprint may contribute
+at most `max_per_fingerprint_per_tick` (default **10**) raw records.
+Additional records for the same fingerprint are dropped from the slice
+but their count is preserved (`+ N more identical occurrences`
+annotation on the cluster summary in stage 2).
 
-If a single tick would have shipped >10× the per-tick cap raw, the
-reviewer also emits a `findings_storm` `severity:warning` record so
-the storm itself becomes a triage signal.
+**Stage 2 — Cluster by fingerprint.** All records are grouped by
+fingerprint. Each cluster is replaced by a single representative
+record `+ count + first_observed + last_observed + N-more-dropped`.
+
+**Stage 3 — Total-volume cap.** If after clustering the slice still
+exceeds `max_findings_per_tick` (default **500**) representative
+records, the lowest-severity clusters are progressively dropped (with
+their counts preserved in a `dropped_clusters_summary` block) until
+the slice fits the cap.
+
+The stages run in this order *deterministically* (same input → same
+output) so Opus's input is reproducible. The dropping in stage 3 only
+ever applies after clustering, so a noisy fingerprint can never crowd
+out distinct clusters of equal severity.
+
+If the **post-stage-1 record count** exceeds 10× `max_findings_per_tick`,
+the reviewer emits a `findings_storm` `severity:warning` finding
+itself so the storm becomes a triage signal. (Threshold is post-stage-1
+to avoid double-counting noise in a single chatty fingerprint.)
 
 ### Auditing the auditor
 
@@ -867,17 +993,31 @@ time without needing the reviewer to run.
 ### digest-writer
 
 Long-running service with internal scheduler. Default: **Mondays 06:00
-UTC**. Reads the last 7 days of JSONL, writes
-`docs/reports/soak/YYYY-WW.md`, opens a PR. Sections:
+UTC**. Reads the last 7 days of JSONL plus the historical roll-ups,
+and writes **three files** in a single weekly PR:
 
-- Counts (findings by check × severity, opus actions, chaos events).
+1. `docs/reports/soak/YYYY-WW.md` — the weekly digest (sections below).
+2. `docs/reports/soak/long-trends.md` — the rolling 6-month view,
+   updated by appending this week's roll-up to the prior version.
+   Hard-resets across grove re-bootstraps are marked.
+3. `docs/reports/soak/coverage.md` — per-check coverage map: every
+   §4 check, its tier annotation, when it was added, when its
+   thresholds were last tuned, last 5 issues caught, and (for
+   `[mem-net-ci]`-tagged checks) whether a follow-up issue exists /
+   is open / is closed.
+
+Weekly digest sections (file 1):
+
+- Counts (findings by check × severity, opus actions, chaos events,
+  `[mem-net-ci]` follow-ups filed).
 - Resource trends (ASCII sparklines of RSS, event log size, storage DB
   size — text-renderable, no graphics deps).
 - Top open soak issues (oldest, most recurring).
 - New vs. resolved soak issues this week.
 - opus-reviewer self-audit.
 - Notable patterns Opus surfaced (clustering across checks).
-- Daily-cost summary (Anthropic spend by service).
+- Daily-cost summary (Anthropic spend by service, separate Haiku and
+  Opus columns).
 
 Two outputs, one source of truth: **GitHub issues are the call-to-action
 layer**; the **weekly digest is the trend / pattern layer**. The same
@@ -925,6 +1065,7 @@ just open.
 | `bot.events`        | ~3 MB    | hot 7d, gz 90d, then weekly-aggregate then drop raw |
 | `bot.actions`       | ~1 MB    | hot 7d, gz 90d, then weekly-aggregate then drop raw |
 | `bot.self-reports`  | <50 KB   | hot 7d, gz 90d, then weekly-aggregate then drop raw |
+| `bot.delivery-audits` | ~500 KB | hot 7d, gz 90d, then weekly-aggregate then drop raw (consumed by message-delivery check within `delivery_deadline × 2`) |
 | `invariant.findings`| <50 KB   | **kept indefinitely** |
 | `process.metrics`   | ~600 KB  | hot 7d, gz 90d, then weekly-aggregate then drop raw |
 | `opus.decisions`    | ~100 KB  | **kept indefinitely** |
@@ -985,6 +1126,8 @@ verified in Phase 1):
 | `swarm-runner` | 2.5 GB | 1.5 |
 | `invariant-checker` | 512 MB | 0.3 |
 | `opus-reviewer` | 512 MB | 0.2 (idle), bursts during tick |
+| `willow-soak-gh-proxy` | 128 MB | 0.05 (idle), bursts during a tick's tool calls |
+| `upstream-github-mcp` | 256 MB | 0.05 (idle), bursts during a tick's tool calls |
 | `digest-writer` | 256 MB | 0.1 (idle), bursts during tick |
 | `critical-webhook` | 64 MB | 0.05 |
 
@@ -997,8 +1140,10 @@ NixOS / Pulumi / Ansible for incremental fit with the project's existing
 declarative-provisioning conversation deferred until after this lands.
 
 - Single `crates/soak/Dockerfile` with a Rust multi-stage build producing
-  all four binaries (`swarm-runner`, `invariant-checker`, `opus-reviewer`,
-  `digest-writer`, plus optional `critical-webhook`).
+  the soak binaries: `swarm-runner`, `invariant-checker`, `opus-reviewer`,
+  `digest-writer`, `willow-soak-gh-proxy`, plus optional
+  `critical-webhook`. The upstream GitHub MCP server runs as a separate
+  pinned image (vendor-supplied), composed in as a sidecar.
 - `compose.yaml` declares one service per binary.
 - **Long-running services with internal schedulers**, not cron-in-container.
   `opus-reviewer` sleeps until next 06:00/18:00 UTC, runs, sleeps.
@@ -1023,7 +1168,9 @@ declarative-provisioning conversation deferred until after this lands.
 | `swarm-runner` | long-running | `unless-stopped` | continuous |
 | `invariant-checker` | long-running | `unless-stopped` | continuous (observer + chaos in one process) |
 | `opus-reviewer` | long-running | `unless-stopped` | internal scheduler — 06:00, 18:00 UTC |
-| `digest-writer` | long-running | `unless-stopped` | internal scheduler — Mon 06:00 UTC |
+| `willow-soak-gh-proxy` | long-running | `unless-stopped` | continuous; serves MCP to opus-reviewer (and Opus by extension); forwards to upstream GitHub MCP server with rate-limit gate (§5) |
+| `upstream-github-mcp` | long-running | `unless-stopped` | continuous; the third-party GitHub MCP server, pinned-image sidecar reachable only by `willow-soak-gh-proxy` |
+| `digest-writer` | long-running | `unless-stopped` | internal scheduler — Mon 06:00 UTC; produces YYYY-WW.md, long-trends.md, coverage.md (§5) |
 | `critical-webhook` *(optional)* | long-running | `unless-stopped` | watches `critical-events.jsonl`, posts on append |
 
 ### Filesystem layout
@@ -1036,7 +1183,13 @@ declarative-provisioning conversation deferred until after this lands.
                                # provisioned out-of-band, never committed
 /var/lib/willow-soak/
   keys/                        # operator + persona Ed25519 keys, mode 0400
+    grove-marker.json          # owner-signed integrity marker (§6 bootstrap)
   state/                       # ClientHandle local state (event store, etc.)
+                               # one subdirectory per persona (per-instance data_dir)
+  open_findings.jsonl          # observer's live state for resolution detection;
+                               # write-to-tmp+rename per check tick;
+                               # required for auto_resolve_pattern correctness (§4)
+                               # NOT in /var/log because it's mutable state, not append-only
   opus.watermark               # JSON {last_reviewed_ts, last_run_ts}
   digest.watermark
   bootstrap.lock               # presence = grove already bootstrapped
@@ -1188,11 +1341,12 @@ Single file, all tunables, defaults match Sections 3–5:
 - **`[bots]` self-report caps:**
   `max_self_reports_per_persona_per_hour`.
 - Log retention policy.
-- **`[budgets]` Anthropic spend caps:** `daily_haiku_cap_usd`,
-  `daily_opus_cap_usd` (independent — Opus billing can be paused
-  without stopping bots, and vice versa). Hard caps; on exceedance
-  the swarm pauses the corresponding API calls (checker keeps
-  running).
+- **`[budgets]` Anthropic spend caps:** `daily_haiku_cap_usd`
+  (default **$40**, calibrated against §3's realistic estimate),
+  `daily_opus_cap_usd` (default **$10**). Independent caps — Opus
+  billing can be paused without stopping bots, and vice versa. Hard
+  caps; on exceedance the swarm pauses the corresponding API calls
+  (checker keeps running).
 
 ### Deployment recipes (added)
 
@@ -1203,8 +1357,10 @@ Single file, all tunables, defaults match Sections 3–5:
 | `just soak-status` | SSH + `docker compose ps`, plus latest entries from each JSONL stream |
 | `just soak-logs <stream>` | SSH + `tail -f` on one of the JSONL streams |
 | `just soak-bootstrap` | Manual/recovery bootstrap (one-off; normally automatic on first start) |
-| `just soak-backup` | Pull encrypted key backup from VPS to local |
+| `just soak-bootstrap --force-new` | **Wipes the live grove** — deletes `grove-marker.json` and `bootstrap.lock`, then runs first-bootstrap from scratch. Used for the protocol-break wipe-and-re-roll path (#393) or after a deliberate-abandonment decision. Does **not** modify backup snapshots. |
+| `just soak-backup` | Pull encrypted key backup (including `grove-marker.json`) from VPS to local |
 | `just soak-restore` | Push restored keys back to VPS (rare, recovery only) |
+| `just soak-restore --no-marker` | Restore everything *except* `grove-marker.json` — for the case where you're restoring a backup that predates a `--force-new` and don't want the stale marker resurrected |
 
 CI does not run any of this. The test VPS is the only environment.
 
@@ -1288,10 +1444,21 @@ Exit: existing tests pass; the multi-instance test is green; the
 two new accessors have unit tests; web app and existing agent tests
 unchanged.
 
-**Effort: 2–3 weeks.** Earlier "1–2 weeks" estimate was optimistic
-given the 30+ call sites that bypass `PersistenceActor` and the need
-to introduce `StorageHandle`. This is a careful refactor that has to
-keep `just check-all` green throughout. Lands in its own PR.
+**Effort: 3–4 weeks.** Real call-site count is ~40 (the constructor
+reads at `lib.rs:581-657`, plus `connect.rs`, `mutations.rs`,
+`listeners.rs`, `joining.rs`, `servers.rs`,
+`search/{handle,actor}.rs`, `lib.rs::load_identity`, and **including**
+`PersistenceActor` itself which calls `storage::save_*`/`load_*` at
+9 sites in `persistence_actor.rs`). The `dirs::download_dir` use in
+`save_download` (`storage.rs:236`) also threads through. Plus the
+new accessors (`heads_summary`, `author_chain`, `send_message_with_audit`)
+each need unit tests, plus the multi-instance integration test, plus
+WASM-compat verification (the new fields are wired but ignored on
+WASM — that's still cfg-gated work across every storage helper).
+Earlier 2–3 week estimate was honest about scope of the threading
+but missed that PersistenceActor itself is a caller and missed the
+audit accessor entirely. This is a careful refactor that has to keep
+`just check-all` green throughout. Lands in its own PR.
 
 **Phase 0b — Non-MCP tool dispatch on `WillowToolRouter`**
 
@@ -1317,17 +1484,27 @@ Total Phase 0 effort: ~1.5–2.5 weeks across two PRs.
 - Invariant checker: **heads-summary convergence, per-author
   event-content equality, panic log scrape (test-VPS scope, allowlist
   installed), process liveness, disk-utilization, HLC monotonicity,
-  dedup positivity, bot event-store integrity** turned on in Phase 1.
+  dedup positivity, bot event-store integrity, restart-survival
+  (Phase-1-restricted form)** turned on in Phase 1.
   Convergence-lag baseline data **collected** during Phase 1 burn-in
   (so Phase 2 has 7+ days of samples) but the lag-regression alarm
   itself stays disabled until day 14.
 - **Minimal chaos in Phase 1.** No persona-restart loop yet, but the
   chaos-driver runs a **single soft-restart probe per persona once
-  during the burn-in week** so Phase 1 actually exercises the
-  HLC-monotonicity-across-restart path (without a restart, the
-  HLC-monotonicity check has nothing to catch). The probe is
-  scheduled (not random) and logged with `concurrent_chaos`. Full
-  every-4h restart-survival waits for Phase 2.
+  during the burn-in week** (12 probes, **evenly spaced ~one per 12
+  hours** starting at hour 12 of burn-in) so Phase 1 exercises the
+  HLC-monotonicity-across-restart path and the restart-survival check
+  fires for every persona (gating Phase 1 exit). The probe is
+  scheduled deterministically (not random) and logged with
+  `concurrent_chaos`. Full every-4h random restart-survival waits for
+  Phase 2.
+- **Panic allowlist seed.** `panic_allowlist.toml` ships pre-populated
+  with known operational `Level::ERROR` / `Level::WARN` patterns
+  (`iroh_gossip::net receiver lagged`, `tokio runtime::worker shutting
+  down`, `tracing-subscriber dropped early events`, etc.) so Phase 1
+  isn't drowned in known noise on day zero. The allowlist is reviewed
+  during Phase 1 calibration; new patterns surfaced during burn-in
+  are added before Phase 2.
 - Logging stack fully in place (JSONL streams + rotation + retention).
 - **No `opus-reviewer` yet** — humans tail logs for the first week.
   Calibrating "what does good look like" before turning Opus loose.
@@ -1341,15 +1518,27 @@ Total Phase 0 effort: ~1.5–2.5 weeks across two PRs.
     pre-restart events lost (gates "bot identities survived restart"
     via the `restart-survival` check, not human eyeballing).
   - One round of "real findings vs. test-fixture noise" review done.
-  - **Triage rubric written and committed.** A
+  - **Triage rubric written, committed, and quality-gated.** A
     `docs/runbooks/soak-triage.md` checked into the repo, derived
     from the week's manually-reviewed findings, that becomes the
-    seed for Opus's system prompt in Phase 2. Includes: false-positive
-    patterns observed and how to recognize them, evidence elements
-    that distinguish real bugs from fixture noise, fingerprint
-    canonicalization examples from real findings. **Without this
-    artifact, Phase 2 is blocked** — Opus's rubric must come from
-    real calibration data, not from this spec's prose.
+    runtime extension of Opus's system prompt in Phase 2 (concatenated
+    with §5's static rules; opus-reviewer reads it from disk on every
+    tick). **Quality bar — not just presence-of-file:**
+    - **≥5 distinct false-positive patterns** drawn from real Phase 1
+      findings, each with a 1-line example showing how to recognize
+      and dismiss it.
+    - **≥3 worked examples** mapping evidence → fingerprint → triage
+      decision (file-new / comment / no-action), drawn from real
+      Phase 1 findings — at least one example per decision branch.
+    - **≥2 distinct check-categories** represented across the
+      examples, so the rubric isn't a one-trick pony.
+    - **Sign-off by a second maintainer** who independently reviewed
+      the same week's logs (recorded as a Git Co-authored-by trailer
+      on the rubric's commit). Without two-maintainer review, the
+      rubric is one person's framing.
+    Without this artifact meeting the quality bar, Phase 2 is
+    blocked — Opus's rubric must come from real calibration data,
+    not from this spec's prose.
   - **Measured RSS report** for one steady-state `ClientHandle`
     (24h after grove bootstrap), checked into the runbook so §6's
     sizing assumptions are verified rather than inherited.
@@ -1460,6 +1649,29 @@ Total Phase 0 effort: ~1.5–2.5 weeks across two PRs.
 - **Should `operator` ever be a Haiku loop too?** Currently scripted. An
   LLM operator would be more chaotic but could reproduce admin-level
   confusion bugs. Consider in Phase 4 as an optional persona type.
+
+### Off-ramp criterion (when to stop running this)
+
+This swarm is not a sacred cow. It earns its keep or it gets shut off.
+The quarterly review (built into Phase 4 steady state) evaluates:
+
+| Signal over the last 90 days | Action |
+|---|---|
+| ≥3 unique soak-only bugs filed and fixed *that other tiers would not have caught* | Continue — the tier is paying for itself. |
+| 1–2 unique soak-only bugs filed and fixed | Continue, but tighten the cost budget by 25% and review whether any persona is dead weight. |
+| 0 unique soak-only bugs *and* 0 `[mem-net-ci]` follow-ups closed in 90 days | **Pause the swarm.** Run a 2-week post-mortem: was the swarm doing nothing because the system is genuinely solid, or because the checks are too narrow? If solid: run the swarm 1 month per quarter instead of continuously. If checks are too narrow: open issues against §4 and decide whether to invest in expanding coverage or shut down. |
+| Anthropic spend exceeds 2× the budget for two consecutive months without a corresponding rise in unique findings | Pause and re-investigate cost model before continuing. |
+| Test fixture itself has produced more `severity:critical` `findings_storm` / `reviewer_runaway` events than real findings filed | The fixture is broken; pause and fix the fixture before trusting any output. |
+
+"Unique soak-only" excludes follow-ups to issues filed in earlier
+quarters and excludes findings that turned out to be test-fixture
+flakiness. The intent is to be honest about what the swarm is
+*independently* contributing.
+
+This off-ramp is reviewed at Phase 4 steady state's first quarterly
+checkpoint and every quarter thereafter, recorded in the weekly
+digest (file 2: `long-trends.md`) so the trend is visible alongside
+the cost trend.
 
 ## 9. References
 
