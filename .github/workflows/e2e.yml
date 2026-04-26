@@ -1,10 +1,11 @@
 name: E2E
 
 on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
-  schedule:
-    # Weekly smoke run — catches drift without gating PRs on a flaky suite.
-    - cron: '0 12 * * 1'
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,9 +15,6 @@ jobs:
     name: Playwright E2E
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Manual / scheduled only: the full stack run takes 15+ min and the
-    # multi-peer suite still has known flakes. Promote to `pull_request`
-    # once the suite is stable.
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -43,4 +41,30 @@ jobs:
           tool: just
 
       - name: Run full E2E flow (setup + tests + teardown)
-        run: just test-e2e-full
+        id: e2e
+        run: just test-e2e-full 2>&1 | tee /tmp/e2e.log
+      - name: Surface E2E failure
+        if: failure() && steps.e2e.conclusion == 'failure'
+        run: |
+          {
+            echo "## Playwright E2E failed"
+            echo
+            echo '<details><summary>just / playwright output (last 300 lines)</summary>'
+            echo
+            echo '```'
+            tail -n 300 /tmp/e2e.log || echo "(no log captured)"
+            echo '```'
+            echo
+            echo '</details>'
+            for f in .dev/logs/relay.log .dev/logs/replay.log .dev/logs/storage.log .dev/logs/web.log; do
+              [ -f "$f" ] || continue
+              echo
+              echo "<details><summary>$f (last 100 lines)</summary>"
+              echo
+              echo '```'
+              tail -n 100 "$f"
+              echo '```'
+              echo
+              echo '</details>'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

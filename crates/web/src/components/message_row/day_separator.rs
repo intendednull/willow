@@ -94,6 +94,13 @@ const MONTHS: [&str; 12] = [
     "december",
 ];
 
+/// Maximum timestamp value (in milliseconds) representable as a valid
+/// JavaScript `Date`. ECMA-262 caps the range at ±100,000,000 days from
+/// the epoch; outside this band `Date` accessors return `NaN`, which
+/// silently casts to `0` in Rust and would mis-bucket the row. See
+/// <https://tc39.es/ecma262/#sec-time-values-and-time-range>.
+const MAX_VALID_TS_MS: i64 = 8_640_000_000_000_000;
+
 /// Compute the [`DayBucket`] for a millisecond timestamp in the local
 /// timezone. Uses `js_sys::Date` on WASM; on native builds the function
 /// returns `DayBucket::Today` so the module still compiles for
@@ -102,6 +109,19 @@ const MONTHS: [&str; 12] = [
 #[cfg(target_arch = "wasm32")]
 pub fn day_bucket(ts_ms: u64) -> DayBucket {
     use wasm_bindgen::JsValue;
+
+    // Out-of-range timestamps make `js_sys::Date` accessors return NaN;
+    // the `as i32` / `as u32` casts then collapse to 0, which would index
+    // into `WEEKDAYS`/`MONTHS` and produce a bogus "sunday · 0 january"
+    // label. Bail to a stable fallback variant instead.
+    if ts_ms > MAX_VALID_TS_MS as u64 {
+        return DayBucket::Older {
+            weekday: "unknown",
+            day: 0,
+            month: "unknown",
+            year: 0,
+        };
+    }
 
     let ts = js_sys::Date::new(&JsValue::from_f64(ts_ms as f64));
     let now = js_sys::Date::new_0();

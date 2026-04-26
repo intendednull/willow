@@ -184,41 +184,43 @@ pub fn process_event_batch(
 /// spec's sticky info toast if it resolves to `denied`. Called once
 /// per session after the first local send.
 fn request_notification_permission(notifier: crate::notifications::Notifier) {
-    // `Notification.requestPermission()` returns a Promise. We don't
-    // `await` it — the SendWrapper + notifier handle survives across
-    // the closure.
-    let js = "(function(){if(typeof Notification==='undefined')return 'unsupported';\
-                if(Notification.permission==='granted')return 'granted';\
-                if(Notification.permission==='denied')return 'denied';\
-                try{return Notification.requestPermission();}catch(e){return 'error';}})()";
-    let Ok(result) = js_sys::eval(js) else {
-        return;
-    };
-    // `result` is either a string (immediate) or a Promise. Handle the
-    // Promise path — catch both arms and fire the sticky toast on
-    // `denied`.
-    if let Some(s) = result.as_string() {
-        if s == "denied" {
+    use web_sys::NotificationPermission;
+
+    // Short-circuit when the host already has a final answer. Avoids
+    // re-prompting on `granted` and surfaces the sticky toast
+    // immediately on `denied`.
+    match web_sys::Notification::permission() {
+        NotificationPermission::Granted => return,
+        NotificationPermission::Denied => {
             notifier.show_permission_denied_once();
+            return;
         }
-        return;
+        // `Default` (or any future variant) means we still need to ask.
+        _ => {}
     }
-    use wasm_bindgen::JsCast;
-    if let Ok(promise) = result.dyn_into::<js_sys::Promise>() {
-        let notifier_ok = notifier.clone();
-        let notifier_err = notifier;
-        let on_ok: wasm_bindgen::closure::Closure<dyn FnMut(wasm_bindgen::JsValue)> =
-            wasm_bindgen::closure::Closure::new(move |v: wasm_bindgen::JsValue| {
-                if v.as_string().as_deref() == Some("denied") {
-                    notifier_ok.show_permission_denied_once();
-                }
-            });
-        let on_err: wasm_bindgen::closure::Closure<dyn FnMut(wasm_bindgen::JsValue)> =
-            wasm_bindgen::closure::Closure::new(move |_err: wasm_bindgen::JsValue| {
-                notifier_err.show_permission_denied_once();
-            });
-        let _ = promise.then2(&on_ok, &on_err);
-        on_ok.forget();
-        on_err.forget();
-    }
+
+    let promise = match web_sys::Notification::request_permission() {
+        Ok(p) => p,
+        Err(err) => {
+            tracing::warn!(?err, "Notification.requestPermission unavailable");
+            return;
+        }
+    };
+
+    let notifier_ok = notifier.clone();
+    let notifier_err = notifier;
+    let on_ok: wasm_bindgen::closure::Closure<dyn FnMut(wasm_bindgen::JsValue)> =
+        wasm_bindgen::closure::Closure::new(move |v: wasm_bindgen::JsValue| {
+            if v.as_string().as_deref() == Some("denied") {
+                notifier_ok.show_permission_denied_once();
+            }
+        });
+    let on_err: wasm_bindgen::closure::Closure<dyn FnMut(wasm_bindgen::JsValue)> =
+        wasm_bindgen::closure::Closure::new(move |err: wasm_bindgen::JsValue| {
+            tracing::warn!(?err, "Notification.requestPermission rejected");
+            notifier_err.show_permission_denied_once();
+        });
+    let _ = promise.then2(&on_ok, &on_err);
+    on_ok.forget();
+    on_err.forget();
 }

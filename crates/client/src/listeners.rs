@@ -9,6 +9,7 @@ use crate::mutations;
 use crate::persistence_actor;
 use crate::state_actors;
 use willow_actor::Addr;
+use willow_common::SYNC_BATCH_LIMIT;
 use willow_identity::EndpointId;
 use willow_network::traits::TopicHandle;
 use willow_network::traits::{GossipEvent, TopicEvents};
@@ -253,12 +254,13 @@ async fn process_received_message<T: TopicHandle>(
         }
         crate::ops::WireMessage::SyncBatch { events: batch } => {
             // Reject oversized batches to prevent memory exhaustion.
-            const MAX_SYNC_BATCH_SIZE: usize = 10_000;
-            if batch.len() > MAX_SYNC_BATCH_SIZE {
+            // Bound matches the producer side in `willow-storage`; the
+            // shared constant lives in `willow_common::SYNC_BATCH_LIMIT`.
+            if batch.len() > SYNC_BATCH_LIMIT {
                 tracing::warn!(
                     size = batch.len(),
                     "rejecting oversized sync batch (max {})",
-                    MAX_SYNC_BATCH_SIZE
+                    SYNC_BATCH_LIMIT
                 );
                 return;
             }

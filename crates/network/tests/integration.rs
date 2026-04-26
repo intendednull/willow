@@ -3,18 +3,6 @@
 //! These tests verify gossip delivery, topic isolation, and disconnect
 //! behavior using real iroh endpoints connected via in-memory address
 //! lookup (no relay, no mDNS).
-//!
-//! All tests in this file are marked `#[ignore]` because they spin up
-//! real iroh UDP endpoints and rely on dual-stack loopback, gossip
-//! NeighborUp/Down signaling, and bind timing. GitHub Actions runners
-//! have flaky dual-stack networking (see PR #360), and these tests
-//! intermittently fail there even though they pass reliably locally.
-//!
-//! Run them locally with:
-//!     cargo test -p willow-network --test integration -- --ignored
-//!
-//! In CI they are run by a dedicated `network-integration` job that is
-//! allowed to fail without blocking PR merges.
 
 use std::time::Duration;
 
@@ -129,7 +117,6 @@ async fn next_received_gossip(
 // ───── Gossip exchange tests ──────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "real iroh UDP — flaky on GHA dual-stack; run with --ignored locally"]
 async fn two_nodes_exchange_gossip() {
     let (node_a, node_b) = create_two_nodes().await;
     let topic = topic_id("integration-test");
@@ -181,7 +168,6 @@ async fn two_nodes_exchange_gossip() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "real iroh UDP — flaky on GHA dual-stack; run with --ignored locally"]
 async fn topic_isolation() {
     let (node_a, node_b) = create_two_nodes().await;
 
@@ -224,7 +210,6 @@ async fn topic_isolation() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "real iroh UDP — flaky on GHA dual-stack; run with --ignored locally"]
 async fn node_disconnect_detected() {
     let (node_a, node_b) = create_two_nodes().await;
     let topic = topic_id("disconnect-test");
@@ -278,7 +263,6 @@ async fn node_disconnect_detected() {
 // ───── IrohNetwork trait-level tests ──────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "real iroh UDP — flaky on GHA dual-stack; run with --ignored locally"]
 async fn iroh_network_new_and_shutdown() {
     let identity = Identity::generate();
     let config = Config {
@@ -293,7 +277,6 @@ async fn iroh_network_new_and_shutdown() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "real iroh UDP — flaky on GHA dual-stack; run with --ignored locally"]
 async fn iroh_network_blob_store() {
     let identity = Identity::generate();
     let config = Config {

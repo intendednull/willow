@@ -6054,7 +6054,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
- "willow-actor",
  "willow-client",
  "willow-identity",
  "willow-network",
@@ -6101,6 +6100,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "serde",
+ "tracing",
  "willow-identity",
  "willow-state",
  "willow-transport",
@@ -6243,6 +6243,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "willow-common",
  "willow-identity",
  "willow-network",
  "willow-state",

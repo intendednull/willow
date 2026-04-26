@@ -40,7 +40,22 @@ jobs:
             target
           key: clippy-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: clippy-
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - id: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee /tmp/clippy.log
+      - name: Surface clippy failure
+        if: failure() && steps.clippy.conclusion == 'failure'
+        run: |
+          {
+            echo "## Clippy failed"
+            echo
+            echo '<details><summary>last 200 lines</summary>'
+            echo
+            echo '```'
+            tail -n 200 /tmp/clippy.log || echo "(no log captured)"
+            echo '```'
+            echo
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   test:
     name: Test
@@ -57,33 +72,22 @@ jobs:
             target
           key: test-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: test-
-      # `cargo test --workspace` runs all tests not marked `#[ignore]`.
-      # The iroh-based real-UDP integration tests in
-      # `crates/network/tests/integration.rs` are marked `#[ignore]`
-      # because they're flaky on GHA dual-stack networking (see #360),
-      # and are exercised by the `network-integration` job below.
-      - run: cargo test --workspace
-
-  network-integration:
-    name: Network Integration (allowed to fail)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    # The iroh integration tests use real UDP endpoints and gossip
-    # NeighborUp/Down signaling. They're flaky on GHA dual-stack
-    # networking, so they run for signal but do not gate merges.
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: test-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: test-
-      - run: cargo test -p willow-network --test integration -- --ignored --test-threads=1
+      - id: test
+        run: cargo test --workspace 2>&1 | tee /tmp/test.log
+      - name: Surface test failure
+        if: failure() && steps.test.conclusion == 'failure'
+        run: |
+          {
+            echo "## Tests failed"
+            echo
+            echo '<details><summary>last 300 lines</summary>'
+            echo
+            echo '```'
+            tail -n 300 /tmp/test.log || echo "(no log captured)"
+            echo '```'
+            echo
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   wasm:
     name: WASM Check
@@ -103,6 +107,44 @@ jobs:
           key: wasm-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: wasm-
       - run: cargo check --target wasm32-unknown-unknown --workspace --exclude willow-relay --exclude willow-worker --exclude willow-replay --exclude willow-storage --exclude willow-agent
+
+  browser:
+    name: Browser tests (wasm-pack + Firefox)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: browser-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: browser-
+      - name: Install wasm-pack
+        uses: taiki-e/install-action@787505cde8a44ea468a00478fe52baf23b15bccd # v2.9.4
+        with:
+          tool: wasm-pack
+      - id: browser
+        run: wasm-pack test --headless --firefox crates/web 2>&1 | tee /tmp/browser.log
+      - name: Surface browser-test failure
+        if: failure() && steps.browser.conclusion == 'failure'
+        run: |
+          {
+            echo "## Browser tests failed"
+            echo
+            echo '<details><summary>last 300 lines</summary>'
+            echo
+            echo '```'
+            tail -n 300 /tmp/browser.log || echo "(no log captured)"
+            echo '```'
+            echo
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   audit:
     name: cargo-audit

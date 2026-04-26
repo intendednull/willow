@@ -20,6 +20,7 @@
 //! never reordered or rewritten so existing databases stay consistent.
 
 use rusqlite::{params, Connection};
+use willow_common::SYNC_BATCH_LIMIT;
 use willow_state::{Event, EventKind, HeadsSummary};
 
 /// Ordered list of schema migrations. Each entry is run inside its own
@@ -188,7 +189,7 @@ impl StorageEventStore {
         before: Option<&HeadsSummary>,
         limit: u32,
     ) -> anyhow::Result<(Vec<Event>, bool)> {
-        let capped = (limit as usize).min(Self::SYNC_BATCH_LIMIT);
+        let capped = (limit as usize).min(SYNC_BATCH_LIMIT);
         let fetch_limit = capped + 1;
 
         // Build the query dynamically based on filters.
@@ -284,8 +285,8 @@ impl StorageEventStore {
     /// doesn't know the author at all), return events with seq > their_seq.
     /// If heads is empty, returns all events for the server.
     /// Maximum events returned in a single sync batch to prevent OOM.
-    const SYNC_BATCH_LIMIT: usize = 10_000;
-
+    /// Defined once in `willow_common::SYNC_BATCH_LIMIT` so storage
+    /// production and client validation cannot drift apart.
     pub fn sync_since(&self, server_id: &str, heads: &HeadsSummary) -> anyhow::Result<Vec<Event>> {
         if heads.heads.is_empty() {
             // New peer — send up to SYNC_BATCH_LIMIT events for this server.
@@ -294,7 +295,7 @@ impl StorageEventStore {
             )?;
             let rows: Vec<Vec<u8>> = stmt
                 .query_map(
-                    rusqlite::params![server_id, Self::SYNC_BATCH_LIMIT as i64],
+                    rusqlite::params![server_id, SYNC_BATCH_LIMIT as i64],
                     |row| row.get(0),
                 )?
                 .filter_map(|r| match r {
@@ -343,10 +344,7 @@ impl StorageEventStore {
         conditions.push(format!("author NOT IN ({known_authors})"));
 
         sql.push_str(&conditions.join(" OR "));
-        sql.push_str(&format!(
-            ") ORDER BY seq ASC LIMIT {}",
-            Self::SYNC_BATCH_LIMIT
-        ));
+        sql.push_str(&format!(") ORDER BY seq ASC LIMIT {SYNC_BATCH_LIMIT}"));
 
         let mut stmt = self.conn.prepare(&sql)?;
 
@@ -558,7 +556,7 @@ mod tests {
             .unwrap();
         assert_eq!(events.len(), 5);
         assert!(!has_more);
-        assert!(events.len() <= StorageEventStore::SYNC_BATCH_LIMIT);
+        assert!(events.len() <= SYNC_BATCH_LIMIT);
     }
 
     #[test]

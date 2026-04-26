@@ -82,13 +82,9 @@ async fn main() -> anyhow::Result<()> {
     let identity_path = cli.identity.clone().unwrap_or_else(default_identity_path);
 
     if cli.generate_identity {
-        let identity = Identity::generate();
-        std::fs::create_dir_all(
-            std::path::Path::new(&identity_path)
-                .parent()
-                .unwrap_or(std::path::Path::new(".")),
-        )?;
-        std::fs::write(&identity_path, identity.to_bytes())?;
+        // Use the identity helper so the file is written atomically with
+        // mode 0o600 (refusing to leave a world-readable secret on disk).
+        let _identity = Identity::load_or_generate(&identity_path)?;
         tracing::info!("identity generated at {}", identity_path);
         return Ok(());
     }
@@ -172,18 +168,18 @@ fn default_identity_path() -> String {
 }
 
 /// Load identity from file, or generate a new one if the file doesn't exist.
+///
+/// Delegates to [`Identity::load_or_generate`] so that:
+///
+/// - newly generated key files are written atomically with mode `0o600`,
+/// - pre-existing key files with insecure permissions (group/world readable)
+///   are refused rather than silently used.
 fn load_or_generate_identity(path: &str) -> anyhow::Result<Identity> {
     let p = std::path::Path::new(path);
-    if p.exists() {
-        let bytes = std::fs::read(p)?;
-        Identity::from_bytes(&bytes).ok_or_else(|| anyhow::anyhow!("invalid identity file"))
-    } else {
-        let identity = Identity::generate();
-        if let Some(parent) = p.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(p, identity.to_bytes())?;
+    let existed = p.exists();
+    let identity = Identity::load_or_generate(p)?;
+    if !existed {
         tracing::info!("generated new identity at {}", path);
-        Ok(identity)
     }
+    Ok(identity)
 }

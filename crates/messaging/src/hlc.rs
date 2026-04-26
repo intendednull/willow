@@ -75,11 +75,18 @@ impl std::fmt::Display for HlcTimestamp {
 // ───── HLC state machine ────────────────────────────────────────────────────
 
 /// Returns the current wall-clock time in milliseconds since Unix epoch.
+///
+/// If the system clock is somehow set before the Unix epoch (e.g. a freshly
+/// reset RTC reporting 1969), we fall back to `Duration::ZERO` instead of
+/// panicking. This is safe because the HLC's logical counter and `latest`
+/// state guarantee monotonicity regardless of the wall-clock value: a
+/// reported "0 ms" simply causes `now()` to fall through to the
+/// `latest.millis` branch and bump the counter.
 #[cfg(not(target_arch = "wasm32"))]
 fn wall_clock_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock before Unix epoch")
+        .unwrap_or(std::time::Duration::ZERO)
         .as_millis() as u64
 }
 
@@ -394,6 +401,17 @@ mod tests {
         assert!(t2 > t1, "got {t2} <= {t1}");
         assert_eq!(t2.millis, future_millis + 1);
         assert_eq!(t2.counter, 0);
+    }
+
+    #[test]
+    fn now_does_not_panic_when_wall_clock_is_zero() {
+        // Even if `wall_clock_ms()` returned 0 (which it does on a backwards
+        // system clock), the HLC's `latest` state must keep timestamps
+        // monotonic without panicking.
+        let mut clock = HLC::new();
+        let t1 = clock.now();
+        let t2 = clock.now();
+        assert!(t2 > t1);
     }
 
     #[test]
