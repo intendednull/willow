@@ -134,7 +134,7 @@
 
 - [x] **T15.** Audit ARIA labels per spec table. **Browser test:** AG-14. **Verify:** `just test-browser`.
 
-- [ ] **T16.** Verify reduced-motion participation. **Browser test:** AG-15. **Verify:** `just test-browser`.
+- [x] **T16.** Verify reduced-motion participation. **Browser test:** AG-15. **Verify:** `just test-browser`.
 
 ### Phase H — close-out
 

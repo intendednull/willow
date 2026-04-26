@@ -13226,4 +13226,52 @@ mod phase_3a_composer {
         );
     }
 
+    // ── T16 — reduced-motion compliance ───────────────────────────────────
+    //
+    // AG-15: `prefers-reduced-motion: reduce` collapses `willowPulse` to
+    // a static dot; `willow-row-flash` (reply scroll-to-parent flash)
+    // also disables its keyframe.
+    //
+    // wasm-pack's headless harness doesn't expose a way to flip the OS
+    // preference at test time, so we verify the CSS contract by string-
+    // matching the published stylesheet content. This is a brittler
+    // assertion than enumerating the live `CSSRule` list (which would
+    // collapse cleanly into a structural test) — but for `style.css`
+    // the harness inlines the file at compile time, so the content
+    // *is* the stylesheet. If a future CSS pipeline tokenises this we
+    // can switch to walking `document.styleSheets[0].cssRules` and
+    // looking for a media-query condition match.
+
+    #[wasm_bindgen_test]
+    async fn composer_reduced_motion_disables_typing_pulse() {
+        let css = include_str!("../style.css");
+        // The block must mention the media query at least once.
+        assert!(
+            css.contains("@media (prefers-reduced-motion: reduce)"),
+            "style.css must contain a `@media (prefers-reduced-motion: reduce)` block"
+        );
+        // Spec §Motion: `willowPulse` becomes a static dot. The rule
+        // we ship lives in `composer__typing-dot { animation: none; … }`.
+        // We assert both halves are present *inside the same source*
+        // — exact ordering is enforced by a substring match on the
+        // canonical block (the `composer__typing-dot` ruleset is the
+        // only one in `style.css` that pairs the selector with
+        // `animation: none`).
+        let needle = ".composer__typing-dot {\n        animation: none;";
+        assert!(
+            css.contains(needle),
+            "style.css must disable `willowPulse` on `.composer__typing-dot` \
+             under `prefers-reduced-motion: reduce`. Looked for substring:\n{needle}"
+        );
+        // Reply-bar scroll-to-parent flash also respects the
+        // preference. Spec §Motion lists `willow-row-flash` on the
+        // reduced-motion path (T7 added the rule).
+        let row_flash_needle =
+            ".message-row--flash,\n    .message.flash {\n        animation: none;";
+        assert!(
+            css.contains(row_flash_needle),
+            "style.css must disable `willow-row-flash` under \
+             `prefers-reduced-motion: reduce`. Looked for substring:\n{row_flash_needle}"
+        );
+    }
 }
