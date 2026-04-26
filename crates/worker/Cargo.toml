@@ -19,6 +19,9 @@ clap = { version = "4", features = ["derive"] }
 anyhow = { workspace = true }
 uuid = { workspace = true }
 
+[features]
+test-utils = []
+
 [dev-dependencies]
 willow-network = { path = "../network", features = ["test-utils"] }
 async-trait = { workspace = true }
