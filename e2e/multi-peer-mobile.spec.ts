@@ -16,8 +16,11 @@ import {
 test.describe.configure({ mode: 'serial' });
 
 test.describe('Multi-peer mobile', () => {
-  // Mobile two-peer tests need extra time for setup + P2P sync + mobile navigation.
-  test.setTimeout(120_000);
+  // Mobile two-peer tests need extra time for setup + P2P sync + mobile
+  // navigation. CI gossip can take 30-60 s for first-channel arrival
+  // after join; the post-join helper now waits up to 60 s on first
+  // channel, so the test budget needs headroom on top.
+  test.setTimeout(180_000);
 
   test.beforeEach(({}, testInfo) => {
     test.skip(!testInfo.project.name.startsWith('mobile'), 'mobile only');

@@ -402,12 +402,17 @@ export async function joinViaInvite(page: Page, inviteCode: string, displayName?
     });
   }
   // Deterministic post-join settle: wait for the sidebar + first channel
-  // to materialise. Covers both shells.
+  // to materialise. Covers both shells. Channel rows arrive via gossip
+  // delivery from the inviter — 20 s was a tight ceiling that flaked on
+  // CI under load (the relay round-trip + DAG replay can take 30+ s when
+  // the gossip mesh is busy from a previous test). 60 s gives the mesh
+  // ample headroom without slowing down the happy path (first-channel
+  // visibility resolves the `waitFor` immediately when fast).
   await page.locator(`${visibleShell(page)} .channel-sidebar, ${visibleShell(page)} .mobile-home`)
     .first()
-    .waitFor({ timeout: 20_000 });
+    .waitFor({ timeout: 60_000 });
   await page.locator(`${visibleShell(page)} .channel-item`).first()
-    .waitFor({ timeout: 20_000 });
+    .waitFor({ timeout: 60_000 });
 }
 
 /** Sets up two peers: peer1 creates a server, peer2 joins via invite. */

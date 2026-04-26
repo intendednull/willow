@@ -20,8 +20,11 @@ import {
 test.describe.configure({ mode: 'serial' });
 
 test.describe('Multi-peer state synchronization', () => {
-  // Two-peer tests need extra time for setup + P2P sync.
-  test.setTimeout(120_000);
+  // Two-peer tests need extra time for setup + P2P sync. The
+  // pre-existing-channels test compounds three 30 s gossip-visibility
+  // assertions on top of a fresh-start + invite + join flow that itself
+  // can take 30-60 s on CI under load. 180 s gives the worst case room.
+  test.setTimeout(180_000);
 
   // Sync-semantic tests (messages/edits/deletes/reactions/typing/display-names/
   // history-replay/reconnect-replay/persist-after-refresh) live in
