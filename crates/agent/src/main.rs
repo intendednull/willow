@@ -4,7 +4,8 @@
 //! notifications to AI agents, bots, and scripts. The agent binary is a
 //! first-class Willow peer with its own Ed25519 identity.
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+use willow_agent::scopes::TokenScope;
 use willow_agent::{auth, server};
 use willow_client::{ClientConfig, ClientHandle};
 use willow_identity::Identity;
@@ -57,6 +58,10 @@ struct Cli {
     #[arg(long, default_value = "info")]
     log_level: String,
 
+    /// Token scope for HTTP transport (least-privilege default).
+    #[arg(long, value_enum, default_value_t = ScopeArg::Messaging)]
+    scope: ScopeArg,
+
     /// Generate a new identity and exit.
     #[arg(long)]
     generate_identity: bool,
@@ -64,6 +69,27 @@ struct Cli {
     /// Print the peer ID for the identity file and exit.
     #[arg(long)]
     print_peer_id: bool,
+}
+
+/// CLI-friendly enum for `--scope`. Maps to `TokenScope`.
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum ScopeArg {
+    /// Messaging tools only (least-privilege default).
+    Messaging,
+    /// Read-only: no tools, all resources.
+    Read,
+    /// Full access: all tools, all resources.
+    Full,
+}
+
+impl From<ScopeArg> for TokenScope {
+    fn from(s: ScopeArg) -> Self {
+        match s {
+            ScopeArg::Messaging => TokenScope::Messaging,
+            ScopeArg::Read => TokenScope::ReadOnly,
+            ScopeArg::Full => TokenScope::Full,
+        }
+    }
 }
 
 #[tokio::main]
@@ -153,7 +179,7 @@ async fn main() -> anyhow::Result<()> {
         "http" => {
             eprintln!("Bearer token: {token}");
             tracing::info!("starting MCP HTTP server on {}", cli.bind);
-            server::serve_http(client, &cli.bind, Default::default(), token).await?;
+            server::serve_http(client, &cli.bind, cli.scope.into(), token).await?;
         }
         other => {
             anyhow::bail!("unsupported transport: {other} (supported: 'stdio', 'http')");
