@@ -10920,7 +10920,13 @@ mod phase_2b_sync_queue {
             });
             view! { <ReconnectionToast /> }
         });
+        // Wait for the queued RAF to fire (driving the device-online flip),
+        // then tick once more to flush the resulting reactive effect. A
+        // bare `tick()` is just `setTimeout(0)` and can resolve before
+        // the browser dispatches RAF callbacks queued by other tests in
+        // the same tab — see `await_animation_frame` for context.
         tick().await;
+        await_animation_frame().await;
         tick().await;
 
         assert!(
@@ -10955,6 +10961,7 @@ mod phase_2b_sync_queue {
             view! { <ReconnectionToast /> }
         });
         tick().await;
+        await_animation_frame().await;
         tick().await;
 
         let toast = query(&container, ".reconnection-toast")
@@ -10990,6 +10997,7 @@ mod phase_2b_sync_queue {
             view! { <ReconnectionToast /> }
         });
         tick().await;
+        await_animation_frame().await;
         tick().await;
 
         let dismiss = query(&container, ".reconnection-toast__dismiss")
@@ -11055,6 +11063,7 @@ mod phase_2b_sync_queue {
             view! { <WelcomeBackBanner /> }
         });
         tick().await;
+        await_animation_frame().await;
         tick().await;
 
         assert!(
@@ -11093,6 +11102,7 @@ mod phase_2b_sync_queue {
             view! { <WelcomeBackBanner /> }
         });
         tick().await;
+        await_animation_frame().await;
         tick().await;
 
         let banner = query(&container, ".welcome-back-banner")
@@ -11134,6 +11144,7 @@ mod phase_2b_sync_queue {
             view! { <WelcomeBackBanner /> }
         });
         tick().await;
+        await_animation_frame().await;
         tick().await;
 
         let dismiss = query(&container, ".welcome-back-banner__dismiss")
@@ -11274,10 +11285,20 @@ mod phase_2b_sync_queue {
         );
     }
 
-    /// `request_animation_frame` wrapper used to schedule signal
-    /// updates after mount so the `Effect` subscribing to
-    /// `device_online` has already run once with the `prev == true`
-    /// default before the test drives the transition.
+    /// Schedule a closure for the next animation frame. Used by the
+    /// reconnection-toast / welcome-back-banner tests to flip
+    /// `device_online` *after* the component's `Effect` has run once
+    /// with `prev == true`, so the `false → true` transition fires.
+    ///
+    /// Pairs with [`await_animation_frame`] — call this to enqueue the
+    /// transition, then await one or more animation frames to make sure
+    /// the callback has actually fired before `tick()`-ing the reactive
+    /// effects. Headless Firefox under wasm-pack runs every `#[wasm_bindgen_test]`
+    /// in the same tab; previously-mounted components leave RAF-bound
+    /// closures and timers behind, so a pure `tick()` (which is just a
+    /// `setTimeout(0)`) can resolve before the new test's RAF has been
+    /// dispatched. Awaiting an explicit animation frame is the
+    /// deterministic synchronization point for these tests.
     fn request_animation_frame(f: impl FnOnce() + 'static) {
         let closure =
             wasm_bindgen::closure::Closure::once_into_js(Box::new(f) as Box<dyn FnOnce()>);
@@ -11285,6 +11306,30 @@ mod phase_2b_sync_queue {
         window
             .request_animation_frame(closure.as_ref().unchecked_ref())
             .expect("request_animation_frame");
+    }
+
+    /// Resolves on the next animation frame. Call this in tests *after*
+    /// scheduling work via [`request_animation_frame`] to wait until the
+    /// browser has actually dispatched the frame callback.
+    async fn await_animation_frame() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use wasm_bindgen::closure::Closure;
+        use wasm_bindgen::JsCast;
+        let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+            let resolve = Rc::new(RefCell::new(Some(resolve)));
+            let resolve_clone = resolve.clone();
+            let cb = Closure::once_into_js(Box::new(move || {
+                if let Some(r) = resolve_clone.borrow_mut().take() {
+                    let _ = r.call0(&wasm_bindgen::JsValue::NULL);
+                }
+            }) as Box<dyn FnOnce()>);
+            let window = web_sys::window().expect("window");
+            window
+                .request_animation_frame(cb.as_ref().unchecked_ref())
+                .expect("request_animation_frame");
+        });
+        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
     }
 }
 
