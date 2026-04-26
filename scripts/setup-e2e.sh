@@ -68,6 +68,14 @@ if ! ls "$HOME/.cache/ms-playwright" 2>/dev/null | grep -q '^chromium-'; then
     npx playwright install chromium
 fi
 
+# Firefox is required by `e2e/cross-browser-sync.spec.ts`, which launches
+# both Chromium and Firefox to verify cross-browser P2P connectivity. Use
+# the same filesystem guard as Chromium so re-runs skip the download.
+if ! ls "$HOME/.cache/ms-playwright" 2>/dev/null | grep -q '^firefox-'; then
+    step "Installing Playwright Firefox..."
+    npx playwright install firefox
+fi
+
 info "Tooling ready: trunk=$(trunk --version 2>/dev/null || echo missing), just=$(just --version 2>/dev/null || echo missing)"
 
 # ── 2. Build all services ───────────────────────────────────────────────
