@@ -12,6 +12,7 @@
 //! all.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use willow_identity::EndpointId;
 
@@ -91,11 +92,15 @@ impl From<IndexableMessage> for Posting {
 
 /// The inverted index itself. Not `Clone` — wrap it in an
 /// `Arc<Mutex<_>>` in the handle layer.
+///
+/// Postings are stored as `Arc<Posting>` so a single message that
+/// matches N tokens occupies one allocation plus N pointer-sized
+/// references — not N deep clones of every field.
 #[derive(Debug, Default)]
 pub struct SearchIndex {
     /// token -> ordered list of postings (insertion order; executor
     /// re-sorts by timestamp-desc).
-    pub(crate) postings: HashMap<String, Vec<Posting>>,
+    pub(crate) postings: HashMap<String, Vec<Arc<Posting>>>,
     /// `message_id -> tokens` so [`Self::remove_message`] can unthread
     /// every posting list the message sits in without a full walk.
     pub(crate) by_msg: HashMap<String, Vec<String>>,
@@ -131,13 +136,13 @@ impl SearchIndex {
         }
 
         let id = m.message_id.clone();
-        let posting: Posting = m.into();
+        let posting = Arc::new(Posting::from(m));
         let tokens: Vec<String> = token_set.into_iter().collect();
         for t in &tokens {
             self.postings
                 .entry(t.clone())
                 .or_default()
-                .push(posting.clone());
+                .push(Arc::clone(&posting));
         }
         self.by_msg.insert(id, tokens);
     }
@@ -189,16 +194,16 @@ impl SearchIndex {
 
     /// Read-only view of one token's postings (empty if absent). Used
     /// by [`super::execute::execute`].
-    pub fn postings_for(&self, token: &str) -> Option<&[Posting]> {
+    pub fn postings_for(&self, token: &str) -> Option<&[Arc<Posting>]> {
         self.postings.get(token).map(|v| v.as_slice())
     }
 
     /// Read-only iterator over every posting once (dedup by id).
     /// Used by [`super::execute::execute`] when the query has no tokens
     /// or phrases but still carries filters (e.g. `has:link` alone).
-    pub fn all_postings(&self) -> Vec<&Posting> {
+    pub fn all_postings(&self) -> Vec<&Arc<Posting>> {
         let mut seen: HashSet<&str> = HashSet::new();
-        let mut out: Vec<&Posting> = Vec::new();
+        let mut out: Vec<&Arc<Posting>> = Vec::new();
         for list in self.postings.values() {
             for p in list {
                 if seen.insert(p.message_id.as_str()) {

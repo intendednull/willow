@@ -700,6 +700,26 @@ mod index_tests {
         idx.insert(mk("m1", "hello world", 100, "general"));
         assert_eq!(idx.all_postings().len(), 1);
     }
+
+    #[test]
+    fn postings_share_one_allocation_across_tokens() {
+        // A message that lands under N tokens must reference one
+        // shared `Posting` allocation, not N deep clones. Pointer
+        // equality between the entries in two different token lists
+        // proves the `Arc` sharing — without it, every token would
+        // own its own deep copy of the message body + ids.
+        let mut idx = SearchIndex::new();
+        idx.insert(mk("m1", "hello world", 100, "general"));
+
+        let hello = idx.postings_for("hello").expect("hello bucket");
+        let world = idx.postings_for("world").expect("world bucket");
+        assert_eq!(hello.len(), 1);
+        assert_eq!(world.len(), 1);
+        assert!(
+            std::sync::Arc::ptr_eq(&hello[0], &world[0]),
+            "postings under different tokens must share one Arc allocation",
+        );
+    }
 }
 
 mod tokenize_tests {
