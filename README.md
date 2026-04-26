@@ -48,7 +48,6 @@ accounts, no middlemen. End-to-end encrypted by default.
 | `willow-identity` | Ed25519 identity, message signing, profiles |
 | `willow-messaging` | Chat messages, HLC ordering, message store |
 | `willow-crypto` | E2E encryption (ChaCha20-Poly1305, X25519) |
-| `willow-channel` | Servers, channels, roles, permissions |
 | `willow-network` | iroh-based P2P networking (native + WASM) |
 | `willow-actor` | Lightweight actor framework (dual-target native + WASM) |
 | `willow-common` | Shared wire protocol types (WireMessage, worker types) |
@@ -86,7 +85,7 @@ event log *is* the data.
 - **`ServerState`** is the materialized view — rebuilt deterministically by
   topologically sorting all events and replaying them through `materialize()`.
   Peers converge to identical state when they have the same DAG.
-- **22 `EventKind` variants** cover server structure (create/delete/rename
+- **`EventKind` variants** cover server structure (create/delete/rename
   channels and roles), chat (messages, edits, deletes, reactions, pins),
   permissions (grant/revoke), identity (profiles), encryption (key rotation),
   and governance (proposals and votes).

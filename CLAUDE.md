@@ -324,7 +324,7 @@ events. The `willow-state` crate is pure — zero I/O, zero networking.
 
 - **Event**: carries unique ID, parent state hash, author PeerId,
   timestamp hint, and an `EventKind` mutation variant.
-- **EventKind**: 17 variants covering server structure, roles,
+- **EventKind**: variants covering server structure, roles,
   fine-grained permissions, chat, identity, and encryption.
 - **ServerState**: complete shared state derivable from event replay.
   Computes a `StateHash` (SHA-256) for divergence detection.
