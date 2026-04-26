@@ -69,22 +69,22 @@
 
 > Each gate maps to one or more browser/client/state tests. A task is complete when (a) the production code lands, (b) the corresponding test(s) pass, (c) the spec checkbox is ticked in the same commit.
 
-- [ ] **AG-1.** `<Composer>` mounts with autogrow textarea (1 line min, 8 lines max, then scrolls). Test: type 1 / 4 / 8 / 12 lines, assert `scrollHeight` matches expected.
-- [ ] **AG-2.** Enter sends; Shift+Enter inserts newline; Ctrl/⌘+Enter force-sends. Test: simulate each combo, assert send callback fires (or doesn't) + textarea state.
-- [ ] **AG-3.** Tab in textarea inserts 2 spaces with no focus move. Test: simulate Tab keydown, assert content + active element unchanged.
-- [ ] **AG-4.** ArrowUp on an empty textarea enters edit mode for the most recent own message in the current channel. Test: send a message, focus composer, simulate ArrowUp, assert `editing` signal flipped to that message.
-- [ ] **AG-5.** Esc unwinds in order: cancel edit → cancel reply → blur. Test: with both edit and reply active, simulate three Esc presses, assert state after each.
-- [ ] **AG-6.** Reply preview bar renders with the spec layout (left rule + author + preview + cancel) and clicking the preview body fires `scroll_to_message`. Test: mount with `replying_to = Some(msg)`, simulate click on preview body, assert callback fired with `msg.id`.
-- [ ] **AG-7.** Edit bar shows `editing message · esc to cancel` and the send button label is `save` while editing; submitting routes to the edit callback. Test: mount with `editing = Some(msg)`, assert send button text + edit callback wiring.
-- [ ] **AG-8.** Mention autocomplete opens on `@` at a word boundary, filters by prefix on handle / display, supports arrow + Enter/Tab to insert, Esc dismisses. Test: type `@a`, assert popover open + filtered list, simulate arrow + Enter, assert handle inserted at the `@` position with the `@` consumed.
-- [ ] **AG-9.** `@channel` row appears only when local peer has `ManageChannels`. Test: with and without permission, assert row presence.
-- [ ] **AG-10.** Connection state `Offline` flips composer to amber tint and meta to `hourglass · offline · queuing messages`; send still routes to the queue path. Test: drive `connection_state` to `Offline`, assert class + meta copy + send still calls callback.
-- [ ] **AG-11.** Per-channel-kind placeholder copy renders the right string for text / letter / offline / no-channel. Test: each combo, assert textarea `placeholder` attribute. (Pure-function unit tests in `placeholders.rs` cover the table; one browser test asserts the wiring.)
-- [ ] **AG-12.** Typing indicator row renders the right form for 1 / 2 / 3 / 4+ peers driven by `Client::typing_in`. Test: drive the underlying actor state, assert text content for each count.
-- [ ] **AG-13.** Typing indicator announces via `aria-live="polite"` and debounces to at most once per 5 s. Test: drive 3 rapid changes within 5 s, assert only the first announces.
-- [ ] **AG-14.** ARIA labels match the spec table (`cancel reply` / `cancel edit` / `send` / `attach file` / `open emoji picker`). Test: mount, assert each `aria-label` attribute.
-- [ ] **AG-15.** `prefers-reduced-motion: reduce` collapses `willowPulse` to a static dot. Test: set the media query, assert `--motion-fast` token replaces the keyframe (foundation already implements this — the test verifies the composer participates).
-- [ ] **AG-16.** Spec acceptance criteria checkboxes in `composer.md` are ticked at the end of the plan (final task).
+- [x] **AG-1.** `<Composer>` mounts with autogrow textarea (1 line min, 8 lines max, then scrolls). Test: type 1 / 4 / 8 / 12 lines, assert `scrollHeight` matches expected.
+- [x] **AG-2.** Enter sends; Shift+Enter inserts newline; Ctrl/⌘+Enter force-sends. Test: simulate each combo, assert send callback fires (or doesn't) + textarea state.
+- [x] **AG-3.** Tab in textarea inserts 2 spaces with no focus move. Test: simulate Tab keydown, assert content + active element unchanged.
+- [x] **AG-4.** ArrowUp on an empty textarea enters edit mode for the most recent own message in the current channel. Test: send a message, focus composer, simulate ArrowUp, assert `editing` signal flipped to that message.
+- [x] **AG-5.** Esc unwinds in order: cancel edit → cancel reply → blur. Test: with both edit and reply active, simulate three Esc presses, assert state after each.
+- [x] **AG-6.** Reply preview bar renders with the spec layout (left rule + author + preview + cancel) and clicking the preview body fires `scroll_to_message`. Test: mount with `replying_to = Some(msg)`, simulate click on preview body, assert callback fired with `msg.id`.
+- [x] **AG-7.** Edit bar shows `editing message · esc to cancel` and the send button label is `save` while editing; submitting routes to the edit callback. Test: mount with `editing = Some(msg)`, assert send button text + edit callback wiring.
+- [x] **AG-8.** Mention autocomplete opens on `@` at a word boundary, filters by prefix on handle / display, supports arrow + Enter/Tab to insert, Esc dismisses. Test: type `@a`, assert popover open + filtered list, simulate arrow + Enter, assert handle inserted at the `@` position with the `@` consumed.
+- [x] **AG-9.** `@channel` row appears only when local peer has `ManageChannels`. Test: with and without permission, assert row presence.
+- [x] **AG-10.** Connection state `Offline` flips composer to amber tint and meta to `hourglass · offline · queuing messages`; send still routes to the queue path. Test: drive `connection_state` to `Offline`, assert class + meta copy + send still calls callback.
+- [x] **AG-11.** Per-channel-kind placeholder copy renders the right string for text / letter / offline / no-channel. Test: each combo, assert textarea `placeholder` attribute. (Pure-function unit tests in `placeholders.rs` cover the table; one browser test asserts the wiring.)
+- [x] **AG-12.** Typing indicator row renders the right form for 1 / 2 / 3 / 4+ peers driven by `Client::typing_in`. Test: drive the underlying actor state, assert text content for each count.
+- [x] **AG-13.** Typing indicator announces via `aria-live="polite"` and debounces to at most once per 5 s. Test: drive 3 rapid changes within 5 s, assert only the first announces.
+- [x] **AG-14.** ARIA labels match the spec table (`cancel reply` / `cancel edit` / `send` / `attach file` / `open emoji picker`). Test: mount, assert each `aria-label` attribute.
+- [x] **AG-15.** `prefers-reduced-motion: reduce` collapses `willowPulse` to a static dot. Test: set the media query, assert `--motion-fast` token replaces the keyframe (foundation already implements this — the test verifies the composer participates).
+- [x] **AG-16.** Spec acceptance criteria checkboxes in `composer.md` are ticked at the end of the plan (final task).
 
 ## Tasks
 
@@ -138,7 +138,7 @@
 
 ### Phase H — close-out
 
-- [ ] **T17.** Tick the spec acceptance criteria in `docs/specs/2026-04-19-ui-design/composer.md` based on the gates that landed. Tick this plan's checkboxes. Update spec status from `draft` → `implementing` (if not already). Resolve the spec's "Open questions" — typing-ping transport is already shipped; mark answered with a pointer to `WireMessage::TypingIndicator`. Edit-history surfacing → `defer to v2`. `@channel` confirmation → `defer to v2 post-governance`. **Verify:** spec + plan diff inspected; `just check` clean.
+- [x] **T17.** Tick the spec acceptance criteria in `docs/specs/2026-04-19-ui-design/composer.md` based on the gates that landed. Tick this plan's checkboxes. Update spec status from `draft` → `implementing` (if not already). Resolve the spec's "Open questions" — typing-ping transport is already shipped; mark answered with a pointer to `WireMessage::TypingIndicator`. Edit-history surfacing → `defer to v2`. `@channel` confirmation → `defer to v2 post-governance`. **Verify:** spec + plan diff inspected; `just check` clean.
 
 ## Ambiguity decisions
 

@@ -1,7 +1,7 @@
 # Composer — textarea, reply / edit bars, mentions, typing indicator
 
 **Parent:** [README.md](README.md)
-**Status:** draft
+**Status:** implementing
 **Dependencies:** [`foundation.md`](foundation.md),
 [`layout-primitives.md`](layout-primitives.md),
 [`message-row.md`](message-row.md)
@@ -260,30 +260,50 @@ All animations respect `prefers-reduced-motion: reduce` per foundation:
 
 ## Acceptance criteria
 
-- [ ] Reply: choosing reply focuses the composer and shows a preview
+- [x] Reply: choosing reply focuses the composer and shows a preview
       bar with parent author + excerpt + cancel; `Escape` cancels.
       Clicking the preview scrolls to the parent and flashes it.
-- [ ] Edit: choosing edit pre-fills the composer, shows the edit
+- [x] Edit: choosing edit pre-fills the composer, shows the edit
       bar, submits via the edit path, and marks the message `(edited)`.
-- [ ] Composer autogrows up to 8 lines; `Enter` sends; `Shift+Enter`
+- [x] Composer autogrows up to 8 lines; `Enter` sends; `Shift+Enter`
       newlines; `Ctrl/Cmd+Enter` always sends; `Escape` unwinds
       edit → reply → blur.
-- [ ] Mention autocomplete opens on `@` with peer filter; arrow keys
+- [x] Mention autocomplete opens on `@` with peer filter; arrow keys
       + `Enter`/`Tab` insert; `Escape` dismisses.
-- [ ] Offline state: composer applies amber tint; meta line becomes
+- [x] Offline state: composer applies amber tint; meta line becomes
       `offline · queuing messages`; pending messages show the queue
       hint.
-- [ ] Typing indicator shows the correct form for 1 / 2 / 3 / 4+
+- [x] Typing indicator shows the correct form for 1 / 2 / 3 / 4+
       typers, driven by a per-channel typing signal.
-- [ ] Every interactive element has an ARIA label per §Accessibility.
+- [x] Every interactive element has an ARIA label per §Accessibility.
 
 ## Open questions
 
 - **Edit history.** Should we surface prior edit versions (the event
   log has them)? Default: no in v1 — just `(edited)`. Data remains
   so a later version can.
+
+  **Resolution (2026-04-26, Phase 3a):** defer to v2 — `(edited)` is
+  rendered; the raw event log retains every version so a future
+  opt-in surface (e.g. an "edit history" submenu in the row toolbar)
+  can revisit without a data migration.
+
 - **`@channel` confirmation.** Skip a confirm step below 20 members;
   show one above that threshold. Revisit after governance.
+
+  **Resolution (2026-04-26, Phase 3a):** defer to v2 post-governance —
+  v1 ships `ManageChannels`-only gating on the `@channel` row in the
+  mention popover (see §Mention autocomplete and `composer.rs`
+  `allow_channel_mention`). The threshold-confirmation modal is
+  parked behind `governance.md`.
+
 - **Typing ping transport.** A new ephemeral event type that does
   not enter the log needs design review in `willow-state` /
   `willow-network` before this spec's acceptance can be met.
+
+  **Resolution (2026-04-26, Phase 3a):** **already shipped.** No new
+  state event needed. Wire format is `WireMessage::TypingIndicator`
+  in `crates/common/src/wire.rs`, send path is `Client::send_typing_indicator`
+  with a 3 s throttle, receive path is `Client::typing_in(channel)`
+  with a 4 s TTL on the in-memory `network_meta.typing_peers` map.
+  The composer consumes `typing_in` directly.
