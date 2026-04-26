@@ -177,6 +177,35 @@ impl<N: willow_network::Network> ClientHandle<N> {
         willow_actor::state::select(&self.event_state_addr, |es| es.description.clone()).await
     }
 
+    /// Most recent message authored by the local peer in `channel_id`.
+    ///
+    /// Spec: `docs/specs/2026-04-19-ui-design/composer.md` §Keyboard —
+    /// "ArrowUp when textarea empty: enters edit mode on most recent
+    /// own message". Plan: `docs/plans/2026-04-26-ui-phase-3a-composer.md`
+    /// Task T2.
+    ///
+    /// Returns [`None`] when the channel doesn't exist or the local
+    /// peer hasn't authored any non-deleted message in it. The lookup
+    /// goes through [`views::compute_messages_view_for_channel`] so the
+    /// returned [`state::DisplayMessage`] carries the same projections
+    /// (mentions, pinned, queue note, …) as the rendered row — the
+    /// composer can pre-fill from `body` without re-deriving anything.
+    pub async fn last_own_message(&self, channel_id: &str) -> Option<state::DisplayMessage> {
+        let es = willow_actor::state::get(&self.event_state_addr).await;
+        let registry = willow_actor::state::get(&self.server_registry_addr).await;
+        let profiles = willow_actor::state::get(&self.profile_state_addr).await;
+        let local = self.identity.endpoint_id();
+        let view =
+            views::compute_messages_view_for_channel(&es, &registry, &profiles, channel_id, local);
+        // `compute_messages_view` sorts ascending by timestamp_ms; the
+        // most recent local message is the last `is_local && !deleted`
+        // entry. Iterate in reverse so we return on the first match.
+        view.messages
+            .into_iter()
+            .rev()
+            .find(|m| m.author_peer_id == local && !m.deleted)
+    }
+
     pub async fn typing_peers(&self) -> Vec<(String, String)> {
         let my_id = self.identity.endpoint_id();
         willow_actor::state::mutate(&self.network_meta_addr, move |n| {

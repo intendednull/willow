@@ -9,7 +9,7 @@
 //! filter helpers.
 
 use willow_identity::Identity;
-use willow_state::{Member, Profile};
+use willow_state::{Channel, ChannelKind, ChatMessage, EventHash, Member, Profile};
 
 use crate::test_client;
 
@@ -97,4 +97,119 @@ async fn mention_candidates_empty_when_channel_missing() {
         .mention_candidates("nope-not-a-channel", local)
         .await;
     assert!(cands.is_empty());
+}
+
+// ───── T2: last_own_message ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn last_own_message_returns_most_recent_in_channel() {
+    let (client, _broker) = test_client();
+    let local = client.identity().endpoint_id();
+    let other = Identity::generate().endpoint_id();
+    add_member_with_display(&client, other, "Rin").await;
+
+    // Create a second channel (channel-B) so we can prove the filter
+    // is by channel id, not just by author.
+    willow_actor::state::mutate(&client.event_state_addr, move |es| {
+        let ch_b_id = "ch-b".to_string();
+        es.channels.insert(
+            ch_b_id.clone(),
+            Channel {
+                id: ch_b_id,
+                name: "general-b".to_string(),
+                pinned_messages: Default::default(),
+                kind: ChannelKind::Text,
+            },
+        );
+    })
+    .await;
+
+    let general_id = willow_actor::state::select(&client.event_state_addr, |es| {
+        es.channels
+            .values()
+            .find(|c| c.name == "general")
+            .map(|c| c.id.clone())
+            .unwrap_or_default()
+    })
+    .await;
+
+    // Three local messages in channel-A + one peer message in A + one
+    // local message in channel-B. The accessor must return the third
+    // local message in A.
+    willow_actor::state::mutate(&client.event_state_addr, move |es| {
+        let push = |es: &mut willow_state::ServerState,
+                    cid: &str,
+                    author: willow_identity::EndpointId,
+                    body: &str,
+                    ts: u64| {
+            let seed = format!("test-msg-{}-{ts}", es.messages.len());
+            let id = EventHash::from_bytes(seed.as_bytes());
+            es.messages.push(ChatMessage {
+                id,
+                channel_id: cid.to_string(),
+                author,
+                body: body.to_string(),
+                timestamp_ms: ts,
+                edited: false,
+                deleted: false,
+                reactions: Default::default(),
+                reply_to: None,
+            });
+        };
+        push(es, &general_id, local, "first", 1_000);
+        push(es, &general_id, local, "second", 2_000);
+        push(es, &general_id, local, "third", 3_000);
+        push(es, &general_id, other, "from rin", 4_000);
+        push(es, "ch-b", local, "in B", 5_000);
+    })
+    .await;
+
+    let last = client
+        .last_own_message("general")
+        .await
+        .expect("expected a last-own message in `general`");
+    assert_eq!(
+        last.body, "third",
+        "last_own_message must return the most recent local-authored message in the channel"
+    );
+    assert!(last.is_local);
+}
+
+#[tokio::test]
+async fn last_own_message_none_when_no_own_messages() {
+    let (client, _broker) = test_client();
+    let other = Identity::generate().endpoint_id();
+    add_member_with_display(&client, other, "Rin").await;
+
+    let general_id = willow_actor::state::select(&client.event_state_addr, |es| {
+        es.channels
+            .values()
+            .find(|c| c.name == "general")
+            .map(|c| c.id.clone())
+            .unwrap_or_default()
+    })
+    .await;
+    let cid = general_id.clone();
+    willow_actor::state::mutate(&client.event_state_addr, move |es| {
+        let seed = format!("peer-only-{}", es.messages.len());
+        let id = EventHash::from_bytes(seed.as_bytes());
+        es.messages.push(ChatMessage {
+            id,
+            channel_id: cid.clone(),
+            author: other,
+            body: "hello".to_string(),
+            timestamp_ms: 1_000,
+            edited: false,
+            deleted: false,
+            reactions: Default::default(),
+            reply_to: None,
+        });
+    })
+    .await;
+
+    let last = client.last_own_message("general").await;
+    assert!(
+        last.is_none(),
+        "channel with no local-authored messages must yield None"
+    );
 }
