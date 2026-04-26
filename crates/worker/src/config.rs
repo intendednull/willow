@@ -15,6 +15,7 @@ pub struct WorkerConfig {
     pub allocation: AllocationStrategy,
 }
 
+#[cfg(any(test, feature = "test-utils"))]
 impl WorkerConfig {
     /// Create a config for testing.
     #[cfg(test)]
