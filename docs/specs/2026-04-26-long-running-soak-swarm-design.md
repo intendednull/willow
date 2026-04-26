@@ -321,7 +321,9 @@ Reuses `willow-agent`'s existing tool set (send message, list channels,
 send DM, react, create channel, grant role, etc.). `tools.rs` is already
 library-shaped (`WillowToolRouter::new`, `tool_list()`, `call()` are
 public — verified against `crates/agent/src/lib.rs`,
-`crates/agent/src/tools.rs:276`); the public entry point is rmcp-typed
+`crates/agent/src/tools.rs` `WillowToolRouter` struct decl, with `new`,
+`tool_list`, and `call` as public methods); the public entry point is
+rmcp-typed
 (`CallToolRequestParams`/`CallToolResult`). Phase 0 adds a thin non-MCP
 dispatch so swarm-runner can call tools by name without re-encoding
 through rmcp. This is **separate from and smaller than** the multi-tenant
@@ -498,7 +500,7 @@ accessors, added as part of Phase 0a (§7):
    captured atomically with the send (inside the same actor message
    handler), so the snapshot is causally consistent — no race window
    between "send happened" and "snapshot taken." The bot loop writes
-   the `SendAudit` to `delivery-audits.jsonl` (§4 stream).
+   the `SendAudit` to `bot.delivery-audits.jsonl` (§4 stream).
 
    Existing `send_message` keeps its `()` return for backward
    compatibility — only call sites that want audit tracking switch
@@ -523,7 +525,7 @@ delivery timing, or wall-clock duration).
 |---|---|---|---|
 | **heads-summary convergence** `[mem-net-ci]` | every 30s | Pull `HeadsSummary` from each bot's `ClientHandle::heads_summary()` (Phase 0a accessor). **Head-equality check:** for every author present in ≥2 peers' summaries, those peers must agree on the head `EventHash` for that author *or* one peer's chain must be a strict prefix of the other's (allowed: lagging ingest). The disagreement case is "same author, same head-position-claim, different head EventHash." **Lag bound:** every peer's head for each author must be at most `lag_bound_seconds` behind the most-advanced peer's head; configurable in `soak.toml` (default 30s steady, 5min critical). | Heads disagree on a position both peers claim = `critical` immediately (true divergence). Lag >`lag_bound_seconds` in a steady-traffic window = `warning`; lag >`lag_bound_critical_seconds` = `critical`. |
 | **per-author event-content equality** `[mem-net-ci]` | every 5min | For every author observed across ≥2 peers in the window, fetch each peer's `author_chain(author, since=last_window_head)` (Phase 0a accessor). For every position present in ≥2 peers' chains, peers must hold identical `EventHash`. Where chains diverge at position `p`, both `EventHash`es and the underlying event payloads are pulled and recorded. | Any same-position-different-hash = `critical`. |
-| **message-delivery audit** `[soak-only]` | every 5min | For each `send` in the last window: at the moment of send, the bot loop snapshots **`(sender_heads_summary_at_send, sender_membership_at_send)`** into a `delivery-audits.jsonl` side-stream. The auditor reads from this side-stream rather than reconstructing post-hoc. **Intended recipients** = the channel-membership snapshot from the side-stream record (sender's local view at send-time). For each recipient peer, verify the event appears in its local event store within `delivery_deadline_seconds` (default 60s) of its system clock first observing the event. Recipients excluded if their `kick`/`leave` causally precedes the send in the receiver's HeadsSummary. | Any send not delivered to an intended recipient after `delivery_deadline × 2` = `warning`. Sustained miss rate >0% over 1h = `critical`. |
+| **message-delivery audit** `[soak-only]` | every 5min | For each `send` in the last window: at the moment of send, the bot loop snapshots **`(sender_heads_summary_at_send, sender_membership_at_send)`** into a `bot.delivery-audits.jsonl` side-stream. The auditor reads from this side-stream rather than reconstructing post-hoc. **Intended recipients** = the channel-membership snapshot from the side-stream record (sender's local view at send-time). For each recipient peer, verify the event appears in its local event store within `delivery_deadline_seconds` (default 60s) of its system clock first observing the event. Recipients excluded if their `kick`/`leave` causally precedes the send in the receiver's HeadsSummary. | Any send not delivered to an intended recipient after `delivery_deadline × 2` = `warning`. Sustained miss rate >0% over 1h = `critical`. |
 | **panic log scrape (test-VPS scope only)** `[mem-net-ci]` | every 30s | Tail Docker container logs (`docker logs --since`) for `swarm-runner`, `invariant-checker`, `opus-reviewer`, `digest-writer`, `critical-webhook`. **Pattern catalog (allowlist-driven, not substring):** matches lines that begin with `thread '...' panicked at `, lines with the literal `note: run with \`RUST_BACKTRACE=1\``, lines tagged `target=panic_hook`, and `tracing` events at `Level::ERROR` from non-allowlisted targets. **Allowlist** of expected `ERROR`/`WARN` patterns lives in `panic_allowlist.toml` (in-repo, reviewed) — `iroh_gossip::net::receiver lagged`, etc. **Out of scope:** prod relay and prod storage worker logs. Those services run on a different VPS and we have no log-shipping channel; spec §6 explicitly excludes log shipping from this work. Prod-side panics during the swarm's run are not caught by this check (see §8 risks). | Any non-allowlisted panic-pattern hit = `critical`, immediate. Any non-allowlisted `Level::ERROR` = `warning`; ≥3 in 24h = `critical`. |
 | **process liveness** `[soak-only]` | every 30s | Each bot task and the checker itself responds to a ping. | Missed ping >2 windows = `critical`. |
 | **HLC monotonicity** `[mem-net-ci]` | every 5min | For each peer, the per-peer HLC `(physical_ms, logical_counter)` tuple — read from `crates/messaging/src/hlc.rs::HlcTimestamp` on each event the peer emits — must be non-decreasing in lexicographic order across all events authored by that peer in the window, **including across restart boundaries** (the persisted HLC state must be loaded and respected on `ClientHandle::new`). | Any decrease (in either component) = `critical`. |
@@ -802,8 +804,15 @@ inert. Caps:
 
 The digest writer's coverage report includes a row per
 `[mem-net-ci]`-tagged check showing whether a follow-up issue exists,
-is open, or is closed — making the follow-up obligation visible at the
-weekly cadence.
+is **open**, **closed-via-test** (PR closing the issue contains a
+`closes-via: <commit-sha>` reference linking to a real test addition
+in `crates/state/`, `crates/client/`, or another lower-tier crate), or
+**closed-as-wontfix** (a separate column). Closures lacking a
+`closes-via:` reference count as `wontfix` regardless of the closing
+comment, so a maintainer cannot silence the obligation by closing
+follow-ups without adding the cheap-tier test. The off-ramp criterion
+(§8) treats `closed-as-wontfix` followups as evidence of *avoidance*,
+not progress — they don't count toward "swarm is paying for itself."
 
 **Hypotheses are restricted to a tagged comment, not the issue body.**
 Empirical weakness of "clearly labeled" hypotheses is that engineers
@@ -890,6 +899,33 @@ only and ignored the proxy plumbing.
 Only the `issue_write`, `add_issue_comment`, and
 `add_reply_to_pull_request_comment` methods carry rate-limit logic;
 everything else (search, read) is forwarded unmodified.
+
+#### Network and auth posture
+
+Anthropic's API calls Opus's MCP tools by reaching the proxy over the
+public internet (rmcp's `transport-streamable-http-server` is the
+declared rmcp transport in `crates/agent/Cargo.toml`). The proxy
+therefore needs:
+
+- **Public reachability** — exposed on the test VPS at a stable
+  HTTPS endpoint (e.g. `https://soak-mcp.example.com/`). TLS
+  terminates at the VPS via Caddy or a similar reverse proxy in a
+  sidecar container.
+- **Auth** — every Opus → proxy request carries a bearer token in
+  the `Authorization` header. The token is provisioned in
+  `secrets.env` (under `MCP_PROXY_AUTH_TOKEN`) and pinned in the
+  Anthropic console's MCP server registration. The proxy rejects
+  unauthorized requests with 401.
+- **IP allowlist** at the firewall — only Anthropic's documented
+  egress IP ranges are accepted on the MCP HTTPS port. Bearer-token
+  auth is the primary defense; the IP allowlist is defense-in-depth.
+- **Outgoing forwarding** — the proxy uses an rmcp **client**
+  internal-only over the Compose network to reach
+  `upstream-github-mcp` (no public exposure for that sidecar).
+
+Phase 0b's exit gate includes the auth-token round-trip test
+(invalid token = 401, valid token + over-cap call = synthetic
+capped error to Opus).
 
 This **closes the "asserted but not designed" gap** earlier drafts had:
 the gate has a concrete implementation surface — a local MCP server
@@ -1473,7 +1509,9 @@ crate compiles unchanged otherwise.
 
 **Effort:** ~2 days. Lands in its own PR after Phase 0a is in.
 
-Total Phase 0 effort: ~1.5–2.5 weeks across two PRs.
+Total Phase 0 effort: **~3.5–4.5 weeks across two PRs** (Phase 0a's
+3–4 weeks dominates; Phase 0b adds ~3–5 days for the rmcp client
+feature enablement, the proxy binary, and the auth-posture work).
 
 ### Phase 1 — MVP swarm: 3 bots, no chaos, manual review
 
@@ -1525,11 +1563,16 @@ Total Phase 0 effort: ~1.5–2.5 weeks across two PRs.
     with §5's static rules; opus-reviewer reads it from disk on every
     tick). **Quality bar — not just presence-of-file:**
     - **≥5 distinct false-positive patterns** drawn from real Phase 1
-      findings, each with a 1-line example showing how to recognize
-      and dismiss it.
+      findings. **Each pattern must cite a concrete
+      `invariant.findings.jsonl` record** by `(timestamp, fingerprint)`
+      that exhibited it, so the pattern is grounded in evidence rather
+      than supposition. Patterns without a real receipt do not count
+      toward the ≥5 bar (anti-padding guard).
     - **≥3 worked examples** mapping evidence → fingerprint → triage
       decision (file-new / comment / no-action), drawn from real
       Phase 1 findings — at least one example per decision branch.
+      Each example cites the `(timestamp, fingerprint)` of the
+      finding it came from.
     - **≥2 distinct check-categories** represented across the
       examples, so the rubric isn't a one-trick pony.
     - **Sign-off by a second maintainer** who independently reviewed
@@ -1667,6 +1710,27 @@ The quarterly review (built into Phase 4 steady state) evaluates:
 quarters and excludes findings that turned out to be test-fixture
 flakiness. The intent is to be honest about what the swarm is
 *independently* contributing.
+
+**Anti-gaming guards on the classification:**
+
+- The classifier-of-record for each closed soak issue is **named on
+  the closing PR** and must not be the original Phase 0/1
+  implementer of this swarm (avoid the obvious champion-bias).
+- Each soak-only classification carries a written
+  **counter-claim**: "this could not have been caught by [specific
+  cheap-tier test], because [reason]." The counter-claim is a
+  required field in the closing PR description; without it, the
+  finding does not count toward the off-ramp criterion's "soak-only"
+  tally regardless of how it was labeled.
+- The quarterly review (recorded in the long-trends doc) lists every
+  counter-claim and lets a second maintainer reject any they find
+  unconvincing — rejected ones move to the "would have been caught
+  cheaper" column.
+
+If the counter-claim discipline becomes painful (engineers grumble
+about writing them), that is itself a useful signal: the swarm is
+either cheap-tier-substitutable (and should be wound down) or not
+(and the counter-claims are easy to write).
 
 This off-ramp is reviewed at Phase 4 steady state's first quarterly
 checkpoint and every quarter thereafter, recorded in the weekly
