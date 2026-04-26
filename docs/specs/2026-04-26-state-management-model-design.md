@@ -1,0 +1,243 @@
+# State Management Model Design
+
+**Date:** 2026-04-26
+**Status:** draft
+**Branch:** `audit/lock-actor-alignment`
+
+## Problem
+
+Willow has a clean actor framework (`willow-actor`) and a clear architectural intent: shared mutable state lives inside an actor; everything else is message passing, derived state, or one-shot init. But the codebase has drifted. A focused audit found 6 hotspots in library and web crates where lock-based state (`Arc<RwLock<_>>`, `Arc<Mutex<_>>`, `parking_lot`) protects business state that should sit inside an actor. Several of those hotspots use a multi-lock pattern that hand-rolls atomicity — exactly what `StateActor` was built to avoid.
+
+Concrete examples:
+
+- `crates/client/src/search/handle.rs:29-32` — `SearchIndexHandle` wraps four logically related fields (index, config, recents, build status) in four independent `parking_lot::Mutex`es. No cross-field atomicity. Updating "build finished + recents bumped" needs careful lock ordering or it's racy.
+- `crates/client/src/nickname.rs:39-40` — `MemNicknameStore` carries an `RwLock<HashMap>` cache plus a separate `RwLock<u64>` version counter. The version exists to drive change notification. `StateActor` already provides version-bumped `Notify` for free.
+- `crates/client/src/trust.rs:149` — `InMemoryState` behind a `std::sync::Mutex`. Same shape as the others.
+- `crates/client/src/lib.rs:214,254,558` — `ClientHandle` carries `Arc<RwLock<HashMap<_,Topic>>>` (`topics`), `Arc<parking_lot::Mutex<Vec<JoinLink>>>` (`join_links`), and `Arc<std::sync::Mutex<MessageDb>>` (`message_db`). The first two are mutated from listeners, mutations, and UI; `message_db` is dead weight (PersistenceActor owns persistence).
+- `crates/web/src/trust_store.rs`, `crates/web/src/profile/nickname_store.rs`, `crates/web/src/state_bridge.rs` — `Mutex`/`RwLock` for component-local state in a Leptos app where signals are the natural primitive.
+
+Underlying cause: there is no written rule. Contributors (human or agent) face a state-management decision and have to reverse-engineer the pattern from neighbouring code. Neighbours include both the right answer (`StateActor` in `crates/worker/`) and the wrong answer (`Arc<Mutex<_>>` in `crates/client/src/lib.rs`). Without a rule, the wrong answer keeps spreading.
+
+## Goal
+
+Every shared-mutable-state decision in the codebase has an obvious, documented answer. The decision is encoded in CLAUDE.md so every agent session sees it. Existing misalignments are fixed in the same PR. Legitimate exceptions (iroh callback boundary, OnceLock init, single-threaded WASM `RefCell`) are explicitly documented inline, not buried.
+
+## Scope
+
+- **In scope:** Written rule + decision tree in `CLAUDE.md` and this spec. Refactor of all 6 audit hotspots. Inline `// state: lock-ok — <reason>` comments on every legitimate remaining lock. Test coverage at the new actor boundaries (client tier).
+- **Out of scope:** Mechanical CI gate (rejected — too many false positives, agent-context awareness preferred). Changes to the actor framework itself. Changes to iroh layer locks (documented as boundary). Changes to native worker runtime. Performance optimisation. New features.
+
+## Architecture
+
+### The rule
+
+> **Shared mutable state in library crates lives inside an actor.** No `Arc<Mutex<T>>` / `Arc<RwLock<T>>` / `parking_lot::*` for business state. The actor owns the data; consumers send messages.
+
+### Decision tree
+
+```
+Need shared mutable state?
+├─ Default                                  → StateActor<S>
+│                                              (or fold into existing actor)
+│
+├─ External-callback boundary (iroh)?       → Lock OK
+│                                              // state: lock-ok — iroh callback
+│                                              //   delivers events outside actor loop
+│
+├─ One-shot init of static data?            → OnceLock<T> / LazyLock<T>
+│                                              (regex compilation, topic IDs)
+│
+├─ Cross-task control flag (stop/cancel)?   → AtomicBool / AtomicU32
+│                                              (mailbox stop, supervisor cancel)
+│
+├─ Single-threaded WASM interior mut?       → Rc<RefCell<T>>
+│                                              (web crate only — voice nodes,
+│                                               WebRTC closures, audio analysers)
+│
+└─ Reactive UI state in web?                → Leptos signal
+                                               (RwSignal, Resource, Memo)
+                                               StateActor only when state mutated
+                                               from non-Leptos context (background
+                                               task, timer spanning components,
+                                               MCP, async coalescing).
+```
+
+### Why StateActor by default
+
+The `willow-actor` `StateActor<S>` already solves every recurring problem the lock-based stores hand-roll:
+
+- **Atomicity across fields** — one mutation sees a consistent `S`. No lock ordering.
+- **Change notification** — `Notify` on every mutation, version-bumped, batched in `idle()`. Subscribers don't poll.
+- **Cheap reads** — state held as `Arc<S>`; readers clone the `Arc`, get a snapshot, no contention.
+- **Copy-on-write mutations** — `Arc::make_mut` for in-place updates without cloning unmodified state.
+- **Single-task ownership** — no concurrent mutator. No data races by construction.
+- **Dual-target** — works on native (`tokio::spawn`) and WASM (`spawn_local`) without per-call gates.
+
+A hand-rolled `Arc<Mutex<HashMap>> + Arc<Mutex<Version>>` reproduces the first three points poorly and skips the rest.
+
+### Where actors live
+
+- **State machine** (`crates/state/`) — pure, no I/O, no actors. Events in, state out.
+- **Client lib** (`crates/client/`) — actors own all shared mutable state. `ClientHandle` is a thin facade holding actor `Addr`s. No business state on the handle struct itself.
+- **Workers** (`crates/worker`, `crates/replay`, `crates/storage`, `crates/relay`, `crates/agent`) — already actor-based via `WorkerRole`. Stay actor-based.
+- **Network** (`crates/network/`) — `IrohNetwork` is the iroh boundary. Locks here are forced by iroh's external-callback delivery model. Documented exception, not aspirational target.
+- **Web** (`crates/web/`) — Leptos signals are the primitive. `StateActor` allowed only where state mutated from outside reactive scope. Bridge to client actors via existing `state_bridge`/`Resource` pattern.
+
+### Why no hard CI gate
+
+A grep gate (`! rg 'Arc<.*Mutex'`) is bulletproof for new violations but generates false positives the moment we touch the iroh layer or want a legitimate `Arc<AtomicBool>`. Allowlist comments turn into noise. A custom clippy lint costs ongoing maintenance against an unstable plugin API. We picked agent-context awareness instead: the rule is in `CLAUDE.md`, every agent session loads it, every PR review reasons against it. If drift recurs, we revisit.
+
+## Refactor plan
+
+Six hotspots from the audit. All ship in this PR.
+
+### 1. `SearchIndexHandle` → `StateActor<SearchState>`
+
+`crates/client/src/search/handle.rs:29-32`
+
+Today: four `Arc<parking_lot::Mutex<_>>` for `index`, `config`, `recents`, `status`.
+
+After:
+
+```rust
+pub struct SearchState {
+    pub index: SearchIndex,
+    pub config: SearchIndexConfig,
+    pub recents: Vec<RecentQuery>,
+    pub status: SearchIndexBuildStatus,
+}
+
+pub struct SearchIndexHandle {
+    addr: Addr<StateActor<SearchState>>,
+}
+```
+
+Mutations become messages (`UpdateConfig`, `RecordQuery`, `SetBuildStatus`, `RebuildIndex`). Readers `ask` for a snapshot or subscribe via `DerivedActor` for reactive views. Cross-field updates (e.g. "rebuild done + recents updated + status set") become one mutation and are atomic for free.
+
+Tests: `just test-client`. Cover concurrent rebuild + query, status transitions, recents rotation.
+
+### 2. `MemNicknameStore` → `StateActor<NicknameCache>`
+
+`crates/client/src/nickname.rs:39-40`
+
+Today: `RwLock<HashMap>` + `RwLock<u64>` (version).
+
+After: `StateActor<NicknameCache>` where `NicknameCache { map: HashMap<_,_> }`. Drop the manual version counter — `StateActor::version()` already bumps on every mutation, and `Notify` carries it. Subscribers re-read on `Notify`.
+
+Tests: `just test-client`. Cover insert + lookup + change-notification subscribers.
+
+### 3. `trust::InMemoryState` → `StateActor<TrustState>`
+
+`crates/client/src/trust.rs:149`
+
+Today: `std::sync::Mutex<InMemoryState>`.
+
+After: `StateActor<TrustState>`. Same pattern as #2. Public `TrustStore` trait (or whatever the consumer-facing shape is) keeps its current API; only the impl changes.
+
+Tests: `just test-client`. Cover trust grant + revoke + concurrent reads.
+
+### 4. `ClientHandle.topics` + `join_links` → actor-owned
+
+`crates/client/src/lib.rs:214,254`
+
+Today: `Arc<RwLock<HashMap<String, N::Topic>>>` (`topics`) and `Arc<parking_lot::Mutex<Vec<ops::JoinLink>>>` (`join_links`) as fields on `ClientHandle`, threaded through `MutationContext`.
+
+After: pick one of two shapes during impl, based on the mutation surface:
+
+- **Option A (preferred):** Fold both into the existing `event_state` / `server_registry` actors. Topic handles and join links are derived from server membership; they likely belong with that state.
+- **Option B (fallback):** New `TopicRegistryActor` owning both maps. Used if the mutation surface doesn't cleanly map to existing actors.
+
+Decision made in PR commit; rationale in commit body. Either way, `ClientHandle` carries an `Addr`, not the data.
+
+Tests: `just test-client`. Cover topic add + remove + concurrent mutation, join link append + clear.
+
+### 5. `ClientHandle.message_db` — delete
+
+`crates/client/src/state.rs:180`
+
+Today: `Option<Arc<std::sync::Mutex<MessageDb>>>` field on `ClientState`.
+
+After: removed. `PersistenceActor` (`crates/client/src/persistence_actor.rs`) already owns persistence and is wired through `ClientHandle.persistence_addr`. The legacy field is dead weight.
+
+Verify with `cargo check` + `just test-client` after deletion. No new tests — pure removal.
+
+### 6. Web layer locks → Leptos signals (or StateActor where justified)
+
+- `crates/web/src/trust_store.rs:46` — `Mutex<Inner>` → Leptos `RwSignal<TrustStoreState>`. Component-local reactive state.
+- `crates/web/src/profile/nickname_store.rs:23-24` — `RwLock<HashMap> + RwLock<u64>` → `RwSignal<HashMap<_,_>>` (signals carry their own change notification; explicit version unnecessary).
+- `crates/web/src/state_bridge.rs:23` — `Arc<Mutex<Option<U>>>` async result cache. If used inside a Leptos `Resource`, replace with the `Resource`'s own caching. If used from outside reactive scope (verify during impl), keep as `StateActor<CacheEntry<U>>` per the carve-out rule.
+
+Tests: `just test-browser` for any DOM-reactive signal changes.
+
+## Legitimate locks — kept, annotated
+
+Each gets a `// state: lock-ok — <reason>` comment so future readers (human + agent) see the rationale at the use site, not just in this spec.
+
+- `crates/network/src/iroh.rs:107,132` — neighbor list `RwLock<Vec<EndpointId>>`. Mutated from iroh gossip-event callback outside actor loop. Forced by iroh API.
+- `crates/network/src/iroh.rs:196,197` — `Mutex<Option<Router>>`, `Mutex<HashMap<TopicId, _>>`. Iroh router + subscription map; iroh's lifecycle API is synchronous.
+- `crates/network/src/iroh.rs:64,215` — blob store + relay-status timestamp. Iroh boundary state.
+- `crates/network/src/iroh.rs:210` — `AtomicBool relay_online_at_boot`. Read-only after init, atomic by choice not necessity but legitimate.
+- `crates/client/src/mentions.rs:79` — `OnceLock<Regex>`. One-shot regex compile.
+- `crates/network/src/topics.rs:35,37,39` — `LazyLock<TopicId>`. Static topic-ID constants.
+- `crates/worker/src/runtime.rs:40` — `tokio::sync::watch::channel` ready signal. Actor coordination primitive, not shared mutable state.
+- All `AtomicBool` / `AtomicU32` in `crates/actor/src/*.rs` — mailbox stop, supervisor cancel, test counters. Control flow, not business state.
+- All `Rc<RefCell<_>>` / `SendWrapper<RefCell<_>>` in `crates/web/src/voice.rs`, `notifications.rs`, `components/toast.rs`, `components/call_page.rs`, `app.rs` — single-threaded WASM. `RefCell` is the correct primitive.
+- `MemNetwork` locks in `crates/network/src/mem.rs` — test infrastructure (`#[cfg(feature = "test-utils")]`). Acceptable; not production code path.
+- `crates/agent/src/server.rs:27` — `Arc<tokio::sync::OnceCell<()>>` for one-shot notification bridge init. One-shot, not ongoing mutation.
+
+`MemNicknameStore`/trust in-mem stores get refactored (#2, #3) rather than annotated, because they are production code paths even if currently used only from tests.
+
+## CLAUDE.md addition
+
+Add a `## State Management` section between the existing `## Repository Structure` and `## Build & Test`. Body:
+
+> All shared mutable state in library crates lives inside an actor (see `crates/actor/`). Default to `StateActor<S>` for new state. The decision tree:
+>
+> | Situation | Pattern |
+> |---|---|
+> | Shared mutable state in a lib crate | `StateActor<S>` (default) |
+> | External-callback boundary (iroh) | Lock + `// state: lock-ok — <reason>` |
+> | One-shot static init | `OnceLock` / `LazyLock` |
+> | Cross-task control flag (stop, cancel) | `AtomicBool` / `AtomicU32` |
+> | WASM single-threaded interior mut | `Rc<RefCell<_>>` (web only) |
+> | Reactive UI state in web | Leptos signal (`RwSignal`, `Resource`) |
+> | Web state mutated from non-Leptos context | `StateActor<S>` |
+>
+> No `Arc<Mutex<T>>` / `Arc<RwLock<T>>` / `parking_lot::*` for business state. New locks need a `// state: lock-ok` comment with rationale. Full discussion: `docs/specs/2026-04-26-state-management-model-design.md`.
+
+This block is the source of truth for new code. The spec is the source of truth for the *why* and the audit trail.
+
+## Testing
+
+- `just test-client` for refactored client actors. Each refactored module gets at least one test that exercises the message-passing surface (mutation + read, mutation + subscribe, concurrent mutators if applicable).
+- `just test-browser` for web-layer signal conversions.
+- Full `just check` (fmt + clippy + test + WASM) green before commit. No warnings.
+- `MessageDb` field removal verified by `cargo check -p willow-client` after deletion.
+
+No new browser/Playwright tests required — refactors preserve external behaviour.
+
+## Migration order
+
+1. **Doc first.** Spec + CLAUDE.md section. Lands the rule before any refactor commit so reviewers and agents have the contract.
+2. **Annotate locks.** Add `// state: lock-ok` comments to all kept locks. Cheap, zero behaviour change, demonstrates the contract.
+3. **`SearchIndexHandle`** — proves the pattern on the highest-value target (4 → 1 lock collapse, atomicity win).
+4. **`MemNicknameStore`** + **trust `InMemoryState`** — same shape as #3, repeats the pattern.
+5. **Delete `message_db`** — pure removal, no design risk.
+6. **`ClientHandle.topics` + `join_links`** — biggest design call (Option A vs B). Comes after the pattern is proven.
+7. **Web stores → signals** — different audience (Leptos), separate commit for clean review.
+8. **`just check`** + commit chain + PR.
+
+Each step in its own commit. Commit body names the runner-up approach where one existed.
+
+## Open questions
+
+None remaining at spec-write time. Audit answered:
+
+- ✅ `PersistenceActor` exists and owns persistence (verified `crates/client/src/persistence_actor.rs`); `message_db` field is dead.
+- ✅ Web philosophy locked: signals by default, `StateActor` carve-out for non-Leptos mutators.
+- ✅ Enforcement: agent-context awareness via CLAUDE.md, no hard gate.
+
+Decisions deferred to impl time:
+
+- Topic registry shape (Option A fold-in vs Option B new actor) — picked when reading the mutation surface.
+- `state_bridge.rs` cache shape (Leptos `Resource` vs `StateActor`) — picked when reading actual call sites.

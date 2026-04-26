@@ -68,6 +68,29 @@ crates/
 └── web/         — Leptos web UI application (willow-web)
 ```
 
+## State Management
+
+All shared mutable state in library crates lives inside an actor (see
+`crates/actor/`). Default to `StateActor<S>` for new state. Decision tree:
+
+| Situation | Pattern |
+|---|---|
+| Shared mutable state in a lib crate | `StateActor<S>` (default) |
+| External-callback boundary (iroh) | Lock + `// state: lock-ok — <reason>` |
+| One-shot static init | `OnceLock<T>` / `LazyLock<T>` |
+| Cross-task control flag (stop, cancel) | `AtomicBool` / `AtomicU32` |
+| WASM single-threaded interior mutability | `Rc<RefCell<T>>` (web only) |
+| Reactive UI state in web | Leptos signal (`RwSignal`, `Resource`) |
+| Web state mutated from non-Leptos context | `StateActor<S>` |
+
+**No `Arc<Mutex<T>>` / `Arc<RwLock<T>>` / `parking_lot::*` for business state.**
+New locks need a `// state: lock-ok — <reason>` comment with rationale at the
+use site. `MemNetwork` (`crates/network/src/mem.rs`) is test infrastructure and
+exempt; the iroh layer (`crates/network/src/iroh.rs`) is the only production
+exception, justified by iroh's external-callback delivery model.
+
+Full discussion + audit trail: `docs/specs/2026-04-26-state-management-model-design.md`.
+
 ## Build & Test
 
 ```bash
