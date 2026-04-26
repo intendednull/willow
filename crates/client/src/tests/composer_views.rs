@@ -11,7 +11,18 @@
 use willow_identity::Identity;
 use willow_state::{Channel, ChannelKind, ChatMessage, EventHash, Member, Profile};
 
-use crate::test_client;
+use crate::mentions::Suggestions;
+use crate::{test_client, MentionCandidate};
+
+/// Synthesise a `MentionCandidate` for the pure-filter unit tests.
+fn cand(handle: &str, display: &str) -> MentionCandidate {
+    MentionCandidate {
+        peer_id: Identity::generate().endpoint_id(),
+        display_name: display.to_string(),
+        handle: handle.to_string(),
+        presence: crate::presence::PresenceState::Unknown,
+    }
+}
 
 /// Insert a member + matching profile into the test client's state.
 async fn add_member_with_display(
@@ -212,4 +223,93 @@ async fn last_own_message_none_when_no_own_messages() {
         last.is_none(),
         "channel with no local-authored messages must yield None"
     );
+}
+
+// ───── T3: Suggestions::filter ──────────────────────────────────────────
+
+#[test]
+fn mention_filter_prefix_handle() {
+    // `mira` matches the `mira.forest.1` handle by handle-prefix. The
+    // tier ranking puts handle-prefix first.
+    let mira = cand("mira.forest.1", "Mira");
+    let rin = cand("rin.coast.2", "Rin");
+    let cands = vec![mira.clone(), rin.clone()];
+    let out = Suggestions::filter("mira", &cands);
+    assert_eq!(out.len(), 1, "expected one match, got {out:?}");
+    assert_eq!(out[0].peer_id, mira.peer_id);
+}
+
+#[test]
+fn mention_filter_prefix_display() {
+    // Handle does not start with `mir`, but display name (and its
+    // first segment) does — display-prefix matches it.
+    let cand1 = cand("xyzzy.coast.1", "Mira Owl");
+    let cand2 = cand("rin.coast.2", "Rin");
+    let cands = vec![cand1.clone(), cand2.clone()];
+    let out = Suggestions::filter("mir", &cands);
+    assert_eq!(out.len(), 1, "expected one match, got {out:?}");
+    assert_eq!(out[0].peer_id, cand1.peer_id);
+}
+
+#[test]
+fn mention_filter_caps_at_8() {
+    // Twelve `m*` candidates → result must clip to 8.
+    let cands: Vec<MentionCandidate> = (0..12)
+        .map(|i| cand(&format!("m{i:02}.coast.1"), &format!("M{i:02}")))
+        .collect();
+    let out = Suggestions::filter("m", &cands);
+    assert_eq!(
+        out.len(),
+        8,
+        "filter must cap at 8 results, got {}",
+        out.len()
+    );
+}
+
+#[test]
+fn mention_filter_dedupes_overlapping_matches() {
+    // A single candidate whose handle AND display name both prefix-match
+    // must appear exactly once. The ranking keeps the highest-tier
+    // match (handle-prefix here).
+    let mira = cand("mira.forest.1", "Mira");
+    let cands = vec![mira.clone()];
+    let out = Suggestions::filter("mira", &cands);
+    assert_eq!(out.len(), 1, "duplicate-tier match must dedupe to one row");
+    assert_eq!(out[0].peer_id, mira.peer_id);
+}
+
+#[test]
+fn mention_filter_empty_query_returns_all_capped() {
+    // Empty query → all candidates, alphabetical by handle, capped at 8.
+    let cands: Vec<MentionCandidate> = (0..10)
+        .map(|i| cand(&format!("z{i:02}.coast.1"), &format!("Z{i:02}")))
+        .collect();
+    let out = Suggestions::filter("", &cands);
+    assert_eq!(out.len(), 8);
+    // Alphabetical by handle.
+    let handles: Vec<&String> = out.iter().map(|c| &c.handle).collect();
+    let mut expected = handles.clone();
+    expected.sort();
+    assert_eq!(
+        handles, expected,
+        "empty-query list must be alphabetical by handle"
+    );
+}
+
+#[test]
+fn mention_filter_tier_ordering_handle_beats_display() {
+    // Two candidates: cand-A's handle starts with `mi`, cand-B's
+    // display name starts with `Mi` but its handle doesn't. The
+    // handle-prefix tier outranks display-prefix; cand-A must come
+    // first regardless of alphabetical order on handle.
+    let cand_a = cand("mira.forest.1", "Zara");
+    let cand_b = cand("alpha.forest.1", "Mira");
+    let cands = vec![cand_b.clone(), cand_a.clone()];
+    let out = Suggestions::filter("mi", &cands);
+    assert_eq!(out.len(), 2);
+    assert_eq!(
+        out[0].peer_id, cand_a.peer_id,
+        "handle-prefix tier must rank above display-prefix"
+    );
+    assert_eq!(out[1].peer_id, cand_b.peer_id);
 }

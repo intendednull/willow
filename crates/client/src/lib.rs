@@ -74,7 +74,7 @@ pub const TYPING_INDICATOR_TTL_MS: u64 = 5_000;
 // Re-export key types at crate root for convenience.
 pub use event_receiver::EventReceiver;
 pub use events::ClientEvent;
-pub use mentions::mentions_me;
+pub use mentions::{mentions_me, Suggestions};
 pub use nickname::{MemNicknameStore, NicknameStore, NicknameStoreHandle, NICKNAME_CAP};
 pub use ops::{pack_wire, unpack_wire, VoiceSignalPayload, WireMessage};
 pub use queue::{ArrivedSummary, QueueSummary, RelayStatus};

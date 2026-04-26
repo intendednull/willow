@@ -96,7 +96,7 @@
 
 - [x] **T2.** Add `last_own_message(channel_id) -> Option<DisplayMessage>` accessor in `willow-client::views`. Returns the most recent message authored by the local peer in the given channel, or `None`. **Tests:** `last_own_message_returns_most_recent_in_channel`, `last_own_message_none_when_no_own_messages`. **Verify:** `just test-client`.
 
-- [ ] **T3.** Add `mentions::Suggestions::filter(query, candidates) -> Vec<MentionCandidate>` — prefix match on `handle`, first `display_name` segment, full `display_name`; dedupe by `peer_id`; max 8 entries. Pure function. **Tests:** `mention_filter_prefix_handle`, `mention_filter_prefix_display`, `mention_filter_caps_at_8`, `mention_filter_dedupes_overlapping_matches`, `mention_filter_empty_query_returns_all_capped`. **Verify:** `just test-client`.
+- [x] **T3.** Add `mentions::Suggestions::filter(query, candidates) -> Vec<MentionCandidate>` — prefix match on `handle`, first `display_name` segment, full `display_name`; dedupe by `peer_id`; max 8 entries. Pure function. **Tests:** `mention_filter_prefix_handle`, `mention_filter_prefix_display`, `mention_filter_caps_at_8`, `mention_filter_dedupes_overlapping_matches`, `mention_filter_empty_query_returns_all_capped`. **Verify:** `just test-client`.
 
 ### Phase B — composer module skeleton
 
