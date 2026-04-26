@@ -6356,3 +6356,98 @@ select:focus-visible {
         transition: background-color 180ms ease;
     }
 }
+
+/* ── Mention autocomplete popover (Phase 3a — T13/T14) ─────────────────
+ *
+ * Anchored above the composer at the position computed by the parent
+ * (textarea bounding rect + spec offset). The popover floats — we use
+ * `position: fixed` so it doesn't get clipped by the chat scroll
+ * container, and rely on the inline `top` / `left` written by
+ * `<MentionAutocomplete>` for placement.
+ *
+ * Spec `composer.md` §Mention autocomplete:
+ *   - `--bg-1` background, `--line` border, radius 10 px, `--shadow-2`.
+ *   - Max 8 rows visible; scrolls above when the list overflows.
+ */
+.mention-popover {
+    position: fixed;
+    z-index: 60;
+    min-width: 220px;
+    max-width: 320px;
+    max-height: 200px;
+    overflow-y: auto;
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: var(--shadow-2);
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.mention-popover__row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    color: var(--ink-1);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color var(--motion-fast) ease;
+}
+
+.mention-popover__row:hover,
+.mention-popover__row--selected {
+    background: var(--bg-2);
+}
+
+.mention-popover__row--channel {
+    /* Distinguish the synthetic `@channel` row with the moss accent
+     * the rest of the composer already uses for "addresses everyone".
+     * Lit up by T14. */
+    color: var(--moss-2);
+}
+
+.mention-popover__avatar {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--bg-2);
+    flex: 0 0 auto;
+}
+
+.mention-popover__display {
+    color: var(--ink-1);
+    flex: 0 1 auto;
+}
+
+.mention-popover__handle {
+    color: var(--ink-3);
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 0.85em;
+    flex: 0 1 auto;
+}
+
+.mention-popover__presence-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ink-3);
+    margin-left: auto;
+    flex: 0 0 auto;
+}
+
+.mention-popover__presence-dot--here {
+    background: var(--moss-2);
+}
+
+.mention-popover__presence-dot--away,
+.mention-popover__presence-dot--queued,
+.mention-popover__presence-dot--gone {
+    background: var(--ink-3);
+}

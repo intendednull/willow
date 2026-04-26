@@ -32,10 +32,13 @@
 
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
+use willow_client::mentions::Suggestions;
+use willow_client::views::MentionCandidate;
 use willow_client::DisplayMessage;
 use willow_state::types::ChannelKind;
 
 use super::edit_bar::EditBar;
+use super::mention_autocomplete::MentionAutocomplete;
 use super::meta_row::MetaRow;
 use super::placeholders::placeholder_for;
 use super::reply_bar::ReplyBar;
@@ -125,6 +128,15 @@ pub fn Composer(
     /// don't have to wire the polling loop.
     #[prop(optional, into)]
     typing_peers: Option<Signal<Vec<String>>>,
+    /// Full list of `@`-mention candidates for the current channel,
+    /// resolved by the parent via
+    /// [`willow_client::Client::mention_candidates`]. The composer
+    /// applies [`willow_client::mentions::Suggestions::filter`]
+    /// against the live `@`-query before rendering. Defaults to an
+    /// empty vec so the popover stays inert in tests that don't need
+    /// it. Spec: `composer.md` §Mention autocomplete.
+    #[prop(optional, into)]
+    mention_candidates: Option<Signal<Vec<MentionCandidate>>>,
 ) -> impl IntoView {
     let (input_text, set_input_text) = signal(String::new());
     let textarea_ref = NodeRef::<leptos::html::Textarea>::new();
@@ -144,10 +156,60 @@ pub fn Composer(
         recipient_name.unwrap_or_else(|| Signal::derive(|| None));
     let typing_peers_sig: Signal<Vec<String>> =
         typing_peers.unwrap_or_else(|| Signal::derive(Vec::new));
+    let mention_candidates_sig: Signal<Vec<MentionCandidate>> =
+        mention_candidates.unwrap_or_else(|| Signal::derive(Vec::new));
     // `data-shell` is set once at mount by `mobile_shell` / the
     // wasm-pack test harness; deriving a Signal still works because the
     // closure runs each time a downstream reader subscribes.
     let is_mobile_sig: Signal<bool> = Signal::derive(is_mobile_shell);
+
+    // ── Mention autocomplete state (T13) ─────────────────────────────
+    //
+    // Owned at the composer level because the popover, the textarea
+    // input handler, and the keydown handler all need to read or
+    // mutate it. Kept on local `RwSignal`s — no global state needed.
+    //
+    // - `autocomplete_open`: `true` while the user is mid-`@`-token.
+    // - `mention_query`: lowercase prefix typed after the `@`.
+    // - `mention_at_pos`: byte offset of the active `@` in the
+    //   textarea. Used by the splice path so the original `@` is
+    //   consumed when a candidate is inserted.
+    // - `mention_selected`: highlighted row index inside the popover.
+    // - `mention_anchor`: `(top, left)` pixel anchor for the popover,
+    //   recomputed on each open. v1 anchors to the textarea's top-
+    //   left rather than the actual `@` glyph (TODO above the popover
+    //   component documents the trade-off).
+    let autocomplete_open = RwSignal::new(false);
+    let mention_query = RwSignal::new(String::new());
+    let mention_at_pos = RwSignal::new(0usize);
+    let mention_selected = RwSignal::new(0usize);
+    let mention_anchor = RwSignal::new((0i32, 0i32));
+
+    let filtered_candidates: Memo<Vec<MentionCandidate>> = Memo::new(move |_| {
+        if !autocomplete_open.get() {
+            return Vec::new();
+        }
+        let q = mention_query.get();
+        let all = mention_candidates_sig.get();
+        Suggestions::filter(&q, &all)
+    });
+    let filtered_signal: Signal<Vec<MentionCandidate>> =
+        Signal::derive(move || filtered_candidates.get());
+
+    // Reset the highlighted index whenever the filtered list shrinks
+    // below the current selection (e.g. the user typed another letter
+    // and the matching set narrowed). Keeps Enter / Tab from
+    // selecting a row that no longer exists.
+    Effect::new(move |_| {
+        let n = filtered_candidates.get().len();
+        if n == 0 {
+            mention_selected.set(0);
+            return;
+        }
+        if mention_selected.get_untracked() >= n {
+            mention_selected.set(0);
+        }
+    });
 
     // Placeholder copy is recomputed by `Memo` so it tracks every
     // input — channel name, peer count, kind, recipient, connection.
@@ -257,9 +319,90 @@ pub fn Composer(
         set_input_text.set(String::new());
     };
 
+    // Splice the selected mention into the textarea, replacing the
+    // span from the active `@` through the caret with `@{handle} `.
+    // Closes the popover and resets the highlighted index. Captured
+    // by the popover's `on_select` callback and by the keydown
+    // handler's Enter / Tab paths.
+    let insert_selected_mention = move |candidate: &MentionCandidate| {
+        let Some(el) = textarea_ref.get_untracked() else {
+            return;
+        };
+        let dom: &web_sys::HtmlTextAreaElement = &el;
+        let value = dom.value();
+        let at_byte = mention_at_pos.get_untracked();
+        // Caret is wherever the user last left it. We collapse the
+        // range to a single point — autocomplete fires on input
+        // events, which always leave the selection collapsed.
+        let caret_chars = dom.selection_end().ok().flatten().unwrap_or(0) as usize;
+        let caret_byte = char_index_to_byte(&value, caret_chars).unwrap_or(value.len());
+        let at_byte = at_byte.min(value.len());
+        let end = caret_byte.max(at_byte);
+        let replacement = format!("@{} ", candidate.handle);
+        let mut new_value = String::with_capacity(value.len() + replacement.len());
+        new_value.push_str(&value[..at_byte]);
+        new_value.push_str(&replacement);
+        new_value.push_str(&value[end..]);
+        let new_caret_chars = byte_index_to_char(&new_value, at_byte + replacement.len())
+            .unwrap_or_else(|| new_value.chars().count()) as u32;
+        dom.set_value(&new_value);
+        set_input_text.set(new_value);
+        let _ = dom.set_selection_range(new_caret_chars, new_caret_chars);
+        autocomplete_open.set(false);
+        mention_query.set(String::new());
+        mention_selected.set(0);
+    };
+
+    let on_select_mention = Callback::new(move |c: MentionCandidate| {
+        insert_selected_mention(&c);
+    });
+
     let submit_for_key = submit.clone();
     let on_keydown = move |ev: web_sys::KeyboardEvent| {
         let key = ev.key();
+
+        // ── Autocomplete keyboard handling ──────────────────────────
+        //
+        // When the popover is open the navigation / commit / dismiss
+        // keys belong to the autocomplete, not the composer. Enter
+        // and Tab insert the selected handle (and *do not* send the
+        // message); Escape dismisses without changing the textarea;
+        // Arrow keys move the highlight with wrap. Spec lines 102–103.
+        if autocomplete_open.get_untracked() {
+            let n = filtered_candidates.get_untracked().len();
+            match key.as_str() {
+                "ArrowDown" if n > 0 => {
+                    ev.prevent_default();
+                    let next = (mention_selected.get_untracked() + 1) % n;
+                    mention_selected.set(next);
+                    return;
+                }
+                "ArrowUp" if n > 0 => {
+                    ev.prevent_default();
+                    let cur = mention_selected.get_untracked();
+                    let prev = if cur == 0 { n - 1 } else { cur - 1 };
+                    mention_selected.set(prev);
+                    return;
+                }
+                "Enter" | "Tab" if n > 0 => {
+                    ev.prevent_default();
+                    ev.stop_propagation();
+                    let idx = mention_selected.get_untracked().min(n - 1);
+                    let candidate = filtered_candidates.get_untracked()[idx].clone();
+                    insert_selected_mention(&candidate);
+                    return;
+                }
+                "Escape" => {
+                    ev.prevent_default();
+                    autocomplete_open.set(false);
+                    mention_query.set(String::new());
+                    mention_selected.set(0);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         let force_send = (ev.ctrl_key() || ev.meta_key()) && key == "Enter";
 
         if force_send {
@@ -436,9 +579,47 @@ pub fn Composer(
                     placeholder=move || placeholder.get()
                     prop:value=move || input_text.get()
                     on:input=move |ev| {
-                        set_input_text.set(event_target_value(&ev));
+                        let value = event_target_value(&ev);
+                        set_input_text.set(value.clone());
                         if let Some(ref cb) = on_typing {
                             cb.run(());
+                        }
+                        // Recompute mention-autocomplete state.
+                        // Anchor relative to the textarea's bounding
+                        // rect so the popover follows the composer if
+                        // the page scrolls. v1 anchors to the
+                        // textarea's top-left (TODO: mirror-based @
+                        // glyph anchor).
+                        let target = ev.target().and_then(|t| {
+                            t.dyn_into::<web_sys::HtmlTextAreaElement>().ok()
+                        });
+                        let caret_chars = target
+                            .as_ref()
+                            .and_then(|el| el.selection_end().ok().flatten())
+                            .map(|n| n as usize)
+                            .unwrap_or_else(|| value.chars().count());
+                        match find_at_word_boundary(&value, caret_chars) {
+                            Some((at_byte, query)) => {
+                                autocomplete_open.set(true);
+                                mention_at_pos.set(at_byte);
+                                mention_query.set(query);
+                                if let Some(el) = target.as_ref() {
+                                    let rect = el.get_bounding_client_rect();
+                                    // -8px offset above the composer per
+                                    // spec line 97. We bias `top` by
+                                    // -200 (popover max-height) so the
+                                    // popover lays out above the
+                                    // textarea regardless of viewport
+                                    // overflow handling.
+                                    let top = (rect.top() - 8.0 - 200.0) as i32;
+                                    let left = rect.left() as i32;
+                                    mention_anchor.set((top, left));
+                                }
+                            }
+                            None => {
+                                autocomplete_open.set(false);
+                                mention_query.set(String::new());
+                            }
                         }
                     }
                     on:keydown=on_keydown
@@ -452,6 +633,12 @@ pub fn Composer(
                     {send_label}
                 </button>
             </div>
+            <MentionAutocomplete
+                candidates=filtered_signal
+                selected=mention_selected
+                on_select=on_select_mention
+                anchor=Signal::derive(move || mention_anchor.get())
+            />
             <MetaRow
                 connection=connection_sig
                 peer_count=peer_count_sig
@@ -488,6 +675,92 @@ fn is_mobile_shell() -> bool {
         return false;
     };
     matches!(root.get_attribute("data-shell").as_deref(), Some("mobile"))
+}
+
+/// Find the active `@`-mention token in `value` at the given caret
+/// position, if any. Returns `(at_byte_offset, lowercase_query)` when
+/// the caret sits after an `@` that is itself either at the start of
+/// the buffer or preceded by whitespace, with no whitespace between
+/// the `@` and the caret.
+///
+/// Spec `composer.md` §Mention autocomplete: "triggered on `@` at a
+/// word boundary." Word boundary in v1 = start of buffer or any
+/// whitespace character (space / tab / newline). Punctuation like
+/// `foo@bar` does NOT trigger autocomplete because the `@` follows a
+/// non-whitespace, non-start glyph.
+///
+/// Returns `None` when:
+/// - There is no `@` between the caret and the most recent
+///   whitespace.
+/// - The `@` is preceded by a non-whitespace character (so it's an
+///   email-like fragment, not a mention).
+/// - Whitespace appears between the `@` and the caret (the boundary
+///   has been broken).
+pub(crate) fn find_at_word_boundary(value: &str, caret_chars: usize) -> Option<(usize, String)> {
+    // Truncate the value at the caret's char position. We work on
+    // chars (not bytes) because the caller talks to us in selection-
+    // index units, then convert the discovered `@` position back to
+    // a byte offset for splice math.
+    let prefix: String = value.chars().take(caret_chars).collect();
+    let mut at_char_idx: Option<usize> = None;
+    for (idx, ch) in prefix.char_indices().rev() {
+        if ch == '@' {
+            // Boundary check: previous char must be whitespace, or
+            // this must be the start of the buffer.
+            let preceded_ok = idx == 0
+                || prefix[..idx]
+                    .chars()
+                    .last()
+                    .map(|c| c.is_whitespace())
+                    .unwrap_or(true);
+            if preceded_ok {
+                at_char_idx = Some(idx);
+            }
+            break;
+        }
+        if ch.is_whitespace() {
+            // Hit whitespace before any `@` — boundary is broken.
+            return None;
+        }
+    }
+    let at_byte = at_char_idx?;
+    let after_at = &prefix[at_byte + 1..];
+    Some((at_byte, after_at.to_lowercase()))
+}
+
+/// Convert a UTF-16 / char-count selection index (as returned by
+/// `selection_end`) to a byte offset into `value`. We treat the
+/// JS-side index as a character count, which is exact for the BMP
+/// range but loses precision for astral codepoints — composer
+/// content is overwhelmingly BMP so this is the simplest approach.
+///
+/// Returns `None` when the index is out of bounds.
+pub(crate) fn char_index_to_byte(value: &str, char_idx: usize) -> Option<usize> {
+    if char_idx == 0 {
+        return Some(0);
+    }
+    let mut count = 0usize;
+    for (byte_idx, _) in value.char_indices() {
+        if count == char_idx {
+            return Some(byte_idx);
+        }
+        count += 1;
+    }
+    if count == char_idx {
+        Some(value.len())
+    } else {
+        None
+    }
+}
+
+/// Inverse of [`char_index_to_byte`]: convert a byte offset to a
+/// char-count index suitable for `set_selection_range`. Returns
+/// `None` when the byte index is past `value.len()`.
+pub(crate) fn byte_index_to_char(value: &str, byte_idx: usize) -> Option<usize> {
+    if byte_idx > value.len() {
+        return None;
+    }
+    Some(value[..byte_idx].chars().count())
 }
 
 /// Insert `text` at the textarea's current caret position, replacing

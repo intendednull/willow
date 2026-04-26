@@ -12577,4 +12577,372 @@ mod phase_3a_composer {
             "typing label must be empty when no peers are typing"
         );
     }
+
+    // ── T13 — mention autocomplete popover ─────────────────────────────
+    //
+    // AGs covered:
+    //   AG-8: popover opens on `@` at a word boundary, filters by
+    //         prefix on handle / display name, supports arrow + Enter
+    //         to insert, Esc dismisses.
+    //
+    // Spec: `composer.md` §Mention autocomplete (lines 93–105).
+    // Plan: `2026-04-26-ui-phase-3a-composer.md` Task T13.
+    //
+    // The popover is purely presentational; filtering, anchoring and
+    // keyboard navigation live in the parent `<Composer>`. These tests
+    // mount the parent with a synthetic `mention_candidates` signal so
+    // we can drive the open / filter / select / dismiss flow without
+    // standing up a `ClientHandle`.
+    use willow_client::presence::PresenceState;
+    use willow_client::views::MentionCandidate;
+
+    fn make_candidate(handle: &str, display: &str) -> MentionCandidate {
+        MentionCandidate {
+            peer_id: willow_identity::Identity::generate().endpoint_id(),
+            display_name: display.to_string(),
+            handle: handle.to_string(),
+            presence: PresenceState::Here,
+        }
+    }
+
+    /// Set the textarea value, position the caret at end-of-value, and
+    /// dispatch an `input` event so the composer's `on:input` handler
+    /// observes the caret + value pair the same way a real keypress
+    /// would deliver.
+    fn type_at_end(textarea: &web_sys::HtmlTextAreaElement, value: &str) {
+        textarea.set_value(value);
+        let len = value.chars().count() as u32;
+        let _ = textarea.set_selection_range(len, len);
+        let ev = web_sys::InputEvent::new("input").unwrap();
+        textarea
+            .dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&ev)
+            .unwrap();
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_mention_popover_opens_on_at_at_word_boundary() {
+        reset_shell();
+        let candidates: Signal<Vec<MentionCandidate>> = Signal::derive(|| {
+            vec![
+                make_candidate("alice.forest.1", "Alice"),
+                make_candidate("bob.river.2", "Bob"),
+            ]
+        });
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    mention_candidates=candidates
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_at_end(&ta, "@a");
+        tick().await;
+
+        let popover = query(&container, ".mention-popover")
+            .expect(".mention-popover must render when @ is typed at word boundary");
+        let rows = popover.query_selector_all(".mention-popover__row").unwrap();
+        assert!(
+            rows.length() >= 1,
+            "popover must list at least the matching candidate, got {}",
+            rows.length()
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_mention_popover_closed_when_at_inside_word() {
+        reset_shell();
+        let candidates: Signal<Vec<MentionCandidate>> =
+            Signal::derive(|| vec![make_candidate("alice.forest.1", "Alice")]);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    mention_candidates=candidates
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        // `@` after `foo` (no whitespace before) is an email-like
+        // fragment, not a mention — popover must stay closed.
+        type_at_end(&ta, "foo@a");
+        tick().await;
+
+        assert!(
+            query(&container, ".mention-popover").is_none(),
+            ".mention-popover must NOT render when @ is preceded by a non-whitespace glyph"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_mention_popover_filters_on_query() {
+        reset_shell();
+        let candidates: Signal<Vec<MentionCandidate>> = Signal::derive(|| {
+            vec![
+                make_candidate("alice.forest.1", "Alice"),
+                make_candidate("bob.river.2", "Bob"),
+            ]
+        });
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    mention_candidates=candidates
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_at_end(&ta, "@a");
+        tick().await;
+
+        let popover = query(&container, ".mention-popover").expect(".mention-popover must render");
+        let rows = popover.query_selector_all(".mention-popover__row").unwrap();
+        assert_eq!(
+            rows.length(),
+            1,
+            "prefix `a` must filter to only `alice`, got {}",
+            rows.length()
+        );
+        let row = rows.item(0).unwrap();
+        let text_content = row.text_content().unwrap_or_default();
+        assert!(
+            text_content.contains("Alice") && text_content.contains("@alice.forest.1"),
+            "filtered row must show alice's display name + handle, got {text_content:?}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_mention_popover_arrow_navigation_wraps() {
+        reset_shell();
+        let candidates: Signal<Vec<MentionCandidate>> = Signal::derive(|| {
+            vec![
+                make_candidate("alice", "Alice"),
+                make_candidate("bob", "Bob"),
+                make_candidate("cy", "Cy"),
+            ]
+        });
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    mention_candidates=candidates
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        // Empty query — popover lists all candidates alphabetical by
+        // handle (alice, bob, cy).
+        type_at_end(&ta, "@");
+        tick().await;
+
+        let popover = query(&container, ".mention-popover").expect(".mention-popover must render");
+        let rows = popover.query_selector_all(".mention-popover__row").unwrap();
+        assert_eq!(rows.length(), 3, "all three candidates must be listed");
+
+        let target = ta.dyn_ref::<web_sys::EventTarget>().unwrap();
+
+        // Initial selection is index 0 (alice).
+        let row0 = rows.item(0).unwrap();
+        assert!(
+            row0.dyn_ref::<web_sys::Element>()
+                .unwrap()
+                .class_list()
+                .contains("mention-popover__row--selected"),
+            "initial selected row must be index 0"
+        );
+
+        // Two ArrowDowns → index 2 (cy).
+        let down1 = make_key_event("keydown", "ArrowDown", false, false, false);
+        dispatch(target, &down1);
+        tick().await;
+        let down2 = make_key_event("keydown", "ArrowDown", false, false, false);
+        dispatch(target, &down2);
+        tick().await;
+        let popover_now = query(&container, ".mention-popover").unwrap();
+        let rows_now = popover_now
+            .query_selector_all(".mention-popover__row")
+            .unwrap();
+        let row2 = rows_now.item(2).unwrap();
+        assert!(
+            row2.dyn_ref::<web_sys::Element>()
+                .unwrap()
+                .class_list()
+                .contains("mention-popover__row--selected"),
+            "after two ArrowDowns selection must be at index 2"
+        );
+
+        // One more ArrowDown wraps back to 0.
+        let down3 = make_key_event("keydown", "ArrowDown", false, false, false);
+        dispatch(target, &down3);
+        tick().await;
+        let row0_now = query(&container, ".mention-popover")
+            .unwrap()
+            .query_selector_all(".mention-popover__row")
+            .unwrap()
+            .item(0)
+            .unwrap();
+        assert!(
+            row0_now
+                .dyn_ref::<web_sys::Element>()
+                .unwrap()
+                .class_list()
+                .contains("mention-popover__row--selected"),
+            "ArrowDown past the end must wrap selection back to index 0"
+        );
+
+        // ArrowUp from 0 wraps to last (index 2 = cy).
+        let up = make_key_event("keydown", "ArrowUp", false, false, false);
+        dispatch(target, &up);
+        tick().await;
+        let last = query(&container, ".mention-popover")
+            .unwrap()
+            .query_selector_all(".mention-popover__row")
+            .unwrap()
+            .item(2)
+            .unwrap();
+        assert!(
+            last.dyn_ref::<web_sys::Element>()
+                .unwrap()
+                .class_list()
+                .contains("mention-popover__row--selected"),
+            "ArrowUp from index 0 must wrap to the last row"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_mention_popover_enter_inserts_handle() {
+        reset_shell();
+        let candidates: Signal<Vec<MentionCandidate>> = Signal::derive(|| {
+            vec![
+                make_candidate("alice", "Alice"),
+                make_candidate("bob", "Bob"),
+            ]
+        });
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    mention_candidates=candidates
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_at_end(&ta, "@a");
+        tick().await;
+
+        // Selection defaults to index 0 (alice). Enter must consume
+        // the original `@` and splice `@alice ` into the buffer.
+        let target = ta.dyn_ref::<web_sys::EventTarget>().unwrap();
+        let enter = make_key_event("keydown", "Enter", false, false, false);
+        let prevented = dispatch(target, &enter);
+        tick().await;
+
+        assert!(
+            prevented,
+            "Enter while popover is open must call prevent_default \
+             so it doesn't fall through to the send path"
+        );
+        assert_eq!(
+            ta.value(),
+            "@alice ",
+            "selecting alice must replace `@a` with `@alice ` (handle + space)"
+        );
+        assert!(
+            query(&container, ".mention-popover").is_none(),
+            "popover must close after a successful selection"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_mention_popover_tab_inserts_handle() {
+        reset_shell();
+        let candidates: Signal<Vec<MentionCandidate>> =
+            Signal::derive(|| vec![make_candidate("bob", "Bob")]);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    mention_candidates=candidates
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_at_end(&ta, "hi @b");
+        tick().await;
+
+        let target = ta.dyn_ref::<web_sys::EventTarget>().unwrap();
+        let tab = make_key_event("keydown", "Tab", false, false, false);
+        let prevented = dispatch(target, &tab);
+        tick().await;
+
+        assert!(
+            prevented,
+            "Tab while popover is open must consume the keypress \
+             instead of inserting two spaces"
+        );
+        assert_eq!(
+            ta.value(),
+            "hi @bob ",
+            "Tab must commit the selected handle in place of `@b`"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_mention_popover_escape_closes_without_inserting() {
+        reset_shell();
+        let candidates: Signal<Vec<MentionCandidate>> =
+            Signal::derive(|| vec![make_candidate("alice", "Alice")]);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    mention_candidates=candidates
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_at_end(&ta, "@a");
+        tick().await;
+        assert!(
+            query(&container, ".mention-popover").is_some(),
+            "popover must be open before pressing Escape"
+        );
+
+        let target = ta.dyn_ref::<web_sys::EventTarget>().unwrap();
+        let esc = make_key_event("keydown", "Escape", false, false, false);
+        let prevented = dispatch(target, &esc);
+        tick().await;
+
+        assert!(
+            prevented,
+            "Escape while popover is open must call prevent_default \
+             — must NOT fall through to the edit/reply unwind path"
+        );
+        assert!(
+            query(&container, ".mention-popover").is_none(),
+            "Escape must dismiss the popover"
+        );
+        assert_eq!(
+            ta.value(),
+            "@a",
+            "Escape must leave the textarea content unchanged"
+        );
+    }
 }

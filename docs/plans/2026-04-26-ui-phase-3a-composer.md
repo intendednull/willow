@@ -126,7 +126,7 @@
 
 ### Phase F — mention autocomplete
 
-- [ ] **T13.** Implement `<MentionAutocomplete>` popover with anchored positioning, 8-row cap, and arrow/Enter/Tab/Esc handling. **Browser test:** AG-8. **Verify:** `just test-browser`.
+- [x] **T13.** Implement `<MentionAutocomplete>` popover with anchored positioning, 8-row cap, and arrow/Enter/Tab/Esc handling. **Browser test:** AG-8. **Verify:** `just test-browser`.
 
 - [ ] **T14.** Wire `@channel` row gated on `ManageChannels`. **Browser test:** AG-9. **Verify:** `just test-browser`.
 
