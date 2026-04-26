@@ -9564,6 +9564,25 @@ async fn phase_2e_recent_chip_has_listitem_role() {
 mod foundation_tokens {
     use super::*;
 
+    /// Strip `@import` rules from a CSS source. The headless Firefox
+    /// harness has no network access, and an `@import url(...)` pointing
+    /// at Google Fonts (the only `@import` we ship) stalls the entire
+    /// stylesheet's `CSSStyleSheet` until the fetch fails, leaving every
+    /// `:root` custom property unresolved under `getComputedStyle` while
+    /// the test runs. Fonts are irrelevant to token resolution, so we
+    /// drop those rules before injecting the sheet.
+    fn css_without_imports(src: &str) -> String {
+        let mut out = String::with_capacity(src.len());
+        for line in src.lines() {
+            if line.trim_start().starts_with("@import") {
+                continue;
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+        out
+    }
+
     /// Inject `foundation.css` into the test document once per page load
     /// so `:root` design tokens resolve under `getComputedStyle`. Dedupes
     /// via a fixed element id.
@@ -9575,7 +9594,9 @@ mod foundation_tokens {
         }
         let style = doc.create_element("style").unwrap();
         style.set_id(STYLE_ID);
-        style.set_text_content(Some(include_str!("../foundation.css")));
+        style.set_text_content(Some(&css_without_imports(include_str!(
+            "../foundation.css"
+        ))));
         let head = doc.head().expect("document has <head>");
         head.append_child(&style).unwrap();
     }
@@ -9591,7 +9612,7 @@ mod foundation_tokens {
         }
         let style = doc.create_element("style").unwrap();
         style.set_id(STYLE_ID);
-        style.set_text_content(Some(include_str!("../style.css")));
+        style.set_text_content(Some(&css_without_imports(include_str!("../style.css"))));
         let head = doc.head().expect("document has <head>");
         head.append_child(&style).unwrap();
     }
