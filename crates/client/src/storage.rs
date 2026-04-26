@@ -223,7 +223,6 @@ pub fn load_events(server_id: &str) -> Vec<willow_state::Event> {
         .unwrap_or_default()
 }
 
-
 // ---- EventStore backends removed ──────────────────────────────────────────
 // SqliteEventStore and LocalStorageEventStore were compat shim implementations
 // of the legacy EventStore trait. They are dead code — PersistenceActor uses

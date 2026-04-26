@@ -116,7 +116,12 @@ impl NicknameStore for WebNicknameStore {
     fn snapshot(&self) -> Vec<(String, String)> {
         self.inner
             .lock()
-            .map(|g| g.cache.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .map(|g| {
+                g.cache
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 }
