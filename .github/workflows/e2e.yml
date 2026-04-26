@@ -42,6 +42,7 @@ jobs:
 
       - name: Run full E2E flow (setup + tests + teardown)
         id: e2e
+        shell: bash --noprofile --norc -eo pipefail {0}
         run: just test-e2e-full 2>&1 | tee /tmp/e2e.log
       - name: Surface E2E failure
         if: failure() && steps.e2e.conclusion == 'failure'
