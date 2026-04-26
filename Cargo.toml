@@ -24,11 +24,11 @@ futures = "0.3"
 
 # Crypto & Networking
 zeroize = { version = "1", features = ["derive"] }
-iroh = "0.97"
-iroh-base = "0.97"
-iroh-gossip = "0.97"
-iroh-blobs = "0.99"
-iroh-relay = "0.97"
+iroh = "0.98"
+iroh-base = "0.98"
+iroh-gossip = "0.98"
+iroh-blobs = "0.100"
+iroh-relay = "0.98"
 async-trait = "0.1"
 bytes = "1"
 blake3 = "1"
