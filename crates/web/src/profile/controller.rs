@@ -46,7 +46,7 @@ pub fn use_profile_controller() -> (
     let write = use_context::<crate::state::AppWriteSignals>().expect("AppWriteSignals in context");
     let read_sig = app_state.profile.open;
     let write_sig = write.profile.set_open;
-    install_listeners_once(write_sig);
+    install_listeners_once(read_sig, write_sig);
     (read_sig, write_sig)
 }
 
@@ -55,7 +55,10 @@ pub fn use_profile_controller() -> (
 /// Idempotent — the helper tags `<body data-profile-bus="mounted">`
 /// so repeat calls are no-ops. In practice the root `<App>` calls
 /// [`use_profile_controller`] once, which calls this helper once.
-fn install_listeners_once(set_open: WriteSignal<Option<ProfileState>>) {
+fn install_listeners_once(
+    open: ReadSignal<Option<ProfileState>>,
+    set_open: WriteSignal<Option<ProfileState>>,
+) {
     let Some(win) = web_sys::window() else { return };
     let body = match win.document().and_then(|d| d.body()) {
         Some(b) => b,
@@ -110,10 +113,10 @@ fn install_listeners_once(set_open: WriteSignal<Option<ProfileState>>) {
         .ok();
     on_close.forget();
 
-    // ESCAPE — close on Escape anywhere.
+    // ESCAPE — close on Escape, but only when a profile is actually open.
     let on_esc = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
         if let Ok(ke) = ev.dyn_into::<web_sys::KeyboardEvent>() {
-            if ke.key() == "Escape" {
+            if ke.key() == "Escape" && open.with(Option::is_some) {
                 set_open.set(None);
             }
         }
