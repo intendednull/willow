@@ -6,7 +6,7 @@
 //! the web crate ships the `WebNicknameStore` impl.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex};
 
 /// Cap on nickname length in UTF-8 characters. Spec §Private nickname.
 pub const NICKNAME_CAP: usize = 32;
@@ -17,6 +17,11 @@ pub const NICKNAME_CAP: usize = 32;
 /// the session (e.g. localStorage on web, on-disk file natively). The
 /// `version` counter increments on every successful mutation so
 /// reactive UIs can bump a signal.
+///
+/// **State management:** the trait API is sync, which forces lock-based
+/// impls. Trait elimination in favour of a `NicknameActor` is tracked
+/// in `docs/specs/2026-04-26-state-management-model-design.md`
+/// § Follow-up work F1.
 pub trait NicknameStore: Send + Sync {
     /// Return the stored nickname for `peer_id`, or `None`.
     fn get(&self, peer_id: &str) -> Option<String>;
@@ -33,16 +38,27 @@ pub trait NicknameStore: Send + Sync {
 /// Handle type matching the `TrustStoreHandle` shape.
 pub type NicknameStoreHandle = Arc<dyn NicknameStore>;
 
+/// Inner state carried under the [`MemNicknameStore`] guard. Held as
+/// a single unit so cache writes and version bumps are atomic.
+#[derive(Default)]
+struct MemNicknameInner {
+    map: HashMap<String, String>,
+    version: u64,
+}
+
 /// In-memory implementation for tests + native builds.
 #[derive(Default)]
 pub struct MemNicknameStore {
-    inner: RwLock<HashMap<String, String>>,
-    version: RwLock<u64>,
+    // state: lock-ok — `NicknameStore` trait is sync; trait elimination
+    // tracked in docs/specs/2026-04-26-state-management-model-design.md
+    // § Follow-up work F1. Single guard preserves atomicity between the
+    // cache write and the version bump.
+    inner: Mutex<MemNicknameInner>,
 }
 
 impl NicknameStore for MemNicknameStore {
     fn get(&self, peer_id: &str) -> Option<String> {
-        self.inner.read().ok()?.get(peer_id).cloned()
+        self.inner.lock().ok()?.map.get(peer_id).cloned()
     }
 
     fn set(&self, peer_id: &str, value: &str) {
@@ -51,34 +67,28 @@ impl NicknameStore for MemNicknameStore {
             self.clear(peer_id);
             return;
         }
-        if let Ok(mut guard) = self.inner.write() {
-            guard.insert(peer_id.to_string(), trimmed);
-        }
-        if let Ok(mut v) = self.version.write() {
-            *v += 1;
+        if let Ok(mut guard) = self.inner.lock() {
+            guard.map.insert(peer_id.to_string(), trimmed);
+            guard.version += 1;
         }
     }
 
     fn clear(&self, peer_id: &str) {
-        let mut did_remove = false;
-        if let Ok(mut guard) = self.inner.write() {
-            did_remove = guard.remove(peer_id).is_some();
-        }
-        if did_remove {
-            if let Ok(mut v) = self.version.write() {
-                *v += 1;
+        if let Ok(mut guard) = self.inner.lock() {
+            if guard.map.remove(peer_id).is_some() {
+                guard.version += 1;
             }
         }
     }
 
     fn version(&self) -> u64 {
-        self.version.read().map(|g| *g).unwrap_or(0)
+        self.inner.lock().map(|g| g.version).unwrap_or(0)
     }
 
     fn snapshot(&self) -> Vec<(String, String)> {
         self.inner
-            .read()
-            .map(|g| g.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .lock()
+            .map(|g| g.map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
             .unwrap_or_default()
     }
 }
@@ -126,6 +136,17 @@ mod tests {
         let v2 = s.version();
         assert!(v1 > v0);
         assert!(v2 > v1);
+    }
+
+    #[test]
+    fn mem_store_clear_missing_does_not_bump_version() {
+        // Pin the no-op-clear semantics: clearing a key that was never
+        // set must not increment the version counter, otherwise
+        // reactive UIs would re-pull spuriously.
+        let s = MemNicknameStore::default();
+        let v0 = s.version();
+        s.clear("never_set");
+        assert_eq!(s.version(), v0);
     }
 
     #[test]

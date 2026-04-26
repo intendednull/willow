@@ -126,6 +126,15 @@ fn new_client() -> WebClientHandle {
         relay_addr: Some(relay_url),
         ..ClientConfig::default()
     };
+    // `_event_loop` (which owns the actor `System`) is dropped here, but
+    // tracked actors continue running because their `Addr` clones survive
+    // inside `ClientHandle`. See `crates/actor/src/system.rs` — "Dropping
+    // the System without calling shutdown() will stop the system actor,
+    // but tracked actors will continue running until their addresses are
+    // dropped." On web the runtime is process-scoped (page reload tears
+    // everything down), so no graceful `System::shutdown()` is needed.
+    // If a future actor needs `stopped()` cleanup that *must* run before
+    // page close, route it via `beforeunload` rather than relying on Drop.
     let (handle, _event_loop) = ClientHandle::<willow_network::iroh::IrohNetwork>::new(config);
     SendWrapper::new(handle)
 }
@@ -164,9 +173,15 @@ pub fn App() -> impl IntoView {
     // `local-search.md` §Index — recents + config do persist via
     // `crate::storage` but the inverted index itself is rebuilt per
     // session.
-    let search_index = willow_client::SearchIndexHandle::new();
+    let search_index = willow_client::SearchIndexHandle::new(handle.system());
     // Seed recents from config so the empty-state chips render on boot.
-    write.search.set_recents.set(search_index.recents());
+    {
+        let search_index = search_index.clone();
+        let set_recents = write.search.set_recents;
+        leptos::task::spawn_local(async move {
+            set_recents.set(search_index.recents().await);
+        });
+    }
     provide_context(search_index.clone());
 
     // Phase 2c — local-only nickname store. Loaded from localStorage on
@@ -336,7 +351,7 @@ pub fn App() -> impl IntoView {
     }
 
     // Wire derived signals that auto-update from state actor changes.
-    crate::state::wire_derived_signals(&handle, handle.actor_system(), &write);
+    crate::state::wire_derived_signals(&handle, handle.system(), &write);
 
     // Install global keybindings (palette toggle, Esc close-stack,
     // Alt+↑ / Alt+↓ grove switch, `/` focus + ⌘F scope-flip for search).
@@ -397,8 +412,14 @@ pub fn App() -> impl IntoView {
             // noise — we keep the read so the effect subscribes in case
             // a later phase filters by author presence.
             let _ = local_peer;
-            search.rebuild(indexable);
-            write_local.search.set_status.set(search.status());
+            let search = search.clone();
+            let set_status = write_local.search.set_status;
+            leptos::task::spawn_local(async move {
+                search.rebuild(indexable).await;
+                // `Rebuild` always settles status to `Idle` before the
+                // future resolves; no need for a second round-trip.
+                set_status.set(willow_client::SearchIndexBuildStatus::Idle);
+            });
         });
     }
 

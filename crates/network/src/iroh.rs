@@ -62,6 +62,12 @@ pub struct Config {
 /// This is a simple implementation suitable for ephemeral usage.
 /// A persistent store can be swapped in later.
 pub struct IrohBlobStore {
+    // state: lock-ok — interim in-memory stub for the
+    // `crate::traits::BlobStore` async trait. A persistent backend
+    // (sled / sqlite / iroh-blobs store) will replace this; the lock
+    // surface goes away with that swap. Not actor-migrated because
+    // the stub itself is throwaway. The annotation here is a "this
+    // exists pending replacement", not an iroh-callback boundary.
     store: Mutex<HashMap<crate::BlobHash, Bytes>>,
 }
 
@@ -105,6 +111,9 @@ impl BlobStore for IrohBlobStore {
 #[derive(Clone)]
 pub struct IrohTopicHandle {
     sender: GossipSender,
+    // state: lock-ok — neighbor list is mutated from the iroh gossip event
+    // callback (see IrohTopicEvents::next) which runs outside any actor loop.
+    // The handle is a sync read API mirrored to topic events.
     receiver_neighbors: std::sync::Arc<std::sync::RwLock<Vec<EndpointId>>>,
 }
 
@@ -130,6 +139,9 @@ impl TopicHandle for IrohTopicHandle {
 /// Stream of gossip events for a topic, wrapping [`GossipReceiver`].
 pub struct IrohTopicEvents {
     receiver: GossipReceiver,
+    // state: lock-ok — shared with IrohTopicHandle::receiver_neighbors so the
+    // sync neighbors() API sees updates from this event loop. iroh's event
+    // callback is the boundary that forces the lock.
     neighbors: std::sync::Arc<std::sync::RwLock<Vec<EndpointId>>>,
 }
 
@@ -194,7 +206,11 @@ pub struct IrohNetwork {
     endpoint: Endpoint,
     gossip: iroh_gossip::Gossip,
     blob_store: IrohBlobStore,
+    // state: lock-ok — iroh Router has a sync lifecycle API (start/shutdown)
+    // and Network trait methods are &self; no actor loop owns the router.
     router: Mutex<Option<Router>>,
+    // state: lock-ok — subscribe/unsubscribe are sync entry points on the
+    // Network trait, called from many call sites without a coordinating actor.
     subscriptions: Mutex<HashMap<TopicId, TopicSubscription>>,
     /// Bootstrap peers merged into every topic subscription.
     bootstrap_peers: Vec<EndpointId>,
@@ -212,6 +228,8 @@ pub struct IrohNetwork {
     /// Instant at which the boot-time online signal was observed (native
     /// only). Used by Phase 2b Task 7 to decide whether the 30 s
     /// `Reachable` window has elapsed.
+    // state: lock-ok — written once when the boot online signal resolves,
+    // read from sync `relay_status()`. No actor mediates this boundary.
     #[cfg(not(target_arch = "wasm32"))]
     relay_online_since: Mutex<Option<Instant>>,
 }

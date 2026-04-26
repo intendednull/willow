@@ -218,6 +218,9 @@ pub struct ClientHandle<N: willow_network::Network> {
     /// The network backend, set after [`connect()`](ClientHandle::connect).
     pub(crate) network: Option<Arc<N>>,
     /// Maps topic string names to their `N::Topic` handles for broadcasting.
+    // state: lock-ok — actor migration tracked in
+    // docs/specs/2026-04-26-state-management-model-design.md § 4 and § F4.
+    // Single guard, generic over `N::Topic`; deferred to keep this PR scoped.
     pub(crate) topics: Arc<RwLock<HashMap<String, N::Topic>>>,
     /// Broker for pub/sub [`ClientEvent`] distribution to subscribers.
     pub(crate) event_broker: willow_actor::Addr<willow_actor::Broker<ClientEvent>>,
@@ -258,6 +261,9 @@ pub struct ClientHandle<N: willow_network::Network> {
     ///
     /// Uses `parking_lot::Mutex` so a panic while holding the guard does
     /// not poison the lock and take down every future caller (issue #114).
+    // state: lock-ok — actor migration tracked in
+    // docs/specs/2026-04-26-state-management-model-design.md § 4 and § F4.
+    // Single guard; deferred to keep this PR scoped.
     pub(crate) join_links: Arc<parking_lot::Mutex<Vec<ops::JoinLink>>>,
     /// Bootstrap peers for gossip topic subscriptions.
     pub bootstrap_peers: Vec<willow_identity::EndpointId>,
@@ -307,6 +313,15 @@ impl<N: willow_network::Network> Clone for ClientHandle<N> {
 }
 
 impl<N: willow_network::Network> ClientHandle<N> {
+    /// Access the underlying actor system handle.
+    ///
+    /// Used by external owners (e.g. the web crate's
+    /// [`SearchIndexHandle`](crate::SearchIndexHandle)) that need to
+    /// spawn their own actors into the same runtime.
+    pub fn system(&self) -> &willow_actor::SystemHandle {
+        &self.system
+    }
+
     /// Access reactive state views at any granularity.
     pub fn views(&self) -> &views::ClientViewHandle {
         &self.view_handle
@@ -559,12 +574,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
 
         let mut state = ClientState::new(identity.endpoint_id());
 
-        // Open message database.
-        if config.persistence {
-            if let Some(db) = storage::open_message_db() {
-                state.message_db = Some(std::sync::Arc::new(std::sync::Mutex::new(db)));
-            }
-        }
+        // Persistence is owned by `PersistenceActor` (see persistence_actor.rs);
+        // no client-handle-level message database exists.
 
         // Load servers. Try multi-server list first, fall back to legacy single server.
         let server_ids = storage::load_server_list();

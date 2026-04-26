@@ -119,6 +119,11 @@ pub struct ComparePreview {
 
 /// Local trust-store interface. `Send + Sync` so the UI can share it
 /// across Leptos effects and `wasm_bindgen_futures::spawn_local`.
+///
+/// **State management:** the trait API is sync, which forces lock-based
+/// impls. Trait elimination in favour of a `TrustActor` is tracked
+/// in `docs/specs/2026-04-26-state-management-model-design.md`
+/// § Follow-up work F1.
 pub trait TrustStore: Send + Sync {
     /// Read the trust belief for a peer. Returns [`PeerTrust::Unknown`]
     /// for any peer the store has not seen.
@@ -146,6 +151,17 @@ pub type TrustStoreHandle = Arc<dyn TrustStore>;
 /// Persists nothing. Safe to clone.
 #[derive(Debug, Default)]
 pub struct InMemoryTrustStore {
+    // state: lock-ok — `TrustStore` trait is sync; trait elimination
+    // tracked in docs/specs/2026-04-26-state-management-model-design.md
+    // § Follow-up work F1. `InMemoryState` already groups peers + version
+    // under one guard, so cross-field atomicity is intact.
+    //
+    // Poison policy: panic on poison (see `.expect(...)` below).
+    // Trust state is security-critical — silently degrading to
+    // `Unknown` would downgrade verified peers, which is unsafe.
+    // Fail-fast keeps a programming error visible. The `NicknameStore`
+    // counterpart degrades gracefully because nickname loss is a UX
+    // concern, not a security one.
     inner: std::sync::Mutex<InMemoryState>,
 }
 

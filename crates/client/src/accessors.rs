@@ -6,10 +6,6 @@ impl<N: willow_network::Network> ClientHandle<N> {
         self.identity.clone()
     }
 
-    pub fn actor_system(&self) -> &willow_actor::SystemHandle {
-        &self.system
-    }
-
     /// Subscribe to client events.
     pub async fn subscribe_events(&self) -> crate::EventReceiver {
         crate::EventReceiver::subscribe(&self.event_broker, &self.system).await

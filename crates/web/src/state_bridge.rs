@@ -20,6 +20,14 @@ pub struct DerivedStateActor<T: Send + Sync + 'static, U: PartialEq + Clone + Se
 {
     source: StateRef<T>,
     selector: Arc<dyn Fn(&T) -> U + Send + Sync>,
+    // state: lock-ok — cross-await dedup cache. The actor mailbox
+    // serializes `Handler<Notify>::handle` invocations, so handle-vs-
+    // handle contention is impossible. The actual race window is
+    // `started()` seeding `cached` (its own future) vs the first
+    // `Notify` arriving before that seed completes — a one-extra-`set()`
+    // worst case that doesn't break correctness. Alternative shapes
+    // (Leptos `Resource`, full StateActor) tracked in
+    // docs/specs/2026-04-26-state-management-model-design.md § Follow-up F2.
     cached: Arc<Mutex<Option<U>>>,
     write: SendWrapper<WriteSignal<U>>,
 }
