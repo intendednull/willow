@@ -548,3 +548,31 @@ correct participant set.
 - **Consent-prompt timeout.** 10 s to grey out a non-responding
   invitee is a guess; may need to be longer on mobile. Revisit
   during the plan.
+
+## Auto-archive
+
+Whispers are non-permanent surfaces and inherit the auto-archive
+mechanic defined in
+[`ephemeral-channels.md`](ephemeral-channels.md). Specifics for
+whispers:
+
+- **Default idle threshold:** 24 hours.
+- **Kind chip:** the `whisper` chip from `kind_chip.rs` renders
+  on the whisper row in the peer's profile card.
+- **Archive surface:** archived whispers **never** appear in the
+  global grove archives surface (peer-scoped, not grove-scoped).
+  They appear only inside the originating peer's profile card
+  under a `recent whispers` section. This applies even when the
+  whisper occurred in the context of a grove channel — the
+  artifact still belongs to the peers, not the grove.
+- **Revive:** posting in the whisper (implicit revive) or tapping
+  `revive` from the profile-card list. Same `ChannelRevive`
+  event.
+- **Two-peer offline.** The 24-hour HLC clock keeps ticking even
+  when one peer is offline. The offline peer, on reconnect, sees
+  the whisper in their profile-card archives section rather than
+  as an active surface; posting from either peer revives it for
+  both on next sync.
+
+See `ephemeral-channels.md` §Inactivity ladder for band
+definitions and §Spawn flows §Whisper for the entry point.

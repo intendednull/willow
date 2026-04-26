@@ -392,11 +392,41 @@ pub fn ProfileCardContent(
                         set_editing_for_click.set(true);
                         let _ = &view_for_nick_click;
                     };
+                    // Phase 2d ad-hoc spawn — `start temp channel…` from the
+                    // profile card. Mirrors the member-list entry; same v1
+                    // cut on member-seeding (defer to manual AddMember).
+                    let view_for_temp = view;
+                    let on_close_for_temp = on_close;
+                    let on_start_temp_channel = move |_| {
+                        let pid = view_for_temp.get().peer_id.clone();
+                        let short: String = pid.chars().take(6).collect();
+                        let name = format!("side-{short}");
+                        if let Some(handle) = use_context::<crate::app::WebClientHandle>() {
+                            wasm_bindgen_futures::spawn_local(async move {
+                                let _ = handle
+                                    .create_ephemeral_channel(
+                                        &name,
+                                        willow_state::EphemeralKind::Channel,
+                                        willow_state::DEFAULT_CHANNEL_THRESHOLD_MS,
+                                    )
+                                    .await;
+                            });
+                        }
+                        on_close_for_temp.run(());
+                    };
                     view! {
                         <div class="profile-card__actions-secondary">
                             <button class="profile-card__link" type="button"
                                     on:click=on_copy_fingerprint>
                                 {pcopy::COPY_FINGERPRINT}
+                            </button>
+                            <button
+                                class="profile-card__link profile-card__link--start-temp"
+                                type="button"
+                                aria-label="start temp channel"
+                                on:click=on_start_temp_channel
+                            >
+                                "start temp channel…"
                             </button>
                             {move || (!editing_nickname.get()).then(|| view! {
                                 <button

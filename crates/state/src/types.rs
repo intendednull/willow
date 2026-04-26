@@ -36,6 +36,18 @@ pub struct Channel {
     /// Text or voice.
     #[serde(default)]
     pub kind: ChannelKind,
+    /// `None` for permanent channels. When set, the channel is
+    /// non-permanent and auto-archives after `idle_threshold_ms` of
+    /// inactivity (see
+    /// `docs/specs/2026-04-19-ui-design/ephemeral-channels.md`).
+    #[serde(default)]
+    pub ephemeral: Option<crate::ephemeral::EphemeralConfig>,
+    /// Latest message HLC (physical millisecond, sourced from the
+    /// event's `timestamp_hint_ms`). `None` until the first message
+    /// lands. Tracked unconditionally — permanent channels carry it
+    /// too so the materialize branch stays simple.
+    #[serde(default)]
+    pub last_activity_hlc: Option<u64>,
 }
 
 /// A named bundle of permissions that can be assigned to members.

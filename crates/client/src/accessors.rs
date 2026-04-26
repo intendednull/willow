@@ -66,6 +66,26 @@ impl<N: willow_network::Network> ClientHandle<N> {
         view.channels.into_iter().map(|c| c.name).collect()
     }
 
+    /// Snapshot of the current materialized server state.
+    ///
+    /// Useful for assertion-style tests that need to inspect channel
+    /// metadata (kinds, ephemeral config, last-activity HLC).
+    pub async fn state_snapshot(&self) -> willow_state::ServerState {
+        let arc = willow_actor::state::get(&self.event_state_addr).await;
+        (*arc).clone()
+    }
+
+    /// Derive the archives view at the given frontier HLC (physical
+    /// milliseconds). Lists every ephemeral channel whose
+    /// `last_activity_hlc + idle_threshold_ms` is below the frontier.
+    ///
+    /// Spec: `docs/specs/2026-04-19-ui-design/ephemeral-channels.md`
+    /// §Archive surface.
+    pub async fn archives_view_at(&self, frontier_hlc_ms: u64) -> views::ArchivesView {
+        let arc = willow_actor::state::get(&self.event_state_addr).await;
+        views::derive_archives_view(&arc, frontier_hlc_ms)
+    }
+
     pub async fn event_messages(&self, channel_id: &str) -> Vec<willow_state::ChatMessage> {
         let cid = channel_id.to_string();
         let addr = self.event_state_addr.clone();

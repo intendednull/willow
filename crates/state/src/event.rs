@@ -99,6 +99,12 @@ pub enum EventKind {
         channel_id: String,
         #[serde(default)]
         kind: crate::types::ChannelKind,
+        /// `Some` when the channel is non-permanent (auto-archives
+        /// after the configured idle threshold). Absence means
+        /// permanent. See
+        /// `docs/specs/2026-04-19-ui-design/ephemeral-channels.md`.
+        #[serde(default)]
+        ephemeral: Option<crate::ephemeral::EphemeralConfig>,
     },
     /// Delete a channel by ID.
     DeleteChannel { channel_id: String },
@@ -107,6 +113,11 @@ pub enum EventKind {
         channel_id: String,
         new_name: String,
     },
+    /// Revive an auto-archived ephemeral channel without posting a
+    /// message. Author must be a member of the server (same gate as
+    /// `Message`), but no `SendMessages` permission is required —
+    /// a muted member can still un-archive a room they belong to.
+    ChannelRevive { channel_id: String },
     /// Create a new role.
     CreateRole { name: String, role_id: String },
     /// Delete a role by ID.

@@ -124,6 +124,25 @@ impl<N: willow_network::Network> ClientHandle<N> {
         self.mutation_handle.create_channel(name).await
     }
 
+    /// Create a non-permanent ("ephemeral") channel that
+    /// auto-archives after `idle_threshold_ms` of inactivity.
+    pub async fn create_ephemeral_channel(
+        &self,
+        name: &str,
+        kind: willow_state::EphemeralKind,
+        idle_threshold_ms: u64,
+    ) -> anyhow::Result<()> {
+        self.mutation_handle
+            .create_ephemeral_channel(name, kind, idle_threshold_ms)
+            .await
+    }
+
+    /// Revive an auto-archived ephemeral channel by name without
+    /// posting a message.
+    pub async fn revive_channel(&self, name: &str) -> anyhow::Result<()> {
+        self.mutation_handle.revive_channel(name).await
+    }
+
     pub async fn create_voice_channel(&self, name: &str) -> anyhow::Result<()> {
         let name = name.to_string();
         let ch_id_str = uuid::Uuid::new_v4().to_string();
@@ -133,6 +152,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 name,
                 channel_id: ch_id_str,
                 kind: willow_state::ChannelKind::Voice,
+                ephemeral: None,
             })
             .await?;
         self.mutation_handle.apply_event(&event).await;

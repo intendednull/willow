@@ -306,6 +306,9 @@ fn required_permission(kind: &EventKind) -> Option<Permission> {
         //                         is the only identity check)
         //   PinMessage,
         //   UnpinMessage        — unrestricted (any member)
+        //   ChannelRevive       — membership check lives in apply_mutation
+        //                         (does not require SendMessages so a muted
+        //                         member can still un-archive)
         //   MuteChannel,
         //   MuteGrove           — per-identity preference, never gated
         //
@@ -324,12 +327,28 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
             name,
             channel_id,
             kind,
+            ephemeral,
         } => {
             if name.chars().count() > 100 {
                 return ApplyResult::Rejected(format!(
                     "channel name exceeds 100 chars ({} chars)",
                     name.chars().count()
                 ));
+            }
+            // Bound check on idle threshold — `[1h, 90d]`. Reject
+            // out-of-range events so the wire cap and the create
+            // dialog clamp share the same enforcement.
+            if let Some(cfg) = ephemeral.as_ref() {
+                if cfg.idle_threshold_ms < crate::ephemeral::IDLE_THRESHOLD_MIN_MS
+                    || cfg.idle_threshold_ms > crate::ephemeral::IDLE_THRESHOLD_MAX_MS
+                {
+                    return ApplyResult::Rejected(format!(
+                        "ephemeral idle_threshold_ms {} out of range [{}, {}]",
+                        cfg.idle_threshold_ms,
+                        crate::ephemeral::IDLE_THRESHOLD_MIN_MS,
+                        crate::ephemeral::IDLE_THRESHOLD_MAX_MS,
+                    ));
+                }
             }
             if !state.channels.contains_key(channel_id) {
                 state.channels.insert(
@@ -339,6 +358,8 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
                         name: name.clone(),
                         pinned_messages: BTreeSet::new(),
                         kind: kind.clone(),
+                        ephemeral: ephemeral.clone(),
+                        last_activity_hlc: None,
                     },
                 );
             }
@@ -460,6 +481,13 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
                 reply_to: *reply_to,
             });
             state.message_index.insert(event.hash, idx);
+            // Advance the channel's last_activity_hlc on every Message.
+            // Tracked unconditionally — permanent channels carry it too —
+            // so the branch stays simple and a future feature can reuse
+            // it. Spec: ephemeral-channels.md §Inactivity ladder.
+            if let Some(ch) = state.channels.get_mut(channel_id) {
+                ch.last_activity_hlc = Some(event.timestamp_hint_ms);
+            }
         }
 
         EventKind::EditMessage {
@@ -618,6 +646,31 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
             }
         }
 
+        EventKind::ChannelRevive { channel_id } => {
+            // Member gate — same contract as Message emission, but
+            // without the SendMessages permission requirement. A
+            // muted member can still revive a channel they belong to,
+            // even if they cannot post.
+            if !state.members.contains_key(&event.author) {
+                return ApplyResult::Rejected(format!(
+                    "ChannelRevive: author '{}' is not a member",
+                    event.author,
+                ));
+            }
+            let ch = match state.channels.get_mut(channel_id) {
+                Some(ch) => ch,
+                None => {
+                    return ApplyResult::Rejected(format!(
+                        "ChannelRevive: channel '{channel_id}' not found"
+                    ));
+                }
+            };
+            // Idempotent on already-active channels — still advances
+            // last_activity_hlc, which is a harmless no-op when the
+            // channel was already active.
+            ch.last_activity_hlc = Some(event.timestamp_hint_ms);
+        }
+
         EventKind::RenameServer { new_name } => {
             if new_name.chars().count() > 100 {
                 return ApplyResult::Rejected(format!(
@@ -718,6 +771,7 @@ mod tests {
                 name: "general".into(),
                 channel_id: "ch-1".into(),
                 kind: crate::types::ChannelKind::Text,
+                ephemeral: None,
             },
         );
         let state = materialize(&dag);
@@ -758,6 +812,7 @@ mod tests {
                 name: "evil".into(),
                 channel_id: "ch-evil".into(),
                 kind: crate::types::ChannelKind::Text,
+                ephemeral: None,
             },
         );
         let state = materialize(&dag);
@@ -787,6 +842,7 @@ mod tests {
                 name: "general".into(),
                 channel_id: "ch-1".into(),
                 kind: crate::types::ChannelKind::Text,
+                ephemeral: None,
             },
         );
         let state = materialize(&dag);
@@ -969,6 +1025,7 @@ mod tests {
                 name: "doomed".into(),
                 channel_id: "ch-d".into(),
                 kind: crate::types::ChannelKind::Text,
+                ephemeral: None,
             },
         );
         emit(
@@ -1417,6 +1474,7 @@ mod tests {
                 name: ok_name.clone(),
                 channel_id: "ch-ok".into(),
                 kind: crate::types::ChannelKind::Text,
+                ephemeral: None,
             },
         );
         // 101-char channel name rejected.
@@ -1427,6 +1485,7 @@ mod tests {
                 name: too_long.clone(),
                 channel_id: "ch-bad".into(),
                 kind: crate::types::ChannelKind::Text,
+                ephemeral: None,
             },
         );
 

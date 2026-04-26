@@ -762,6 +762,7 @@ mod tests {
                     channel_id: ch_id.into(),
                     name: ch_name.into(),
                     kind: crate::types::ChannelKind::Text,
+                    ephemeral: None,
                 },
                 vec![],
                 0,

@@ -64,6 +64,10 @@ mod tests_queue;
 #[path = "tests/profile_view.rs"]
 mod tests_profile_view;
 
+#[cfg(test)]
+#[path = "tests/ephemeral.rs"]
+mod tests_ephemeral;
+
 /// How long a typing indicator remains visible after the last typing event, in milliseconds.
 pub const TYPING_INDICATOR_TTL_MS: u64 = 5_000;
 
@@ -161,7 +165,10 @@ pub mod event_receiver {
     }
 }
 pub use state::{DisplayMessage, QueueNote};
-pub use views::{since_hint, ProfileDelta, ProfileView};
+pub use views::{
+    derive_archives_view, since_hint, ArchivedChannelSummary, ArchivesView, ProfileDelta,
+    ProfileView,
+};
 pub use willow_state::{CrestPattern, PinnedFragment, PinnedKind};
 
 // ClientState, ServerContext, ChatState, ProfileStore are used internally
@@ -978,6 +985,7 @@ pub fn test_client() -> (
                 channel_id: ch_id_str,
                 name: "general".to_string(),
                 kind: willow_state::ChannelKind::Text,
+                ephemeral: None,
             },
             0,
         )
@@ -1564,6 +1572,7 @@ mod tests {
             channel_id: uuid::Uuid::new_v4().to_string(),
             name: "dev".to_string(),
             kind: willow_state::ChannelKind::Text,
+            ephemeral: None,
         });
         let events = derive_client_events(&ev);
         assert_eq!(events.len(), 1);

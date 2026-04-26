@@ -125,6 +125,68 @@ pub struct ChannelInfo {
     pub kind: willow_state::ChannelKind,
 }
 
+/// One row in the archives surface — an ephemeral channel that has
+/// crossed its idle threshold and is no longer in the active sidebar.
+///
+/// Spec: `docs/specs/2026-04-19-ui-design/ephemeral-channels.md`
+/// §Archive surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchivedChannelSummary {
+    pub channel_id: String,
+    pub name: String,
+    pub kind: willow_state::EphemeralKind,
+    pub last_activity_ms: Option<u64>,
+    /// `last_activity + idle_threshold` — the moment the channel
+    /// crossed into archived. Used by the archives view to render
+    /// "archived after N units idle".
+    pub archived_at_ms: u64,
+}
+
+/// Everything the archives surface needs to render — list of
+/// auto-archived ephemeral channels, newest archive first.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ArchivesView {
+    pub entries: Vec<ArchivedChannelSummary>,
+}
+
+/// Pure derivation: enumerate the channels whose ephemeral band has
+/// crossed into [`willow_state::EphemeralState::Archived`] given the
+/// current frontier HLC. Newest archive first.
+pub fn derive_archives_view(
+    state: &willow_state::ServerState,
+    frontier_hlc_ms: u64,
+) -> ArchivesView {
+    let mut entries: Vec<ArchivedChannelSummary> = state
+        .channels
+        .values()
+        .filter_map(|ch| {
+            let cfg = ch.ephemeral.as_ref()?;
+            let band = willow_state::derive_ephemeral_state(
+                ch.last_activity_hlc,
+                cfg.idle_threshold_ms,
+                frontier_hlc_ms,
+            );
+            if band != willow_state::EphemeralState::Archived {
+                return None;
+            }
+            let archived_at = ch
+                .last_activity_hlc
+                .unwrap_or(0)
+                .saturating_add(cfg.idle_threshold_ms);
+            Some(ArchivedChannelSummary {
+                channel_id: ch.id.clone(),
+                name: ch.name.clone(),
+                kind: cfg.kind,
+                last_activity_ms: ch.last_activity_hlc,
+                archived_at_ms: archived_at,
+            })
+        })
+        .collect();
+    // Newest archive first.
+    entries.sort_by_key(|e| std::cmp::Reverse(e.archived_at_ms));
+    ArchivesView { entries }
+}
+
 /// Member list with online status.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MembersView {
@@ -1003,6 +1065,8 @@ mod tests {
                 name: name.into(),
                 pinned_messages: Default::default(),
                 kind: ChannelKind::Text,
+                ephemeral: None,
+                last_activity_hlc: None,
             },
         );
     }
