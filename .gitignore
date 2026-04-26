@@ -4,6 +4,7 @@ project/.obsidian/
 web/pkg/
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+.claude/worktrees/
 
 # Playwright
 node_modules/
