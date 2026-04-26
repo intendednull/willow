@@ -8,197 +8,137 @@
 //! never a log line that could leak search state.
 //!
 //! [`SearchIndexHandle`] is the clonable, thread-safe entry-point the
-//! UI and the client wire use. It wraps the non-`Clone` [`SearchIndex`]
-//! in an `Arc<Mutex<_>>` and exposes the verbs the UI needs: `insert`
-//! live messages, `rebuild` from a batch, `query` against a scope, plus
-//! config + recents + status accessors.
+//! UI and the client wire use. It wraps an [`Addr`] to a
+//! [`SearchActor`] (see [`super::actor`]). The actor owns the
+//! inverted index, config, recents, and build status as one unit;
+//! cross-field updates are atomic by mailbox serialization. See
+//! `docs/specs/2026-04-26-state-management-model-design.md` § State Management.
 
-use std::sync::Arc;
+use willow_actor::{Addr, SystemHandle};
 
-use parking_lot::Mutex;
-
+use super::actor::{
+    ClearAllRecents, ForgetRecent, GetConfig, GetRecents, GetStatus, Insert, MessageCount,
+    PushRecent, Query, Rebuild, RemoveChannel, RemoveGrove, RemoveMessage, SearchActor, SetConfig,
+};
 use super::config::{RecentQuery, SearchIndexConfig};
-use super::execute::{execute, SearchResult, SearchScope};
-use super::index::{IndexableMessage, SearchIndex};
+use super::execute::{SearchResult, SearchScope};
+use super::index::IndexableMessage;
 use super::query::SearchQuery;
 use super::status::SearchIndexBuildStatus;
 
 /// Clonable, `Send + Sync` entry-point to the local search index.
 #[derive(Clone)]
 pub struct SearchIndexHandle {
-    index: Arc<Mutex<SearchIndex>>,
-    config: Arc<Mutex<SearchIndexConfig>>,
-    recents: Arc<Mutex<Vec<RecentQuery>>>,
-    status: Arc<Mutex<SearchIndexBuildStatus>>,
-    /// `true` in production (config + recents writes hit
-    /// `crate::storage`); `false` under test (`new_in_memory()`) to
-    /// keep unit tests from stomping the shared data directory.
-    persist: bool,
+    addr: Addr<SearchActor>,
 }
 
 impl SearchIndexHandle {
     /// Build a handle, loading config + recents from persistent
     /// storage (via `crate::storage`). First-run callers get defaults.
-    pub fn new() -> Self {
+    pub fn new(system: &SystemHandle) -> Self {
         let config = crate::storage::load_search_config().unwrap_or_default();
         let recents = crate::storage::load_search_recents();
-        Self {
-            index: Arc::new(Mutex::new(SearchIndex::new())),
-            config: Arc::new(Mutex::new(config)),
-            recents: Arc::new(Mutex::new(recents)),
-            status: Arc::new(Mutex::new(SearchIndexBuildStatus::Idle)),
-            persist: true,
-        }
+        let addr = system.spawn(SearchActor::new(config, recents, true));
+        Self { addr }
     }
 
     /// Build a handle without touching `crate::storage`. Used by tests
     /// to avoid polluting the shared native data dir. Config + recents
     /// writes stay in memory for the lifetime of the handle.
-    pub fn new_in_memory() -> Self {
-        Self {
-            index: Arc::new(Mutex::new(SearchIndex::new())),
-            config: Arc::new(Mutex::new(SearchIndexConfig::default())),
-            recents: Arc::new(Mutex::new(Vec::new())),
-            status: Arc::new(Mutex::new(SearchIndexBuildStatus::Idle)),
-            persist: false,
-        }
+    pub fn new_in_memory(system: &SystemHandle) -> Self {
+        let addr = system.spawn(SearchActor::new(
+            SearchIndexConfig::default(),
+            Vec::new(),
+            false,
+        ));
+        Self { addr }
     }
 
     /// Insert one live message. Guarded on `enabled` + per-grove opt-out.
+    /// Fire-and-forget; ordering with subsequent reads is preserved by
+    /// the actor's FIFO mailbox.
     pub fn insert(&self, m: IndexableMessage) {
-        {
-            let cfg = self.config.lock();
-            if !cfg.enabled {
-                return;
-            }
-            if let Some(gid) = &m.grove_id {
-                if cfg.per_grove_enabled.get(gid).copied() == Some(false) {
-                    return;
-                }
-            }
-        }
-        self.index.lock().insert(m);
+        self.addr.do_send(Insert(m)).ok();
     }
 
-    /// Drop the current index and rebuild from `msgs`. Updates the
-    /// status signal so the UI can drive the streaming banner.
-    pub fn rebuild(&self, msgs: Vec<IndexableMessage>) {
-        let total = msgs.len() as u32;
-        *self.status.lock() = SearchIndexBuildStatus::Building;
-        let mut index = self.index.lock();
-        *index = SearchIndex::new();
-        for (i, m) in msgs.into_iter().enumerate() {
-            let skip = {
-                let cfg = self.config.lock();
-                if !cfg.enabled {
-                    true
-                } else if let Some(gid) = &m.grove_id {
-                    cfg.per_grove_enabled.get(gid).copied() == Some(false)
-                } else {
-                    false
-                }
-            };
-            if skip {
-                continue;
-            }
-            index.insert(m);
-            *self.status.lock() = SearchIndexBuildStatus::Indexing {
-                done: (i + 1) as u32,
-                total,
-            };
-        }
-        drop(index);
-        *self.status.lock() = SearchIndexBuildStatus::Idle;
+    /// Drop the current index and rebuild from `msgs`. Returns once the
+    /// rebuild is complete and `status` has settled back to `Idle`.
+    pub async fn rebuild(&self, msgs: Vec<IndexableMessage>) {
+        self.addr.ask(Rebuild(msgs)).await.ok();
     }
 
     /// Run a query against the index under `scope`.
     ///
     /// Returns hits in timestamp-desc order. Caller is expected to
     /// pre-parse with [`super::parse_query`].
-    pub fn query(&self, q: &SearchQuery, scope: &SearchScope) -> Vec<SearchResult> {
-        let index = self.index.lock();
-        execute(&index, q, scope)
+    pub async fn query(&self, q: &SearchQuery, scope: &SearchScope) -> Vec<SearchResult> {
+        self.addr
+            .ask(Query {
+                q: q.clone(),
+                scope: scope.clone(),
+            })
+            .await
+            .unwrap_or_default()
     }
 
     /// Remove one message by id. Called from the incremental-update
     /// path when a message is deleted.
     pub fn remove_message(&self, id: &str) {
-        self.index.lock().remove_message(id);
+        self.addr.do_send(RemoveMessage(id.to_string())).ok();
     }
 
     /// Remove everything in a channel — channel deletion / per-grove
     /// opt-out pipes here.
     pub fn remove_channel(&self, cid: &str) {
-        self.index.lock().remove_channel(cid);
+        self.addr.do_send(RemoveChannel(cid.to_string())).ok();
     }
 
     /// Remove everything in a grove — per-grove opt-out pipes here
     /// when the toggle flips off.
     pub fn remove_grove(&self, gid: &str) {
-        self.index.lock().remove_grove(gid);
+        self.addr.do_send(RemoveGrove(gid.to_string())).ok();
     }
 
     /// Current config snapshot.
-    pub fn config(&self) -> SearchIndexConfig {
-        self.config.lock().clone()
+    pub async fn config(&self) -> SearchIndexConfig {
+        self.addr.ask(GetConfig).await.unwrap_or_default()
     }
 
     /// Replace the config and persist. Called from settings-tweaks.md.
     pub fn set_config(&self, c: SearchIndexConfig) {
-        *self.config.lock() = c.clone();
-        if self.persist {
-            crate::storage::save_search_config(&c);
-        }
+        self.addr.do_send(SetConfig(c)).ok();
     }
 
     /// Current recents snapshot.
-    pub fn recents(&self) -> Vec<RecentQuery> {
-        self.recents.lock().clone()
+    pub async fn recents(&self) -> Vec<RecentQuery> {
+        self.addr.ask(GetRecents).await.unwrap_or_default()
     }
 
     /// Push a new recent; guarded on `config.remember_recents`.
     pub fn push_recent(&self, r: RecentQuery) {
-        if !self.config.lock().remember_recents {
-            return;
-        }
-        let mut list = self.recents.lock();
-        super::config::push_recent(&mut list, r);
-        if self.persist {
-            crate::storage::save_search_recents(&list);
-        }
+        self.addr.do_send(PushRecent(r)).ok();
     }
 
     /// Forget one recent by its text.
     pub fn forget_recent(&self, text: &str) {
-        let mut list = self.recents.lock();
-        super::config::forget_recent(&mut list, text);
-        if self.persist {
-            crate::storage::save_search_recents(&list);
-        }
+        self.addr.do_send(ForgetRecent(text.to_string())).ok();
     }
 
     /// Clear all recents.
     pub fn clear_all_recents(&self) {
-        let mut list = self.recents.lock();
-        super::config::clear_all_recents(&mut list);
-        if self.persist {
-            crate::storage::save_search_recents(&list);
-        }
+        self.addr.do_send(ClearAllRecents).ok();
     }
 
     /// Current build status.
-    pub fn status(&self) -> SearchIndexBuildStatus {
-        self.status.lock().clone()
+    pub async fn status(&self) -> SearchIndexBuildStatus {
+        self.addr
+            .ask(GetStatus)
+            .await
+            .unwrap_or(SearchIndexBuildStatus::Idle)
     }
 
     /// How many messages are indexed right now.
-    pub fn message_count(&self) -> usize {
-        self.index.lock().message_count()
-    }
-}
-
-impl Default for SearchIndexHandle {
-    fn default() -> Self {
-        Self::new()
+    pub async fn message_count(&self) -> usize {
+        self.addr.ask(MessageCount).await.unwrap_or(0)
     }
 }

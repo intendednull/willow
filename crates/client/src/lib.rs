@@ -300,6 +300,15 @@ impl<N: willow_network::Network> Clone for ClientHandle<N> {
 }
 
 impl<N: willow_network::Network> ClientHandle<N> {
+    /// Access the underlying actor system handle.
+    ///
+    /// Used by external owners (e.g. the web crate's
+    /// [`SearchIndexHandle`](crate::SearchIndexHandle)) that need to
+    /// spawn their own actors into the same runtime.
+    pub fn system(&self) -> &willow_actor::SystemHandle {
+        &self.system
+    }
+
     /// Access reactive state views at any granularity.
     pub fn views(&self) -> &views::ClientViewHandle {
         &self.view_handle

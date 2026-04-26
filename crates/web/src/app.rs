@@ -164,9 +164,15 @@ pub fn App() -> impl IntoView {
     // `local-search.md` §Index — recents + config do persist via
     // `crate::storage` but the inverted index itself is rebuilt per
     // session.
-    let search_index = willow_client::SearchIndexHandle::new();
+    let search_index = willow_client::SearchIndexHandle::new(handle.system());
     // Seed recents from config so the empty-state chips render on boot.
-    write.search.set_recents.set(search_index.recents());
+    {
+        let search_index = search_index.clone();
+        let set_recents = write.search.set_recents;
+        leptos::task::spawn_local(async move {
+            set_recents.set(search_index.recents().await);
+        });
+    }
     provide_context(search_index.clone());
 
     // Phase 2c — local-only nickname store. Loaded from localStorage on
@@ -397,8 +403,12 @@ pub fn App() -> impl IntoView {
             // noise — we keep the read so the effect subscribes in case
             // a later phase filters by author presence.
             let _ = local_peer;
-            search.rebuild(indexable);
-            write_local.search.set_status.set(search.status());
+            let search = search.clone();
+            let set_status = write_local.search.set_status;
+            leptos::task::spawn_local(async move {
+                search.rebuild(indexable).await;
+                set_status.set(search.status().await);
+            });
         });
     }
 

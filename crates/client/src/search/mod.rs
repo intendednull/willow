@@ -9,6 +9,7 @@
 //! Sub-modules land incrementally as the plan's tasks are ticked off.
 //! Today (Task 1): [`query`] only.
 
+pub mod actor;
 pub mod config;
 pub mod execute;
 pub mod handle;

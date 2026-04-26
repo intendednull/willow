@@ -3,6 +3,7 @@
 
 mod handle_tests {
     use super::super::*;
+    use willow_actor::System;
     use willow_identity::Identity;
 
     fn mk(id: &str, body: &str) -> IndexableMessage {
@@ -23,80 +24,101 @@ mod handle_tests {
         }
     }
 
-    #[test]
-    fn handle_insert_then_query() {
-        let h = SearchIndexHandle::new_in_memory();
+    /// Yield to the runtime so `do_send` messages drain through the
+    /// mailbox before the next assertion.
+    async fn drain() {
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_insert_then_query() {
+        let sys = System::new();
+        let h = SearchIndexHandle::new_in_memory(&sys.handle());
         h.insert(mk("m1", "hello world"));
+        drain().await;
         let q = parse_query("hello");
-        let hits = h.query(&q, &SearchScope::AllGrovesAndLetters);
+        let hits = h.query(&q, &SearchScope::AllGrovesAndLetters).await;
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].message_id, "m1");
     }
 
-    #[test]
-    fn handle_grove_opt_out_drops_inserts() {
-        let h = SearchIndexHandle::new_in_memory();
-        let mut cfg = h.config();
+    #[tokio::test]
+    async fn handle_grove_opt_out_drops_inserts() {
+        let sys = System::new();
+        let h = SearchIndexHandle::new_in_memory(&sys.handle());
+        let mut cfg = h.config().await;
         cfg.per_grove_enabled.insert("g0".into(), false);
         h.set_config(cfg);
         h.insert(mk("m1", "hello world"));
+        drain().await;
         let q = parse_query("hello");
-        let hits = h.query(&q, &SearchScope::AllGrovesAndLetters);
+        let hits = h.query(&q, &SearchScope::AllGrovesAndLetters).await;
         assert!(hits.is_empty());
     }
 
-    #[test]
-    fn disabled_config_blocks_inserts() {
-        let h = SearchIndexHandle::new_in_memory();
-        let mut cfg = h.config();
+    #[tokio::test]
+    async fn disabled_config_blocks_inserts() {
+        let sys = System::new();
+        let h = SearchIndexHandle::new_in_memory(&sys.handle());
+        let mut cfg = h.config().await;
         cfg.enabled = false;
         h.set_config(cfg);
         h.insert(mk("m1", "hello"));
-        assert_eq!(h.message_count(), 0);
+        drain().await;
+        assert_eq!(h.message_count().await, 0);
     }
 
-    #[test]
-    fn recents_disabled_by_config() {
-        let h = SearchIndexHandle::new_in_memory();
-        let mut cfg = h.config();
+    #[tokio::test]
+    async fn recents_disabled_by_config() {
+        let sys = System::new();
+        let h = SearchIndexHandle::new_in_memory(&sys.handle());
+        let mut cfg = h.config().await;
         cfg.remember_recents = false;
         h.set_config(cfg);
         h.push_recent(RecentQuery {
             text: "hi".into(),
             timestamp_ms: 1,
         });
-        assert!(h.recents().is_empty());
+        drain().await;
+        assert!(h.recents().await.is_empty());
     }
 
-    #[test]
-    fn recents_push_dedups_and_caps() {
-        let h = SearchIndexHandle::new_in_memory();
-        // Ensure recents default-on.
+    #[tokio::test]
+    async fn recents_push_dedups_and_caps() {
+        let sys = System::new();
+        let h = SearchIndexHandle::new_in_memory(&sys.handle());
         for i in 0..20 {
             h.push_recent(RecentQuery {
                 text: format!("q{i}"),
                 timestamp_ms: i,
             });
         }
-        assert!(h.recents().len() <= MAX_RECENTS);
+        drain().await;
+        assert!(h.recents().await.len() <= MAX_RECENTS);
     }
 
-    #[test]
-    fn rebuild_replaces_index() {
-        let h = SearchIndexHandle::new_in_memory();
+    #[tokio::test]
+    async fn rebuild_replaces_index() {
+        let sys = System::new();
+        let h = SearchIndexHandle::new_in_memory(&sys.handle());
         h.insert(mk("m1", "hello"));
-        h.rebuild(vec![mk("m2", "world")]);
-        let hits = h.query(&parse_query("hello"), &SearchScope::AllGrovesAndLetters);
+        h.rebuild(vec![mk("m2", "world")]).await;
+        let hits = h
+            .query(&parse_query("hello"), &SearchScope::AllGrovesAndLetters)
+            .await;
         assert!(hits.is_empty());
-        let hits = h.query(&parse_query("world"), &SearchScope::AllGrovesAndLetters);
+        let hits = h
+            .query(&parse_query("world"), &SearchScope::AllGrovesAndLetters)
+            .await;
         assert_eq!(hits.len(), 1);
     }
 
     #[test]
     fn handle_is_send_and_sync() {
-        // Smoke test: the handle is cloned into Leptos callbacks and
-        // must be `Send + Sync` so `Arc<Mutex<_>>` actually pulls its
-        // weight.
+        // The handle is cloned into Leptos callbacks; it must stay
+        // `Send + Sync` so the `Addr<SearchActor>` propagates correctly.
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<SearchIndexHandle>();
     }

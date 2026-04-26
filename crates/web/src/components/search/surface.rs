@@ -56,9 +56,15 @@ pub fn SearchSurface(
         let handle_res = set_timeout_with_handle(
             move || {
                 let q = parse_query(&raw);
-                let results = idx.query(&q, &scope);
-                write.search.set_results.set(results);
-                write.search.set_debouncing.set(false);
+                let idx = idx.clone();
+                let scope = scope.clone();
+                let set_results = write.search.set_results;
+                let set_debouncing = write.search.set_debouncing;
+                leptos::task::spawn_local(async move {
+                    let results = idx.query(&q, &scope).await;
+                    set_results.set(results);
+                    set_debouncing.set(false);
+                });
             },
             std::time::Duration::from_millis(120),
         );
@@ -72,13 +78,18 @@ pub fn SearchSurface(
     let on_submit = {
         let idx = index.clone();
         Callback::new(move |q: String| {
-            if !q.is_empty() {
-                idx.push_recent(RecentQuery {
-                    text: q,
-                    timestamp_ms: js_sys::Date::now() as u64,
-                });
-                write.search.set_recents.set(idx.recents());
+            if q.is_empty() {
+                return;
             }
+            let idx = idx.clone();
+            let set_recents = write.search.set_recents;
+            idx.push_recent(RecentQuery {
+                text: q,
+                timestamp_ms: js_sys::Date::now() as u64,
+            });
+            leptos::task::spawn_local(async move {
+                set_recents.set(idx.recents().await);
+            });
         })
     };
 
@@ -91,16 +102,24 @@ pub fn SearchSurface(
     let on_forget_recent = {
         let idx = index.clone();
         Callback::new(move |text: String| {
+            let idx = idx.clone();
+            let set_recents = write.search.set_recents;
             idx.forget_recent(&text);
-            write.search.set_recents.set(idx.recents());
+            leptos::task::spawn_local(async move {
+                set_recents.set(idx.recents().await);
+            });
         })
     };
 
     let on_clear_all_recents = {
         let idx = index.clone();
         Callback::new(move |()| {
+            let idx = idx.clone();
+            let set_recents = write.search.set_recents;
             idx.clear_all_recents();
-            write.search.set_recents.set(idx.recents());
+            leptos::task::spawn_local(async move {
+                set_recents.set(idx.recents().await);
+            });
         })
     };
 
