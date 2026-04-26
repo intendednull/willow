@@ -84,6 +84,7 @@ All shared mutable state in library crates lives inside an actor (see
 | WASM single-threaded interior mutability | `Rc<RefCell<T>>` (web only) |
 | Reactive UI state in web | Leptos signal (`RwSignal`, `Resource`) |
 | Web state mutated from non-Leptos context | `StateActor<S>` |
+| Actor coordination signal (ready, cancel, one-shot) | `tokio::sync::watch` / `oneshot` / `broadcast` / `Notify` (never `tokio::sync::Mutex` for business state) |
 
 **No `Arc<Mutex<T>>` / `Arc<RwLock<T>>` / `parking_lot::*` for business state.**
 New locks need a `// state: lock-ok — <reason>` comment with rationale at the

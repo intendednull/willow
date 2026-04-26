@@ -126,6 +126,15 @@ fn new_client() -> WebClientHandle {
         relay_addr: Some(relay_url),
         ..ClientConfig::default()
     };
+    // `_event_loop` (which owns the actor `System`) is dropped here, but
+    // tracked actors continue running because their `Addr` clones survive
+    // inside `ClientHandle`. See `crates/actor/src/system.rs` — "Dropping
+    // the System without calling shutdown() will stop the system actor,
+    // but tracked actors will continue running until their addresses are
+    // dropped." On web the runtime is process-scoped (page reload tears
+    // everything down), so no graceful `System::shutdown()` is needed.
+    // If a future actor needs `stopped()` cleanup that *must* run before
+    // page close, route it via `beforeunload` rather than relying on Drop.
     let (handle, _event_loop) = ClientHandle::<willow_network::iroh::IrohNetwork>::new(config);
     SendWrapper::new(handle)
 }

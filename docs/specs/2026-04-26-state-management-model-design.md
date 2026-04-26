@@ -63,12 +63,19 @@ Need shared mutable state?
 │                                              (web crate only — voice nodes,
 │                                               WebRTC closures, audio analysers)
 │
-└─ Reactive UI state in web?                → Leptos signal
-                                               (RwSignal, Resource, Memo)
-                                               StateActor only when state mutated
-                                               from non-Leptos context (background
-                                               task, timer spanning components,
-                                               MCP, async coalescing).
+├─ Reactive UI state in web?                → Leptos signal
+│                                              (RwSignal, Resource, Memo)
+│                                              StateActor only when state mutated
+│                                              from non-Leptos context (background
+│                                              task, timer spanning components,
+│                                              MCP, async coalescing).
+│
+└─ Coordination signal between actors        → tokio::sync::watch / oneshot /
+   (ready, cancel, single-value broadcast)?    broadcast / Notify
+                                              (control flow, not shared mutable
+                                               state — never `tokio::sync::Mutex`
+                                               for business state; same rule as
+                                               `std`/`parking_lot` Mutex.)
 ```
 
 ### Why StateActor by default
@@ -181,7 +188,8 @@ Each gets a `// state: lock-ok — <reason>` comment so future readers (human + 
 
 - `crates/network/src/iroh.rs:107,132` — neighbor list `RwLock<Vec<EndpointId>>`. Mutated from iroh gossip-event callback outside actor loop. Forced by iroh API.
 - `crates/network/src/iroh.rs:196,197` — `Mutex<Option<Router>>`, `Mutex<HashMap<TopicId, _>>`. Iroh router + subscription map; iroh's lifecycle API is synchronous.
-- `crates/network/src/iroh.rs:64,215` — blob store + relay-status timestamp. Iroh boundary state.
+- `crates/network/src/iroh.rs:215` — relay-status timestamp `Mutex<Option<Instant>>`. Written from the boot online-signal future, read from sync `relay_status()`. Iroh boundary state.
+- `crates/network/src/iroh.rs:64` — `IrohBlobStore` `Mutex<HashMap>`. **Not** an iroh-callback boundary — `BlobStore` is Willow's own async trait. Annotated as `lock-ok` because the in-memory store is an interim stub pending a persistent backend; the lock surface goes away with that swap.
 - `crates/network/src/iroh.rs:210` — `AtomicBool relay_online_at_boot`. Read-only after init, atomic by choice not necessity but legitimate.
 - `crates/client/src/mentions.rs:79` — `OnceLock<Regex>`. One-shot regex compile.
 - `crates/network/src/topics.rs:35,37,39` — `LazyLock<TopicId>`. Static topic-ID constants.
@@ -286,3 +294,53 @@ Right shape:
 - All consumers switch to `Addr.do_send` / `Addr.ask`. `MutationContext` and `ListenerContext` carry `Addr`s instead of `Arc<Lock<_>>`.
 
 Trigger: open as a dedicated PR titled `refactor(client): migrate ClientHandle.topics + join_links into actors`, link back to this spec § 4 + F4.
+
+### F5. SearchActor head-of-line + rebuild-storm fixes
+
+`SearchActor::Rebuild` runs to completion in one mailbox turn. With `SearchIndex` intentionally non-Clone and rebuild-of-N being O(N), a long rebuild blocks every queued `Query` (search-as-you-type latency). Two compounding factors:
+
+1. The rebuild Effect at `crates/web/src/app.rs:367` re-fires on every `messages_sig` change with no debounce or coalescing, so a chatty channel can stack multiple full rebuilds in the mailbox back-to-back.
+2. `SearchIndexHandle::insert` uses `do_send`; under sustained burst it silently drops. The Effect's "rebuild on every messages_sig" pattern is the documented recovery path, but it makes the storm worse.
+
+Right shape:
+
+- Wrap the rebuild Effect in a `Debounce<Rebuild>` (the `willow-actor` framework already has `Debounce`), 100–300 ms window.
+- Either chunk `Rebuild` to yield between batches (the `Indexing { done, total }` enum variant is already reserved for this) so `Query` can preempt, OR split the read-only `Query` path onto a separate actor with its own `Arc<SearchIndex>` snapshot updated reactively from the writer.
+- If the chunked path is chosen, document the now-observable `Indexing` semantics and add a streaming-banner test.
+
+Trigger: open as a dedicated PR titled `perf(client): chunk SearchActor::Rebuild + debounce rebuild Effect`, link back to this spec § 1 + F5.
+
+### F6. Browser-tier coverage for `SearchIndexHandle` consumers
+
+The bespoke-actor migration (§ 1) moved `SearchIndexHandle::query` and `rebuild` from sync to async. Web call sites in `crates/web/src/app.rs` and `crates/web/src/components/search/surface.rs` gained `spawn_local` wrapping. The 74 actor-tier tests under `tokio::test` cover the actor itself; the spawn_local + Effect + signal-write-back path is uncovered at the browser tier.
+
+Per CLAUDE.md "Which test tier to use", DOM rendering + event dispatch in a single client + single viewport → wasm-pack browser test.
+
+Right shape:
+
+- `crates/web/tests/browser.rs` test that mounts `SearchSurface`, fills the input, asserts `set_debouncing` becomes true, then false after results arrive.
+- Mount `App` (or a slimmer harness) with two `messages_sig` values and assert `idx.message_count()` reflects each after Effect re-runs.
+
+Trigger: open as a dedicated PR titled `test(web): browser-tier coverage for SearchIndexHandle consumers`, link back to this spec § 1 + F6.
+
+### F7. Sealed `ClientSpawner` to narrow the `system()` API surface
+
+`ClientHandle::system()` returns `&willow_actor::SystemHandle`, which exposes `spawn`, `spawn_supervised`, `spawn_with_capacity`. External consumers (the web `SearchIndexHandle::new`) only need to spawn one specific actor type. Returning the full `SystemHandle` lets a misbehaving consumer spawn arbitrary actors that share the runtime with the client's domain actors.
+
+Right shape:
+
+- Introduce `ClientSpawner` in `crates/client/` that wraps `&SystemHandle` and exposes only the surface external consumers need (e.g. a method per allowed actor type, or a sealed `spawn<A: AllowedActor>` trait).
+- Change `ClientHandle::system()` to return `&ClientSpawner`. Document the narrowed surface as the supported extension point.
+
+Trigger: open as a dedicated PR titled `refactor(client): narrow system() to a sealed ClientSpawner`, link back to this spec § 1 + F7.
+
+### F8. Search query debouncing-flicker fix
+
+`crates/web/src/components/search/surface.rs:43-76` debounces the user's keystrokes via `set_timeout_with_handle`. The cleanup cancels the timer but cannot cancel an already-spawned `idx.query().await` future. If the timer already fired and the spawn_local is in flight, the next keystroke's "still loading" indicator can be momentarily stomped to false by the in-flight query's resolution. Functional correctness preserved (FIFO mailbox guarantees ordering); UX flicker only.
+
+Right shape:
+
+- Tag each query with a monotonic generation counter; the spawn_local reads the current generation before writing back to the signal.
+- Or migrate to a Leptos `Resource` whose pending state is reactive and managed automatically. (Simpler, but couples the search input to `Resource` semantics — evaluate during impl.)
+
+Trigger: open as a dedicated PR titled `fix(web): generation-tag search-query result write-back`, link back to this spec § 1 + F8.
