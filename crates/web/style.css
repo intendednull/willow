@@ -6231,6 +6231,88 @@ select:focus-visible {
     color: var(--amber);
 }
 
+/* ── Composer typing indicator (Phase 3a, T11) ──────────────────────────
+ *
+ * Spec: `composer.md` §Typing indicator. Sits at the very top of the
+ * composer wrapper. Padding is 4px/24px on desktop and 8px/14px on
+ * mobile (selector below `data-shell="mobile"` overrides the desktop
+ * defaults — same pattern used by the meta row). The 3-dot
+ * `willowPulse` cluster is staggered 0 / 200 / 400 ms via the
+ * `:nth-child` rules. The `--empty` modifier collapses the row so it
+ * doesn't claim layout when no peers are typing.
+ *
+ * Foundation tokens only: `--ink-2` for the label, `--ink-3` for the
+ * dots. The italic font matches the spec's `font-display` italic
+ * affordance — `--font-display` is a foundation variable that falls
+ * back to the system serif stack on platforms without the custom
+ * face. */
+.composer__typing-indicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 24px;
+    font-family: var(--font-display, serif);
+    font-style: italic;
+    font-size: 12px;
+    color: var(--ink-2);
+    min-height: 20px;
+}
+
+[data-shell="mobile"] .composer__typing-indicator {
+    padding: 8px 14px;
+}
+
+.composer__typing-indicator--empty {
+    /* Collapse to zero height so the composer doesn't shift on each
+     * typing-ping update. The pluralisation label stays in the DOM
+     * (rendered as the empty string) so reactive subscriptions don't
+     * tear down and rebuild on every transition. */
+    display: none;
+}
+
+.composer__typing-dots {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    /* Match the dot block height so the row's vertical centre aligns
+     * with the label baseline. */
+    line-height: 0;
+}
+
+.composer__typing-dot {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--ink-3);
+    animation: willowPulse 1.4s infinite ease-in-out;
+    /* `display: inline-block` so width/height take effect on the
+     * empty `<span>` we render. */
+    display: inline-block;
+}
+
+.composer__typing-dot:nth-child(2) {
+    animation-delay: 200ms;
+}
+
+.composer__typing-dot:nth-child(3) {
+    animation-delay: 400ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    /* Spec §Motion: `willowPulse` becomes a static opacity dot.
+     * Foundation already gates other `willowPulse` consumers via the
+     * same media query — this rule mirrors them so the typing dots
+     * participate without copying the foundation logic. */
+    .composer__typing-dot {
+        animation: none;
+        opacity: 1;
+    }
+}
+
+.composer__typing-label {
+    color: var(--ink-2);
+}
+
 /* ── Message-row flash (T7 — scroll-to-parent affordance) ──────────────
  *
  * Triggered by the chat view after `on_jump_to_parent` fires from the

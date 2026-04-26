@@ -1070,23 +1070,6 @@ pub fn App() -> impl IntoView {
                                                     js_sys::eval("var i=document.querySelector('.input-area input,.input-area textarea');if(i)i.focus();").ok();
                                                 })
                                             />
-                                            <div class="typing-indicator">
-                                                {move || {
-                                                    let ch = current_channel.get();
-                                                    let views = channel_views.get();
-                                                    let names = views
-                                                        .get(&ch)
-                                                        .map(|v| v.typing.clone())
-                                                        .unwrap_or_default();
-                                                    match names.len() {
-                                                        0 => String::new(),
-                                                        1 => format!("{} is typing...", names[0]),
-                                                        2 => format!("{} and {} are typing...", names[0], names[1]),
-                                                        3 => format!("{}, {}, and {} are typing...", names[0], names[1], names[2]),
-                                                        _ => "Multiple people are typing...".to_string(),
-                                                    }
-                                                }}
-                                            </div>
                                             <div class="input-row">
                                                 <FileShareButton
                                                     channel=current_channel
@@ -1105,6 +1088,19 @@ pub fn App() -> impl IntoView {
                                                     on_typing=on_typing_cb
                                                     on_arrow_up_edit=on_arrow_up_edit_cb
                                                     on_jump_to_parent=on_jump_to_parent_cb
+                                                    // Typing peers come off the `channel_views`
+                                                    // map (filled by the typing-expiry timer
+                                                    // spawned at app start). The composer
+                                                    // collapses the row itself when the list
+                                                    // is empty per spec §Typing indicator.
+                                                    typing_peers=Signal::derive(move || {
+                                                        let ch = current_channel.get();
+                                                        channel_views
+                                                            .get()
+                                                            .get(&ch)
+                                                            .map(|v| v.typing.clone())
+                                                            .unwrap_or_default()
+                                                    })
                                                 />
                                             </div>
                                         </main>

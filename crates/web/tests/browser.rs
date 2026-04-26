@@ -12157,8 +12157,8 @@ mod phase_3a_composer {
         });
         tick().await;
 
-        let composer = query(&container, ".composer")
-            .expect(".composer wrapper must render under <Composer>");
+        let composer =
+            query(&container, ".composer").expect(".composer wrapper must render under <Composer>");
         assert!(
             composer.class_list().contains("composer--offline"),
             "outer `.composer` element must carry the `composer--offline` modifier when offline"
@@ -12236,6 +12236,198 @@ mod phase_3a_composer {
             textarea.placeholder(),
             "choose a channel to start",
             "empty channel name + no recipient must render the no-channel form"
+        );
+    }
+
+    // ── T11 — typing indicator row (visible label + 3-dot cluster) ─────
+    //
+    // AGs covered by this group:
+    //   AG-12: 1 / 2 / 3 / 4+ peer pluralisation forms render the
+    //          spec's exact copy.
+    //   Plus: hidden when no peers are typing.
+    //
+    // Spec: `composer.md` §Typing indicator (lines 145–159).
+    // Plan: `2026-04-26-ui-phase-3a-composer.md` Task T11.
+    //
+    // The `peers` prop accepts a `Signal<Vec<String>>` so tests can
+    // drive each pluralisation case directly without standing up a
+    // real `ClientHandle`. Production wiring in `app.rs` derives the
+    // signal from the existing `channel_views` map (filled by the
+    // typing-expiry timer at app start).
+
+    /// Resolve the typing-indicator label text — the row is always
+    /// in the DOM, but `--empty` styling collapses it visually when
+    /// the peers list is empty.
+    fn typing_label_text(container: &web_sys::HtmlElement) -> String {
+        let row = query(container, ".composer__typing-indicator")
+            .expect(".composer__typing-indicator must render under <Composer>");
+        let label = row
+            .query_selector(".composer__typing-label")
+            .unwrap()
+            .expect(".composer__typing-label must render inside the indicator");
+        text(&label)
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_typing_indicator_renders_one_typist() {
+        reset_shell();
+        let peers: Signal<Vec<String>> = Signal::derive(|| vec!["alex".to_string()]);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    typing_peers=peers
+                />
+            }
+        });
+        tick().await;
+
+        // Spec copy: `{name} is writing…` (Unicode horizontal ellipsis).
+        assert_eq!(typing_label_text(&container), "alex is writing\u{2026}");
+
+        // Three dots must be present so the visual affordance matches
+        // the spec; arity is asserted via `query_selector_all`.
+        let row = query(&container, ".composer__typing-indicator").unwrap();
+        let dots = row
+            .query_selector_all(".composer__typing-dot")
+            .unwrap()
+            .length();
+        assert_eq!(
+            dots, 3,
+            "indicator must render 3 dots for the staggered pulse animation"
+        );
+
+        // Not hidden — `data-empty="false"` and the modifier class is
+        // absent.
+        let html: web_sys::HtmlElement = row.dyn_into().unwrap();
+        assert_eq!(
+            html.dataset().get("empty").as_deref(),
+            Some("false"),
+            "data-empty must be `false` while peers are typing"
+        );
+        assert!(
+            !html
+                .class_list()
+                .contains("composer__typing-indicator--empty"),
+            "indicator must not carry --empty modifier when peers are typing"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_typing_indicator_renders_two_typists() {
+        reset_shell();
+        let peers: Signal<Vec<String>> =
+            Signal::derive(|| vec!["alex".to_string(), "bo".to_string()]);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    typing_peers=peers
+                />
+            }
+        });
+        tick().await;
+
+        assert_eq!(
+            typing_label_text(&container),
+            "alex and bo are writing\u{2026}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_typing_indicator_renders_three_typists() {
+        reset_shell();
+        let peers: Signal<Vec<String>> =
+            Signal::derive(|| vec!["alex".to_string(), "bo".to_string(), "cy".to_string()]);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    typing_peers=peers
+                />
+            }
+        });
+        tick().await;
+
+        // Spec copy: `{name}, {name}, and {name} are writing…` —
+        // serial Oxford comma form per `composer.md` line 155.
+        assert_eq!(
+            typing_label_text(&container),
+            "alex, bo, and cy are writing\u{2026}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_typing_indicator_renders_count_for_four_plus() {
+        reset_shell();
+        let peers: Signal<Vec<String>> = Signal::derive(|| {
+            vec![
+                "alex".to_string(),
+                "bo".to_string(),
+                "cy".to_string(),
+                "dee".to_string(),
+                "el".to_string(),
+            ]
+        });
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    typing_peers=peers
+                />
+            }
+        });
+        tick().await;
+
+        // Spec copy: `{count} people are writing…` — used for any
+        // count >= 4 so the row stays bounded.
+        assert_eq!(
+            typing_label_text(&container),
+            "5 people are writing\u{2026}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_typing_indicator_hidden_when_no_typists() {
+        reset_shell();
+        let peers: Signal<Vec<String>> = Signal::derive(Vec::new);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    typing_peers=peers
+                />
+            }
+        });
+        tick().await;
+
+        // Row stays in the DOM (so reactive bindings don't tear down)
+        // but is hidden via `--empty` modifier so the composer
+        // doesn't shift on every transition.
+        let row = query(&container, ".composer__typing-indicator")
+            .expect(".composer__typing-indicator must render even when empty");
+        let html: web_sys::HtmlElement = row.dyn_into().unwrap();
+        assert!(
+            html.class_list()
+                .contains("composer__typing-indicator--empty"),
+            "indicator must carry --empty modifier when peers list is empty"
+        );
+        assert_eq!(
+            html.dataset().get("empty").as_deref(),
+            Some("true"),
+            "data-empty must be `true` when peers list is empty"
+        );
+
+        // Label resolves to the empty string so screen readers don't
+        // pick up stale text.
+        let label = html
+            .query_selector(".composer__typing-label")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            text(&label),
+            "",
+            "typing label must be empty when no peers are typing"
         );
     }
 }

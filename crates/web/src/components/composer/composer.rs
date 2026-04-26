@@ -39,6 +39,7 @@ use super::edit_bar::EditBar;
 use super::meta_row::MetaRow;
 use super::placeholders::placeholder_for;
 use super::reply_bar::ReplyBar;
+use super::typing_indicator::TypingIndicator;
 use crate::state::ConnectionState;
 
 /// Maximum number of visible textarea lines before the textarea
@@ -117,6 +118,13 @@ pub fn Composer(
     /// the API.
     #[prop(optional, into)]
     recipient_name: Option<Signal<Option<String>>>,
+    /// Display names of peers currently typing in the active channel.
+    /// Drives the `<TypingIndicator>` row above the composer per spec
+    /// §Typing indicator. The local peer is already filtered out by
+    /// `Client::typing_in`. Defaults to an empty vec so unit tests
+    /// don't have to wire the polling loop.
+    #[prop(optional, into)]
+    typing_peers: Option<Signal<Vec<String>>>,
 ) -> impl IntoView {
     let (input_text, set_input_text) = signal(String::new());
     let textarea_ref = NodeRef::<leptos::html::Textarea>::new();
@@ -134,6 +142,8 @@ pub fn Composer(
         channel_name.unwrap_or_else(|| Signal::derive(String::new));
     let recipient_name_sig: Signal<Option<String>> =
         recipient_name.unwrap_or_else(|| Signal::derive(|| None));
+    let typing_peers_sig: Signal<Vec<String>> =
+        typing_peers.unwrap_or_else(|| Signal::derive(Vec::new));
     // `data-shell` is set once at mount by `mobile_shell` / the
     // wasm-pack test harness; deriving a Signal still works because the
     // closure runs each time a downstream reader subscribes.
@@ -367,6 +377,11 @@ pub fn Composer(
         // or relay has dropped out — drives the spec's amber tint per
         // §Offline state.
         <div class=wrapper_class>
+            // Typing indicator — sits at the very top of the composer
+            // wrapper per spec §Typing indicator. The component
+            // collapses itself when `typing_peers` is empty so the
+            // row doesn't claim layout while no one is typing.
+            <TypingIndicator peers=typing_peers_sig />
             // Edit bar — full spec layout per `composer.md` §Edit mode.
             // The send-button label flip to `save` is owned below; this
             // bar only renders the hint + cancel affordance.
