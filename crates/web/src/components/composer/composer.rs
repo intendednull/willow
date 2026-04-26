@@ -35,7 +35,9 @@ use wasm_bindgen::JsCast;
 use willow_client::DisplayMessage;
 
 use super::edit_bar::EditBar;
+use super::meta_row::MetaRow;
 use super::reply_bar::ReplyBar;
+use crate::state::ConnectionState;
 
 /// Maximum number of visible textarea lines before the textarea
 /// switches from grow-to-fit to scroll. Matches the spec's
@@ -86,9 +88,30 @@ pub fn Composer(
     /// Cancelling the reply uses `on_cancel_reply` instead.
     #[prop(optional, into)]
     on_jump_to_parent: Option<Callback<String>>,
+    /// Live connection state. Drives the meta row offline form and the
+    /// amber composer tint per spec §Offline state. When omitted (e.g.
+    /// in a focused unit test) defaults to `Connected`.
+    #[prop(optional, into)]
+    connection: Option<ReadSignal<ConnectionState>>,
+    /// Channel peer count for the mobile meta row's `sealed to {N}
+    /// peers in grove` copy. Defaults to `0` when omitted.
+    #[prop(optional, into)]
+    peer_count: Option<Signal<usize>>,
 ) -> impl IntoView {
     let (input_text, set_input_text) = signal(String::new());
     let textarea_ref = NodeRef::<leptos::html::Textarea>::new();
+
+    // Resolve optional context props to concrete signals so the meta
+    // row + offline tint + placeholder copy don't have to branch on
+    // `Option<…>` at every read. Tests that mount `<Composer>` with
+    // just `on_send` get sensible online defaults.
+    let (default_connection, _) = signal(ConnectionState::Connected);
+    let connection_sig: ReadSignal<ConnectionState> = connection.unwrap_or(default_connection);
+    let peer_count_sig: Signal<usize> = peer_count.unwrap_or_else(|| Signal::derive(|| 0));
+    // `data-shell` is set once at mount by `mobile_shell` / the
+    // wasm-pack test harness; deriving a Signal still works because the
+    // closure runs each time a downstream reader subscribes.
+    let is_mobile_sig: Signal<bool> = Signal::derive(is_mobile_shell);
 
     // When `editing` becomes `Some`, pre-fill the textarea with the
     // message body. Mirrors the legacy `<ChatInput>` behaviour so the
@@ -357,6 +380,11 @@ pub fn Composer(
                     {send_label}
                 </button>
             </div>
+            <MetaRow
+                connection=connection_sig
+                peer_count=peer_count_sig
+                is_mobile=is_mobile_sig
+            />
         </div>
     }
 }

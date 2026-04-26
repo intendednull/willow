@@ -6149,6 +6149,78 @@ select:focus-visible {
     border-top-right-radius: 0;
 }
 
+/* ── Composer meta row (Phase 3a, T9) ────────────────────────────────
+ *
+ * Spec: `docs/specs/2026-04-19-ui-design/composer.md` §Desktop compose
+ * surface — Meta row, §Mobile compose surface, §Offline state.
+ * Renders beneath the textarea+button row. Three forms:
+ *
+ *   Desktop online — `lock · sealed with grove-keys · ear · hold shift
+ *                     to whisper` (with `shift` in mono `--whisper`).
+ *   Mobile online  — `lock · sealed to {N} peers in grove · ear · tap
+ *                     ear to whisper`.
+ *   Offline        — `hourglass · offline · queuing messages` in
+ *                     `--amber` (replaces both online forms).
+ */
+.composer__meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--ink-3);
+    /* Hint-size copy — matches the reply/edit bar's 12 px convention,
+     * which is the project's de-facto "hint" size until the
+     * foundation pins a `--text-hint` token. */
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.composer__meta-icon {
+    display: inline-flex;
+    align-items: center;
+    color: var(--ink-3);
+    flex-shrink: 0;
+}
+
+.composer__meta-icon .icon {
+    width: 12px;
+    height: 12px;
+}
+
+.composer__meta-text {
+    color: var(--ink-3);
+    white-space: nowrap;
+}
+
+.composer__meta-sep {
+    color: var(--ink-4);
+    flex-shrink: 0;
+}
+
+.composer__meta-spacer {
+    flex: 1;
+}
+
+/* `shift` keycap in the desktop whisper hint — mono, `--whisper`,
+ * borderless to keep the row visually quiet (spec §Composer meta:
+ * "shift in mono `--whisper`"). */
+.composer__kbd {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    color: var(--whisper);
+    font-size: inherit;
+    padding: 0;
+    background: transparent;
+    border: 0;
+}
+
+.composer__meta--offline {
+    color: var(--amber);
+}
+
+.composer__meta--offline .composer__meta-icon,
+.composer__meta--offline .composer__meta-text {
+    color: var(--amber);
+}
+
 /* ── Message-row flash (T7 — scroll-to-parent affordance) ──────────────
  *
  * Triggered by the chat view after `on_jump_to_parent` fires from the

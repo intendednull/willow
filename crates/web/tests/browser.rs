@@ -11263,6 +11263,7 @@ mod phase_2b_sync_queue {
 mod phase_3a_composer {
     use super::*;
     use willow_web::components::Composer;
+    use willow_web::state::ConnectionState;
 
     /// Mounts a bare `<Composer>` and asserts the textarea is present
     /// and autogrows: a single line stays inside one line-height, while
@@ -12006,5 +12007,134 @@ mod phase_3a_composer {
             "cancel",
             "edit bar cancel button text must be 'cancel'"
         );
+    }
+
+    // ── T9 — meta row (desktop / mobile / offline variants) ────────────
+    //
+    // Spec: `composer.md` §Desktop compose surface — Meta row,
+    // §Mobile compose surface, §Offline state.
+    // Plan: `2026-04-26-ui-phase-3a-composer.md` Task T9.
+
+    #[wasm_bindgen_test]
+    async fn composer_meta_row_desktop_shows_grove_keys_and_whisper_hint() {
+        let (connection_sig, _set_connection) = signal(ConnectionState::Connected);
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    connection=connection_sig
+                />
+            }
+        });
+        tick().await;
+
+        let meta = query(&container, ".composer__meta")
+            .expect(".composer__meta must render under <Composer> on desktop");
+        let meta_text = text(&meta);
+        assert!(
+            meta_text.contains("sealed with grove-keys"),
+            "desktop meta row must include 'sealed with grove-keys', got {meta_text:?}"
+        );
+        assert!(
+            meta_text.contains("hold"),
+            "desktop meta row must include the whisper hint, got {meta_text:?}"
+        );
+        assert!(
+            meta_text.contains("shift"),
+            "desktop meta row must render the literal `shift` keycap, got {meta_text:?}"
+        );
+        assert!(
+            meta_text.contains("to whisper"),
+            "desktop meta row must end with 'to whisper', got {meta_text:?}"
+        );
+
+        // Lock + ear icons are rendered through the shared icon helpers.
+        assert!(
+            meta.query_selector(".icon-lock").unwrap().is_some(),
+            "desktop meta row must render the lock icon"
+        );
+        assert!(
+            meta.query_selector(".icon-ear").unwrap().is_some(),
+            "desktop meta row must render the ear icon"
+        );
+        // Offline class must be absent while connected.
+        assert!(
+            !meta.class_list().contains("composer__meta--offline"),
+            "desktop online meta must not carry the offline modifier"
+        );
+        reset_shell();
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_meta_row_mobile_shows_peer_count_and_tap_ear() {
+        let (connection_sig, _set_connection) = signal(ConnectionState::Connected);
+        let peer_count_sig: Signal<usize> = Signal::derive(|| 5);
+        let container = mount_test_with_shell(TestShell::Mobile, move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    connection=connection_sig
+                    peer_count=peer_count_sig
+                />
+            }
+        });
+        tick().await;
+
+        let meta = query(&container, ".composer__meta")
+            .expect(".composer__meta must render under <Composer> on mobile");
+        let meta_text = text(&meta);
+        assert!(
+            meta_text.contains("sealed to 5 peers in grove"),
+            "mobile meta row must include 'sealed to 5 peers in grove', got {meta_text:?}"
+        );
+        assert!(
+            meta_text.contains("tap ear to whisper"),
+            "mobile meta row must include 'tap ear to whisper', got {meta_text:?}"
+        );
+        assert!(
+            meta.query_selector(".icon-lock").unwrap().is_some(),
+            "mobile meta row must render the lock icon"
+        );
+        assert!(
+            meta.query_selector(".icon-ear").unwrap().is_some(),
+            "mobile meta row must render the ear icon"
+        );
+        reset_shell();
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_meta_row_offline_replaces_with_queuing_message() {
+        let (connection_sig, _set_connection) = signal(ConnectionState::Offline);
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    connection=connection_sig
+                />
+            }
+        });
+        tick().await;
+
+        let meta = query(&container, ".composer__meta")
+            .expect(".composer__meta must render in the offline form");
+        assert!(
+            meta.class_list().contains("composer__meta--offline"),
+            "offline meta must carry the `composer__meta--offline` modifier"
+        );
+        let meta_text = text(&meta);
+        assert!(
+            meta_text.contains("offline · queuing messages"),
+            "offline meta must include 'offline · queuing messages', got {meta_text:?}"
+        );
+        assert!(
+            meta.query_selector(".icon-hourglass").unwrap().is_some(),
+            "offline meta must render the hourglass icon"
+        );
+        // Online copy must not leak through when offline.
+        assert!(
+            !meta_text.contains("sealed with grove-keys"),
+            "offline meta must replace the online copy entirely, got {meta_text:?}"
+        );
+        reset_shell();
     }
 }
