@@ -7963,8 +7963,14 @@ mod phase_2a_message_row {
         });
         tick().await;
 
-        let hint = query(&container, ".queue-note.queue-note--late")
-            .expect("LateArrival must render .queue-note.queue-note--late");
+        // Phase 2b routes the inline hint through the shared
+        // `<InlineQueueNote>` component (`crates/web/src/components/inline_queue_note.rs`),
+        // which renders `.inline-note.inline-note--inbound-held` for the
+        // late-arrival state. The literal copy is sourced from
+        // `sync_queue_copy::MSG_NOTE_INBOUND_HELD`, matching the Copy
+        // table in `docs/specs/2026-04-19-ui-design/sync-queue.md` §Copy.
+        let hint = query(&container, ".inline-note.inline-note--inbound-held")
+            .expect("LateArrival must render .inline-note.inline-note--inbound-held");
         assert!(
             text(&hint).contains("sent earlier · arrived now"),
             "LateArrival hint must carry the literal spec copy, got: {:?}",
@@ -8010,11 +8016,18 @@ mod phase_2a_message_row {
         });
         tick().await;
 
-        let hint = query(&container, ".queue-note.queue-note--pending")
-            .expect("Pending must render .queue-note.queue-note--pending");
+        // Phase 2b routes the inline hint through the shared
+        // `<InlineQueueNote>` component, which renders
+        // `.inline-note.inline-note--queued` for the local-pending state.
+        // The literal copy comes from `sync_queue_copy::msg_note_queued`
+        // (spec §Copy), interpolating the author display name as the
+        // peer-or-grove placeholder.
+        let hint = query(&container, ".inline-note.inline-note--queued")
+            .expect("Pending must render .inline-note.inline-note--queued");
+        let expected = willow_web::components::sync_queue_copy::msg_note_queued("Mira");
         assert!(
-            text(&hint).contains("queued · will send on reconnect"),
-            "Pending hint must carry the literal spec copy, got: {:?}",
+            text(&hint).contains(&expected),
+            "Pending hint must carry spec copy ({expected:?}), got: {:?}",
             text(&hint)
         );
         assert!(
