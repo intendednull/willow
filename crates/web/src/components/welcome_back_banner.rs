@@ -28,6 +28,11 @@ pub fn WelcomeBackBanner() -> impl IntoView {
 
     let last_online = StoredValue::new(true);
 
+    // Track which `last_offline_ticks` value we last showed the banner
+    // for. On a rapid flap the same tick value must not trigger the
+    // banner a second time (fixes #351).
+    let last_consumed_ticks: StoredValue<Option<u64>> = StoredValue::new(None);
+
     Effect::new(move |_| {
         let online = device_online.get();
         let prev = last_online.get_value();
@@ -43,6 +48,13 @@ pub fn WelcomeBackBanner() -> impl IntoView {
             if offline_ticks.is_none_or(|t| t < sync_queue_copy::RECONNECT_GATE_TICKS) {
                 return;
             }
+            // Guard: skip if this exact offline window has already
+            // triggered the banner (same tick value seen twice on a
+            // rapid flap).
+            if offline_ticks == last_consumed_ticks.get_value() {
+                return;
+            }
+            last_consumed_ticks.set_value(offline_ticks);
             if arrivals_sum > 0 {
                 count.set(arrivals_sum);
                 visible.set(true);
