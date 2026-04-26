@@ -17,6 +17,7 @@ pub struct WorkerConfig {
 
 impl WorkerConfig {
     /// Create a config for testing.
+    #[cfg(test)]
     pub fn test_config() -> Self {
         Self {
             identity_path: "/tmp/test-worker.key".to_string(),
