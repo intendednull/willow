@@ -64,6 +64,10 @@ mod tests_queue;
 #[path = "tests/profile_view.rs"]
 mod tests_profile_view;
 
+#[cfg(test)]
+#[path = "tests/composer_views.rs"]
+mod tests_composer_views;
+
 /// How long a typing indicator remains visible after the last typing event, in milliseconds.
 pub const TYPING_INDICATOR_TTL_MS: u64 = 5_000;
 
@@ -81,6 +85,7 @@ pub use search::{
 pub use trust::{
     ComparePreview, InMemoryTrustStore, PeerTrust, TrustStore, TrustStoreHandle, UnverifiedReason,
 };
+pub use views::MentionCandidate;
 
 /// Errors returned by client API entry points.
 ///
