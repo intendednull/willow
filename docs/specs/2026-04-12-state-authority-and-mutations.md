@@ -76,7 +76,7 @@ cases where a remote event is rejected:
 | **Governance (vote)** | `Propose`, `Vote` | `is_admin()` — only admins may propose or vote. Actions auto-apply when vote threshold is met. |
 | **Admin-only** | `GrantPermission`, `RevokePermission`, `RenameServer`, `SetServerDescription` | `is_admin()` — any single admin can execute these directly. |
 | **Permission-gated** | `Message`, `EditMessage`, `DeleteMessage`, `Reaction` → `SendMessages`; `CreateChannel`, `DeleteChannel`, `RenameChannel`, `RotateChannelKey` → `ManageChannels`; `CreateRole`, `DeleteRole`, `SetPermission`, `AssignRole` → `ManageRoles` | `has_permission()` — admins pass implicitly; non-admins need an explicit grant. |
-| **Unrestricted** | `SetProfile`, `PinMessage`, `UnpinMessage` | No check — any member can execute. |
+| **Unrestricted** | `SetProfile`, `UpdateProfile`, `PinMessage`, `UnpinMessage`, `MuteChannel`, `MuteGrove` | No check — any member can execute. |
 | **Genesis** | `CreateServer` | No-op on replay; the genesis author becomes the sole initial admin. |
 
 Admin status is tracked in `ServerState.admins` and is **not** a variant
@@ -103,7 +103,9 @@ comment so reviewers notice when a new variant is missing:
 - `RenameServer`, `SetServerDescription` — admin-only, checked in the
   admin block
 - `SetProfile` — intentionally unrestricted
+- `UpdateProfile` — intentionally unrestricted (any member; self-authorship enforced structurally)
 - `PinMessage`, `UnpinMessage` — intentionally unrestricted
+- `MuteChannel`, `MuteGrove` — per-identity preference, never gated
 
 If a variant is not in this list and not in a `required_permission()`
 arm, it is a bug.
