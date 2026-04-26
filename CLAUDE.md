@@ -335,9 +335,8 @@ an event is created — rejected events never enter the DAG.
 ```
 willow-web → willow-client  → willow-state
                             → willow-network (iroh, iroh-gossip, iroh-blobs)
-           → willow-crypto  → willow-identity → willow-transport
-           → willow-messaging → willow-identity
-                              (defines SealedContent used by willow-crypto)
+           → willow-crypto  → willow-messaging → willow-identity → willow-transport
+                              (re-exports Content, SealedContent from willow-messaging)
 
 willow-replay  → willow-worker → willow-actor
 willow-storage → willow-worker → willow-actor
