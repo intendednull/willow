@@ -23,8 +23,12 @@ test.describe('Multi-peer state synchronization', () => {
   // Two-peer tests need extra time for setup + P2P sync. The
   // pre-existing-channels test compounds three 30 s gossip-visibility
   // assertions on top of a fresh-start + invite + join flow that itself
-  // can take 30-60 s on CI under load. 180 s gives the worst case room.
-  test.setTimeout(180_000);
+  // can take 30-60 s on CI under load. The 60 s display-name sync inside
+  // setupTwoPeers (helpers.ts) plus three serial 30 s channel waits
+  // tipped past 180 s in repeated CI runs; bumping to 240 s keeps room
+  // for normal jitter without masking real regressions (a real bug would
+  // hang for the full window, not flicker around 180 s).
+  test.setTimeout(240_000);
 
   // Sync-semantic tests (messages/edits/deletes/reactions/typing/display-names/
   // history-replay/reconnect-replay/persist-after-refresh) live in
@@ -64,9 +68,12 @@ test.describe('Multi-peer state synchronization', () => {
       await createChannel(page1, 'announcements');
       await createChannel(page1, 'random');
 
-      // Peer 2: Get peer ID.
+      // Peer 2: Get peer ID. Pass display name so step 1 captures it
+      // before the name input unmounts (joinViaInvite's
+      // advancePastNameStep would otherwise no-op and leave the welcome
+      // display_name signal empty).
       await freshStart(page2);
-      const peer2Id = await getPeerId(page2);
+      const peer2Id = await getPeerId(page2, 'Bob');
 
       // Peer 1: Generate invite.
       const inviteCode = await generateInvite(page1, peer2Id);

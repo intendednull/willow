@@ -13,6 +13,10 @@ test.describe('Join via shareable link', () => {
     // desktop but flakes past the 60s budget on mobile. Covered at the
     // Rust client tier in Phase B (MemNetwork join-flow test).
     test.skip(testInfo.project.name.startsWith('mobile'), 'mobile P2P join-url real-network flake');
+    // Internal waits chain to >60 s on slow CI: 60 s `.app-shell` wait
+    // + 30 s `.channel-item` attach + 30 s `waitForMessage` round-trip.
+    // The default 60 s test budget is exhausted by the first wait alone.
+    test.setTimeout(180_000);
     const ctxA = await browser.newContext({
       permissions: ['clipboard-read', 'clipboard-write'],
     });

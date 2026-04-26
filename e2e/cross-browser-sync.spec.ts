@@ -23,8 +23,14 @@ test.describe.configure({ mode: 'serial' });
  * They do NOT use the Playwright project's browser fixture — they launch browsers directly.
  */
 test.describe('Cross-browser peer sync', () => {
-  // These tests are slow — they launch two separate browser engines.
-  test.setTimeout(120_000);
+  // These tests are slow — they launch two separate browser engines and
+  // exercise the full joinViaInvite + warmup + bidirectional-message
+  // path. Helper waits inside joinViaInvite extended to 60 s for slow-CI
+  // gossip in 7f88280; 120 s is no longer enough headroom on top of
+  // double-browser launch + two .channel-item waits + two sendMessage
+  // round-trips. Match the 180 s ceiling used by the other multi-peer
+  // specs.
+  test.setTimeout(180_000);
 
   // Only run from one project to avoid duplicating (each test launches its own browsers).
   test.beforeEach(({}, testInfo) => {

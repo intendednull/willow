@@ -19,8 +19,13 @@ import {
 test.describe.configure({ mode: 'serial' });
 
 test.describe('Permissions and trust', () => {
-  // Two-peer permission tests need extra time for setup + P2P sync.
-  test.setTimeout(120_000);
+  // Two-peer permission tests share the setupTwoPeers + joinViaInvite
+  // path with multi-peer-sync. After 7f88280 bumped joinViaInvite's
+  // post-join `.channel-item` wait to 60 s for slow-CI gossip, the
+  // compounded budget for setup + member-list poll + kick + re-poll
+  // reliably runs past 120 s on CI under load. Match the 180 s ceiling
+  // already used by multi-peer-sync.spec.ts and multi-peer-mobile.spec.ts.
+  test.setTimeout(180_000);
 
   // Mobile member-list surface is deferred to a later phase (Phase 1b
   // shipped the mobile shell without the right-rail members pane).
