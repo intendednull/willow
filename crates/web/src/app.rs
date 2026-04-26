@@ -990,6 +990,13 @@ pub fn App() -> impl IntoView {
                                             pin_handler(msg);
                                         })
                                     };
+                                    // Phase 3a T7 — clicking the composer's reply-bar
+                                    // body scrolls + flashes the parent message in
+                                    // the list. Re-uses the `msg-{id}` DOM ids set by
+                                    // `MessageRow`.
+                                    let on_jump_to_parent_cb = Callback::new(|parent_id: String| {
+                                        crate::util::scroll_to_message_and_flash(&parent_id);
+                                    });
                                     // Derive one-of-four right-rail state from existing UI signals.
                                     // Phase 2b — sync queue takes precedence over members/pinned
                                     // when `app.queue.open == true` (mounted desktop right-pane).
@@ -1097,6 +1104,7 @@ pub fn App() -> impl IntoView {
                                                     })
                                                     on_typing=on_typing_cb
                                                     on_arrow_up_edit=on_arrow_up_edit_cb
+                                                    on_jump_to_parent=on_jump_to_parent_cb
                                                 />
                                             </div>
                                         </main>

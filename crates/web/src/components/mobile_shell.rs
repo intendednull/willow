@@ -412,6 +412,9 @@ where
                                                         });
                                                     })
                                                 }
+                                                on_jump_to_parent=Callback::new(|parent_id: String| {
+                                                    crate::util::scroll_to_message_and_flash(&parent_id);
+                                                })
                                             />
                                         </div>
                                     </div>

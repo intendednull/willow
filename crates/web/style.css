@@ -6003,3 +6003,122 @@ select:focus-visible {
     opacity: 0.5;
     cursor: not-allowed;
 }
+
+/* ── Composer reply bar (Phase 3a, T7) ────────────────────────────────
+ *
+ * Spec: `docs/specs/2026-04-19-ui-design/composer.md` §Reply preview.
+ * Lives above the composer, top-radius only so the bottom edge fuses
+ * visually with the composer pill below. 2 px `--moss-2` left rule,
+ * `replying to` label, parent author italic, single-line body
+ * preview, flex spacer, `cancel` text button.
+ */
+.composer__reply-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-bottom: 0;
+    border-radius: 10px 10px 0 0;
+}
+
+.composer__reply-bar-rule {
+    flex-shrink: 0;
+    width: 2px;
+    align-self: stretch;
+    background: var(--moss-2);
+    border-radius: 1px;
+}
+
+/* The preview body is a button so it's keyboard-focusable; we strip
+ * the UA chrome and lay its children inline instead. */
+.composer__reply-bar-preview {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    overflow: hidden;
+}
+
+.composer__reply-bar-label {
+    color: var(--ink-3);
+    font-size: 12px;
+    flex-shrink: 0;
+}
+
+.composer__reply-bar-author {
+    color: var(--ink-1);
+    font-style: italic;
+    font-size: 13px;
+    flex-shrink: 0;
+}
+
+.composer__reply-bar-body {
+    color: var(--ink-2);
+    font-size: 13px;
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.composer__reply-bar-cancel {
+    flex-shrink: 0;
+    background: transparent;
+    border: 0;
+    padding: 2px 4px;
+    color: var(--ink-2);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition: color var(--motion-fast, 120ms) ease;
+}
+
+.composer__reply-bar-cancel:hover,
+.composer__reply-bar-cancel:focus-visible {
+    color: var(--ink-0);
+}
+
+/* Reply-bar lives directly above the composer pill — drop the
+ * pill's top corners + top border so the two surfaces fuse. */
+.composer__reply-bar + .composer {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+}
+
+/* ── Message-row flash (T7 — scroll-to-parent affordance) ──────────────
+ *
+ * Triggered by the chat view after `on_jump_to_parent` fires from the
+ * reply bar. The class is added for ~180 ms and then removed; the
+ * keyframe is `--moss-2`-tinted so it reads as the same accent the
+ * left rule on the reply bar uses.
+ */
+@keyframes willow-row-flash {
+    0%   { background-color: color-mix(in oklab, var(--moss-2) 22%, transparent); }
+    100% { background-color: transparent; }
+}
+
+.message-row--flash,
+.message.flash {
+    animation: willow-row-flash 180ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .message-row--flash,
+    .message.flash {
+        animation: none;
+        background-color: color-mix(in oklab, var(--moss-2) 12%, transparent);
+        transition: background-color 180ms ease;
+    }
+}

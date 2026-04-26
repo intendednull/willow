@@ -34,6 +34,8 @@ use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use willow_client::DisplayMessage;
 
+use super::reply_bar::ReplyBar;
+
 /// Maximum number of visible textarea lines before the textarea
 /// switches from grow-to-fit to scroll. Matches the spec's
 /// "grows by `scrollHeight` up to 8 lines then scrolls" rule.
@@ -77,6 +79,12 @@ pub fn Composer(
     /// the T6 plan: parent owns the state, composer just emits).
     #[prop(optional, into)]
     on_arrow_up_edit: Option<Callback<()>>,
+    /// Fired with the parent message id when the user clicks the body
+    /// of the reply preview bar. The chat view wires this to a
+    /// scroll-into-view + 180 ms `willow-row-flash` on the parent.
+    /// Cancelling the reply uses `on_cancel_reply` instead.
+    #[prop(optional, into)]
+    on_jump_to_parent: Option<Callback<String>>,
 ) -> impl IntoView {
     let (input_text, set_input_text) = signal(String::new());
     let textarea_ref = NodeRef::<leptos::html::Textarea>::new();
@@ -311,8 +319,9 @@ pub fn Composer(
                     })
                 })
             }}
-            // Reply bar — visual port from legacy `<ChatInput>`. T7
-            // restyles per spec.
+            // Reply bar — full spec layout per `composer.md` §Reply
+            // preview. Suppressed while edit mode is active so the
+            // composer never shows two stacked context bars.
             {move || {
                 let is_editing = editing
                     .map(|sig| sig.get().is_some())
@@ -320,34 +329,32 @@ pub fn Composer(
                 if is_editing {
                     return None;
                 }
-                replying_to.and_then(|sig| {
-                    let msg = sig.get();
-                    let cancel = on_cancel_reply;
-                    msg.map(|m| {
-                        let preview = if m.body.chars().count() > 60 {
-                            format!("{}...", m.body.chars().take(60).collect::<String>())
-                        } else {
-                            m.body.clone()
-                        };
-                        view! {
-                            <div class="reply-bar">
-                                <span class="reply-bar-text">
-                                    {format!("Replying to {}: {}", m.author_display_name, preview)}
-                                </span>
-                                <button
-                                    class="reply-bar-cancel"
-                                    aria-label="cancel reply"
-                                    on:click=move |_| {
-                                        if let Some(ref cb) = cancel {
-                                            cb.run(());
-                                        }
-                                    }
-                                >
-                                    "x"
-                                </button>
-                            </div>
-                        }
-                    })
+                let sig = replying_to?;
+                // Fall back to a no-op so the bar still renders when
+                // the parent didn't supply a cancel handler. The
+                // composer's keydown handler also drives cancellation
+                // via `Escape`, which goes through `on_cancel_reply`
+                // independently.
+                let cancel = on_cancel_reply.unwrap_or_else(|| Callback::new(|_| ()));
+                // `on_jump_to_parent` is optional on `<ReplyBar>` —
+                // splitting the two render paths keeps the typed-builder
+                // happy without forcing every callsite to pass a stub.
+                Some(match on_jump_to_parent {
+                    Some(jump) => view! {
+                        <ReplyBar
+                            replying_to=sig
+                            on_cancel=cancel
+                            on_jump_to_parent=jump
+                        />
+                    }
+                    .into_any(),
+                    None => view! {
+                        <ReplyBar
+                            replying_to=sig
+                            on_cancel=cancel
+                        />
+                    }
+                    .into_any(),
                 })
             }}
             <div class="composer__row">

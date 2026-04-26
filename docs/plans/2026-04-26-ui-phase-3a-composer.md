@@ -108,7 +108,7 @@
 
 - [x] **T6.** Implement full keydown handler: Enter / Shift+Enter / Ctrl|⌘+Enter / Tab / Esc unwind / ArrowUp-edit-last. **Browser tests:** AG-2, AG-3, AG-4, AG-5. **Verify:** `just test-browser` for the suite.
 
-- [ ] **T7.** Implement `<ReplyBar>` per spec layout. Wire `scroll_to_message` callback in `chat_view.rs` to scroll + flash the parent via `willow-pop-in` (foundation keyframe already exists). **Browser test:** AG-6. **Verify:** `just test-browser`.
+- [x] **T7.** Implement `<ReplyBar>` per spec layout. Wire `scroll_to_message` callback in `chat_view.rs` to scroll + flash the parent via `willow-pop-in` (foundation keyframe already exists). **Browser test:** AG-6. **Verify:** `just test-browser`.
 
 - [ ] **T8.** Implement `<EditBar>` per spec layout. Add send-button label flip in parent (`save` while editing; `send` otherwise). **Browser test:** AG-7. **Verify:** `just test-browser`.
 

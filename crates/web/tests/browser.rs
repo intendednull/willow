@@ -11748,4 +11748,170 @@ mod phase_3a_composer {
             "on_arrow_up_edit must not fire when textarea has content"
         );
     }
+
+    // ── T7 — styled reply bar with scroll-to-parent ────────────────────
+    //
+    // AGs covered by this group:
+    //   AG-6: Reply preview bar renders with the spec layout (left
+    //         rule + author + preview + cancel) and clicking the
+    //         preview body fires `on_jump_to_parent` with the
+    //         parent message id.
+    //
+    // Spec: `composer.md` §Reply preview (above composer).
+    // Plan: `2026-04-26-ui-phase-3a-composer.md` Task T7.
+
+    #[wasm_bindgen_test]
+    async fn composer_reply_bar_renders_with_left_rule_and_cancel() {
+        reset_shell();
+        let parent = make_msg("mira", "the parent body", 1_700_000_000_000);
+        let (reply_sig, _set_reply) = signal(Some(parent.clone()));
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    replying_to=reply_sig
+                    on_cancel_reply=Callback::new(|_| ())
+                />
+            }
+        });
+        tick().await;
+
+        let bar = query(&container, ".composer__reply-bar")
+            .expect(".composer__reply-bar must render when replying_to is Some");
+
+        // Left accent rule.
+        assert!(
+            bar.query_selector(".composer__reply-bar-rule")
+                .unwrap()
+                .is_some(),
+            "reply bar must include the 2 px left rule element"
+        );
+
+        // Label, author, body preview.
+        let label = bar
+            .query_selector(".composer__reply-bar-label")
+            .unwrap()
+            .expect("reply bar must include the 'replying to' label");
+        assert_eq!(
+            text(&label).trim(),
+            "replying to",
+            "reply bar label text must match the spec copy"
+        );
+        let author = bar
+            .query_selector(".composer__reply-bar-author")
+            .unwrap()
+            .expect("reply bar must include the parent author span");
+        assert!(
+            text(&author).contains("mira"),
+            "reply bar author must show the parent's display name, got {:?}",
+            text(&author)
+        );
+        let body = bar
+            .query_selector(".composer__reply-bar-body")
+            .unwrap()
+            .expect("reply bar must include the body preview span");
+        assert!(
+            text(&body).contains("the parent body"),
+            "reply bar body must include the parent body preview, got {:?}",
+            text(&body)
+        );
+
+        // Cancel button — text content `cancel`, ARIA label `cancel reply`.
+        let cancel = bar
+            .query_selector(".composer__reply-bar-cancel")
+            .unwrap()
+            .expect("reply bar must include a cancel button");
+        assert_eq!(
+            text(&cancel).trim(),
+            "cancel",
+            "cancel button text must be the spec 'cancel' string"
+        );
+        assert_eq!(
+            cancel.get_attribute("aria-label").as_deref(),
+            Some("cancel reply"),
+            "cancel button ARIA label must match the spec accessibility table"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_reply_bar_click_preview_fires_on_jump_to_parent() {
+        reset_shell();
+        let parent = make_msg("mira", "preview body", 1_700_000_000_000);
+        let parent_id = parent.id.clone();
+        let (reply_sig, _set_reply) = signal(Some(parent.clone()));
+        let jumps: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured = jumps.clone();
+        let container = mount_test(move || {
+            let captured = captured.clone();
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    replying_to=reply_sig
+                    on_cancel_reply=Callback::new(|_| ())
+                    on_jump_to_parent=Callback::new(move |id: String| {
+                        captured.lock().unwrap().push(id);
+                    })
+                />
+            }
+        });
+        tick().await;
+
+        let preview = query(&container, ".composer__reply-bar-preview")
+            .expect("reply bar preview button must exist");
+        let html_btn: web_sys::HtmlElement =
+            preview.dyn_into().expect("preview must be an HtmlElement");
+        html_btn.click();
+        tick().await;
+
+        assert_eq!(
+            jumps.lock().unwrap().as_slice(),
+            &[parent_id],
+            "clicking the preview body must fire on_jump_to_parent with the parent id"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_reply_bar_cancel_does_not_fire_on_jump() {
+        reset_shell();
+        let parent = make_msg("mira", "preview body", 1_700_000_000_000);
+        let (reply_sig, _set_reply) = signal(Some(parent.clone()));
+        let cancels: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+        let jumps: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let cancels_ctr = cancels.clone();
+        let jumps_ctr = jumps.clone();
+        let container = mount_test(move || {
+            let cancels_ctr = cancels_ctr.clone();
+            let jumps_ctr = jumps_ctr.clone();
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    replying_to=reply_sig
+                    on_cancel_reply=Callback::new(move |_| {
+                        *cancels_ctr.lock().unwrap() += 1;
+                    })
+                    on_jump_to_parent=Callback::new(move |id: String| {
+                        jumps_ctr.lock().unwrap().push(id);
+                    })
+                />
+            }
+        });
+        tick().await;
+
+        let cancel = query(&container, ".composer__reply-bar-cancel")
+            .expect("reply bar cancel button must exist");
+        let html_btn: web_sys::HtmlElement =
+            cancel.dyn_into().expect("cancel must be an HtmlElement");
+        html_btn.click();
+        tick().await;
+
+        assert_eq!(
+            *cancels.lock().unwrap(),
+            1,
+            "cancel must fire on_cancel_reply exactly once"
+        );
+        assert!(
+            jumps.lock().unwrap().is_empty(),
+            "cancel click must not bubble into on_jump_to_parent"
+        );
+    }
 }
