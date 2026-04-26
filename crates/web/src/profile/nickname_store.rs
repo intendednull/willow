@@ -74,37 +74,37 @@ impl NicknameStore for WebNicknameStore {
             self.clear(peer_id);
             return;
         }
+        // Persist to localStorage *inside* the guard so a subscriber
+        // observing `version()` cannot see the bump before the write
+        // is durable. `localStorage.set_item` is sync — no await — so
+        // there's no risk of holding across async boundaries.
         if let Ok(mut guard) = self.inner.lock() {
-            guard.cache.insert(peer_id.to_string(), trimmed.clone());
-            guard.version += 1;
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            if let Some(win) = web_sys::window() {
-                if let Ok(Some(ls)) = win.local_storage() {
-                    ls.set_item(&format!("{KEY_PREFIX}{peer_id}"), &trimmed)
-                        .ok();
+            #[cfg(target_arch = "wasm32")]
+            {
+                if let Some(win) = web_sys::window() {
+                    if let Ok(Some(ls)) = win.local_storage() {
+                        ls.set_item(&format!("{KEY_PREFIX}{peer_id}"), &trimmed)
+                            .ok();
+                    }
                 }
             }
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let _ = &trimmed; // silence unused warning on native
+            guard.cache.insert(peer_id.to_string(), trimmed);
+            guard.version += 1;
         }
     }
 
     fn clear(&self, peer_id: &str) {
         if let Ok(mut guard) = self.inner.lock() {
             if guard.cache.remove(peer_id).is_some() {
-                guard.version += 1;
-            }
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            if let Some(win) = web_sys::window() {
-                if let Ok(Some(ls)) = win.local_storage() {
-                    ls.remove_item(&format!("{KEY_PREFIX}{peer_id}")).ok();
+                #[cfg(target_arch = "wasm32")]
+                {
+                    if let Some(win) = web_sys::window() {
+                        if let Ok(Some(ls)) = win.local_storage() {
+                            ls.remove_item(&format!("{KEY_PREFIX}{peer_id}")).ok();
+                        }
+                    }
                 }
+                guard.version += 1;
             }
         }
     }
@@ -151,5 +151,13 @@ mod tests {
         let v0 = s.version();
         s.set("alice", "mira");
         assert!(s.version() > v0);
+    }
+
+    #[test]
+    fn web_store_clear_missing_does_not_bump_version() {
+        let s = WebNicknameStore::default();
+        let v0 = s.version();
+        s.clear("never_set");
+        assert_eq!(s.version(), v0);
     }
 }

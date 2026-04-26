@@ -139,6 +139,17 @@ mod tests {
     }
 
     #[test]
+    fn mem_store_clear_missing_does_not_bump_version() {
+        // Pin the no-op-clear semantics: clearing a key that was never
+        // set must not increment the version counter, otherwise
+        // reactive UIs would re-pull spuriously.
+        let s = MemNicknameStore::default();
+        let v0 = s.version();
+        s.clear("never_set");
+        assert_eq!(s.version(), v0);
+    }
+
+    #[test]
     fn mem_store_caps_at_nickname_cap_chars() {
         let s = MemNicknameStore::default();
         // 100 x 'a' — should truncate to NICKNAME_CAP chars on set.

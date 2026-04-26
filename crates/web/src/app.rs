@@ -342,7 +342,7 @@ pub fn App() -> impl IntoView {
     }
 
     // Wire derived signals that auto-update from state actor changes.
-    crate::state::wire_derived_signals(&handle, handle.actor_system(), &write);
+    crate::state::wire_derived_signals(&handle, handle.system(), &write);
 
     // Install global keybindings (palette toggle, Esc close-stack,
     // Alt+↑ / Alt+↓ grove switch, `/` focus + ⌘F scope-flip for search).
@@ -407,7 +407,9 @@ pub fn App() -> impl IntoView {
             let set_status = write_local.search.set_status;
             leptos::task::spawn_local(async move {
                 search.rebuild(indexable).await;
-                set_status.set(search.status().await);
+                // `Rebuild` always settles status to `Idle` before the
+                // future resolves; no need for a second round-trip.
+                set_status.set(willow_client::SearchIndexBuildStatus::Idle);
             });
         });
     }

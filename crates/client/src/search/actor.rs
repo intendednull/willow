@@ -82,8 +82,15 @@ impl Handler<Insert> for SearchActor {
 }
 
 /// Drop the current index and rebuild from `msgs`. The status field
-/// transitions Idle → Building → (Indexing per-step) → Idle so callers
-/// observing `Status` after rebuild see Idle.
+/// transitions Idle → Building → Idle. The `Indexing { done, total }`
+/// variant is reserved for a future chunked rebuild that yields between
+/// batches; this handler runs to completion in one mailbox turn so
+/// per-step progress is unobservable and intentionally not emitted.
+///
+/// Config is captured as a snapshot at handler entry: a `SetConfig`
+/// queued during a long rebuild waits behind it in the mailbox and
+/// only takes effect after rebuild completes (atomicity by mailbox
+/// serialization).
 pub struct Rebuild(pub Vec<IndexableMessage>);
 impl Message for Rebuild {
     type Result = ();
@@ -95,18 +102,13 @@ impl Handler<Rebuild> for SearchActor {
         msg: Rebuild,
         _ctx: &mut Context<Self>,
     ) -> impl Future<Output = ()> + Send {
-        let total = msg.0.len() as u32;
         self.status = SearchIndexBuildStatus::Building;
         self.index = SearchIndex::new();
-        for (i, m) in msg.0.into_iter().enumerate() {
+        for m in msg.0 {
             if !self.message_allowed(&m) {
                 continue;
             }
             self.index.insert(m);
-            self.status = SearchIndexBuildStatus::Indexing {
-                done: (i + 1) as u32,
-                total,
-            };
         }
         self.status = SearchIndexBuildStatus::Idle;
         async {}

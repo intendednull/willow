@@ -61,9 +61,12 @@ pub struct Config {
 /// This is a simple implementation suitable for ephemeral usage.
 /// A persistent store can be swapped in later.
 pub struct IrohBlobStore {
-    // state: lock-ok — iroh BlobStore trait is sync-callback driven from the
-    // iroh runtime; we have no actor loop on the receiving side. Replace with
-    // a persistent backend in future; the lock surface stays.
+    // state: lock-ok — interim in-memory stub for the
+    // `crate::traits::BlobStore` async trait. A persistent backend
+    // (sled / sqlite / iroh-blobs store) will replace this; the lock
+    // surface goes away with that swap. Not actor-migrated because
+    // the stub itself is throwaway. The annotation here is a "this
+    // exists pending replacement", not an iroh-callback boundary.
     store: Mutex<HashMap<crate::BlobHash, Bytes>>,
 }
 

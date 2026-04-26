@@ -78,6 +78,7 @@ All shared mutable state in library crates lives inside an actor (see
 | Shared mutable state in a lib crate | `StateActor<S>` or bespoke actor (default) |
 | External-callback boundary (iroh) | Lock + `// state: lock-ok — <reason>` |
 | Sync trait abstraction over small cache (legacy) | Single `Mutex<Inner>` + `// state: lock-ok` (trait elimination is follow-up work) |
+| Pre-existing lock with actor migration deferred | Single `Mutex<_>`/`RwLock<_>` + `// state: lock-ok` citing the spec follow-up entry |
 | One-shot static init | `OnceLock<T>` / `LazyLock<T>` |
 | Cross-task control flag (stop, cancel) | `AtomicBool` / `AtomicU32` |
 | WASM single-threaded interior mutability | `Rc<RefCell<T>>` (web only) |
@@ -317,7 +318,7 @@ interaction.
 - **Documentation**: Every public type and function has a doc comment. Module-level `//!` docs explain the purpose and provide examples.
 - **Testing**: Every crate has unit tests. Use `#[cfg(test)] mod tests` at the bottom of each file.
 - **Serialization**: All wire types derive `Serialize + Deserialize`. Round-trip tests validate compatibility.
-- **Specs & Plans**: Design specs go in `docs/specs/`, implementation plans go in `docs/plans/`. Name files with date prefix: `YYYY-MM-DD-<feature-name>.md`.
+- **Specs & Plans**: Design specs go in `docs/specs/` named `YYYY-MM-DD-<feature-name>-design.md`. Implementation plans go in `docs/plans/` named `YYYY-MM-DD-<feature-name>.md`.
 
 ## Architecture Notes
 

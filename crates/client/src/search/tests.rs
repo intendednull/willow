@@ -24,20 +24,16 @@ mod handle_tests {
         }
     }
 
-    /// Yield to the runtime so `do_send` messages drain through the
-    /// mailbox before the next assertion.
-    async fn drain() {
-        for _ in 0..4 {
-            tokio::task::yield_now().await;
-        }
-    }
+    // No `drain()` helper: every test follows its `do_send`s with an
+    // `ask` (e.g. `query()`, `recents()`, `message_count()`) on the
+    // same `Addr`, so FIFO mailbox ordering already guarantees the
+    // reads observe every prior write.
 
     #[tokio::test]
     async fn handle_insert_then_query() {
         let sys = System::new();
         let h = SearchIndexHandle::new_in_memory(&sys.handle());
         h.insert(mk("m1", "hello world"));
-        drain().await;
         let q = parse_query("hello");
         let hits = h.query(&q, &SearchScope::AllGrovesAndLetters).await;
         assert_eq!(hits.len(), 1);
@@ -52,7 +48,6 @@ mod handle_tests {
         cfg.per_grove_enabled.insert("g0".into(), false);
         h.set_config(cfg);
         h.insert(mk("m1", "hello world"));
-        drain().await;
         let q = parse_query("hello");
         let hits = h.query(&q, &SearchScope::AllGrovesAndLetters).await;
         assert!(hits.is_empty());
@@ -66,7 +61,6 @@ mod handle_tests {
         cfg.enabled = false;
         h.set_config(cfg);
         h.insert(mk("m1", "hello"));
-        drain().await;
         assert_eq!(h.message_count().await, 0);
     }
 
@@ -81,7 +75,6 @@ mod handle_tests {
             text: "hi".into(),
             timestamp_ms: 1,
         });
-        drain().await;
         assert!(h.recents().await.is_empty());
     }
 
@@ -95,7 +88,6 @@ mod handle_tests {
                 timestamp_ms: i,
             });
         }
-        drain().await;
         assert!(h.recents().await.len() <= MAX_RECENTS);
     }
 

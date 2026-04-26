@@ -46,7 +46,9 @@ pub struct WebTrustStore {
     // state: lock-ok — `TrustStore` trait is sync; trait elimination
     // tracked in docs/specs/2026-04-26-state-management-model-design.md
     // § Follow-up work F1. `Inner` already groups peers + version under
-    // one guard, so cross-field atomicity is intact.
+    // one guard, so cross-field atomicity is intact. Poison policy
+    // matches `InMemoryTrustStore` (panic on poison): trust state is
+    // security-critical, so silent degradation would be unsafe.
     inner: Mutex<Inner>,
 }
 

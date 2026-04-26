@@ -55,8 +55,17 @@ impl SearchIndexHandle {
     }
 
     /// Insert one live message. Guarded on `enabled` + per-grove opt-out.
-    /// Fire-and-forget; ordering with subsequent reads is preserved by
-    /// the actor's FIFO mailbox.
+    ///
+    /// Fire-and-forget via `do_send`; ordering with subsequent reads is
+    /// preserved by the actor's FIFO mailbox on the same `Addr`.
+    ///
+    /// Backpressure: under sustained burst (e.g. 10k+ live messages
+    /// arriving while a long rebuild is mid-flight) `do_send` may drop
+    /// the message when the actor mailbox is full. This is recoverable —
+    /// the rebuild Effect in `crates/web/src/app.rs` re-runs on every
+    /// `messages_sig` change and reseeds the index from scratch, so any
+    /// dropped insert is picked up on the next rebuild trigger. Callers
+    /// don't need to retry.
     pub fn insert(&self, m: IndexableMessage) {
         self.addr.do_send(Insert(m)).ok();
     }

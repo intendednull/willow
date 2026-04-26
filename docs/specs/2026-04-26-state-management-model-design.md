@@ -163,7 +163,7 @@ Today: `Option<Arc<std::sync::Mutex<MessageDb>>>` field on `ClientState`.
 
 After: removed. `PersistenceActor` (`crates/client/src/persistence_actor.rs`) already owns persistence and is wired through `ClientHandle.persistence_addr`. The legacy field is dead weight.
 
-Verify with `cargo check` + `just test-client` after deletion. No new tests — pure removal.
+Verify with `just check` after deletion (workspace-wide — `cargo check -p willow-client` alone would not catch a downstream consumer in `willow-web` or `willow-agent`). No new tests — pure removal.
 
 ### 6. Web layer locks — collapse + annotate, signal conversion deferred
 
@@ -218,7 +218,7 @@ This block is the source of truth for new code. The spec is the source of truth 
 - `just test-client` for refactored client actors. Each refactored module gets at least one test that exercises the message-passing surface (mutation + read, mutation + subscribe, concurrent mutators if applicable).
 - `just test-browser` for web-layer signal conversions.
 - Full `just check` (fmt + clippy + test + WASM) green before commit. No warnings.
-- `MessageDb` field removal verified by `cargo check -p willow-client` after deletion.
+- `MessageDb` field removal verified by full `just check` (workspace-wide), so any downstream consumer in `willow-web` or `willow-agent` would surface.
 
 No new browser/Playwright tests required — refactors preserve external behaviour.
 
@@ -226,11 +226,11 @@ No new browser/Playwright tests required — refactors preserve external behavio
 
 1. **Doc first.** Spec + CLAUDE.md section. Lands the rule before any refactor commit so reviewers and agents have the contract.
 2. **Annotate locks.** Add `// state: lock-ok` comments to all kept locks. Cheap, zero behaviour change, demonstrates the contract.
-3. **`SearchIndexHandle`** — proves the pattern on the highest-value target (4 → 1 lock collapse, atomicity win).
-4. **`MemNicknameStore`** + **trust `InMemoryState`** — same shape as #3, repeats the pattern.
+3. **`SearchIndexHandle`** — proves the bespoke-actor pattern on the highest-value target (4 → 1 lock collapse via single-mailbox ownership; full async API).
+4. **`MemNicknameStore`** + **trust `InMemoryState`** — collapse + annotate per § 2/§ 3; trait elimination deferred to F1.
 5. **Delete `message_db`** — pure removal, no design risk.
-6. **`ClientHandle.topics` + `join_links`** — biggest design call (Option A vs B). Comes after the pattern is proven.
-7. **Web stores → signals** — different audience (Leptos), separate commit for clean review.
+6. **`ClientHandle.topics` + `join_links`** — annotate + defer to F4 per § 4 (full migration is mechanical but large).
+7. **Web stores** — collapse `WebNicknameStore` lock pair, annotate the rest per § 6 (signal conversion gated on F1 trait elimination).
 8. **`just check`** + commit chain + PR.
 
 Each step in its own commit. Commit body names the runner-up approach where one existed.
