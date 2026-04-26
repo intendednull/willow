@@ -98,13 +98,7 @@ mod tests {
 
     #[test]
     fn placeholder_for_no_channel_selected() {
-        let out = placeholder_for(
-            ChannelKind::Text,
-            "",
-            None,
-            0,
-            ConnectionState::Connected,
-        );
+        let out = placeholder_for(ChannelKind::Text, "", None, 0, ConnectionState::Connected);
         assert_eq!(out, "choose a channel to start");
     }
 }

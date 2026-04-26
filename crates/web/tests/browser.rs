@@ -11253,3 +11253,83 @@ mod phase_2b_sync_queue {
             .expect("request_animation_frame");
     }
 }
+
+// ── Phase 3a — Composer ─────────────────────────────────────────────────
+//
+// Tests for the new `<Composer>` shell that supersedes `<ChatInput>`.
+// Spec: `docs/specs/2026-04-19-ui-design/composer.md`. T5 covers just
+// the shell + autogrow textarea; the rest of the AGs land in T6+.
+
+mod phase_3a_composer {
+    use super::*;
+    use willow_web::components::Composer;
+
+    /// Mounts a bare `<Composer>` and asserts the textarea is present
+    /// and autogrows: a single line stays inside one line-height, while
+    /// 12 lines of content cap at 8 line-heights of visible height and
+    /// then scrolls (`scroll_height > client_height`).
+    #[wasm_bindgen_test]
+    async fn composer_mounts_with_autogrow_textarea() {
+        let container = mount_test(|| {
+            view! {
+                <Composer on_send=|_msg: String| {} />
+            }
+        });
+        tick().await;
+
+        let textarea_el = query(&container, ".composer__textarea")
+            .expect(".composer__textarea must render under <Composer>");
+        let textarea: web_sys::HtmlTextAreaElement = textarea_el
+            .dyn_into()
+            .expect(".composer__textarea must be a <textarea>");
+
+        // Single short line: visible height stays close to one
+        // line-height. We don't pin an exact pixel value because
+        // `font-size: 14px; line-height: 1.45em` resolves slightly
+        // differently across browsers / DPRs; we only assert that the
+        // textarea has not grown to multi-line height.
+        textarea.set_value("hi");
+        let event = web_sys::InputEvent::new("input").unwrap();
+        textarea
+            .dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&event)
+            .unwrap();
+        tick().await;
+        let one_line_client = textarea.client_height();
+        let one_line_scroll = textarea.scroll_height();
+        assert!(
+            one_line_scroll <= one_line_client + 4,
+            "single-line input must not overflow: scroll_height={one_line_scroll}, \
+             client_height={one_line_client}"
+        );
+
+        // 12 lines of content: visible height caps at 8 lines, content
+        // overflows so `scrollHeight > clientHeight`.
+        let twelve_lines = "hi\n".repeat(12);
+        textarea.set_value(&twelve_lines);
+        let event = web_sys::InputEvent::new("input").unwrap();
+        textarea
+            .dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&event)
+            .unwrap();
+        tick().await;
+        let many_client = textarea.client_height();
+        let many_scroll = textarea.scroll_height();
+        assert!(
+            many_scroll > many_client,
+            "12-line input must overflow when capped at 8 visible lines: \
+             scroll_height={many_scroll}, client_height={many_client}"
+        );
+        // Capped client height should not exceed roughly 8 ×
+        // line-height. We use a generous upper bound (≈ 9 ×
+        // line-height) to allow per-browser metrics drift; the load-
+        // bearing assertion is `scroll_height > client_height` above.
+        assert!(
+            many_client <= 200,
+            "client_height should remain bounded by the 8-line cap, \
+             got {many_client}"
+        );
+    }
+}

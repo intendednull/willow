@@ -5942,3 +5942,64 @@ select:focus-visible {
     outline-offset: 2px;
     border-radius: 4px;
 }
+
+/* ── Composer (Phase 3a, T5 shell) ───────────────────────────────────
+ *
+ * Minimal style approximation of `docs/specs/2026-04-19-ui-design/composer.md`
+ * §Desktop compose surface; later tasks (T9–T15) refine to spec
+ * (mobile-pill variant, meta row, offline tint, mention popover, …).
+ */
+
+.composer {
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    box-shadow: var(--shadow-1);
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.composer__row {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+}
+
+.composer__textarea {
+    flex: 1;
+    width: 100%;
+    background: transparent;
+    border: 0;
+    color: var(--ink-0);
+    font-size: 14px;
+    line-height: 1.45em;
+    min-height: 1.45em;
+    outline: none;
+    resize: none;
+    overflow-y: auto;
+    font-family: inherit;
+}
+
+.composer__textarea::placeholder {
+    color: var(--ink-3);
+}
+
+.composer__send {
+    background: var(--moss-1);
+    color: var(--moss-4);
+    border: 0;
+    border-radius: 8px;
+    padding: 6px 10px;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: opacity var(--motion-fast, 120ms) ease;
+}
+
+.composer__send:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}

@@ -10,6 +10,11 @@
 //! up the `<Composer>` shell, and later tasks wire up the meta row,
 //! reply / edit bars, typing indicator, and mention autocomplete.
 
+// Layout matches `docs/plans/2026-04-26-ui-phase-3a-composer.md`
+// §File structure: each subcomponent in its own file under
+// `composer/`, with the parent `<Composer>` itself in `composer.rs`.
+// This intentionally triggers `clippy::module_inception`.
+#[allow(clippy::module_inception)]
 pub mod composer;
 pub mod edit_bar;
 pub mod mention_autocomplete;

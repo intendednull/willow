@@ -20,7 +20,7 @@
 use leptos::prelude::*;
 
 use crate::components::{
-    BottomSheet, ChannelSidebar, ChatInput, FileShareButton, GroveDrawer, MainPaneHeader,
+    BottomSheet, ChannelSidebar, Composer, FileShareButton, GroveDrawer, MainPaneHeader,
     MessageList, RightRailWhich, TabBar,
 };
 use crate::icons;
@@ -382,7 +382,7 @@ where
                                         </div>
                                         <div class="input-row">
                                             <FileShareButton channel=current_channel />
-                                            <ChatInput
+                                            <Composer
                                                 on_send=send
                                                 replying_to=replying_to
                                                 on_cancel_reply=Callback::new(move |_| {

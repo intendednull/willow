@@ -6,9 +6,9 @@ use send_wrapper::SendWrapper;
 use willow_client::{ClientConfig, ClientEvent, ClientHandle, DisplayMessage, VoiceSignalPayload};
 
 use crate::components::{
-    AddServerPanel, CallPage, ChannelSidebar, ChatInput, CommandPalette, FileShareButton,
-    GroveRail, JoinPage, MainPaneHeader, MessageList, MobileShell, RightRail, RightRailWhich,
-    SettingsPanel, ToastStackView, WelcomeScreen,
+    AddServerPanel, CallPage, ChannelSidebar, CommandPalette, Composer, FileShareButton, GroveRail,
+    JoinPage, MainPaneHeader, MessageList, MobileShell, RightRail, RightRailWhich, SettingsPanel,
+    ToastStackView, WelcomeScreen,
 };
 use crate::event_processing::process_event_batch;
 use crate::handlers;
@@ -1061,7 +1061,7 @@ pub fn App() -> impl IntoView {
                                                 <FileShareButton
                                                     channel=current_channel
                                                 />
-                                                <ChatInput
+                                                <Composer
                                                     on_send=send2
                                                     replying_to=replying_to
                                                     on_cancel_reply=Callback::new(move |_| {

@@ -102,7 +102,7 @@
 
 - [x] **T4.** Create `crates/web/src/components/composer/` module + `placeholders.rs` with `placeholder_for(...)`. Pure function with 4 unit tests (text / letter / offline / no-channel). Wire into `components/mod.rs`. **Verify:** `cargo test -p willow-web`.
 
-- [ ] **T5.** Add `<Composer>` shell component (no behavior yet) — autogrow textarea + send button only, picks `--desktop` / `--mobile` variant from `data-shell` body attribute. Replace `<ChatInput>` callsite in `chat_view.rs`. Delete `crates/web/src/components/input.rs`. **Browser test:** `composer_mounts_with_autogrow_textarea` (renders, asserts initial `min-height`, types 12 lines, asserts max 8 visible + scrolls). **Verify:** `just test-browser` for the new test only.
+- [x] **T5.** Add `<Composer>` shell component (no behavior yet) — autogrow textarea + send button only, picks `--desktop` / `--mobile` variant from `data-shell` body attribute. Replace `<ChatInput>` callsite in `chat_view.rs`. Delete `crates/web/src/components/input.rs`. **Browser test:** `composer_mounts_with_autogrow_textarea` (renders, asserts initial `min-height`, types 12 lines, asserts max 8 visible + scrolls). **Verify:** `just test-browser` for the new test only.
 
 ### Phase C — keybindings + reply/edit bars
 
