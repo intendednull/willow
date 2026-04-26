@@ -6313,6 +6313,24 @@ select:focus-visible {
     color: var(--ink-2);
 }
 
+/* Screen-reader-only aria-live region for the typing indicator
+ * (Phase 3a, T12). Visually hidden but still announced by AT —
+ * standard SR-only pattern (1px box clipped out of view). The
+ * companion `.composer__typing-label` span carries `aria-hidden`
+ * so screen readers only consume this throttled region. Spec
+ * `composer.md` §Screen reader flow: "at most once per 5 s". */
+.composer__typing-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
 /* ── Message-row flash (T7 — scroll-to-parent affordance) ──────────────
  *
  * Triggered by the chat view after `on_jump_to_parent` fires from the

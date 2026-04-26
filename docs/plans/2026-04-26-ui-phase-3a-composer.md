@@ -122,7 +122,7 @@
 
 - [x] **T11.** Implement `<TypingIndicator>` row above the composer. Reads `client.typing_in(channel_id)` (already shipped in `joining.rs:322`). Pluralization via match on `len()`. **Browser test:** AG-12. **Verify:** `just test-browser`.
 
-- [ ] **T12.** Wire `aria-live="polite"` with 5s debounce. **Browser test:** AG-13. **Verify:** `just test-browser`.
+- [x] **T12.** Wire `aria-live="polite"` with 5s debounce. **Browser test:** AG-13. **Verify:** `just test-browser`.
 
 ### Phase F — mention autocomplete
 

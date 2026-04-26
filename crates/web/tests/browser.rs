@@ -12387,6 +12387,153 @@ mod phase_3a_composer {
         );
     }
 
+    // ── T12 — aria-live polite + 5 s debounce ──────────────────────────
+    //
+    // AGs covered:
+    //   AG-13: Typing indicator announces via `aria-live="polite"`
+    //          and debounces to at most once per 5 s.
+    //
+    // Spec: `composer.md` §Screen reader flow (line 257-259).
+    // Plan: `2026-04-26-ui-phase-3a-composer.md` Task T12.
+    //
+    // Pure-function unit tests for the debounce gate
+    // (`should_announce`) live in
+    // `crates/web/src/components/composer/typing_indicator.rs::tests`.
+    // The browser tests below verify the wiring — that the visible
+    // label updates on each peers change while the aria-live span
+    // stays pinned to the *first* announcement until 5 s elapses
+    // (`Date::now()` does not advance by 5 000 ms inside a single
+    // wasm-bindgen-test, so three rapid updates yield exactly one
+    // announcement).
+
+    #[wasm_bindgen_test]
+    async fn composer_typing_indicator_has_aria_live_polite() {
+        reset_shell();
+        let peers: Signal<Vec<String>> = Signal::derive(|| vec!["alex".to_string()]);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    typing_peers=peers
+                />
+            }
+        });
+        tick().await;
+
+        let row = query(&container, ".composer__typing-indicator")
+            .expect(".composer__typing-indicator must render under <Composer>");
+
+        // The SR-only span is the *only* aria-live region in the
+        // indicator. The visible label carries `aria-hidden="true"`
+        // so screen readers consume the throttled span only.
+        let sr = row
+            .query_selector(".composer__typing-sr-only")
+            .unwrap()
+            .expect(".composer__typing-sr-only must render for screen-reader announcements");
+        assert_eq!(
+            sr.get_attribute("aria-live").as_deref(),
+            Some("polite"),
+            "screen-reader span must declare aria-live=\"polite\""
+        );
+        assert_eq!(
+            sr.get_attribute("aria-atomic").as_deref(),
+            Some("true"),
+            "screen-reader span must declare aria-atomic=\"true\" so partial updates aren't read"
+        );
+
+        // The visible label and dot cluster must be hidden from AT
+        // so the aria-live throttle isn't bypassed by the visible
+        // text node updating on every signal change.
+        let label = row
+            .query_selector(".composer__typing-label")
+            .unwrap()
+            .expect(".composer__typing-label must render");
+        assert_eq!(
+            label.get_attribute("aria-hidden").as_deref(),
+            Some("true"),
+            "visible label must be aria-hidden so it doesn't bypass the debounced live region"
+        );
+        let dots = row
+            .query_selector(".composer__typing-dots")
+            .unwrap()
+            .expect(".composer__typing-dots must render");
+        assert_eq!(
+            dots.get_attribute("aria-hidden").as_deref(),
+            Some("true"),
+            "dot cluster must be aria-hidden — pure decorative animation"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_typing_indicator_aria_throttled_to_5s() {
+        reset_shell();
+
+        // RwSignal so the test can drive multiple updates within a
+        // single render tree.
+        let peers_rw = RwSignal::new(vec!["alex".to_string()]);
+        let peers: Signal<Vec<String>> = Signal::derive(move || peers_rw.get());
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    typing_peers=peers
+                />
+            }
+        });
+        tick().await;
+
+        let row = query(&container, ".composer__typing-indicator").unwrap();
+        let label = row
+            .query_selector(".composer__typing-label")
+            .unwrap()
+            .unwrap();
+        let sr = row
+            .query_selector(".composer__typing-sr-only")
+            .unwrap()
+            .unwrap();
+
+        // First non-empty change announces — both visible label and
+        // aria-live region read `alex is writing…`.
+        assert_eq!(text(&label), "alex is writing\u{2026}");
+        assert_eq!(
+            text(&sr),
+            "alex is writing\u{2026}",
+            "first non-empty change must announce immediately"
+        );
+
+        // Drive two more rapid changes within the same test tick.
+        // `Date::now()` does not advance by 5 000 ms inside a single
+        // wasm-bindgen-test, so the gate must keep the aria-live
+        // text pinned to the first announcement while the visible
+        // label updates each time.
+        peers_rw.set(vec!["alex".to_string(), "bo".to_string()]);
+        tick().await;
+        assert_eq!(
+            text(&label),
+            "alex and bo are writing\u{2026}",
+            "visible label must update on every peers change"
+        );
+        assert_eq!(
+            text(&sr),
+            "alex is writing\u{2026}",
+            "aria-live must stay pinned to the first announcement \
+             during the 5 s debounce window"
+        );
+
+        peers_rw.set(vec!["alex".to_string(), "bo".to_string(), "cy".to_string()]);
+        tick().await;
+        assert_eq!(
+            text(&label),
+            "alex, bo, and cy are writing\u{2026}",
+            "visible label must continue to update freely"
+        );
+        assert_eq!(
+            text(&sr),
+            "alex is writing\u{2026}",
+            "aria-live must still be throttled — only one announcement per 5 s"
+        );
+    }
+
     #[wasm_bindgen_test]
     async fn composer_typing_indicator_hidden_when_no_typists() {
         reset_shell();
