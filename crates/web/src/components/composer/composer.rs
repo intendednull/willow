@@ -31,10 +31,12 @@
 //! once per keydown.
 
 use leptos::prelude::*;
+use std::sync::OnceLock;
 use wasm_bindgen::JsCast;
 use willow_client::mentions::Suggestions;
 use willow_client::views::MentionCandidate;
 use willow_client::DisplayMessage;
+use willow_identity::EndpointId;
 use willow_state::types::ChannelKind;
 
 use super::edit_bar::EditBar;
@@ -137,6 +139,14 @@ pub fn Composer(
     /// it. Spec: `composer.md` §Mention autocomplete.
     #[prop(optional, into)]
     mention_candidates: Option<Signal<Vec<MentionCandidate>>>,
+    /// `true` when the local peer holds `Permission::ManageChannels`
+    /// in the active server. When set, a synthetic `@channel` row is
+    /// prepended to the candidate list so the popover can offer
+    /// "everyone in this channel" alongside the per-peer rows. Spec
+    /// line 104-105: "Special row `@channel` (mentions all members)
+    /// visible only with `ManageChannels`." Defaults to `false`.
+    #[prop(optional, into)]
+    allow_channel_mention: Option<Signal<bool>>,
 ) -> impl IntoView {
     let (input_text, set_input_text) = signal(String::new());
     let textarea_ref = NodeRef::<leptos::html::Textarea>::new();
@@ -158,6 +168,8 @@ pub fn Composer(
         typing_peers.unwrap_or_else(|| Signal::derive(Vec::new));
     let mention_candidates_sig: Signal<Vec<MentionCandidate>> =
         mention_candidates.unwrap_or_else(|| Signal::derive(Vec::new));
+    let allow_channel_mention_sig: Signal<bool> =
+        allow_channel_mention.unwrap_or_else(|| Signal::derive(|| false));
     // `data-shell` is set once at mount by `mobile_shell` / the
     // wasm-pack test harness; deriving a Signal still works because the
     // closure runs each time a downstream reader subscribes.
@@ -190,7 +202,21 @@ pub fn Composer(
             return Vec::new();
         }
         let q = mention_query.get();
-        let all = mention_candidates_sig.get();
+        let mut all = mention_candidates_sig.get();
+        // Prepend the synthetic `@channel` row when the local peer is
+        // allowed to address everyone (T14 — spec line 104-105). The
+        // ranker treats it as a normal handle-prefix candidate, so an
+        // empty query lists it first (alphabetical "channel" sorts
+        // before most peer handles) and a query like `c` filters via
+        // the same prefix path the per-peer rows use.
+        if allow_channel_mention_sig.get() {
+            let mut next = Vec::with_capacity(all.len() + 1);
+            next.push(super::mention_autocomplete::channel_mention_candidate(
+                synthetic_channel_peer_id(),
+            ));
+            next.append(&mut all);
+            all = next;
+        }
         Suggestions::filter(&q, &all)
     });
     let filtered_signal: Signal<Vec<MentionCandidate>> =
@@ -675,6 +701,18 @@ fn is_mobile_shell() -> bool {
         return false;
     };
     matches!(root.get_attribute("data-shell").as_deref(), Some("mobile"))
+}
+
+/// Stable placeholder `EndpointId` for the synthetic `@channel`
+/// candidate row. `EndpointId` is an Ed25519 public key so we can't
+/// fabricate one from zero bytes; we generate a fresh identity once
+/// and cache it for the lifetime of the process. The composer never
+/// uses this id for routing — selection writes the handle into the
+/// textarea, not the peer id — so the placeholder is purely a slot
+/// in the `MentionCandidate` struct.
+fn synthetic_channel_peer_id() -> EndpointId {
+    static SENTINEL: OnceLock<EndpointId> = OnceLock::new();
+    *SENTINEL.get_or_init(|| willow_identity::Identity::generate().endpoint_id())
 }
 
 /// Find the active `@`-mention token in `value` at the given caret

@@ -12945,4 +12945,144 @@ mod phase_3a_composer {
             "Escape must leave the textarea content unchanged"
         );
     }
+
+    // ── T14 — `@channel` row gated on `ManageChannels` ────────────────
+    //
+    // AGs covered:
+    //   AG-9: `@channel` row appears only when local peer has
+    //         `ManageChannels`.
+    //
+    // Spec: `composer.md` line 104-105 — "Special row `@channel`
+    // (mentions all members) visible only with `ManageChannels`."
+    // Plan: `2026-04-26-ui-phase-3a-composer.md` Task T14.
+
+    #[wasm_bindgen_test]
+    async fn composer_mention_popover_includes_at_channel_when_permitted() {
+        reset_shell();
+        let candidates: Signal<Vec<MentionCandidate>> =
+            Signal::derive(|| vec![make_candidate("alice.forest.1", "Alice")]);
+        let allow: Signal<bool> = Signal::derive(|| true);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    mention_candidates=candidates
+                    allow_channel_mention=allow
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_at_end(&ta, "@");
+        tick().await;
+
+        let popover = query(&container, ".mention-popover")
+            .expect(".mention-popover must render when @ is typed");
+        let channel_row = popover
+            .query_selector(".mention-popover__row--channel")
+            .unwrap()
+            .expect("with allow_channel_mention=true the popover must include the @channel row");
+        let row_text = text(&channel_row);
+        assert!(
+            row_text.contains("everyone in this channel"),
+            "@channel row must show the spec display name, got {row_text:?}"
+        );
+        assert!(
+            row_text.contains("@channel"),
+            "@channel row must show the `@channel` handle, got {row_text:?}"
+        );
+        assert_eq!(
+            channel_row.get_attribute("aria-label").as_deref(),
+            Some("everyone in this channel · notifies all members"),
+            "@channel row aria-label must match the spec accessibility table"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_mention_popover_omits_at_channel_when_not_permitted() {
+        reset_shell();
+        let candidates: Signal<Vec<MentionCandidate>> =
+            Signal::derive(|| vec![make_candidate("alice.forest.1", "Alice")]);
+        let allow: Signal<bool> = Signal::derive(|| false);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    mention_candidates=candidates
+                    allow_channel_mention=allow
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_at_end(&ta, "@");
+        tick().await;
+
+        let popover = query(&container, ".mention-popover")
+            .expect(".mention-popover must render when @ is typed");
+        assert!(
+            popover
+                .query_selector(".mention-popover__row--channel")
+                .unwrap()
+                .is_none(),
+            "without ManageChannels the @channel row must NOT appear"
+        );
+        // The per-peer row must still be there so the popover isn't
+        // empty.
+        let rows = popover.query_selector_all(".mention-popover__row").unwrap();
+        assert_eq!(
+            rows.length(),
+            1,
+            "popover must still list the single per-peer candidate, got {}",
+            rows.length()
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_mention_popover_at_channel_filters_by_prefix() {
+        // Even with permission, the @channel row must obey the
+        // prefix-match contract — typing `@a` (which doesn't prefix
+        // `channel`) must NOT surface the synthetic row.
+        reset_shell();
+        let candidates: Signal<Vec<MentionCandidate>> =
+            Signal::derive(|| vec![make_candidate("alice.forest.1", "Alice")]);
+        let allow: Signal<bool> = Signal::derive(|| true);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    mention_candidates=candidates
+                    allow_channel_mention=allow
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_at_end(&ta, "@a");
+        tick().await;
+
+        let popover = query(&container, ".mention-popover").unwrap();
+        assert!(
+            popover
+                .query_selector(".mention-popover__row--channel")
+                .unwrap()
+                .is_none(),
+            "query `a` does not prefix `channel` — synthetic row must drop out"
+        );
+
+        // And `@c` does prefix `channel` — the row must reappear.
+        type_at_end(&ta, "@c");
+        tick().await;
+        let popover = query(&container, ".mention-popover").unwrap();
+        assert!(
+            popover
+                .query_selector(".mention-popover__row--channel")
+                .unwrap()
+                .is_some(),
+            "query `c` prefixes `channel` — synthetic row must surface"
+        );
+    }
 }

@@ -162,7 +162,33 @@ pub fn MentionAutocomplete(
 }
 
 /// Sentinel handle for the synthetic `@channel` candidate (lit up in
-/// T14 once the `ManageChannels` gate is in place). Defined here so
-/// row rendering can stay symmetric across both real-peer and
-/// synthetic rows.
+/// T14 by the `ManageChannels` gate). Defined here so row rendering
+/// can stay symmetric across both real-peer and synthetic rows.
 pub const CHANNEL_HANDLE: &str = "channel";
+
+/// Build the synthetic `@channel` candidate the parent prepends to
+/// the suggestion list when the local peer has `ManageChannels`.
+///
+/// Spec `composer.md` line 104-105: "Special row `@channel` (mentions
+/// all members) visible only with `ManageChannels`." The popover row
+/// carries the spec's full accessibility-table copy
+/// ("everyone in this channel · notifies all members") via its
+/// `aria-label`; the visible display name is the shorter form so the
+/// row stays compact.
+///
+/// `peer_id` is a placeholder — composer insertion uses the handle,
+/// not the peer id. `EndpointId` requires a valid Ed25519 curve
+/// point so the parent passes one in (typically a stable local
+/// fallback) rather than this module fabricating a fresh identity
+/// per call.
+pub fn channel_mention_candidate(
+    sentinel_peer_id: willow_identity::EndpointId,
+) -> MentionCandidate {
+    use willow_client::presence::PresenceState;
+    MentionCandidate {
+        peer_id: sentinel_peer_id,
+        display_name: "everyone in this channel".to_string(),
+        handle: CHANNEL_HANDLE.to_string(),
+        presence: PresenceState::Unknown,
+    }
+}
