@@ -329,6 +329,12 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
             kind,
             ephemeral,
         } => {
+            if name.chars().count() > 100 {
+                return ApplyResult::Rejected(format!(
+                    "channel name exceeds 100 chars ({} chars)",
+                    name.chars().count()
+                ));
+            }
             // Bound check on idle threshold — `[1h, 90d]`. Reject
             // out-of-range events so the wire cap and the create
             // dialog clamp share the same enforcement.
@@ -376,6 +382,12 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
             channel_id,
             new_name,
         } => {
+            if new_name.chars().count() > 100 {
+                return ApplyResult::Rejected(format!(
+                    "channel name exceeds 100 chars ({} chars)",
+                    new_name.chars().count()
+                ));
+            }
             if let Some(ch) = state.channels.get_mut(channel_id) {
                 ch.name = new_name.clone();
             }
@@ -516,6 +528,12 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
         }
 
         EventKind::SetProfile { display_name } => {
+            if display_name.chars().count() > 64 {
+                return ApplyResult::Rejected(format!(
+                    "display name exceeds 64 chars ({} chars)",
+                    display_name.chars().count()
+                ));
+            }
             let entry = state
                 .profiles
                 .entry(event.author)
@@ -654,6 +672,12 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
         }
 
         EventKind::RenameServer { new_name } => {
+            if new_name.chars().count() > 100 {
+                return ApplyResult::Rejected(format!(
+                    "server name exceeds 100 chars ({} chars)",
+                    new_name.chars().count()
+                ));
+            }
             state.server_name = new_name.clone();
         }
 
@@ -1427,6 +1451,79 @@ mod tests {
         );
         let state = materialize(&dag);
         assert!(!state.peer_permissions.contains_key(&target.endpoint_id()));
+    }
+
+    // ── Name length caps (issue #189) ──────────────────────────────
+
+    #[test]
+    fn name_length_caps_are_utf8_aware() {
+        // 100 crab emoji ('🦀') is 100 chars but 400 bytes — must be accepted
+        // since the cap is on .chars().count(), not .len(). 101 crabs must be
+        // rejected.
+        let admin = Identity::generate();
+        let mut dag = test_dag(&admin);
+
+        let ok_name: String = "🦀".repeat(100);
+        let too_long: String = "🦀".repeat(101);
+
+        // 100-char channel name accepted.
+        emit(
+            &mut dag,
+            &admin,
+            EventKind::CreateChannel {
+                name: ok_name.clone(),
+                channel_id: "ch-ok".into(),
+                kind: crate::types::ChannelKind::Text,
+                ephemeral: None,
+            },
+        );
+        // 101-char channel name rejected.
+        emit(
+            &mut dag,
+            &admin,
+            EventKind::CreateChannel {
+                name: too_long.clone(),
+                channel_id: "ch-bad".into(),
+                kind: crate::types::ChannelKind::Text,
+                ephemeral: None,
+            },
+        );
+
+        // 64-char display name accepted; 65-char rejected.
+        let ok_display: String = "🦀".repeat(64);
+        let bad_display: String = "🦀".repeat(65);
+        emit(
+            &mut dag,
+            &admin,
+            EventKind::SetProfile {
+                display_name: ok_display.clone(),
+            },
+        );
+        let state_after_ok = materialize(&dag);
+        assert_eq!(
+            state_after_ok.profiles[&admin.endpoint_id()].display_name,
+            ok_display
+        );
+
+        emit(
+            &mut dag,
+            &admin,
+            EventKind::SetProfile {
+                display_name: bad_display,
+            },
+        );
+
+        let state = materialize(&dag);
+        // 100-char crab channel survived.
+        assert!(state.channels.contains_key("ch-ok"));
+        assert_eq!(state.channels["ch-ok"].name, ok_name);
+        // 101-char channel was rejected.
+        assert!(!state.channels.contains_key("ch-bad"));
+        // Display name pinned at the 64-char value (rejected event left it intact).
+        assert_eq!(
+            state.profiles[&admin.endpoint_id()].display_name,
+            ok_display
+        );
     }
 
     #[test]

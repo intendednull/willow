@@ -118,7 +118,6 @@ pub fn ResultsList(
             class="search-results"
             role="listbox"
             aria-label="search results"
-            aria-live="polite"
         >
             {sections}
         </div>

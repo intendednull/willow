@@ -1,7 +1,7 @@
 [package]
 name = "willow-storage"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 
 [[bin]]
 name = "willow-storage"
@@ -12,6 +12,7 @@ willow-worker = { path = "../worker" }
 willow-state = { path = "../state" }
 willow-identity = { path = "../identity" }
 willow-network = { path = "../network" }
+willow-common = { path = "../common" }
 rusqlite = { version = "0.31", features = ["bundled"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = { workspace = true }

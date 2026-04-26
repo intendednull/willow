@@ -2,6 +2,34 @@
   "effortLevel": "high",
   "enabledPlugins": {
     "frontend-design@claude-plugins-official": true,
-    "code-simplifier@claude-plugins-official": true
+    "code-simplifier@claude-plugins-official": true,
+    "superpowers@claude-plugins-official": false,
+    "caveman@caveman": false
+  },
+  "extraKnownMarketplaces": {
+    "caveman": {
+      "source": {
+        "source": "github",
+        "repo": "JuliusBrussee/caveman"
+      },
+      "autoUpdate": false
+    }
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/using-superpowers-session-start.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/caveman-session-start.sh\""
+          }
+        ]
+      }
+    ]
   }
 }
