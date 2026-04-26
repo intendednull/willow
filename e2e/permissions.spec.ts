@@ -4,6 +4,7 @@ import {
   waitForMessage,
   setupTwoPeers,
   kickPeer,
+  openMemberList,
   openServerSettings,
   openCompareFingerprints,
   markFingerprintsMatch,
@@ -45,15 +46,23 @@ test.describe('Permissions and trust', () => {
   test('owner kicks member — member count drops', async ({ browser }) => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Kick Server', 'Alice', 'Bob');
     try {
-      // Record initial member count (includes relay + peers).
-      await page1.waitForTimeout(1000);
-      const initialCount = await page1.locator(`${visibleShell(page1)} .member-item`).count();
-      expect(initialCount).toBeGreaterThanOrEqual(2);
+      // The members pane is closed by default — `setupTwoPeers` opens it
+      // briefly to wait for display-name sync and then closes it again.
+      // Open it before counting so `.member-item` rows are mounted (the
+      // right-rail `match which.get()` only renders MemberList when the
+      // pane is open). Then poll for the membership-sync-completed state
+      // (>= 2 members) instead of taking a single fixed-delay snapshot.
+      await openMemberList(page1);
+      const memberItems = page1.locator(`${visibleShell(page1)} .member-item`);
+      await expect.poll(() => memberItems.count(), { timeout: 30_000 })
+        .toBeGreaterThanOrEqual(2);
+      const initialCount = await memberItems.count();
 
-      // Alice kicks Bob.
+      // Alice kicks Bob (helper toggles the pane open/closed itself).
       await kickPeer(page1, 'Bob');
 
-      // Member count should drop by 1.
+      // Re-open the pane so we can re-count after the kick lands.
+      await openMemberList(page1);
       await expect(page1.locator(`${visibleShell(page1)} .member-item`))
         .toHaveCount(initialCount - 1, { timeout: 30_000 });
     } finally {
