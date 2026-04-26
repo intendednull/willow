@@ -19,8 +19,10 @@ Quality and longevity beat speed and convenience.
   right means touching more files or refactoring an abstraction — do it. But
   don't add features, abstractions, or error handling the task didn't ask for.
 - **When the answer isn't obvious, stop and design.** Two+ reasonable approaches?
-  Write a brief note in `docs/superpowers/specs/YYYY-MM-DD-<name>.md` before coding.
-  Cheap up front, expensive later.
+  Write a brief note in `docs/specs/YYYY-MM-DD-<name>-design.md` before coding.
+  Implementation plan goes in `docs/plans/YYYY-MM-DD-<name>.md`. Cheap up front,
+  expensive later. **Specs go in `docs/specs/`, plans in `docs/plans/`.** Do
+  not create `docs/superpowers/`.
 - **Surface tradeoffs explicitly.** When picking between approaches, name the
   runner-up and why rejected. Commit body or PR description. Future-you needs
   the reasoning, not just the result.
@@ -38,9 +40,8 @@ Quality and longevity beat speed and convenience.
 
 ```
 docs/
-├── plans/              — Implementation plans for features
-├── specs/              — Design specs and technical specifications
-├── superpowers/        — Active-work specs + plans (current convention)
+├── plans/              — Implementation plans for features (YYYY-MM-DD-<name>.md)
+├── specs/              — Design specs and technical specifications (YYYY-MM-DD-<name>-design.md)
 ├── reference-designs/  — Exploratory UI / design references
 └── reports/            — Ad-hoc audit and investigation reports
 crates/
@@ -241,7 +242,7 @@ Decision tree for every new test:
 
 **Rewrite trigger.** When a Playwright test fails because a selector or helper drifts — not because behaviour broke — that test is at the wrong tier. Migrate it down on the same commit.
 
-Full discussion: `docs/superpowers/specs/2026-04-21-e2e-test-architecture-design.md`.
+Full discussion: `docs/specs/2026-04-21-e2e-test-architecture-design.md`.
 
 ### Which Test to Write
 

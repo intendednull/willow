@@ -8,7 +8,7 @@
 
 **Tech Stack:** Playwright (`playwright.config.ts` + `e2e/*.spec.ts` + `e2e/helpers.ts`), wasm-pack + `wasm-bindgen-test` (`crates/web/tests/browser.rs`), `cargo test` (`crates/{state,client}/src/**`), Leptos 0.7 signals, `willow-client::MemNetwork`, `just`.
 
-**Spec:** `docs/superpowers/specs/2026-04-21-e2e-test-architecture-design.md`.
+**Spec:** `docs/specs/2026-04-21-e2e-test-architecture-design.md`.
 
 **Branch:** `e2e/test-architecture` (worktree `.worktrees/e2e-arch`). Merged into `design/ui-target-ux` on completion.
 
@@ -957,7 +957,7 @@ Decision tree for every new test:
 
 **Rewrite trigger.** When a Playwright test fails because a selector or helper drifts — not because behaviour broke — that test is at the wrong tier. Migrate it down on the same commit.
 
-Full discussion: `docs/superpowers/specs/2026-04-21-e2e-test-architecture-design.md`.
+Full discussion: `docs/specs/2026-04-21-e2e-test-architecture-design.md`.
 ```
 
 - [ ] **Step 2: Commit.**
@@ -979,7 +979,7 @@ git commit -m "docs: add 'which test tier to use' decision tree to CLAUDE.md"
 
 This directory is reserved for tests that *need* Playwright. Everything
 else belongs at a lower tier — see `CLAUDE.md` §Which test tier to use
-or `docs/superpowers/specs/2026-04-21-e2e-test-architecture-design.md`.
+or `docs/specs/2026-04-21-e2e-test-architecture-design.md`.
 
 ## What belongs here
 
@@ -1050,7 +1050,7 @@ down requires active discipline.
 - When a Playwright test fails because of selector drift rather than
   behaviour change, migrate it down on the same commit — don't just
   fix the selector.
-- Spec: `docs/superpowers/specs/2026-04-21-e2e-test-architecture-design.md`.
+- Spec: `docs/specs/2026-04-21-e2e-test-architecture-design.md`.
 ```
 
 - [ ] **Step 2: Add the index line to MEMORY.md.**

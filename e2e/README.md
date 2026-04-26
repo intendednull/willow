@@ -2,7 +2,7 @@
 
 This directory is reserved for tests that *need* Playwright. Everything
 else belongs at a lower tier — see `CLAUDE.md` §Which test tier to use
-or `docs/superpowers/specs/2026-04-21-e2e-test-architecture-design.md`.
+or `docs/specs/2026-04-21-e2e-test-architecture-design.md`.
 
 ## What belongs here
 
