@@ -22,7 +22,7 @@ test.describe('Join via shareable link', () => {
 
     // Generate join link from settings.
     await openSidebar(pageA);
-    await pageA.locator(`${visibleShell(pageA)} .server-gear-btn`).first().click();
+    await pageA.locator(`${visibleShell(pageA)} [aria-label="grove menu"]`).first().click();
     // Settings panel appears.
     await pageA.locator('.settings-panel, .settings-overlay').first()
       .waitFor({ timeout: 5_000 });

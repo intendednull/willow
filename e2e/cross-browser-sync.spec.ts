@@ -57,7 +57,7 @@ test.describe('Cross-browser peer sync', () => {
       expect(mobilePeerId).toBeTruthy();
 
       // Desktop Firefox: generate invite for mobile peer.
-      await desktopPage.locator('.server-gear-btn').click();
+      await desktopPage.locator('[aria-label="grove menu"]').click();
       await desktopPage.waitForTimeout(500);
       await desktopPage.locator('input[placeholder*="12D3KooW"]').fill(mobilePeerId);
       await desktopPage.locator('button', { hasText: 'Generate Invite' }).click();
@@ -133,7 +133,7 @@ test.describe('Cross-browser peer sync', () => {
 
       // Mobile Chrome: open settings to generate invite.
       await openSidebar(mobilePage);
-      await mobilePage.locator('.server-gear-btn').click();
+      await mobilePage.locator('[aria-label="grove menu"]').click();
       await mobilePage.waitForTimeout(500);
       await mobilePage.locator('input[placeholder*="12D3KooW"]').fill(desktopPeerId);
       await mobilePage.locator('button', { hasText: 'Generate Invite' }).click();

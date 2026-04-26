@@ -352,8 +352,8 @@ export async function closeMemberList(page: Page) {
 /** Opens the server settings panel (opens sidebar first on mobile). */
 export async function openServerSettings(page: Page) {
   if (isMobile(page)) {
-    // Channel list is on the home tab; the gear lives in the sidebar
-    // header rendered inside `.mobile-home`. No drawer needed.
+    // Channel list is on the home tab; the grove header lives in the
+    // sidebar rendered inside `.mobile-home`. No drawer needed.
     const backSlot = page.locator('.mobile-top-bar .top-slot-left .top-back');
     while (await backSlot.isVisible().catch(() => false)) {
       await page.locator('.mobile-top-bar .top-slot-left').click();
@@ -362,7 +362,7 @@ export async function openServerSettings(page: Page) {
     await page.locator('.mobile-tab-bar .tab[data-tab="home"]').click();
     await page.waitForTimeout(200);
   }
-  await page.locator(`${visibleShell(page)} .server-gear-btn`).first().click();
+  await page.locator(`${visibleShell(page)} [aria-label="grove menu"]`).first().click();
   await page.locator('.settings-panel, .settings-overlay').first()
     .waitFor({ timeout: 5_000 });
 }
