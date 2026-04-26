@@ -11332,4 +11332,420 @@ mod phase_3a_composer {
              got {many_client}"
         );
     }
+
+    // ── T6 — full keydown handler ───────────────────────────────────────
+    //
+    // AGs covered by this group:
+    //   AG-2: Enter sends, Shift+Enter inserts newline,
+    //         Ctrl/⌘+Enter force-sends.
+    //   AG-3: Tab inserts two spaces (no focus move).
+    //   AG-4: ArrowUp on empty textarea fires the edit-last callback.
+    //   AG-5: Escape unwinds in order edit → reply → blur.
+    //
+    // Spec: `composer.md` §Keyboard (desktop) + §Keyboard (mobile).
+    // Plan: `2026-04-26-ui-phase-3a-composer.md` Task T6.
+    //
+    // We dispatch synthetic `KeyboardEvent`s onto the rendered
+    // textarea instead of relying on the OS layer because wasm-pack's
+    // headless browser harness does not raise hardware key events.
+    // Each synthetic event sets `bubbles` + `cancelable` so the
+    // composer's `on:keydown` listener observes it as it would a real
+    // user keypress, including `prevent_default()` semantics.
+    //
+    // Test scratch state lives in `Arc<Mutex<…>>` because Leptos
+    // `Callback::new` requires `Send + Sync` even though wasm-pack's
+    // browser harness is single-threaded.
+    use std::sync::{Arc, Mutex};
+
+    /// Reset the `<html data-shell>` attribute so a stale value from
+    /// a previous test (e.g. mobile) doesn't leak into desktop tests.
+    fn reset_shell() {
+        let doc = web_sys::window().unwrap().document().unwrap();
+        let root = doc.document_element().unwrap();
+        let _ = root.remove_attribute("data-shell");
+    }
+
+    /// Build a `KeyboardEvent` that bubbles + can be cancelled, with
+    /// optional modifier keys. Mirrors the plain `press_key` helper
+    /// elsewhere in this file but adds the modifier bits T6 needs.
+    fn make_key_event(
+        kind: &str,
+        key: &str,
+        shift: bool,
+        ctrl: bool,
+        meta: bool,
+    ) -> web_sys::KeyboardEvent {
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_key(key);
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        init.set_shift_key(shift);
+        init.set_ctrl_key(ctrl);
+        init.set_meta_key(meta);
+        web_sys::KeyboardEvent::new_with_keyboard_event_init_dict(kind, &init).unwrap()
+    }
+
+    /// Dispatch the event on `target` and return whether
+    /// `prevent_default()` was called (i.e. the event was consumed).
+    fn dispatch(target: &web_sys::EventTarget, ev: &web_sys::KeyboardEvent) -> bool {
+        target.dispatch_event(ev).unwrap();
+        ev.default_prevented()
+    }
+
+    /// Type `value` into a textarea and dispatch an `input` event so
+    /// the composer's `on:input` handler updates `input_text`.
+    fn type_into(textarea: &web_sys::HtmlTextAreaElement, value: &str) {
+        textarea.set_value(value);
+        let ev = web_sys::InputEvent::new("input").unwrap();
+        textarea
+            .dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&ev)
+            .unwrap();
+    }
+
+    fn composer_textarea(container: &web_sys::HtmlElement) -> web_sys::HtmlTextAreaElement {
+        query(container, ".composer__textarea")
+            .expect(".composer__textarea must exist")
+            .dyn_into::<web_sys::HtmlTextAreaElement>()
+            .expect(".composer__textarea must be a <textarea>")
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_enter_sends() {
+        reset_shell();
+        let sent: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured = sent.clone();
+        let container = mount_test(move || {
+            let captured = captured.clone();
+            view! {
+                <Composer on_send=move |msg: String| captured.lock().unwrap().push(msg) />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_into(&ta, "hi");
+        tick().await;
+
+        let target = ta.dyn_ref::<web_sys::EventTarget>().unwrap();
+        let ev = make_key_event("keydown", "Enter", false, false, false);
+        let prevented = dispatch(target, &ev);
+        tick().await;
+
+        assert!(
+            prevented,
+            "Enter must call prevent_default to suppress newline"
+        );
+        assert_eq!(
+            sent.lock().unwrap().as_slice(),
+            &["hi".to_string()],
+            "on_send must fire exactly once with the typed body"
+        );
+        assert_eq!(
+            ta.value(),
+            "",
+            "textarea must be cleared after a successful send"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_shift_enter_inserts_newline() {
+        reset_shell();
+        let sent: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured = sent.clone();
+        let container = mount_test(move || {
+            let captured = captured.clone();
+            view! {
+                <Composer on_send=move |msg: String| captured.lock().unwrap().push(msg) />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_into(&ta, "hi");
+        tick().await;
+
+        let target = ta.dyn_ref::<web_sys::EventTarget>().unwrap();
+        let ev = make_key_event("keydown", "Enter", true, false, false);
+        let prevented = dispatch(target, &ev);
+        tick().await;
+
+        // Shift+Enter must NOT call preventDefault (browser is allowed
+        // to insert the newline) and must NOT fire `on_send`.
+        // Synthesised KeyboardEvents do not actually splice a newline
+        // into the textarea, so we assert via the consumption signal.
+        assert!(
+            !prevented,
+            "Shift+Enter must not call prevent_default — browser inserts the newline"
+        );
+        assert!(
+            sent.lock().unwrap().is_empty(),
+            "on_send must not fire on Shift+Enter"
+        );
+        assert_eq!(
+            ta.value(),
+            "hi",
+            "textarea body must remain unchanged after Shift+Enter"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_ctrl_enter_force_sends_on_mobile() {
+        // Ctrl/Cmd+Enter is the only way to submit on mobile per spec
+        // §Keyboard (mobile). Mounting under the mobile shell proves
+        // the modifier path bypasses the plain-Enter newline rule.
+        let sent: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured = sent.clone();
+        let container = mount_test_with_shell(TestShell::Mobile, move || {
+            let captured = captured.clone();
+            view! {
+                <Composer on_send=move |msg: String| captured.lock().unwrap().push(msg) />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_into(&ta, "hi");
+        tick().await;
+
+        // First sanity: plain Enter on mobile must NOT send.
+        let target = ta.dyn_ref::<web_sys::EventTarget>().unwrap();
+        let plain = make_key_event("keydown", "Enter", false, false, false);
+        let plain_prevented = dispatch(target, &plain);
+        tick().await;
+        assert!(
+            !plain_prevented,
+            "plain Enter on mobile must let the browser insert a newline"
+        );
+        assert!(
+            sent.lock().unwrap().is_empty(),
+            "plain Enter on mobile must not fire on_send"
+        );
+
+        // Now Ctrl+Enter — must force-send regardless of shell.
+        let ctrl = make_key_event("keydown", "Enter", false, true, false);
+        let ctrl_prevented = dispatch(target, &ctrl);
+        tick().await;
+        assert!(
+            ctrl_prevented,
+            "Ctrl+Enter must call prevent_default (force-send path)"
+        );
+        assert_eq!(
+            sent.lock().unwrap().as_slice(),
+            &["hi".to_string()],
+            "Ctrl+Enter must fire on_send once"
+        );
+
+        // And Cmd+Enter (meta) — same effect, exercised in a single
+        // test so we cover both modifier flags.
+        type_into(&ta, "ho");
+        tick().await;
+        let meta = make_key_event("keydown", "Enter", false, false, true);
+        let meta_prevented = dispatch(target, &meta);
+        tick().await;
+        assert!(
+            meta_prevented,
+            "Cmd+Enter must also force-send via prevent_default"
+        );
+        assert_eq!(
+            sent.lock().unwrap().len(),
+            2,
+            "Cmd+Enter must fire on_send a second time"
+        );
+
+        reset_shell();
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_tab_inserts_two_spaces() {
+        reset_shell();
+        let container = mount_test(|| {
+            view! { <Composer on_send=|_msg: String| {} /> }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_into(&ta, "ab");
+        tick().await;
+        // Caret at position 2 (end of "ab").
+        ta.set_selection_range(2, 2).unwrap();
+
+        let target = ta.dyn_ref::<web_sys::EventTarget>().unwrap();
+        let ev = make_key_event("keydown", "Tab", false, false, false);
+        let prevented = dispatch(target, &ev);
+        tick().await;
+
+        assert!(prevented, "Tab inside textarea must call prevent_default");
+        assert_eq!(
+            ta.value(),
+            "ab  ",
+            "Tab must insert exactly two spaces at the caret"
+        );
+        let caret = ta.selection_start().unwrap().unwrap_or(0);
+        assert_eq!(caret, 4, "caret must advance past the inserted two spaces");
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_escape_unwinds_edit_then_reply_then_blur() {
+        reset_shell();
+        let editing_msg = make_msg("you", "draft body", 1_700_000_000_000);
+        let reply_msg = make_msg("them", "parent body", 1_700_000_000_000);
+
+        let (editing_sig, set_editing) = signal(Some(editing_msg.clone()));
+        let (reply_sig, set_reply) = signal(Some(reply_msg.clone()));
+
+        let cancel_edit_count: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+        let cancel_reply_count: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+        let edit_ctr = cancel_edit_count.clone();
+        let reply_ctr = cancel_reply_count.clone();
+
+        let container = mount_test(move || {
+            let edit_ctr = edit_ctr.clone();
+            let reply_ctr = reply_ctr.clone();
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    replying_to=reply_sig
+                    on_cancel_reply=Callback::new(move |_| {
+                        *reply_ctr.lock().unwrap() += 1;
+                        set_reply.set(None);
+                    })
+                    editing=editing_sig
+                    on_cancel_edit=Callback::new(move |_| {
+                        *edit_ctr.lock().unwrap() += 1;
+                        set_editing.set(None);
+                    })
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        ta.focus().unwrap();
+        let target = ta.dyn_ref::<web_sys::EventTarget>().unwrap();
+
+        // Press 1: must fire cancel_edit (only).
+        let ev1 = make_key_event("keydown", "Escape", false, false, false);
+        dispatch(target, &ev1);
+        tick().await;
+        assert_eq!(
+            *cancel_edit_count.lock().unwrap(),
+            1,
+            "first Escape must cancel edit"
+        );
+        assert_eq!(
+            *cancel_reply_count.lock().unwrap(),
+            0,
+            "first Escape must not cancel reply yet"
+        );
+
+        // Press 2: must fire cancel_reply (only).
+        let ev2 = make_key_event("keydown", "Escape", false, false, false);
+        dispatch(target, &ev2);
+        tick().await;
+        assert_eq!(
+            *cancel_edit_count.lock().unwrap(),
+            1,
+            "second Escape must not re-fire edit cancel"
+        );
+        assert_eq!(
+            *cancel_reply_count.lock().unwrap(),
+            1,
+            "second Escape must cancel reply"
+        );
+
+        // Press 3: nothing else to unwind — must blur the textarea.
+        // We assert via `document.active_element` because `blur()`
+        // is the contract here, not a callback.
+        let ev3 = make_key_event("keydown", "Escape", false, false, false);
+        dispatch(target, &ev3);
+        tick().await;
+        let doc = web_sys::window().unwrap().document().unwrap();
+        let active = doc.active_element();
+        let still_focused = active
+            .as_ref()
+            .map(|el| el.is_same_node(Some(ta.as_ref())))
+            .unwrap_or(false);
+        assert!(
+            !still_focused,
+            "third Escape must blur the textarea (active element changed)"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_arrow_up_on_empty_fires_edit_callback() {
+        reset_shell();
+        let count: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+        let captured = count.clone();
+        let container = mount_test(move || {
+            let captured = captured.clone();
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    on_arrow_up_edit=Callback::new(move |_| {
+                        *captured.lock().unwrap() += 1;
+                    })
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        // Textarea is empty by default — no `type_into` needed.
+        let target = ta.dyn_ref::<web_sys::EventTarget>().unwrap();
+        let ev = make_key_event("keydown", "ArrowUp", false, false, false);
+        let prevented = dispatch(target, &ev);
+        tick().await;
+
+        assert!(
+            prevented,
+            "ArrowUp on empty composer must call prevent_default \
+             (suppresses caret move)"
+        );
+        assert_eq!(
+            *count.lock().unwrap(),
+            1,
+            "on_arrow_up_edit must fire exactly once on empty ArrowUp"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_arrow_up_on_nonempty_does_not_fire() {
+        reset_shell();
+        let count: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+        let captured = count.clone();
+        let container = mount_test(move || {
+            let captured = captured.clone();
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    on_arrow_up_edit=Callback::new(move |_| {
+                        *captured.lock().unwrap() += 1;
+                    })
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_into(&ta, "x");
+        tick().await;
+
+        let target = ta.dyn_ref::<web_sys::EventTarget>().unwrap();
+        let ev = make_key_event("keydown", "ArrowUp", false, false, false);
+        let prevented = dispatch(target, &ev);
+        tick().await;
+
+        assert!(
+            !prevented,
+            "ArrowUp on a non-empty draft must NOT prevent_default \
+             — the user is moving the caret within the buffer"
+        );
+        assert_eq!(
+            *count.lock().unwrap(),
+            0,
+            "on_arrow_up_edit must not fire when textarea has content"
+        );
+    }
 }

@@ -961,6 +961,29 @@ pub fn App() -> impl IntoView {
                                             });
                                         })
                                     };
+                                    // ArrowUp on an empty composer enters edit
+                                    // mode on the most recent own message in
+                                    // the current channel. Spec
+                                    // `composer.md` §Keyboard (desktop). The
+                                    // composer fires `on_arrow_up_edit` and
+                                    // the parent owns the lookup + signal
+                                    // write so the component stays unaware
+                                    // of the client handle.
+                                    let on_arrow_up_edit_cb = {
+                                        let h = handle_ty.clone();
+                                        let ch = current_channel;
+                                        Callback::new(move |_: ()| {
+                                            let h = h.clone();
+                                            let channel = ch.get_untracked();
+                                            wasm_bindgen_futures::spawn_local(async move {
+                                                if let Some(msg) =
+                                                    h.last_own_message(&channel).await
+                                                {
+                                                    write.chat.set_editing.set(Some(msg));
+                                                }
+                                            });
+                                        })
+                                    };
                                     let on_pin_cb = {
                                         let pin_handler = pin.clone();
                                         Callback::new(move |msg: DisplayMessage| {
@@ -1073,6 +1096,7 @@ pub fn App() -> impl IntoView {
                                                         write.chat.set_editing.set(None);
                                                     })
                                                     on_typing=on_typing_cb
+                                                    on_arrow_up_edit=on_arrow_up_edit_cb
                                                 />
                                             </div>
                                         </main>

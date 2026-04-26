@@ -2,11 +2,13 @@
 //!
 //! T5 ships the minimum-viable shell: an autogrow textarea + a send
 //! button that mirrors the existing `<ChatInput>` prop contract so
-//! callsites only swap the component name. Reply / edit bars carry
-//! over the legacy markup unchanged here; T7 / T8 restyle them per
-//! `docs/specs/2026-04-19-ui-design/composer.md`. Full keybinding
-//! semantics, autocomplete, meta row, typing indicator, offline tint,
-//! and per-channel-kind placeholder copy land in T6 onward.
+//! callsites only swap the component name. T6 lights up the full
+//! keydown table (Enter / Shift+Enter / Ctrl|Cmd+Enter / Tab /
+//! Esc-unwind / ArrowUp-edit-last) per
+//! `docs/specs/2026-04-19-ui-design/composer.md`. Reply / edit bars
+//! carry over the legacy markup unchanged here; T7 / T8 restyle them
+//! per spec. Mention autocomplete, meta row, typing indicator, offline
+//! tint, and per-channel-kind placeholder copy land in later tasks.
 //!
 //! The outer wrapper carries both `composer` (new) and `input-area`
 //! (legacy). The legacy class keeps the existing CSS rules (focus
@@ -19,8 +21,17 @@
 //! whenever `input_text` changes — including when the submit handler
 //! resets it to empty, which collapses the textarea back to its
 //! `min-height: 1.45em` baseline.
+//!
+//! Mobile detection: the wrapper reads `data-shell` from the `<html>`
+//! root (set by `mobile_shell` / test harness via
+//! `mount_test_with_shell`) so a single `<Composer>` component can
+//! serve both desktop (Enter sends) and mobile (Enter inserts newline,
+//! Ctrl/Cmd+Enter still force-sends) keyboard conventions per spec
+//! §Keyboard (mobile). No new global signals — the lookup is done
+//! once per keydown.
 
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
 use willow_client::DisplayMessage;
 
 /// Maximum number of visible textarea lines before the textarea
@@ -59,6 +70,13 @@ pub fn Composer(
     /// throttle in the parent).
     #[prop(optional, into)]
     on_typing: Option<Callback<()>>,
+    /// Fired when the user presses `ArrowUp` while the textarea is
+    /// empty. The parent looks up `client.last_own_message(channel)`
+    /// and writes the result into its `editing` signal — Composer
+    /// stays unaware of the client handle and channel id (Option A in
+    /// the T6 plan: parent owns the state, composer just emits).
+    #[prop(optional, into)]
+    on_arrow_up_edit: Option<Callback<()>>,
 ) -> impl IntoView {
     let (input_text, set_input_text) = signal(String::new());
     let textarea_ref = NodeRef::<leptos::html::Textarea>::new();
@@ -98,13 +116,27 @@ pub fn Composer(
         }
     });
 
-    // Submit-on-Enter / Escape unwind. Full kbd table (Shift+Enter
-    // newline, Ctrl/Cmd+Enter force-send, Tab→2 spaces, ArrowUp edit)
-    // lands in T6.
+    // Full keydown table per `composer.md` §Keyboard (desktop) +
+    // §Keyboard (mobile):
+    //
+    //   Ctrl|Cmd + Enter        → force-send (both shells).
+    //   Enter (no modifiers)    → desktop sends; mobile inserts newline.
+    //   Shift + Enter           → newline (default — no preventDefault).
+    //   Escape                  → unwind: edit → reply → blur.
+    //   Tab inside textarea     → insert two spaces (no focus move).
+    //   ArrowUp on empty input  → fire `on_arrow_up_edit` (parent decides).
+    //   `@` and other keys      → fall through (mention autocomplete + IME
+    //                             land in T13).
+    //
+    // Mobile is detected by reading `data-shell` from the `<html>`
+    // root each keydown. `mobile_shell` sets it at runtime; the
+    // wasm-pack test harness sets it via `mount_test_with_shell`.
     let cancel_reply_cb = on_cancel_reply;
     let cancel_edit_cb = on_cancel_edit;
     let edit_send_cb = on_edit_send;
     let editing_for_keydown = editing;
+    let replying_for_keydown = replying_to;
+    let arrow_up_cb = on_arrow_up_edit;
     let on_send_clone = on_send.clone();
 
     let submit = move || {
@@ -131,22 +163,96 @@ pub fn Composer(
 
     let submit_for_key = submit.clone();
     let on_keydown = move |ev: web_sys::KeyboardEvent| {
-        if ev.key() == "Enter" && !ev.shift_key() {
+        let key = ev.key();
+        let force_send = (ev.ctrl_key() || ev.meta_key()) && key == "Enter";
+
+        if force_send {
+            // Ctrl/Cmd+Enter: force-send regardless of shell. Spec
+            // §Keyboard (desktop): "for users who prefer Enter as
+            // newline" — also the only modal way to submit on mobile
+            // when the textarea is multi-line.
             ev.prevent_default();
             submit_for_key();
-        } else if ev.key() == "Escape" {
-            // Edit cancel takes priority over reply cancel — matches
-            // the legacy `<ChatInput>` semantics and `composer.md`
-            // §Keyboard "unwinds in order: cancel edit → cancel reply".
-            let is_editing = editing_for_keydown
+            return;
+        }
+
+        if key == "Enter" {
+            if ev.shift_key() {
+                // Spec §Keyboard: Shift+Enter inserts a newline. Let
+                // the browser do the default insert.
+                return;
+            }
+            // Plain Enter: desktop sends, mobile inserts newline.
+            if is_mobile_shell() {
+                return;
+            }
+            ev.prevent_default();
+            submit_for_key();
+            return;
+        }
+
+        if key == "Escape" {
+            // Spec §Keyboard: "unwinds in order: cancel edit → cancel
+            // reply → blur." Each Esc press performs the next step.
+            let editing_active = editing_for_keydown
                 .map(|sig| sig.get_untracked().is_some())
                 .unwrap_or(false);
-            if is_editing {
+            if editing_active {
+                ev.prevent_default();
                 if let Some(ref cb) = cancel_edit_cb {
                     cb.run(());
                 }
                 set_input_text.set(String::new());
-            } else if let Some(ref cb) = cancel_reply_cb {
+                return;
+            }
+            let replying_active = replying_for_keydown
+                .map(|sig| sig.get_untracked().is_some())
+                .unwrap_or(false);
+            if replying_active {
+                ev.prevent_default();
+                if let Some(ref cb) = cancel_reply_cb {
+                    cb.run(());
+                }
+                return;
+            }
+            // Nothing to unwind — blur the textarea so the next Esc
+            // exits the surface entirely. Pulled from the event
+            // target rather than the captured ref so we still blur
+            // when the keydown bubbles from a child element.
+            if let Some(target) = ev.target() {
+                if let Ok(el) = target.dyn_into::<web_sys::HtmlElement>() {
+                    let _ = el.blur();
+                }
+            }
+            return;
+        }
+
+        if key == "Tab" {
+            // Spec §Keyboard: "Tab inside textarea inserts two spaces
+            // (no focus move)." Splice at the current selection so
+            // the user's caret stays anchored after the inserted
+            // pair.
+            if let Some(target) = ev.target() {
+                if let Ok(el) = target.dyn_into::<web_sys::HtmlTextAreaElement>() {
+                    ev.prevent_default();
+                    insert_at_caret(&el, "  ");
+                    set_input_text.set(el.value());
+                }
+            }
+            return;
+        }
+
+        if key == "ArrowUp" {
+            // Spec §Keyboard: "ArrowUp when textarea empty → enters
+            // edit mode on most recent own message." Only fires when
+            // the textarea is empty *and* the caret is at position 0
+            // — otherwise the user is navigating within a multi-line
+            // draft and the default browser behaviour wins.
+            if !input_text.get_untracked().is_empty() {
+                return;
+            }
+            if let Some(ref cb) = arrow_up_cb {
+                ev.prevent_default();
                 cb.run(());
             }
         }
@@ -281,4 +387,46 @@ fn parse_line_height_px(el: &web_sys::HtmlTextAreaElement) -> Option<f64> {
     let raw = style.get_property_value("line-height").ok()?;
     let trimmed = raw.trim_end_matches("px");
     trimmed.parse::<f64>().ok()
+}
+
+/// Returns true when the document root is rendering under the mobile
+/// shell. Reads `<html data-shell="mobile">`, set by
+/// `mobile_shell` at runtime and by the wasm-pack `mount_test_with_shell`
+/// helper in tests. Returns false (i.e. desktop) when the attribute is
+/// absent so SSR / unit harnesses default to the desktop send path.
+fn is_mobile_shell() -> bool {
+    let Some(window) = web_sys::window() else {
+        return false;
+    };
+    let Some(doc) = window.document() else {
+        return false;
+    };
+    let Some(root) = doc.document_element() else {
+        return false;
+    };
+    matches!(root.get_attribute("data-shell").as_deref(), Some("mobile"))
+}
+
+/// Insert `text` at the textarea's current caret position, replacing
+/// any active selection, and advance the caret by `text.len()`. Used
+/// for the Tab → 2-spaces affordance and (later) mention insertion.
+/// Caret math uses `selection_start` / `selection_end`; falls back to
+/// `len()` when the browser can't report a valid range (rare — happens
+/// when the textarea is detached from layout).
+fn insert_at_caret(el: &web_sys::HtmlTextAreaElement, text: &str) {
+    let value = el.value();
+    let len = value.chars().count() as u32;
+    let start = el.selection_start().ok().flatten().unwrap_or(len);
+    let end = el.selection_end().ok().flatten().unwrap_or(start);
+    let s = start as usize;
+    let e = end.max(start) as usize;
+    let s = s.min(value.len());
+    let e = e.min(value.len());
+    let mut new_value = String::with_capacity(value.len() + text.len());
+    new_value.push_str(&value[..s]);
+    new_value.push_str(text);
+    new_value.push_str(&value[e..]);
+    el.set_value(&new_value);
+    let new_caret = (s + text.len()) as u32;
+    let _ = el.set_selection_range(new_caret, new_caret);
 }

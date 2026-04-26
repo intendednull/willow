@@ -19,6 +19,7 @@
 
 use leptos::prelude::*;
 
+use crate::app::WebClientHandle;
 use crate::components::{
     BottomSheet, ChannelSidebar, Composer, FileShareButton, GroveDrawer, MainPaneHeader,
     MessageList, RightRailWhich, TabBar,
@@ -104,6 +105,8 @@ where
 {
     let app_state = use_context::<AppState>().expect("AppState context");
     let write = use_context::<AppWriteSignals>().expect("AppWriteSignals context");
+    let client_handle =
+        use_context::<WebClientHandle>().expect("WebClientHandle context (provided in app.rs)");
 
     // Local shell signals — mobile navigation is entirely client-side.
     let (active_tab, set_active_tab) = signal(MobileTab::Home);
@@ -396,6 +399,19 @@ where
                                                     write.chat.set_editing.set(None);
                                                 })
                                                 on_typing=Callback::new(|_| ())
+                                                on_arrow_up_edit={
+                                                    let h = client_handle.clone();
+                                                    let ch = current_channel;
+                                                    Callback::new(move |_: ()| {
+                                                        let h = h.clone();
+                                                        let channel = ch.get_untracked();
+                                                        wasm_bindgen_futures::spawn_local(async move {
+                                                            if let Some(msg) = h.last_own_message(&channel).await {
+                                                                write.chat.set_editing.set(Some(msg));
+                                                            }
+                                                        });
+                                                    })
+                                                }
                                             />
                                         </div>
                                     </div>
