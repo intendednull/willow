@@ -12137,4 +12137,105 @@ mod phase_3a_composer {
         );
         reset_shell();
     }
+
+    // ── T10 — offline tint + per-channel-kind placeholder wiring ──────
+    //
+    // Spec: `composer.md` §Offline state, §Composer placeholders.
+    // Plan: `2026-04-26-ui-phase-3a-composer.md` Task T10.
+
+    #[wasm_bindgen_test]
+    async fn composer_offline_class_applied_when_connection_offline() {
+        reset_shell();
+        let (connection_sig, _set_connection) = signal(ConnectionState::Offline);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    connection=connection_sig
+                />
+            }
+        });
+        tick().await;
+
+        let composer = query(&container, ".composer")
+            .expect(".composer wrapper must render under <Composer>");
+        assert!(
+            composer.class_list().contains("composer--offline"),
+            "outer `.composer` element must carry the `composer--offline` modifier when offline"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_placeholder_uses_channel_form_when_connected() {
+        reset_shell();
+        let (connection_sig, _set_connection) = signal(ConnectionState::Connected);
+        let peer_count_sig: Signal<usize> = Signal::derive(|| 3);
+        let channel_name_sig: Signal<String> = Signal::derive(|| "general".to_string());
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    connection=connection_sig
+                    peer_count=peer_count_sig
+                    channel_name=channel_name_sig
+                />
+            }
+        });
+        tick().await;
+
+        let textarea = composer_textarea(&container);
+        assert_eq!(
+            textarea.placeholder(),
+            "message #general — encrypted to 3 peers",
+            "online + named channel must render the channel placeholder form"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_placeholder_uses_offline_form_when_offline() {
+        reset_shell();
+        let (connection_sig, _set_connection) = signal(ConnectionState::Offline);
+        let channel_name_sig: Signal<String> = Signal::derive(|| "general".to_string());
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    connection=connection_sig
+                    channel_name=channel_name_sig
+                />
+            }
+        });
+        tick().await;
+
+        let textarea = composer_textarea(&container);
+        assert_eq!(
+            textarea.placeholder(),
+            "offline — messages queue until reconnect",
+            "offline overrides the channel placeholder form"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_placeholder_no_channel_form() {
+        reset_shell();
+        let (connection_sig, _set_connection) = signal(ConnectionState::Connected);
+        let channel_name_sig: Signal<String> = Signal::derive(String::new);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    connection=connection_sig
+                    channel_name=channel_name_sig
+                />
+            }
+        });
+        tick().await;
+
+        let textarea = composer_textarea(&container);
+        assert_eq!(
+            textarea.placeholder(),
+            "choose a channel to start",
+            "empty channel name + no recipient must render the no-channel form"
+        );
+    }
 }

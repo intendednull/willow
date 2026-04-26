@@ -5961,6 +5961,16 @@ select:focus-visible {
     gap: 8px;
 }
 
+/* Phase 3a, T10 — offline tint per `composer.md` §Offline state.
+ * Background softens to a 10 % `--amber` mix over `--bg-2`. The amber
+ * meta row owns the icon + copy colour swap; the wrapper just shifts
+ * the surface tone so the user can feel the queue without losing the
+ * pill silhouette. Reconnecting reuses the same tint because the queue
+ * is still the truthful destination for sent messages. */
+.composer--offline {
+    background: color-mix(in oklab, var(--amber) 10%, var(--bg-2));
+}
+
 .composer__row {
     display: flex;
     align-items: flex-end;

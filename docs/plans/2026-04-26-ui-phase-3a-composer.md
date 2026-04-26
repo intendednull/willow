@@ -116,7 +116,7 @@
 
 - [x] **T9.** Implement `<MetaRow>` desktop + mobile variants reading from `connection_state` + `peer_count` + `current_channel`. **Browser test:** `meta_row_renders_desktop_meta`, `meta_row_renders_mobile_meta` (use `mount_test_with_shell`). **Verify:** `just test-browser`.
 
-- [ ] **T10.** Implement offline tint flip + placeholder copy wiring from `placeholder_for`. **Browser tests:** AG-10, AG-11. **Verify:** `just test-browser`.
+- [x] **T10.** Implement offline tint flip + placeholder copy wiring from `placeholder_for`. **Browser tests:** AG-10, AG-11. **Verify:** `just test-browser`.
 
 ### Phase E — typing indicator
 

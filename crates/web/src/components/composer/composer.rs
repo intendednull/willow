@@ -33,9 +33,11 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use willow_client::DisplayMessage;
+use willow_state::types::ChannelKind;
 
 use super::edit_bar::EditBar;
 use super::meta_row::MetaRow;
+use super::placeholders::placeholder_for;
 use super::reply_bar::ReplyBar;
 use crate::state::ConnectionState;
 
@@ -94,9 +96,27 @@ pub fn Composer(
     #[prop(optional, into)]
     connection: Option<ReadSignal<ConnectionState>>,
     /// Channel peer count for the mobile meta row's `sealed to {N}
-    /// peers in grove` copy. Defaults to `0` when omitted.
+    /// peers in grove` copy and the desktop placeholder's
+    /// `encrypted to {N} peers` suffix. Defaults to `0` when omitted.
     #[prop(optional, into)]
     peer_count: Option<Signal<usize>>,
+    /// Current channel's kind. Plumbed through to `placeholder_for`
+    /// for forward compatibility (the spec's letter affordance has no
+    /// dedicated kind in `willow-state` yet). Defaults to
+    /// `ChannelKind::Text` when omitted.
+    #[prop(optional, into)]
+    channel_kind: Option<Signal<ChannelKind>>,
+    /// Current channel name (without the `#`). Empty string means
+    /// "no channel selected" — `placeholder_for` then returns the
+    /// `choose a channel to start` form.
+    #[prop(optional, into)]
+    channel_name: Option<Signal<String>>,
+    /// Recipient name for the letter / 1:1 DM placeholder form. `None`
+    /// for v1 (Letter not shipped — see plan §Ambiguity decisions).
+    /// Reserved as a prop so Phase 3b can wire it without re-shaping
+    /// the API.
+    #[prop(optional, into)]
+    recipient_name: Option<Signal<Option<String>>>,
 ) -> impl IntoView {
     let (input_text, set_input_text) = signal(String::new());
     let textarea_ref = NodeRef::<leptos::html::Textarea>::new();
@@ -108,10 +128,44 @@ pub fn Composer(
     let (default_connection, _) = signal(ConnectionState::Connected);
     let connection_sig: ReadSignal<ConnectionState> = connection.unwrap_or(default_connection);
     let peer_count_sig: Signal<usize> = peer_count.unwrap_or_else(|| Signal::derive(|| 0));
+    let channel_kind_sig: Signal<ChannelKind> =
+        channel_kind.unwrap_or_else(|| Signal::derive(|| ChannelKind::Text));
+    let channel_name_sig: Signal<String> =
+        channel_name.unwrap_or_else(|| Signal::derive(String::new));
+    let recipient_name_sig: Signal<Option<String>> =
+        recipient_name.unwrap_or_else(|| Signal::derive(|| None));
     // `data-shell` is set once at mount by `mobile_shell` / the
     // wasm-pack test harness; deriving a Signal still works because the
     // closure runs each time a downstream reader subscribes.
     let is_mobile_sig: Signal<bool> = Signal::derive(is_mobile_shell);
+
+    // Placeholder copy is recomputed by `Memo` so it tracks every
+    // input — channel name, peer count, kind, recipient, connection.
+    // Spec source-of-truth: `composer.md` §Composer placeholders.
+    let placeholder = Memo::new(move |_| {
+        let kind = channel_kind_sig.get();
+        let name = channel_name_sig.get();
+        let recipient = recipient_name_sig.get();
+        let count = peer_count_sig.get();
+        let conn = connection_sig.get();
+        placeholder_for(kind, &name, recipient.as_deref(), count, conn)
+    });
+
+    // Offline tint flips the wrapper class when connection drops out.
+    // Spec §Offline state: background softens to
+    // `color-mix(in oklab, var(--amber) 10%, var(--bg-2))`. Reconnecting
+    // keeps the tint on for the same reason the meta row does — the
+    // user's send still routes to the queue and can't reach peers.
+    let wrapper_class = move || {
+        let mut classes = String::from("composer input-area");
+        if matches!(
+            connection_sig.get(),
+            ConnectionState::Offline | ConnectionState::Reconnecting
+        ) {
+            classes.push_str(" composer--offline");
+        }
+        classes
+    };
 
     // When `editing` becomes `Some`, pre-fill the textarea with the
     // message body. Mirrors the legacy `<ChatInput>` behaviour so the
@@ -309,7 +363,10 @@ pub fn Composer(
         // `input-area` retained alongside `composer` for backward
         // compatibility with the existing CSS + focus-back JS;
         // T9–T15 will port those onto the `composer` namespace.
-        <div class="composer input-area">
+        // `composer--offline` is appended reactively when the device
+        // or relay has dropped out — drives the spec's amber tint per
+        // §Offline state.
+        <div class=wrapper_class>
             // Edit bar — full spec layout per `composer.md` §Edit mode.
             // The send-button label flip to `save` is owned below; this
             // bar only renders the hint + cancel affordance.
@@ -361,7 +418,7 @@ pub fn Composer(
                     class="composer__textarea"
                     node_ref=textarea_ref
                     rows="1"
-                    placeholder="message #channel"
+                    placeholder=move || placeholder.get()
                     prop:value=move || input_text.get()
                     on:input=move |ev| {
                         set_input_text.set(event_target_value(&ev));
