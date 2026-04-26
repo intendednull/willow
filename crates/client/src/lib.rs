@@ -211,6 +211,9 @@ pub struct ClientHandle<N: willow_network::Network> {
     /// The network backend, set after [`connect()`](ClientHandle::connect).
     pub(crate) network: Option<Arc<N>>,
     /// Maps topic string names to their `N::Topic` handles for broadcasting.
+    // state: lock-ok — actor migration tracked in
+    // docs/specs/2026-04-26-state-management-model-design.md § 4 and § F4.
+    // Single guard, generic over `N::Topic`; deferred to keep this PR scoped.
     pub(crate) topics: Arc<RwLock<HashMap<String, N::Topic>>>,
     /// Broker for pub/sub [`ClientEvent`] distribution to subscribers.
     pub(crate) event_broker: willow_actor::Addr<willow_actor::Broker<ClientEvent>>,
@@ -251,6 +254,9 @@ pub struct ClientHandle<N: willow_network::Network> {
     ///
     /// Uses `parking_lot::Mutex` so a panic while holding the guard does
     /// not poison the lock and take down every future caller (issue #114).
+    // state: lock-ok — actor migration tracked in
+    // docs/specs/2026-04-26-state-management-model-design.md § 4 and § F4.
+    // Single guard; deferred to keep this PR scoped.
     pub(crate) join_links: Arc<parking_lot::Mutex<Vec<ops::JoinLink>>>,
     /// Bootstrap peers for gossip topic subscriptions.
     pub bootstrap_peers: Vec<willow_identity::EndpointId>,

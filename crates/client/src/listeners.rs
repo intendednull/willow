@@ -25,6 +25,8 @@ pub struct ListenerCtx {
     pub persistence_enabled: bool,
     pub event_broker: Addr<willow_actor::Broker<ClientEvent>>,
     pub identity: willow_identity::Identity,
+    // state: lock-ok — mirrors `ClientHandle.join_links`; actor migration
+    // tracked in docs/specs/2026-04-26-state-management-model-design.md § F4.
     pub join_links: Arc<Mutex<Vec<crate::ops::JoinLink>>>,
     pub dag: Addr<willow_actor::StateActor<state_actors::DagState>>,
     pub server_registry: Addr<willow_actor::StateActor<state_actors::ServerRegistry>>,

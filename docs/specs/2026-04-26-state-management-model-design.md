@@ -143,20 +143,17 @@ After: keep the single lock; add a `// state: lock-ok` annotation explaining the
 
 Tests: no change.
 
-### 4. `ClientHandle.topics` + `join_links` → actor-owned
+### 4. `ClientHandle.topics` + `join_links` — annotate, actor migration deferred
 
 `crates/client/src/lib.rs:214,254`
 
-Today: `Arc<RwLock<HashMap<String, N::Topic>>>` (`topics`) and `Arc<parking_lot::Mutex<Vec<ops::JoinLink>>>` (`join_links`) as fields on `ClientHandle`, threaded through `MutationContext`.
+Today: `Arc<RwLock<HashMap<String, N::Topic>>>` (`topics`) and `Arc<parking_lot::Mutex<Vec<ops::JoinLink>>>` (`join_links`) as fields on `ClientHandle`, threaded through `MutationContext` and `ListenerContext`.
 
-After: pick one of two shapes during impl, based on the mutation surface:
+After this PR: both stay as locks with `// state: lock-ok` annotations naming the constraint. Each is already a single guard so the multi-lock-atomicity smell does not apply (same shape as #3/§3).
 
-- **Option A (preferred):** Fold both into the existing `event_state` / `server_registry` actors. Topic handles and join links are derived from server membership; they likely belong with that state.
-- **Option B (fallback):** New `TopicRegistryActor` owning both maps. Used if the mutation surface doesn't cleanly map to existing actors.
+**Why migration is deferred**: ~25 sync `.lock()` / `.read()` call sites across `crates/client/src/{listeners,mutations,joining,lib,connect}.rs`. The `topics` field is also generic over `N::Topic`, so a `StateActor` here would need to be `StateActor<HashMap<String, N::Topic>>` — a generic-typed actor that ripples through `MutationContext` and `ListenerContext`. The migration is mechanical but large enough to warrant its own PR rather than landing inside this one. Tracked as F4 in § Follow-up work.
 
-Decision made in PR commit; rationale in commit body. Either way, `ClientHandle` carries an `Addr`, not the data.
-
-Tests: `just test-client`. Cover topic add + remove + concurrent mutation, join link append + clear.
+Tests: no change.
 
 ### 5. `ClientHandle.message_db` — delete
 
@@ -277,3 +274,15 @@ The `Arc<Mutex<Option<U>>>` async result cache in `crates/web/src/state_bridge.r
 ### F3. Custom clippy lint or grep gate (optional)
 
 Spec rejected a hard CI gate due to false-positive rate. If drift recurs after F1, revisit. A grep-based check that scans for new `Arc<Mutex<` / `Arc<RwLock<` outside the allowlisted crates and looks for an inline `// state: lock-ok` comment within N lines is the cheapest viable mechanism. A custom clippy lint is the cleaner path but has ongoing maintenance cost against unstable plugin APIs.
+
+### F4. Migrate `ClientHandle.topics` + `join_links` into actors
+
+`Arc<RwLock<HashMap<String, N::Topic>>>` (topics) and `Arc<parking_lot::Mutex<Vec<JoinLink>>>` (join_links) currently live as fields on `ClientHandle` and `MutationContext` / `ListenerContext`. This PR annotates them as `// state: lock-ok` because the migration is mechanical but large: ~25 sync `.lock()` / `.read()` call sites across `listeners.rs`, `mutations.rs`, `joining.rs`, `lib.rs`, `connect.rs`. The `topics` map is generic over `N::Topic`, requiring a generic-typed `StateActor<HashMap<String, N::Topic>>` that threads `N` through any actor it lands in.
+
+Right shape:
+
+- `JoinLinksActor` (concrete, no generics) owning `Vec<JoinLink>`.
+- `TopicRegistryActor<N>` owning `HashMap<String, N::Topic>`. Alternatively folded into the existing `server_registry_addr` if `ServerRegistry` becomes generic over `N` (bigger ripple).
+- All consumers switch to `Addr.do_send` / `Addr.ask`. `MutationContext` and `ListenerContext` carry `Addr`s instead of `Arc<Lock<_>>`.
+
+Trigger: open as a dedicated PR titled `refactor(client): migrate ClientHandle.topics + join_links into actors`, link back to this spec § 4 + F4.

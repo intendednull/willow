@@ -44,6 +44,9 @@ pub struct ClientMutations<N: willow_network::Network> {
     pub(crate) persistence_enabled: bool,
     pub(crate) identity: Identity,
     pub(crate) dag: Addr<StateActor<DagState>>,
+    // state: lock-ok — mirrors `ClientHandle.{join_links,topics}`; actor
+    // migration tracked in docs/specs/2026-04-26-state-management-model-design.md
+    // § F4.
     pub(crate) join_links: Arc<Mutex<Vec<crate::ops::JoinLink>>>,
     pub(crate) topics: Arc<RwLock<HashMap<String, N::Topic>>>,
     /// Phase 2b: shared handle to the sync-queue actor, so mutations
