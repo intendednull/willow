@@ -75,8 +75,9 @@ All shared mutable state in library crates lives inside an actor (see
 
 | Situation | Pattern |
 |---|---|
-| Shared mutable state in a lib crate | `StateActor<S>` (default) |
+| Shared mutable state in a lib crate | `StateActor<S>` or bespoke actor (default) |
 | External-callback boundary (iroh) | Lock + `// state: lock-ok — <reason>` |
+| Sync trait abstraction over small cache (legacy) | Single `Mutex<Inner>` + `// state: lock-ok` (trait elimination is follow-up work) |
 | One-shot static init | `OnceLock<T>` / `LazyLock<T>` |
 | Cross-task control flag (stop, cancel) | `AtomicBool` / `AtomicU32` |
 | WASM single-threaded interior mutability | `Rc<RefCell<T>>` (web only) |

@@ -37,12 +37,21 @@ Every shared-mutable-state decision in the codebase has an obvious, documented a
 
 ```
 Need shared mutable state?
-├─ Default                                  → StateActor<S>
-│                                              (or fold into existing actor)
+├─ Default                                  → StateActor<S> or bespoke actor
+│                                              (use bespoke when S is non-Clone
+│                                               or when domain-rich messages
+│                                               read clearer than closure-based
+│                                               mutate; see SearchActor for an
+│                                               example)
 │
 ├─ External-callback boundary (iroh)?       → Lock OK
 │                                              // state: lock-ok — iroh callback
 │                                              //   delivers events outside actor loop
+│
+├─ Sync trait abstraction over small        → Single Mutex<Inner>
+│  in-memory cache (legacy)?                   // state: lock-ok — sync trait API,
+│                                              //   trait elimination tracked in
+│                                              //   spec § Follow-up work
 │
 ├─ One-shot init of static data?            → OnceLock<T> / LazyLock<T>
 │                                              (regex compilation, topic IDs)
@@ -91,50 +100,48 @@ A grep gate (`! rg 'Arc<.*Mutex'`) is bulletproof for new violations but generat
 
 Six hotspots from the audit. All ship in this PR.
 
-### 1. `SearchIndexHandle` → `StateActor<SearchState>`
+### 1. `SearchIndexHandle` → bespoke `SearchActor`
 
 `crates/client/src/search/handle.rs:29-32`
 
 Today: four `Arc<parking_lot::Mutex<_>>` for `index`, `config`, `recents`, `status`.
 
-After:
+After: bespoke `SearchActor` (in `crates/client/src/search/actor.rs`) owning all four fields as one unit; handle wraps `Addr<SearchActor>`. Cross-field updates become atomic via mailbox serialization.
 
 ```rust
-pub struct SearchState {
-    pub index: SearchIndex,
-    pub config: SearchIndexConfig,
-    pub recents: Vec<RecentQuery>,
-    pub status: SearchIndexBuildStatus,
-}
-
-pub struct SearchIndexHandle {
-    addr: Addr<StateActor<SearchState>>,
-}
+pub struct SearchActor { /* index + config + recents + status + persist */ }
+pub struct SearchIndexHandle { addr: Addr<SearchActor> }
 ```
 
-Mutations become messages (`UpdateConfig`, `RecordQuery`, `SetBuildStatus`, `RebuildIndex`). Readers `ask` for a snapshot or subscribe via `DerivedActor` for reactive views. Cross-field updates (e.g. "rebuild done + recents updated + status set") become one mutation and are atomic for free.
+**Bespoke actor over generic `StateActor<S>`**: `SearchIndex` is intentionally not `Clone` (large inverted index, deep copy is wasteful). `StateActor::Mutate` requires `S: Clone` for copy-on-write, so a generic state actor doesn't fit. Bespoke message types (`Insert`, `Rebuild`, `Query`, `RemoveMessage`, `RemoveChannel`, `RemoveGrove`, `GetConfig`, `SetConfig`, `GetRecents`, `PushRecent`, `ForgetRecent`, `ClearAllRecents`, `GetStatus`, `MessageCount`) also read clearer than closure-based `Mutate`.
 
-Tests: `just test-client`. Cover concurrent rebuild + query, status transitions, recents rotation.
+API trade-off: read methods (`config`, `recents`, `status`, `message_count`, `query`, `rebuild`) become async. Web call sites in `app.rs` and `search/surface.rs` gain thin `spawn_local` wraps.
 
-### 2. `MemNicknameStore` → `StateActor<NicknameCache>`
+Tests: `just test-client`. 74 search tests pass under `tokio::test`.
+
+### 2. `MemNicknameStore` — collapse lock-pair to single `Mutex<Inner>`
 
 `crates/client/src/nickname.rs:39-40`
 
 Today: `RwLock<HashMap>` + `RwLock<u64>` (version).
 
-After: `StateActor<NicknameCache>` where `NicknameCache { map: HashMap<_,_> }`. Drop the manual version counter — `StateActor::version()` already bumps on every mutation, and `Notify` carries it. Subscribers re-read on `Notify`.
+After: single `Mutex<Inner { map: HashMap<_,_>, version: u64 }>`. Cross-field atomicity (cache write + version bump) is preserved by the single guard. The lock carries a `// state: lock-ok` annotation explaining the constraint.
 
-Tests: `just test-client`. Cover insert + lookup + change-notification subscribers.
+**Why not bespoke actor**: `MemNicknameStore` implements the public `NicknameStore` trait whose API is sync (`fn get`, `fn set`, `fn clear`, `fn version`, `fn snapshot`). Multiple impls (`MemNicknameStore` in client, `WebNicknameStore` in web) and ~10 sync call sites in the web crate consume the trait. Eliminating the trait in favour of a `NicknameActor` is the right long-term shape but requires async API + web rewrite, which is a separate PR. Tracked in § Follow-up work.
 
-### 3. `trust::InMemoryState` → `StateActor<TrustState>`
+Tests: existing nickname tests stay sync, no API change.
+
+### 3. `trust::InMemoryState` — collapse `Mutex<Inner>` (already single-lock)
 
 `crates/client/src/trust.rs:149`
 
-Today: `std::sync::Mutex<InMemoryState>`.
+Today: `std::sync::Mutex<InMemoryState>` — already a single lock; no multi-lock atomicity smell. The `TrustStore` trait API is sync (`fn get`, `fn set`, `fn snapshot`, `fn version`) with the same trait shape as `NicknameStore` and ~15 call sites.
 
-After: `StateActor<TrustState>`. Same pattern as #2. Public `TrustStore` trait (or whatever the consumer-facing shape is) keeps its current API; only the impl changes.
+After: keep the single lock; add a `// state: lock-ok` annotation explaining the sync trait constraint. No code change beyond the annotation.
 
-Tests: `just test-client`. Cover trust grant + revoke + concurrent reads.
+**Why not bespoke actor**: same reasoning as #2. Trait elimination is tracked in § Follow-up work.
+
+Tests: no change.
 
 ### 4. `ClientHandle.topics` + `join_links` → actor-owned
 
@@ -161,13 +168,15 @@ After: removed. `PersistenceActor` (`crates/client/src/persistence_actor.rs`) al
 
 Verify with `cargo check` + `just test-client` after deletion. No new tests — pure removal.
 
-### 6. Web layer locks → Leptos signals (or StateActor where justified)
+### 6. Web layer locks — collapse + annotate, signal conversion deferred
 
-- `crates/web/src/trust_store.rs:46` — `Mutex<Inner>` → Leptos `RwSignal<TrustStoreState>`. Component-local reactive state.
-- `crates/web/src/profile/nickname_store.rs:23-24` — `RwLock<HashMap> + RwLock<u64>` → `RwSignal<HashMap<_,_>>` (signals carry their own change notification; explicit version unnecessary).
-- `crates/web/src/state_bridge.rs:23` — `Arc<Mutex<Option<U>>>` async result cache. If used inside a Leptos `Resource`, replace with the `Resource`'s own caching. If used from outside reactive scope (verify during impl), keep as `StateActor<CacheEntry<U>>` per the carve-out rule.
+- `crates/web/src/trust_store.rs:46` — `Mutex<Inner>` is already a single lock implementing the sync `TrustStore` trait. Add `// state: lock-ok` annotation. Conversion to a Leptos signal is gated on the trait elimination in § Follow-up work.
+- `crates/web/src/profile/nickname_store.rs:23-24` — `RwLock<HashMap> + RwLock<u64>` → collapse to single `Mutex<Inner { map, version }>` for cross-field atomicity. Annotate. Conversion to a Leptos signal is gated on trait elimination.
+- `crates/web/src/state_bridge.rs:23` — `Arc<Mutex<Option<U>>>` async result cache. Annotate as `// state: lock-ok` for now; the cache shape is genuinely cross-Effect, and the right replacement (Leptos `Resource` vs eliminate via redesign) needs a deeper look at the bridge architecture. Tracked in § Follow-up work.
 
-Tests: `just test-browser` for any DOM-reactive signal changes.
+**Why not full signal conversion now**: the web stores all sit behind the sync `NicknameStore` / `TrustStore` traits. Replacing the lock with a signal in the impl while leaving the trait sync produces an awkward middle state. The full play is signals + trait elimination, which is § Follow-up work.
+
+Tests: no change.
 
 ## Legitimate locks — kept, annotated
 
@@ -241,3 +250,30 @@ Decisions deferred to impl time:
 
 - Topic registry shape (Option A fold-in vs Option B new actor) — picked when reading the mutation surface.
 - `state_bridge.rs` cache shape (Leptos `Resource` vs `StateActor`) — picked when reading actual call sites.
+
+## Follow-up work
+
+Discovered during impl, deferred to subsequent PRs to keep this one coherent:
+
+### F1. Eliminate `NicknameStore` and `TrustStore` traits in favour of actors
+
+The `NicknameStore` (`crates/client/src/nickname.rs`) and `TrustStore` (`crates/client/src/trust.rs`) traits expose **sync** APIs (`fn get`, `fn set`, `fn version`, `fn snapshot`). Two impls each (`Mem*` in client, `Web*` in web) with ~25 sync call sites across `crates/web/`. The sync API forces lock-based impls; replacing the lock with an actor inside the impl while keeping the trait sync produces a worse hybrid (cache + actor + persistence).
+
+Right shape:
+
+- Single `NicknameActor` and `TrustActor` in client, each owning the in-memory state directly. No trait.
+- Persistence becomes a `Persist*` callback / message addressed to a separate persistence-aware actor (e.g. `WebPersistenceActor` for `localStorage`, no-op on native).
+- Web call sites adopt async / `spawn_local` the way `SearchIndexHandle` consumers did (#1).
+- Spec § 2, 3, and 6 collapse into "the *Store traits are gone".
+
+Estimated cost: ~600 lines across `crates/client/src/{nickname,trust}.rs`, `crates/web/src/{trust_store,profile/nickname_store,components/profile_card,components/add_friend,state}.rs`, and the web tests under `crates/web/tests/browser.rs`.
+
+Trigger: open as a dedicated PR titled `refactor(client+web): eliminate NicknameStore + TrustStore traits in favour of actors`, link back to this spec.
+
+### F2. Re-evaluate `state_bridge.rs` cache shape
+
+The `Arc<Mutex<Option<U>>>` async result cache in `crates/web/src/state_bridge.rs` is annotated `// state: lock-ok` in this PR. Whether the right replacement is a Leptos `Resource`, an explicit derived state actor, or a redesign that eliminates the cache entirely needs a closer look at the bridge's call sites. Touch this when F1 lands, since the trait elimination will simplify the bridge.
+
+### F3. Custom clippy lint or grep gate (optional)
+
+Spec rejected a hard CI gate due to false-positive rate. If drift recurs after F1, revisit. A grep-based check that scans for new `Arc<Mutex<` / `Arc<RwLock<` outside the allowlisted crates and looks for an inline `// state: lock-ok` comment within N lines is the cheapest viable mechanism. A custom clippy lint is the cleaner path but has ongoing maintenance cost against unstable plugin APIs.
