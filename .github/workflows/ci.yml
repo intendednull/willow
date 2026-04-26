@@ -40,7 +40,22 @@ jobs:
             target
           key: clippy-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: clippy-
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - id: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee /tmp/clippy.log
+      - name: Surface clippy failure
+        if: failure() && steps.clippy.conclusion == 'failure'
+        run: |
+          {
+            echo "## Clippy failed"
+            echo
+            echo '<details><summary>last 200 lines</summary>'
+            echo
+            echo '```'
+            tail -n 200 /tmp/clippy.log || echo "(no log captured)"
+            echo '```'
+            echo
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   test:
     name: Test
@@ -57,7 +72,22 @@ jobs:
             target
           key: test-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: test-
-      - run: cargo test --workspace
+      - id: test
+        run: cargo test --workspace 2>&1 | tee /tmp/test.log
+      - name: Surface test failure
+        if: failure() && steps.test.conclusion == 'failure'
+        run: |
+          {
+            echo "## Tests failed"
+            echo
+            echo '<details><summary>last 300 lines</summary>'
+            echo
+            echo '```'
+            tail -n 300 /tmp/test.log || echo "(no log captured)"
+            echo '```'
+            echo
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   wasm:
     name: WASM Check
@@ -99,7 +129,22 @@ jobs:
         uses: taiki-e/install-action@787505cde8a44ea468a00478fe52baf23b15bccd # v2.9.4
         with:
           tool: wasm-pack
-      - run: wasm-pack test --headless --firefox crates/web
+      - id: browser
+        run: wasm-pack test --headless --firefox crates/web 2>&1 | tee /tmp/browser.log
+      - name: Surface browser-test failure
+        if: failure() && steps.browser.conclusion == 'failure'
+        run: |
+          {
+            echo "## Browser tests failed"
+            echo
+            echo '<details><summary>last 300 lines</summary>'
+            echo
+            echo '```'
+            tail -n 300 /tmp/browser.log || echo "(no log captured)"
+            echo '```'
+            echo
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   audit:
     name: cargo-audit

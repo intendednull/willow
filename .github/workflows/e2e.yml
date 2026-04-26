@@ -41,4 +41,30 @@ jobs:
           tool: just
 
       - name: Run full E2E flow (setup + tests + teardown)
-        run: just test-e2e-full
+        id: e2e
+        run: just test-e2e-full 2>&1 | tee /tmp/e2e.log
+      - name: Surface E2E failure
+        if: failure() && steps.e2e.conclusion == 'failure'
+        run: |
+          {
+            echo "## Playwright E2E failed"
+            echo
+            echo '<details><summary>just / playwright output (last 300 lines)</summary>'
+            echo
+            echo '```'
+            tail -n 300 /tmp/e2e.log || echo "(no log captured)"
+            echo '```'
+            echo
+            echo '</details>'
+            for f in .dev/logs/relay.log .dev/logs/replay.log .dev/logs/storage.log .dev/logs/web.log; do
+              [ -f "$f" ] || continue
+              echo
+              echo "<details><summary>$f (last 100 lines)</summary>"
+              echo
+              echo '```'
+              tail -n 100 "$f"
+              echo '```'
+              echo
+              echo '</details>'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
