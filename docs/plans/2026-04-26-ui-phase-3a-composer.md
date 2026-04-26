@@ -110,7 +110,7 @@
 
 - [x] **T7.** Implement `<ReplyBar>` per spec layout. Wire `scroll_to_message` callback in `chat_view.rs` to scroll + flash the parent via `willow-pop-in` (foundation keyframe already exists). **Browser test:** AG-6. **Verify:** `just test-browser`.
 
-- [ ] **T8.** Implement `<EditBar>` per spec layout. Add send-button label flip in parent (`save` while editing; `send` otherwise). **Browser test:** AG-7. **Verify:** `just test-browser`.
+- [x] **T8.** Implement `<EditBar>` per spec layout. Add send-button label flip in parent (`save` while editing; `send` otherwise). **Browser test:** AG-7. **Verify:** `just test-browser`.
 
 ### Phase D — meta row, offline tint, placeholders
 

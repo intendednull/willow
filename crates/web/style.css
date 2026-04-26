@@ -6097,6 +6097,58 @@ select:focus-visible {
     border-top-right-radius: 0;
 }
 
+/* ── Composer edit bar (Phase 3a, T8) ────────────────────────────────
+ *
+ * Spec: `docs/specs/2026-04-19-ui-design/composer.md` §Edit mode.
+ * Slim hint above the composer: `editing message · esc to cancel`
+ * (12 px, `--ink-3`) plus a small `cancel` text button. Send-button
+ * label flip to `save` is owned by the parent `<Composer>`.
+ */
+.composer__edit-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 12px;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-bottom: 0;
+    border-radius: 10px 10px 0 0;
+    color: var(--ink-3);
+    font-size: 12px;
+}
+
+.composer__edit-bar-text {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.composer__edit-bar-cancel {
+    flex-shrink: 0;
+    background: transparent;
+    border: 0;
+    padding: 2px 4px;
+    color: var(--ink-2);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition: color var(--motion-fast, 120ms) ease;
+}
+
+.composer__edit-bar-cancel:hover,
+.composer__edit-bar-cancel:focus-visible {
+    color: var(--ink-0);
+}
+
+/* Edit bar fuses with the composer pill below the same way the
+ * reply bar does. */
+.composer__edit-bar + .composer {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+}
+
 /* ── Message-row flash (T7 — scroll-to-parent affordance) ──────────────
  *
  * Triggered by the chat view after `on_jump_to_parent` fires from the

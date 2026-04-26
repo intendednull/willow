@@ -11914,4 +11914,97 @@ mod phase_3a_composer {
             "cancel click must not bubble into on_jump_to_parent"
         );
     }
+
+    // ── T8 — styled edit bar + send-button label flip ──────────────────
+    //
+    // AGs covered by this group:
+    //   AG-7: Edit bar shows `editing message · esc to cancel` and the
+    //         send button label flips to `save` while editing.
+    //
+    // Spec: `composer.md` §Edit mode + §ARIA labels (`cancel edit`).
+    // Plan: `2026-04-26-ui-phase-3a-composer.md` Task T8.
+
+    #[wasm_bindgen_test]
+    async fn composer_edit_bar_renders_hint() {
+        reset_shell();
+        let msg = make_msg("you", "draft body", 1_700_000_000_000);
+        let (editing_sig, _set_editing) = signal(Some(msg.clone()));
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    editing=editing_sig
+                    on_cancel_edit=Callback::new(|_| ())
+                />
+            }
+        });
+        tick().await;
+
+        let bar = query(&container, ".composer__edit-bar")
+            .expect(".composer__edit-bar must render when editing is Some");
+        let bar_text = text(&bar);
+        assert!(
+            bar_text.contains("editing message"),
+            "edit bar text must include 'editing message', got {bar_text:?}"
+        );
+        assert!(
+            bar_text.contains("esc to cancel"),
+            "edit bar text must include 'esc to cancel', got {bar_text:?}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_edit_bar_send_button_says_save() {
+        reset_shell();
+        let msg = make_msg("you", "draft body", 1_700_000_000_000);
+        let (editing_sig, _set_editing) = signal(Some(msg.clone()));
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    editing=editing_sig
+                    on_cancel_edit=Callback::new(|_| ())
+                />
+            }
+        });
+        tick().await;
+
+        let send =
+            query(&container, ".composer__send").expect(".composer__send must exist while editing");
+        assert_eq!(
+            text(&send).trim(),
+            "save",
+            "send button text must flip to 'save' while editing"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_edit_bar_cancel_button_aria_label() {
+        reset_shell();
+        let msg = make_msg("you", "draft body", 1_700_000_000_000);
+        let (editing_sig, _set_editing) = signal(Some(msg.clone()));
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    editing=editing_sig
+                    on_cancel_edit=Callback::new(|_| ())
+                />
+            }
+        });
+        tick().await;
+
+        let cancel = query(&container, ".composer__edit-bar-cancel")
+            .expect(".composer__edit-bar-cancel must exist when editing");
+        assert_eq!(
+            cancel.get_attribute("aria-label").as_deref(),
+            Some("cancel edit"),
+            "edit bar cancel ARIA label must match the spec accessibility table"
+        );
+        assert_eq!(
+            text(&cancel).trim(),
+            "cancel",
+            "edit bar cancel button text must be 'cancel'"
+        );
+    }
 }

@@ -34,6 +34,7 @@ use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use willow_client::DisplayMessage;
 
+use super::edit_bar::EditBar;
 use super::reply_bar::ReplyBar;
 
 /// Maximum number of visible textarea lines before the textarea
@@ -286,38 +287,13 @@ pub fn Composer(
         // compatibility with the existing CSS + focus-back JS;
         // T9–T15 will port those onto the `composer` namespace.
         <div class="composer input-area">
-            // Edit bar — visual port from legacy `<ChatInput>`. T8
-            // restyles per spec.
+            // Edit bar — full spec layout per `composer.md` §Edit mode.
+            // The send-button label flip to `save` is owned below; this
+            // bar only renders the hint + cancel affordance.
             {move || {
-                editing.and_then(|sig| {
-                    let msg = sig.get();
-                    let cancel = on_cancel_edit;
-                    msg.map(|m| {
-                        let preview = if m.body.chars().count() > 60 {
-                            format!("{}...", m.body.chars().take(60).collect::<String>())
-                        } else {
-                            m.body.clone()
-                        };
-                        view! {
-                            <div class="edit-bar">
-                                <span class="edit-bar-text">
-                                    {format!("Editing: {}", preview)}
-                                </span>
-                                <button
-                                    class="edit-bar-cancel"
-                                    aria-label="cancel edit"
-                                    on:click=move |_| {
-                                        if let Some(ref cb) = cancel {
-                                            cb.run(());
-                                        }
-                                    }
-                                >
-                                    "x"
-                                </button>
-                            </div>
-                        }
-                    })
-                })
+                let sig = editing?;
+                let cancel = on_cancel_edit.unwrap_or_else(|| Callback::new(|_| ()));
+                Some(view! { <EditBar editing=sig on_cancel=cancel /> })
             }}
             // Reply bar — full spec layout per `composer.md` §Reply
             // preview. Suppressed while edit mode is active so the
