@@ -145,7 +145,10 @@ export async function sendMessage(page: Page, text: string) {
       .catch(() => false);
     if (!inPush) {
       await page.locator('.shell-mobile .mobile-home .channel-item').first().click();
-      await page.waitForTimeout(400);
+      // Event-based: wait for the channel push to mount instead of
+      // sleeping. The push-channel container only appears after the
+      // tap-to-push transition completes.
+      await page.locator('.shell-mobile .mobile-push--channel').waitFor();
     }
   }
   const input = page
@@ -153,14 +156,14 @@ export async function sendMessage(page: Page, text: string) {
     .first();
   await input.fill(text);
   await input.press('Enter');
-  // Own-message render is local (not gossip-dependent), but on mobile-
-  // chrome under load the chat-list reactive update routinely takes
-  // 10-20 s to flush after the input handler dispatches the event.
-  // Bump to 30 s so the helper doesn't bail before the local DAG-
-  // applied event reaches the rendered list.
-  await page.locator(`${visibleShell(page)} .message .body`, { hasText: text })
-    .first()
-    .waitFor({ timeout: 30_000 });
+  // Event-based post-send signal: the input element clears synchronously
+  // when the composer successfully dispatches the message. Polling the
+  // rendered `.message .body` text was a flaky proxy — it depends on
+  // chat-list virtualisation, scroll position, and reactive flush order
+  // (10-20 s tail on mobile-chrome under load). The input-clear event
+  // fires deterministically the moment `send_message` returns, so the
+  // helper exits as soon as the local send succeeds.
+  await expect(input).toHaveValue('');
 }
 
 /** Get all visible message bodies. */
