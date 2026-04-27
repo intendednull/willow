@@ -119,7 +119,11 @@ fn close_top_of_stack(state: AppState, write: AppWriteSignals) -> bool {
 /// timeout so Leptos has mounted the surface if we just opened it.
 fn focus_search_input() {
     if let Some(w) = web_sys::window() {
-        let cb = Closure::<dyn FnMut()>::new(move || {
+        // One-shot zero-timeout focus push fires every time the search
+        // surface opens. `once_into_js` lets JS GC reclaim the closure
+        // after fire — `.forget()` would leak per search-open
+        // (issue #193).
+        let cb = Closure::once_into_js(move || {
             if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
                 if let Some(el) = doc.query_selector(".search-input").ok().flatten() {
                     if let Ok(html) = el.dyn_into::<web_sys::HtmlElement>() {
@@ -128,9 +132,7 @@ fn focus_search_input() {
                 }
             }
         });
-        let _ =
-            w.set_timeout_with_callback_and_timeout_and_arguments_0(cb.as_ref().unchecked_ref(), 0);
-        cb.forget();
+        let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(cb.unchecked_ref(), 0);
     }
 }
 
