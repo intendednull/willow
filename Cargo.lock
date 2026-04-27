@@ -6208,6 +6208,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "dirs",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -6225,6 +6226,7 @@ dependencies = [
  "bincode",
  "iroh-base",
  "serde",
+ "serde_json",
  "sha2 0.10.9",
  "tracing",
  "willow-identity",
@@ -6237,6 +6239,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "clap",
+ "dirs",
  "rusqlite",
  "serde",
  "tempfile",

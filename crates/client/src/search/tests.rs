@@ -940,3 +940,102 @@ mod query_tests {
         assert_eq!(q.raw, "Hello");
     }
 }
+
+mod from_display_message_tests {
+    //! `IndexableMessage::from_display_message` derives the operator
+    //! flags (`has_image`, `has_file`, `has_link`) from a
+    //! [`DisplayMessage`]. Per `docs/specs/2026-04-19-ui-design/local-search.md`
+    //! §Operators, the index must populate these so `has:image` /
+    //! `has:file` / `has:link` queries actually match — see issue
+    //! #355.
+    use super::super::index::IndexableMessage;
+    use crate::state::{DisplayMessage, QueueNote};
+    use std::collections::HashMap;
+    use willow_identity::Identity;
+
+    fn dm(id: &str, body: &str) -> DisplayMessage {
+        DisplayMessage {
+            id: id.into(),
+            channel_id: "c1".into(),
+            author_peer_id: Identity::generate().endpoint_id(),
+            author_display_name: "Mira".into(),
+            body: body.into(),
+            is_local: false,
+            timestamp_ms: 100,
+            reactions: HashMap::new(),
+            edited: false,
+            deleted: false,
+            reply_to: None,
+            reply_preview: None,
+            mentions: Vec::new(),
+            pinned: false,
+            whisper: false,
+            queue_note: QueueNote::None,
+        }
+    }
+
+    #[test]
+    fn inline_image_attachment_sets_has_image() {
+        // `[file:NAME:b64]` where NAME has an image extension renders
+        // inline as an image embed in the web UI; the index must
+        // mirror that classification so `has:image` matches.
+        let body = format!(
+            "[file:photo.png:{}]",
+            crate::base64::encode(b"\x89PNG\r\n\x1a\n")
+        );
+        let m = dm("m1", &body);
+        let ix = IndexableMessage::from_display_message(&m, "general", None, None);
+        assert!(ix.has_image, "image attachment must set has_image");
+        assert!(!ix.has_file, "image attachment must not set has_file");
+    }
+
+    #[test]
+    fn inline_non_image_attachment_sets_has_file() {
+        let body = format!("[file:notes.txt:{}]", crate::base64::encode(b"hello"));
+        let m = dm("m2", &body);
+        let ix = IndexableMessage::from_display_message(&m, "general", None, None);
+        assert!(ix.has_file, "non-image attachment must set has_file");
+        assert!(!ix.has_image, "non-image attachment must not set has_image");
+    }
+
+    #[test]
+    fn image_url_in_body_sets_has_image() {
+        // Bare URL pointing at an image extension also lights up
+        // `has:image` — mirrors the UI's `is_image_url` rule.
+        let m = dm("m3", "look at https://example.com/cat.jpg");
+        let ix = IndexableMessage::from_display_message(&m, "general", None, None);
+        assert!(ix.has_image, "image URL must set has_image");
+        assert!(ix.has_link, "URL must set has_link");
+    }
+
+    #[test]
+    fn plain_url_sets_has_link_only() {
+        let m = dm("m4", "see https://willow.im/docs");
+        let ix = IndexableMessage::from_display_message(&m, "general", None, None);
+        assert!(ix.has_link);
+        assert!(!ix.has_image);
+        assert!(!ix.has_file);
+    }
+
+    #[test]
+    fn plain_text_sets_no_flags() {
+        let m = dm("m5", "hello world");
+        let ix = IndexableMessage::from_display_message(&m, "general", None, None);
+        assert!(!ix.has_image);
+        assert!(!ix.has_file);
+        assert!(!ix.has_link);
+    }
+
+    #[test]
+    fn grove_and_letter_id_passed_through() {
+        let m = dm("m6", "hi");
+        let ix = IndexableMessage::from_display_message(
+            &m,
+            "general",
+            Some("g0".into()),
+            Some("L1".into()),
+        );
+        assert_eq!(ix.grove_id.as_deref(), Some("g0"));
+        assert_eq!(ix.letter_id.as_deref(), Some("L1"));
+    }
+}

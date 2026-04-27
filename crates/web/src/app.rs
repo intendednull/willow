@@ -370,33 +370,26 @@ pub fn App() -> impl IntoView {
             let grove_id = active_server_sig.get();
             let local_peer = peer_id_sig.get();
 
+            // `IndexableMessage::from_display_message` derives the
+            // `has_image` / `has_file` / `has_link` operator flags
+            // from the body so `has:image` / `has:file` / `has:link`
+            // queries actually match. `letter_id` stays `None` here —
+            // the active-letter signal isn't yet wired into this
+            // effect; tracked as a follow-up to issue #355.
+            let grove = if grove_id.is_empty() {
+                None
+            } else {
+                Some(grove_id.clone())
+            };
             let indexable: Vec<willow_client::IndexableMessage> = msgs
                 .into_iter()
                 .map(|m| {
-                    let author_peer_id = m.author_peer_id;
-                    // Lightweight link detection — `has:link` operator
-                    // key. Proper URL parsing lives in message-row
-                    // rendering; this is the cheap version.
-                    let has_link = m.body.contains("http://") || m.body.contains("https://");
-                    willow_client::IndexableMessage {
-                        message_id: m.id,
-                        channel_id: m.channel_id.clone(),
-                        channel_name: current_ch.clone(),
-                        grove_id: if grove_id.is_empty() {
-                            None
-                        } else {
-                            Some(grove_id.clone())
-                        },
-                        letter_id: None,
-                        author_peer_id,
-                        author_handle: m.author_display_name.to_lowercase(),
-                        author_display_name: m.author_display_name,
-                        timestamp_ms: m.timestamp_ms,
-                        body: m.body,
-                        has_image: false,
-                        has_file: false,
-                        has_link,
-                    }
+                    willow_client::IndexableMessage::from_display_message(
+                        &m,
+                        &current_ch,
+                        grove.clone(),
+                        None,
+                    )
                 })
                 .collect();
             // Ignore local peer binding to avoid unused_variables clippy
