@@ -11184,6 +11184,62 @@ mod phase_2b_sync_queue {
     }
 
     #[wasm_bindgen_test]
+    async fn sync_queue_view_mark_as_read_button_has_busy_attrs() {
+        // Issue #345: the mark-as-read button must carry an explicit
+        // busy gate (aria-busy + a `disabled` attribute path) so it
+        // cannot be spam-clicked while a per-peer batch is in flight.
+        // Without a `WebClientHandle` in context the click handler
+        // exits immediately, but the structural attributes guarantee
+        // the busy contract is wired even before the runtime handle
+        // arrives.
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <SyncQueueView /> }
+        });
+        tick().await;
+
+        let tabs = query_all(&container, "[role='tab']");
+        let inbound_tab = tabs
+            .iter()
+            .find(|t| text(t) == "inbound")
+            .expect("inbound tab must exist");
+        simulate_click(inbound_tab);
+        tick().await;
+
+        let btn = query(&container, ".sync-queue-view__mark-read")
+            .expect("mark-as-read button must render on inbound tab");
+        assert_eq!(
+            btn.get_attribute("aria-busy").as_deref(),
+            Some("false"),
+            "mark-as-read must expose aria-busy so AT clients see the in-flight gate"
+        );
+        // Idle copy comes from the spec; busy copy is the
+        // accessibility refinement parallel to ACTION_RETRY_BUSY.
+        assert_eq!(
+            text(&btn).trim(),
+            sync_queue_copy::ACTION_MARK_READ,
+            "idle label must be the spec copy"
+        );
+
+        // Smoke-click to ensure the handler runs without panicking
+        // when no `WebClientHandle` is provided (the test harness
+        // path) — exercises the early-return reset of `mark_busy`.
+        simulate_click(&btn);
+        tick().await;
+        assert_eq!(
+            btn.get_attribute("aria-busy").as_deref(),
+            Some("false"),
+            "mark-as-read must drop back to aria-busy=false once the early-return path runs"
+        );
+    }
+
+    #[wasm_bindgen_test]
     async fn sync_queue_view_no_delete_action_anywhere() {
         // Spec is explicit: the queue is authoritative — no destructive
         // action is permitted. Walk the DOM and guard against any
@@ -12187,5 +12243,144 @@ mod handler_error_toasts {
     async fn warn_and_toast_with_no_stack_does_not_panic() {
         warn_and_toast_with("send message", &"boom", None);
         tick().await;
+    }
+}
+
+// ── Service-worker postMessage validation (issue #244) ──────────────────────
+//
+// `validate_payload` is the kind-discriminator gate. We test it
+// directly because driving a real `ServiceWorker` under wasm-pack is
+// infeasible — and the gate is the load-bearing piece. The
+// `store_and_dispatch` helper is exercised separately to confirm a
+// validated payload reaches `take_last_push` and fires the
+// `willow-push` window event.
+mod service_worker_bridge {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::JsValue;
+    use wasm_bindgen_test::*;
+    use willow_web::service_worker_bridge::{
+        store_and_dispatch, take_last_push, validate_payload, PushPayload, NOTIFICATION_CLICK_KIND,
+        PUSH_EVENT, PUSH_KIND,
+    };
+
+    /// Build a JS `{ kind, cat, ref }` object for `MessageEvent.data`.
+    fn make_data(kind: Option<&str>, cat: Option<&str>, reference: Option<&str>) -> JsValue {
+        let obj = js_sys::Object::new();
+        if let Some(k) = kind {
+            js_sys::Reflect::set(&obj, &"kind".into(), &k.into()).unwrap();
+        }
+        if let Some(c) = cat {
+            js_sys::Reflect::set(&obj, &"cat".into(), &c.into()).unwrap();
+        }
+        if let Some(r) = reference {
+            js_sys::Reflect::set(&obj, &"ref".into(), &r.into()).unwrap();
+        }
+        obj.into()
+    }
+
+    #[wasm_bindgen_test]
+    fn validate_accepts_well_formed_push() {
+        let data = make_data(Some(PUSH_KIND), Some("mention"), Some("ch:42"));
+        let payload = validate_payload(&data).expect("valid push must pass");
+        assert_eq!(
+            payload,
+            PushPayload {
+                kind: PUSH_KIND.to_string(),
+                cat: "mention".to_string(),
+                reference: Some("ch:42".to_string()),
+            }
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn validate_accepts_notification_click_kind() {
+        // Both kinds the SW posts must clear the gate so a future
+        // reader can subscribe without a second validator.
+        let data = make_data(Some(NOTIFICATION_CLICK_KIND), Some("msg"), None);
+        let payload = validate_payload(&data).expect("notification-click must pass");
+        assert_eq!(payload.kind, NOTIFICATION_CLICK_KIND);
+    }
+
+    #[wasm_bindgen_test]
+    fn validate_drops_payload_missing_kind() {
+        // The whole point of issue #244 — no `kind`, no admission.
+        let data = make_data(None, Some("msg"), Some("anything"));
+        assert!(
+            validate_payload(&data).is_none(),
+            "missing kind must be rejected"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn validate_drops_payload_with_wrong_kind() {
+        let data = make_data(Some("attacker-kind"), Some("msg"), None);
+        assert!(
+            validate_payload(&data).is_none(),
+            "unknown kind must be rejected"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn validate_drops_non_object_payload() {
+        // postMessage(string) etc. — the SW never sends these but a
+        // hostile sender might.
+        assert!(validate_payload(&JsValue::from_str("willow-push")).is_none());
+        assert!(validate_payload(&JsValue::from_f64(42.0)).is_none());
+        assert!(validate_payload(&JsValue::NULL).is_none());
+        assert!(validate_payload(&JsValue::UNDEFINED).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn validate_defaults_missing_cat_to_msg() {
+        let data = make_data(Some(PUSH_KIND), None, None);
+        let payload = validate_payload(&data).expect("kind alone is enough");
+        assert_eq!(payload.cat, "msg");
+        assert!(payload.reference.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    async fn store_and_dispatch_round_trips_through_window_event() {
+        use wasm_bindgen::closure::Closure;
+
+        // Drain any leftover payload from prior tests in the same
+        // browser document so this case starts from a known state.
+        let _ = take_last_push();
+
+        let window = web_sys::window().expect("window exists");
+        let fired = Rc::new(Cell::new(false));
+        let fired_for_cb = fired.clone();
+        let cb = Closure::<dyn Fn(web_sys::Event)>::new(move |_| {
+            fired_for_cb.set(true);
+        });
+        window
+            .add_event_listener_with_callback(PUSH_EVENT, cb.as_ref().unchecked_ref())
+            .unwrap();
+
+        let payload = PushPayload {
+            kind: PUSH_KIND.to_string(),
+            cat: "mention".to_string(),
+            reference: Some("msg:abc".to_string()),
+        };
+        store_and_dispatch(&window, payload.clone());
+
+        // Synchronous dispatch_event: the listener has already run.
+        assert!(fired.get(), "willow-push event must fire");
+        assert_eq!(
+            take_last_push(),
+            Some(payload),
+            "validated payload must be retrievable"
+        );
+        assert!(
+            take_last_push().is_none(),
+            "take_last_push must drain the slot"
+        );
+
+        window
+            .remove_event_listener_with_callback(PUSH_EVENT, cb.as_ref().unchecked_ref())
+            .unwrap();
+        drop(cb);
     }
 }

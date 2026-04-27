@@ -293,29 +293,18 @@ pub fn App() -> impl IntoView {
 
     // Wire the service-worker bridge — the `willow-push` window event
     // fires whenever the SW forwards a focused-client push payload.
-    // Reads the payload out of `window.__willowLastPush` (stashed by
-    // `main.rs::wire_service_worker_bridge`) and routes it through the
-    // Notifier.
+    // Pulls the validated payload from `service_worker_bridge` (a
+    // module-local cell, not a global window property — issue #244)
+    // and routes it through the Notifier.
     {
         use wasm_bindgen::closure::Closure;
         use wasm_bindgen::JsCast;
         let notifier = notifier.clone();
         let closure = Closure::<dyn Fn(web_sys::Event)>::new(move |_ev: web_sys::Event| {
-            let Some(window) = web_sys::window() else {
+            let Some(payload) = crate::service_worker_bridge::take_last_push() else {
                 return;
             };
-            let payload = js_sys::Reflect::get(
-                &window,
-                &wasm_bindgen::JsValue::from_str("__willowLastPush"),
-            )
-            .ok();
-            let Some(payload) = payload else {
-                return;
-            };
-            let cat = js_sys::Reflect::get(&payload, &"cat".into())
-                .ok()
-                .and_then(|v| v.as_string())
-                .unwrap_or_else(|| "msg".to_string());
+            let cat = payload.cat;
             let cat_enum = match cat.as_str() {
                 "mention" => crate::notifications::Category::Mention,
                 "letter" => crate::notifications::Category::Letter,
@@ -333,8 +322,10 @@ pub fn App() -> impl IntoView {
             });
         });
         if let Some(window) = web_sys::window() {
-            let _ = window
-                .add_event_listener_with_callback("willow-push", closure.as_ref().unchecked_ref());
+            let _ = window.add_event_listener_with_callback(
+                crate::service_worker_bridge::PUSH_EVENT,
+                closure.as_ref().unchecked_ref(),
+            );
         }
         closure.forget();
     }
