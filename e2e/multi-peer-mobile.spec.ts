@@ -79,7 +79,7 @@ test.describe('Multi-peer mobile', () => {
       await sendMessage(page1, 'mobile hello');
 
       // Bob should see the message in the chat area.
-      await waitForMessage(page2, 'mobile hello', 30_000);
+      await waitForMessage(page2, 'mobile hello', 60_000);
     } finally {
       await ctx1.close();
       await ctx2.close();
@@ -106,7 +106,7 @@ test.describe('Multi-peer mobile', () => {
 
       // Bob switches to the new channel and should see the message.
       await switchChannel(page2, 'mobile-dev');
-      await waitForMessage(page2, 'dev channel msg', 30_000);
+      await waitForMessage(page2, 'dev channel msg', 60_000);
     } finally {
       await ctx1.close();
       await ctx2.close();

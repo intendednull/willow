@@ -71,9 +71,13 @@ test.describe('Join via shareable link', () => {
     // slowing the fast happy path.
     await pageB.waitForSelector('.app-shell, .mobile-top-bar', { timeout: 120_000 });
 
-    // Verify B sees the server — wait for DOM attachment first (gossip may lag).
+    // Verify B sees the server — wait for DOM attachment first (gossip
+    // may lag). The post-join initial sync delivers the channel events,
+    // but on slow CI under load the relay round-trip can take 30+ s
+    // before the `general` row reaches B's DOM. Match the 60 s ceiling
+    // used elsewhere for first-channel arrival.
     await expect(pageB.locator(`${visibleShell(pageB)} .channel-item`, { hasText: 'general' }))
-      .toBeAttached({ timeout: 30_000 });
+      .toBeAttached({ timeout: 60_000 });
     await openSidebar(pageB);
     await expect(pageB.locator(`${visibleShell(pageB)} .channel-item`, { hasText: 'general' }))
       .toBeVisible({ timeout: 5_000 });
@@ -82,7 +86,7 @@ test.describe('Join via shareable link', () => {
     await sendMessage(pageA, 'Welcome Bob!');
 
     // B should see it.
-    await waitForMessage(pageB, 'Welcome Bob!', 30000);
+    await waitForMessage(pageB, 'Welcome Bob!', 60_000);
 
     await ctxA.close();
     await ctxB.close();

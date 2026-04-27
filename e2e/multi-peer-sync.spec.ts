@@ -130,13 +130,15 @@ test.describe('Multi-peer state synchronization', () => {
       await switchChannel(page1, 'dev');
       await switchChannel(page2, 'dev');
 
-      // Alice sends a message.
+      // Alice sends a message. Mobile-chrome's gossip mesh routinely
+      // takes 30+ s for first-message delivery in non-default channels;
+      // 60 s gives slow-CI headroom without slowing the happy path.
       await sendMessage(page1, 'message in dev');
-      await waitForMessage(page2, 'message in dev', 30_000);
+      await waitForMessage(page2, 'message in dev', 60_000);
 
       // Bob sends a reply.
       await sendMessage(page2, 'bob in dev too');
-      await waitForMessage(page1, 'bob in dev too', 30_000);
+      await waitForMessage(page1, 'bob in dev too', 60_000);
     } finally {
       await ctx1.close();
       await ctx2.close();

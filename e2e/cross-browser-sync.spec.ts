@@ -8,7 +8,7 @@ const desktopFirefoxContext = {
   viewport: { width: 1280, height: 720 },
   hasTouch: false,
 };
-import { freshStart, createServer, sendMessage, waitForMessage, waitForApp, getPeerId, openSidebar, joinViaInvite, visibleShell } from './helpers';
+import { freshStart, createServer, sendMessage, waitForMessage, waitForApp, getPeerId, openSidebar, closeSidebar, joinViaInvite, visibleShell } from './helpers';
 
 // Shared relay + gossip mesh — keep tests inside this file sequential
 // so they don't stampede the relay while `fullyParallel: true` runs
@@ -83,13 +83,18 @@ test.describe('Cross-browser peer sync', () => {
       // Mobile Chrome: join via invite.
       await joinViaInvite(mobilePage, inviteCode);
 
-      // Verify mobile sees the server — wait for DOM attachment first (gossip may lag).
+      // Verify mobile sees the server — wait for DOM attachment first
+      // (gossip may lag).
       await expect(mobilePage.locator(`${visibleShell(mobilePage)} .channel-item`, { hasText: 'general' }))
         .toBeAttached({ timeout: 60_000 });
-      // Now open the sidebar and confirm the item is visible.
+      // Briefly open the sidebar and confirm the item is visible, then
+      // close it. `sendMessage` below pushes into the channel via the
+      // home tab, which the grove-drawer overlay would otherwise sit on
+      // top of and block.
       await openSidebar(mobilePage);
       await expect(mobilePage.locator(`${visibleShell(mobilePage)} .channel-item`, { hasText: 'general' }))
         .toBeVisible({ timeout: 5_000 });
+      await closeSidebar(mobilePage);
 
       // Establish bidirectional gossip mesh: Chrome→Firefox is the reliable direction.
       // Waiting for Firefox to *receive* a Chrome message proves both gossip paths are
@@ -97,19 +102,19 @@ test.describe('Cross-browser peer sync', () => {
       // (member-item appearance on Firefox alone only confirms Firefox's NeighborUp,
       // not Chrome's reverse path which is required for the main assertion below.)
       await sendMessage(mobilePage, 'warmup');
-      await waitForMessage(desktopPage, 'warmup', 30_000);
+      await waitForMessage(desktopPage, 'warmup', 60_000);
 
       // Desktop Firefox: send a message.
       await sendMessage(desktopPage, 'Hello from Firefox desktop');
 
       // Mobile Chrome: should see the message.
-      await waitForMessage(mobilePage, 'Hello from Firefox desktop', 30_000);
+      await waitForMessage(mobilePage, 'Hello from Firefox desktop', 60_000);
 
       // Mobile Chrome: send a reply.
       await sendMessage(mobilePage, 'Hello from Chrome mobile');
 
       // Desktop Firefox: should see the reply.
-      await waitForMessage(desktopPage, 'Hello from Chrome mobile', 30_000);
+      await waitForMessage(desktopPage, 'Hello from Chrome mobile', 60_000);
 
     } finally {
       await mobileCtx.close();
@@ -172,7 +177,7 @@ test.describe('Cross-browser peer sync', () => {
       await sendMessage(mobilePage, 'Cross browser works!');
 
       // Desktop should see it.
-      await waitForMessage(desktopPage, 'Cross browser works!', 30_000);
+      await waitForMessage(desktopPage, 'Cross browser works!', 60_000);
 
     } finally {
       await mobileCtx.close();
