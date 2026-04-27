@@ -5,7 +5,9 @@ WORKDIR /build
 COPY . .
 RUN cd crates/web && trunk build --release
 
-FROM nginx:alpine
-COPY --from=builder /build/crates/web/dist/ /usr/share/nginx/html/
+FROM nginxinc/nginx-unprivileged:alpine
+COPY --from=builder --chown=nginx:nginx /build/crates/web/dist/ /usr/share/nginx/html/
 RUN chmod 644 /usr/share/nginx/html/*
-EXPOSE 80
+
+USER nginx
+EXPOSE 8080
