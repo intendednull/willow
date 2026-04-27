@@ -55,6 +55,8 @@ Same flow but review PR only. No issues filed.
 - GitHub comms (issues, comments, reviews) written in caveman mode. Code blocks + security warnings stay normal.
 
 ### Setup
+- **REQUIRED:** `superpowers:using-git-worktrees` — one worktree per subagent for isolation.
+- Pre-worktree: `git stash` or `git restore` main dir; `.claude/worktrees/` in `.gitignore`. Tear down after report submitted.
 - `cargo install --locked cargo-audit` upfront (or verify); run as 1st step in security/deps.
 
 ### Quality
