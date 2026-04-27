@@ -153,9 +153,14 @@ export async function sendMessage(page: Page, text: string) {
     .first();
   await input.fill(text);
   await input.press('Enter');
+  // Own-message render is local (not gossip-dependent), but on mobile-
+  // chrome under load the chat-list reactive update routinely takes
+  // 10-20 s to flush after the input handler dispatches the event.
+  // Bump to 30 s so the helper doesn't bail before the local DAG-
+  // applied event reaches the rendered list.
   await page.locator(`${visibleShell(page)} .message .body`, { hasText: text })
     .first()
-    .waitFor({ timeout: 10_000 });
+    .waitFor({ timeout: 30_000 });
 }
 
 /** Get all visible message bodies. */
