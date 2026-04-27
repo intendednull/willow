@@ -14,6 +14,34 @@ use willow_identity::EndpointId;
 use willow_network::traits::TopicHandle;
 use willow_network::traits::{GossipEvent, TopicEvents};
 
+/// Maximum length (in Unicode scalar values / `char`s) for an attacker-supplied
+/// display name accepted into [`state_actors::ProfileState::names`]. Inputs
+/// longer than this are truncated on receipt and a `tracing::warn!` is logged.
+///
+/// We cap by `char` count rather than UTF-8 bytes to keep the limit friendly
+/// for non-ASCII names. Worst-case memory per entry stays bounded
+/// (`MAX_DISPLAY_NAME_LEN * 4` bytes).
+///
+/// See `[SEC-V-05]` (issue #234) — full mitigation also requires an LRU /
+/// total-entry cap on the map (tracked separately).
+pub(crate) const MAX_DISPLAY_NAME_LEN: usize = 128;
+
+/// Maximum length (in `char`s) for an attacker-supplied typing-channel name
+/// accepted into [`state_actors::NetworkMeta::typing_peers`]. Same rationale
+/// as [`MAX_DISPLAY_NAME_LEN`].
+pub(crate) const MAX_TYPING_CHANNEL_LEN: usize = 128;
+
+/// Truncate `s` to at most `max` Unicode scalar values, returning the original
+/// string unchanged if it already fits. Splits at `char` boundaries so the
+/// returned `String` is always valid UTF-8.
+pub(crate) fn truncate_to_chars(s: String, max: usize) -> String {
+    if s.chars().count() <= max {
+        s
+    } else {
+        s.chars().take(max).collect()
+    }
+}
+
 /// Context passed to listener tasks with all the actor addresses they need.
 pub struct ListenerCtx {
     pub event_state: Addr<willow_actor::StateActor<willow_state::ServerState>>,
@@ -317,6 +345,16 @@ async fn process_received_message<T: TopicHandle>(
             }
         }
         crate::ops::WireMessage::TypingIndicator { channel } => {
+            // Bound attacker-supplied input. See `MAX_TYPING_CHANNEL_LEN`
+            // and issue #234 ([SEC-V-05]).
+            let original_len = channel.chars().count();
+            let channel = truncate_to_chars(channel, MAX_TYPING_CHANNEL_LEN);
+            if original_len > MAX_TYPING_CHANNEL_LEN {
+                tracing::warn!(
+                    %signer, original_len, capped_len = MAX_TYPING_CHANNEL_LEN,
+                    "TypingIndicator channel exceeded cap — truncating"
+                );
+            }
             let now = crate::util::current_time_ms();
             willow_actor::state::mutate(&ctx.network, move |n| {
                 n.typing_peers.insert(signer, (channel, now));
@@ -550,6 +588,16 @@ async fn process_received_message<T: TopicHandle>(
         // Sent on SERVER_OPS_TOPIC so delivery is guaranteed via the sync path.
         crate::ops::WireMessage::ProfileAnnounce { display_name } => {
             let peer_id = signer;
+            // Bound attacker-supplied input. See `MAX_DISPLAY_NAME_LEN`
+            // and issue #234 ([SEC-V-05]).
+            let original_len = display_name.chars().count();
+            let display_name = truncate_to_chars(display_name, MAX_DISPLAY_NAME_LEN);
+            if original_len > MAX_DISPLAY_NAME_LEN {
+                tracing::warn!(
+                    %peer_id, original_len, capped_len = MAX_DISPLAY_NAME_LEN,
+                    "ProfileAnnounce display_name exceeded cap — truncating"
+                );
+            }
             let name = display_name.clone();
             willow_actor::state::mutate(&ctx.profiles, move |p| {
                 p.names.insert(peer_id, name);
@@ -744,5 +792,178 @@ mod tests {
             bob_has,
             "verified signer must be granted SendMessages via join link"
         );
+    }
+
+    // ─── [SEC-V-05] / #234 — bound attacker-supplied strings ───────────────
+
+    #[test]
+    fn truncate_to_chars_passes_short_input_unchanged() {
+        let s = "hello".to_string();
+        assert_eq!(truncate_to_chars(s.clone(), 128), s);
+    }
+
+    #[test]
+    fn truncate_to_chars_caps_long_input_at_char_boundary() {
+        // 200 ASCII chars → cap at 128.
+        let s: String = "x".repeat(200);
+        let out = truncate_to_chars(s, 128);
+        assert_eq!(out.chars().count(), 128);
+        assert_eq!(out.len(), 128); // ASCII so bytes == chars
+    }
+
+    #[test]
+    fn truncate_to_chars_handles_multibyte_at_boundary() {
+        // 200 four-byte chars (each `🌲` is U+1F332, 4 bytes UTF-8). Capping
+        // at 128 must split on a `char` boundary, never mid-codepoint.
+        let s: String = "🌲".repeat(200);
+        let out = truncate_to_chars(s, 128);
+        assert_eq!(out.chars().count(), 128);
+        // Output must still be valid UTF-8 (it is by construction since
+        // `String` enforces it; but assert byte-len matches expectation).
+        assert_eq!(out.len(), 128 * 4);
+    }
+
+    /// A `ProfileAnnounce` with an oversized `display_name` must end up in
+    /// `ProfileState.names` with at most `MAX_DISPLAY_NAME_LEN` chars.
+    /// Without the cap, an attacker could grow the map's per-entry footprint
+    /// without bound (#234, [SEC-V-05]).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn profile_announce_display_name_is_truncated_on_receipt() {
+        let (client, _rx) = test_client();
+
+        let hub = willow_network::mem::MemHub::new();
+        let net = willow_network::mem::MemNetwork::new(&hub);
+        let (topic_handle, _events) = net
+            .subscribe(willow_network::topic_id("unit-test-profile-cap"), vec![])
+            .await
+            .expect("subscribe must succeed");
+
+        let ctx = ListenerCtx {
+            event_state: client.event_state_addr.clone(),
+            chat_meta: client.chat_meta_addr.clone(),
+            profiles: client.profile_state_addr.clone(),
+            network: client.network_meta_addr.clone(),
+            voice: client.voice_state_addr.clone(),
+            persistence: client.persistence_addr.clone(),
+            persistence_enabled: false,
+            event_broker: client.event_broker.clone(),
+            identity: client.identity.clone(),
+            join_links: Arc::clone(&client.join_links),
+            dag: client.dag_addr.clone(),
+            server_registry: client.server_registry_addr.clone(),
+            on_neighbor_up: None,
+        };
+
+        let attacker = willow_identity::Identity::generate();
+        let attacker_id = attacker.endpoint_id();
+
+        // 4096 chars — well past the 128-char cap.
+        let oversized: String = "A".repeat(4096);
+        let msg = crate::ops::WireMessage::ProfileAnnounce {
+            display_name: oversized,
+        };
+        let bytes = crate::ops::pack_wire(&msg, &attacker).expect("pack_wire must succeed");
+
+        process_received_message(&bytes, attacker_id, &ctx, &topic_handle).await;
+
+        // Poll for the entry to land. `mutate` awaits the actor reply, so
+        // the state should already be visible — but poll briefly to absorb
+        // any scheduling jitter on slow CI hosts.
+        let stored_len = poll_until_some(
+            || {
+                willow_actor::state::select(&client.profile_state_addr, move |p| {
+                    p.names.get(&attacker_id).map(|n| n.chars().count())
+                })
+            },
+            std::time::Duration::from_secs(2),
+        )
+        .await;
+
+        assert_eq!(
+            stored_len,
+            Some(MAX_DISPLAY_NAME_LEN),
+            "oversized display_name must be capped at MAX_DISPLAY_NAME_LEN on receipt"
+        );
+    }
+
+    /// A `TypingIndicator` with an oversized `channel` must end up in
+    /// `NetworkMeta.typing_peers` with at most `MAX_TYPING_CHANNEL_LEN` chars.
+    /// Same threat model as the profile case (#234, [SEC-V-05]).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn typing_indicator_channel_is_truncated_on_receipt() {
+        let (client, _rx) = test_client();
+
+        let hub = willow_network::mem::MemHub::new();
+        let net = willow_network::mem::MemNetwork::new(&hub);
+        let (topic_handle, _events) = net
+            .subscribe(willow_network::topic_id("unit-test-typing-cap"), vec![])
+            .await
+            .expect("subscribe must succeed");
+
+        let ctx = ListenerCtx {
+            event_state: client.event_state_addr.clone(),
+            chat_meta: client.chat_meta_addr.clone(),
+            profiles: client.profile_state_addr.clone(),
+            network: client.network_meta_addr.clone(),
+            voice: client.voice_state_addr.clone(),
+            persistence: client.persistence_addr.clone(),
+            persistence_enabled: false,
+            event_broker: client.event_broker.clone(),
+            identity: client.identity.clone(),
+            join_links: Arc::clone(&client.join_links),
+            dag: client.dag_addr.clone(),
+            server_registry: client.server_registry_addr.clone(),
+            on_neighbor_up: None,
+        };
+
+        let attacker = willow_identity::Identity::generate();
+        let attacker_id = attacker.endpoint_id();
+
+        // 1024 ASCII chars — well past the 128-char cap, well under the
+        // 4 KB `SIGNALING_CAP` enforced by `unpack_wire`.
+        let oversized: String = "C".repeat(1024);
+        let msg = crate::ops::WireMessage::TypingIndicator { channel: oversized };
+        let bytes = crate::ops::pack_wire(&msg, &attacker).expect("pack_wire must succeed");
+
+        process_received_message(&bytes, attacker_id, &ctx, &topic_handle).await;
+
+        let stored_len = poll_until_some(
+            || {
+                willow_actor::state::select(&client.network_meta_addr, move |n| {
+                    n.typing_peers
+                        .get(&attacker_id)
+                        .map(|(ch, _ts)| ch.chars().count())
+                })
+            },
+            std::time::Duration::from_secs(2),
+        )
+        .await;
+
+        assert_eq!(
+            stored_len,
+            Some(MAX_TYPING_CHANNEL_LEN),
+            "oversized typing channel must be capped at MAX_TYPING_CHANNEL_LEN on receipt"
+        );
+    }
+
+    /// Poll a closure that returns `impl Future<Output = Option<T>>` until
+    /// it yields `Some` or the deadline expires. Returns the last observed
+    /// value (whether `Some` or `None`).
+    async fn poll_until_some<T, Fut, F>(mut f: F, deadline: std::time::Duration) -> Option<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Option<T>>,
+    {
+        let start = std::time::Instant::now();
+        loop {
+            let v = f().await;
+            if v.is_some() {
+                return v;
+            }
+            if start.elapsed() >= deadline {
+                return v;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
     }
 }
