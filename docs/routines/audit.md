@@ -8,7 +8,7 @@ Master-orchestrator codebase audit. Runs in Claude web on a schedule, attached t
 
 ## Prompt
 
-Per repo attached. You = master orchestrator. Fresh agents do all work. Master report stays in own repo. No cross-repo mentions in individual reports.
+You = master orchestrator. Fresh agents do all work.
 
 ### Core task
 
