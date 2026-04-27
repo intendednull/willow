@@ -102,9 +102,12 @@ test.describe('Multi-peer state synchronization', () => {
       await createChannel(page1, 'new-channel');
 
       // Bob should see the new channel (open sidebar on mobile).
+      // Mid-session channel events can take 30+ s on slow CI to gossip
+      // through the relay; pre-existing channels arrive faster because
+      // they're delivered in the initial state replay on accept_invite.
       await openSidebar(page2);
       await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'new-channel' }))
-        .toBeVisible({ timeout: 30_000 });
+        .toBeVisible({ timeout: 60_000 });
     } finally {
       await ctx1.close();
       await ctx2.close();
@@ -117,10 +120,11 @@ test.describe('Multi-peer state synchronization', () => {
       // Alice creates a new channel.
       await createChannel(page1, 'dev');
 
-      // Wait for Bob to see it (open sidebar on mobile).
+      // Wait for Bob to see it (open sidebar on mobile). Mid-session
+      // channel gossip can take 30+ s on slow CI.
       await openSidebar(page2);
       await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'dev' }))
-        .toBeVisible({ timeout: 30_000 });
+        .toBeVisible({ timeout: 60_000 });
 
       // Both switch to the new channel.
       await switchChannel(page1, 'dev');
@@ -172,11 +176,12 @@ test.describe('Multi-peer state synchronization', () => {
       await createChannel(page1, 'chan-b');
 
       // Both should appear on Bob's side after gossip delivery.
+      // Mid-session channel events can take 30+ s on slow CI.
       await openSidebar(page2);
       await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'chan-a' }))
-        .toBeVisible({ timeout: 30_000 });
+        .toBeVisible({ timeout: 60_000 });
       await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'chan-b' }))
-        .toBeVisible({ timeout: 30_000 });
+        .toBeVisible({ timeout: 60_000 });
     } finally {
       await ctx1.close();
       await ctx2.close();

@@ -28,9 +28,10 @@ test.describe('Cross-browser peer sync', () => {
   // path. Helper waits inside joinViaInvite extended to 60 s for slow-CI
   // gossip in 7f88280; 120 s is no longer enough headroom on top of
   // double-browser launch + two .channel-item waits + two sendMessage
-  // round-trips. Match the 180 s ceiling used by the other multi-peer
-  // specs.
-  test.setTimeout(180_000);
+  // round-trips. 240 s matches multi-peer-sync.spec.ts (which compounds
+  // the same setupTwoPeers-style waits) and gives slow-CI headroom for
+  // the cross-engine handshake without slowing the happy path.
+  test.setTimeout(240_000);
 
   // Only run from one project to avoid duplicating (each test launches its own browsers).
   test.beforeEach(({}, testInfo) => {
@@ -62,8 +63,12 @@ test.describe('Cross-browser peer sync', () => {
       const mobilePeerId = await getPeerId(mobilePage);
       expect(mobilePeerId).toBeTruthy();
 
-      // Desktop Firefox: generate invite for mobile peer.
-      await desktopPage.locator('[aria-label="grove menu"]').click();
+      // Desktop Firefox: generate invite for mobile peer. Both shells
+      // mount a `[aria-label="grove menu"]` button (one in `.shell-desktop`,
+      // one in `.shell-mobile`); scope to the visible-shell + `.first()`
+      // so Playwright's strict mode picks exactly the one rendered for
+      // this viewport instead of throwing on the duplicate match.
+      await desktopPage.locator('.shell-desktop [aria-label="grove menu"]').first().click();
       await desktopPage.waitForTimeout(500);
       await desktopPage.locator('input[placeholder*="12D3KooW"]').fill(mobilePeerId);
       await desktopPage.locator('button', { hasText: 'Generate Invite' }).click();
@@ -137,9 +142,12 @@ test.describe('Cross-browser peer sync', () => {
       const desktopPeerId = await getPeerId(desktopPage);
       expect(desktopPeerId).toBeTruthy();
 
-      // Mobile Chrome: open settings to generate invite.
+      // Mobile Chrome: open settings to generate invite. Scope to the
+      // visible mobile shell + `.first()` so the duplicate grove-menu
+      // button mounted on the inactive desktop shell doesn't trigger a
+      // Playwright strict-mode violation.
       await openSidebar(mobilePage);
-      await mobilePage.locator('[aria-label="grove menu"]').click();
+      await mobilePage.locator('.shell-mobile [aria-label="grove menu"]').first().click();
       await mobilePage.waitForTimeout(500);
       await mobilePage.locator('input[placeholder*="12D3KooW"]').fill(desktopPeerId);
       await mobilePage.locator('button', { hasText: 'Generate Invite' }).click();

@@ -83,8 +83,18 @@ test.describe('Permissions and trust', () => {
       await kickPeer(page1, 'Bob');
       await page1.waitForTimeout(2000);
 
-      // Bob tries to send a message that should NOT arrive.
-      await sendMessage(page2, 'kicked but trying');
+      // Bob tries to send a message that should NOT arrive. Bypass
+      // `sendMessage` because, post-kick, Bob's own broadcast is
+      // rejected by the local DAG (he no longer has SendMessages on
+      // this server), so the message body never renders locally and
+      // the helper's `waitFor(.message .body)` times out. Drive the
+      // composer directly and don't assert local render — only the
+      // remote-non-delivery assertion below matters.
+      const bobInput = page2
+        .locator(`${visibleShell(page2)} .input-area input, ${visibleShell(page2)} .input-area textarea`)
+        .first();
+      await bobInput.fill('kicked but trying');
+      await bobInput.press('Enter');
 
       // Sentinel: Alice sends her own message. Her own message appears locally
       // immediately, so waiting for it proves that local rendering is working

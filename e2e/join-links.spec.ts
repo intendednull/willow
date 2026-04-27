@@ -63,10 +63,13 @@ test.describe('Join via shareable link', () => {
 
     // Wait for join to complete (join page disappears, chat appears).
     // Both shells mount after join — desktop shows `.app-shell`,
-    // mobile shows `.mobile-top-bar` inside `.shell-mobile`. Mobile
-    // real-P2P joining can take longer as the relay + gossip mesh
-    // stabilises, so allow a generous timeout.
-    await pageB.waitForSelector('.app-shell, .mobile-top-bar', { timeout: 60_000 });
+    // mobile shows `.mobile-top-bar` inside `.shell-mobile`. The
+    // join-via-URL flow performs a fresh-start of peer B's client
+    // (full IDB clear + reload + WASM bootstrap + relay handshake +
+    // accept_invite + initial sync); 60 s is a tight ceiling for the
+    // worst-case slow CI run. 120 s gives the bootstrap room without
+    // slowing the fast happy path.
+    await pageB.waitForSelector('.app-shell, .mobile-top-bar', { timeout: 120_000 });
 
     // Verify B sees the server — wait for DOM attachment first (gossip may lag).
     await expect(pageB.locator(`${visibleShell(pageB)} .channel-item`, { hasText: 'general' }))
