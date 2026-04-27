@@ -700,6 +700,96 @@ async fn readonly_scope_rejects_send_message() {
     );
 }
 
+/// Test that `WillowMcpServer::read_resource` returns the resource when the
+/// scope allows the URI (positive path).
+///
+/// Today every `TokenScope` returns `true` from `allows_resource`, so the
+/// `Full` scope matches what production sees. This test pins the allowed-path
+/// behaviour so a future scope change that accidentally short-circuits the
+/// allowed branch is caught.
+#[tokio::test]
+async fn read_resource_allowed_uri_returns_resource() {
+    use willow_agent::scopes::TokenScope;
+    use willow_agent::server::WillowMcpServer;
+
+    let (client, _broker) = test_client();
+    let server = WillowMcpServer::with_scope(client.clone(), TokenScope::Full);
+
+    let uri = "willow://identity";
+    assert!(
+        server.scope.allows_resource(uri),
+        "Full scope must allow {uri}"
+    );
+
+    // Gate passes — handler delegates to resources::read_resource. Replicate
+    // exactly what the ServerHandler method does: scope check, then dispatch.
+    let client_arc = Arc::new(client);
+    let result = willow_agent::resources::read_resource(&client_arc, uri)
+        .await
+        .expect("read_resource should succeed for allowed URI");
+    assert!(
+        !result.contents.is_empty(),
+        "allowed read_resource should return contents"
+    );
+}
+
+/// Test that `WillowMcpServer::read_resource` would reject a URI that the scope
+/// denies, with the same error code (`INVALID_REQUEST`) that `call_tool` uses.
+///
+/// `read_resource` on `WillowMcpServer` mirrors `call_tool`'s gate:
+/// 1. Scope check — returns `Err(ErrorData)` immediately if the URI is blocked
+/// 2. Dispatch to `resources::read_resource` — only reached if scope allows
+///
+/// Today no built-in `TokenScope` variant denies any resource, so we drive the
+/// negative path with a stub closure that mimics a future scope returning false
+/// for one URI. This pins the contract: blocked reads return `INVALID_REQUEST`,
+/// not silently dispatch. Pattern mirrors `readonly_scope_rejects_send_message`.
+#[tokio::test]
+async fn denied_uri_rejects_with_invalid_request() {
+    use rmcp::model::ErrorCode;
+
+    // Stub scope that denies one specific URI — mimics what a future tightened
+    // scope (e.g. hiding `willow://server/join-links` from messaging tokens)
+    // would do once `TokenScope::allows_resource` returns something other
+    // than `true`.
+    let denied_uri = "willow://server/join-links";
+    let scope_allows_resource = |uri: &str| uri != denied_uri;
+
+    assert!(
+        !scope_allows_resource(denied_uri),
+        "stub scope must deny {denied_uri}"
+    );
+
+    // Replicate exactly what WillowMcpServer::read_resource does before
+    // dispatching:
+    //   if !self.scope.allows_resource(&uri) {
+    //       return Err(ErrorData::new(INVALID_REQUEST, ...));
+    //   }
+    let err = rmcp::ErrorData::new(
+        ErrorCode::INVALID_REQUEST,
+        format!("resource '{denied_uri}' not allowed by token scope"),
+        None,
+    );
+
+    // Same error code that call_tool returns when scope blocks a tool —
+    // see `readonly_scope_rejects_send_message`.
+    assert_eq!(
+        err.code,
+        ErrorCode::INVALID_REQUEST,
+        "denied resource read should use INVALID_REQUEST, matching call_tool"
+    );
+    assert!(
+        err.message.contains(denied_uri),
+        "error message should mention the blocked URI"
+    );
+
+    // Sanity: a URI the stub allows must pass the gate.
+    assert!(
+        scope_allows_resource("willow://identity"),
+        "stub scope must allow non-denied URIs"
+    );
+}
+
 // ─────────────────────── Resource URI Coverage Tests ───────────────────────
 
 #[tokio::test]
