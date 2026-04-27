@@ -3,15 +3,39 @@
 pub mod role;
 pub mod store;
 
+use std::path::PathBuf;
+
 use clap::Parser;
 use role::StorageRole;
 use store::StorageEventStore;
+
+/// Compute the platform-aware default path for the storage identity key.
+///
+/// Prefers the user's config dir (e.g. `$XDG_CONFIG_HOME/willow/storage.key`
+/// on Linux), falling back to `/etc/willow/storage.key` when no config dir
+/// is available (matches the historical Linux deployment path).
+fn default_storage_key() -> PathBuf {
+    dirs::config_dir()
+        .map(|d| d.join("willow").join("storage.key"))
+        .unwrap_or_else(|| PathBuf::from("/etc/willow/storage.key"))
+}
+
+/// Compute the platform-aware default path for the storage SQLite database.
+///
+/// Prefers the user's data dir (e.g. `$XDG_DATA_HOME/willow/storage.db` on
+/// Linux), falling back to `/var/lib/willow/storage.db` when no data dir is
+/// available (matches the historical Linux deployment path).
+fn default_storage_db() -> PathBuf {
+    dirs::data_dir()
+        .map(|d| d.join("willow").join("storage.db"))
+        .unwrap_or_else(|| PathBuf::from("/var/lib/willow/storage.db"))
+}
 
 #[derive(Parser)]
 #[command(name = "willow-storage", about = "Willow storage worker node")]
 struct Cli {
     /// Path to the Ed25519 identity keypair file.
-    #[arg(long, default_value = "/etc/willow/storage.key")]
+    #[arg(long, default_value_t = default_storage_key().display().to_string())]
     identity_path: String,
 
     /// Iroh relay URL to connect through.
@@ -19,7 +43,7 @@ struct Cli {
     relay_url: Option<String>,
 
     /// Path to SQLite database.
-    #[arg(long, default_value = "/var/lib/willow/storage.db")]
+    #[arg(long, default_value_t = default_storage_db().display().to_string())]
     db_path: String,
 
     /// Active sync interval in seconds.
@@ -88,4 +112,44 @@ async fn main() -> anyhow::Result<()> {
     };
 
     willow_worker::runtime::run(Box::new(role), config, network).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn default_storage_key_targets_willow_subdir() {
+        let p = default_storage_key();
+        assert_eq!(p.file_name().and_then(|s| s.to_str()), Some("storage.key"));
+        let parent = p.parent().expect("default path has parent");
+        assert_eq!(
+            parent.file_name().and_then(|s| s.to_str()),
+            Some("willow"),
+            "expected willow/ as parent dir, got {parent:?}"
+        );
+        assert!(p.is_absolute(), "default path must be absolute, got {p:?}");
+        assert!(
+            p.ends_with(Path::new("willow/storage.key")),
+            "expected path to end with willow/storage.key, got {p:?}"
+        );
+    }
+
+    #[test]
+    fn default_storage_db_targets_willow_subdir() {
+        let p = default_storage_db();
+        assert_eq!(p.file_name().and_then(|s| s.to_str()), Some("storage.db"));
+        let parent = p.parent().expect("default path has parent");
+        assert_eq!(
+            parent.file_name().and_then(|s| s.to_str()),
+            Some("willow"),
+            "expected willow/ as parent dir, got {parent:?}"
+        );
+        assert!(p.is_absolute(), "default path must be absolute, got {p:?}");
+        assert!(
+            p.ends_with(Path::new("willow/storage.db")),
+            "expected path to end with willow/storage.db, got {p:?}"
+        );
+    }
 }

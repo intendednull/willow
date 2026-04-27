@@ -6208,6 +6208,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "dirs",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -6237,6 +6238,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "clap",
+ "dirs",
  "rusqlite",
  "serde",
  "tempfile",
