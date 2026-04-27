@@ -11473,6 +11473,128 @@ mod phase_2b_sync_queue {
         );
     }
 
+    /// Issue #352 — Escape on the popover closes it. The popover is
+    /// outside the global close-stack in `keybindings::install`, so
+    /// without a local handler keyboard users could not dismiss it.
+    #[wasm_bindgen_test]
+    async fn relay_signal_button_escape_closes_popover() {
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.queue.set_relay_status.set(RelayStatus::Reachable);
+            provide_context(app_state);
+            provide_context(write);
+            view! { <RelaySignalButton /> }
+        });
+        tick().await;
+
+        let btn = query(&container, ".relay-signal-button").expect("button must render");
+        simulate_click(&btn);
+        tick().await;
+
+        let popover = query(&container, ".relay-popover").expect("popover must be open");
+
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_key("Escape");
+        let escape =
+            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        popover
+            .dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&escape)
+            .unwrap();
+        tick().await;
+
+        assert!(
+            query(&container, ".relay-popover").is_none(),
+            "Escape keydown on the popover must close it"
+        );
+        assert_eq!(
+            btn.get_attribute("aria-expanded").as_deref(),
+            Some("false"),
+            "aria-expanded must flip back to false after Escape"
+        );
+    }
+
+    /// Issue #352 — opening the popover seeds focus on the
+    /// settings-link button so keyboard users land inside the dialog.
+    #[wasm_bindgen_test]
+    async fn relay_signal_button_focuses_settings_link_on_open() {
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.queue.set_relay_status.set(RelayStatus::Reachable);
+            provide_context(app_state);
+            provide_context(write);
+            view! { <RelaySignalButton /> }
+        });
+        tick().await;
+
+        let btn = query(&container, ".relay-signal-button").expect("button must render");
+        simulate_click(&btn);
+        tick().await;
+
+        // Focus is queued via `request_animation_frame`, so wait one
+        // frame before asserting `document.activeElement`. A short
+        // timeout is more than long enough for rAF to fire in the
+        // headless test browser and matches the timing pattern used
+        // elsewhere in this file.
+        gloo_timers::future::TimeoutFuture::new(40).await;
+        tick().await;
+
+        let active = web_sys::window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .active_element()
+            .expect("active element after open");
+        assert!(
+            active.class_list().contains("relay-popover__settings-link"),
+            "settings-link button must receive focus when the popover opens"
+        );
+    }
+
+    /// Issue #352 — popover advertises itself as a non-modal dialog.
+    /// The popover does not trap focus, so `aria-modal="false"` is the
+    /// honest signal to assistive tech.
+    #[wasm_bindgen_test]
+    async fn relay_signal_button_popover_is_non_modal() {
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.queue.set_relay_status.set(RelayStatus::Reachable);
+            provide_context(app_state);
+            provide_context(write);
+            view! { <RelaySignalButton /> }
+        });
+        tick().await;
+
+        let btn = query(&container, ".relay-signal-button").expect("button must render");
+        simulate_click(&btn);
+        tick().await;
+
+        let popover = query(&container, ".relay-popover").expect("popover must be open");
+        assert_eq!(
+            popover.get_attribute("aria-modal").as_deref(),
+            Some("false"),
+            "popover is non-modal — must advertise aria-modal=\"false\""
+        );
+        assert_eq!(
+            popover.get_attribute("role").as_deref(),
+            Some("dialog"),
+            "popover must keep role=dialog so aria-haspopup=\"dialog\" stays accurate"
+        );
+    }
+
     /// `request_animation_frame` wrapper used to schedule signal
     /// updates after mount so the `Effect` subscribing to
     /// `device_online` has already run once with the `prev == true`
