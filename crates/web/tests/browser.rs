@@ -9549,6 +9549,239 @@ async fn phase_2e_recent_chip_has_listitem_role() {
     assert_eq!(text(&clear).trim(), "clear all recents");
 }
 
+// ── Phase 2e — active-row a11y wiring ───────────────────────────────────────
+//
+// Closes #344. The listbox previously hard-coded `selected=false` on every
+// `<ResultRow>`, so keyboard / AT users had no way to tell which row Enter
+// would activate. These tests verify the data wiring: the row whose flat
+// (in-display-order) index equals `SearchUiState::active_index` carries
+// `aria-selected="true"`, every other row carries `aria-selected="false"`,
+// and moving `active_index` reactively swaps that bit.
+
+mod phase_2e_search_active_row {
+    use super::*;
+    use willow_client::{SearchResult, SearchScope};
+    use willow_web::components::ResultsList;
+    use willow_web::state::{create_signals, InitialSignals};
+
+    fn fixture_result(id: &str, body: &str, ts: u64) -> SearchResult {
+        SearchResult {
+            message_id: id.into(),
+            channel_id: "general".into(),
+            channel_name: "general".into(),
+            grove_id: Some("grove-fixture".into()),
+            letter_id: None,
+            author_display_name: "Mira".into(),
+            author_handle: "mira".into(),
+            timestamp_ms: ts,
+            body: body.into(),
+            matched_ranges: Vec::new(),
+        }
+    }
+
+    /// Mount `<ResultsList>` with a seeded result set. Pins scope to
+    /// `ThisChannel` so grouping is the trivial single-implicit-group
+    /// shape — keeps the test focused on the active-row wiring rather
+    /// than the cross-group flat-index walk (which has its own
+    /// dedicated test).
+    /// Tuple of writers stashed during mount so the test body can drive
+    /// the seeded `<ResultsList>` after it's on the DOM.
+    type StashedWriters = (WriteSignal<usize>, WriteSignal<Vec<SearchResult>>);
+
+    fn mount_results_with(
+        results: Vec<SearchResult>,
+        active: usize,
+    ) -> (web_sys::HtmlElement, StashedWriters) {
+        let cell: std::rc::Rc<std::cell::Cell<Option<StashedWriters>>> =
+            std::rc::Rc::new(std::cell::Cell::new(None));
+        let cell_for_mount = cell.clone();
+
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+
+            // Seed: we're scoped to one channel and have N results. The
+            // surface effect that resets `active_index` on result-set
+            // change is *not* mounted here, so the test owns the
+            // signal directly.
+            write
+                .search
+                .set_scope
+                .set(SearchScope::ThisChannel("general".into()));
+            write.search.set_results.set(results.clone());
+            write.search.set_active_index.set(active);
+
+            cell_for_mount.set(Some((
+                write.search.set_active_index,
+                write.search.set_results,
+            )));
+
+            provide_context(app_state);
+            provide_context(write);
+
+            view! {
+                <ResultsList on_select=Callback::new(move |_: SearchResult| {}) />
+            }
+        });
+
+        let writers = cell.take().expect("signals stashed during mount");
+        (container, writers)
+    }
+
+    #[wasm_bindgen_test]
+    async fn active_row_carries_aria_selected_true_others_false() {
+        let results = vec![
+            fixture_result("m-0", "first hit", 30_000),
+            fixture_result("m-1", "second hit", 20_000),
+            fixture_result("m-2", "third hit", 10_000),
+        ];
+        let (container, _writers) = mount_results_with(results, 1);
+        tick().await;
+
+        let rows = query_all(&container, ".search-result-row");
+        assert_eq!(
+            rows.len(),
+            3,
+            "fixture mounts three rows; got {}",
+            rows.len()
+        );
+
+        // Row 0 — not active.
+        assert_eq!(
+            rows[0].get_attribute("aria-selected").as_deref(),
+            Some("false"),
+            "non-active rows must report aria-selected=\"false\""
+        );
+        // Row 1 — active.
+        assert_eq!(
+            rows[1].get_attribute("aria-selected").as_deref(),
+            Some("true"),
+            "the row at active_index must carry aria-selected=\"true\" \
+             — without this, screen readers never see a selected option \
+             in the listbox (regression guard for #344)"
+        );
+        // Row 2 — not active.
+        assert_eq!(
+            rows[2].get_attribute("aria-selected").as_deref(),
+            Some("false")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn moving_active_index_swaps_selected_row_reactively() {
+        let results = vec![
+            fixture_result("m-0", "first", 30_000),
+            fixture_result("m-1", "second", 20_000),
+        ];
+        let (container, (set_active, _set_results)) = mount_results_with(results, 0);
+        tick().await;
+
+        let rows = query_all(&container, ".search-result-row");
+        assert_eq!(
+            rows[0].get_attribute("aria-selected").as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            rows[1].get_attribute("aria-selected").as_deref(),
+            Some("false")
+        );
+
+        set_active.set(1);
+        tick().await;
+
+        let rows = query_all(&container, ".search-result-row");
+        assert_eq!(
+            rows[0].get_attribute("aria-selected").as_deref(),
+            Some("false"),
+            "row 0 must lose its selection when active_index moves to 1"
+        );
+        assert_eq!(
+            rows[1].get_attribute("aria-selected").as_deref(),
+            Some("true"),
+            "row 1 must claim selection when active_index moves to 1"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn active_index_indexes_flat_in_display_order_across_groups() {
+        // Scope `AllGrovesAndLetters` groups by grove id (BTreeMap-sorted),
+        // so this fixture lands two grove-a rows before three grove-b
+        // rows. `active_index = 3` therefore must select the *first*
+        // grove-b row — proving `active_index` indexes into the flat
+        // in-display-order list, not the unsorted raw results vec.
+        let cell: std::rc::Rc<std::cell::Cell<Option<WriteSignal<usize>>>> =
+            std::rc::Rc::new(std::cell::Cell::new(None));
+        let cell_for_mount = cell.clone();
+
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+
+            // Push the grove-b rows first to prove ordering doesn't come
+            // from input order — only from the grouped display order.
+            let mut results = Vec::new();
+            for (i, ts) in [(0u32, 10_000u64), (1, 20_000), (2, 30_000)].iter() {
+                let mut r = fixture_result(&format!("b-{i}"), "body b", *ts);
+                r.grove_id = Some("grove-b".into());
+                results.push(r);
+            }
+            for (i, ts) in [(0u32, 40_000u64), (1, 50_000)].iter() {
+                let mut r = fixture_result(&format!("a-{i}"), "body a", *ts);
+                r.grove_id = Some("grove-a".into());
+                results.push(r);
+            }
+
+            write.search.set_scope.set(SearchScope::AllGrovesAndLetters);
+            write.search.set_results.set(results);
+            write.search.set_active_index.set(3);
+
+            cell_for_mount.set(Some(write.search.set_active_index));
+
+            provide_context(app_state);
+            provide_context(write);
+
+            view! {
+                <ResultsList on_select=Callback::new(move |_: SearchResult| {}) />
+            }
+        });
+        let _ = cell.take();
+        tick().await;
+
+        let rows = query_all(&container, ".search-result-row");
+        assert_eq!(
+            rows.len(),
+            5,
+            "two grove-a rows + three grove-b rows = 5 visible rows"
+        );
+
+        // The selected row's id encodes its `message_id`. grove-a sorts
+        // before grove-b under BTreeMap, so flat index 3 = first grove-b
+        // row, which (sorted by timestamp_ms desc) is `b-2`.
+        let selected = query(&container, ".search-result-row[aria-selected=\"true\"]")
+            .expect("exactly one row must claim aria-selected=\"true\"");
+        assert_eq!(
+            selected.id(),
+            "search-row-b-2",
+            "active_index=3 under grove grouping must light up the first \
+             grove-b row (b-2 by ts-desc), not a raw-index row"
+        );
+
+        // And no other row may share the bit.
+        let all_selected = query_all(&container, ".search-result-row[aria-selected=\"true\"]");
+        assert_eq!(
+            all_selected.len(),
+            1,
+            "exactly one row may carry aria-selected=\"true\" at a time"
+        );
+    }
+}
+
 // ── Foundation tokens (Phase 0) ─────────────────────────────────────────────
 //
 // Closes Task 14 of `docs/plans/2026-04-19-ui-phase-0-foundation.md`.
