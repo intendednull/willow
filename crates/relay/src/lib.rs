@@ -74,6 +74,15 @@ const PROXY_REQUEST_LINE_BUFFER: usize = 8 * 1024;
 /// connection. Slow clients (Slowloris) are dropped at this deadline.
 pub const BOOTSTRAP_IO_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Maximum number of bytes buffered while draining the remainder of a
+/// bootstrap-id request looking for the end-of-headers marker
+/// (`\r\n\r\n`). Real HTTP requests for our single-route endpoint never
+/// approach this size; a client that exceeds it is malformed or
+/// abusive, and we close the connection rather than keep reading until
+/// [`BOOTSTRAP_IO_TIMEOUT`]. Matches [`PROXY_REQUEST_LINE_BUFFER`] so
+/// the relay applies a single, symmetric budget for header bytes.
+pub const BOOTSTRAP_DRAIN_BUFFER_CAP: usize = 8 * 1024;
+
 /// Maximum number of distinct channel topics the topic-announce
 /// listener will subscribe to. Once this cap is reached the listener
 /// silently drops further unique announces (after a one-shot warn).
@@ -272,6 +281,22 @@ async fn handle_bootstrap_request_after_line(
     // end-of-headers marker "\r\n\r\n" is already in what we read, we
     // don't need to read more.
     if !already_read.windows(4).any(|w| w == b"\r\n\r\n") {
+        // Accumulate every chunk we read into a single buffer and
+        // search the *whole* buffer for "\r\n\r\n" each iteration.
+        // Searching only the latest chunk would miss a marker that
+        // straddles a chunk boundary, leaving the loop spinning until
+        // BOOTSTRAP_IO_TIMEOUT (issue #238).
+        //
+        // Seed the accumulator with the trailing 3 bytes of
+        // `already_read` so a marker straddling the boundary between
+        // the request line and the first newly-read chunk is also
+        // caught. (3 bytes is the most that can contribute to a
+        // 4-byte marker without itself containing the full marker —
+        // if `already_read` already held it, we wouldn't be here.)
+        let mut buffered: Vec<u8> = Vec::with_capacity(1024);
+        let seed_start = already_read.len().saturating_sub(3);
+        buffered.extend_from_slice(&already_read[seed_start..]);
+
         let mut chunk = [0u8; 1024];
         let deadline = tokio::time::sleep(BOOTSTRAP_IO_TIMEOUT);
         tokio::pin!(deadline);
@@ -280,11 +305,20 @@ async fn handle_bootstrap_request_after_line(
                 _ = &mut deadline => break,
                 res = client.read(&mut chunk) => match res {
                     Ok(0) => break,
-                    Ok(_n) => {
-                        // We don't care about the content; just look
-                        // for the blank line terminator.
-                        if chunk.windows(4).any(|w| w == b"\r\n\r\n") {
+                    Ok(n) => {
+                        buffered.extend_from_slice(&chunk[..n]);
+                        if buffered.windows(4).any(|w| w == b"\r\n\r\n") {
                             break;
+                        }
+                        if buffered.len() >= BOOTSTRAP_DRAIN_BUFFER_CAP {
+                            warn!(
+                                cap = BOOTSTRAP_DRAIN_BUFFER_CAP,
+                                "bootstrap request headers exceeded drain cap; closing"
+                            );
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "bootstrap request headers exceeded drain cap",
+                            ));
                         }
                     }
                     Err(e) => return Err(e),
