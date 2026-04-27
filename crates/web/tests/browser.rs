@@ -12087,3 +12087,105 @@ mod phase_2d_ephemeral_channels {
         assert_eq!(input.value(), "90", "must clamp at 90-day cap");
     }
 }
+
+// ── Issue #350: handler error reporting ─────────────────────────────────────
+//
+// `crates/web/src/handlers.rs` previously discarded every async-action
+// error with `let _ = ...`. The new `warn_and_toast_with` helper logs
+// via `tracing::warn!` and pushes an err toast onto the captured
+// `ToastStack` so the user gets feedback when send/edit/delete/react/
+// pin fails.
+//
+// We test the helper directly rather than driving a fake-failing
+// client through the closures: the handler closures are pinned to the
+// real `ClientHandle<IrohNetwork>` type and there's no trait seam to
+// inject a failing double. The helper *is* the production code path
+// that every handler now goes through (handlers capture the stack via
+// `use_context` outside their `spawn_local` block, then call
+// `warn_and_toast_with` from inside), so exercising it covers all 7
+// `let _ = h.<action>(...).await` sites.
+mod handler_error_toasts {
+    use super::*;
+    use willow_web::components::{ToastStack, ToastStackView};
+    use willow_web::handlers::warn_and_toast_with;
+
+    /// `warn_and_toast_with` pushes an `err` toast onto the supplied
+    /// `ToastStack` whose copy names the action that failed. Without
+    /// this, action handlers would still be silently dropping errors.
+    #[wasm_bindgen_test]
+    async fn warn_and_toast_with_pushes_err_toast() {
+        let stack = ToastStack::new();
+        let stack_for_mount = stack.clone();
+        let container = mount_test(move || {
+            provide_context(stack_for_mount.clone());
+            view! { <ToastStackView/> }
+        });
+
+        // No toasts yet.
+        tick().await;
+        assert_eq!(query_all(&container, ".toast").len(), 0);
+
+        // Simulate a handler failure. Any `Debug`-able error stands in
+        // for the real `anyhow::Error` the production handlers pass
+        // through.
+        warn_and_toast_with("send message", &"boom", Some(&stack));
+        tick().await;
+
+        let toasts = query_all(&container, ".toast");
+        assert_eq!(
+            toasts.len(),
+            1,
+            "warn_and_toast_with must push exactly one toast"
+        );
+        let t = &toasts[0];
+        assert_eq!(
+            t.get_attribute("role").as_deref(),
+            Some("alert"),
+            "err severity routes to assertive aria-live (role=alert)"
+        );
+        let title = t
+            .query_selector(".toast-title")
+            .unwrap()
+            .expect("toast title element");
+        let title_text = text(&title);
+        assert!(
+            title_text.contains("send message"),
+            "toast title must name the failed action. got: {title_text:?}"
+        );
+    }
+
+    /// Two failures of the same action coalesce via the `dedup` key —
+    /// the user sees a single err toast updated in place rather than
+    /// a stack of identical entries piling up if the network flaps.
+    #[wasm_bindgen_test]
+    async fn warn_and_toast_with_dedups_per_action() {
+        let stack = ToastStack::new();
+        let stack_for_mount = stack.clone();
+        let container = mount_test(move || {
+            provide_context(stack_for_mount.clone());
+            view! { <ToastStackView/> }
+        });
+        tick().await;
+
+        warn_and_toast_with("send message", &"first", Some(&stack));
+        warn_and_toast_with("send message", &"second", Some(&stack));
+        tick().await;
+
+        let toasts = query_all(&container, ".toast");
+        assert_eq!(
+            toasts.len(),
+            1,
+            "two failures of the same action must coalesce, not stack"
+        );
+    }
+
+    /// When the supplied stack is `None` (early boot, stripped-down
+    /// test harness), `warn_and_toast_with` must still log without
+    /// panicking. The toast push is a best-effort surface; the
+    /// `tracing::warn!` is the load-bearing record.
+    #[wasm_bindgen_test]
+    async fn warn_and_toast_with_no_stack_does_not_panic() {
+        warn_and_toast_with("send message", &"boom", None);
+        tick().await;
+    }
+}
