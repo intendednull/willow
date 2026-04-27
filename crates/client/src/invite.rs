@@ -56,6 +56,62 @@ pub struct EncryptedChannel {
     pub encrypted_key: willow_crypto::EncryptedChannelKey,
 }
 
+/// Maximum number of channels permitted in a single invite.
+///
+/// Caps how many gossip topics a malicious invite can subscribe a joining
+/// peer to. Real servers ship a handful to a few dozen channels; 1000 is
+/// well above any realistic legitimate use.
+pub const MAX_INVITE_CHANNELS: usize = 1000;
+
+/// Maximum permitted length, in bytes, of a channel topic string.
+///
+/// Chosen to bound subscription state — gossip topics over a few hundred
+/// bytes have no legitimate use. Mirrors the relay's per-topic cap
+/// (`MAX_TOPIC_LEN`) so an invite cannot ship a topic the relay would
+/// reject anyway.
+pub const MAX_TOPIC_LEN: usize = 256;
+
+/// Validate that a channel `topic` belongs to `server_id` and embeds
+/// the declared channel `name`.
+///
+/// Topics are constructed (in `generate_invite` and across the codebase)
+/// as `"{server_id}/{channel_name}"`. A malicious invite that ships a
+/// topic with a different prefix could subscribe a joining peer to an
+/// arbitrary gossip topic. We reject any invite whose topics do not
+/// match this format end-to-end:
+///
+/// - `topic` must start with `"{server_id}/"`,
+/// - the suffix after that prefix must equal the declared `name`,
+/// - and the topic must be no longer than [`MAX_TOPIC_LEN`].
+fn topic_matches_server(server_id: &str, topic: &str, name: &str) -> bool {
+    if topic.len() > MAX_TOPIC_LEN {
+        return false;
+    }
+    let expected_prefix = format!("{server_id}/");
+    let Some(suffix) = topic.strip_prefix(&expected_prefix) else {
+        return false;
+    };
+    suffix == name
+}
+
+/// Validate an [`InvitePayload`] before its topics are trusted.
+///
+/// Returns `false` if the channel count exceeds [`MAX_INVITE_CHANNELS`]
+/// or if any channel's `(topic, name)` pair fails [`topic_matches_server`].
+/// On any failure the *entire* invite is rejected — we never silently
+/// drop a single channel and accept the rest, because a partial accept
+/// still subscribes the joining peer to whatever malicious topics
+/// remained.
+fn validate_invite_payload(payload: &InvitePayload) -> bool {
+    if payload.channels.len() > MAX_INVITE_CHANNELS {
+        return false;
+    }
+    payload
+        .channels
+        .iter()
+        .all(|ch| topic_matches_server(&payload.server_id, &ch.topic, &ch.name))
+}
+
 /// Generate a secure invite code encrypted for a specific recipient.
 ///
 /// Takes the data it needs directly rather than a Server object:
@@ -102,13 +158,21 @@ pub fn generate_invite(
 /// Parse an invite code and decrypt the channel keys using our identity.
 ///
 /// Returns the server info and decrypted channel keys, or `None` if the
-/// code is invalid or we're not the intended recipient.
+/// code is invalid, fails topic validation (see [`validate_invite_payload`]),
+/// or we're not the intended recipient.
 pub fn accept_invite(
     code: &str,
     our_identity: &willow_identity::Identity,
 ) -> Option<AcceptedInvite> {
     let bytes = crate::base64::decode(code.trim())?;
     let payload: InvitePayload = willow_transport::unpack(&bytes).ok()?;
+
+    // Reject the entire invite on any topic-confusion failure: a malicious
+    // invite could otherwise subscribe a joining peer to arbitrary gossip
+    // topics, or ship an unbounded channel list to exhaust resources.
+    if !validate_invite_payload(&payload) {
+        return None;
+    }
 
     let mut channel_keys = HashMap::new();
     for ch in &payload.channels {
@@ -275,6 +339,163 @@ mod tests {
         let accepted = accept_invite(&code, &recipient).unwrap();
 
         assert_eq!(accepted.channel_keys.len(), 3);
+    }
+
+    /// Helper: build an invite payload, hand-rewrite it, and re-encode
+    /// so we can produce a code that is cryptographically valid for
+    /// `recipient` but carries malicious topic data. This is the same
+    /// shape an attacker would forge to mount a topic-confusion attack.
+    fn forged_code<F: FnOnce(&mut InvitePayload)>(
+        owner: &Identity,
+        recipient: &Identity,
+        server_name: &str,
+        channel_names: &[&str],
+        mutate: F,
+    ) -> String {
+        let (server_id, keys, topic_map) = test_server_with_channels(server_name, channel_names);
+        let recipient_pub = recipient_public_bytes(recipient);
+        let code = generate_invite(
+            server_name,
+            &server_id,
+            owner.endpoint_id(),
+            &keys,
+            &topic_map,
+            &recipient_pub,
+        )
+        .unwrap();
+        let raw = crate::base64::decode(&code).unwrap();
+        let mut payload: InvitePayload = willow_transport::unpack(&raw).unwrap();
+        mutate(&mut payload);
+        let bytes = willow_transport::pack(&payload).unwrap();
+        crate::base64::encode(&bytes)
+    }
+
+    #[test]
+    fn happy_path_passes_validation() {
+        // Sanity check: a freshly generated invite passes the new
+        // validator end-to-end. Guards against the validator being
+        // accidentally too strict and rejecting honest traffic.
+        let owner = Identity::generate();
+        let recipient = Identity::generate();
+        let (server_id, keys, topic_map) =
+            test_server_with_channels("Happy", &["general", "random"]);
+        let recipient_pub = recipient_public_bytes(&recipient);
+
+        let code = generate_invite(
+            "Happy",
+            &server_id,
+            owner.endpoint_id(),
+            &keys,
+            &topic_map,
+            &recipient_pub,
+        )
+        .unwrap();
+
+        let accepted = accept_invite(&code, &recipient).expect("valid invite must be accepted");
+        assert_eq!(accepted.channel_keys.len(), 2);
+    }
+
+    #[test]
+    fn mismatched_server_id_prefix_is_rejected() {
+        // A topic whose server_id prefix does not match the payload's
+        // server_id would subscribe the joining peer to gossip on an
+        // attacker-chosen server. The whole invite must be rejected.
+        let owner = Identity::generate();
+        let recipient = Identity::generate();
+        let code = forged_code(&owner, &recipient, "Evil", &["general"], |payload| {
+            // Repoint every channel's topic at a different server.
+            for ch in &mut payload.channels {
+                ch.topic = format!("attacker-server/{}", ch.name);
+            }
+        });
+        assert!(
+            accept_invite(&code, &recipient).is_none(),
+            "topic with mismatched server_id prefix must be rejected"
+        );
+    }
+
+    #[test]
+    fn over_long_topic_is_rejected() {
+        // A topic longer than MAX_TOPIC_LEN has no legitimate use and
+        // could be used to bloat subscription state on the joiner.
+        let owner = Identity::generate();
+        let recipient = Identity::generate();
+        let code = forged_code(&owner, &recipient, "Long", &["general"], |payload| {
+            // Build a topic that keeps the right server_id prefix and
+            // declared name, but pads the name out past the cap so it
+            // still "matches" the suffix yet trips the length check.
+            let big_name = "x".repeat(MAX_TOPIC_LEN);
+            for ch in &mut payload.channels {
+                ch.name = big_name.clone();
+                ch.topic = format!("{}/{}", payload.server_id, big_name);
+            }
+        });
+        assert!(
+            accept_invite(&code, &recipient).is_none(),
+            "over-length topic must be rejected"
+        );
+    }
+
+    #[test]
+    fn channel_count_over_cap_is_rejected() {
+        // An invite that ships more than MAX_INVITE_CHANNELS channels
+        // could be used to fan a joining peer out across an unbounded
+        // number of gossip subscriptions.
+        let owner = Identity::generate();
+        let recipient = Identity::generate();
+        let code = forged_code(&owner, &recipient, "Big", &["general"], |payload| {
+            // Replicate the single legitimate channel until the list
+            // exceeds MAX_INVITE_CHANNELS. Topics still validate
+            // individually, so this proves the count cap fires.
+            let template = payload.channels[0].clone();
+            payload.channels.clear();
+            for _ in 0..(MAX_INVITE_CHANNELS + 1) {
+                payload.channels.push(template.clone());
+            }
+        });
+        assert!(
+            accept_invite(&code, &recipient).is_none(),
+            "channel count above MAX_INVITE_CHANNELS must be rejected"
+        );
+    }
+
+    #[test]
+    fn channel_name_mismatch_with_topic_suffix_is_rejected() {
+        // A topic whose suffix does not match the declared `name` would
+        // let an attacker route the joiner to a different channel under
+        // an innocent-looking display name.
+        let owner = Identity::generate();
+        let recipient = Identity::generate();
+        let code = forged_code(&owner, &recipient, "Spoof", &["general"], |payload| {
+            // Keep `name = "general"` but point `topic` at a different
+            // channel under the same server.
+            for ch in &mut payload.channels {
+                ch.topic = format!("{}/secret-admin", payload.server_id);
+            }
+        });
+        assert!(
+            accept_invite(&code, &recipient).is_none(),
+            "topic suffix mismatching declared name must be rejected"
+        );
+    }
+
+    #[test]
+    fn channel_count_at_cap_is_accepted() {
+        // Boundary check: the cap is "more than" MAX_INVITE_CHANNELS,
+        // so exactly MAX_INVITE_CHANNELS channels must still pass.
+        let owner = Identity::generate();
+        let recipient = Identity::generate();
+        let code = forged_code(&owner, &recipient, "Edge", &["general"], |payload| {
+            let template = payload.channels[0].clone();
+            payload.channels.clear();
+            for _ in 0..MAX_INVITE_CHANNELS {
+                payload.channels.push(template.clone());
+            }
+        });
+        assert!(
+            accept_invite(&code, &recipient).is_some(),
+            "channel count at exactly MAX_INVITE_CHANNELS must still be accepted"
+        );
     }
 
     #[test]
