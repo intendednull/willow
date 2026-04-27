@@ -274,7 +274,6 @@ pub struct UiState {
     pub show_call_page: ReadSignal<bool>,
     pub show_palette: ReadSignal<bool>,
     pub call_layout: ReadSignal<CallLayout>,
-    #[allow(dead_code)]
     pub settings_tab: ReadSignal<SettingsTab>,
     pub join_token: ReadSignal<Option<ParsedJoinToken>>,
     /// "", "connecting", or "denied:<reason>".
@@ -287,7 +286,6 @@ pub struct VoiceState {
     pub voice_muted: ReadSignal<bool>,
     pub voice_deafened: ReadSignal<bool>,
     /// Participants per voice channel.
-    #[allow(dead_code)]
     pub voice_participants_map: ReadSignal<HashMap<String, Vec<String>>>,
     pub voice_channel_name: ReadSignal<String>,
     pub video_source: ReadSignal<Option<VideoSource>>,
