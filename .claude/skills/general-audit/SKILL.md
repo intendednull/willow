@@ -1,17 +1,17 @@
 ---
-name: audit
-description: Use when running a scheduled audit of the Willow codebase, or when /audit is invoked on a pull request for review
+name: general-audit
+description: Use when running a scheduled general audit of the Willow codebase, or when /general-audit is invoked on a pull request for review
 user-invocable: true
 ---
 
-# Audit
+# General Audit
 
-You = master orchestrator. Fresh agents do all work.
+You = master orchestrator. Fresh agents do all work. Job = find + file findings. Resolution = separate routine.
 
 ## When to Use
 
-- Scheduled run on `main`: full-tree audit, files findings as issues, opens auto-fix PRs.
-- `/audit` invoked in a PR: review the PR only — no issues, no PRs.
+- Scheduled run on `main`: full-tree audit, files findings as issues.
+- `/general-audit` invoked in a PR: review the PR only — no issues filed.
 
 ## Core Task
 
@@ -30,29 +30,20 @@ Spawn more if area needs depth.
 
 Collect findings → master issue (commit + all findings) + child issue per finding. Cross-ref open issues here for dedup. Second pass w/ fresh agents: verify findings real + non-dup via grep/rg for exact patterns cited.
 
-## Auto-fix
-
-Obvious findings → open PR via git worktrees (parallel). Monitor CI till green. Ambiguous findings → draft PR w/ questions in description.
-
-## Background
-
-Fresh agent sweeps existing open issues for resolved/false-positive → close w/ reason comment. Conservative; no-op fine.
-
-Identify other existing issues workable in parallel; same PR rules.
-
 ## Lessons Learned
 
 Append "lessons learned" section to report. Feed back into this skill next run.
 
-## /audit in PR
+## /general-audit in PR
 
-Same flow but review PR only. No issues, no PRs.
+Same flow but review PR only. No issues filed.
 
 ## Hard Rules
 
 ### Scope
 - Audit full tree always. Never scope to diff.
 - Agents blind to existing issues. Dedup = synthesis + 2nd pass only.
+- File findings only. No PRs, no auto-fix, no closing existing issues. Resolution = separate routine.
 
 ### Agent prompts (mandatory fields)
 - Time budget: 6 min, stop+save if exceeded.
@@ -61,11 +52,10 @@ Same flow but review PR only. No issues, no PRs.
 - Count/ratio claims: verify w/ second grep cmd proving count.
 - Use general-purpose agent (Explore can't Write).
 - Architecture agents: skip cargo tree/cargo clippy; use rg + ls + reads.
-- GitHub comms (issues, PRs, comments, reviews) written in caveman mode. Code blocks + security warnings stay normal.
+- GitHub comms (issues, comments, reviews) written in caveman mode. Code blocks + security warnings stay normal.
 
 ### Setup
 - `cargo install --locked cargo-audit` upfront (or verify); run as 1st step in security/deps.
-- Pre-worktree: `git stash` or `git restore` main dir; add `.claude/worktrees/` to `.gitignore`.
 
 ### Quality
 - Quality > speed. Always thorough path.
