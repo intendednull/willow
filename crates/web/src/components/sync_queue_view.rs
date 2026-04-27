@@ -14,7 +14,7 @@
 use leptos::prelude::*;
 
 use crate::app::WebClientHandle;
-use crate::components::{sync_queue_copy, RelaySignalButton};
+use crate::components::{sync_queue_copy, RelaySignalButton, Toast, ToastStack};
 use crate::icons;
 use crate::state::AppState;
 
@@ -38,6 +38,9 @@ pub fn SyncQueueView() -> impl IntoView {
 
     let tab = RwSignal::new(Tab::Outbound);
     let busy = RwSignal::new(false);
+    // Independent busy gate for the inbound `mark as read locally`
+    // action so it cannot collide with `retry now` busy state.
+    let mark_busy = RwSignal::new(false);
 
     let status_label = move || {
         let v = queue_view.get();
@@ -80,15 +83,45 @@ pub fn SyncQueueView() -> impl IntoView {
     };
 
     let mark_read_click = move |_| {
+        // Busy guard: ignore re-entrant clicks while a prior batch is
+        // still in flight. Mirrors `retry_click` so the button cannot
+        // be spammed into stacked async loops.
+        if mark_busy.get() {
+            return;
+        }
+        mark_busy.set(true);
         let Some(h) = use_context::<WebClientHandle>() else {
+            // No handle in context — used by the browser-test harness.
+            // Flip busy straight back; real deployments always have a
+            // handle.
+            mark_busy.set(false);
             return;
         };
         let view = queue_view.get();
         let peers: Vec<_> = view.inbound_per_peer.keys().copied().collect();
+        // Pull the toast stack lazily — `ToastStack` is optional so
+        // headless component tests that don't `provide_toast_stack()`
+        // still drive this handler without panicking. Production trees
+        // always provide one via `provide_notifier()`.
+        let toasts = use_context::<ToastStack>();
         wasm_bindgen_futures::spawn_local(async move {
+            // Collect per-peer errors so a single flaky link doesn't
+            // mask the success of the rest, and so we can surface the
+            // partial-failure shape to the user.
+            let mut failed = 0usize;
             for peer in peers {
-                let _ = h.mark_queue_read(peer).await;
+                if h.mark_queue_read(peer).await.is_err() {
+                    failed = failed.saturating_add(1);
+                }
             }
+            if failed > 0 {
+                if let Some(stack) = toasts {
+                    stack.push(Toast::err(sync_queue_copy::toast_mark_read_failed(failed)).build());
+                }
+            }
+            // Reset busy in every path — the button must never get
+            // stuck in the disabled state, even if all peers failed.
+            mark_busy.set(false);
         });
     };
 
@@ -250,9 +283,15 @@ pub fn SyncQueueView() -> impl IntoView {
                     <button
                         type="button"
                         class="sync-queue-view__mark-read"
+                        aria-busy=move || mark_busy.get().to_string()
+                        disabled=move || mark_busy.get()
                         on:click=mark_read_click
                     >
-                        {sync_queue_copy::ACTION_MARK_READ}
+                        {move || if mark_busy.get() {
+                            sync_queue_copy::ACTION_MARK_READ_BUSY
+                        } else {
+                            sync_queue_copy::ACTION_MARK_READ
+                        }}
                     </button>
                 </Show>
             </footer>

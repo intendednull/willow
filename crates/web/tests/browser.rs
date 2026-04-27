@@ -11024,6 +11024,62 @@ mod phase_2b_sync_queue {
     }
 
     #[wasm_bindgen_test]
+    async fn sync_queue_view_mark_as_read_button_has_busy_attrs() {
+        // Issue #345: the mark-as-read button must carry an explicit
+        // busy gate (aria-busy + a `disabled` attribute path) so it
+        // cannot be spam-clicked while a per-peer batch is in flight.
+        // Without a `WebClientHandle` in context the click handler
+        // exits immediately, but the structural attributes guarantee
+        // the busy contract is wired even before the runtime handle
+        // arrives.
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <SyncQueueView /> }
+        });
+        tick().await;
+
+        let tabs = query_all(&container, "[role='tab']");
+        let inbound_tab = tabs
+            .iter()
+            .find(|t| text(t) == "inbound")
+            .expect("inbound tab must exist");
+        simulate_click(inbound_tab);
+        tick().await;
+
+        let btn = query(&container, ".sync-queue-view__mark-read")
+            .expect("mark-as-read button must render on inbound tab");
+        assert_eq!(
+            btn.get_attribute("aria-busy").as_deref(),
+            Some("false"),
+            "mark-as-read must expose aria-busy so AT clients see the in-flight gate"
+        );
+        // Idle copy comes from the spec; busy copy is the
+        // accessibility refinement parallel to ACTION_RETRY_BUSY.
+        assert_eq!(
+            text(&btn).trim(),
+            sync_queue_copy::ACTION_MARK_READ,
+            "idle label must be the spec copy"
+        );
+
+        // Smoke-click to ensure the handler runs without panicking
+        // when no `WebClientHandle` is provided (the test harness
+        // path) — exercises the early-return reset of `mark_busy`.
+        simulate_click(&btn);
+        tick().await;
+        assert_eq!(
+            btn.get_attribute("aria-busy").as_deref(),
+            Some("false"),
+            "mark-as-read must drop back to aria-busy=false once the early-return path runs"
+        );
+    }
+
+    #[wasm_bindgen_test]
     async fn sync_queue_view_no_delete_action_anywhere() {
         // Spec is explicit: the queue is authoritative — no destructive
         // action is permitted. Walk the DOM and guard against any
