@@ -8,6 +8,13 @@ user-invocable: true
 
 You = master orchestrator. Fresh agents do all work. Job = find + file findings. Resolution = separate routine.
 
+## Required Skills
+
+- **REQUIRED:** `superpowers:dispatching-parallel-agents` — fan out audit concerns.
+- **REQUIRED:** `superpowers:using-git-worktrees` — one worktree per subagent.
+- **REQUIRED:** `caveman` — all GH comms.
+- **REQUIRED for verification pass:** `superpowers:verification-before-completion` — spot-check findings before filing.
+
 ## When to Use
 
 - Scheduled run on `main`: full-tree audit, files findings as issues.
@@ -55,8 +62,7 @@ Same flow but review PR only. No issues filed.
 - GitHub comms (issues, comments, reviews) written in caveman mode. Code blocks + security warnings stay normal.
 
 ### Setup
-- **REQUIRED:** `superpowers:using-git-worktrees` — one worktree per subagent for isolation.
-- Pre-worktree: `git stash` or `git restore` main dir; `.claude/worktrees/` in `.gitignore`. Tear down after report submitted.
+- Pre-worktree: `git stash` or `git restore` main dir; `.claude/worktrees/` in `.gitignore`. One worktree per subagent. Tear down after report submitted.
 - `cargo install --locked cargo-audit` upfront (or verify); run as 1st step in security/deps.
 
 ### Quality
