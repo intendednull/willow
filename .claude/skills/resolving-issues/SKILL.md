@@ -21,11 +21,11 @@ You = coordinator. Implementer subagents = workers. Read, dispatch, monitor. Nev
 
 ## Master PR Pattern
 
-All sub-fixes land in one long-running master PR. Human reviews master PR holistically + merges → all linked issues auto-close.
+All sub-fixes land in one master PR per session. Human reviews master PR holistically + merges → all linked issues auto-close.
 
 ### Master PR setup
-1. Check open PRs for existing master PR (label `auto-fix-batch` or branch prefix `auto-fix/batch-`). Reuse if found — orchestrator checks out that branch.
-2. If none, create branch `auto-fix/batch-YYYY-MM-DD` off latest `main`. Push. Open **draft** PR titled `auto-fix batch YYYY-MM-DD` targeting `main`. Apply label `auto-fix-batch`.
+1. Always create fresh master PR per session. Never reuse an open one.
+2. Branch off latest `main`: `auto-fix/batch-YYYY-MM-DD-HHMMSS` (timestamp = unique per session). Push. Open **draft** PR titled `auto-fix batch YYYY-MM-DD-HHMMSS` targeting `main`. Apply label `auto-fix-batch`.
 3. Master PR body = running list of `Fixes #N` lines, one per resolved issue. Update after each sub-PR merge.
 
 ### Sub-PR rules
