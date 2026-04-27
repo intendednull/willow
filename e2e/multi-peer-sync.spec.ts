@@ -61,9 +61,11 @@ test.describe('Multi-peer state synchronization', () => {
       await createChannel(page1, 'announcements');
       await createChannel(page1, 'random');
 
-      // Peer 2: Get peer ID.
+      // Peer 2: Get peer ID. Pass the display name so welcome step 1
+      // commits with 'Bob' — `joinViaInvite` below cannot re-set it
+      // because step 1 has already been advanced past.
       await freshStart(page2);
-      const peer2Id = await getPeerId(page2);
+      const peer2Id = await getPeerId(page2, 'Bob');
 
       // Peer 1: Generate invite.
       const inviteCode = await generateInvite(page1, peer2Id);
