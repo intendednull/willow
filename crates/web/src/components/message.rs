@@ -236,7 +236,7 @@ pub fn MessageView(
     #[prop(optional, into)]
     on_open_thread: Option<Callback<DisplayMessage>>,
 ) -> impl IntoView {
-    let author_color = super::peer_color(&message.author_peer_id.to_string());
+    let author_color = super::peer_color(&message.author_peer_id);
     // Phase 2a Task 14 — spec §Copy / Deleted placeholder + empty-body
     // fallback: deleted rows render the fixed `this message was
     // withdrawn` string inside `.body.body--deleted` (italic `--ink-3`);
