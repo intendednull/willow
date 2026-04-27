@@ -16,7 +16,7 @@ You = coordinator. Fresh subagents = workers. Read, dispatch, monitor. Never tou
 ## Required Skills
 
 - **REQUIRED:** `superpowers:using-git-worktrees` — isolate each subagent.
-- **REQUIRED:** `superpowers:caveman` — all GH comms.
+- **REQUIRED:** `caveman` — all GH comms.
 - **REQUIRED for subagents:** `superpowers:test-driven-development`, `superpowers:verification-before-completion`.
 
 ## Core Loop
