@@ -231,7 +231,9 @@ async fn main() -> Result<()> {
     }
 
     // Network is moved into the listener task, so we just shut down the relay.
-    relay_server.shutdown().await.ok();
+    if let Err(e) = relay_server.shutdown().await {
+        tracing::warn!(%e, "relay server shutdown failed");
+    }
     info!("shut down complete");
     Ok(())
 }
