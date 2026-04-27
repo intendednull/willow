@@ -71,7 +71,7 @@ policies:
 
 | Profile | Determinism | Imports | Where it runs | Examples |
 |---|---|---|---|---|
-| **State / `apply`** | **Required** — bit-identical across peers | `host.log` only | Every peer materializing the topic | chat-server-state apply, wiki-state apply |
+| **State / `apply`** | **Required** — bit-identical across peers | `host.log`, plus the **deterministic helper set**: signature verification, seal-envelope authenticity check, content hashing, and key installation from a sealed key-distribution payload | Every peer materializing the topic | chat-server-state apply, wiki-state apply |
 | **State / `propose`** | Not required (runs once, on the authoring peer) | `host.hlc`, `host.random`, `host.seal` (capability-gated), `host.log` | The peer that originates the event | chat-server-state propose |
 | **Interaction** | Not required | `host.broadcast`, `host.subscribe`, `host.kv`, `host.user-prompt`, UI app's `ui:*` | Any peer with a UI / agent host | chat-server-interaction, wiki-interaction |
 | **Behavior** | Not required | + `host.http`, `host.timer`, `host.identity` (own keypair, gated) | Designated peer(s) | bridges, automod, archivers, bots |
@@ -169,21 +169,49 @@ non-deterministic; its output is an event payload that the kernel then signs
 and broadcasts, after which all peers (including the originator) replay
 through `apply`.
 
-State-`apply` is a pure function of its inputs. The kernel passes the event
-author, the event hash, the HLC encoded in the event, and the event payload.
-The component mutates state held in its linear memory and optionally emits
-a snapshot.
+State-`apply` is a pure function of its inputs *and the kernel-side
+deterministic helper set*. The kernel passes the event author, the event
+hash, the HLC encoded in the event, and the event payload. The component
+mutates state held in its linear memory and optionally emits a snapshot.
 
-To preserve cross-peer determinism, state-`apply` has:
+The rule is **`apply` may import only host functions whose output is a
+pure function of their inputs** — not "no imports." Useful kernel-side
+helpers `apply` legitimately needs are deterministic by construction:
 
-- No wall clock. HLC bytes only.
-- No randomness. Hash-derived if needed.
-- No network, no filesystem, no environment access.
+- `host.verify-signature(pubkey, msg, sig)` — Ed25519 verification.
+- `host.verify-seal-envelope(envelope, pubkey)` — AEAD-tag check on a
+  sealed payload, without revealing plaintext.
+- `host.hash(bytes)` — blake3 / sha256.
+- `host.install-key(handle, sealed)` — accept a sealed key-distribution
+  blob addressed to *this peer*, unwrap it with the kernel-custodied
+  recipient key, install the resulting symmetric key under the
+  app-supplied opaque handle. The unwrapped bytes never enter component
+  memory; the function returns success/failure and the handle namespace
+  the app chose. Output depends on the local peer's private key, but
+  the *failure-or-handle-bound-success* outcome is deterministic from
+  the app's point of view because if the blob does not address the
+  local peer the call deterministically fails — no peer-specific bytes
+  flow back.
+- `host.now-hlc-from-event(event)` — extract HLC bytes from the event
+  envelope (no wall clock).
+
+What `apply` continues to be denied:
+
+- No wall clock. No randomness. No network, no filesystem, no environment.
 - No threads.
-- A deterministic fuel budget (instruction count, not wall time). Running out
-  of fuel terminates uniformly across peers.
+- A deterministic fuel budget (instruction count, not wall time). Running
+  out of fuel terminates uniformly across peers.
 - Spec-deterministic floats (the WASM spec pins these), with a strong
   recommendation to ban them in v1 anyway to avoid review pain.
+
+The determinism proof is therefore: **every host import bound to `apply`
+returns a pure function of its inputs given the event payload alone**.
+`host.install-key` is the only edge case — it is deterministic *modulo
+local key custody*, and behaves uniformly (succeeds, or deterministically
+fails with no observable difference) on peers that are or are not the
+intended recipient. The exact list of deterministic helpers belongs in
+the crypto-and-key-custody child spec; the master spec commits to the
+shape.
 
 The kernel verifies cross-peer convergence by hashing snapshots and gossiping
 state hashes. Mismatches surface as bugs (or, if signed, as proof of a
@@ -198,11 +226,17 @@ has to place it explicitly, not silently. The chosen split:
 - **Private signing keys live only in the kernel.** No component sees them.
   Components describe events; the kernel signs.
 - **Symmetric channel/group keys, ratchets, and MLS group state are kernel-custodied as well**, but on behalf of an app instance. Apps refer to them by app-declared key handles (opaque IDs).
-- **The kernel exposes a typed `host.seal` / `host.open` capability**
-  bound to a key handle. State-`propose` may call `host.seal` to produce
-  ciphertext; interaction components may call `host.open` to decrypt for
-  display. State-`apply` does not see plaintext — it sees only sealed
-  payloads it stores or forwards.
+- **The kernel exposes typed crypto host imports** bound to key handles:
+  - `host.seal(handle, plaintext)` on state-`propose` and behavior
+    profiles only — produces ciphertext under the named key.
+  - `host.open(handle, ciphertext)` on interaction profile only —
+    decrypts for display.
+  - `host.verify-seal-envelope(envelope, signer-pubkey)` and
+    `host.install-key(handle, sealed-distribution-blob)` on state-`apply`
+    — deterministic helpers (see "Determinism, in detail"). State-`apply`
+    never sees plaintext message content; it sees sealed payloads, can
+    verify their authenticity, and can install keys distributed in the
+    DAG into the kernel's custody under app-named handles.
 - **Key generation and rotation events are app-defined.** A chat-server-style
   app defines its own `RotateChannelKeyV2`-equivalent events; the state-`apply`
   function records the new key handle in materialized state; the kernel
@@ -241,8 +275,9 @@ events on topic X, store ≤ 1 MB locally, send HTTP requests to discord.com."
 Granted capabilities are bound at instantiate time; they cannot escalate
 later without re-prompting.
 
-State-`apply` has a deliberately *empty* capability surface beyond
-`host.log`. There is nothing to grant; nothing to leak. State-`propose`
+State-`apply` is bound only to the deterministic helper set
+(see "Determinism, in detail" for the full list). There is no
+non-deterministic capability to grant; nothing to leak. State-`propose`
 has the small set listed in the runtime-profiles table (`host.hlc`,
 `host.random`, capability-gated `host.seal`); these are bound only when a
 peer is actually originating an event, never during replay.
@@ -255,11 +290,17 @@ peer is actually originating an event, never during replay.
 - Relays remain dumb topic-bridges; they do not materialize state.
 - Workers (`replay`, `storage`) remain peers, just generalized to host
   arbitrary state components instead of being chat-specific.
-- The dual-target (native + WASM) compilation discipline survives at the
-  *kernel* layer — the kernel itself compiles to both targets, the native
-  build using wasmtime and the web build using a jco-transpiled host. For
-  *application code*, the discipline is replaced: an app component is
-  built once to wasm and is loaded by whichever kernel a peer is running.
+- The dual-target (native + WASM) compilation discipline is *intended* to
+  survive at the *kernel* layer — the kernel compiles to both targets, the
+  native build using wasmtime and the web build using a jco-transpiled
+  host. Concrete kernel subsystems that have historically been native-only
+  (the MLS engine when adopted, persistent key storage, full-fat blob
+  store) may require platform-specific backends behind a stable
+  kernel-internal trait; cataloguing those backends and confirming each
+  one survives jco transpilation is part of the crypto-and-key-custody
+  child spec. For *application code*, the discipline is replaced: an app
+  component is built once to wasm and is loaded by whichever kernel a
+  peer is running.
 - The existing capability/permission ideas from `willow-state` generalize,
   with one new responsibility: each app defines its own permission set, but
   also supplies the *pre-check* code that gates event creation. Today's
@@ -269,8 +310,13 @@ peer is actually originating an event, never during replay.
   This shifts a precise, audit-friendly responsibility onto app authors;
   bugs in app pre-check code admit invalid events that other peers will
   reject at apply, accumulating in the DAG as the existing authority spec
-  warns against. The chat-server-migration spec must address this directly,
-  not defer it.
+  warns against. **An app's pre-check and apply MUST share the authority
+  decision** — typically the same WIT-exposed function called in two
+  different modes — so that drift between "would this be accepted" and
+  "is this accepted" is impossible by construction. Diverging pre-check
+  from apply is a soundness bug the kernel cannot detect; the
+  chat-server-migration spec specifies the shared-code pattern app authors
+  are expected to use.
 
 ## Runtime and actors
 
@@ -281,10 +327,13 @@ The runtime sits *underneath* that model, not in place of it.
 
 The intended mapping:
 
-- **Each component instance is owned by exactly one actor in the host.**
-  The actor's mailbox serializes calls into the component's WASM instance.
-  Component instances are the unit of *typed sandboxing*; actors remain the
-  unit of *concurrency*.
+- **On any one peer, each component instance is owned by exactly one
+  actor.** The actor's mailbox serializes calls into the component's WASM
+  instance. Component instances are the unit of *typed sandboxing*; actors
+  remain the unit of *concurrency*. Different peers materializing the same
+  topic each instantiate the same component code in their own actor; the
+  runtime makes no claim about cross-peer actor topology — that is
+  emergent from the gossip protocol, not coordinated by the kernel.
 - The kernel itself is composed of actors: a loader actor, a per-topic
   state-materialization actor (which owns one state component instance and
   calls `apply` on each event), interaction actors per active interaction
@@ -305,28 +354,32 @@ host-side concurrency model.
 
 ## What changes about Willow
 
-- `willow-state` splits. The kernel half (`Event`, `EventDag<P>`,
-  `PendingBuffer`, sync, HLC) stays. The chat half (`EventKind`,
-  `ServerState`, `apply_event`, `required_permission`) becomes the
-  `chat-server` app, eventually shipped in-tree at `crates/apps/chat-server/`.
-- `willow-web` becomes the default UI app, shipped in-tree at
-  `crates/apps/ui-leptos/`. Its bindings to chat semantics route through
-  the kernel and the chat-server interaction component, not through direct
-  Rust imports.
-- `replay` and `storage` workers become generic peer hosts that load
-  state components for any topic they are subscribed to.
-- **Worker trust model shifts.** Today's workers run trusted in-tree Rust;
-  under the runtime, a worker subscribed to N topics may be executing N
-  distinct, third-party-authored, attacker-influenceable WASM state
-  components simultaneously. DoS resistance, fuel scheduling, per-instance
-  memory caps, fair-share between topics, and operator-level deny-lists are
-  load-bearing operational concerns, not bandwidth/latency tuning.
-  Operators must be able to constrain which apps a worker will host.
-- A new top-level crate `willow-kernel` (or similar) gathers what the kernel
-  contains. A new `willow-app-sdk` crate is what app authors use.
+These are *consequences* of the design, named at the level of
+responsibility rather than file layout. Exact crate boundaries, names,
+and migration mechanics are child-spec concerns.
 
-These are *consequences* of the design, not v1 work items. Migration is its
-own multi-spec effort and will be planned separately.
+- **`willow-state` splits.** A payload-agnostic kernel half (events,
+  DAG, sync primitives, HLC) stays as kernel. The chat-specific half
+  (`EventKind`, `ServerState`, `apply_event`, `required_permission`)
+  becomes the `chat-server` app.
+- **The web client becomes the default UI app.** Its bindings to chat
+  semantics route through the kernel and the chat-server interaction
+  component rather than through direct Rust imports of chat types.
+- **Workers become generic peer hosts** that load state components for
+  any topic they are subscribed to.
+- **Worker trust model shifts.** Today's workers run trusted in-tree
+  Rust; under the runtime, a worker subscribed to N topics may be
+  executing N distinct, third-party-authored, attacker-influenceable
+  WASM state components simultaneously. DoS resistance, fuel scheduling,
+  per-instance memory caps, fair-share between topics, and operator-level
+  deny-lists are load-bearing operational concerns, not bandwidth/latency
+  tuning. Operators must be able to constrain which apps a worker will host.
+- **A kernel crate emerges** gathering the privileged subsystems described
+  above; an app-SDK crate emerges as the authoring surface for app
+  components.
+
+Migration from today's codebase to this layout is its own multi-spec
+effort and will be planned separately.
 
 ## ABI commitments
 
@@ -371,18 +424,28 @@ require app-author refactor at migration time.
   Exact diffing/paging strategy is for the WIT-interfaces child spec.
 - **Sync ABI at v1.** Browser jco does not support async. State components
   are sync by definition; the rest fit.
-- **Behavior components run under their own kernel-custodied identity.**
-  A behavior component instance is associated with an Ed25519 keypair
-  custodied by the kernel; events authored through `host.broadcast` are
-  signed under that identity, not the user's. Permission to act under that
-  identity is granted in-band by app-defined events (the "bot user"
-  pattern), enforced by the app's own state-`apply` pre-check. Behavior
-  components never see private keys.
+- **Behavior identity is per-(peer, behavior-instance).** When a peer
+  enables a behavior, the kernel generates and custodies a fresh Ed25519
+  keypair scoped to that peer and that instance. Events authored through
+  `host.broadcast` are signed under that identity, not the user's. The
+  runtime does *not* migrate behavior keypairs between peers; cross-peer
+  behavior continuity is an app-level concern. Apps that need a stable
+  "bot identity" across peers define an in-band registration event
+  mapping a peer-side behavior keypair to an app-level role
+  (the "bot user" pattern), enforced by the app's own state-`apply`
+  pre-check. Behavior components never see private keys; key custody is
+  identical to the user-identity custody story.
 - **Opaque IDs, not typed resource handles, between components.** Until
   wit-bindgen unifies imported and exported resource types, components pass
   string/u64 IDs and the kernel resolves them.
 - **Two runtime backends in the kernel.** wasmtime native, jco-transpiled
   web. Same host interface so app authors target one ABI.
+- **Relays are gossip-driven, not state-driven.** The relay never inspects
+  app payloads, never materializes state, and never runs WASM. App-defined
+  topic-ID rotation (as used today by the epoch-rotation spec) must
+  publish post-rotation topic IDs on a stable, public discovery channel
+  the relay can subscribe to without app knowledge. Topic discovery at
+  the relay remains a transport-layer concern.
 - **Deterministic-by-omission for state.** No host imports = no
   non-determinism. We do not implement runtime checks for nondeterminism
   because the absence of imports is the proof.
@@ -473,6 +536,10 @@ become useful:
 - Cross-app authority composition: out of scope for v1, but what shape
   should the v2 hooks take?
 - Resource limits: per-instance fuel and memory budgets — what defaults?
+- Pre-check failure modes: on the originating peer, when an app's
+  pre-check panics, exhausts fuel, or loops unbounded, does the kernel
+  fail closed (reject the user action) or fail open (let `apply` reject
+  on every peer)?
 - Hot reload: deferred. Component update is restart for v1.
 
 ## Status
