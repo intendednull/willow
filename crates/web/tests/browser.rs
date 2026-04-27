@@ -11312,20 +11312,14 @@ mod phase_2b_sync_queue {
     /// scheduling work via [`request_animation_frame`] to wait until the
     /// browser has actually dispatched the frame callback.
     async fn await_animation_frame() {
-        use std::cell::RefCell;
-        use std::rc::Rc;
         use wasm_bindgen::closure::Closure;
-        use wasm_bindgen::JsCast;
+        use wasm_bindgen::{JsCast, JsValue};
         let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-            let resolve = Rc::new(RefCell::new(Some(resolve)));
-            let resolve_clone = resolve.clone();
             let cb = Closure::once_into_js(Box::new(move || {
-                if let Some(r) = resolve_clone.borrow_mut().take() {
-                    let _ = r.call0(&wasm_bindgen::JsValue::NULL);
-                }
+                let _ = resolve.call0(&JsValue::NULL);
             }) as Box<dyn FnOnce()>);
-            let window = web_sys::window().expect("window");
-            window
+            web_sys::window()
+                .expect("window")
                 .request_animation_frame(cb.as_ref().unchecked_ref())
                 .expect("request_animation_frame");
         });
