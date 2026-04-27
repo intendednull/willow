@@ -124,6 +124,13 @@ pub struct SearchUiState {
     /// True while a 120 ms debounce timer is outstanding — UI dims the
     /// stale results row by 15 % per spec §Performance envelope.
     pub debouncing: ReadSignal<bool>,
+    /// Index of the keyboard-active result row in the flat (in-display-
+    /// order) results vector. Drives `aria-selected` per row and
+    /// `aria-activedescendant` on the search input. Reset to `0` when
+    /// the result set or scope changes. When `results` is empty, the
+    /// value is meaningless and consumers must not render
+    /// `aria-activedescendant`.
+    pub active_index: ReadSignal<usize>,
 }
 
 /// Tightened connection state companion to `NetworkState::connection_status`.
@@ -323,6 +330,7 @@ pub struct SearchUiWriteSignals {
     pub set_status: WriteSignal<SearchIndexBuildStatus>,
     pub set_recents: WriteSignal<Vec<RecentQuery>>,
     pub set_debouncing: WriteSignal<bool>,
+    pub set_active_index: WriteSignal<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -561,6 +569,7 @@ pub fn create_signals() -> InitialSignals {
     let (search_status, set_search_status) = signal(SearchIndexBuildStatus::default());
     let (search_recents, set_search_recents) = signal(Vec::<RecentQuery>::new());
     let (search_debouncing, set_search_debouncing) = signal(false);
+    let (search_active_index, set_search_active_index) = signal(0usize);
 
     // Persist scope on every change so the user's preference survives
     // a reload. Run on wasm only — native tests don't mount this state.
@@ -660,6 +669,7 @@ pub fn create_signals() -> InitialSignals {
             status: search_status,
             recents: search_recents,
             debouncing: search_debouncing,
+            active_index: search_active_index,
         },
         queue: QueueUiState {
             view: queue_view,
@@ -746,6 +756,7 @@ pub fn create_signals() -> InitialSignals {
             set_status: set_search_status,
             set_recents: set_search_recents,
             set_debouncing: set_search_debouncing,
+            set_active_index: set_search_active_index,
         },
         queue: QueueWriteSignals {
             set_view: set_queue_view,

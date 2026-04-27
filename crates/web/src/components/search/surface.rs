@@ -33,6 +33,17 @@ pub fn SearchSurface(
     let state = use_context::<AppState>().expect("AppState");
     let write = use_context::<AppWriteSignals>().expect("AppWriteSignals");
 
+    // Whenever the result set or scope changes, snap keyboard focus
+    // back to the first row. Without this, an `active_index` from a
+    // prior result set could outlive its data and point past the new
+    // tail (or at a different message entirely), breaking
+    // `aria-activedescendant` and `aria-selected`.
+    Effect::new(move |_| {
+        let _ = state.search.results.get();
+        let _ = state.search.scope.get();
+        write.search.set_active_index.set(0);
+    });
+
     // Debounced query driver: 120 ms after the last keystroke, parse
     // the query and run against the index under the current scope.
     //
