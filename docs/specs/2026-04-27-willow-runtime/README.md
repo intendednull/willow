@@ -190,20 +190,19 @@ helpers `apply` legitimately needs are deterministic by construction:
   messages do not flow through the DAG and are therefore not what
   `apply` verifies.
 - `host.hash(bytes)` — blake3 / sha256.
-- `host.install-key(handle, sealed)` — accept a sealed key-distribution
-  blob addressed to *this peer*, unwrap it with the kernel-custodied
-  recipient key, install the resulting symmetric key under the
-  app-supplied opaque handle. The unwrapped bytes never enter component
-  memory; the function returns success/failure based on whether the
-  blob addressed the local peer. **The return value is informational
-  about local capability only, and an app's `apply` MUST NOT
-  incorporate it into any state included in the cross-peer snapshot
-  hash.** A conformant state component records the key handle in
-  materialized state regardless of install outcome (every peer learns
-  "channel epoch N exists, handle is `chN-eN`"); the kernel separately
-  knows which handles this peer can actually open. The cross-peer
-  state-hash gossip is the conformance check — apps that branch
-  visibly on install-key return values fail it immediately.
+- `host.install-key(handle, sealed-distribution-blob) -> ()` — register
+  that a key-distribution blob exists for this app handle. The kernel
+  records the (handle, blob) pair under the app's namespace on every
+  peer; whether *this* peer can actually unwrap the blob with its own
+  X25519 key is recorded **only in kernel-local custody, never visible
+  to `apply`**. From `apply`'s point of view, the call is a pure
+  recording of "this app declares handle H, gated by this distribution
+  blob," with no return value to branch on. State-`apply` is therefore
+  bit-identical across peers regardless of who can decrypt. The
+  *interaction* profile asks the kernel separately (`host.can-open(handle)`
+  or by attempting `host.open` and getting an error) whether this peer
+  can use the key to read messages. There is no observable peer-local
+  return on the `apply` path.
 - `host.now-hlc-from-event(event)` — extract HLC bytes from the event
   envelope (no wall clock).
 
@@ -218,14 +217,22 @@ What `apply` continues to be denied:
 
 The determinism proof is therefore: **every host import bound to `apply`
 returns a pure function of its inputs given the event payload alone**.
-`host.install-key` is the one helper whose return value is *peer-local*,
-which is why apps are required to treat that return as informational
-about local capability only (see above). The exact list of deterministic
-helpers belongs in the crypto-and-key-custody child spec; the master
-spec commits to the shape.
+There are no peer-local return values; whether-this-peer-can-decrypt is
+an interaction-profile concern, not an `apply` concern. The exact list
+of deterministic helpers belongs in the crypto-and-key-custody child
+spec; the master spec commits to the shape.
 
-The kernel verifies cross-peer convergence by hashing snapshots and gossiping
-state hashes. Mismatches surface as bugs (or, if signed, as proof of a
+The kernel verifies cross-peer convergence by hashing a **canonical
+state digest** the app exports — *not* a hash of WASM linear memory,
+which would diverge trivially across peers due to allocator behavior,
+struct field padding, or `HashMap` iteration order. Apps export a
+`state-digest()` function (or equivalent) that returns canonical bytes
+under a deterministic encoding (postcard with sorted collections is the
+existing-codebase precedent); the kernel hashes the result and gossips
+the hash. The exact encoding rules belong in the
+determinism-enforcement child spec; the master commitment is that
+convergence is checked against an app-canonical digest, not memory
+bytes. Mismatches surface as bugs (or, if signed, as proof of a
 malicious or buggy component).
 
 ## Crypto and key custody
@@ -243,12 +250,13 @@ has to place it explicitly, not silently. The chosen split:
   - `host.open(handle, ciphertext)` on interaction profile only —
     decrypts for display.
   - `host.verify-payload-mac(envelope, key-handle)` and
-    `host.install-key(handle, sealed-distribution-blob)` on state-`apply`
-    — deterministic helpers (see "Determinism, in detail"). State-`apply`
-    never sees plaintext message content; it sees sealed payloads, can
-    verify "some holder of this key handle sealed this," and can install
-    keys distributed in the DAG into the kernel's custody under app-named
-    handles.
+    `host.install-key(handle, sealed-distribution-blob) -> ()` on
+    state-`apply` — deterministic helpers (see "Determinism, in detail").
+    State-`apply` never sees plaintext message content, never sees a
+    return value indicating local decryption capability; it records that
+    the handle exists and lets the kernel custody the per-peer
+    decryptability privately. Whether *this* peer can actually use a
+    handle is a separate interaction-profile query.
 - **Key generation and rotation events are app-defined.** A chat-server-style
   app defines its own `RotateChannelKeyV2`-equivalent events; the state-`apply`
   function records the new key handle in materialized state; the kernel
@@ -288,6 +296,17 @@ events on topic X, store ≤ 1 MB locally, send HTTP requests to discord.com."
 Granted capabilities are bound at instantiate time; they cannot escalate
 later without re-prompting.
 
+**`ui:*` calls that proxy privileged platform surfaces are
+capability-checked per call, not just per import-binding.** Clipboard
+writes, file pickers, top-level navigation, push-notification
+registration, and similar — each call is gated by the *calling
+component's* manifest, not the UI app's broad surface. This prevents a
+malicious or compromised interaction component composed inside the UI
+app from socially-engineering the UI into doing things the calling
+component was never granted. The UI app is in the TCB for its own
+chrome and its own DOM; it is not in the TCB for arbitrary callers'
+intents.
+
 State-`apply` is bound only to the deterministic helper set
 (see "Determinism, in detail" for the full list). There is no
 non-deterministic capability to grant and no information leak surface;
@@ -322,20 +341,21 @@ peer is actually originating an event, never during replay.
   centralized `required_permission()` table runs in trusted in-process Rust;
   under the runtime the kernel calls into the app's state component to ask
   "may this author emit this event under the current state?" before signing.
-  This shifts a precise, audit-friendly responsibility onto app authors;
-  bugs in app pre-check code admit invalid events that other peers will
-  reject at apply, accumulating in the DAG as the existing authority spec
-  warns against. **An app's pre-check and apply MUST share the authority
-  decision** — typically the same WIT-exposed function called in two
-  different modes — so that drift between "would this be accepted" and
-  "is this accepted" is impossible by construction. **Pre-check executes
-  under the state-`apply` runtime profile** — same deterministic helper
-  set, same fuel posture, same denied non-deterministic imports — even
-  though it is invoked from the originating peer's propose flow with the
-  proposed event payload. This is what makes "shared decision" mechanically
-  possible. Diverging pre-check from apply is a soundness bug the kernel
-  cannot detect; the chat-server-migration spec specifies the shared-code
-  pattern app authors are expected to use.
+  This shifts a precise, audit-friendly responsibility onto app authors,
+  but the runtime makes drift impossible by construction: **pre-check is
+  not "shared logic by convention" — it is mechanically the same WASM
+  function as `apply`'s authority verdict, called by the kernel in
+  dry-run mode against a hypothetical post-state.** Apps export one
+  authority predicate; the kernel calls it once before signing on the
+  originator (with the proposed event applied to a scratch copy of state)
+  and again on every peer during real `apply`. Compare-acceptance is
+  enforced because it is the same export. Pre-check therefore runs under
+  the state-`apply` runtime profile — same deterministic helper set, same
+  fuel posture, same denied non-deterministic imports. The exact dry-run
+  protocol (scratch state ownership, rollback semantics) is deferred to
+  the chat-server-migration / WIT-interfaces child spec; the master spec
+  commits to the *property* that pre-check and apply cannot diverge
+  because they are not separate code paths.
 
 ## Runtime and actors
 
@@ -441,8 +461,30 @@ require app-author refactor at migration time.
   recomposition on no-op state changes; large lists (timelines, member
   rosters) are paged. Behavior components observe and emit in batches.
   Exact diffing/paging strategy is for the WIT-interfaces child spec.
-- **Sync ABI at v1.** Browser jco does not support async. State components
-  are sync by definition; the rest fit.
+- **Sync ABI at v1, with kernel-side async bridged via tokens.** Browser
+  jco does not support async. State `apply` is sync by definition.
+  Kernel calls that wrap inherently async surfaces (gossip broadcast,
+  blob fetch, HTTP, persistent KV, timers) follow a *submit-and-poll*
+  pattern: the component calls a sync host function that returns a
+  `request-token`, then the kernel later re-enters the component (via
+  an exported `on-completion(token, result)` handler in the appropriate
+  profile) when the operation finishes. This keeps the WIT surface sync
+  while preserving back-pressure: a slow blob fetch does not stall the
+  component's actor mailbox, because the originating call returned
+  immediately. The ergonomic cost is real — apps cannot use familiar
+  `async`/`await` flow control, and SDK macros are expected to hide the
+  token-juggling for common patterns. Exact handler-method shape is for
+  the WIT-interfaces child spec.
+- **Pre-check fails closed.** When the kernel's dry-run pre-check panics,
+  exhausts fuel, traps, or loops up to the deterministic budget, the
+  user-action that triggered it is rejected and the event is *not*
+  signed. Failing open (admitting an event that every peer rejects at
+  `apply`) is forbidden because rejected events accumulate in the
+  per-author DAG and cannot be removed without breaking the chain — the
+  exact failure mode the existing authority spec was designed to make
+  impossible. Adversarial app components that always-fail pre-check
+  produce a self-DoS of the user's own ability to act in that app, which
+  is detectable and recoverable by uninstalling the app.
 - **Behavior identity is per-(peer, behavior-instance).** When a peer
   enables a behavior, the kernel generates and custodies a fresh Ed25519
   keypair scoped to that peer and that instance. Events authored through
@@ -451,9 +493,13 @@ require app-author refactor at migration time.
   behavior continuity is an app-level concern. Apps that need a stable
   "bot identity" across peers define an in-band registration event
   mapping a peer-side behavior keypair to an app-level role
-  (the "bot user" pattern), enforced by the app's own state-`apply`
-  pre-check. Behavior components never see private keys; key custody is
-  identical to the user-identity custody story.
+  (the "bot user" pattern), enforced by the app's own pre-check.
+  Behavior components never see private keys; key custody is
+  identical to the user-identity custody story. **This is structurally
+  the same problem as multi-device user identity** (long-term identity,
+  short-lived per-device signing key) which the seal-gift-wrap deferral
+  spec calls out as non-negotiable: both should share a kernel-level
+  mechanism rather than be invented twice.
 - **Opaque IDs, not typed resource handles, between components.** Until
   wit-bindgen unifies imported and exported resource types, components pass
   string/u64 IDs and the kernel resolves them.
@@ -470,6 +516,11 @@ require app-author refactor at migration time.
   next topic to the existing relay session before rotation, but the
   exact protocol is deferred to a relay-and-rotation child spec; the
   master-spec commitment is only that the kernel is not in this loop.
+  Practical consequence: the in-flight epoch-rotation work
+  (`docs/specs/2026-04-24-epoch-key-rotation.md`) needs to land in this
+  new shape — the relay will no longer be told "this is a rotation
+  event, here's the next topic id" by app code, because the relay no
+  longer runs app code.
 - **Deterministic-by-construction for state-`apply`.** The only host
   imports bound to `apply` are the deterministic helper set (signature
   verification, hash, payload-MAC verification, key installation, HLC
@@ -567,13 +618,14 @@ become useful:
 - Cross-app authority composition: out of scope for v1, but what shape
   should the v2 hooks take?
 - Resource limits: per-instance fuel and memory budgets — what defaults?
-- Pre-check failure modes: on the originating peer, when an app's
-  pre-check panics, exhausts fuel, or loops unbounded, does the kernel
-  fail closed (reject the user action) or fail open (let `apply` reject
-  on every peer)?
+- Worker capability advertisement: parallel to the existing relay
+  capability document, should workers advertise which app-component
+  hashes they host, so peers can discover "a worker that materializes
+  my chat-server app" without out-of-band config? Or stays operator-config?
 - Pre-check fuel budget: pre-check runs under the `apply` profile, but
   it runs *only on the originating peer*; does it share `apply`'s
-  per-event fuel cap, or is it budgeted separately?
+  per-event fuel cap, or is it budgeted separately? (The polarity is
+  master-level: pre-check fails closed — see "Constraints we accept".)
 - Handle namespace ownership: two apps installing keys under the same
   opaque handle on one peer — collision, namespacing per-app instance,
   or kernel-arbitrated allocation?
