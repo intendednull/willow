@@ -71,7 +71,7 @@ policies:
 
 | Profile | Determinism | Imports | Where it runs | Examples |
 |---|---|---|---|---|
-| **State / `apply`** | **Required** — bit-identical across peers | `host.log`, plus the **deterministic helper set**: signature verification, seal-envelope authenticity check, content hashing, and key installation from a sealed key-distribution payload | Every peer materializing the topic | chat-server-state apply, wiki-state apply |
+| **State / `apply`** | **Required** — bit-identical across peers | `host.log`, plus the **deterministic helper set**: signature verification, payload-MAC verification, content hashing, key installation from a sealed key-distribution payload, HLC extraction | Every peer materializing the topic | chat-server-state apply, wiki-state apply |
 | **State / `propose`** | Not required (runs once, on the authoring peer) | `host.hlc`, `host.random`, `host.seal` (capability-gated), `host.log` | The peer that originates the event | chat-server-state propose |
 | **Interaction** | Not required | `host.broadcast`, `host.subscribe`, `host.kv`, `host.user-prompt`, UI app's `ui:*` | Any peer with a UI / agent host | chat-server-interaction, wiki-interaction |
 | **Behavior** | Not required | + `host.http`, `host.timer`, `host.identity` (own keypair, gated) | Designated peer(s) | bridges, automod, archivers, bots |
@@ -179,19 +179,31 @@ pure function of their inputs** — not "no imports." Useful kernel-side
 helpers `apply` legitimately needs are deterministic by construction:
 
 - `host.verify-signature(pubkey, msg, sig)` — Ed25519 verification.
-- `host.verify-seal-envelope(envelope, pubkey)` — AEAD-tag check on a
-  sealed payload, without revealing plaintext.
+- `host.verify-payload-mac(envelope, key-handle)` — authenticity check
+  on a sealed payload without revealing plaintext, proving "some holder
+  of the key bound to this handle sealed this." Note this proves *key
+  possession*, not *author identity* — author identity comes from the
+  outer Ed25519 signature on the event itself. The exact set of envelope
+  formats the helper accepts (current `seal_content`, future MLS
+  Welcome / Commit, etc.) is the crypto-and-key-custody child spec's
+  responsibility; per the seal-gift-wrap deferral spec, MLS *application*
+  messages do not flow through the DAG and are therefore not what
+  `apply` verifies.
 - `host.hash(bytes)` — blake3 / sha256.
 - `host.install-key(handle, sealed)` — accept a sealed key-distribution
   blob addressed to *this peer*, unwrap it with the kernel-custodied
   recipient key, install the resulting symmetric key under the
   app-supplied opaque handle. The unwrapped bytes never enter component
-  memory; the function returns success/failure and the handle namespace
-  the app chose. Output depends on the local peer's private key, but
-  the *failure-or-handle-bound-success* outcome is deterministic from
-  the app's point of view because if the blob does not address the
-  local peer the call deterministically fails — no peer-specific bytes
-  flow back.
+  memory; the function returns success/failure based on whether the
+  blob addressed the local peer. **The return value is informational
+  about local capability only, and an app's `apply` MUST NOT
+  incorporate it into any state included in the cross-peer snapshot
+  hash.** A conformant state component records the key handle in
+  materialized state regardless of install outcome (every peer learns
+  "channel epoch N exists, handle is `chN-eN`"); the kernel separately
+  knows which handles this peer can actually open. The cross-peer
+  state-hash gossip is the conformance check — apps that branch
+  visibly on install-key return values fail it immediately.
 - `host.now-hlc-from-event(event)` — extract HLC bytes from the event
   envelope (no wall clock).
 
@@ -206,12 +218,11 @@ What `apply` continues to be denied:
 
 The determinism proof is therefore: **every host import bound to `apply`
 returns a pure function of its inputs given the event payload alone**.
-`host.install-key` is the only edge case — it is deterministic *modulo
-local key custody*, and behaves uniformly (succeeds, or deterministically
-fails with no observable difference) on peers that are or are not the
-intended recipient. The exact list of deterministic helpers belongs in
-the crypto-and-key-custody child spec; the master spec commits to the
-shape.
+`host.install-key` is the one helper whose return value is *peer-local*,
+which is why apps are required to treat that return as informational
+about local capability only (see above). The exact list of deterministic
+helpers belongs in the crypto-and-key-custody child spec; the master
+spec commits to the shape.
 
 The kernel verifies cross-peer convergence by hashing snapshots and gossiping
 state hashes. Mismatches surface as bugs (or, if signed, as proof of a
@@ -231,12 +242,13 @@ has to place it explicitly, not silently. The chosen split:
     profiles only — produces ciphertext under the named key.
   - `host.open(handle, ciphertext)` on interaction profile only —
     decrypts for display.
-  - `host.verify-seal-envelope(envelope, signer-pubkey)` and
+  - `host.verify-payload-mac(envelope, key-handle)` and
     `host.install-key(handle, sealed-distribution-blob)` on state-`apply`
     — deterministic helpers (see "Determinism, in detail"). State-`apply`
     never sees plaintext message content; it sees sealed payloads, can
-    verify their authenticity, and can install keys distributed in the
-    DAG into the kernel's custody under app-named handles.
+    verify "some holder of this key handle sealed this," and can install
+    keys distributed in the DAG into the kernel's custody under app-named
+    handles.
 - **Key generation and rotation events are app-defined.** A chat-server-style
   app defines its own `RotateChannelKeyV2`-equivalent events; the state-`apply`
   function records the new key handle in materialized state; the kernel
@@ -252,9 +264,10 @@ has to place it explicitly, not silently. The chosen split:
 
 The principle is consistent: **secrets do not enter component memory in
 their raw form**. Components hold handles; the kernel custodies bytes. An
-app-defined permission that gates `Rotate*` events is an app-level pre-check
-in state-`apply` (see the capability model section); the kernel only enforces
-that the seal/open call presented an authorized handle.
+app-defined permission that gates `Rotate*` events is enforced by the
+app's pre-check function (which shares its decision logic with apply, see
+the capability model section); the kernel only enforces that the seal/open
+call presented an authorized handle.
 
 The exact `host.seal` / `host.open` / `host.mls` interface, key-derivation
 strategy, and persistence story belong in a child spec dedicated to crypto
@@ -277,7 +290,9 @@ later without re-prompting.
 
 State-`apply` is bound only to the deterministic helper set
 (see "Determinism, in detail" for the full list). There is no
-non-deterministic capability to grant; nothing to leak. State-`propose`
+non-deterministic capability to grant and no information leak surface;
+resource consumption — handle namespace, key-store size, fuel — is bounded
+by per-instance caps defined in the worker child spec. State-`propose`
 has the small set listed in the runtime-profiles table (`host.hlc`,
 `host.random`, capability-gated `host.seal`); these are bound only when a
 peer is actually originating an event, never during replay.
@@ -313,10 +328,14 @@ peer is actually originating an event, never during replay.
   warns against. **An app's pre-check and apply MUST share the authority
   decision** — typically the same WIT-exposed function called in two
   different modes — so that drift between "would this be accepted" and
-  "is this accepted" is impossible by construction. Diverging pre-check
-  from apply is a soundness bug the kernel cannot detect; the
-  chat-server-migration spec specifies the shared-code pattern app authors
-  are expected to use.
+  "is this accepted" is impossible by construction. **Pre-check executes
+  under the state-`apply` runtime profile** — same deterministic helper
+  set, same fuel posture, same denied non-deterministic imports — even
+  though it is invoked from the originating peer's propose flow with the
+  proposed event payload. This is what makes "shared decision" mechanically
+  possible. Diverging pre-check from apply is a soundness bug the kernel
+  cannot detect; the chat-server-migration spec specifies the shared-code
+  pattern app authors are expected to use.
 
 ## Runtime and actors
 
@@ -441,14 +460,22 @@ require app-author refactor at migration time.
 - **Two runtime backends in the kernel.** wasmtime native, jco-transpiled
   web. Same host interface so app authors target one ABI.
 - **Relays are gossip-driven, not state-driven.** The relay never inspects
-  app payloads, never materializes state, and never runs WASM. App-defined
-  topic-ID rotation (as used today by the epoch-rotation spec) must
-  publish post-rotation topic IDs on a stable, public discovery channel
-  the relay can subscribe to without app knowledge. Topic discovery at
-  the relay remains a transport-layer concern.
-- **Deterministic-by-omission for state.** No host imports = no
-  non-determinism. We do not implement runtime checks for nondeterminism
-  because the absence of imports is the proof.
+  app payloads, never materializes state, and never runs WASM. Topic
+  discovery at the relay remains a transport-layer concern. App-defined
+  topic-ID rotation (as used today by the epoch-rotation spec, where
+  future topic IDs are intentionally unpredictable to non-members) must
+  bridge a relay across rotations *without* publishing rotated IDs on a
+  public channel — naive public discovery would defeat the rotation's
+  unlinkability property. The likely shape is members announcing the
+  next topic to the existing relay session before rotation, but the
+  exact protocol is deferred to a relay-and-rotation child spec; the
+  master-spec commitment is only that the kernel is not in this loop.
+- **Deterministic-by-construction for state-`apply`.** The only host
+  imports bound to `apply` are the deterministic helper set (signature
+  verification, hash, payload-MAC verification, key installation, HLC
+  extraction, log). Each is a pure function of its inputs given the
+  event payload. Determinism is proven by the absence of any
+  *non-deterministic* import — not by the absence of imports altogether.
 
 ## Lineage and influences
 
@@ -518,6 +545,10 @@ become useful:
   across topics, per-instance resource caps, operator deny-lists, abuse
   surfaces. Distinct from materialization, which is about correctness;
   this is about operating workers safely at scale.
+- **Relay and topic-ID rotation** — how a relay continues to bridge a
+  topic across an app-driven rotation without the kernel knowing what an
+  epoch is and without leaking rotation linkability to the public
+  network. Likely member-announced via the pre-rotation session.
 - **Crypto and key custody boundaries** — the `host.seal` / `host.open` /
   `host.mls` interface, key-derivation strategy, persistence story, app
   ↔ kernel responsibility split for rotation.
@@ -540,6 +571,21 @@ become useful:
   pre-check panics, exhausts fuel, or loops unbounded, does the kernel
   fail closed (reject the user action) or fail open (let `apply` reject
   on every peer)?
+- Pre-check fuel budget: pre-check runs under the `apply` profile, but
+  it runs *only on the originating peer*; does it share `apply`'s
+  per-event fuel cap, or is it budgeted separately?
+- Handle namespace ownership: two apps installing keys under the same
+  opaque handle on one peer — collision, namespacing per-app instance,
+  or kernel-arbitrated allocation?
+- Snapshot portability across component-version upgrades: when an app's
+  state component is updated, do existing snapshots remain valid? What
+  is the migration story?
+- Multi-peer behavior coordination: when two peers run instances of the
+  same behavior for redundancy, dedup of emitted events and leader
+  election are app-level concerns; the runtime offers no kernel-level
+  coordination primitive. Apps that need single-emitter semantics
+  implement leader election in their own state component. Should the
+  runtime offer a shared primitive, or stay strict?
 - Hot reload: deferred. Component update is restart for v1.
 
 ## Status
