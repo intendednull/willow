@@ -57,8 +57,8 @@ pub struct Role {
     pub id: String,
     /// Human-readable name (e.g. "Moderator").
     pub name: String,
-    /// The set of permission strings this role grants.
-    pub permissions: BTreeSet<String>,
+    /// The set of typed permissions this role grants.
+    pub permissions: BTreeSet<crate::event::Permission>,
 }
 
 /// A peer's membership record within a server.
