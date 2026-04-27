@@ -1,16 +1,19 @@
+---
+name: audit
+description: Use when running a scheduled audit of the Willow codebase, or when /audit is invoked on a pull request for review
+user-invocable: true
+---
+
 # Audit
-
-Master-orchestrator codebase audit. Runs in Claude web on a schedule, attached to a repo. Spawns parallel fresh agents to review the full tree, files findings as GitHub issues, and opens auto-fix PRs for obvious issues.
-
-- **Where it runs:** Claude web, scheduled task, attached to a single repo at a time.
-- **Cadence:** as scheduled in Claude web.
-- **Output:** master report issue + child issues per finding + draft/auto-fix PRs.
-
-## Prompt
 
 You = master orchestrator. Fresh agents do all work.
 
-### Core task
+## When to Use
+
+- Scheduled run on `main`: full-tree audit, files findings as issues, opens auto-fix PRs.
+- `/audit` invoked in a PR: review the PR only — no issues, no PRs.
+
+## Core Task
 
 Audit full codebase, main branch only. Skip if HEAD == commit in last report.
 
@@ -23,29 +26,27 @@ Spawn parallel agents, narrow by concern (not file scope). Default split:
 
 Spawn more if area needs depth.
 
-### Synthesis
+## Synthesis
 
 Collect findings → master issue (commit + all findings) + child issue per finding. Cross-ref open issues here for dedup. Second pass w/ fresh agents: verify findings real + non-dup via grep/rg for exact patterns cited.
 
-### Auto-fix
+## Auto-fix
 
 Obvious findings → open PR via git worktrees (parallel). Monitor CI till green. Ambiguous findings → draft PR w/ questions in description.
 
-### Background
+## Background
 
 Fresh agent sweeps existing open issues for resolved/false-positive → close w/ reason comment. Conservative; no-op fine.
 
 Identify other existing issues workable in parallel; same PR rules.
 
-### Lessons section
+## Lessons Learned
 
-Append "lessons learned" section to report. Feed back into this prompt next run.
+Append "lessons learned" section to report. Feed back into this skill next run.
 
-### /audit in PR
+## /audit in PR
 
 Same flow but review PR only. No issues, no PRs.
-
----
 
 ## Hard Rules
 
