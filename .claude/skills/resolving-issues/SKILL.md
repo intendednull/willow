@@ -30,17 +30,18 @@ All sub-fixes land on one master branch per session. Master PR is opened **only 
 3. Track resolved issues locally during the run (commit subjects + a working list in coordinator memory or a scratch file). Assemble the final PR body at end-of-run from this list.
 
 ### Master PR open (end of run)
-1. After all sub-PRs merge, all skill edits applied, and Lessons Learned drafted, open the PR — **non-draft, ready for review**.
+1. After all sub-PRs merge (or get parked as follow-up issues — see below), all skill edits applied, and Lessons Learned drafted, open the PR — **non-draft, ready for review**.
 2. Title: `auto-fix batch YYYY-MM-DD-HHMMSS`. Base: `main`. Apply label `auto-fix-batch`.
-3. PR body: running list of `Fixes #N` lines (one per resolved issue) + `## Skill Evolution` (if skill commits landed) + `## Lessons Learned` section.
-4. **Never open the master PR as a draft.** Open as ready or not at all. If something is unfinished, leave the branch un-PR'd and surface what's left so the human can decide.
+3. PR body: running list of `Fixes #N` lines (one per resolved issue) + `## Skill Evolution` (if skill commits landed) + `## Lessons Learned` section + `## Parked` (if any issues hit a blocker mid-run; cite the follow-up issue per row).
+4. **Always open the master PR with what landed**, even if some attempted issues hit blockers. The PR ships the wins; blockers move to follow-up issues so the next scheduled run picks them up automatically. Never open as draft. If literally nothing landed (zero merged sub-PRs), don't open a PR at all — close the branch out.
+5. **No in-session continuation.** Don't leave a session "to be resumed" — the human must not have to chase a session. The issue queue is the durable handoff.
 
 ### Sub-PR rules
 - Sub-PR base = master branch, NOT `main`.
 - Sub-PR body references issue (`Refs #N`) — no `Fixes` keyword. `Fixes` lives only on master PR (assembled at end of run) so issues close when master PR merges.
 - **Sub-PR base ≠ main means GH Actions workflows scoped to `pull_request: branches: [main]` won't fire.** Implementer treats local `just check` green (fmt + clippy + test + wasm) as the merge gate; do not park sub-PR open waiting for CI that won't run. Master PR (base=main, opened end-of-run) runs full CI before human merge — the load-bearing gate.
 - Implementer watches CI on sub-PR ONLY when CI actually runs (rare; usually requires PR base = main). CI green → merge sub-PR into master branch. No CI run → local `just check` green is the gate, then merge.
-- CI red after one fix attempt → convert sub-PR to draft + caveman question. Move on.
+- CI red after one fix attempt → file follow-up issue (caveman body, link blocker), close sub-PR. Move on. Do NOT leave it as a draft for someone to resume — the next scheduled run picks up the follow-up issue automatically.
 
 ## Core Loop
 
@@ -78,8 +79,8 @@ Fresh agent per issue, scoped to one issue + master branch ref. Steps:
 7. `just check` green locally before pushing.
 8. Push branch. Open sub-PR with master branch as base.
 9. **Merge gate:** if sub-PR CI runs (rare — only when workflow `branches: [main]` filter matches), wait for green. If CI doesn't run (sub-PR base ≠ main is the common case), local `just check` green from step 7 IS the gate. Merge with `mcp__github__merge_pull_request` `merge_method: squash`.
-10. CI red after one fix attempt OR local `just check` red → mark sub-PR as draft + caveman question in body. Return control to coordinator.
-11. Tear down worktree on merge.
+10. CI red after one fix attempt OR local `just check` red OR mid-fix block → **file a follow-up GH issue** (caveman body, link the original issue + cite the blocker), then **close the sub-PR** (don't leave it as a draft for someone to resume). The next scheduled run will see the follow-up issue in the queue and pick it up. Return control to coordinator.
+11. Tear down worktree on merge OR on close-after-blocker.
 
 ## Lessons Learned
 
@@ -118,8 +119,9 @@ Never defer skill edits to a follow-up — they ship with the run that surfaced 
 
 ### Autonomy
 - Best judgment. No hand-holding.
-- Mid-fix block? Implementer parks work as draft sub-PR + caveman question, moves on.
+- Mid-fix block? Implementer files a follow-up GH issue (caveman body, link original + cite blocker), closes the sub-PR, moves on. The follow-up issue is the durable handoff for the next scheduled run — don't leave a draft sub-PR for someone to chase.
 - Noop fine. Ship nothing > ship junk.
+- **No in-session continuation.** Sessions don't get resumed. If something doesn't fit in this run, file an issue.
 
 ## Setup
 
@@ -131,5 +133,6 @@ Never defer skill edits to a follow-up — they ship with the run that surfaced 
 - `just check` green before sub-PR opened.
 - Tests at lowest tier covering behavior (see `CLAUDE.md`).
 - Sub-PR merges into master branch only after merge gate passes (see ### Sub-PR rules — local `just check` is the gate when CI doesn't run, sub-PR CI is the gate when it does).
-- Master PR opened only at end of run, **non-draft**. Master PR runs full CI when opened — the actual quality net for the run.
-- If anything's unfinished or you're unsure, leave the branch un-PR'd. Never open the master PR as a draft.
+- Master PR opened only at end of run, **non-draft**, with whatever sub-PRs landed. Master PR runs full CI when opened — the actual quality net for the run.
+- Anything blocked → follow-up issue, sub-PR closed, next scheduled run picks it up. Never open the master PR as draft. Only skip opening the PR entirely if literally zero sub-PRs landed.
+- No in-session continuation. The issue queue is the durable handoff.
