@@ -45,6 +45,40 @@ pub fn RelaySignalButton() -> impl IntoView {
 
     let open = RwSignal::new(false);
 
+    // Settings-link button receives focus when the popover opens, so
+    // keyboard users land inside the dialog instead of skipping past
+    // its contents. Same pattern used by `ConfirmDialog`.
+    let settings_link_ref = NodeRef::<leptos::html::Button>::new();
+
+    // Pull focus into the popover on each open transition. The global
+    // keybinding stack (`crate::keybindings`) does not know about this
+    // popover, so we own the initial-focus contract locally. The dialog
+    // is non-modal (`aria-modal="false"`) — we do not trap focus, just
+    // seed it; Tab continues to move through page chrome normally.
+    Effect::new(move |prev: Option<bool>| {
+        let is_open = open.get();
+        let was_open = prev.unwrap_or(false);
+        if is_open && !was_open {
+            request_animation_frame(move || {
+                if let Some(el) = settings_link_ref.get_untracked() {
+                    let _ = el.focus();
+                }
+            });
+        }
+        is_open
+    });
+
+    // Local Escape handler scoped to the popover. The global handler in
+    // `keybindings::install` only knows about the rail / palette / sheet
+    // stack; this popover is outside that stack, so without a local
+    // listener Escape would be a no-op while focus is inside the dialog.
+    let on_popover_keydown = move |ev: web_sys::KeyboardEvent| {
+        if ev.key() == "Escape" {
+            ev.stop_propagation();
+            open.set(false);
+        }
+    };
+
     let class_for = move || match relay.get() {
         RelayStatus::Reachable => "relay-signal-button relay-signal-button--ok",
         RelayStatus::Unreachable => "relay-signal-button relay-signal-button--warn",
@@ -94,6 +128,9 @@ pub fn RelaySignalButton() -> impl IntoView {
                     class="relay-popover"
                     role="dialog"
                     aria-label="relay status"
+                    aria-modal="false"
+                    tabindex="-1"
+                    on:keydown=on_popover_keydown
                 >
                     <header class="relay-popover__header">
                         {icons::icon_signal()}
@@ -106,6 +143,7 @@ pub fn RelaySignalButton() -> impl IntoView {
                     <button
                         class="relay-popover__settings-link"
                         type="button"
+                        node_ref=settings_link_ref
                         on:click=move |_| {
                             // Close the popover + open settings. The
                             // relay-picker tab lands with
