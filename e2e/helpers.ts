@@ -89,13 +89,18 @@ export async function createServer(page: Page, name: string, displayName?: strin
   }
 }
 
-/** Get the full peer ID from the welcome screen or settings. */
-export async function getPeerId(page: Page): Promise<string> {
-  // Welcome screen: advance past step 1 (no name), then switch to the
-  // Join tab — the peer id lives inside the Join step list, hidden by
-  // default and revealed by the eye-toggle icon.
+/** Get the full peer ID from the welcome screen or settings.
+ *  If `displayName` is provided, fills it into the welcome step-1 name
+ *  input before advancing — required when the same page will later
+ *  invoke `joinViaInvite`, since step 1 only renders once. Without
+ *  this, the joiner ends up with display name "anonymous" and member-
+ *  list lookups by name fail. */
+export async function getPeerId(page: Page, displayName?: string): Promise<string> {
+  // Welcome screen: advance past step 1, then switch to the Join tab —
+  // the peer id lives inside the Join step list, hidden by default and
+  // revealed by the eye-toggle icon.
   if (await page.locator('.welcome-card').isVisible().catch(() => false)) {
-    await advancePastNameStep(page);
+    await advancePastNameStep(page, displayName);
     const joinTab = page.locator('.welcome-tab-btn', { hasText: 'Join' });
     if (await joinTab.isVisible().catch(() => false)) {
       await joinTab.click();
@@ -347,6 +352,39 @@ export async function closeMemberList(page: Page) {
   }
 }
 
+/** Opens the sync-queue panel via the command palette.
+ *
+ *  The sync-queue surface (`SyncQueueView`) mounts inside the right-rail
+ *  on desktop when `app.queue.open == true`. The user-facing trigger is
+ *  the "open sync queue" action in the command palette (⌘K / Ctrl+K).
+ *  The `OfflineStrip` is the only other in-app entry point but it gates
+ *  on `peer_count > 0`, which isn't reliable immediately after server
+ *  creation when no peers are queued yet.
+ *
+ *  Idempotent — short-circuits when the queue panel is already mounted.
+ */
+export async function openSyncQueue(page: Page) {
+  const alreadyOpen = await page
+    .locator(`${visibleShell(page)} .sync-queue-view`)
+    .first()
+    .isVisible()
+    .catch(() => false);
+  if (alreadyOpen) return;
+
+  // Open the command palette. The global keydown listener in
+  // `crates/web/src/keybindings.rs` toggles `show_palette` on Ctrl/⌘+K.
+  await page.keyboard.press('Control+K');
+  const row = page.locator('.palette-row', { hasText: 'open sync queue' }).first();
+  await row.waitFor({ timeout: 5_000 });
+  await row.click();
+
+  // Wait for the surface to mount in the visible shell.
+  await page
+    .locator(`${visibleShell(page)} .sync-queue-view`)
+    .first()
+    .waitFor({ timeout: 5_000 });
+}
+
 // ── Invite flow ───────────────────────────────────────────────────────
 
 /** Opens the server settings panel (opens sidebar first on mobile). */
@@ -402,17 +440,12 @@ export async function joinViaInvite(page: Page, inviteCode: string, displayName?
     });
   }
   // Deterministic post-join settle: wait for the sidebar + first channel
-  // to materialise. Covers both shells. Channel rows arrive via gossip
-  // delivery from the inviter — 20 s was a tight ceiling that flaked on
-  // CI under load (the relay round-trip + DAG replay can take 30+ s when
-  // the gossip mesh is busy from a previous test). 60 s gives the mesh
-  // ample headroom without slowing down the happy path (first-channel
-  // visibility resolves the `waitFor` immediately when fast).
+  // to materialise. Covers both shells.
   await page.locator(`${visibleShell(page)} .channel-sidebar, ${visibleShell(page)} .mobile-home`)
     .first()
-    .waitFor({ timeout: 60_000 });
+    .waitFor({ timeout: 20_000 });
   await page.locator(`${visibleShell(page)} .channel-item`).first()
-    .waitFor({ timeout: 60_000 });
+    .waitFor({ timeout: 20_000 });
 }
 
 /** Sets up two peers: peer1 creates a server, peer2 joins via invite. */
@@ -431,9 +464,11 @@ export async function setupTwoPeers(
   await freshStart(page1);
   await createServer(page1, serverName, peer1Name);
 
-  // Peer 2: Get peer ID from welcome screen.
+  // Peer 2: Get peer ID from welcome screen. Pass peer2Name so step 1
+  // commits with the correct display name — `joinViaInvite` below cannot
+  // re-set it because step 1 has already been advanced.
   await freshStart(page2);
-  const peer2Id = await getPeerId(page2);
+  const peer2Id = await getPeerId(page2, peer2Name);
 
   // Peer 1: Generate invite for peer 2.
   const inviteCode = await generateInvite(page1, peer2Id);
@@ -447,15 +482,12 @@ export async function setupTwoPeers(
   // just as reliably via gossip events consumed by other helpers.
   if (peer2Name && !isMobile(page1)) {
     await openMemberList(page1);
-    try {
-      await page1
-        .locator('.member-item', { hasText: peer2Name })
-        .waitFor({ timeout: 20_000 });
-    } catch {
-      // Display name sync may be slow; proceed anyway — but warn so failures
-      // here don't produce misleading timeouts in downstream assertions.
-      console.warn('[setupTwoPeers] peer2 display name did not sync in time — P2P may be slow');
-    }
+    // Throw on timeout instead of swallowing — silent fallback hides
+    // genuine sync regressions and produces misleading downstream
+    // failures (e.g. trustPeer/kickPeer can't find the member row).
+    await page1
+      .locator('.member-item', { hasText: peer2Name })
+      .waitFor({ timeout: 60_000 });
     await closeMemberList(page1);
   } else if (peer2Name) {
     // On mobile, just sleep a bit to let gossip propagate.

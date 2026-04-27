@@ -1211,6 +1211,15 @@ pub fn App() -> impl IntoView {
                                             write.ui.set_show_members.set(true);
                                             write.ui.set_show_palette.set(false);
                                         })
+                                        on_open_sync_queue=Callback::new(move |_| {
+                                            // Phase 2b — palette → sync-queue
+                                            // surface. The right-rail watches
+                                            // `app.queue.open` and mounts the
+                                            // SyncQueueView when it flips
+                                            // true.
+                                            app_state.queue.open.set(true);
+                                            write.ui.set_show_palette.set(false);
+                                        })
                                         on_search=Callback::new(move |q: String| {
                                             // Palette bridge per
                                             // `local-search.md` §Command-
