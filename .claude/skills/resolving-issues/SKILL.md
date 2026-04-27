@@ -39,16 +39,16 @@ All sub-fixes land in one master PR per session. Human reviews master PR holisti
 1. Read open issues + open PRs. Skip anything in flight.
 2. Pick small-scope fixes. `general-audit` issues = top priority.
 3. Skip big features + major refactors. Out of scope.
-4. Create fresh master PR for this session.
-5. Per issue, sequential, max 10 per run:
+4. No in-scope issues? Noop. Skip the rest. No master PR opened.
+5. Create fresh master PR for this session.
+6. Per issue, sequential, max 10 per run:
    - Spawn fresh implementer agent.
    - Implementer: worktree off master PR branch → research subagents if needed → fix → tests → sub-PR into master PR → watch CI → merge on green.
    - On merge, append `Fixes #N` to master PR body.
    - Tear down worktree.
    - Next issue.
-6. Implementer finds related rot? File follow-up issue.
-7. Run done? Leave master PR as draft. Human marks ready when satisfied.
-8. No work fits + no commits added this run? Noop fine.
+7. Implementer finds related rot? File follow-up issue.
+8. Run done? Append Lessons Learned section to master PR body. Leave master PR as draft. Human marks ready when satisfied.
 
 ## Implementer Agent
 
@@ -62,7 +62,7 @@ Fresh agent per issue, scoped to one issue + master PR branch ref. Steps:
 6. Push branch. Open sub-PR with master PR branch as base.
 7. Watch CI. Flake → re-run. Real failure → one fix attempt.
 8. CI green → merge sub-PR into master PR branch. Tear down worktree.
-9. CI still red → draft sub-PR + caveman question in body. Return control to coordinator.
+9. CI still red → mark sub-PR as draft + caveman question in body. Return control to coordinator.
 
 ## Lessons Learned
 
@@ -94,7 +94,7 @@ End of run, append `## Lessons Learned` section to master PR body with caveman b
 
 ### Autonomy
 - Best judgment. No hand-holding.
-- Mid-fix block? Implementer drafts sub-PR + caveman question, moves on.
+- Mid-fix block? Implementer parks work as draft sub-PR + caveman question, moves on.
 - Noop fine. Ship nothing > ship junk.
 
 ## Setup

@@ -22,7 +22,7 @@ You = master orchestrator. Fresh agents do all work. Job = find + file findings.
 
 ## Core Task
 
-Audit full codebase, main branch only. Skip if HEAD == commit in last report.
+Audit full codebase, main branch only. Skip if HEAD == commit recorded in most recent `general-audit` master issue.
 
 Spawn parallel agents, narrow by concern (not file scope). Default split:
 - security → sub-split: input validation/DoS, auth/permissions, web/WASM, deps/supply-chain
@@ -40,10 +40,6 @@ Collect findings → master issue (commit + all findings) + child issue per find
 ## Lessons Learned
 
 Open dedicated issue per run titled `general-audit lessons: YYYY-MM-DD` with caveman body listing what worked, what didn't, and concrete suggested edits to this skill file. Human (or follow-up routine) edits `.claude/skills/general-audit/SKILL.md` directly to incorporate.
-
-## /general-audit in PR
-
-Same flow but review PR only. No issues filed.
 
 ## Hard Rules
 
