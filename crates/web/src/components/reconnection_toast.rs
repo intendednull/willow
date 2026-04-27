@@ -69,15 +69,18 @@ pub fn ReconnectionToast() -> impl IntoView {
             // before scheduling a fresh one.
             clear_timeout(timeout_handle.get_value());
             let vis = visible;
-            let cb = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || vis.set(false));
+            // One-shot auto-hide timer; this Effect re-runs on every
+            // reconnect so `forget()` would leak per reconnection
+            // (issue #193). `once_into_js` hands the closure to JS
+            // for GC after fire / `clear_timeout_with_handle` above.
+            let cb = wasm_bindgen::closure::Closure::once_into_js(move || vis.set(false));
             let handle = web_sys::window().and_then(|win| {
                 win.set_timeout_with_callback_and_timeout_and_arguments_0(
-                    cb.as_ref().unchecked_ref(),
+                    cb.unchecked_ref(),
                     AUTO_HIDE_MS,
                 )
                 .ok()
             });
-            cb.forget();
             timeout_handle.set_value(handle);
         }
     });

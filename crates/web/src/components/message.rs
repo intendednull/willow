@@ -510,10 +510,14 @@ pub fn MessageView(
             is_dragging.set(true);
         }
         set_long_press_active.set(true);
-        // Start 500ms timer via web_sys.
+        // Start 500ms timer via web_sys. Use `once_into_js` so the
+        // closure transfers ownership to JS — once the timer fires (or
+        // `clear_timeout_with_handle` discards it on the cancel paths
+        // below), the JS GC reclaims it. `Closure::once(...).forget()`
+        // would leak per touchstart on mobile (issue #193).
         if let Some(window) = web_sys::window() {
             let open_sheet = set_show_sheet_open.clone();
-            let cb = wasm_bindgen::closure::Closure::once(move || {
+            let cb = wasm_bindgen::closure::Closure::once_into_js(move || {
                 set_long_press_active.set(false);
                 open_sheet();
                 // Haptic feedback. Headless test browsers lack
@@ -525,13 +529,11 @@ pub fn MessageView(
                     }
                 }
             });
-            if let Ok(id) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                cb.as_ref().unchecked_ref(),
-                500,
-            ) {
+            if let Ok(id) = window
+                .set_timeout_with_callback_and_timeout_and_arguments_0(cb.unchecked_ref(), 500)
+            {
                 lp_start.set(id);
             }
-            cb.forget();
         }
     };
 

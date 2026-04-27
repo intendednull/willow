@@ -43,7 +43,11 @@ pub fn LongPressAvatar(
         set_ring.set(Some(false));
         let set_ring_for_timer = set_ring;
         let on_trigger_inner = on_trigger;
-        let cb = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
+        // `once_into_js` transfers ownership to JS so the closure is
+        // reclaimed by GC after fire (or after `clear_timeout_with_handle`
+        // in `cancel`). `Closure::once(...).forget()` would leak one
+        // closure per pointerdown / touchstart (issue #193).
+        let cb = wasm_bindgen::closure::Closure::once_into_js(move || {
             set_ring_for_timer.set(Some(true));
             // Light haptic + fire the callback. Headless browsers
             // (wasm-bindgen-test) lack `navigator.vibrate`, so
@@ -56,14 +60,12 @@ pub fn LongPressAvatar(
             on_trigger_inner.get_value().run(());
         });
         if let Some(win) = web_sys::window() {
-            if let Ok(handle) = win.set_timeout_with_callback_and_timeout_and_arguments_0(
-                cb.as_ref().unchecked_ref(),
-                HOLD_MS,
-            ) {
+            if let Ok(handle) = win
+                .set_timeout_with_callback_and_timeout_and_arguments_0(cb.unchecked_ref(), HOLD_MS)
+            {
                 timer.set_value(Some(handle));
             }
         }
-        cb.forget();
     };
 
     let cancel = move || {
@@ -80,17 +82,16 @@ pub fn LongPressAvatar(
     Effect::new(move |_| {
         if let Some(true) = ring.get() {
             let set_ring_off = set_ring;
-            let cb = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
+            // One-shot fade-off timer. `once_into_js` lets JS reclaim
+            // the closure after fire — this Effect re-runs on every
+            // arm, so `forget()` would leak per long-press (issue #193).
+            let cb = wasm_bindgen::closure::Closure::once_into_js(move || {
                 set_ring_off.set(None);
             });
             if let Some(win) = web_sys::window() {
-                win.set_timeout_with_callback_and_timeout_and_arguments_0(
-                    cb.as_ref().unchecked_ref(),
-                    180,
-                )
-                .ok();
+                win.set_timeout_with_callback_and_timeout_and_arguments_0(cb.unchecked_ref(), 180)
+                    .ok();
             }
-            cb.forget();
         }
     });
 
