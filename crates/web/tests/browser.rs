@@ -9782,6 +9782,166 @@ mod phase_2e_search_active_row {
     }
 }
 
+// ── Phase 2e — Enter activates highlighted row (#406) ───────────────────────
+//
+// Follow-up to #344. After the active-row a11y wiring landed, Enter still
+// routed to the recents-push path instead of activating the highlighted row.
+// These tests pin the corrected contract:
+//
+// - With ≥1 result and a highlighted row, Enter must invoke the row-select
+//   callback with the row at `active_index`, NOT push to recents with the
+//   raw query string.
+// - With zero results, Enter must fall back to the recents-push path so the
+//   "submit query for later recall" affordance still works on misses.
+
+mod phase_2e_search_enter_activates {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use willow_client::{SearchResult, SearchScope};
+    use willow_web::components::SearchInput;
+    use willow_web::state::{create_signals, InitialSignals};
+
+    fn fixture_result(id: &str, body: &str, ts: u64) -> SearchResult {
+        SearchResult {
+            message_id: id.into(),
+            channel_id: "general".into(),
+            channel_name: "general".into(),
+            grove_id: Some("grove-fixture".into()),
+            letter_id: None,
+            author_display_name: "Mira".into(),
+            author_handle: "mira".into(),
+            timestamp_ms: ts,
+            body: body.into(),
+            matched_ranges: Vec::new(),
+        }
+    }
+
+    /// Captures invocations of `on_submit` (recents path) and `on_select`
+    /// (row-activation path). `Arc<Mutex<...>>` so they're `Send + Sync`
+    /// and satisfy `Callback::new`'s bound; that's overhead the harness
+    /// pays gladly to use the real callback path.
+    type SubmitLog = Arc<Mutex<Vec<String>>>;
+    type SelectLog = Arc<Mutex<Vec<SearchResult>>>;
+
+    fn mount_input_with(
+        results: Vec<SearchResult>,
+        query_text: &str,
+        active: usize,
+    ) -> (web_sys::HtmlElement, SubmitLog, SelectLog) {
+        let submitted: SubmitLog = Arc::new(Mutex::new(Vec::new()));
+        let selected: SelectLog = Arc::new(Mutex::new(Vec::new()));
+
+        let submitted_for_mount = submitted.clone();
+        let selected_for_mount = selected.clone();
+        let query_text_owned = query_text.to_string();
+
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+
+            // Pin scope to ThisChannel so the flat (in-display-order)
+            // list is just the raw results in the order we passed them
+            // — keeps the test focused on Enter wiring, not grouping.
+            write
+                .search
+                .set_scope
+                .set(SearchScope::ThisChannel("general".into()));
+            write.search.set_query.set(query_text_owned.clone());
+            write.search.set_results.set(results.clone());
+            write.search.set_active_index.set(active);
+
+            provide_context(app_state);
+            provide_context(write);
+
+            let on_submit = {
+                let log = submitted_for_mount.clone();
+                Callback::new(move |q: String| log.lock().unwrap().push(q))
+            };
+            let on_select = {
+                let log = selected_for_mount.clone();
+                Callback::new(move |r: SearchResult| log.lock().unwrap().push(r))
+            };
+
+            view! { <SearchInput on_submit=on_submit on_select=on_select /> }
+        });
+
+        (container, submitted, selected)
+    }
+
+    /// Dispatch a bubbling `keydown` of the given `key` on `el`.
+    fn dispatch_keydown(el: &web_sys::Element, key: &str) {
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_key(key);
+        init.set_bubbles(true);
+        let ev =
+            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        el.dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&ev)
+            .unwrap();
+    }
+
+    #[wasm_bindgen_test]
+    async fn enter_with_active_row_invokes_on_select_not_on_submit() {
+        let results = vec![
+            fixture_result("m-0", "first hit", 30_000),
+            fixture_result("m-1", "second hit", 20_000),
+            fixture_result("m-2", "third hit", 10_000),
+        ];
+        let (container, submitted, selected) = mount_input_with(results, "hit", 1);
+        tick().await;
+
+        let input = query(&container, ".search-input").expect("search input mounted");
+        dispatch_keydown(&input, "Enter");
+        tick().await;
+
+        // The bug: Enter was routing to on_submit("hit") instead of the
+        // row activation path.
+        let submits = submitted.lock().unwrap();
+        assert!(
+            submits.is_empty(),
+            "Enter with a highlighted row must NOT push to recents \
+             (got submits: {:?})",
+            *submits
+        );
+        drop(submits);
+
+        let picks = selected.lock().unwrap();
+        assert_eq!(
+            picks.len(),
+            1,
+            "Enter with a highlighted row must invoke on_select exactly once"
+        );
+        assert_eq!(
+            picks[0].message_id, "m-1",
+            "on_select must receive the row at active_index (1), not the first row"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn enter_with_no_results_falls_back_to_on_submit() {
+        let (container, submitted, selected) = mount_input_with(Vec::new(), "nothing", 0);
+        tick().await;
+
+        let input = query(&container, ".search-input").expect("search input mounted");
+        dispatch_keydown(&input, "Enter");
+        tick().await;
+
+        assert!(
+            selected.lock().unwrap().is_empty(),
+            "with zero results there is no row to activate; on_select must not fire"
+        );
+        assert_eq!(
+            submitted.lock().unwrap().as_slice(),
+            &["nothing".to_string()],
+            "with zero results Enter must fall through to the recents-push path"
+        );
+    }
+}
+
 // ── Foundation tokens (Phase 0) ─────────────────────────────────────────────
 //
 // Closes Task 14 of `docs/plans/2026-04-19-ui-phase-0-foundation.md`.

@@ -14,9 +14,14 @@
 //!   target. The active row is also announced via
 //!   `aria-activedescendant`, which points at the row's
 //!   `id="search-row-{message_id}"` per WAI-ARIA listbox guidance.
+//! - `Enter` activates the highlighted row (the row at `active_index`
+//!   in flat in-display order) — same path as clicking the row. When
+//!   there are no results to highlight, `Enter` falls back to the
+//!   recents-push submit so empty / zero-hit queries still get
+//!   remembered.
 
 use leptos::prelude::*;
-use willow_client::SearchScope;
+use willow_client::{SearchResult, SearchScope};
 
 use crate::state::{AppState, AppWriteSignals};
 
@@ -34,9 +39,17 @@ fn placeholder_for(scope: &SearchScope) -> &'static str {
 #[component]
 pub fn SearchInput(
     /// Fired with the current query text when the user presses Enter
-    /// (used for recents push).
+    /// AND there is no row to activate (zero results — recents push
+    /// fallback so the "submit query for later recall" affordance still
+    /// works on misses).
     #[prop(into)]
     on_submit: Callback<String>,
+    /// Fired when Enter activates the highlighted result row (the row
+    /// at `SearchUiState::active_index` in flat in-display order). The
+    /// caller navigates to the row's native container — same path as
+    /// clicking the row.
+    #[prop(into)]
+    on_select: Callback<SearchResult>,
 ) -> impl IntoView {
     let state = use_context::<AppState>().expect("AppState");
     let write = use_context::<AppWriteSignals>().expect("AppWriteSignals");
@@ -75,7 +88,21 @@ pub fn SearchInput(
         }
         "Enter" => {
             ev.prevent_default();
-            on_submit.run(state.search.query.get_untracked());
+            // Enter activates the highlighted row when results exist —
+            // matches the click path. Falls back to the recents-push
+            // submit only when there is no row to activate (e.g. zero
+            // results, query just typed, etc.). Per #406, routing Enter
+            // unconditionally to `on_submit` is the bug we're fixing.
+            let flat = super::results::flat_ordered(
+                &state.search.results.get_untracked(),
+                &state.search.scope.get_untracked(),
+            );
+            let i = state.search.active_index.get_untracked();
+            if let Some(row) = flat.get(i) {
+                on_select.run(row.clone());
+            } else {
+                on_submit.run(state.search.query.get_untracked());
+            }
         }
         "ArrowDown" => {
             let n = result_count();

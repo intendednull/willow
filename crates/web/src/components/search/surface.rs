@@ -147,7 +147,7 @@ pub fn SearchSurface(
 
     view! {
         <div class="search-surface">
-            <SearchInput on_submit=on_submit />
+            <SearchInput on_submit=on_submit on_select=on_select_result />
             <ScopeChip focused_channel=focused_channel />
             {move || {
                 let q = state.search.query.get();
