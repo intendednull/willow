@@ -72,7 +72,16 @@ struct Cli {
 }
 
 /// CLI-friendly enum for `--scope`. Maps to `TokenScope`.
-#[derive(Copy, Clone, Debug, ValueEnum)]
+///
+/// Per-scope tool list:
+/// - `messaging` (default): `send_message`, `send_reply`, `edit_message`,
+///   `delete_message`, `react`, `pin_message`, `unpin_message`, `send_typing`.
+///   All resources readable.
+/// - `read`: no tools. All resources readable.
+/// - `full`: every tool reachable from the bearer token, all resources.
+/// - `admin`: every tool, all resources. Semantically distinct from `full`
+///   so audit log consumers can tell intent apart.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 enum ScopeArg {
     /// Messaging tools only (least-privilege default).
     Messaging,
@@ -80,6 +89,8 @@ enum ScopeArg {
     Read,
     /// Full access: all tools, all resources.
     Full,
+    /// Admin access: all tools, all resources (audit-distinct from `full`).
+    Admin,
 }
 
 impl From<ScopeArg> for TokenScope {
@@ -88,6 +99,7 @@ impl From<ScopeArg> for TokenScope {
             ScopeArg::Messaging => TokenScope::Messaging,
             ScopeArg::Read => TokenScope::ReadOnly,
             ScopeArg::Full => TokenScope::Full,
+            ScopeArg::Admin => TokenScope::Admin,
         }
     }
 }
@@ -208,4 +220,86 @@ fn load_or_generate_identity(path: &str) -> anyhow::Result<Identity> {
         tracing::info!("generated new identity at {}", path);
     }
     Ok(identity)
+}
+
+#[cfg(test)]
+mod tests {
+    //! CLI parsing tests for `--scope`. Verifies that:
+    //!
+    //! - omitting `--scope` yields the least-privilege `Messaging` default
+    //!   (closes the SEC-A-09 footgun where `serve_http` previously got
+    //!   `TokenScope::default()` == `Full`),
+    //! - every documented value (`messaging`, `read`, `full`, `admin`) parses,
+    //! - each `ScopeArg` maps to the expected `TokenScope` variant.
+    //!
+    //! Regression test for https://github.com/intendednull/willow/issues/311.
+    use super::*;
+    use clap::Parser;
+    use willow_agent::scopes::TokenScope;
+    // Required arg for clap to accept a successful parse.
+    const MIN_ARGS: &[&str] = &["willow-agent"];
+
+    fn parse(extra: &[&str]) -> Cli {
+        let mut argv: Vec<&str> = MIN_ARGS.to_vec();
+        argv.extend_from_slice(extra);
+        Cli::parse_from(argv)
+    }
+
+    #[test]
+    fn default_scope_is_messaging() {
+        // SEC-A-09: when operator does not pass --scope, HTTP transport must
+        // not silently fall back to full admin authority.
+        let cli = parse(&[]);
+        assert_eq!(cli.scope, ScopeArg::Messaging);
+    }
+
+    #[test]
+    fn scope_messaging_parses() {
+        let cli = parse(&["--scope", "messaging"]);
+        assert_eq!(cli.scope, ScopeArg::Messaging);
+    }
+
+    #[test]
+    fn scope_read_parses() {
+        let cli = parse(&["--scope", "read"]);
+        assert_eq!(cli.scope, ScopeArg::Read);
+    }
+
+    #[test]
+    fn scope_full_parses() {
+        let cli = parse(&["--scope", "full"]);
+        assert_eq!(cli.scope, ScopeArg::Full);
+    }
+
+    #[test]
+    fn scope_admin_parses() {
+        let cli = parse(&["--scope", "admin"]);
+        assert_eq!(cli.scope, ScopeArg::Admin);
+    }
+
+    #[test]
+    fn unknown_scope_rejected() {
+        let mut argv: Vec<&str> = MIN_ARGS.to_vec();
+        argv.extend_from_slice(&["--scope", "root"]);
+        assert!(Cli::try_parse_from(argv).is_err());
+    }
+
+    #[test]
+    fn scope_arg_maps_to_token_scope() {
+        // ScopeArg → TokenScope wiring. If this drifts, the wrong scope
+        // ends up gating tool calls in serve_http.
+        assert!(matches!(
+            TokenScope::from(ScopeArg::Messaging),
+            TokenScope::Messaging
+        ));
+        assert!(matches!(
+            TokenScope::from(ScopeArg::Read),
+            TokenScope::ReadOnly
+        ));
+        assert!(matches!(TokenScope::from(ScopeArg::Full), TokenScope::Full));
+        assert!(matches!(
+            TokenScope::from(ScopeArg::Admin),
+            TokenScope::Admin
+        ));
+    }
 }
