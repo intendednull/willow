@@ -63,7 +63,7 @@ the kernel. A laptop running a UI, a worker running headless, an MCP agent,
 and a future native desktop client are all just "the kernel + a different mix
 of components."
 
-## Three runtime profiles for components
+## Runtime profiles for components
 
 Different components have fundamentally different needs. The kernel
 distinguishes three profiles, with very different host imports and execution
@@ -71,15 +71,20 @@ policies:
 
 | Profile | Determinism | Imports | Where it runs | Examples |
 |---|---|---|---|---|
-| **State** | **Required** — bit-identical across peers | `host.log` only | Every peer materializing the topic | chat-server-state, wiki-state, polls-state |
+| **State / `apply`** | **Required** — bit-identical across peers | `host.log` only | Every peer materializing the topic | chat-server-state apply, wiki-state apply |
+| **State / `propose`** | Not required (runs once, on the authoring peer) | `host.hlc`, `host.random`, `host.seal` (capability-gated), `host.log` | The peer that originates the event | chat-server-state propose |
 | **Interaction** | Not required | `host.broadcast`, `host.subscribe`, `host.kv`, `host.user-prompt`, UI app's `ui:*` | Any peer with a UI / agent host | chat-server-interaction, wiki-interaction |
 | **Behavior** | Not required | + `host.http`, `host.timer`, `host.identity` (own keypair, gated) | Designated peer(s) | bridges, automod, archivers, bots |
 
-All three are loaded by the same kernel through the same WIT-typed interface.
+All four are loaded by the same kernel through the same WIT-typed interface.
 The difference is *which host imports each profile is permitted to bind* and
-*which fuel/time policy applies*. Determinism is enforced for state
-components by the absence of any non-deterministic host import — there is
-nothing to call.
+*which fuel/time policy applies*. State components have two entry points:
+**`apply`** runs everywhere, deterministically, with no non-deterministic
+imports; **`propose`** runs only on the originating peer to construct an
+event payload (it is allowed to consult the clock, generate randomness, and
+seal content), after which the kernel signs and broadcasts. Determinism is
+enforced on the `apply` path by the absence of any non-deterministic host
+import — there is nothing to call.
 
 ## Apps as bundles of components
 
@@ -104,20 +109,39 @@ instantiates only the components it needs for what it intends to do.
 
 The Leptos web client is, in this model, **the default UI app**. It exports
 a set of `ui:*` interfaces — `ui:panel`, `ui:list`, `ui:message`, `ui:form`,
-`ui:menu`, etc. — that other apps' interaction components import. It is not
-privileged in the kernel; it is bound to DOM imports as a capability,
-shipped in-tree for convenience, but architecturally indistinguishable from
-a third-party UI.
+`ui:menu`, etc. — that other apps' interaction components import.
 
-Other UI apps are possible at different levels of effort:
+The honest framing: a real UI on any platform requires a broad and unstable
+capability surface (DOM + focus/IME, clipboard, file pickers, navigation,
+viewport/media queries, push, IndexedDB, service workers, drag-and-drop on
+web; the equivalent set on each native platform). The kernel does not try
+to abstract that surface. **The default UI app is privileged to bind a
+broad, browser-shaped capability surface**; it is shipped in-tree as one
+app, but it is not architecturally identical to a third-party
+interaction-only utility — its capability set is much larger, and it is
+trusted by the user accordingly.
 
-- **`willow-ui-tui`** — terminal, ratatui rendering, same WIT contract.
+The `ui:*` WIT interfaces are therefore **an interaction contract for
+app-to-UI integration**, not a portable UI substrate. They define how an
+interaction component declares the views it wants rendered, the commands
+it accepts, and the contextual integration points it offers — not how
+those views are painted. Each UI app implements the contract in its own
+idiom; reusing one set of interaction components across UIs is the goal,
+but each UI app is a substantial standalone project, not a recompile.
+
+Plausible UI apps over time:
+
+- **`willow-ui-tui`** — terminal, ratatui rendering, the chat-shaped
+  subset of `ui:*`.
 - **`willow-ui-mcp`** — agent host, structured-data rendering for an LLM.
-- **`willow-ui-mobile-native`** — Compose / SwiftUI shell, future.
-- **`willow-ui-dioxus`** — once Dioxus Blitz is mature, replaces Leptos.
+- **`willow-ui-mobile-native`** — Compose / SwiftUI shell, far-future.
+- **`willow-ui-dioxus`** — once Dioxus Blitz is mature, candidate
+  replacement for Leptos.
 
-App authors target the WIT contract, not a specific UI. Their interaction
-components work against any UI app that exports the interfaces they import.
+App authors target the WIT contract. Their interaction components work
+against any UI app that exports the interfaces they import. UI apps that
+do not export an interface (e.g. a TUI without `ui:rich-card`) cause
+graceful degradation, not breakage.
 
 ## Inter-component composition
 
@@ -136,13 +160,21 @@ capability arbiter, the call broker, and the resource-handle resolver. There
 is no direct memory-shared linkage between components; every interaction is
 typed, bounded, and refusable.
 
-## Determinism, in detail (for state components)
+## Determinism, in detail (for state-`apply`)
 
-State components are pure functions of their inputs. The kernel passes the
-event author, the event hash, the HLC, and the event payload. The component
-returns a mutated state (held in linear memory) and optionally a snapshot.
+The deterministic constraint applies only to the `apply` entry point of a
+state component — the function every peer runs against every event. The
+`propose` entry point runs once on the originating peer and is intentionally
+non-deterministic; its output is an event payload that the kernel then signs
+and broadcasts, after which all peers (including the originator) replay
+through `apply`.
 
-To preserve cross-peer determinism, state components have:
+State-`apply` is a pure function of its inputs. The kernel passes the event
+author, the event hash, the HLC encoded in the event, and the event payload.
+The component mutates state held in its linear memory and optionally emits
+a snapshot.
+
+To preserve cross-peer determinism, state-`apply` has:
 
 - No wall clock. HLC bytes only.
 - No randomness. Hash-derived if needed.
@@ -156,6 +188,44 @@ To preserve cross-peer determinism, state components have:
 The kernel verifies cross-peer convergence by hashing snapshots and gossiping
 state hashes. Mismatches surface as bugs (or, if signed, as proof of a
 malicious or buggy component).
+
+## Crypto and key custody
+
+Encryption is load-bearing today (`willow-crypto`, `seal_content`,
+the epoch-rotation spec, the deferred MLS-over-Willow spec) and the runtime
+has to place it explicitly, not silently. The chosen split:
+
+- **Private signing keys live only in the kernel.** No component sees them.
+  Components describe events; the kernel signs.
+- **Symmetric channel/group keys, ratchets, and MLS group state are kernel-custodied as well**, but on behalf of an app instance. Apps refer to them by app-declared key handles (opaque IDs).
+- **The kernel exposes a typed `host.seal` / `host.open` capability**
+  bound to a key handle. State-`propose` may call `host.seal` to produce
+  ciphertext; interaction components may call `host.open` to decrypt for
+  display. State-`apply` does not see plaintext — it sees only sealed
+  payloads it stores or forwards.
+- **Key generation and rotation events are app-defined.** A chat-server-style
+  app defines its own `RotateChannelKeyV2`-equivalent events; the state-`apply`
+  function records the new key handle in materialized state; the kernel
+  binds the new handle to the underlying key material it just generated on
+  behalf of the propose call. The kernel does *not* know what
+  "channel" or "epoch" mean; it only knows about handles and the
+  permissions to seal/open under them.
+- **MLS group state**, when we adopt MLS, lives on the kernel side of the
+  boundary as a typed capability surface (`host.mls`) bound to an app's
+  group handle. The app emits MLS Welcome / Commit / Application events
+  through ordinary state propose; the kernel-side MLS engine processes
+  them under the requesting peer's identity.
+
+The principle is consistent: **secrets do not enter component memory in
+their raw form**. Components hold handles; the kernel custodies bytes. An
+app-defined permission that gates `Rotate*` events is an app-level pre-check
+in state-`apply` (see the capability model section); the kernel only enforces
+that the seal/open call presented an authorized handle.
+
+The exact `host.seal` / `host.open` / `host.mls` interface, key-derivation
+strategy, and persistence story belong in a child spec dedicated to crypto
+boundaries. What this section commits to is the placement: **encryption is
+a kernel capability bound to opaque key handles**, not an app concern.
 
 ## Capability model
 
@@ -171,8 +241,11 @@ events on topic X, store ≤ 1 MB locally, send HTTP requests to discord.com."
 Granted capabilities are bound at instantiate time; they cannot escalate
 later without re-prompting.
 
-State components have a deliberately *empty* capability surface beyond
-`host.log`. There is nothing to grant; nothing to leak.
+State-`apply` has a deliberately *empty* capability surface beyond
+`host.log`. There is nothing to grant; nothing to leak. State-`propose`
+has the small set listed in the runtime-profiles table (`host.hlc`,
+`host.random`, capability-gated `host.seal`); these are bound only when a
+peer is actually originating an event, never during replay.
 
 ## What stays the same about Willow
 
@@ -182,10 +255,53 @@ State components have a deliberately *empty* capability surface beyond
 - Relays remain dumb topic-bridges; they do not materialize state.
 - Workers (`replay`, `storage`) remain peers, just generalized to host
   arbitrary state components instead of being chat-specific.
-- The dual-target (native + WASM) compilation discipline maps directly to
-  the runtime's two backends.
-- The existing capability/permission ideas from `willow-state` generalize:
-  each app defines its own permission set, the kernel does not.
+- The dual-target (native + WASM) compilation discipline survives at the
+  *kernel* layer — the kernel itself compiles to both targets, the native
+  build using wasmtime and the web build using a jco-transpiled host. For
+  *application code*, the discipline is replaced: an app component is
+  built once to wasm and is loaded by whichever kernel a peer is running.
+- The existing capability/permission ideas from `willow-state` generalize,
+  with one new responsibility: each app defines its own permission set, but
+  also supplies the *pre-check* code that gates event creation. Today's
+  centralized `required_permission()` table runs in trusted in-process Rust;
+  under the runtime the kernel calls into the app's state component to ask
+  "may this author emit this event under the current state?" before signing.
+  This shifts a precise, audit-friendly responsibility onto app authors;
+  bugs in app pre-check code admit invalid events that other peers will
+  reject at apply, accumulating in the DAG as the existing authority spec
+  warns against. The chat-server-migration spec must address this directly,
+  not defer it.
+
+## Runtime and actors
+
+Willow's existing actor framework (`willow-actor`) and the
+`docs/specs/2026-04-26-state-management-model-design.md` discipline — all
+shared mutable state in lib crates lives inside an actor — do not go away.
+The runtime sits *underneath* that model, not in place of it.
+
+The intended mapping:
+
+- **Each component instance is owned by exactly one actor in the host.**
+  The actor's mailbox serializes calls into the component's WASM instance.
+  Component instances are the unit of *typed sandboxing*; actors remain the
+  unit of *concurrency*.
+- The kernel itself is composed of actors: a loader actor, a per-topic
+  state-materialization actor (which owns one state component instance and
+  calls `apply` on each event), interaction actors per active interaction
+  component, behavior actors per behavior instance.
+- Lock-vs-actor decisions in *kernel code* still follow the existing
+  decision tree. Components never see locks; they see only the actor's
+  mailbox semantics, surfaced as synchronous WIT calls into and out of the
+  instance.
+- Persistence is owned by the host's actors, not by components. A state
+  component returns updated state in its linear memory; the kernel-side
+  materialization actor decides when to snapshot, when to write to the
+  storage backend, and how to coordinate with sync.
+
+This means: the actor framework is one of the things that stays. The
+runtime adds a layer above it for typed sandboxing, content-addressed
+distribution, and capability arbitration. It does not replace the
+host-side concurrency model.
 
 ## What changes about Willow
 
@@ -199,6 +315,13 @@ State components have a deliberately *empty* capability surface beyond
   Rust imports.
 - `replay` and `storage` workers become generic peer hosts that load
   state components for any topic they are subscribed to.
+- **Worker trust model shifts.** Today's workers run trusted in-tree Rust;
+  under the runtime, a worker subscribed to N topics may be executing N
+  distinct, third-party-authored, attacker-influenceable WASM state
+  components simultaneously. DoS resistance, fuel scheduling, per-instance
+  memory caps, fair-share between topics, and operator-level deny-lists are
+  load-bearing operational concerns, not bandwidth/latency tuning.
+  Operators must be able to constrain which apps a worker will host.
 - A new top-level crate `willow-kernel` (or similar) gathers what the kernel
   contains. A new `willow-app-sdk` crate is what app authors use.
 
@@ -214,24 +337,47 @@ not yet committed to a v1 implementation path. Two candidates:
   wasmtime native, jco-transpiled glue + core wasm in browser. Ecosystem-aligned.
   Cost: heavier toolchain, browser CM is still maturing, ~350 KB JS shim
   floor in browser, no async on the browser side.
-- **(B) Extism for v1, WIT-shaped subset.** Ship faster on a simpler runtime;
-  every component call has a WIT-expressible signature; migrate to full
-  Component Model when browser tooling is mature. Cost: known migration
-  later. Reward: faster v1, real-world component authoring before the ABI is
-  locked.
+- **(B) Extism for v1, WIT-shaped where possible.** Ship faster on a simpler
+  runtime. Every *host-call* signature is chosen to be WIT-expressible
+  (records, variants, lists, strings, integers). Cross-component composition
+  in v1 is **kernel-brokered RPC by opaque ID only** — Extism has no notion
+  of imported/exported resource handles, borrowed lifetimes, world
+  composition, or futures/streams, and we do not pretend it does. Migration
+  to full Component Model later is a real refactor for app authors (resource
+  handles replace ID lookups, imported interfaces replace kernel-broker calls,
+  borrows replace clone-and-pass), not a regenerate-bindings event.
+
+The migration story is therefore: (a) *host-side* signatures we design today
+will translate mechanically; (b) *cross-component composition* will be
+rewritten when we move to Component Model; (c) any v1 plugin author should
+expect to update their code at the migration boundary, but not redesign their
+state machine or domain model.
 
 Tentative lean: (B). Decision will be settled in a child spec on ABI &
-runtime backends.
+runtime backends, including an explicit table of which v1 conveniences will
+require app-author refactor at migration time.
 
 ## Constraints we accept
 
 - **All cross-component calls go through the kernel.** Runtime composition
   in WASM is host-mediated; this aligns with our capability model anyway.
-- **Coarse-grained interfaces only.** No tight inner-loop callbacks across
-  component boundaries. Interaction components return whole view models per
-  state change; behavior components observe and emit in batches.
+- **Coarse-grained interfaces.** No tight inner-loop callbacks across
+  component boundaries. Interaction components return view models in
+  per-surface units (e.g. one channel timeline, one member list, one
+  composer state) — not per-element callbacks, but also not "the whole
+  app's view." Returns are version-tagged so the host can skip
+  recomposition on no-op state changes; large lists (timelines, member
+  rosters) are paged. Behavior components observe and emit in batches.
+  Exact diffing/paging strategy is for the WIT-interfaces child spec.
 - **Sync ABI at v1.** Browser jco does not support async. State components
   are sync by definition; the rest fit.
+- **Behavior components run under their own kernel-custodied identity.**
+  A behavior component instance is associated with an Ed25519 keypair
+  custodied by the kernel; events authored through `host.broadcast` are
+  signed under that identity, not the user's. Permission to act under that
+  identity is granted in-band by app-defined events (the "bot user"
+  pattern), enforced by the app's own state-`apply` pre-check. Behavior
+  components never see private keys.
 - **Opaque IDs, not typed resource handles, between components.** Until
   wit-bindgen unifies imported and exported resource types, components pass
   string/u64 IDs and the kernel resolves them.
@@ -273,7 +419,9 @@ The smallest end-to-end demonstration that the runtime is real:
 5. Capability declarations actually gate access — a component cannot import
    an interface its manifest does not declare.
 6. A behavior component can run on a designated peer, observe events, and
-   emit events that propagate to other peers.
+   log them. Emitting events under a kernel-custodied behavior identity is
+   the next milestone after MVP, blocked on the capability model + identity
+   custody child specs landing first.
 
 What demo app proves this is an open child-spec question. Candidates: a tiny
 shared-counter app (~50 lines of state, ~100 lines of interaction); a
@@ -303,6 +451,15 @@ become useful:
   state-hash gossip.
 - **State materialization on workers** — how `replay` and `storage` become
   generic; bandwidth/latency tradeoffs; snapshot custody.
+- **Worker as untrusted-WASM execution host** — fuel scheduling, fair-share
+  across topics, per-instance resource caps, operator deny-lists, abuse
+  surfaces. Distinct from materialization, which is about correctness;
+  this is about operating workers safely at scale.
+- **Crypto and key custody boundaries** — the `host.seal` / `host.open` /
+  `host.mls` interface, key-derivation strategy, persistence story, app
+  ↔ kernel responsibility split for rotation.
+- **Runtime and actor coexistence** — exact actor topology, mailbox
+  semantics across the WIT boundary, lock/actor decision tree updates.
 - **MVP demo app** — what it is, what it proves, what it doesn't have to.
 - **chat-server migration** (much later) — extracting today's `ServerState`
   into the `chat-server` app on top of the runtime.
@@ -313,8 +470,6 @@ become useful:
   and migrate later?
 - Topic root: how is the (state-component-hash, genesis-hash) tuple pinned —
   encoded in the topic ID directly, or in a `PinComponent` event?
-- Behavior component identity: own keypair, granted permissions via the
-  state component's permission system (i.e. "bot user")?
 - Cross-app authority composition: out of scope for v1, but what shape
   should the v2 hooks take?
 - Resource limits: per-instance fuel and memory budgets — what defaults?
