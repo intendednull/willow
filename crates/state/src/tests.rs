@@ -446,7 +446,7 @@ fn set_permission_on_nonexistent_role_is_noop() {
         &admin,
         EventKind::SetPermission {
             role_id: "nonexistent".to_string(),
-            permission: "SendMessages".to_string(),
+            permission: Permission::SendMessages,
             granted: true,
         },
     );
@@ -856,7 +856,7 @@ fn has_permission_ignores_role_based_permissions() {
         &admin,
         EventKind::SetPermission {
             role_id: "r-1".to_string(),
-            permission: "SendMessages".to_string(),
+            permission: Permission::SendMessages,
             granted: true,
         },
     );
@@ -4374,5 +4374,140 @@ fn derive_ephemeral_state_bands() {
     assert_eq!(
         derive_ephemeral_state(None, threshold, 200),
         EphemeralState::Archived
+    );
+}
+
+// ───── SetPermission typed permission round-trip ─────────────────────────
+
+/// Emit `SetPermission` with a typed `Permission` enum value, serialize
+/// via the wire format (`willow-transport` = bincode), deserialize, apply
+/// to a fresh DAG, and assert the role's permission set contains the
+/// typed permission.
+#[test]
+fn set_permission_with_typed_permission_round_trips() {
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::CreateRole {
+            name: "mod".into(),
+            role_id: "r-1".into(),
+        },
+    );
+    let set_event = do_emit(
+        &mut dag,
+        &admin,
+        EventKind::SetPermission {
+            role_id: "r-1".into(),
+            permission: Permission::ManageChannels,
+            granted: true,
+        },
+    );
+
+    // Wire-round-trip the event through bincode (the format used by
+    // `willow-transport` and the storage layer) and re-apply.
+    let bytes = bincode::serialize(&set_event).unwrap();
+    let decoded: Event = bincode::deserialize(&bytes).unwrap();
+    match &decoded.kind {
+        EventKind::SetPermission { permission, .. } => {
+            assert_eq!(*permission, Permission::ManageChannels);
+        }
+        other => panic!("expected SetPermission, got {other:?}"),
+    }
+
+    let state = materialize(&dag);
+    let role = state.roles.get("r-1").expect("role created");
+    assert!(role.permissions.contains(&Permission::ManageChannels));
+}
+
+/// Synthesize a JSON document carrying the legacy `permission: "<name>"`
+/// string form (the shape MCP / agent boundary accepts) and assert the
+/// custom deserializer maps it to the typed `Permission::ManageChannels`.
+#[test]
+fn set_permission_legacy_string_form_still_loads() {
+    let json = serde_json::json!({
+        "SetPermission": {
+            "role_id": "r-1",
+            "permission": "ManageChannels",
+            "granted": true,
+        }
+    });
+    let kind: EventKind = serde_json::from_value(json).expect("legacy string form must load");
+    match kind {
+        EventKind::SetPermission { permission, .. } => {
+            assert_eq!(permission, Permission::ManageChannels);
+        }
+        other => panic!("expected SetPermission, got {other:?}"),
+    }
+}
+
+/// Unknown legacy permission strings deserialize successfully (so the
+/// event still enters the DAG and the chain is not broken) but apply as
+/// a no-op — the unknown name is dropped.
+#[test]
+fn set_permission_legacy_unknown_string_drops_silently() {
+    let json = serde_json::json!({
+        "SetPermission": {
+            "role_id": "r-1",
+            "permission": "FrobnicateWidgets",
+            "granted": true,
+        }
+    });
+    let kind: EventKind =
+        serde_json::from_value(json).expect("unknown legacy string must deserialize, not fail");
+    match kind {
+        EventKind::SetPermission { permission, .. } => {
+            // Unknown name is mapped to the sentinel that apply_event drops.
+            assert_eq!(permission, Permission::__UnknownLegacy);
+        }
+        other => panic!("expected SetPermission, got {other:?}"),
+    }
+
+    // Apply path: synthesize the post-deserialize event in memory (the
+    // sentinel never crosses the wire — it only exists after a custom
+    // deserialize from an unrecognised string form). Bypass `do_emit`
+    // (which signs + bincodes the kind) and feed the event directly to
+    // `apply_incremental`, mirroring what would happen if a JSON
+    // snapshot containing the unknown name were replayed into state.
+    use crate::materialize::apply_incremental;
+
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::CreateRole {
+            name: "mod".into(),
+            role_id: "r-1".into(),
+        },
+    );
+    let mut state = materialize(&dag);
+
+    // Fabricate an event whose kind carries the sentinel; we reuse a
+    // valid hash from the genesis chain since `apply_event` does not
+    // re-verify signatures and we only care about the apply branch.
+    let signable = EventKind::SetPermission {
+        role_id: "r-1".into(),
+        permission: Permission::__UnknownLegacy,
+        granted: true,
+    };
+    let synthetic = Event {
+        hash: EventHash::from_bytes(b"synthetic-unknown-legacy"),
+        author: admin.endpoint_id(),
+        seq: 99,
+        prev: EventHash::ZERO,
+        deps: vec![],
+        kind: signable,
+        sig: willow_identity::Signature::from_bytes(&[0u8; 64]),
+        timestamp_hint_ms: 0,
+    };
+    let _ = apply_incremental(&mut state, &synthetic);
+
+    let role = state.roles.get("r-1").expect("role created");
+    assert!(
+        role.permissions.is_empty(),
+        "unknown legacy permission must apply as a no-op"
     );
 }

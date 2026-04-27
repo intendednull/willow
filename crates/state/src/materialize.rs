@@ -418,9 +418,20 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
             permission,
             granted,
         } => {
+            // Drop the unknown-legacy sentinel produced by the
+            // back-compat deserialize path so a rogue / future client
+            // can never inject an unrecognised permission name into a
+            // role's permission set.
+            if matches!(permission, Permission::__UnknownLegacy) {
+                tracing::warn!(
+                    role_id = %role_id,
+                    "SetPermission with unknown legacy permission; dropping",
+                );
+                return ApplyResult::Applied;
+            }
             if let Some(role) = state.roles.get_mut(role_id) {
                 if *granted {
-                    role.permissions.insert(permission.clone());
+                    role.permissions.insert(*permission);
                 } else {
                     role.permissions.remove(permission);
                 }

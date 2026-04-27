@@ -198,7 +198,14 @@ pub fn RoleManager(
                                                         let rid = rid_t.clone();
                                                         let perm = perm_toggle.clone();
                                                         wasm_bindgen_futures::spawn_local(async move {
-                                                            let _ = h.set_permission(&rid, &perm, granted).await;
+                                                            // Names come from PERMISSION_NAMES which is
+                                                            // kept in sync with willow_state::Permission;
+                                                            // an unparsed name is a bug, not user input.
+                                                            if let Some(parsed) =
+                                                                willow_state::Permission::from_name(&perm)
+                                                            {
+                                                                let _ = h.set_permission(&rid, parsed, granted).await;
+                                                            }
                                                         });
                                                     }
                                                 />

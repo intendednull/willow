@@ -196,11 +196,10 @@ impl<N: willow_network::Network> ClientHandle<N> {
     pub async fn set_permission(
         &self,
         role_id: &str,
-        permission: &str,
+        permission: willow_state::Permission,
         granted: bool,
     ) -> anyhow::Result<()> {
         let role_id = role_id.to_string();
-        let permission = permission.to_string();
         let event = self
             .mutation_handle
             .build_event(willow_state::EventKind::SetPermission {

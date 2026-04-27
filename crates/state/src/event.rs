@@ -4,7 +4,7 @@
 //! containing an [`EventKind`]. Events are content-addressed — their
 //! identity is their SHA-256 hash.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use willow_identity::{EndpointId, Identity, Signature};
 
 use crate::hash::EventHash;
@@ -17,7 +17,7 @@ use crate::hash::EventHash;
 /// [`ProposedAction`] and the vote path. This structural separation makes
 /// it impossible for any peer to grant admin via a direct
 /// [`EventKind::GrantPermission`] event.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum Permission {
     /// Can sync/provide full history to other peers.
     SyncProvider,
@@ -30,6 +30,124 @@ pub enum Permission {
     SendMessages,
     /// Can create invites.
     CreateInvite,
+    /// Sentinel for permission names that an unknown / future client
+    /// emitted. Reached only via the back-compat string-form deserialize
+    /// path (e.g. an MCP tool boundary or a legacy JSON snapshot).
+    /// `apply_event` treats this sentinel as a no-op so the event still
+    /// joins the DAG — preserving signatures + hash linkage — without
+    /// mutating any role's permission set.
+    ///
+    /// Hidden from generated docs; never emitted by Willow itself.
+    #[doc(hidden)]
+    #[serde(skip)]
+    __UnknownLegacy,
+}
+
+impl Permission {
+    /// Try to parse a permission name from its string form.
+    ///
+    /// Returns `None` for unknown names. Used by the agent MCP tool
+    /// boundary, which rejects unknown permissions before they enter
+    /// the DAG.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "SyncProvider" => Some(Self::SyncProvider),
+            "ManageChannels" => Some(Self::ManageChannels),
+            "ManageRoles" => Some(Self::ManageRoles),
+            "SendMessages" => Some(Self::SendMessages),
+            "CreateInvite" => Some(Self::CreateInvite),
+            _ => None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Permission {
+    /// Custom deserialize that accepts both the enum form (default for
+    /// any format — bincode emits a u32 discriminant, JSON emits the
+    /// variant name) and tolerates unknown variant names by mapping
+    /// them to the [`Permission::__UnknownLegacy`] sentinel.
+    ///
+    /// This lets a peer running an older or rogue client that broadcast
+    /// an unrecognised permission name still have its event join the
+    /// DAG; `apply_event` then silently drops the unknown perm so the
+    /// role's permission set is never polluted.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct PermissionVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for PermissionVisitor {
+            type Value = Permission;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a Permission variant")
+            }
+
+            // String form (JSON, MCP boundary, legacy snapshots).
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Permission, E> {
+                Ok(Permission::from_name(v).unwrap_or_else(|| {
+                    tracing::warn!(
+                        permission = %v,
+                        "unknown permission name; mapping to __UnknownLegacy",
+                    );
+                    Permission::__UnknownLegacy
+                }))
+            }
+
+            // Owned-string variant — same handling.
+            fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Permission, E> {
+                self.visit_str(&v)
+            }
+
+            // Bincode encodes a unit-variant enum as the discriminant
+            // index via `deserialize_enum`, which routes through this
+            // method. Forward to the standard derived parser.
+            fn visit_enum<A>(self, data: A) -> Result<Permission, A::Error>
+            where
+                A: serde::de::EnumAccess<'de>,
+            {
+                use serde::de::VariantAccess;
+                #[derive(Deserialize)]
+                enum Tag {
+                    SyncProvider,
+                    ManageChannels,
+                    ManageRoles,
+                    SendMessages,
+                    CreateInvite,
+                }
+                let (tag, variant) = data.variant::<Tag>()?;
+                variant.unit_variant()?;
+                Ok(match tag {
+                    Tag::SyncProvider => Permission::SyncProvider,
+                    Tag::ManageChannels => Permission::ManageChannels,
+                    Tag::ManageRoles => Permission::ManageRoles,
+                    Tag::SendMessages => Permission::SendMessages,
+                    Tag::CreateInvite => Permission::CreateInvite,
+                })
+            }
+        }
+
+        if deserializer.is_human_readable() {
+            // JSON-style formats encode unit variants as strings; route
+            // through the visitor so unknown names hit the sentinel.
+            deserializer.deserialize_any(PermissionVisitor)
+        } else {
+            // Bincode-style formats encode unit variants as discriminant
+            // indices; route through the enum visitor.
+            deserializer.deserialize_enum(
+                "Permission",
+                &[
+                    "SyncProvider",
+                    "ManageChannels",
+                    "ManageRoles",
+                    "SendMessages",
+                    "CreateInvite",
+                ],
+                PermissionVisitor,
+            )
+        }
+    }
 }
 
 // ───── Governance types ────────────────────────────────────────────────────
@@ -125,7 +243,7 @@ pub enum EventKind {
     /// Set or clear a permission on a role.
     SetPermission {
         role_id: String,
-        permission: String,
+        permission: Permission,
         granted: bool,
     },
     /// Assign a role to a member.
