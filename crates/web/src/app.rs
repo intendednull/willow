@@ -378,6 +378,15 @@ pub fn App() -> impl IntoView {
                     // key. Proper URL parsing lives in message-row
                     // rendering; this is the cheap version.
                     let has_link = m.body.contains("http://") || m.body.contains("https://");
+                    // `has:image` / `has:file` derive from the body
+                    // string (inline `[file:name:b64]` payload +
+                    // image-URL embeds) — `DisplayMessage` doesn't
+                    // carry a separate attachments field. See
+                    // `willow_client::search::derive`. `letter_id`
+                    // stays `None` until the active-letter signal
+                    // lands alongside `letters-dms.md` (issue #355
+                    // follow-up).
+                    let (has_image, has_file) = willow_client::derive_has_image_file(&m.body);
                     willow_client::IndexableMessage {
                         message_id: m.id,
                         channel_id: m.channel_id.clone(),
@@ -393,8 +402,8 @@ pub fn App() -> impl IntoView {
                         author_display_name: m.author_display_name,
                         timestamp_ms: m.timestamp_ms,
                         body: m.body,
-                        has_image: false,
-                        has_file: false,
+                        has_image,
+                        has_file,
                         has_link,
                     }
                 })

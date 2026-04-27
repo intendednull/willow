@@ -79,8 +79,8 @@ pub use nickname::{MemNicknameStore, NicknameStore, NicknameStoreHandle, NICKNAM
 pub use ops::{pack_wire, unpack_wire, VoiceSignalPayload, WireMessage};
 pub use queue::{ArrivedSummary, QueueSummary, RelayStatus};
 pub use search::{
-    IndexableMessage, RecentQuery, SearchIndex, SearchIndexBuildStatus, SearchIndexConfig,
-    SearchIndexHandle, SearchQuery, SearchResult, SearchScope,
+    derive_has_image_file, IndexableMessage, RecentQuery, SearchIndex, SearchIndexBuildStatus,
+    SearchIndexConfig, SearchIndexHandle, SearchQuery, SearchResult, SearchScope,
 };
 pub use trust::{
     ComparePreview, InMemoryTrustStore, PeerTrust, TrustStore, TrustStoreHandle, UnverifiedReason,

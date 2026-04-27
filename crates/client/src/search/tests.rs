@@ -536,6 +536,57 @@ mod execute_tests {
         assert_eq!(hits[0].message_id, "m3");
     }
 
+    /// Regression for #355 — the indexer call site in
+    /// `crates/web/src/app.rs` previously hard-coded
+    /// `has_image: false` / `has_file: false`, so the documented
+    /// `has:image` / `has:file` operators silently returned zero hits.
+    /// This test wires the body strings produced by
+    /// `ClientHandle::share_file_inline` (and an image URL) through
+    /// `derive_has_image_file` and asserts the executor returns the
+    /// expected message ids.
+    #[test]
+    fn derived_attachment_flags_drive_has_image_and_has_file_operators() {
+        use super::super::derive::derive_has_image_file;
+        let mut idx = SearchIndex::new();
+        let bodies = [
+            ("m_text", "just talking, no attachments"),
+            ("m_inline_png", "[file:cat.png:Zm9v]"),
+            ("m_inline_pdf", "[file:report.pdf:Zm9v]"),
+            ("m_image_url", "look https://cdn.example.com/cat.jpg yo"),
+        ];
+        for (id, body) in bodies {
+            let (img, file) = derive_has_image_file(body);
+            // `has_link` is left to the existing call-site rule;
+            // irrelevant to this regression.
+            let link = body.contains("http://") || body.contains("https://");
+            idx.insert(mk(
+                id,
+                body,
+                "c1",
+                "general",
+                100,
+                "Mira",
+                "mira",
+                Some("g0"),
+                None,
+                img,
+                file,
+                link,
+            ));
+        }
+
+        let img_q = parse_query("has:image");
+        let img_hits = execute(&idx, &img_q, &SearchScope::AllGrovesAndLetters);
+        let mut img_ids: Vec<&str> = img_hits.iter().map(|h| h.message_id.as_str()).collect();
+        img_ids.sort();
+        assert_eq!(img_ids, vec!["m_image_url", "m_inline_png"]);
+
+        let file_q = parse_query("has:file");
+        let file_hits = execute(&idx, &file_q, &SearchScope::AllGrovesAndLetters);
+        let file_ids: Vec<&str> = file_hits.iter().map(|h| h.message_id.as_str()).collect();
+        assert_eq!(file_ids, vec!["m_inline_pdf"]);
+    }
+
     #[test]
     fn results_ordered_desc_by_timestamp() {
         let idx = seed_index();

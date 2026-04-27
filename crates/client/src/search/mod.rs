@@ -11,6 +11,7 @@
 
 pub mod actor;
 pub mod config;
+pub mod derive;
 pub mod execute;
 pub mod handle;
 pub mod highlight;
@@ -25,6 +26,7 @@ mod tests;
 pub use config::{
     clear_all_recents, forget_recent, push_recent, RecentQuery, SearchIndexConfig, MAX_RECENTS,
 };
+pub use derive::derive_has_image_file;
 pub use execute::{execute, SearchResult, SearchScope};
 pub use handle::SearchIndexHandle;
 pub use highlight::{build_excerpt, match_ranges, Excerpt};
