@@ -287,4 +287,38 @@ mod tests {
         ));
         assert_eq!(info.server_info.name, "willow-agent");
     }
+
+    #[test]
+    fn tokens_eq_ct_accepts_correct_token() {
+        let token = "s3cret-bearer-token";
+        assert!(tokens_eq_ct(token.as_bytes(), token.as_bytes()));
+    }
+
+    #[test]
+    fn tokens_eq_ct_rejects_wrong_token_same_length() {
+        let expected = "s3cret-bearer-token";
+        let provided = "X3cret-bearer-token";
+        assert_eq!(provided.len(), expected.len());
+        assert!(!tokens_eq_ct(provided.as_bytes(), expected.as_bytes()));
+    }
+
+    #[test]
+    fn tokens_eq_ct_rejects_shorter_token() {
+        let expected = "s3cret-bearer-token";
+        let provided = "s3cret-bearer";
+        assert!(!tokens_eq_ct(provided.as_bytes(), expected.as_bytes()));
+    }
+
+    #[test]
+    fn tokens_eq_ct_rejects_longer_token() {
+        let expected = "s3cret-bearer-token";
+        let provided = "s3cret-bearer-token-extra";
+        assert!(!tokens_eq_ct(provided.as_bytes(), expected.as_bytes()));
+    }
+
+    #[test]
+    fn tokens_eq_ct_rejects_empty_against_nonempty() {
+        let expected = "s3cret-bearer-token";
+        assert!(!tokens_eq_ct(b"", expected.as_bytes()));
+    }
 }
