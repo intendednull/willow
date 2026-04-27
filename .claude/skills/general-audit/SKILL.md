@@ -32,7 +32,7 @@ Collect findings → master issue (commit + all findings) + child issue per find
 
 ## Lessons Learned
 
-Append "lessons learned" section to report. Feed back into this skill next run.
+Open dedicated issue per run titled `general-audit lessons: YYYY-MM-DD` with caveman body listing what worked, what didn't, and concrete suggested edits to this skill file. Human (or follow-up routine) edits `.claude/skills/general-audit/SKILL.md` directly to incorporate.
 
 ## /general-audit in PR
 
