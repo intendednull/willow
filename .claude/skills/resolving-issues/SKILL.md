@@ -39,7 +39,7 @@ All sub-fixes land in one master PR per session. Human reviews master PR holisti
 1. Read open issues + open PRs. Skip anything in flight.
 2. Pick small-scope fixes. `general-audit` issues = top priority.
 3. Skip big features + major refactors. Out of scope.
-4. Ensure master PR exists (create or reuse).
+4. Create fresh master PR for this session.
 5. Per issue, sequential, max 10 per run:
    - Spawn fresh implementer agent.
    - Implementer: worktree off master PR branch → research subagents if needed → fix → tests → sub-PR into master PR → watch CI → merge on green.
@@ -63,6 +63,10 @@ Fresh agent per issue, scoped to one issue + master PR branch ref. Steps:
 7. Watch CI. Flake → re-run. Real failure → one fix attempt.
 8. CI green → merge sub-PR into master PR branch. Tear down worktree.
 9. CI still red → draft sub-PR + caveman question in body. Return control to coordinator.
+
+## Lessons Learned
+
+End of run, append `## Lessons Learned` section to master PR body with caveman bullets: what worked, what didn't, concrete suggested edits to this skill file. Human (or follow-up routine) edits `.claude/skills/resolving-issues/SKILL.md` directly to incorporate.
 
 ## Rules
 
