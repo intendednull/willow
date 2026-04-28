@@ -112,6 +112,53 @@ fn index_html_only_references_bundled_svg_icons() {
     assert_all_in_allow_list("index.html", &refs);
 }
 
+/// Required directives for the CSP meta tag baked into `index.html`.
+///
+/// Each entry is a substring search against the meta tag's `content` value;
+/// they collectively encode the policy decisions described in the inline
+/// HTML comment beside the tag (see GitHub issue #175). If you intentionally
+/// loosen or tighten one of these directives, update both this list and the
+/// inline comment so the rationale stays in sync.
+const REQUIRED_CSP_DIRECTIVES: &[&str] = &[
+    "default-src 'self'",
+    // WASM module + the still-extant js_sys::eval() sites (tracked by
+    // issues #171 / #425). Drop 'unsafe-eval' once those are gone.
+    "script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'",
+    // Inline style="…" attrs from Leptos views + Google Fonts CSS @import.
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    // ws/wss for relay transport, https for the relay HTTP bootstrap probe.
+    "connect-src 'self' ws: wss: https:",
+    // data: for avatar URIs, blob: for runtime createObjectURL attachments.
+    "img-src 'self' data: blob:",
+    "media-src 'self' blob:",
+    "worker-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+];
+
+#[test]
+fn index_html_declares_content_security_policy() {
+    let contents = read_asset("index.html");
+    let needle = "http-equiv=\"Content-Security-Policy\"";
+    assert!(
+        contents.contains(needle),
+        "index.html is missing the Content-Security-Policy meta tag. \
+         See GitHub issue #175 — the CSP guards against script injection \
+         and clickjacking and must stay in the document head.",
+    );
+    for directive in REQUIRED_CSP_DIRECTIVES {
+        assert!(
+            contents.contains(directive),
+            "index.html CSP is missing required directive `{directive}`. \
+             Update both the meta tag in index.html and the rationale \
+             comment beside it if you are intentionally changing this.",
+        );
+    }
+}
+
 #[test]
 fn manifest_json_only_references_bundled_svg_icons() {
     let contents = read_asset("manifest.json");
