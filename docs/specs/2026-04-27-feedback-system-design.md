@@ -497,7 +497,7 @@ user-supplied body is wrapped in a fenced markdown code block** —
 this is the single most important sanitization step:
 
 ````markdown
-**Reporter (salted hash):** `whisper-quiet-fern-3a9c`
+**Reporter (salted hash):** `whisper-quiet-fern-3a9cf`
 **Category:** Bug
 **App version:** 0.1.0
 **Build:** abc1234
@@ -565,7 +565,7 @@ The worker computes
 bits — bumped from 6 bytes per round-2 review to put targeted
 second-preimage attacks beyond practical reach for an open-source
 project's threat model) and renders it as a deterministic 4-word
-phrase plus 4-hex suffix (`whisper-quiet-fern-3a9c`):
+phrase plus 5-hex suffix (`whisper-quiet-fern-3a9cf`):
 
 - **Wordlist:** the BIP-39 English wordlist (2048 words, 11 bits
   each) via the existing-in-ecosystem `bip39 = "2"` crate. v1
@@ -659,8 +659,11 @@ posted markdown for several inputs.
      proceed.
   2. If creation fails because the file exists: read its mtime,
      compute `delta = now() - mtime`. If `delta < 15 seconds`,
-     `sleep(15 - delta)`. Then update the file's mtime
-     (`utime(...)` or rewrite contents) atomically and proceed.
+     `sleep(15 - delta)`. Then bump the file's mtime via the
+     standard pattern of writing fresh contents to a sibling
+     tempfile and `rename()`-ing over the original (atomic on
+     POSIX, the `filetime::set_file_mtime` crate works too).
+     Proceed.
   3. If the file is missing at read time (unlikely race with step
      1's open), treat as `delta = 15s` and proceed.
 
@@ -911,19 +914,6 @@ test also captures).
 
 ## Trade-offs
 
-**Reused gossip request path vs. dedicated encrypted ALPN.** During
-brainstorming we initially proposed a new `/willow/feedback/0` ALPN
-with direct iroh request/response. Inspecting the existing worker
-infrastructure showed that replay and storage already share a single
-gossip-based request/response pathway (`_willow_workers` topic,
-`WorkerWireMessage::Request/Response`). Reusing that pathway keeps v1
-drastically simpler — no new transport code, no new dispatcher, no
-parallel correlation logic — at the cost of feedback request payloads
-being visible to other peers subscribed to `_willow_workers`. Since
-v1's reports are destined for a public GitHub issue anyway, that's an
-acceptable trade-off for the initial cut. A dedicated encrypted ALPN
-is on the follow-up list with the broader feedback redesign.
-
 **In-memory rate limit vs. persistent.** A restart resets every
 peer's bucket. For a single instance with light load this is fine —
 combined with the global cap and the 15-second restart-throttle,
@@ -972,12 +962,15 @@ every relay/replay/storage instance.
 
 **Reused gossip request path vs. dedicated encrypted ALPN.** During
 brainstorming we initially proposed a new `/willow/feedback/0` ALPN
-with direct iroh request/response. Reusing the gossip pathway keeps
-v1 drastically simpler at the cost of feedback request payloads
-being visible to other peers subscribed to `_willow_workers`. Since
-v1's reports are destined for a public GitHub issue anyway *and* the
-sensitive header data is salted-hashed before posting, that's an
-acceptable trade-off. The encrypted ALPN is on the follow-up list.
+with direct iroh request/response. Reusing the existing gossip
+pathway (`_willow_workers` topic,
+`WorkerWireMessage::Request/Response`) keeps v1 drastically simpler
+— no new transport code, no new dispatcher, no parallel correlation
+logic — at the cost of feedback request payloads being visible to
+other peers subscribed to `_willow_workers`. Since v1's reports are
+destined for a public GitHub issue anyway *and* the sensitive
+header data is salted-hashed before posting, that's an acceptable
+trade-off. The encrypted ALPN is on the follow-up list.
 
 **Content moderation: pre-flight sanitization, not real-time
 moderation.** Issues are filed into a public repository. The worker
