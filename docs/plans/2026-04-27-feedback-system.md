@@ -1238,4 +1238,318 @@ git add crates/feedback/src/lib.rs crates/feedback/src/handle.rs crates/feedback
 git commit -m "feat(feedback): salted-hash reporter handle (blake3 + BIP-39)"
 ```
 
+### Task 2.4: Token-bucket rate limiter (`ratelimit.rs`)
+
+**Files:**
+- Create: `crates/feedback/src/ratelimit.rs`
+- Modify: `crates/feedback/src/lib.rs`
+
+A continuous-refill token bucket. We use `Instant` so tests can drive time deterministically via an injected clock — but for v1 simplicity we drive the clock through a small trait `Clock` with a real `SystemClock` and a test `MockClock`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `crates/feedback/src/ratelimit.rs`:
+
+```rust
+//! Continuous-refill token-bucket rate limiter.
+//!
+//! - Per-peer buckets keyed by `EndpointId`.
+//! - One worker-wide global bucket.
+//! - On rejection, returns the exact wait time to the next available
+//!   token in milliseconds.
+
+use std::collections::HashMap;
+use std::time::Duration;
+
+use willow_identity::EndpointId;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use willow_identity::Identity;
+
+    fn peer() -> EndpointId {
+        Identity::generate().endpoint_id()
+    }
+
+    #[test]
+    fn fresh_bucket_allows_burst_capacity() {
+        let mut clock = MockClock::new();
+        let mut rl = RateLimiter::new(5, 50, &mut clock);
+        let p = peer();
+        for _ in 0..5 {
+            assert!(rl.try_take(&p, &mut clock).is_ok());
+        }
+    }
+
+    #[test]
+    fn per_peer_limit_returns_retry_after() {
+        let mut clock = MockClock::new();
+        let mut rl = RateLimiter::new(5, 50, &mut clock);
+        let p = peer();
+        for _ in 0..5 {
+            rl.try_take(&p, &mut clock).unwrap();
+        }
+        match rl.try_take(&p, &mut clock) {
+            Err(RateLimited::PerPeer { retry_after_ms }) => {
+                // Refill rate is 5/3600s ≈ 1 per 720s.
+                let expected_ms = 3600 * 1000 / 5;
+                let lo = expected_ms as i64 - 50;
+                let hi = expected_ms as i64 + 50;
+                assert!(
+                    (retry_after_ms as i64) >= lo && (retry_after_ms as i64) <= hi,
+                    "got {retry_after_ms}, expected near {expected_ms}"
+                );
+            }
+            other => panic!("expected PerPeer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn distinct_peers_have_independent_buckets() {
+        let mut clock = MockClock::new();
+        let mut rl = RateLimiter::new(2, 50, &mut clock);
+        let a = peer();
+        let b = peer();
+        rl.try_take(&a, &mut clock).unwrap();
+        rl.try_take(&a, &mut clock).unwrap();
+        assert!(matches!(rl.try_take(&a, &mut clock), Err(RateLimited::PerPeer { .. })));
+        // b is unaffected.
+        rl.try_take(&b, &mut clock).unwrap();
+        rl.try_take(&b, &mut clock).unwrap();
+    }
+
+    #[test]
+    fn global_limit_trips_across_distinct_peers() {
+        let mut clock = MockClock::new();
+        // Per-peer 100 (won't trip), global 3.
+        let mut rl = RateLimiter::new(100, 3, &mut clock);
+        for _ in 0..3 {
+            let p = peer();
+            rl.try_take(&p, &mut clock).unwrap();
+        }
+        let p4 = peer();
+        match rl.try_take(&p4, &mut clock) {
+            Err(RateLimited::Global { retry_after_ms }) => {
+                let expected_ms = 3600 * 1000 / 3;
+                assert!(retry_after_ms >= (expected_ms as u64).saturating_sub(50));
+            }
+            other => panic!("expected Global, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn refill_replenishes_a_token_after_the_advertised_wait() {
+        let mut clock = MockClock::new();
+        let mut rl = RateLimiter::new(2, 50, &mut clock);
+        let p = peer();
+        rl.try_take(&p, &mut clock).unwrap();
+        rl.try_take(&p, &mut clock).unwrap();
+        let err = rl.try_take(&p, &mut clock).unwrap_err();
+        let wait_ms = match err {
+            RateLimited::PerPeer { retry_after_ms } => retry_after_ms,
+            _ => panic!("expected PerPeer"),
+        };
+        clock.advance(Duration::from_millis(wait_ms));
+        rl.try_take(&p, &mut clock).unwrap();
+    }
+
+    #[test]
+    fn currently_rate_limited_count_reflects_throttled_peers() {
+        let mut clock = MockClock::new();
+        let mut rl = RateLimiter::new(1, 50, &mut clock);
+        let a = peer();
+        let b = peer();
+        rl.try_take(&a, &mut clock).unwrap();
+        let _ = rl.try_take(&a, &mut clock); // a is now throttled
+        rl.try_take(&b, &mut clock).unwrap();
+        // a is throttled (saturated bucket); b is not.
+        assert_eq!(rl.currently_rate_limited(&clock), 1);
+    }
+}
+```
+
+- [ ] **Step 2: Run tests, expect compile failure**
+
+Run: `cargo test -p willow-feedback --lib ratelimit::tests`
+Expected: COMPILE FAIL — types don't exist yet.
+
+- [ ] **Step 3: Implement the limiter**
+
+Append to `crates/feedback/src/ratelimit.rs` *above* the test module:
+
+```rust
+/// Abstract clock so tests can drive time without sleeping.
+pub trait Clock {
+    fn now(&self) -> std::time::Instant;
+}
+
+#[derive(Default)]
+pub struct SystemClock;
+impl Clock for SystemClock {
+    fn now(&self) -> std::time::Instant {
+        std::time::Instant::now()
+    }
+}
+
+#[cfg(test)]
+pub struct MockClock {
+    base: std::time::Instant,
+    offset: Duration,
+}
+#[cfg(test)]
+impl MockClock {
+    pub fn new() -> Self {
+        Self {
+            base: std::time::Instant::now(),
+            offset: Duration::ZERO,
+        }
+    }
+    pub fn advance(&mut self, by: Duration) {
+        self.offset += by;
+    }
+}
+#[cfg(test)]
+impl Clock for MockClock {
+    fn now(&self) -> std::time::Instant {
+        self.base + self.offset
+    }
+}
+
+#[derive(Debug)]
+pub enum RateLimited {
+    PerPeer { retry_after_ms: u64 },
+    Global { retry_after_ms: u64 },
+}
+
+#[derive(Clone, Copy)]
+struct Bucket {
+    /// Tokens available, fractional (refills smoothly between integers).
+    tokens: f64,
+    /// Last time we updated `tokens`.
+    last: std::time::Instant,
+}
+
+impl Bucket {
+    fn fresh(capacity: u32, now: std::time::Instant) -> Self {
+        Self {
+            tokens: capacity as f64,
+            last: now,
+        }
+    }
+    fn refill(&mut self, capacity: u32, refill_per_sec: f64, now: std::time::Instant) {
+        let elapsed = now.saturating_duration_since(self.last).as_secs_f64();
+        self.tokens = (self.tokens + elapsed * refill_per_sec).min(capacity as f64);
+        self.last = now;
+    }
+    fn try_take(&mut self, capacity: u32, refill_per_sec: f64, now: std::time::Instant) -> Result<(), u64> {
+        self.refill(capacity, refill_per_sec, now);
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            Ok(())
+        } else {
+            // Time to next full token.
+            let need = 1.0 - self.tokens;
+            let secs = need / refill_per_sec;
+            Err((secs * 1000.0).ceil() as u64)
+        }
+    }
+    fn is_throttled(&self, capacity: u32, refill_per_sec: f64, now: std::time::Instant) -> bool {
+        let elapsed = now.saturating_duration_since(self.last).as_secs_f64();
+        let projected = (self.tokens + elapsed * refill_per_sec).min(capacity as f64);
+        projected < 1.0
+    }
+}
+
+pub struct RateLimiter {
+    per_peer_capacity: u32,
+    per_peer_refill_per_sec: f64,
+    global_capacity: u32,
+    global_refill_per_sec: f64,
+    per_peer: HashMap<EndpointId, Bucket>,
+    global: Bucket,
+}
+
+impl RateLimiter {
+    pub fn new(per_peer_per_hour: u32, global_per_hour: u32, clock: &mut impl Clock) -> Self {
+        let now = clock.now();
+        Self {
+            per_peer_capacity: per_peer_per_hour,
+            per_peer_refill_per_sec: per_peer_per_hour as f64 / 3600.0,
+            global_capacity: global_per_hour,
+            global_refill_per_sec: global_per_hour as f64 / 3600.0,
+            per_peer: HashMap::new(),
+            global: Bucket::fresh(global_per_hour, now),
+        }
+    }
+
+    pub fn try_take(
+        &mut self,
+        peer: &EndpointId,
+        clock: &mut impl Clock,
+    ) -> Result<(), RateLimited> {
+        let now = clock.now();
+        let bucket = self
+            .per_peer
+            .entry(*peer)
+            .or_insert_with(|| Bucket::fresh(self.per_peer_capacity, now));
+        if let Err(retry_after_ms) =
+            bucket.try_take(self.per_peer_capacity, self.per_peer_refill_per_sec, now)
+        {
+            return Err(RateLimited::PerPeer { retry_after_ms });
+        }
+        if let Err(retry_after_ms) =
+            self.global
+                .try_take(self.global_capacity, self.global_refill_per_sec, now)
+        {
+            // Refund the per-peer token we just took: the request didn't
+            // really happen.
+            let bucket = self.per_peer.get_mut(peer).unwrap();
+            bucket.tokens += 1.0;
+            return Err(RateLimited::Global { retry_after_ms });
+        }
+        Ok(())
+    }
+
+    /// Number of peers whose per-peer bucket is currently throttled
+    /// (would deny a `try_take` right now without waiting).
+    pub fn currently_rate_limited(&self, clock: &impl Clock) -> u32 {
+        let now = clock.now();
+        self.per_peer
+            .values()
+            .filter(|b| {
+                b.is_throttled(self.per_peer_capacity, self.per_peer_refill_per_sec, now)
+            })
+            .count() as u32
+    }
+
+    pub fn global_is_throttled(&self, clock: &impl Clock) -> bool {
+        let now = clock.now();
+        self.global
+            .is_throttled(self.global_capacity, self.global_refill_per_sec, now)
+    }
+}
+```
+
+- [ ] **Step 4: Wire into `lib.rs`**
+
+```rust
+pub mod sanitize;
+pub mod wordlist;
+pub mod handle;
+pub mod ratelimit;
+```
+
+- [ ] **Step 5: Run tests, verify all pass**
+
+Run: `cargo test -p willow-feedback --lib ratelimit::tests`
+Expected: 6 tests pass.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/feedback/src/lib.rs crates/feedback/src/ratelimit.rs
+git commit -m "feat(feedback): continuous-refill token-bucket rate limiter"
+```
+
 
