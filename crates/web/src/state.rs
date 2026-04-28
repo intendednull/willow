@@ -81,11 +81,11 @@ pub struct ParsedJoinToken {
 
 #[derive(Clone, Copy)]
 pub struct AppState {
-    pub chat: ChatState,
+    pub chat: ChatSignals,
     pub network: NetworkState,
-    pub server: ServerState,
+    pub server: ServerSignals,
     pub ui: UiState,
-    pub voice: VoiceState,
+    pub voice: VoiceSignals,
     pub trust: TrustState,
     pub presence: PresenceUiState,
     /// Local-search UI state (phase 2e — `local-search.md`).
@@ -224,7 +224,7 @@ pub struct TrustState {
 }
 
 #[derive(Clone, Copy)]
-pub struct ChatState {
+pub struct ChatSignals {
     pub messages: ReadSignal<Vec<DisplayMessage>>,
     pub current_channel: ReadSignal<String>,
     pub channels: ReadSignal<Vec<String>>,
@@ -249,7 +249,7 @@ pub struct NetworkState {
 }
 
 #[derive(Clone, Copy)]
-pub struct ServerState {
+pub struct ServerSignals {
     pub servers: ReadSignal<Vec<(String, String)>>,
     pub active_server_id: ReadSignal<String>,
     pub active_server_name: ReadSignal<String>,
@@ -288,7 +288,7 @@ pub struct UiState {
 }
 
 #[derive(Clone, Copy)]
-pub struct VoiceState {
+pub struct VoiceSignals {
     pub voice_channel: ReadSignal<Option<String>>,
     pub voice_muted: ReadSignal<bool>,
     pub voice_deafened: ReadSignal<bool>,
@@ -590,7 +590,7 @@ pub fn create_signals() -> InitialSignals {
     let (profile_open, set_profile_open) = signal(Option::<crate::profile::ProfileState>::None);
 
     let app_state = AppState {
-        chat: ChatState {
+        chat: ChatSignals {
             messages,
             current_channel,
             channels,
@@ -608,7 +608,7 @@ pub fn create_signals() -> InitialSignals {
             connection_state,
             loading,
         },
-        server: ServerState {
+        server: ServerSignals {
             servers,
             active_server_id,
             active_server_name,
@@ -635,7 +635,7 @@ pub fn create_signals() -> InitialSignals {
             join_token,
             join_status,
         },
-        voice: VoiceState {
+        voice: VoiceSignals {
             voice_channel,
             voice_muted,
             voice_deafened,
