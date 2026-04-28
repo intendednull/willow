@@ -103,10 +103,13 @@ impl StorageEventStore {
             }
             let tx = self.conn.unchecked_transaction()?;
             tx.execute_batch(sql)?;
+            // Propagate clock errors instead of recording `applied_at_ms = 0`
+            // when the system clock is somehow set before 1970. The rest of
+            // this crate returns `anyhow::Result`, so surface the error too.
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
+                .map_err(anyhow::Error::from)?
+                .as_millis() as i64;
             tx.execute(
                 "INSERT INTO schema_version (version, applied_at_ms) VALUES (?1, ?2)",
                 params![version, now_ms],
@@ -831,22 +834,35 @@ mod tests {
     #[test]
     fn schema_version_table_exists_after_open() {
         let (_dir, store) = open_file_store();
-        let versions: Vec<i64> = store
+        let rows: Vec<(i64, i64)> = store
             .conn
-            .prepare("SELECT version FROM schema_version ORDER BY version ASC")
+            .prepare("SELECT version, applied_at_ms FROM schema_version ORDER BY version ASC")
             .unwrap()
-            .query_map([], |row| row.get(0))
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
             .unwrap()
             .map(|r| r.unwrap())
             .collect();
         assert!(
-            !versions.is_empty(),
+            !rows.is_empty(),
             "schema_version table should be populated after open"
         );
+        let versions: Vec<i64> = rows.iter().map(|(v, _)| *v).collect();
         assert!(
             versions.contains(&1),
             "migration 1 (initial schema) must be recorded"
         );
+        // applied_at_ms must reflect the real clock, not the legacy `0`
+        // fallback. Under a normal system clock (post-1970) it is strictly
+        // positive. The pre-1970 branch now returns an error instead of
+        // silently writing 0; testing that path would require time-mocking
+        // infrastructure this crate doesn't have, which is out of scope.
+        for (version, applied_at_ms) in &rows {
+            assert!(
+                *applied_at_ms > 0,
+                "migration {version} recorded applied_at_ms={applied_at_ms}, \
+                 expected a positive Unix-ms timestamp",
+            );
+        }
     }
 
     #[test]
