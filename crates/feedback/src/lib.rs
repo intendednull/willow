@@ -1,2 +1,3 @@
-//! Willow feedback worker library. Modules added in subsequent
-//! plan tasks.
+//! Willow feedback worker library.
+
+pub mod sanitize;
