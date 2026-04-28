@@ -573,15 +573,70 @@ async fn readonly_token_hides_tools() {
         visible.iter().map(|t| &t.name).collect::<Vec<_>>()
     );
 
-    // Resources should all be visible
+    // All resources except `willow://server/join-links` are visible. The
+    // join-links resource exposes single-step bearer credentials usable by
+    // `WireMessage::JoinRequest`, so it is restricted to `Full`/`Admin`
+    // (audit finding AUD-2, issue #436).
     let resources = willow_agent::resources::list_resources();
     for r in &resources {
-        assert!(
-            server.scope.allows_resource(&r.raw.uri),
-            "ReadOnly should allow resource: {}",
-            r.raw.uri
-        );
+        if r.raw.uri == "willow://server/join-links" {
+            assert!(
+                !server.scope.allows_resource(&r.raw.uri),
+                "ReadOnly must NOT expose {}: link_id is a bearer credential",
+                r.raw.uri
+            );
+        } else {
+            assert!(
+                server.scope.allows_resource(&r.raw.uri),
+                "ReadOnly should allow resource: {}",
+                r.raw.uri
+            );
+        }
     }
+}
+
+/// Integration-tier check: under `ReadOnly`, the same filter pipeline used by
+/// `WillowMcpServer::list_resources` must omit the join-links entry.
+///
+/// `ServerHandler::list_resources` cannot be invoked directly from outside
+/// rmcp (the `RequestContext<RoleServer>` is not externally constructible),
+/// so we replicate the exact filter pipeline that the handler runs:
+/// `resources::list_resources().filter(|r| scope.allows_resource(&r.raw.uri))`.
+#[tokio::test]
+async fn readonly_list_resources_omits_join_links() {
+    use willow_agent::scopes::TokenScope;
+    use willow_agent::server::WillowMcpServer;
+
+    let (client, _broker) = test_client();
+    let server = WillowMcpServer::with_scope(client.clone(), TokenScope::ReadOnly);
+
+    let visible: Vec<String> = willow_agent::resources::list_resources()
+        .into_iter()
+        .filter(|r| server.scope.allows_resource(&r.raw.uri))
+        .map(|r| r.raw.uri)
+        .collect();
+
+    assert!(
+        !visible.iter().any(|u| u == "willow://server/join-links"),
+        "ReadOnly list_resources must omit join-links, got: {visible:?}"
+    );
+    // Sanity: other resources are still listed.
+    assert!(visible.iter().any(|u| u == "willow://identity"));
+    assert!(visible.iter().any(|u| u == "willow://server/channels"));
+
+    // `Full` scope must still see join-links (positive control).
+    let full = WillowMcpServer::with_scope(client, TokenScope::Full);
+    let visible_full: Vec<String> = willow_agent::resources::list_resources()
+        .into_iter()
+        .filter(|r| full.scope.allows_resource(&r.raw.uri))
+        .map(|r| r.raw.uri)
+        .collect();
+    assert!(
+        visible_full
+            .iter()
+            .any(|u| u == "willow://server/join-links"),
+        "Full scope should still list join-links"
+    );
 }
 
 #[tokio::test]
@@ -733,31 +788,33 @@ async fn read_resource_allowed_uri_returns_resource() {
     );
 }
 
-/// Test that `WillowMcpServer::read_resource` would reject a URI that the scope
-/// denies, with the same error code (`INVALID_REQUEST`) that `call_tool` uses.
+/// Test that `WillowMcpServer::read_resource` rejects `willow://server/join-links`
+/// for a `ReadOnly`-scoped token with `INVALID_REQUEST`, matching the error
+/// code `call_tool` uses when scope blocks a tool.
 ///
-/// `read_resource` on `WillowMcpServer` mirrors `call_tool`'s gate:
+/// `read_resource` on `WillowMcpServer` has two layers:
 /// 1. Scope check — returns `Err(ErrorData)` immediately if the URI is blocked
 /// 2. Dispatch to `resources::read_resource` — only reached if scope allows
 ///
-/// Today no built-in `TokenScope` variant denies any resource, so we drive the
-/// negative path with a stub closure that mimics a future scope returning false
-/// for one URI. This pins the contract: blocked reads return `INVALID_REQUEST`,
-/// not silently dispatch. Pattern mirrors `readonly_scope_rejects_send_message`.
+/// Layer 1 is what this test pins: under `ReadOnly`, join-links is now denied
+/// (audit finding AUD-2, issue #436). The `RequestContext<RoleServer>` needed
+/// by the `ServerHandler` trait method cannot be constructed from outside the
+/// rmcp crate, so we replicate the exact gate that `read_resource` runs.
 #[tokio::test]
-async fn denied_uri_rejects_with_invalid_request() {
+async fn readonly_scope_rejects_join_links_read() {
     use rmcp::model::ErrorCode;
+    use willow_agent::scopes::TokenScope;
+    use willow_agent::server::WillowMcpServer;
 
-    // Stub scope that denies one specific URI — mimics what a future tightened
-    // scope (e.g. hiding `willow://server/join-links` from messaging tokens)
-    // would do once `TokenScope::allows_resource` returns something other
-    // than `true`.
+    let (client, _broker) = test_client();
+    let server = WillowMcpServer::with_scope(client, TokenScope::ReadOnly);
+
     let denied_uri = "willow://server/join-links";
-    let scope_allows_resource = |uri: &str| uri != denied_uri;
 
+    // The real `ReadOnly` scope must deny the join-links URI now.
     assert!(
-        !scope_allows_resource(denied_uri),
-        "stub scope must deny {denied_uri}"
+        !server.scope.allows_resource(denied_uri),
+        "ReadOnly must deny {denied_uri} (link_id is a bearer credential)"
     );
 
     // Replicate exactly what WillowMcpServer::read_resource does before
@@ -783,10 +840,10 @@ async fn denied_uri_rejects_with_invalid_request() {
         "error message should mention the blocked URI"
     );
 
-    // Sanity: a URI the stub allows must pass the gate.
+    // Sanity: non-credential URIs still pass under ReadOnly.
     assert!(
-        scope_allows_resource("willow://identity"),
-        "stub scope must allow non-denied URIs"
+        server.scope.allows_resource("willow://identity"),
+        "ReadOnly must still allow non-credential URIs"
     );
 }
 
