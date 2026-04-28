@@ -15,7 +15,7 @@ The Playwright suite leans on time-based waits as flake compensation. Audit of `
 
 Two consequences: arbitrary sleeps mask race conditions instead of fixing them (per Playwright's own guidance, replacing `waitForTimeout` removes ~45% of flake), and the suite's wall-clock is dominated by sleeps that succeed long before they expire.
 
-The underlying cause is that the web crate exposes nothing for tests to synchronise on — no `#[wasm_bindgen]` exports, no `data-testid` attributes, no readiness events. So tests guess at delays. The Willow client *does* already publish a `ClientEvent::SyncCompleted { ops_applied }` after every applied `SyncBatch` (`crates/client/src/listeners.rs:289`); it is not currently visible to JS.
+The underlying cause is that the web crate exposes nothing for tests to synchronise on — no `#[wasm_bindgen] pub` exports, no `data-testid` attributes, no readiness events. So tests guess at delays. The Willow client *does* already publish a `ClientEvent::SyncCompleted { ops_applied }` after every applied `SyncBatch` (`crates/client/src/listeners.rs:290`); it is not currently visible to JS.
 
 ## Goal
 
@@ -27,8 +27,8 @@ Every wait in the Playwright suite gates on a real signal: a DOM state, an appli
 - New cargo feature `test-hooks` on `willow-web`, off in production builds.
 - WASM-exported `WillowTestHooks` API (snapshot, heads, event count, last event).
 - Push-side instrumentation: WASM dispatches every `ClientEvent` to a Playwright `exposeBinding('__willowEvent', …)` callback.
-- TypeScript wrapper `Peer` in `e2e/test-hooks.ts` providing `nextEvent(predicate)`, `snapshot()`, `heads()`, `eventCount()`, `waitUntilConverged(other)`.
-- `data-state="<phase>"` attribute pattern on animated UI elements (drawer, modal, dropdown, tab) tied to CSS `transitionend`.
+- TypeScript wrapper `Peer` in `e2e/test-hooks.ts` providing `nextEvent(predicate)`, `snapshot()`, `heads()`, `eventCount()`, `waitUntilHeadsEqual(other)`.
+- `data-state="<phase>"` attribute pattern on five animated UI elements (mobile drawer, grove drawer, confirm dialog, bottom sheet, tab bar) plus the action-sheet overlay in `message.rs`, tied to CSS `transitionend` with reduced-motion fallback.
 - `page.clock` adoption for the few legitimate real-duration waits (longPress, debounce).
 - Helpers split: `e2e/helpers/{peers,ui,touch}.ts` replacing the current 702-line monolith.
 - Pilot conversions: `helpers.ts` (full) and `multi-peer-sync.spec.ts`.
@@ -73,6 +73,8 @@ All new instrumentation code lives behind `#[cfg(feature = "test-hooks")]`. Prod
 
 The e2e build switches to `trunk build --features test-hooks`. Just recipes affected: `setup-e2e`, `test-e2e-ui`, `test-e2e-sync`, `test-e2e-perms`, `test-e2e-full`, `test-e2e-flake` (new), `check-all`.
 
+**`just dev`** stays on the default feature set (no test-hooks). Developers who want to poke at `window.__willow` from devtools run `just dev FEATURES=test-hooks`. This requires modifying the `dev`, `setup-e2e`, `test-e2e-*`, and `check-all` recipes to accept an optional `FEATURES` variable that is forwarded to `trunk build`. The justfile changes are scoped explicitly into PR 1 alongside the cargo feature flag — the spec assumes no pre-existing `FEATURES` parameterisation. Default value is empty (prod build); e2e recipes hardcode `FEATURES=test-hooks` internally.
+
 ## WASM API surface
 
 New file `crates/web/src/test_hooks.rs`, gated:
@@ -110,42 +112,95 @@ Push side, in the same module:
 
 ```rust
 /// Subscribes to `client.subscribe_events()` and dispatches every
-/// `ClientEvent` to `window.__willowEvent` if present. Bounded ring buffer
-/// (capacity 1024) drops oldest on overflow and logs a warning.
-pub fn install_push_dispatcher(client: ClientHandle);
+/// wire-visible `ClientEvent` to `window.__willowEvent` (a Playwright
+/// binding). If the binding is not yet wired, events accumulate in a
+/// page-local buffer (`window.__willowEventBuffer`) and are drained by
+/// the binding on first call.
+///
+/// Capacity: 65_536 (per-page; never shared across peers). On overflow
+/// the dispatcher calls `window.__willowOverflow(droppedCount)` if
+/// defined and emits an error to the console. Test fixtures install
+/// `__willowOverflow` and fail the test on any call — overflow is
+/// always a correctness bug, not backpressure.
+///
+/// Lifecycle: returns a `DispatcherHandle` that aborts the spawned
+/// loop on drop. `app.rs` stores it in a Leptos `StoredValue` keyed
+/// to the same lifetime as the `ClientHandle`. Re-init replaces the
+/// handle (drop aborts the previous loop). No leak on hot reload.
+pub fn install_push_dispatcher(client: ClientHandle) -> DispatcherHandle;
 ```
 
-Mounted from `app.rs` behind the same `cfg`:
+Mounted from `app.rs` immediately **after** the `with_trust_store` clone (so the same handle the UI uses is captured), behind the same `cfg`:
 
 ```rust
 #[cfg(feature = "test-hooks")]
 {
     let hooks = test_hooks::WillowTestHooks::new(client_handle.clone());
     js_sys::Reflect::set(&window, &"__willow".into(), &hooks.into()).unwrap();
-    test_hooks::install_push_dispatcher(client_handle.clone());
+    let dispatcher = test_hooks::install_push_dispatcher(client_handle.clone());
+    // Bind the handle so it lives for the component's scope. `StoredValue`
+    // does not drop until its owning Leptos scope is disposed; binding
+    // its return value (rather than discarding it) ensures the dispatcher
+    // loop runs for the app's lifetime. Without the binding, the value
+    // would be dropped at end of expression and the loop would abort.
+    let _dispatcher_handle = leptos::StoredValue::new(dispatcher);
 }
 ```
 
-The pull API serializes via `serde_wasm_bindgen` from the existing `HeadsSummary` (`crates/state/src/sync.rs:267`) and a new lightweight `Snapshot` struct that reads from the materialised `ServerState` already held by the client. Both serializer outputs use `#[serde(rename_all = "camelCase")]` so the JS-side shape matches the TypeScript `Snapshot` interface (`eventCount`, `lastEvent`) without per-call key remapping.
+The pull API does **not** serialize `HeadsSummary` directly. Instead, `test_hooks` defines a web-only DTO `SnapshotDto` that reads from the materialised `ServerState` (held by the client) and the DAG `HeadsSummary` (`crates/state/src/sync.rs:22`, with `AuthorHead { seq, hash }` per author at `:28`). The DTO is `#[serde(rename_all = "camelCase")]` so the JS-side shape matches the TypeScript `Snapshot` interface without modifying the state crate.
 
-The push dispatcher reuses `ClientHandle::subscribe_events()` (`crates/client/src/lib.rs:226`); no new emit points are added inside `willow-client` or `willow-state`.
+The push dispatcher reuses `ClientHandle::subscribe_events()` (`crates/client/src/accessors.rs:10`), which returns an `EventReceiver` (`crates/client/src/lib.rs:120`) — a custom actor-broker forwarder, not a `futures::Stream`. The dispatcher spawns a `wasm_bindgen_futures::spawn_local` task that loops on `rx.recv().await`, converts each `ClientEvent` to the stable JSON wire shape (see below), and dispatches via `window.__willowEvent`. No new emit points are added inside `willow-client` or `willow-state`.
+
+### Stable JSON wire shape for `ClientEvent`
+
+The Rust `ClientEvent` enum (`crates/client/src/events.rs:19`) has 30+ variants mixing tuple-style (`PeerConnected(EndpointId)`, `ChannelCreated(String)`) and struct-style (`SyncCompleted { ops_applied }`). Default serde would produce inconsistent JSON shapes per variant.
+
+`test_hooks` defines a stable wire shape `{ kind: <PascalCaseName>, ...flattened fields in camelCase }` and hand-writes the conversion. The `kind` discriminator stays PascalCase (matches Rust variant names); all other field names are camelCase (matches TypeScript convention). Tests see only the variants the suite cares about today; new variants are added explicitly. Initial wire-visible set:
+
+- `{ kind: "SyncCompleted", opsApplied: number }`
+- `{ kind: "MessageReceived", channel: string, messageId: string, isLocal: boolean }`
+- `{ kind: "PeerConnected", peerId: string }`
+- `{ kind: "PeerDisconnected", peerId: string }`
+- `{ kind: "ChannelCreated", name: string }`
+- `{ kind: "ChannelDeleted", name: string }`
+- `{ kind: "PeerTrusted", peerId: string }`
+- `{ kind: "PeerUntrusted", peerId: string }`
+- `{ kind: "ProfileUpdated", peerId: string, displayName: string }`
+- `{ kind: "RoleCreated", roleId: string, name: string }`
+
+Internal-only variants (`QueueChanged`, `VoiceSignal`, etc.) are **not** dispatched to the test side — the dispatcher filters them out. This keeps the test surface narrow and stable across internal client changes.
 
 ## Playwright wrapper — `Peer`
 
 New file `e2e/test-hooks.ts`:
 
 ```ts
+// Mirror of the wire-visible subset of willow-client's ClientEvent.
+// Hand-maintained against test_hooks' conversion table; codegen is a
+// follow-up if drift becomes painful.
 export type ClientEvent =
   | { kind: 'SyncCompleted'; opsApplied: number }
-  | { kind: 'EventApplied'; hash: string; author: string }
-  | { kind: 'PeerJoined'; peerId: string }
+  | { kind: 'MessageReceived'; channel: string; messageId: string; isLocal: boolean }
+  | { kind: 'PeerConnected'; peerId: string }
+  | { kind: 'PeerDisconnected'; peerId: string }
   | { kind: 'ChannelCreated'; name: string }
-  // …mirror of willow-client's ClientEvent, kept in sync via codegen check
+  | { kind: 'ChannelDeleted'; name: string }
+  | { kind: 'PeerTrusted'; peerId: string }
+  | { kind: 'PeerUntrusted'; peerId: string }
+  | { kind: 'ProfileUpdated'; peerId: string; displayName: string }
+  | { kind: 'RoleCreated'; roleId: string; name: string };
+
+export interface AuthorHead {
+  seq: number;
+  hash: string;
+}
 
 export interface Snapshot {
   eventCount: number;
-  heads: Record<string, string>;
+  /// Per-author heads. Keys are EndpointId hex strings.
+  heads: Record<string, AuthorHead>;
   lastEvent: string | null;
+  /// Channels by display name (the channel-id path string).
   channels: Array<{ name: string; memberCount: number }>;
 }
 
@@ -159,73 +214,148 @@ export class Peer {
   ): Promise<ClientEvent>;
 
   async snapshot(): Promise<Snapshot>;
-  async heads(): Promise<Record<string, string>>;
+  async heads(): Promise<Record<string, AuthorHead>>;
   async eventCount(): Promise<number>;
 
   /** Wait until this peer's heads equal `other`'s heads. Uses expect.poll. */
-  async waitUntilConverged(
+  async waitUntilHeadsEqual(
     other: Peer,
+    opts?: { timeout?: number },
+  ): Promise<void>;
+
+  /** Wait until this peer's heads equal each peer in `others`. */
+  async waitUntilAllHeadsEqual(
+    others: Peer[],
     opts?: { timeout?: number },
   ): Promise<void>;
 }
 ```
 
-Per-page push queue is set up in a Playwright fixture before `page.goto`:
+Per-page push queue is set up in a Playwright fixture. The order is critical:
+
+1. `context.exposeBinding('__willowEvent', cb)` registers the binding.
+2. `context.exposeBinding('__willowOverflow', cb)` registers an overflow hook that fails the test on call.
+3. `page.addInitScript(...)` installs the JS-side buffer that the WASM dispatcher writes into when the binding is not yet present (a defensive guard for the narrow window before the page's `__willowEvent` proxy is bound).
+4. `page.goto(...)` — only after all three.
 
 ```ts
 test.beforeEach(async ({ page, context }) => {
   const queue: ClientEvent[] = [];
   await context.exposeBinding('__willowEvent', (_src, ev: ClientEvent) => {
+    // Drain on read side too: pulls anything the WASM dispatcher pushed
+    // into the buffer while the binding was momentarily absent (hot
+    // reload, dispatcher restart, etc.). Drain on read covers the case
+    // where no further event arrives to trigger a write-side drain.
     queue.push(ev);
   });
-  await page.addInitScript(() => {
-    // Placeholder for events emitted before the binding is wired.
-    (window as any).__willowEventBuffer = [];
-    const origDispatch = (window as any).__willowEvent;
-    (window as any).__willowEvent = (ev: any) => {
-      if (origDispatch) origDispatch(ev);
-      else (window as any).__willowEventBuffer.push(ev);
-    };
+  await context.exposeBinding('__willowOverflow', (_src, dropped: number) => {
+    throw new Error(`__willow event queue overflow: ${dropped} events dropped`);
   });
-  // Peer construction stores `queue` so nextEvent can drain it.
+  await page.addInitScript(() => {
+    // Buffer for events the WASM dispatcher emits before `__willowEvent`
+    // is callable. Defence-in-depth: under normal Playwright ordering
+    // (exposeBinding before goto) the buffer is empty; under restart /
+    // hot-reload it covers the gap.
+    (window as any).__willowEventBuffer = [];
+  });
+  // Peer construction stores `queue` for nextEvent to drain.
 });
 ```
 
-`waitUntilConverged` uses `expect.poll` with default intervals `[100, 250, 500, 1000]` and a 30s timeout:
+The WASM dispatcher (`test_hooks::install_push_dispatcher`) implements the drain on **two** edges:
 
-```ts
-async waitUntilConverged(other: Peer, opts) {
-  await expect.poll(
-    async () => JSON.stringify(await this.heads()),
-    { timeout: opts?.timeout ?? 30_000, message: `${this.label} converge with ${other.label}` },
-  ).toBe(JSON.stringify(await other.heads()));
+```rust
+// On dispatcher init: drain anything left from a prior dispatcher.
+if let Some(fn_) = window.get("__willowEvent") {
+    if let Some(buf) = window.get("__willowEventBuffer") {
+        for buffered in drain_array(buf) { fn_.call(buffered); }
+    }
+}
+
+// Per-event:
+let event_js = serialize_event(&event);
+match window.get("__willowEvent") {
+    Some(fn_) => {
+        // Drain buffer first (covers the case where binding became
+        // available between events).
+        if let Some(buf) = window.get("__willowEventBuffer") {
+            for buffered in drain_array(buf) { fn_.call(buffered); }
+        }
+        fn_.call(event_js);
+    }
+    None => push_to_buffer(event_js),
 }
 ```
 
+The combination — **drain on dispatcher init, drain on every dispatch, plus the Playwright fixture's read-side drain on each binding invocation** — closes the stale-buffer hazard in all three failure modes (dispatcher restart, binding-present-but-no-new-events, hot reload).
+
+`waitUntilHeadsEqual` uses `expect.poll` with default intervals `[100, 250, 500, 1000]` and a 30s timeout. Heads are serialized with sorted keys so equality is engine-independent:
+
+```ts
+function canonical(heads: Record<string, AuthorHead>): string {
+  return JSON.stringify(
+    Object.keys(heads).sort().map(k => [k, heads[k].seq, heads[k].hash]),
+  );
+}
+
+async waitUntilHeadsEqual(other: Peer, opts?: { timeout?: number }) {
+  const target = canonical(await other.heads());
+  await expect.poll(
+    async () => canonical(await this.heads()),
+    {
+      timeout: opts?.timeout ?? 30_000,
+      message: `${this.label} converge with ${other.label}`,
+    },
+  ).toBe(target);
+}
+
+async waitUntilAllHeadsEqual(others: Peer[], opts?) {
+  for (const other of others) await this.waitUntilHeadsEqual(other, opts);
+}
+```
+
+**Naming caveat.** `waitUntilHeadsEqual` is named for what it verifies, not the abstract concept of "convergence." Two peers can be heads-equal yet both still missing an event from a third peer C — the assertion does not protect against that. Tests that need true N-peer convergence call `waitUntilAllHeadsEqual([peerA, peerB, peerC])` to verify every peer has reached the same head set, which is the standard CRDT-suite check (head-set equality across all observed peers). Single-peer tests, or two-peer tests where the peer pair is the entire universe, can use `waitUntilHeadsEqual` directly.
+
+**Partial-equality footgun.** If peer A's head set and peer C's head set name *different* author keys (A has `{x, y}`, C has `{x, y, z}`), `waitUntilHeadsEqual` will hang until timeout because canonical equality requires identical key sets. The timeout error message includes a structured author-key diff (`A missing authors: [z]; C missing authors: []`) so the failure is debuggable without a manual `console.log` round-trip. Required for the helper to be usable in mixed-membership tests.
+
 ## `data-state` attribute pattern
 
-For animated UI elements (drawer, modal, dropdown, tab transition, action sheet), the component sets a `data-state` attribute reflecting the transition phase, and tests gate on the attribute rather than sleeping for the animation.
+For animated UI elements with a settling phase, the component sets a `data-state` attribute reflecting the transition phase and tests gate on the attribute rather than sleeping. This is the canonical replacement for every `waitForTimeout` after a UI transition.
 
-States: `closed`, `opening`, `open`, `closing`. The `opening`/`closing` phases are set imperatively when the transition starts; `open`/`closed` are flipped on the `transitionend` event.
+**Lifecycle states.** `closed`, `opening`, `open`, `closing`. The `opening`/`closing` phases are set imperatively when the transition starts; `open`/`closed` are flipped on `transitionend`.
+
+**Three failure modes that must be handled** to prevent false flake:
+
+1. **`prefers-reduced-motion: reduce`** — CSS transition is zeroed; `transitionend` may not fire. The component reads `getComputedStyle(el).transitionDuration`; if `0s`, the terminal state is set synchronously without waiting for the event.
+2. **Component unmount mid-transition** — Leptos cleanup must abort the pending state. The signal is owned by the component and is dropped with it; test simply observes the locator detach.
+3. **Overlapping transitions** — only the last `transitionend` fires reliably for a given property. The component listens for the *specific* property (`transitionend` filtered by `event.propertyName === <component's driving property>`). Each of the five components documents its driving property in a comment at the listener site (`mobile_shell.rs` and `grove_drawer.rs` use `transform`; `confirm_dialog.rs` and `bottom_sheet.rs` use `opacity`; `tab_bar.rs` uses `transform`). A browser test asserts the chosen property is what advances `data-state` — guards against future CSS edits silently breaking the lifecycle.
 
 ```rust
-// crates/web/src/components/drawer.rs (illustrative)
+// crates/web/src/components/grove_drawer.rs (illustrative)
 let state = RwSignal::new("closed");
-view! {
-    <div
-        class="drawer"
-        data-state=move || state.get()
-        on:transitionend=move |_| {
-            state.set(match state.get_untracked() {
-                "opening" => "open",
-                "closing" => "closed",
-                other => other,
-            });
-        }
-    >
-        ...
-    </div>
-}
+
+let advance = move || {
+    state.set(match state.get_untracked() {
+        "opening" => "open",
+        "closing" => "closed",
+        other => other,
+    });
+};
+
+let on_transition_end = move |ev: web_sys::TransitionEvent| {
+    if ev.property_name() == "transform" {
+        advance();
+    }
+};
+
+let trigger_open = move |_| {
+    state.set("opening");
+    // Reduced-motion shortcut: if the element has zero-duration
+    // transition, skip the wait and snap to terminal state.
+    if computed_transition_duration_is_zero(&drawer_ref) {
+        advance();
+    }
+};
 ```
 
 Tests:
@@ -235,19 +365,27 @@ await openSidebarBtn.click();
 await expect(drawer).toHaveAttribute('data-state', 'open');
 ```
 
-This replaces every `await page.waitForTimeout(300)` after a UI transition. Components affected: mobile drawer (`mobile_shell.rs`), action sheet (`mobile_action_sheet.rs`), modal dialog (`dialog.rs`), dropdown menu (`dropdown.rs`), tab bar transitions (`tab_bar.rs`).
+**Components receiving the lifecycle.** `mobile_shell.rs` (mobile drawer), `grove_drawer.rs`, `confirm_dialog.rs`, `bottom_sheet.rs`, `tab_bar.rs` (active-tab transition). The mobile action sheet markup lives in `message.rs`; the `data-state` attribute is added to the existing `mobile-action-sheet-overlay` div there. Five physical edits.
 
-Existing `data-*` attributes (`data-tab`, `data-open`, `data-state` already on `status_dot.rs` / `grove_rail.rs`) are reused or extended; no new attribute namespace is introduced.
+**Existing `data-state` usages on `status_dot.rs` and `grove_rail.rs` are NOT brought into the four-phase lifecycle.** They use `data-state` for orthogonal categorical states (`online`/`offline`, etc.). The lifecycle contract applies only to the listed five animated components. The shared attribute name is a convention; tests that gate on it must know which component they target. `e2e/README.md` documents this distinction.
 
 ## `page.clock` for real durations
 
 Three legitimate real-duration waits exist today and are migrated to `page.clock`:
 
-1. **`longPress(locator, duration)`** in `e2e/helpers.ts:264`. Today: `mouse.down()` + `waitForTimeout(duration)` + `mouse.up()`. New: `clock.runFor(duration)` between down and up. Test must `await context.clock.install()` in the relevant `beforeEach`.
+1. **`longPress(locator, duration)`** in `e2e/helpers.ts:264`. Today: `mouse.down()` + `waitForTimeout(duration)` + `mouse.up()`. New: `clock.runFor(duration)` between down and up. Test must `await page.clock.install()` in the relevant `beforeEach`.
 2. **Debounce timers in the input box** (typing-indicator throttle, message-edit autosave). Tests that exercise these flows install the clock and `runFor` past the debounce window.
-3. **HLC drift simulation** (no current test, but a likely future need): `clock.setFixedTime(date)` per peer, then `clock.runFor` to advance.
+3. **HLC drift simulation** (no current test, but a likely future need): `clock.setFixedTime(date)` per peer.
 
-Clock install is **opt-in per test** (or `describe` block), not global. Default e2e tests run with real time so iroh background timers are unaffected.
+**API correction.** Playwright's clock is `page.clock.install()`, not `context.clock.install()`. The clock is per-page (which means per-`BrowserContext` in the common one-page-per-context Playwright fixture, but the call goes through the page).
+
+**Multi-peer caveat.** `page.clock` is per-page. Two peers in the same Playwright test run in two separate `BrowserContext`s (and therefore two separate pages), so each peer can install an independent clock and the drift simulation works. Tests that share a context across peers (rare in this suite but possible) cannot use independent clocks; the spec's two-peer fixture (`setupTwoPeers`) creates two contexts and is unaffected.
+
+**WASM coverage.** `page.clock` patches the JS `Date`/`setTimeout`/`setInterval`/`requestAnimationFrame` globals. It does **not** patch `performance.now()`. Willow's WASM HLC reads time via `js_sys::Date::now()` (`crates/messaging/src/hlc.rs:96`), which calls the patched global, so HLC behaviour is controlled by the fake clock when installed. **Native** HLC (`hlc.rs:87`) uses `SystemTime::now()` directly and is unaffected — and is exercised in Rust tests, not Playwright, so this is a non-issue for the e2e suite.
+
+**iroh timer verification (PR 1 acceptance gate).** Before merging PR 1, a one-off audit checks whether iroh's WASM transport uses `performance.now()` for retry backoff or gossip heartbeats. Method: `git grep -n 'performance\|Performance::now\|web_sys::window().*performance' iroh*`-vendored sources used by `willow-network`. If iroh uses `performance.now`, installing `page.clock` would freeze UI/HLC time but iroh would keep running on real time — silent divergence. In that case `page.clock` install is constrained to scopes where iroh activity is irrelevant (longPress within a single peer, debounce within a stable connection). The audit result and the resulting constraint are recorded in PR 1's description and inlined back into this section once known.
+
+**Opt-in.** Clock install is per test (or `describe` block), not global. Default e2e tests run with real time so iroh background timers (gossip heartbeats, retry backoff) are unaffected.
 
 ## Helpers redesign
 
@@ -267,22 +405,55 @@ Three patterns purged:
 
 1. `while (await locator.isVisible()) { click; waitForTimeout(300) }` loops at `helpers.ts:178`, `:358`, `:471` → recursive `clickBack` with bounded depth gating on `expect(backBtn).toBeHidden()`.
 2. Bare `waitForTimeout` after navigation (e.g. `helpers.ts:118` after Settings nav) → assert on a landing-page locator instead.
-3. `{ timeout: 30_000 }` overrides on `toBeVisible` for cross-peer assertions (23 occurrences) → `await peer.waitUntilConverged(other)` before the assertion, then default 5s timeout.
+3. `{ timeout: 30_000 }` overrides on `toBeVisible` for cross-peer assertions (23 occurrences) → `await peer.waitUntilHeadsEqual(other)` before the assertion, then default 5s timeout.
 
 **Targeted exception rule.** A small number of waits may have no event-based equivalent (e.g. a CSS transition on a third-party component without `transitionend`). These require a `// time-wait: <reason>` comment plus a per-line `eslint-disable-next-line` referencing the rule and the tracking issue. No blanket allowlist.
 
+## Implementation phasing
+
+The work is decomposed into four sequential PRs against the `claude/event-based-waits-RNFZ9` branch (or successor branch). Each PR is independently reviewable and ships green CI.
+
+**PR 1 — `test-hooks` feature + WASM API + push dispatcher.**
+- `crates/web/Cargo.toml` feature flag.
+- `crates/web/src/test_hooks.rs` (`WillowTestHooks`, `SnapshotDto`, `install_push_dispatcher`).
+- Mount in `app.rs` post-`with_trust_store`.
+- `crates/web/tests/browser.rs` self-tests for `snapshot()`, `heads()`, `event_count()`, `last_event()`.
+- `just check-all` symbol-leak grep additions.
+- Smoke test: nothing in e2e converted yet; just verifies `window.__willow` exists in the e2e build and not in the prod build.
+
+**PR 2 — Playwright `Peer` wrapper + helpers split + first pilot.**
+- `e2e/test-hooks.ts` with `Peer`, `Snapshot`, `ClientEvent` types and the fixture.
+- `e2e/helpers.ts` → `e2e/helpers/{peers,ui,touch}.ts`. Magic numbers stripped where the equivalent locator-or-event wait suffices.
+- `e2e/test-hooks.spec.ts` smoke tests for the wrapper.
+- Pilot: `e2e/multi-peer-sync.spec.ts` converted.
+- Other 7 specs continue to use the legacy import paths through a shim (`e2e/helpers.ts` becomes a re-export barrel). No semantic change to un-migrated specs. PR 2 includes an exhaustive enumeration of legacy exports (every name imported by any spec under `e2e/*.spec.ts`) verified by a TypeScript test that imports each one through the barrel; missing exports fail the build.
+
+**PR 3 — `data-state` lifecycle on the five animated components.**
+- Lifecycle on `mobile_shell.rs`, `grove_drawer.rs`, `confirm_dialog.rs`, `bottom_sheet.rs`, `tab_bar.rs` and the action-sheet markup in `message.rs`.
+- Reduced-motion fallback per the spec section.
+- Browser tests in `crates/web/tests/browser.rs` covering reduced-motion and unmount cases.
+
+**Lint window note.** The ESLint rule lands in PR 4, leaving PRs 1–3 unprotected against new `waitForTimeout` calls. To narrow the window: PR 1 also adds the ESLint rule and a `// eslint-disable` header on every existing spec referencing the tracking issue. The full ratchet script + baseline file ship with PR 4 since the baseline value depends on the post-pilot count. This way the rule blocks new offences from PR 1 onward while the count-based ratchet starts when there's a stable count to ratchet against.
+
+**PR 4 — Ratchet script + flake harness + cleanup.**
+- `scripts/check-wait-timeout-count.sh` + `e2e/.wait-timeout-baseline` (initial value: post-pilot count, computed at PR-4 land time; script also enforces sunset cutoff).
+- `just test-e2e-flake N=5` recipe.
+- Removal of any `eslint-disable` headers from specs migrated in PRs 2–3.
+
+The tracking issue is opened **before PR 1** so the URL is stable for `eslint-disable` references in PR 4. The issue's body lists the 7 un-migrated specs, the sunset date (2026-09-30), and links to this spec.
+
 ## Pilot conversions
 
-Two pilots ship in the same PR as the infra so the API is exercised under real load:
+Two pilots ship in PR 2 so the API is exercised under real load:
 
 1. **`e2e/helpers.ts` → `e2e/helpers/{peers,ui,touch}.ts`.** Highest leverage: every spec re-imports through the new modules. Validates the `data-state` pattern (UI helpers) and `page.clock` (touch helpers) end-to-end.
-2. **`e2e/multi-peer-sync.spec.ts`.** Worst gossip-pad offender: 30s timeout overrides on every cross-peer assertion plus two `waitForTimeout(2000)` calls. Validates `Peer.nextEvent` and `Peer.waitUntilConverged` in their dominant use case.
+2. **`e2e/multi-peer-sync.spec.ts`.** Worst gossip-pad offender: 30s timeout overrides on every cross-peer assertion plus two `waitForTimeout(2000)` calls. Validates `Peer.nextEvent` and `Peer.waitUntilHeadsEqual` in their dominant use case.
 
-Acceptance for the pilots: `just test-e2e-flake N=10` over both must pass with zero failures. Wall-clock for `multi-peer-sync.spec.ts` should drop measurably (current ~45s; target <20s once gossip-pads are removed, but the hard requirement is correctness, not speed).
+Acceptance for **both** pilots: `just test-e2e-flake N=10` must pass with zero failures, measured in CI. Wall-clock for `multi-peer-sync.spec.ts` should drop measurably (current ~45s wall-clock per local run, sampled best-of-3; target <20s, sampled the same way once gossip-pads are removed). The hard requirement is zero flake; speed is a follow indicator.
 
 ## Tracking issue
 
-A GitHub issue `e2e: migrate remaining specs to event-based waits` is opened concurrently with this spec. Body lists each remaining file as a checklist:
+A GitHub issue `e2e: migrate remaining specs to event-based waits` is opened **before PR 1 lands**, so its URL is stable and can be cited from `eslint-disable` headers added in PR 4. Body lists each remaining file as a checklist plus the 2026-09-30 sunset date:
 
 - [ ] `e2e/permissions.spec.ts`
 - [ ] `e2e/mobile.spec.ts`
@@ -298,8 +469,8 @@ Each file gets its own small PR; each PR removes that file's entry from the ESLi
 
 **Build verification.** `just check-all` adds two steps:
 
-1. `trunk build --release` (no features) → grep the resulting `dist/*.wasm` for `WillowTestHooks`. Must not find. Fails CI if leaked. Catches accidental `default = ["test-hooks"]` regressions.
-2. `trunk build --features test-hooks` → grep for `WillowTestHooks`. Must find. Sanity check the gating actually compiles.
+1. `trunk build --release` (no features) → grep the resulting `dist/*.js` (the wasm-bindgen-emitted JS shim, which retains class names regardless of `wasm-opt` symbol stripping in the `.wasm`) for `WillowTestHooks`. Must not find. Fails CI if leaked. Catches accidental `default = ["test-hooks"]` regressions. As a defence-in-depth check, also runs `wasm-objdump --section=name dist/*.wasm | grep -q WillowTestHooks` and asserts no match.
+2. `trunk build --features test-hooks` → grep `dist/*.js` for `WillowTestHooks`. Must find. Sanity check the gating actually compiles.
 
 **Lint.** New `e2e/.eslintrc.cjs` (or extension of root config) adds:
 
@@ -316,7 +487,9 @@ Each file gets its own small PR; each PR removes that file's entry from the ESLi
 
 Un-migrated specs receive `/* eslint-disable no-restricted-syntax -- tracked: <issue-url> */` at file top. As each file migrates, the disable comment is removed in the same PR.
 
-**Ratchet.** A small `scripts/check-wait-timeout-count.sh` counts `waitForTimeout` occurrences in `e2e/`, compares to a baseline file `e2e/.wait-timeout-baseline`, and fails CI if the count increases. Decreases update the baseline. Prevents regressions while migration is in flight.
+**Ratchet.** A small `scripts/check-wait-timeout-count.sh` counts `waitForTimeout` occurrences in `e2e/`, **excluding** lines tagged with the `// time-wait:` exemption marker, compares to a baseline file `e2e/.wait-timeout-baseline`, and fails CI if the count increases. Decreases update the baseline (manually committed; not auto-rewritten). The exemption-marker carve-out is the escape hatch for legitimate real-duration waits that no event can replace; each exemption requires a justification comment and survives review.
+
+**Sunset.** The ESLint allowlist and ratchet baseline are scheduled for removal by **2026-Q3** (concretely: by 2026-09-30). The ratchet script enforces this: after the cutoff date it requires the baseline to be `0` and exits non-zero otherwise, regardless of whether the baseline file still exists. On 2026-09-30 the rule flips to hard-fail at 0, the baseline file is deleted, and any remaining `// time-wait:` exemptions stand on their justification alone. The sunset date is recorded in the tracking issue. If migration is incomplete by then, a brief written extension (PR amending this spec and updating the script's date constant) is required.
 
 **Flake harness.** New just recipe:
 
@@ -333,34 +506,48 @@ Migrated specs must pass `N=10` in CI on every PR that modifies `e2e/`.
 
 | Risk | Mitigation |
 |---|---|
-| Push queue grows unbounded if a test forgets to drain | Bounded ring buffer (capacity 1024) inside the WASM dispatcher. Oldest dropped on overflow with `console.warn`. |
-| `exposeBinding` registered after the app boots → first events dropped | `addInitScript` installs a `window.__willowEvent` placeholder that buffers into `__willowEventBuffer`. Real binding drains the buffer on first call. |
+| Push queue grows unbounded if a test forgets to drain | Bounded buffer (capacity 65 536) inside the WASM dispatcher. Overflow is a hard error: dispatcher calls `window.__willowOverflow(droppedCount)`, which the test fixture wires to fail the test immediately. Overflow is treated as a correctness bug, not backpressure. |
+| `exposeBinding` registered after the app boots → first events dropped | `exposeBinding` is registered in `beforeEach` *before* `goto`, so the binding is normally present when WASM dispatches. As defence-in-depth, `addInitScript` declares an empty `__willowEventBuffer`; the dispatcher checks for `__willowEvent` on the window and falls back to pushing into the buffer if absent. The first `__willowEvent` call drains the buffer. |
 | `page.clock` interferes with iroh's WASM timers (gossip heartbeats, retry backoff) | Clock install is opt-in per test; default e2e tests run with real time. Tests that install the clock are explicit about which timers they advance. |
 | `data-state` attributes proliferate across markup | Only on elements tests gate on (drawer, modal, dropdown, tab, action sheet — finite, listed above). Documented in the `e2e/README.md`. |
 | Cargo feature drift: e2e build differs from prod build behaviour | `#[cfg]` only adds inert mounting code; no behaviour change. Validated by running existing `just test-browser` once with `--features test-hooks` and asserting the same pass set. |
 | Migration stalls; ESLint allowlist becomes permanent | Tracking issue + ratchet script (count must monotonically decrease). Renewed on every file migration PR. |
 | `ClientEvent` schema drifts between Rust and TS `Peer` wrapper | TS type kept in `e2e/test-hooks.ts` with a `// keep in sync with crates/client/src/lib.rs ClientEvent` marker. A small Rust integration test serializes every `ClientEvent` variant and asserts the TS type covers it (codegen check is a follow-up if drift becomes painful). |
 
-**Runner-up rejected — DOM-only (`data-testid` + attribute polling, no WASM API).** Rejected because gossip convergence is non-DOM: peer B can apply role/permission events that change no UI, but downstream assertions still depend on those events being applied. Forcing a DOM proxy for every state fact bloats markup and still does not cover the heads-equality check that `waitUntilConverged` relies on.
+**Runner-up rejected — DOM-only (`data-testid` + attribute polling, no WASM API).** Rejected for the *state-convergence* bucket because gossip convergence is non-DOM: peer B can apply role/permission events that change no UI, but downstream assertions still depend on those events being applied. The `data-state` lifecycle pattern is essentially the DOM-only approach for the *DOM-settle* bucket — that's intentional and not a contradiction; the rejection is scoped to the convergence bucket only.
 
 **Runner-up rejected — always-on `window.__willow` API (no cargo feature).** Rejected on privacy: third-party JS in production could read DAG heads and event counts. Cost of the feature gate is one cargo feature, one CI line, and one symbol-leak grep — small and one-time.
 
+**Runner-up rejected — keep `waitForTimeout` and just lengthen.** Rejected because longer sleeps mask the race rather than fix it; the suite still spends real wall-clock waiting after the system has settled, and any new flake source raises the timeout further. The flake is an information-theoretic problem (no signal) and time can't substitute.
+
+**Runner-up rejected — Rust-driven test harness in place of Playwright.** Rejected because the e2e tier exists specifically to validate real iroh + browser behaviour, and that fidelity is exactly what the lower tiers cannot cover. The `MemNetwork` already serves the Rust-driven multi-peer testing role at the `client` tier (per `docs/specs/2026-04-21-e2e-test-architecture-design.md`).
+
+**Runner-up rejected — synchronous iroh mock in tests.** Rejected for the same reason: `MemNetwork` already exists for the Rust tier; e2e exists because the network-effect path matters.
+
 ## Testing the test infrastructure
 
-**WASM-side.** New tests in `crates/web/tests/browser.rs` (gated `#[cfg(feature = "test-hooks")]`) construct a `ClientHandle`, apply known events, and assert `WillowTestHooks::snapshot()` and `heads()` return the expected shape and values. Pure WASM, no Playwright, fast.
+**WASM-side.** New tests in `crates/web/tests/browser.rs` (gated `#[cfg(feature = "test-hooks")]`) construct a `ClientHandle`, apply known events, and assert:
+- `snapshot()`, `heads()`, `event_count()`, `last_event()` return the expected shape and values.
+- Bounded-buffer overflow path: synthetic stress that pushes 65 537 events triggers the overflow callback exactly once.
+- Buffer drain on first binding call: events queued before binding wiring are delivered in order on first call.
+- `data-state` lifecycle: reduced-motion shortcut sets terminal state synchronously; component unmount mid-transition does not leak state.
 
 **Playwright-side.** New `e2e/test-hooks.spec.ts` smoke-tests the `Peer` wrapper:
-
 - `peer.snapshot()` returns the expected fields after a fresh start.
 - `peer.eventCount()` equals 1 after `CreateServer`.
-- `peer.nextEvent(e => e.kind === 'SyncCompleted')` resolves on the first heartbeat.
-- `peer.waitUntilConverged(self)` is a no-op (single peer trivially converges).
+- `peer.nextEvent(e => e.kind === 'SyncCompleted')` resolves on the first heartbeat, and rejects with a clear error after `opts.timeout` if no matching event arrives.
+- `peer.waitUntilHeadsEqual(self)` is a no-op (single peer trivially converges).
+- Three-peer test: `waitUntilAllHeadsEqual([peerB, peerC])` blocks until *all* three peers reach the same head set.
 
-**Pilot acceptance.** `multi-peer-sync.spec.ts` is run 10× via `just test-e2e-flake N=10` before the migration (baseline) and 10× after. After must be ≤ baseline failures, target zero.
+**Pilot acceptance.** `multi-peer-sync.spec.ts` is run 10× via `just test-e2e-flake N=10` and `helpers/*` exercised through every spec it underpins. Both must pass with zero failures in CI. The "before" baseline (legacy 30s-timeout version) is captured in the same PR via a one-time CI run on the parent commit; numbers recorded in the PR description for review.
+
+## Cross-references
+
+- [`docs/specs/2026-04-21-e2e-test-architecture-design.md`](./2026-04-21-e2e-test-architecture-design.md) — three-tier test pyramid; this spec slots into Tier 3 (Playwright) and references the "rewrite trigger" rule for migrating tests downwards when selectors drift.
 
 ## Open questions
 
 - Do we need a `Peer.events()` accessor that returns the full applied-event log (filtered by predicate)? Probably yes for permissions tests; defer until those migrate.
 - Should the `data-state` attribute pattern be lifted into a shared Leptos helper component to enforce consistency? Defer; first apply the pattern manually to the listed components and refactor if duplication accumulates.
 - WebSocket-frame-level waits via `page.waitForEvent('websocket')` are powerful for relay tests but couple to wire format. Out of scope for this spec; revisit if relay-specific flakes appear.
-- `ClientEvent` enum is currently internal to `willow-client`. Exposing all variants over `wasm_bindgen` may pull in serialization for variants that should remain internal. The `test-hooks` module re-serializes through a stable JSON shape rather than `serde_wasm_bindgen` on the raw enum, so internal variants can be filtered or remapped.
+- Auto-generation of the TS `ClientEvent` mirror from the Rust enum (e.g. via `ts-rs`). Cheap to add later; not scoped here.
