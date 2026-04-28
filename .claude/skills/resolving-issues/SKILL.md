@@ -51,9 +51,10 @@ All sub-fixes land on one master branch per session. Master PR is opened **only 
 4. No in-scope issues? Noop. Skip the rest. No master branch created, no PR opened.
 5. Create fresh master branch for this session (push, no PR yet — see ### Master branch setup).
 6. Per issue, sequential, max 10 per run:
+   - **Pre-dispatch sync:** before spawning each implementer, `git fetch origin <master-batch>` + `git reset --hard origin/<master-batch>` in the coordinator's checkout. Prior implementers' merges + your own session-open commit must be the worktree base; stale local state poisons the next worktree.
    - Spawn fresh implementer agent.
    - Implementer: worktree off master branch → research subagents if needed → fix → tests → sub-PR into master branch → merge gate → squash-merge.
-   - Track `Fixes #N` for final PR body assembly.
+   - Track `Fixes #N` for final PR body assembly. **If implementer reports the issue was already fixed upstream and closed it directly with a caveman comment**, do NOT include in `Fixes` list — issue is already closed, `Fixes` keyword would be a no-op or worse a stale link. Note in `## Already-Fixed` master-PR section instead.
    - Tear down worktree.
    - Next issue.
 7. Implementer finds related rot? File follow-up issue.
@@ -81,6 +82,7 @@ Fresh agent per issue, scoped to one issue + master branch ref. Steps:
 9. **Merge gate:** if sub-PR CI runs (rare — only when workflow `branches: [main]` filter matches), wait for green. If CI doesn't run (sub-PR base ≠ main is the common case), local `just check` green from step 7 IS the gate. Merge with `mcp__github__merge_pull_request` `merge_method: squash`.
 10. CI red after one fix attempt OR local `just check` red OR mid-fix block → **file a follow-up GH issue** (caveman body, link the original issue + cite the blocker), then **close the sub-PR** (don't leave it as a draft for someone to resume). The next scheduled run will see the follow-up issue in the queue and pick it up. Return control to coordinator.
 11. Tear down worktree on merge OR on close-after-blocker.
+12. **Already-fixed-upstream path:** if pre-flight investigation (e.g. `cargo audit`, file-state grep, `cargo tree`) shows the issue was resolved by a recently-merged upstream PR, do NOT open a dead sub-PR. Leave a caveman comment on the original issue naming the upstream PR + the fix location, close the issue as `completed`, tear down the worktree, report back. Coordinator records this under `## Already-Fixed` in the master PR — NOT under `Fixes`.
 
 ## Lessons Learned
 
@@ -98,6 +100,7 @@ Never defer skill edits to a follow-up — they ship with the run that surfaced 
 - Read, dispatch, monitor. Implementers touch files.
 - One worktree per issue. Sequential between issues. Tear down after merge or draft-park.
 - **Exception:** the master branch's own session-open commit + Lessons Learned skill edits (see ## Lessons Learned). Coordinator commits these directly to the master branch.
+- **Webhook subscriptions are informational.** When `<github-webhook-activity>` arrives for a sub-PR opened by an implementer, the implementer owns its merge gate. Coordinator does NOT investigate CI / review state — that's the implementer's job, and the implementer is still running. Acknowledge briefly + keep waiting. Only act on the webhook if no implementer is running for that PR (i.e. the implementer already finished and the webhook arrived later as a stale event).
 
 ### Sequential between issues
 - One issue at a time. No parallel implementers.
