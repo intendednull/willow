@@ -95,7 +95,7 @@ without losing identity or history.
 | Configuration push | `deploy-rs` | `scp` + `systemctl restart` |
 | Secrets | `agenix` | Plaintext password in skill file |
 | Reverse proxy + TLS | Caddy (NixOS module) | None (HTTP only) |
-| Static web hosting | Caddy on the same VM (Phase 1) | nginx serving `/var/www/willow` |
+| Static web hosting | Caddy on the VM (committed) | manual `scp` to Linode VM, no TLS |
 | CI | GitHub Actions | None |
 | Nix binary cache | Cachix (free tier) | None |
 | Backups | `restic` → Hetzner Storage Box | None |
@@ -373,13 +373,11 @@ TTLs and proxy settings live in HCL.
   handful of `A` record values, not registrar config.
 - **Optional proxy.** For the web UI specifically, Cloudflare's proxy
   can be turned on with a flag flip, giving CDN + DDoS protection for
-  free. The relay's WSS / TCP traffic stays **direct** (unproxied) for
-  two reasons: (a) Cloudflare imposes a 100s idle timeout on free/pro
-  plans which would forcibly close long-lived gossip connections, and
-  (b) iroh's TCP/9090 is a binary protocol that Cloudflare's
-  HTTP-aware proxy cannot route at all. WSS itself is fine over the
-  proxy — that part of the original rationale was wrong; the timeout
-  and TCP-protocol constraints are the durable reasons.
+  free. The relay's traffic stays **direct** (unproxied) for two
+  reasons: (a) Cloudflare imposes a 100s idle timeout on free/pro
+  plans which would forcibly close long-lived gossip WSS
+  connections, and (b) iroh's TCP/9090 is a binary protocol that
+  Cloudflare's HTTP-aware proxy cannot route at all.
 
 **Rejected alternatives.**
 
@@ -523,7 +521,7 @@ restartTriggers = [ config.age.secrets.<name>.file ];
 
 so that `deploy-rs` registers the changed file path as a unit
 input and triggers `systemctl restart` on the consumer. Tested in
-Phase 4 by rotating the restic password and confirming the backup unit
+Phase 1 by rotating the restic password and confirming the backup unit
 restarts.
 
 **Threat model — agenix host-key compromise is forever-decrypting.**
@@ -763,11 +761,26 @@ Required mitigations:
   `dependabot` watching for upstream version bumps so review happens
   before adoption.
 - **Closure signing.** The deploy artefact is signed with a Nix
-  signing key held in agenix (not Cachix's). Production's
-  `nix.settings.trusted-public-keys` lists *only* this key. Cachix
-  is a substituter for unprivileged store paths, not a trust root for
-  what gets activated. A Cachix-only compromise then yields slow
-  builds, not root.
+  signing key whose **public** half is in production's
+  `nix.settings.trusted-public-keys` and whose **private** half lives
+  in GitHub Secrets at `WILLOW_NIX_SIGNING_KEY`, scoped to a single
+  job (`build-and-sign`) within `deploy.yml`. Production's
+  `trusted-public-keys` lists *only* this key — Cachix's key is
+  permitted as a *substituter* for unprivileged store paths but not
+  as a trust root for what gets activated.
+
+  **What this defends:** a Cachix supply-chain compromise (poisoned
+  cache) is then non-fatal because prod won't activate paths Cachix
+  signed but our signing key didn't. A `cachix/install-nix-action`
+  compromise that runs in the *cache-fetch* job (which uses the
+  Cachix key but not the signing key) is also non-fatal.
+
+  **What this does not defend:** a full GitHub Actions runner
+  compromise of the signing job still yields prod root, because that
+  job legitimately holds the signing key. Closure signing is a
+  blast-radius reduction — Cachix is no longer "if compromised, prod
+  is rooted" — not a defence against runner compromise itself. The
+  spec's threat-model claim is bounded accordingly.
 - **Workflow `permissions:` minimised.** Each workflow declares
   `permissions:` explicitly (default `read` everywhere; `write`
   only where strictly required).
@@ -859,11 +872,25 @@ because closure signing pins activation independently.
 **Role in Willow.** A nightly systemd timer (`services.restic.backups.willow`)
 snapshots:
 
-- `/etc/willow` — peer identity keys (relay, replay, storage). The
-  LUKS volume key for the Hetzner Volume also lives here.
+- `/etc/willow` — peer identity keys (relay, replay, storage).
 - `/var/lib/willow` — storage worker SQLite DB.
 - `/var/lib/caddy` — TLS cert state (renewable; included for fast
   recovery rather than correctness).
+
+The LUKS unlock material for the Hetzner Volume is **not** in the
+backup set — the source of truth is the agenix-encrypted blob in git
+plus the offline LUKS recovery key (see DR triplet below). Backing it
+up onto the Volume itself would be circular.
+
+**Identity keys at restore vs. cutover.** The relay's identity is
+migrated *once* at Phase-2 cutover (see Appendix C) and thereafter
+restored byte-identical from `restic` if the Volume is lost — peer ID
+is preserved across DR. Worker (`replay`/`storage`) identities are
+also restored byte-identical from `restic`; the "fresh worker
+identities" decision applies only to the *initial* Hetzner build (it
+saves an avoidable migration), not to subsequent disaster recovery.
+SyncProvider re-grants therefore only happen at the Phase-2 cutover,
+not on every DR exercise.
 
 **Explicitly excluded** from the backup set:
 
@@ -899,18 +926,28 @@ restic password (in agenix)
        └─ which lived on the destroyed volume
 ```
 
-That's circular. To resolve it, three secrets are kept **offline,
-outside the host**, in a developer-managed password vault (1Password,
-hardware token, sealed envelope — operator's choice, but *not* in this
-git repo):
+That's circular. The full bootstrap-from-zero chain also requires
+decrypting the OpenTofu API tokens (`hcloud-token.age`,
+`cloudflare-token.age`) before the new VM exists, which depends on
+an *operator* age identity (not a host one). Four secrets are
+therefore kept **offline, outside the host**, in a developer-managed
+password vault (1Password, hardware token, sealed envelope — operator's
+choice, but *not* in this git repo):
 
 1. The restic repository password.
-2. The Storage Box SSH key (private half).
+2. The Storage Box SSH key (private half) — append-only credential is
+   sufficient for restore; pruning credential is held separately.
 3. The LUKS recovery key for the Hetzner Volume.
+4. **At least one operator age private key** listed as a recipient
+   in `secrets.nix`, so a fresh laptop can decrypt the Hetzner +
+   Cloudflare API tokens to drive `tofu apply`. Recommended form:
+   `age-plugin-yubikey` identity on a hardware token. Accepted
+   alternative: a sealed-envelope copy of the age private key.
 
-The recovery procedure (Phase 3 drill) verifies these three are
-sufficient to bring up a fresh CAX21 with the original storage state.
-The "DR runbook" appendix lists the exact steps.
+The recovery procedure (Phase 1 drill) verifies these four are
+sufficient to bring up a fresh CAX21 with the original storage state,
+*starting from a laptop with no pre-existing access*. The "DR runbook"
+appendix lists the exact steps.
 
 **Backup-failure notification.** A silent backup failure is worse than
 no backup. Each `restic` unit declares `OnFailure=` pointing to a
@@ -928,7 +965,7 @@ webhook (Discord, ntfy, Mattermost) substitutes.
 - **NixOS module exists** (`services.restic.backups.<name>`) — fully
   declarative including timers, paths, retention, and pre/post hooks.
 - **Restore tested as part of migration.** §"Implementation phases"
-  Phase 4 includes a documented restore drill.
+  Phase 1 includes a documented restore drill.
 
 **Rejected alternatives.**
 
@@ -956,14 +993,18 @@ webhook (Discord, ntfy, Mattermost) substitutes.
 
 **Role in Willow.** Defense in depth.
 
-Edge (Hetzner) — explicit allow list, applied to both IPv4 and IPv6:
+Edge (Hetzner) — explicit allow list, applied to both IPv4 and IPv6.
+Hetzner Cloud Firewall is L3/L4 *stateful permit-only*; it does not
+do per-source connection rate limiting. Rate limits in the table below
+are enforced by **in-host** `nftables` rules that share the same Nix
+definition.
 
-| Port | Protocol | Source | Purpose |
-|---|---|---|---|
-| 22 | TCP | deploy CI IPs + admin allowlist | SSH |
-| 80 | TCP | 0.0.0.0/0, ::/0 | HTTP→HTTPS redirect (ACME uses DNS-01, not :80) |
-| 443 | TCP + UDP | 0.0.0.0/0, ::/0 | HTTPS + HTTP/3 |
-| 9090 | TCP | 0.0.0.0/0, ::/0 | iroh relay TCP — see rate-limit note |
+| Port | Protocol | Source | Hetzner edge | In-host nftables |
+|---|---|---|---|---|
+| 22 | TCP | deploy CI IPs + admin allowlist | permit | permit + sshd `MaxAuthTries=3` |
+| 80 | TCP | 0.0.0.0/0, ::/0 | permit | permit (HTTP→HTTPS redirect; ACME uses DNS-01) |
+| 443 | TCP + UDP | 0.0.0.0/0, ::/0 | permit | permit |
+| 9090 | TCP | 0.0.0.0/0, ::/0 | permit | per-source limit 60/min, burst 10; global `ct count` ≤ 5000 |
 
 Port 9091 (relay WS) is **not** listed at the edge: it binds to
 `127.0.0.1:9091` only and is reachable solely via Caddy's loopback
@@ -973,14 +1014,15 @@ relay binary's listen address is set explicitly to `127.0.0.1:9091`
 in its NixOS module, so the host firewall is not load-bearing for
 this confidentiality property.
 
-**Rate limiting on 9090.** A relay TCP port without rate limits is a
-DDoS amplifier waiting to happen. The in-host `nftables` ruleset
-applies a per-source-IP connection rate limit (e.g. 60/min, burst 10)
-on 9090, plus a global `ct count` cap (e.g. 5000 concurrent). Cloudflare
-cannot help here (binary protocol). A targeted L4 attack still
-saturates the host's NIC; the runbook for that case is "swap the
-Hetzner Floating IP to a temporary scrubbing host" — see Phase-2
-work.
+**Rate limiting + DDoS posture on 9090.** Cloudflare cannot proxy
+iroh's binary TCP/9090, so the only mitigations are at the host's own
+NIC. The in-host `nftables` rules apply a per-source connection rate
+limit and a global `ct count` cap (see table). This catches noisy
+single-IP misbehaviour, not a coordinated volumetric flood — a
+sufficiently large L4 attack saturates the Hetzner uplink before any
+host rule sees the packet. That residual risk is acknowledged in
+"Future work" with a defined trigger threshold and fallback runbook
+(Floating IP swap to a temporary scrubbing host).
 
 In-host (NixOS) — same allow list as a fallback, generated from a
 single Nix definition shared with the OpenTofu locals so the two
@@ -1153,6 +1195,108 @@ operator leaves. CI deploy key is *not* permitted interactive sessions
 - Backup failures email out via the path described in §13.
 - Hetzner panel and Cloudflare audit logs are reviewed monthly.
 
+**Ownership, cadence, and verification.** "Required" without an owner
+is aspirational. Each control above has a named owner and a verifier:
+
+| Control | Owner | Cadence | Evidence captured |
+|---|---|---|---|
+| Hetzner / Cloudflare / GitHub 2FA | Account holder | At account creation, audited quarterly | Screenshot of 2FA settings page, attached to a quarterly `docs/reports/YYYY-QN-security-review.md` commit |
+| API token rotation (Hetzner, Cloudflare, Cachix push, Storage Box) | Designated infra-on-call | 90 days | OpenTofu plan diff showing rotated token name + agenix commit log |
+| `journalctl --priority=warning` review | Designated infra-on-call | Weekly | Findings noted in operator log; non-event reviews allowed to be silent but not skipped |
+| Cloudflare + Hetzner audit-log review | Designated infra-on-call | Monthly | Brief note in operator log |
+| Restore drill | Whole team | Every 6 months | Timed run, durations and any deviations captured in `docs/reports/` |
+| `systemd-analyze security` ≤ 3.0 verification | CI | Every deploy | CI job fails on regression |
+
+Until the project has multiple operators, the "designated infra-on-
+call" is a single person; the rotation table becomes meaningful in
+Phase 2+.
+
+**Multi-approver requirement.** The Phase-1 manual-approval gate is
+single-approver. A single compromised approver session — phishing-
+resistant 2FA notwithstanding — still gives prod root via the
+`production` GitHub environment. Once the team is ≥ 3 operators, the
+environment is reconfigured to require **two distinct approvers**
+(GitHub `required_reviewers ≥ 2` on the environment). Tracked in
+"Future work"; until then, single-approver is the documented residual
+risk.
+
+**Action supply-chain bump checklist.** SHA-pinning third-party
+GitHub Actions defends against tag retargeting, not against an action
+repo whose SHA you adopt being compromised at adoption time. Every
+dependabot bump for `cachix/install-nix-action`, `actions/checkout`,
+`DeterminateSystems/nix-installer-action`, etc. is reviewed against
+this checklist before merge:
+
+1. Cross-reference the new SHA against the publisher's signed tag /
+   release attestation (or, where available, the publisher's
+   provenance attestations on GitHub).
+2. Read the diff between current and proposed SHA. Trivial bumps
+   should look trivial; if the diff is large or touches secret
+   handling, escalate.
+3. Prefer first-party Nix actions
+   (`DeterminateSystems/nix-installer-action`) over community
+   actions where the threat surface is comparable, because the
+   publisher is more accountable in case of dispute.
+4. Record the review outcome in the dependabot PR.
+
+**ACME / CAA ordering.** Phase-1 implementation cannot create the
+`accounturi`-constrained CAA record before Caddy has run, because the
+ACME account URL is generated on first issuance. The bootstrap
+sequence is:
+
+1. Deploy Caddy with permissive CAA: `issue "letsencrypt.org"`.
+2. Wait for first successful certificate issuance.
+3. Extract Caddy's ACME account URL from
+   `/var/lib/caddy/.local/share/caddy/acme/.../accounts/.../account.json`.
+4. Tighten CAA via OpenTofu to include
+   `accounturi="<account-url>"`.
+5. Verify renewal still succeeds against the tightened CAA.
+
+This sequence is included in the Phase-1 implementation runbook so
+it isn't discovered the hard way at first renewal.
+
+**Compromise response order.** When an operator-side compromise is
+suspected (laptop loss, phished session, observed unauthorised
+deploy), the canonical revocation order — designed so that earlier
+steps don't break the operator's ability to do later steps — is:
+
+1. Revoke the suspect operator's GitHub session(s) via the GitHub
+   security log; require re-authentication.
+2. Remove the operator's key from the GitHub `production`
+   environment approver list (kills future deploys).
+3. Rotate the GitHub Actions deploy SSH key on prod
+   (`authorized_keys` rotated via deploy-rs from a known-clean
+   operator).
+4. Rotate the closure-signing key in `WILLOW_NIX_SIGNING_KEY` and
+   redeploy with the new public key in `trusted-public-keys`.
+5. Rotate Cachix push token and rebuild any cached paths from
+   trusted source.
+6. Rotate Hetzner and Cloudflare API tokens; commit the new
+   ciphertexts via agenix from a known-clean operator.
+7. If the operator's age private key is suspect, regenerate it,
+   remove the old public key from `secrets.nix`, run
+   `agenix --rekey` for every blob, commit and deploy.
+8. Rotate the restic repository password and Storage Box append-only
+   key (if exposure to backup system is suspected).
+9. Rotate the LUKS volume key (the LUKS slot is replaced; data is
+   unaffected).
+10. Issue a security advisory under `docs/reports/`.
+
+The order matters: rotating Hetzner API tokens (step 6) before
+rotating the GitHub deploy key (step 3) would lock the operator out
+of the `tofu apply` path needed to redeploy. The order is rehearsed
+during the 6-monthly restore drill.
+
+**Hetzner abuse-desk runbook.** Hetzner sends abuse notices to the
+account email of record. That address is monitored by the
+infra-on-call (same role as token rotation). Notices typically arrive
+about port scans, copyright DMCA, or outbound spam — none of which
+should originate from a relay-only workload, so any notice is treated
+as an incident. SLA: respond within 4 hours of receipt; document
+investigation outcome in `docs/reports/`. Hetzner's own escalation
+window is 24 hours before service suspension; do not let an
+unanswered notice expire.
+
 ## Repository layout
 
 New top-level directories introduced by this work:
@@ -1172,17 +1316,21 @@ infra/
 │   ├── hosts/
 │   │   └── willow-prod.nix       # CAX21 in FSN1, imports modules
 │   └── disko/
-│       └── cpx21.nix             # disk + volume layout
+│       └── willow-prod.nix       # disk + volume layout (CAX21 + Volume)
 ├── tofu/
 │   ├── main.tf                # hcloud server, volume, firewall, FIP
 │   ├── dns.tf                 # cloudflare records
 │   ├── variables.tf
 │   └── outputs.tf
 └── secrets/
-    ├── secrets.nix            # who-can-decrypt-what
-    ├── restic-password.age
-    ├── hcloud-token.age       # CI uses; not deployed to host
-    └── cloudflare-token.age   # CI uses; not deployed to host
+    ├── secrets.nix              # who-can-decrypt-what (recipient matrix)
+    ├── restic-password.age      # host-decryptable (services.restic)
+    ├── willow-volume-luks.age   # host-decryptable (boot-time LUKS unlock)
+    ├── nix-signing-pubkey.txt   # plaintext; pinned in trusted-public-keys
+    ├── tfstate-encryption.age   # operator-decryptable (OpenTofu state encryption)
+    ├── smtp-credential.age      # host-decryptable (backup-failure alerts)
+    ├── hcloud-token.age         # operator + CI; never deployed to host
+    └── cloudflare-token.age     # operator + CI + host (DNS-01 ACME)
 
 .github/workflows/
 ├── check.yml                  # PR gate (existing `just check-all`)
@@ -1195,6 +1343,42 @@ scripts/
 The `.claude/skills/deploy/SKILL.md` is rewritten as a thin wrapper:
 "Run `nix run .#deploy -- .#willow-prod` after `tofu apply`. Secrets are
 managed via agenix; see `infra/secrets/`."
+
+**`secrets.nix` recipient matrix.** This file is the authority on
+production access; the spec includes its skeleton here (illustrative;
+real public-key values redacted):
+
+```nix
+let
+  # Host identities (derived from /etc/ssh/ssh_host_ed25519_key.pub
+  # via ssh-to-age, captured at first deploy)
+  willow-prod      = "age1...prodhost...";
+
+  # Operator identities (long-lived; ideally on YubiKey)
+  alice            = "age1...alice...";
+  bob              = "age1...bob...";
+
+  # CI identity (GitHub-Secrets-resident; rotatable)
+  ci               = "age1...ci...";
+
+  operators = [ alice bob ];
+  hosts     = [ willow-prod ];
+in
+{
+  "restic-password.age"     .publicKeys = hosts ++ operators;
+  "willow-volume-luks.age"  .publicKeys = hosts ++ operators;
+  "smtp-credential.age"     .publicKeys = hosts;
+  "tfstate-encryption.age"  .publicKeys = operators ++ [ ci ];
+  "hcloud-token.age"        .publicKeys = operators ++ [ ci ];   # never host
+  "cloudflare-token.age"    .publicKeys = hosts ++ operators ++ [ ci ];
+}
+```
+
+Operators decrypt every secret needed for full DR (see §13). Host
+decrypts only what it needs at runtime (no API tokens). CI decrypts
+what it needs to drive `tofu apply` and signing — but **not** the
+restic password, LUKS key, or SMTP credential, which never leave the
+host or operator vault.
 
 ## Implementation phases
 
@@ -1220,20 +1404,23 @@ accordingly. In order:
    immediately, with a temporary `ops` user.
 3. **Audit auth logs** (`/var/log/auth.log`, `last`, `wtmp`) on the
    Linode VM for unauthorized SSH sessions during the leak window.
-   Document findings.
+   Document findings. The audit conclusion is the input to the
+   Phase-2 decision gate (whether to migrate the relay key); it is
+   not used outside that gate.
 4. **Treat any secret the Linode VM ever held as compromised**:
    relay/replay/storage Ed25519 keys, agent harness keys, any `.env`
-   files. The Phase-2 plan to migrate the relay key is conditional
-   on the auth-log audit ruling out unauthorized access. If
-   exfiltration cannot be ruled out, **do not migrate** the relay key
-   — accept peer-ID rotation as the cost of the leak. This decision
-   is recorded explicitly before Phase 2 proceeds.
-5. **(Optional) git history rewrite** with `git filter-repo` to scrub
-   the password from public history. Controversial; weigh against the
-   "history is permanent" honest framing above. At minimum, file a
-   short security advisory in the repo's `SECURITY.md` (or a
-   dedicated note in `docs/`) documenting the leak window, what was
-   exposed, and what was rotated.
+   files. Plan their rotation as part of the cutover schedule.
+5. **Publish a security advisory** in `SECURITY.md` (or a dated note
+   under `docs/reports/`) documenting the leak window, exposed
+   artifacts, rotation actions taken, and the Phase-0 audit outcome.
+   This is **mandatory**, not optional, and is the user-visible
+   responsible-disclosure record.
+6. **(Optional, hygiene only)** A `git filter-repo` rewrite to remove
+   the password from public history can follow. This **does not**
+   count as remediation: the password is already public via clones,
+   mirrors, and archives. Treat it as repo cleanup, not as
+   compromise response, and only run after step 5's advisory is
+   published.
 
 Phase 0 is independent of the rest and reduces immediate risk while
 the new stack is built.
@@ -1282,11 +1469,21 @@ serving real users.
   single state event after they connect.
 - **Re-point DNS in Cloudflare** to the new IP. Pre-stage with low
   TTL (60s) the day before so propagation is effectively instant.
-- **Atomicity invariant.** Only one host holds the live relay key at
-  a time. Concretely: stop the Linode relay; verify it is stopped;
-  copy the key; start the Hetzner relay; verify it advertises the
-  expected peer ID; cut DNS. Failing any step, abort and roll back.
-- Decommission Linode VM after a 7-day soak.
+- **Single-key invariant** (not full atomicity). Only one host runs
+  the relay process with the live key at any moment. Concretely:
+  stop the Linode relay; verify it is stopped; copy the key; start
+  the Hetzner relay; verify it advertises the expected peer ID; cut
+  DNS. Failing any step, abort and roll back.
+- **Acknowledged reachability gap.** Between "start Hetzner relay"
+  and "DNS TTL expires" there is a window (≤ 60s with TTL 60) where
+  DNS still points at Linode but the Linode relay is stopped. Peers
+  that hit Linode in this window get TCP RST / connection-refused.
+  Clients with exponential backoff (the default for `willow-client`)
+  recover transparently; clients without retry logic see a sub-2-minute
+  outage. Accepted as the cost of the single-key invariant; documented
+  here so the cutover note can capture observed user impact.
+- Decommission Linode VM after a 7-day soak (this is what actually
+  deallocates the underlying storage; see Appendix C step 11).
 
 ### Phase 3 — CI deploy path with manual approval (1 day)
 
@@ -1316,7 +1513,7 @@ Prices reflect Hetzner's 2026-04-01 adjustment.
 | Hetzner Volume (10 GB, LUKS-encrypted) | 0.57 |
 | Hetzner Primary IPv4 | 0.50 |
 | Hetzner Storage Box BX11 (1 TB) | 3.20 |
-| Cloudflare DNS + proxy + Pages | 0.00 |
+| Cloudflare DNS + optional proxy | 0.00 |
 | Cachix (free OSS tier, 5 GB) | 0.00 |
 | GitHub Actions (public repo) | 0.00 |
 | **Total** | **~12.26** |
@@ -1330,8 +1527,9 @@ not in the Phase-1 budget. It becomes worthwhile during the multi-region
 or DDoS-scrubbing rollout because it can be reassigned between hosts in
 seconds without DNS propagation.
 
-Phase-2 multi-region adds another full host: ~€8/mo for compute
-+ Volume + Primary IP, and Floating IP if used (€3/mo).
+Phase-2 multi-region adds another full host: ~€9/mo for compute
++ Volume + Primary IP (Storage Box is shared so excluded), and a
+Floating IP per region if used (€3/mo).
 
 ## Resolved decisions
 
@@ -1385,9 +1583,27 @@ These are tracked separately and explicitly out of scope here.
   relay-discovery work (`docs/specs/2026-04-24-outbox-relay-discovery.md`).
 - **Observability stack** — see issue #460.
 - **DDoS scrubbing for relay TCP/9090.** A volumetric attack on the
-  relay is currently unmitigated (Cloudflare can't proxy a binary
-  protocol). Possible Phase-2 work: relay-of-relays topology, or
-  upstream-tunnel-via-QUIC scrubbing service.
+  relay is currently unmitigated by anything beyond per-source
+  nftables rate limits (see §14). **Trigger:** sustained > 100 Mbps
+  inbound on TCP/9090, or relay reachability < 95% from a third-party
+  external probe over a 10-minute window.
+  **Fallback runbook:** reassign the Hetzner Floating IP to a
+  temporary scrubbing host (a second CAX21 in a different DC running
+  `iptables -m hashlimit` + iroh proxy), then triage upstream. Decide
+  between (a) relay-of-relays topology, (b) upstream-tunnel-via-QUIC
+  scrubbing service, or (c) accept the residual risk based on observed
+  attack patterns.
+- **Off-Hetzner restic mirror.** `restic` snapshots live entirely
+  inside Hetzner's network today — Storage Box reachability depends
+  on Hetzner being cooperative (not legally holding the account, not
+  applying an AUP suspension during a dispute). A weekly off-Hetzner
+  mirror to Backblaze B2 with separately-managed credentials removes
+  the single-point-of-recovery-failure. Phase-2 work; cost ~€1/mo
+  for ~100 GB at B2 list rate.
+- **Two-of-N approver requirement on `production` GitHub
+  environment.** Phase-1 manual-approval is single-approver; once
+  team is ≥ 3 operators, raise `required_reviewers ≥ 2` so a single
+  compromised approver session cannot ship to prod.
 - **Disaster-recovery game day.** Schedule a periodic exercise where
   the prod VM is intentionally destroyed and rebuilt from `infra/` +
   restic + offline secrets; measure recovery time. Target: <30
@@ -1439,95 +1655,139 @@ a feature; if the runbook is wrong, fix the runbook and re-run.
 
 **Pre-conditions**
 
-- Phase 0 auth-log audit passed; key migration has been authorised.
+- Phase 0 auth-log audit passed; key migration has been authorised
+  (Phase 2 decision gate).
 - Hetzner host is fully provisioned, configured, and idle (relay
   process not yet started, or started with a throwaway test key).
 - Operator has SSH access to both Linode and Hetzner via personal key.
-- Operator has the Hetzner host's age public key, derived from
+- Operator has the Hetzner host's age public key in
+  `./hetzner-host-age.pub`, derived from
   `/etc/ssh/ssh_host_ed25519_key.pub` via `ssh-to-age`.
-- Operator's shell is running with `HISTCONTROL=ignoreboth`; commands
-  in this runbook are entered with a leading space so they don't hit
-  history.
+- All `ssh` invocations below use `-o ForwardAgent=no` (set globally
+  via `~/.ssh/config` for the duration of the runbook). **Never** use
+  `ssh -A` against Linode while it is treated as potentially
+  compromised.
+
+**Operator shell preamble (paste at top of session, before step 1)**
+
+```sh
+set -euo pipefail              # any failure aborts the session
+unset HISTFILE                 # current shell history → /dev/null
+ssh() { command ssh -o ForwardAgent=no "$@"; }
+[[ -s hetzner-host-age.pub ]]  # bail if recipient file empty/missing
+```
+
+(For zsh/fish, the local-`unset HISTFILE` equivalent is
+`HISTFILE=/dev/null` for zsh, `set -gx HISTFILE /dev/null` for fish.
+The `set -euo pipefail` is bash; portable equivalents per shell.)
+
+To suppress history on the *remote* hosts, every multi-line remote
+block runs as `ssh <host> 'HISTFILE=/dev/null bash -c "..."'`.
 
 **Steps**
 
 1. **Stop the Linode relay** and verify it has stopped:
+
    ```sh
-    ssh linode 'systemctl stop willow-relay && systemctl is-active willow-relay'
+   ssh linode 'HISTFILE=/dev/null bash -c "systemctl stop willow-relay && systemctl is-active willow-relay"'
    ```
+
    Expect `inactive`. Do not proceed otherwise.
 
-2. **Capture the source key fingerprint** (for integrity verification
-   later, without the key itself touching the operator's terminal
-   buffer in cleartext):
+2. **Record the source's peer ID and key hash.** Peer ID is the
+   *security-relevant* identity property (a substituted key would
+   produce a different peer ID); the SHA-256 is a transport-correctness
+   check.
+
    ```sh
-    ssh linode 'sha256sum /etc/willow/relay.key'
+   SOURCE_PEER_ID=$(ssh linode 'HISTFILE=/dev/null willow-relay --print-peer-id --identity-path /etc/willow/relay.key')
+   SOURCE_HASH=$(ssh linode 'HISTFILE=/dev/null sha256sum /etc/willow/relay.key' | awk '{print $1}')
+   echo "Linode peer ID: $SOURCE_PEER_ID"
+   echo "Linode key hash: $SOURCE_HASH"
    ```
-   Record the hash in the cutover note.
+
+   Record both in the cutover note. If either looks unexpected, abort
+   and treat as a Phase-0 compromise extension.
 
 3. **Stream the key end-to-end through `age`**, never writing
    plaintext to the operator's laptop:
+
    ```sh
-    ssh linode 'cat /etc/willow/relay.key' \
-      | age -r "$(cat hetzner-host-age.pub)" \
-      | ssh hetzner 'age -d -i /etc/ssh/ssh_host_ed25519_key \
-                     > /etc/willow/relay.key.new \
-                     && chmod 0400 /etc/willow/relay.key.new \
-                     && chown willow-relay:willow-relay /etc/willow/relay.key.new'
+   ssh linode 'HISTFILE=/dev/null cat /etc/willow/relay.key' \
+     | age -r "$(cat hetzner-host-age.pub)" \
+     | ssh hetzner 'HISTFILE=/dev/null bash -c "age -d -i /etc/ssh/ssh_host_ed25519_key > /etc/willow/relay.key.new && chmod 0400 /etc/willow/relay.key.new && chown willow-relay:willow-relay /etc/willow/relay.key.new"'
    ```
 
-4. **Verify integrity on the destination**:
-   ```sh
-    ssh hetzner 'sha256sum /etc/willow/relay.key.new'
-   ```
-   Compare against step 2's hash. Match required.
+4. **Verify transport integrity (hash match):**
 
-5. **Atomic swap** on the Hetzner host:
    ```sh
-    ssh hetzner 'mv /etc/willow/relay.key.new /etc/willow/relay.key'
+   DEST_HASH=$(ssh hetzner 'HISTFILE=/dev/null sha256sum /etc/willow/relay.key.new' | awk '{print $1}')
+   [[ "$DEST_HASH" == "$SOURCE_HASH" ]] || { echo "HASH MISMATCH"; exit 1; }
    ```
 
-6. **Start the Hetzner relay** and verify it advertises the same
-   peer ID as Linode advertised pre-stop:
+5. **Swap into place** on the Hetzner host:
+
    ```sh
-    ssh hetzner 'systemctl start willow-relay'
-    ssh hetzner 'willow-relay --print-peer-id --identity-path /etc/willow/relay.key'
+   ssh hetzner 'HISTFILE=/dev/null mv /etc/willow/relay.key.new /etc/willow/relay.key'
    ```
-   Compare against the peer ID recorded from Linode before step 1.
-   Match required.
+
+6. **Start the Hetzner relay and verify peer-ID continuity** —
+   the security-critical check:
+
+   ```sh
+   ssh hetzner 'HISTFILE=/dev/null systemctl start willow-relay'
+   DEST_PEER_ID=$(ssh hetzner 'HISTFILE=/dev/null willow-relay --print-peer-id --identity-path /etc/willow/relay.key')
+   [[ "$DEST_PEER_ID" == "$SOURCE_PEER_ID" ]] || { echo "PEER ID MISMATCH"; exit 1; }
+   ```
+
+   A peer-ID mismatch here means the migration produced a different
+   advertised identity than the Linode source — could be transport
+   corruption (would also fail step 4), substitution at the source
+   (Linode compromise), or operator error. Abort.
 
 7. **Cut DNS in Cloudflare** to point `relay.<domain>` and (if
    applicable) `willow.<domain>` at the Hetzner IP. Cloudflare
    propagation completes in seconds with TTL 60.
 
 8. **Smoke test** from a fresh peer (e.g. `willow-agent` from a
-   developer laptop) to confirm gossip + WSS work end-to-end.
+   developer laptop) to confirm gossip + WSS work end-to-end against
+   the new relay's peer ID.
 
-9. **Securely delete the source key** before powering off Linode:
+9. **Remove (not "shred") the source key** before powering off Linode.
+   `shred` is unreliable on virtualized block devices and Hetzner /
+   Linode network volumes — overwrite-in-place semantics are not
+   guaranteed. Honest framing: the destination of last resort is
+   destroying the Linode VM (step 11), which deallocates the
+   underlying storage. Removal here is best-effort hygiene:
+
    ```sh
-    ssh linode 'shred -uvz /etc/willow/relay.key'
-    ssh linode 'history -c'
+   ssh linode 'HISTFILE=/dev/null rm -f /etc/willow/relay.key /root/.bash_history /home/*/.bash_history'
    ```
 
-10. **Power off the Linode VM** (do not destroy yet — keep for the
-    7-day soak):
-    ```sh
-     # via Linode CLI / console, not via ssh-on-the-box
-    ```
+10. **Power off the Linode VM** via the Linode panel (not
+    ssh-on-the-box, so the panel-level audit log captures the
+    operator action). Do not destroy yet — keep for the 7-day soak.
 
 11. **Revoke operator SSH keys on Linode** at the panel level
     so re-power-on doesn't restore SSH reachability without
-    re-authorisation.
+    re-authorisation. After the 7-day soak, **destroy the Linode VM**
+    via the panel — only this step deallocates the underlying storage
+    and provides the actual key-disposal guarantee that step 9 cannot.
 
 12. **Record the cutover** in a commit on `main`:
     `chore(infra): cut over to Hetzner; relay peer ID preserved`,
-    citing the recorded peer ID and the Phase-0 audit conclusion.
+    citing the recorded `$SOURCE_PEER_ID` and the Phase-0 audit
+    conclusion.
 
-**Failure handling.** If any verification step (2 → 4, 6) mismatches,
-or if step 8's smoke test fails, abort: keep Linode powered off but
-revert DNS, restore from `restic` if Hetzner state was modified, and
-debug offline. Do not improvise the runbook live.
+**Failure handling.** If any verification step (2 sanity, 4 hash, 6
+peer ID) mismatches, or if step 8's smoke test fails: abort, keep
+Linode powered off, revert DNS, restore from `restic` if Hetzner
+state was modified, and debug offline. The `set -euo pipefail`
+preamble means a `[[ ... ]]` mismatch terminates the session — do
+**not** improvise around it.
 
 **What this runbook deliberately does not do**: scp the key through
 the operator's laptop, base64-encode-and-paste it through a clipboard,
-or rely on the operator's memory of any value longer than a hash.
+forward the operator's ssh-agent to a potentially compromised host,
+rely on `shred` semantics that the underlying storage doesn't honour,
+or trust the operator's memory of any value longer than a hash.
