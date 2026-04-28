@@ -10,6 +10,9 @@
 
 #![cfg(feature = "test-hooks")]
 
+mod dispatcher;
+pub use dispatcher::{install_push_dispatcher, DispatcherHandle};
+
 mod snapshot;
 pub use snapshot::{AuthorHeadDto, ChannelDto, SnapshotDto};
 
