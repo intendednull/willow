@@ -83,6 +83,9 @@ impl WorkerRole for StorageRole {
                     reason: format!("sync query failed: {e}"),
                 },
             },
+            _ => WorkerResponse::Denied {
+                reason: "unsupported request type".to_string(),
+            },
         }
     }
 }

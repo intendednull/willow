@@ -317,6 +317,9 @@ impl WorkerRole for ReplayRole {
             WorkerRequest::History { .. } => WorkerResponse::Denied {
                 reason: "replay nodes do not serve history".to_string(),
             },
+            _ => WorkerResponse::Denied {
+                reason: "unsupported request type".to_string(),
+            },
         }
     }
 

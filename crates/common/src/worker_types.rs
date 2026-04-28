@@ -17,6 +17,7 @@ pub const SERVER_OPS_TOPIC: &str = "_willow_server_ops";
 /// Combined role identity and capacity info. The variant determines
 /// the role — impossible to mismatch role type and capacity data.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[non_exhaustive]
 pub enum WorkerRoleInfo {
     Replay {
         servers_loaded: u32,
@@ -32,6 +33,14 @@ pub enum WorkerRoleInfo {
         total_events_stored: u64,
         disk_used_bytes: u64,
     },
+    Feedback {
+        reports_accepted: u64,
+        reports_rejected: u64,
+        /// Gauge: peers currently throttled by the per-peer bucket.
+        currently_rate_limited: u32,
+        /// Gauge: true if the worker is hot-tripped on the global cap.
+        global_rate_limited: bool,
+    },
     // Future: File { ... }, Stream { ... }, Bot { ... }
 }
 
@@ -41,6 +50,7 @@ impl WorkerRoleInfo {
         match self {
             WorkerRoleInfo::Replay { .. } => "replay",
             WorkerRoleInfo::Storage { .. } => "storage",
+            WorkerRoleInfo::Feedback { .. } => "feedback",
         }
     }
 }
@@ -85,7 +95,8 @@ pub enum WorkerWireMessage {
 }
 
 /// Request payloads sent by clients to workers.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[non_exhaustive]
 pub enum WorkerRequest {
     /// State sync request (handled by replay nodes).
     /// Sends our heads so the worker can compute a delta.
@@ -103,10 +114,26 @@ pub enum WorkerRequest {
         before: Option<HeadsSummary>,
         limit: u32,
     },
+
+    /// Submit a user feedback report (handled by feedback nodes).
+    Feedback {
+        /// 16-byte client-generated dedup key. Worker maintains an LRU
+        /// cache of (signer, dedup_id) → issue_url so retries return
+        /// the original URL.
+        dedup_id: [u8; 16],
+        /// 1..=200 chars (worker-validated).
+        title: String,
+        category: FeedbackCategory,
+        /// 1..=8000 chars (worker-validated). Worker wraps this
+        /// verbatim in a fenced markdown code block on GitHub.
+        body: String,
+        diagnostics: Option<FeedbackDiagnostics>,
+    },
 }
 
 /// Response payloads sent by workers back to clients.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum WorkerResponse {
     /// Batch of events for sync catch-up.
     SyncBatch { events: Vec<Event> },
@@ -122,6 +149,37 @@ pub enum WorkerResponse {
 
     /// Request denied.
     Denied { reason: String },
+
+    /// Feedback report accepted; GitHub issue created or dedup hit.
+    FeedbackOk { issue_url: String },
+
+    /// Feedback report rejected.
+    FeedbackErr { reason: FeedbackErrReason },
+}
+
+impl PartialEq for WorkerResponse {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (WorkerResponse::Denied { reason: a }, WorkerResponse::Denied { reason: b }) => a == b,
+            (
+                WorkerResponse::HistoryPage {
+                    has_more: a_more, ..
+                },
+                WorkerResponse::HistoryPage {
+                    has_more: b_more, ..
+                },
+            ) => a_more == b_more,
+            (
+                WorkerResponse::FeedbackOk { issue_url: a },
+                WorkerResponse::FeedbackOk { issue_url: b },
+            ) => a == b,
+            (
+                WorkerResponse::FeedbackErr { reason: a },
+                WorkerResponse::FeedbackErr { reason: b },
+            ) => a == b,
+            _ => false,
+        }
+    }
 }
 
 /// The trait that each worker binary implements.
@@ -202,6 +260,31 @@ pub struct FeedbackDiagnostics {
     pub locale: Option<String>,
     /// Platform the submission originated from.
     pub client: ClientPlatform,
+}
+
+/// Reason a feedback request was rejected. Units are MILLISECONDS to
+/// align with the broader `WireRejectReason` design
+/// ([`docs/specs/2026-04-24-error-prefixes.md`]); consolidating the
+/// two enums is a follow-up.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[non_exhaustive]
+pub enum FeedbackErrReason {
+    RateLimited {
+        retry_after_ms: u64,
+    },
+    /// `field` <= 64 chars; `message` <= 200 chars (worker-enforced
+    /// before constructing the reply, client-enforced on receipt).
+    InvalidInput {
+        field: String,
+        message: String,
+    },
+    GithubFailure {
+        status: u16,
+        /// GitHub's `message` field, truncated to 200 chars.
+        message: Option<String>,
+    },
+    /// Worker has no PAT configured, or PAT was revoked (401).
+    Unconfigured,
 }
 
 #[cfg(test)]
@@ -597,5 +680,100 @@ mod tests {
         let bytes = bincode::serialize(&diag).unwrap();
         let decoded: FeedbackDiagnostics = bincode::deserialize(&bytes).unwrap();
         assert_eq!(diag, decoded);
+    }
+
+    #[test]
+    fn feedback_err_reason_variants_round_trip() {
+        for r in [
+            FeedbackErrReason::RateLimited {
+                retry_after_ms: 12_345,
+            },
+            FeedbackErrReason::InvalidInput {
+                field: "title".to_string(),
+                message: "too long".to_string(),
+            },
+            FeedbackErrReason::GithubFailure {
+                status: 422,
+                message: Some("Validation Failed".to_string()),
+            },
+            FeedbackErrReason::GithubFailure {
+                status: 0,
+                message: None,
+            },
+            FeedbackErrReason::Unconfigured,
+        ] {
+            let bytes = bincode::serialize(&r).unwrap();
+            let decoded: FeedbackErrReason = bincode::deserialize(&bytes).unwrap();
+            assert_eq!(r, decoded);
+        }
+    }
+
+    #[test]
+    fn worker_request_feedback_round_trip() {
+        let id = Identity::generate();
+        let req = WorkerRequest::Feedback {
+            dedup_id: [7u8; 16],
+            title: "It crashes".to_string(),
+            category: FeedbackCategory::Bug,
+            body: "Steps:\n1. open the app\n2. it crashes".to_string(),
+            diagnostics: Some(FeedbackDiagnostics {
+                app_version: "0.1.0".to_string(),
+                build_hash: Some("abc1234".to_string()),
+                locale: Some("en-US".to_string()),
+                client: ClientPlatform::Web {
+                    ua_family: "firefox/138".to_string(),
+                },
+            }),
+        };
+        let msg = WorkerWireMessage::Request {
+            request_id: "rid-1".to_string(),
+            target_peer: id.endpoint_id(),
+            payload: req.clone(),
+        };
+        let decoded = worker_wire_round_trip(msg, &id);
+        match decoded {
+            WorkerWireMessage::Request { payload, .. } => assert_eq!(payload, req),
+            _ => panic!("expected Request"),
+        }
+    }
+
+    #[test]
+    fn worker_response_feedback_round_trip() {
+        let id = Identity::generate();
+        for resp in [
+            WorkerResponse::FeedbackOk {
+                issue_url: "https://github.com/x/y/issues/42".to_string(),
+            },
+            WorkerResponse::FeedbackErr {
+                reason: FeedbackErrReason::RateLimited {
+                    retry_after_ms: 60_000,
+                },
+            },
+        ] {
+            let msg = WorkerWireMessage::Response {
+                request_id: "rid-1".to_string(),
+                target_peer: id.endpoint_id(),
+                payload: Box::new(resp.clone()),
+            };
+            let decoded = worker_wire_round_trip(msg, &id);
+            match decoded {
+                WorkerWireMessage::Response { payload, .. } => assert_eq!(*payload, resp),
+                _ => panic!("expected Response"),
+            }
+        }
+    }
+
+    #[test]
+    fn worker_role_info_feedback_round_trip_and_name() {
+        let info = WorkerRoleInfo::Feedback {
+            reports_accepted: 17,
+            reports_rejected: 4,
+            currently_rate_limited: 2,
+            global_rate_limited: false,
+        };
+        let bytes = bincode::serialize(&info).unwrap();
+        let decoded: WorkerRoleInfo = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(info, decoded);
+        assert_eq!(info.role_name(), "feedback");
     }
 }

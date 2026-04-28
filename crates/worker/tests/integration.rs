@@ -72,6 +72,9 @@ impl WorkerRole for TestReplayRole {
             WorkerRequest::History { .. } => WorkerResponse::Denied {
                 reason: "not a storage node".to_string(),
             },
+            _ => WorkerResponse::Denied {
+                reason: "unsupported request type".to_string(),
+            },
         }
     }
 }
