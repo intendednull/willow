@@ -1,7 +1,7 @@
 # rust:1.95-slim-bookworm pinned 2026-04-28; bump via `docker buildx imagetools inspect rust:1.95-slim-bookworm`
 FROM rust:1.95-slim-bookworm@sha256:caaf9ca7acd474892186860307d6f28e51fdbc1a4eada459fcff81517cf46a36 AS builder
 RUN rustup target add wasm32-unknown-unknown
-RUN cargo install trunk
+RUN cargo install trunk --version 0.21.14 --locked
 WORKDIR /build
 COPY . .
 RUN cd crates/web && trunk build --release
