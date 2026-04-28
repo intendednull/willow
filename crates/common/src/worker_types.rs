@@ -160,7 +160,7 @@ pub enum AllocationStrategy {
 
 /// Top-level category for a feedback report. Surfaced as a label and
 /// title prefix on the GitHub issue.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[non_exhaustive]
 pub enum FeedbackCategory {
     Bug,
@@ -176,7 +176,7 @@ pub enum FeedbackCategory {
 
 /// The submitting client's platform — coarse-grained on purpose so
 /// the issue body cannot include a fingerprintable full UA string.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[non_exhaustive]
 pub enum ClientPlatform {
     /// Browser submission. `ua_family` is `"<browser>/<major>"`,
@@ -190,7 +190,7 @@ pub enum ClientPlatform {
 /// Optional diagnostic info attached to a feedback report. Only
 /// included when the user opts in via the UI checkbox; the disclosure
 /// renders the *exact* value that will be sent.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[non_exhaustive]
 pub struct FeedbackDiagnostics {
     /// `CARGO_PKG_VERSION` of the submitting client.
@@ -200,6 +200,7 @@ pub struct FeedbackDiagnostics {
     pub build_hash: Option<String>,
     /// IETF BCP 47 locale tag (e.g. `"en-US"`).
     pub locale: Option<String>,
+    /// Platform the submission originated from.
     pub client: ClientPlatform,
 }
 
