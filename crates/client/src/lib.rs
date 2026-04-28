@@ -1403,9 +1403,18 @@ mod tests {
         // a UUID. This is the exact failure mode #115 describes: an
         // invite that looks valid right up to the point where we ask
         // parsing as a UUID for the server ID.
+        //
+        // Topics also have to be re-pointed at the new server_id so the
+        // payload still passes the topic-confusion validator added for
+        // issue #197 — otherwise the invite would be rejected at the
+        // topic-prefix check instead of reaching the UUID-parse check
+        // we want to exercise here.
         let raw = base64::decode(&valid_code).unwrap();
         let mut payload: invite::InvitePayload = willow_transport::unpack(&raw).unwrap();
         payload.server_id = "not-a-uuid".to_string();
+        for ch in &mut payload.channels {
+            ch.topic = format!("{}/{}", payload.server_id, ch.name);
+        }
         let tampered_bytes = willow_transport::pack(&payload).unwrap();
         let tampered_code = base64::encode(&tampered_bytes);
 
