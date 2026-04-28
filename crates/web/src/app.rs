@@ -45,14 +45,6 @@ fn detect_platform() -> &'static str {
     }
 }
 
-#[allow(dead_code)]
-pub fn toggle_theme() {
-    js_sys::eval(
-        r#"var h=document.documentElement;var c=h.getAttribute('data-theme')||'dark';var n=c==='dark'?'light':'dark';h.setAttribute('data-theme',n);localStorage.setItem('willow-theme',n);"#,
-    )
-    .ok();
-}
-
 /// How many milliseconds to wait before clearing the loading state automatically.
 const LOADING_TIMEOUT_MS: u32 = 5_000;
 

@@ -42,6 +42,7 @@ All sub-fixes land on one master branch per session. Master PR is opened **only 
 - **Sub-PR base ≠ main means GH Actions workflows scoped to `pull_request: branches: [main]` won't fire.** Implementer treats local `just check` green (fmt + clippy + test + wasm) as the merge gate; do not park sub-PR open waiting for CI that won't run. Master PR (base=main, opened end-of-run) runs full CI before human merge — the load-bearing gate.
 - Implementer watches CI on sub-PR ONLY when CI actually runs (rare; usually requires PR base = main). CI green → merge sub-PR into master branch. No CI run → local `just check` green is the gate, then merge.
 - CI red after one fix attempt → file follow-up issue (caveman body, link blocker), close sub-PR. Move on. Do NOT leave it as a draft for someone to resume — the next scheduled run picks up the follow-up issue automatically.
+- **`just` may be absent in some sandboxes.** Fall back to raw `cargo` equivalents — `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo check --target wasm32-unknown-unknown -p <crate>` for dual-target lib crates. Same gate, different binary. Report which path was used in the sub-PR body.
 
 ## Core Loop
 
@@ -130,6 +131,7 @@ Never defer skill edits to a follow-up — they ship with the run that surfaced 
 
 - Pre-worktree: `git stash` or `git restore` main dir; `.claude/worktrees/` in `.gitignore`.
 - Worktree per issue, branched off master branch. Tear down after sub-PR merges or parks as draft.
+- **Worktree dir may be pre-populated** with residue from a prior session that didn't tear down cleanly. Inspect first: if it contains the same logical work the implementer would do, incorporate it (run gates, finish the workflow). Don't blindly `git worktree remove --force` — that destroys legitimate in-progress work. Reset only if the residue is from an unrelated branch.
 
 ## Quality
 
@@ -139,3 +141,4 @@ Never defer skill edits to a follow-up — they ship with the run that surfaced 
 - Master PR opened only at end of run, **non-draft**, with whatever sub-PRs landed. Master PR runs full CI when opened — the actual quality net for the run.
 - Anything blocked → follow-up issue, sub-PR closed, next scheduled run picks it up. Never open the master PR as draft. Only skip opening the PR entirely if literally zero sub-PRs landed.
 - No in-session continuation. The issue queue is the durable handoff.
+- **Browser tests may be compile-only when wasm-pack / firefox / geckodriver are absent in the sandbox.** `cargo check --target wasm32-unknown-unknown -p willow-web --tests` is the fallback gate — it confirms the test compiles. The full headless run executes on real CI when the master PR opens. Implementer must flag the gap explicitly in the sub-PR body so the human knows what was actually run vs. compile-checked.
