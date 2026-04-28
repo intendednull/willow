@@ -1552,4 +1552,323 @@ git add crates/feedback/src/lib.rs crates/feedback/src/ratelimit.rs
 git commit -m "feat(feedback): continuous-refill token-bucket rate limiter"
 ```
 
+### Task 2.5: Salt file load-or-generate (`salt.rs`)
+
+**Files:**
+- Create: `crates/feedback/src/salt.rs`
+- Modify: `crates/feedback/src/lib.rs`
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `crates/feedback/src/salt.rs`:
+
+```rust
+//! 32-byte salt file used by the reporter-handle hash. Loaded at
+//! startup; regenerated on demand via the `--generate-salt` CLI
+//! flag (which writes a fresh salt and exits if the file is missing).
+
+use std::path::Path;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn load_salt_returns_32_bytes_for_valid_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("salt");
+        fs::write(&path, [0u8; 32]).unwrap();
+        let salt = load_salt(&path).unwrap();
+        assert_eq!(salt, [0u8; 32]);
+    }
+
+    #[test]
+    fn load_salt_errors_on_missing_file() {
+        let dir = tempdir().unwrap();
+        let err = load_salt(&dir.path().join("missing")).unwrap_err();
+        assert!(err.to_string().contains("not found") || err.to_string().contains("No such"));
+    }
+
+    #[test]
+    fn load_salt_errors_on_wrong_length() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("short");
+        fs::write(&path, [0u8; 16]).unwrap();
+        let err = load_salt(&path).unwrap_err();
+        assert!(err.to_string().contains("expected 32"));
+    }
+
+    #[test]
+    fn generate_salt_creates_32_random_bytes() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("salt");
+        generate_salt(&path).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        assert_eq!(bytes.len(), 32);
+        // Two consecutive generations should differ (extremely high prob).
+        let path2 = dir.path().join("salt2");
+        generate_salt(&path2).unwrap();
+        let bytes2 = fs::read(&path2).unwrap();
+        assert_ne!(bytes, bytes2);
+    }
+
+    #[test]
+    fn generate_salt_refuses_to_overwrite_existing() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("salt");
+        fs::write(&path, [0u8; 32]).unwrap();
+        let err = generate_salt(&path).unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+    }
+}
+```
+
+Add `tempfile = "3"` to `crates/feedback/Cargo.toml` `[dev-dependencies]`.
+
+- [ ] **Step 2: Run tests, expect compile failure**
+
+Run: `cargo test -p willow-feedback --lib salt::tests`
+Expected: COMPILE FAIL — functions don't exist.
+
+- [ ] **Step 3: Implement load + generate**
+
+Append to `crates/feedback/src/salt.rs` *above* the test module:
+
+```rust
+use std::fs;
+
+use anyhow::{anyhow, Context, Result};
+use rand::RngCore;
+
+/// Load a 32-byte salt from `path`. Errors if the file is missing,
+/// the wrong length, or unreadable.
+pub fn load_salt(path: &Path) -> Result<[u8; 32]> {
+    let bytes = fs::read(path)
+        .with_context(|| format!("failed to read salt file at {}", path.display()))?;
+    if bytes.len() != 32 {
+        return Err(anyhow!(
+            "salt file at {} is {} bytes, expected 32",
+            path.display(),
+            bytes.len()
+        ));
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    Ok(out)
+}
+
+/// Generate a fresh 32-byte salt and write it to `path`. Errors if
+/// the file already exists (caller is expected to delete it first
+/// for rotation).
+pub fn generate_salt(path: &Path) -> Result<()> {
+    if path.exists() {
+        return Err(anyhow!(
+            "salt file at {} already exists; delete it first to rotate",
+            path.display()
+        ));
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).ok();
+        }
+    }
+    let mut salt = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut salt);
+    fs::write(path, salt)
+        .with_context(|| format!("failed to write salt file to {}", path.display()))?;
+    // Restrict permissions on Unix.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path)?.permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(path, perms)?;
+    }
+    Ok(())
+}
+```
+
+- [ ] **Step 4: Wire into `lib.rs`**
+
+```rust
+pub mod sanitize;
+pub mod wordlist;
+pub mod handle;
+pub mod ratelimit;
+pub mod salt;
+```
+
+- [ ] **Step 5: Run tests**
+
+Run: `cargo test -p willow-feedback --lib salt::tests`
+Expected: 5 tests pass.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/feedback/Cargo.toml crates/feedback/src/lib.rs crates/feedback/src/salt.rs
+git commit -m "feat(feedback): salt file load + generate"
+```
+
+### Task 2.6: Startup-throttle gating (`throttle.rs`)
+
+**Files:**
+- Create: `crates/feedback/src/throttle.rs`
+- Modify: `crates/feedback/src/lib.rs`
+
+15-second startup throttle: atomic `O_CREAT | O_EXCL` on first boot; on subsequent boots, read mtime and sleep to enforce the gap. Bumps mtime via tempfile + rename.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `crates/feedback/src/throttle.rs`:
+
+```rust
+//! Startup throttle. Enforces a minimum 15-second gap between
+//! consecutive worker starts so a crash-loop attacker can't reset
+//! rate-limit buckets unbounded times.
+
+use std::path::Path;
+use std::time::Duration;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn first_boot_creates_file_and_does_not_sleep() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".feedback-last-boot");
+        let elapsed = enforce_throttle(&path, Duration::from_secs(15)).unwrap();
+        assert!(path.exists());
+        assert!(elapsed < Duration::from_millis(500), "first boot should not sleep");
+    }
+
+    #[test]
+    fn second_boot_within_window_sleeps_remainder() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".feedback-last-boot");
+        // First call.
+        enforce_throttle(&path, Duration::from_millis(200)).unwrap();
+        // Second call immediately — should sleep ≈ 200ms.
+        let elapsed = enforce_throttle(&path, Duration::from_millis(200)).unwrap();
+        assert!(elapsed >= Duration::from_millis(150), "got {elapsed:?}");
+        assert!(elapsed < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn second_boot_outside_window_does_not_sleep() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".feedback-last-boot");
+        enforce_throttle(&path, Duration::from_millis(50)).unwrap();
+        std::thread::sleep(Duration::from_millis(60));
+        let elapsed = enforce_throttle(&path, Duration::from_millis(50)).unwrap();
+        assert!(elapsed < Duration::from_millis(20), "got {elapsed:?}");
+    }
+}
+```
+
+- [ ] **Step 2: Run tests, expect compile failure**
+
+Run: `cargo test -p willow-feedback --lib throttle::tests`
+Expected: COMPILE FAIL — `enforce_throttle` undefined.
+
+- [ ] **Step 3: Implement throttle**
+
+Append to `crates/feedback/src/throttle.rs` *above* the test module:
+
+```rust
+use std::fs::{File, OpenOptions};
+use std::io::Write;
+use std::time::{Instant, SystemTime};
+
+use anyhow::{Context, Result};
+use filetime::{set_file_mtime, FileTime};
+
+/// Enforce a minimum gap between consecutive boots by reading and
+/// updating the mtime of `gate_path`. Returns the time spent inside
+/// this call (mostly sleeping or zero).
+///
+/// On first boot, atomically creates the file via `O_CREAT|O_EXCL`.
+/// On subsequent boots, reads mtime; if `delta < window`, sleeps
+/// `window - delta`; then bumps mtime via tempfile+rename.
+pub fn enforce_throttle(gate_path: &Path, window: Duration) -> Result<Duration> {
+    let start = Instant::now();
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(gate_path)
+    {
+        Ok(mut f) => {
+            // First boot — write timestamp, no sleep.
+            let now = SystemTime::now();
+            let secs = now
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
+                .as_secs();
+            f.write_all(secs.to_string().as_bytes()).ok();
+            return Ok(start.elapsed());
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Fall through to mtime check.
+        }
+        Err(e) => return Err(e).context("opening gate file"),
+    }
+
+    // Read existing mtime.
+    let metadata = std::fs::metadata(gate_path).context("stat gate file")?;
+    let mtime = metadata.modified().context("read mtime")?;
+    let delta = SystemTime::now()
+        .duration_since(mtime)
+        .unwrap_or(Duration::ZERO);
+    if delta < window {
+        std::thread::sleep(window - delta);
+    }
+
+    // Bump mtime atomically: write fresh contents to a sibling tempfile, rename over.
+    let parent = gate_path.parent().unwrap_or_else(|| Path::new("."));
+    let tempfile = parent.join(format!(
+        ".{}.tmp",
+        gate_path.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    let mut f = File::create(&tempfile).context("create tempfile")?;
+    let secs = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs();
+    f.write_all(secs.to_string().as_bytes()).ok();
+    drop(f);
+    std::fs::rename(&tempfile, gate_path).context("atomic rename")?;
+    let now = FileTime::from_system_time(SystemTime::now());
+    set_file_mtime(gate_path, now).ok();
+
+    Ok(start.elapsed())
+}
+```
+
+- [ ] **Step 4: Wire into `lib.rs`**
+
+```rust
+pub mod sanitize;
+pub mod wordlist;
+pub mod handle;
+pub mod ratelimit;
+pub mod salt;
+pub mod throttle;
+```
+
+- [ ] **Step 5: Run tests**
+
+Run: `cargo test -p willow-feedback --lib throttle::tests`
+Expected: 3 tests pass.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/feedback/src/lib.rs crates/feedback/src/throttle.rs
+git commit -m "feat(feedback): startup-throttle gating with O_CREAT|O_EXCL"
+```
+
 
