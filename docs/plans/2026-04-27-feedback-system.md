@@ -1871,4 +1871,367 @@ git add crates/feedback/src/lib.rs crates/feedback/src/throttle.rs
 git commit -m "feat(feedback): startup-throttle gating with O_CREAT|O_EXCL"
 ```
 
+### Task 2.7: GitHub client trait + reqwest impl + fixtures (`github.rs`)
+
+**Files:**
+- Create: `crates/feedback/src/github.rs`
+- Create: `crates/feedback/tests/fixtures/github/201-created.json`
+- Create: `crates/feedback/tests/fixtures/github/401-unauthorized.json`
+- Create: `crates/feedback/tests/fixtures/github/403-secondary-rate-limit.json`
+- Create: `crates/feedback/tests/fixtures/github/404-not-found.json`
+- Create: `crates/feedback/tests/fixtures/github/422-validation.json`
+- Modify: `crates/feedback/src/lib.rs`
+
+We isolate GitHub behind a trait so the role can be tested with a mock. The reqwest impl is thin — POST + parse response.
+
+- [ ] **Step 1: Capture the JSON fixtures**
+
+Capture representative responses. Each fixture is a static JSON document recorded once and committed; tests parse them as if they came back from `reqwest`. The shapes below are recorded from GitHub's REST API documentation (`docs.github.com/en/rest/issues/issues#create-an-issue`) — adjust if the live API drift requires it.
+
+`crates/feedback/tests/fixtures/github/201-created.json`:
+
+```json
+{
+  "url": "https://api.github.com/repos/intendednull/willow/issues/42",
+  "html_url": "https://github.com/intendednull/willow/issues/42",
+  "number": 42,
+  "state": "open",
+  "title": "[Bug] It crashes",
+  "body": "..."
+}
+```
+
+`crates/feedback/tests/fixtures/github/422-validation.json`:
+
+```json
+{
+  "message": "Validation Failed",
+  "errors": [
+    { "resource": "Issue", "code": "missing_field", "field": "title" }
+  ],
+  "documentation_url": "https://docs.github.com/rest/reference/issues#create-an-issue"
+}
+```
+
+`crates/feedback/tests/fixtures/github/401-unauthorized.json`:
+
+```json
+{
+  "message": "Bad credentials",
+  "documentation_url": "https://docs.github.com/rest"
+}
+```
+
+`crates/feedback/tests/fixtures/github/403-secondary-rate-limit.json`:
+
+```json
+{
+  "message": "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+  "documentation_url": "https://docs.github.com/rest/overview/resources-in-the-rest-api#secondary-rate-limits"
+}
+```
+
+`crates/feedback/tests/fixtures/github/404-not-found.json`:
+
+```json
+{
+  "message": "Not Found",
+  "documentation_url": "https://docs.github.com/rest/reference/issues#create-an-issue"
+}
+```
+
+- [ ] **Step 2: Write the failing tests**
+
+Create `crates/feedback/src/github.rs`:
+
+```rust
+//! GitHub Issues API client.
+//!
+//! `GithubClient` is a trait so the role can be tested with a mock.
+//! `ReqwestGithubClient` is the production impl.
+
+use willow_common::FeedbackErrReason;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture(name: &str) -> serde_json::Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/github")
+            .join(name);
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+        serde_json::from_str(&raw).unwrap()
+    }
+
+    #[test]
+    fn parse_201_extracts_html_url() {
+        let body = fixture("201-created.json");
+        let url = parse_201_html_url(&body).unwrap();
+        assert_eq!(url, "https://github.com/intendednull/willow/issues/42");
+    }
+
+    #[test]
+    fn parse_422_returns_invalid_input() {
+        let body = fixture("422-validation.json");
+        match map_failure(422, None, Some(&body)) {
+            FeedbackErrReason::GithubFailure { status, message } => {
+                assert_eq!(status, 422);
+                assert_eq!(message.as_deref(), Some("Validation Failed"));
+            }
+            other => panic!("expected GithubFailure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_401_returns_unconfigured() {
+        let body = fixture("401-unauthorized.json");
+        // 401 is the role's signal to transition to Unconfigured; the
+        // GithubClient layer surfaces it as GithubFailure { status: 401 }
+        // and the role decides what to do with it.
+        match map_failure(401, None, Some(&body)) {
+            FeedbackErrReason::GithubFailure { status, .. } => assert_eq!(status, 401),
+            other => panic!("expected GithubFailure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_403_with_zero_remaining_returns_rate_limited() {
+        // Headers carry the secondary-rate-limit signal.
+        let body = fixture("403-secondary-rate-limit.json");
+        let headers = vec![
+            ("x-ratelimit-remaining".to_string(), "0".to_string()),
+            ("retry-after".to_string(), "60".to_string()),
+        ];
+        match map_failure(403, Some(&headers), Some(&body)) {
+            FeedbackErrReason::RateLimited { retry_after_ms } => {
+                assert_eq!(retry_after_ms, 60_000);
+            }
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_403_without_secondary_signal_is_just_failure() {
+        // A 403 *without* x-ratelimit-remaining: 0 is a generic 403,
+        // not the secondary-rate-limit signal.
+        let body = fixture("403-secondary-rate-limit.json");
+        let headers = vec![("x-ratelimit-remaining".to_string(), "47".to_string())];
+        match map_failure(403, Some(&headers), Some(&body)) {
+            FeedbackErrReason::GithubFailure { status, .. } => assert_eq!(status, 403),
+            other => panic!("expected GithubFailure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn message_truncation_caps_at_200_chars() {
+        let big = "x".repeat(500);
+        let body = serde_json::json!({ "message": big });
+        match map_failure(500, None, Some(&body)) {
+            FeedbackErrReason::GithubFailure { message: Some(m), .. } => {
+                assert_eq!(m.chars().count(), 200);
+            }
+            other => panic!("expected GithubFailure, got {other:?}"),
+        }
+    }
+}
+```
+
+- [ ] **Step 3: Run tests, expect compile failure**
+
+Run: `cargo test -p willow-feedback --lib github::tests`
+Expected: COMPILE FAIL — `parse_201_html_url`, `map_failure` undefined.
+
+- [ ] **Step 4: Implement parsing helpers + the trait + reqwest impl**
+
+Append to `crates/feedback/src/github.rs` *above* the test module:
+
+```rust
+use std::time::Duration;
+
+use anyhow::{anyhow, Result};
+use async_trait::async_trait;
+use secrecy::ExposeSecret;
+use secrecy::SecretString;
+use serde::Serialize;
+
+/// Result of a `create_issue` call. Successful path carries the GitHub
+/// `html_url` (the user-facing issue URL); failure carries a typed
+/// reason matching `FeedbackErrReason` plus `secondary_rate_limit`
+/// flag so the role can trip the worker-wide cooldown.
+pub enum CreateIssueOutcome {
+    Created { html_url: String },
+    Failed { reason: FeedbackErrReason },
+}
+
+#[async_trait]
+pub trait GithubClient: Send + Sync {
+    /// Create an issue on the configured `owner/repo`. Returns the
+    /// resulting issue's `html_url` on success, or a typed error.
+    async fn create_issue(&self, body: IssueBody<'_>) -> CreateIssueOutcome;
+}
+
+#[derive(Serialize)]
+pub struct IssueBody<'a> {
+    pub title: &'a str,
+    pub body: &'a str,
+    pub labels: &'a [&'a str],
+}
+
+/// Production GitHub client.
+pub struct ReqwestGithubClient {
+    client: reqwest::Client,
+    repo: String, // "owner/repo"
+    token: SecretString,
+}
+
+impl ReqwestGithubClient {
+    pub fn new(repo: String, token: SecretString) -> Result<Self> {
+        let client = reqwest::Client::builder()
+            .user_agent(concat!("willow-feedback/", env!("CARGO_PKG_VERSION")))
+            .timeout(Duration::from_secs(20))
+            .build()?;
+        Ok(Self { client, repo, token })
+    }
+}
+
+#[async_trait]
+impl GithubClient for ReqwestGithubClient {
+    async fn create_issue(&self, body: IssueBody<'_>) -> CreateIssueOutcome {
+        let url = format!("https://api.github.com/repos/{}/issues", self.repo);
+        let resp = self
+            .client
+            .post(&url)
+            .bearer_auth(self.token.expose_secret())
+            .header("Accept", "application/vnd.github+json")
+            .json(&body)
+            .send()
+            .await;
+
+        let resp = match resp {
+            Ok(r) => r,
+            Err(e) if e.is_timeout() => {
+                return CreateIssueOutcome::Failed {
+                    reason: FeedbackErrReason::GithubFailure {
+                        status: 0,
+                        message: Some("timeout".to_string()),
+                    },
+                };
+            }
+            Err(e) => {
+                return CreateIssueOutcome::Failed {
+                    reason: FeedbackErrReason::GithubFailure {
+                        status: 0,
+                        message: Some(format!("transport: {}", truncate(&e.to_string(), 200))),
+                    },
+                };
+            }
+        };
+
+        let status = resp.status().as_u16();
+        let headers: Vec<(String, String)> = resp
+            .headers()
+            .iter()
+            .map(|(k, v)| (k.as_str().to_lowercase(), v.to_str().unwrap_or("").to_string()))
+            .collect();
+        let body_json: Option<serde_json::Value> = resp.json().await.ok();
+
+        if status == 201 {
+            if let Some(b) = body_json.as_ref() {
+                if let Some(url) = parse_201_html_url(b) {
+                    return CreateIssueOutcome::Created { html_url: url };
+                }
+            }
+            return CreateIssueOutcome::Failed {
+                reason: FeedbackErrReason::GithubFailure {
+                    status,
+                    message: Some("missing html_url".to_string()),
+                },
+            };
+        }
+
+        CreateIssueOutcome::Failed {
+            reason: map_failure(status, Some(&headers), body_json.as_ref()),
+        }
+    }
+}
+
+/// Extract the `html_url` from a 201 response body.
+pub fn parse_201_html_url(body: &serde_json::Value) -> Option<String> {
+    body.get("html_url")?.as_str().map(|s| s.to_string())
+}
+
+/// Map a non-201 GitHub response to a `FeedbackErrReason`.
+///
+/// Special cases:
+/// - 403 with `x-ratelimit-remaining: 0` → `RateLimited` with
+///   `retry-after` (default 60s if header missing).
+/// - All other non-2xx → `GithubFailure { status, message }` with
+///   the message truncated to 200 chars.
+pub fn map_failure(
+    status: u16,
+    headers: Option<&[(String, String)]>,
+    body: Option<&serde_json::Value>,
+) -> FeedbackErrReason {
+    if status == 403 {
+        if let Some(headers) = headers {
+            let remaining_zero = headers
+                .iter()
+                .any(|(k, v)| k == "x-ratelimit-remaining" && v == "0");
+            if remaining_zero {
+                let retry_secs: u64 = headers
+                    .iter()
+                    .find(|(k, _)| k == "retry-after")
+                    .and_then(|(_, v)| v.parse().ok())
+                    .unwrap_or(60);
+                return FeedbackErrReason::RateLimited {
+                    retry_after_ms: retry_secs * 1000,
+                };
+            }
+        }
+    }
+    let message = body
+        .and_then(|b| b.get("message").and_then(|m| m.as_str()))
+        .map(|s| truncate(s, 200));
+    FeedbackErrReason::GithubFailure { status, message }
+}
+
+fn truncate(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
+}
+
+// Helper to make `anyhow!` resolve in the file even though we don't
+// use it directly above (keeps the import non-noisy if `parse_*` is
+// extended later).
+#[allow(dead_code)]
+fn _unused_anyhow() -> Result<()> {
+    Err(anyhow!("placeholder"))
+}
+```
+
+- [ ] **Step 5: Wire into `lib.rs`**
+
+```rust
+pub mod sanitize;
+pub mod wordlist;
+pub mod handle;
+pub mod ratelimit;
+pub mod salt;
+pub mod throttle;
+pub mod github;
+```
+
+- [ ] **Step 6: Run tests**
+
+Run: `cargo test -p willow-feedback --lib github::tests`
+Expected: 6 tests pass.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add crates/feedback/
+git commit -m "feat(feedback): GitHub client trait + reqwest impl + fixtures"
+```
+
 
