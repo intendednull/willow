@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use willow_identity::EndpointId;
 
 use crate::dag::EventDag;
-use crate::event::{Event, EventKind, Permission, ProposedAction};
+use crate::event::{Event, EventKind, Permission, ProposedAction, MAX_ENCRYPTED_KEYS_OVER_MEMBERS};
 use crate::hash::EventHash;
 use crate::server::{PendingProposal, ServerState};
 use crate::types::{
@@ -630,6 +630,25 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
             // without also adding the peer to `members`.
             if !state.members.contains_key(&event.author) {
                 return ApplyResult::Rejected(format!("author '{}' is not a member", event.author));
+            }
+            // Anti-DoS cap (SEC-V-07). A legitimate RotateChannelKey
+            // carries at most one entry per current member; epsilon
+            // absorbs benign races between membership changes and key
+            // rotation. Anything beyond that is a fabricated-id flood —
+            // every entry would otherwise `.clone()` into the per-server
+            // `BTreeMap<EndpointId, Vec<u8>>` on every peer.
+            let cap = state
+                .members
+                .len()
+                .saturating_add(MAX_ENCRYPTED_KEYS_OVER_MEMBERS);
+            if encrypted_keys.len() > cap {
+                return ApplyResult::Rejected(format!(
+                    "RotateChannelKey: {} encrypted_keys exceeds cap {} (members={} + epsilon={})",
+                    encrypted_keys.len(),
+                    cap,
+                    state.members.len(),
+                    MAX_ENCRYPTED_KEYS_OVER_MEMBERS,
+                ));
             }
             if !encrypted_keys.is_empty() {
                 let keys = state.channel_keys.entry(channel_id.clone()).or_default();

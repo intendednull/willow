@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use willow_identity::{EndpointId, Identity};
 
-use crate::event::{Event, EventKind};
+use crate::event::{Event, EventKind, MAX_ENCRYPTED_KEY_BYTES, MAX_EVENT_DEPS};
 use crate::hash::EventHash;
 
 /// Error returned when inserting an event into the DAG fails.
@@ -39,6 +39,13 @@ pub enum InsertError {
         vote: EventHash,
         proposal: EventHash,
     },
+    /// `event.deps.len()` exceeds [`crate::event::MAX_EVENT_DEPS`].
+    /// Anti-DoS cap; see SEC-V-07 (#236).
+    DepsTooLong { got: usize, max: usize },
+    /// One entry inside `RotateChannelKey.encrypted_keys` carries a
+    /// blob larger than [`crate::event::MAX_ENCRYPTED_KEY_BYTES`].
+    /// Anti-DoS cap; see SEC-V-07 (#236).
+    EncryptedKeyTooLarge { got: usize, max: usize },
     /// Author lacks the required permission for this EventKind.
     PermissionDenied(String),
 }
@@ -73,6 +80,13 @@ impl std::fmt::Display for InsertError {
             Self::MissingGovernanceDep { vote, proposal } => write!(
                 f,
                 "Vote event {vote} must include proposal {proposal} in deps"
+            ),
+            Self::DepsTooLong { got, max } => {
+                write!(f, "event.deps too long: {got} entries (max {max})")
+            }
+            Self::EncryptedKeyTooLarge { got, max } => write!(
+                f,
+                "RotateChannelKey encrypted blob too large: {got} bytes (max {max})"
             ),
             Self::PermissionDenied(reason) => write!(f, "permission denied: {reason}"),
         }
@@ -118,12 +132,36 @@ impl EventDag {
             return Err(InsertError::InvalidSignature);
         }
 
-        // 2. Check duplicate.
+        // 2. Anti-DoS vector caps (SEC-V-07).
+        //
+        // A peer holding any permission could otherwise broadcast events
+        // with pathologically large `deps` or `encrypted_keys` blobs that
+        // every other peer would clone into a `BTreeMap` during apply.
+        // Reject at the inbound DAG boundary so over-cap events never
+        // even reach `applied_events` / `materialize`.
+        if event.deps.len() > MAX_EVENT_DEPS {
+            return Err(InsertError::DepsTooLong {
+                got: event.deps.len(),
+                max: MAX_EVENT_DEPS,
+            });
+        }
+        if let EventKind::RotateChannelKey { encrypted_keys, .. } = &event.kind {
+            for (_, blob) in encrypted_keys {
+                if blob.len() > MAX_ENCRYPTED_KEY_BYTES {
+                    return Err(InsertError::EncryptedKeyTooLarge {
+                        got: blob.len(),
+                        max: MAX_ENCRYPTED_KEY_BYTES,
+                    });
+                }
+            }
+        }
+
+        // 3. Check duplicate.
         if self.events.contains_key(&event.hash) {
             return Err(InsertError::Duplicate);
         }
 
-        // 3. Genesis check: first event must be CreateServer.
+        // 4. Genesis check: first event must be CreateServer.
         //    After genesis is set, reject any further CreateServer events.
         if self.genesis_hash.is_none() {
             match &event.kind {
@@ -143,7 +181,7 @@ impl EventDag {
             return Err(InsertError::DuplicateGenesis);
         }
 
-        // 4. Check seq: must be latest_seq + 1.
+        // 5. Check seq: must be latest_seq + 1.
         //    This also prevents equivocation: an author cannot insert two
         //    events at the same seq number because only seq = latest + 1
         //    is accepted. Combined with the prev-hash check below, this
@@ -157,7 +195,7 @@ impl EventDag {
             });
         }
 
-        // 5. Check prev: must match current head (or ZERO for seq=1).
+        // 6. Check prev: must match current head (or ZERO for seq=1).
         let expected_prev = self
             .heads
             .get(&event.author)
@@ -171,7 +209,7 @@ impl EventDag {
             });
         }
 
-        // 6. Governance structural checks: Vote events must causally
+        // 7. Governance structural checks: Vote events must causally
         //    depend on their proposal (via deps or prev) so topological
         //    sort always places the proposal before the vote.
         if let EventKind::Vote { proposal, .. } = &event.kind {
@@ -183,7 +221,7 @@ impl EventDag {
             }
         }
 
-        // 7. Insert.
+        // 8. Insert.
         let hash = event.hash;
         let author = event.author;
         self.events.insert(hash, event);

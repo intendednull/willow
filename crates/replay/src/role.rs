@@ -189,6 +189,15 @@ impl ReplayRole {
                 Err(InsertError::PermissionDenied(reason)) => {
                     warn!(%reason, "rejected event: permission denied");
                 }
+                Err(InsertError::DepsTooLong { got, max }) => {
+                    warn!(got, max, "rejected event: deps over cap (SEC-V-07)");
+                }
+                Err(InsertError::EncryptedKeyTooLarge { got, max }) => {
+                    warn!(
+                        got, max,
+                        "rejected event: RotateChannelKey blob over cap (SEC-V-07)",
+                    );
+                }
             }
         }
     }
