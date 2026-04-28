@@ -222,9 +222,13 @@ async fn dropping_dispatcher_handle_stops_emissions() {
 
     let count_after_post_drop_event = captured.borrow().len();
 
+    // The dispatcher loop checks the abort flag at the top of each iteration,
+    // AFTER `recv().await` returns. So one already-dequeued event can still
+    // dispatch before the next iteration sees the flag. Anything more than +1
+    // means the abort flag isn't being checked.
     assert!(
         count_after_post_drop_event <= count_after_drop + 1,
-        "dispatcher should not deliver events after handle drop \
+        "dispatcher should deliver at most 1 in-flight event after handle drop \
          (got {count_after_post_drop_event} after drop, was {count_after_drop} at drop)"
     );
 

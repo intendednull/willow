@@ -85,7 +85,9 @@ fn dispatch_or_buffer(js: JsValue) {
 
     if let Ok(callback) = js_sys::Reflect::get(&window, &"__willowEvent".into()) {
         if let Some(func) = callback.dyn_ref::<js_sys::Function>() {
-            let _ = func.call1(&JsValue::NULL, &js);
+            if let Err(e) = func.call1(&JsValue::NULL, &js) {
+                web_sys::console::warn_1(&format!("test-hooks: __willowEvent threw: {e:?}").into());
+            }
             return;
         }
     }
@@ -114,7 +116,11 @@ fn drain_buffer_into_callback() {
 
     while arr.length() > 0 {
         let item = arr.shift();
-        let _ = func.call1(&JsValue::NULL, &item);
+        if let Err(e) = func.call1(&JsValue::NULL, &item) {
+            web_sys::console::warn_1(
+                &format!("test-hooks: __willowEvent (drain) threw: {e:?}").into(),
+            );
+        }
     }
 }
 
