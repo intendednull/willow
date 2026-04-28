@@ -639,4 +639,144 @@ git add crates/
 git commit -m "refactor(worker): make WorkerRole::handle_request async + accept signer"
 ```
 
+---
+
+## Phase 2: `willow-feedback` crate
+
+**Why now:** the trait is async and signer-aware; all the new wire types exist. We can build the worker on top.
+
+**Approach:** TDD against the `FeedbackRole` directly. We isolate GitHub via a `GithubClient` trait so role tests don't talk to the network. The role is the integration point; the supporting modules (`sanitize`, `handle`, `ratelimit`, `salt`, `throttle`) each have their own focused unit tests.
+
+### Task 2.1: Scaffold the crate
+
+**Files:**
+- Create: `crates/feedback/Cargo.toml`
+- Create: `crates/feedback/build.rs`
+- Create: `crates/feedback/src/main.rs` (placeholder so `cargo check` passes)
+- Create: `crates/feedback/src/lib.rs` (empty placeholder; modules added in later tasks)
+- Modify: `Cargo.toml` (root) — add `crates/feedback` to `[workspace] members`
+
+- [ ] **Step 1: Add the workspace member**
+
+Edit the root `Cargo.toml` `[workspace] members` array. Insert `"crates/feedback"` alphabetically.
+
+- [ ] **Step 2: Create `crates/feedback/Cargo.toml`**
+
+```toml
+[package]
+name = "willow-feedback"
+version = "0.1.0"
+edition.workspace = true
+
+[[bin]]
+name = "willow-feedback"
+path = "src/main.rs"
+
+[dependencies]
+willow-common = { path = "../common" }
+willow-identity = { path = "../identity" }
+willow-network = { path = "../network" }
+willow-state = { path = "../state" }
+willow-worker = { path = "../worker" }
+
+anyhow = { workspace = true }
+async-trait = "0.1"
+blake3 = "1"
+bytes = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+filetime = "0.2"
+rand = { version = "0.8", features = ["std", "std_rng"] }
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+secrecy = "0.10"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+
+[dev-dependencies]
+tracing-test = "0.2"
+```
+
+- [ ] **Step 3: Create `crates/feedback/build.rs` to inject the build SHA**
+
+```rust
+//! Inject `WILLOW_BUILD_SHA` via `option_env!` so diagnostics can
+//! surface the short git SHA. Best-effort: empty in dev builds.
+
+use std::process::Command;
+
+fn main() {
+    println!("cargo:rerun-if-env-changed=WILLOW_BUILD_SHA");
+    if std::env::var_os("WILLOW_BUILD_SHA").is_some() {
+        return; // caller already set it
+    }
+    if let Ok(out) = Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+    {
+        if out.status.success() {
+            let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !sha.is_empty() {
+                println!("cargo:rustc-env=WILLOW_BUILD_SHA={sha}");
+            }
+        }
+    }
+}
+```
+
+- [ ] **Step 4: Create a placeholder `crates/feedback/src/lib.rs`**
+
+```rust
+//! Willow feedback worker library. Modules added in subsequent
+//! plan tasks.
+
+pub mod role;
+pub mod github;
+pub mod handle;
+pub mod ratelimit;
+pub mod sanitize;
+pub mod salt;
+pub mod throttle;
+pub mod wordlist;
+```
+
+(Each `pub mod` line will fail compilation until the corresponding file exists. Add them as we go — Step 5 only stubs the binary so `cargo check` passes for now. We delete this `lib.rs` placeholder content and replace it as each module is added.)
+
+For Step 5's check to pass right now, *temporarily* leave `lib.rs` empty:
+
+```rust
+//! Willow feedback worker library. Modules added in subsequent
+//! plan tasks.
+```
+
+- [ ] **Step 5: Create a placeholder `crates/feedback/src/main.rs`**
+
+```rust
+//! Willow Feedback Node — stub.
+//!
+//! Filled in by Task 2.10. This stub exists so the crate compiles
+//! while earlier modules are being built.
+
+fn main() {
+    eprintln!("willow-feedback: not yet implemented");
+    std::process::exit(1);
+}
+```
+
+- [ ] **Step 6: Verify the crate compiles**
+
+Run: `cargo check -p willow-feedback`
+Expected: pass.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add Cargo.toml crates/feedback/
+git commit -m "feat(feedback): scaffold willow-feedback crate"
+```
+
 
