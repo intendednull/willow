@@ -4,6 +4,15 @@
 **Status:** draft
 **Branch:** `claude/event-based-waits-RNFZ9`
 
+> **2026-04-28 erratum.** Investigation during PR-1 execution found that
+> several API assumptions below are wrong. `ClientHandle` has no
+> synchronous DAG read path (everything is actor-mediated), `MemNetwork`
+> won't compile on `wasm32`, and the `test-hooks` feature must span
+> `willow-client` + `willow-web`. The `WillowTestHooks` pull API methods
+> therefore return `js_sys::Promise`, not synchronous values. The
+> sections below have been updated; the old shape is preserved in
+> `docs/plans/2026-04-28-event-based-waits-pr1-errata.md`.
+
 ## Problem
 
 The Playwright suite leans on time-based waits as flake compensation. Audit of `e2e/` (8 spec files, 1814 LOC):
@@ -61,13 +70,22 @@ Anti-patterns explicitly forbidden in the migrated suite:
 
 ## `test-hooks` cargo feature
 
-`crates/web/Cargo.toml` gains:
+The feature spans two crates so the test-only `dag_addr_clone()` accessor can be gated cleanly on `willow-client` (which is depended on by other consumers like `willow-agent` that must NOT see test-hooks symbols):
 
 ```toml
+# crates/client/Cargo.toml
+[features]
+test-hooks = []           # NEW — distinct from existing test-utils
+```
+
+```toml
+# crates/web/Cargo.toml
 [features]
 default = []
-test-hooks = []
+test-hooks = ["dep:serde-wasm-bindgen", "willow-client/test-hooks"]
 ```
+
+`serde-wasm-bindgen` is gated as an optional dep so the prod build pays no cost. The `test-hooks` feature is intentionally distinct from the existing workspace `test-utils` feature: `test-utils` transitively pulls `MemNetwork`, which uses `tokio::sync::broadcast` and **will not compile on wasm32** (verified `crates/network/src/mem.rs:35`). `test-hooks` is narrow read-only instrumentation that builds clean on both targets.
 
 All new instrumentation code lives behind `#[cfg(feature = "test-hooks")]`. Production `trunk build --release` is unchanged: no exported symbols, no event subscription, no `window.__willow`.
 
@@ -77,36 +95,79 @@ The e2e build switches to `trunk build --features test-hooks`. Just recipes affe
 
 ## WASM API surface
 
-New file `crates/web/src/test_hooks.rs`, gated:
+New module `crates/web/src/test_hooks/`, gated:
 
 ```rust
 #![cfg(feature = "test-hooks")]
 
 use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::future_to_promise;
+use willow_actor::Addr;
+use willow_actor::StateActor;
+use willow_client::state_actors::DagState;
 use willow_client::ClientHandle;
+use willow_state::ServerState;
 
+/// Read-only test instrumentation handle. Stores the DAG and ServerState
+/// actor addresses (cheaply cloneable). All methods are async because
+/// the underlying actor read path is async (`willow_actor::state::select`).
 #[wasm_bindgen]
 pub struct WillowTestHooks {
-    client: ClientHandle,
+    dag_addr: Addr<StateActor<DagState>>,
+    state_addr: Addr<StateActor<ServerState>>,
+}
+
+impl WillowTestHooks {
+    /// Construct from any `ClientHandle<N>`. Captures the actor addresses
+    /// so the wasm_bindgen-exposed methods stay monomorphic.
+    pub fn new<N: willow_network::Network>(handle: &ClientHandle<N>) -> Self {
+        Self {
+            dag_addr: handle.dag_addr_clone(),         // gated test-hooks
+            state_addr: handle.event_state_addr_clone(),// gated test-hooks
+        }
+    }
 }
 
 #[wasm_bindgen]
 impl WillowTestHooks {
     /// Aggregated state snapshot for `expect.poll` matchers.
-    /// Shape: { event_count, heads: { author_id_hex: head_hash_hex, ... },
-    ///          last_event: Option<hash_hex>, channels: [{ name, member_count }] }
-    pub fn snapshot(&self) -> Result<JsValue, JsValue>;
+    /// Resolves to: { eventCount, heads: { authorIdHex: { seq, hash }, ... },
+    ///                 lastEvent: string | null, channels: [{ name, kind }] }
+    pub fn snapshot(&self) -> js_sys::Promise;
 
-    /// Compact per-author DAG heads. Stable across calls when DAG unchanged.
-    pub fn heads(&self) -> Result<JsValue, JsValue>;
+    /// Per-author DAG heads. Resolves to Record<authorIdHex, { seq, hash }>.
+    pub fn heads(&self) -> js_sys::Promise;
 
-    /// Total events applied to local DAG.
-    pub fn event_count(&self) -> u32;
+    /// Total events applied to local DAG. Resolves to a number.
+    pub fn event_count(&self) -> js_sys::Promise;
 
-    /// Hash of the most recently applied event (any author), or `None`.
-    pub fn last_event(&self) -> Option<String>;
+    /// Hex hash of the most recently applied event (Display-formatted, 64
+    /// chars), or null. Resolves to string | null.
+    pub fn last_event(&self) -> js_sys::Promise;
 }
 ```
+
+All read methods return `js_sys::Promise`. The actor-ask round-trip in WASM is sub-millisecond mailbox dispatch — fine for `expect.poll` tick rates. JS callers `await` the promise:
+
+```ts
+const count = await window.__willow.event_count();   // number
+const snap  = await window.__willow.snapshot();      // Snapshot
+```
+
+The TypeScript `Peer` wrapper hides the await from test authors.
+
+`ClientHandle` exposes two new sync getters under `#[cfg(feature = "test-hooks")]`:
+
+```rust
+// crates/client/src/accessors.rs
+#[cfg(feature = "test-hooks")]
+impl<N: Network> ClientHandle<N> {
+    pub fn dag_addr_clone(&self)         -> Addr<StateActor<DagState>>     { self.dag_addr.clone() }
+    pub fn event_state_addr_clone(&self) -> Addr<StateActor<ServerState>> { self.event_state_addr.clone() }
+}
+```
+
+These are the only client-side surface additions. Both are sync (just clone an `Addr`) and behind the same feature gate. They are NOT visible to non-test consumers of `willow-client`.
 
 Push side, in the same module:
 
@@ -200,8 +261,8 @@ export interface Snapshot {
   /// Per-author heads. Keys are EndpointId hex strings.
   heads: Record<string, AuthorHead>;
   lastEvent: string | null;
-  /// Channels by display name (the channel-id path string).
-  channels: Array<{ name: string; memberCount: number }>;
+  /// Channels in the materialised ServerState.
+  channels: Array<{ name: string; kind: string }>;
 }
 
 export class Peer {

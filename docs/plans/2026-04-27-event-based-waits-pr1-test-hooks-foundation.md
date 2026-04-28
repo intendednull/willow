@@ -1,5 +1,7 @@
 # Event-Based Waits — PR 1: test-hooks Foundation
 
+> **2026-04-28: ERRATA APPLIES.** Read `docs/plans/2026-04-28-event-based-waits-pr1-errata.md` alongside this plan. Where they conflict, the errata wins. Several API assumptions in the original plan were wrong (no sync DAG read path, MemNetwork is native-only, `to_hex()` doesn't exist, `member_count` field doesn't exist). The errata documents the corrected pattern with file:line citations.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Land the cargo-feature-gated `test-hooks` infrastructure (`WillowTestHooks` WASM API + push dispatcher), the symbol-leak guard, the justfile `FEATURES` parameterisation, the ESLint rule for `waitForTimeout`, and the per-spec allowlist headers. No spec migrations yet; that work is PR 2.
