@@ -132,20 +132,42 @@ the state actor's message handler
 their responses entirely in memory, so sync was sufficient.
 
 A feedback worker must perform an HTTP call to GitHub before it can
-return a response. We change the trait to:
+return a response, AND it needs to know the verified signer to
+enforce per-peer rate limits and to compute the salted reporter
+handle. We change the trait to:
 
 ```rust
 #[async_trait::async_trait]
 pub trait WorkerRole: Send + 'static {
     fn role_info(&self) -> WorkerRoleInfo;
     fn on_event(&mut self, event: &Event);
-    async fn handle_request(&mut self, req: WorkerRequest) -> WorkerResponse;
+    /// `signer` is the verified Ed25519 endpoint that signed the
+    /// inbound `WireMessage`; the actor recovers it from
+    /// `unpack_wire` and passes it through. Roles that don't need
+    /// the signer (replay, storage) simply ignore the parameter.
+    async fn handle_request(
+        &mut self,
+        signer: EndpointId,
+        req: WorkerRequest,
+    ) -> WorkerResponse;
     fn heads_summaries(&self) -> Vec<(String, HeadsSummary)> { vec![] }
 }
 ```
 
+The actor's `Handler<WorkerRequestMsg>`
+(`crates/worker/src/actors/state.rs`) currently has access to the
+verified `WireMessage` envelope including the signer (it's part of
+how the message is dispatched); the actor passes it through to the
+role unchanged. **Implementer note:** if the dispatch path doesn't
+yet carry the signer through to the actor, this is the one
+mechanical change the trait migration depends on. Pull the
+`(WireMessage, EndpointId)` tuple from `unpack_wire` end-to-end
+into the actor's `WorkerRequestMsg` shape and forward it.
+
 Replay and storage become trivial converts — `async fn handle_request`
-that doesn't `.await` anything. The state actor's
+that doesn't `.await` anything and ignores `signer`. We use a
+`#[allow(unused_variables)]` or `_signer: EndpointId` parameter
+naming on those impls so it's clear the parameter is intentional. The state actor's
 `Handler<WorkerRequestMsg>` is already `async fn handle(...)`, so it
 just needs to `.await` the role's response. While `handle_request` is
 running on the state actor, no other message is processed for that
@@ -160,9 +182,11 @@ oneshot channel, leaving the trait sync. Rejected because it requires
 either (a) extending the actor's request/response correlation to handle
 late replies, or (b) blocking inside `handle_request` on a spawned
 task, which is the same back-pressure as async with extra plumbing.
-Async-trait is the simpler, smaller diff. The cost — pulling in
-`async-trait` (or using a manually-written `Pin<Box<dyn Future>>`
-return type) — is acceptable.
+Async-trait is the simpler, smaller diff. We use the `async-trait`
+crate (already in the wider Rust ecosystem; not currently a
+dep — adding it is OK), not a manually-written
+`Pin<Box<dyn Future>>` return type. The macro-driven approach is
+the standard pattern and keeps the trait readable.
 
 **Back-pressure scope.** The state-actor invariant is that one
 message at a time is processed per actor instance. With async
@@ -185,8 +209,10 @@ inside a handler.
 - `crates/worker/src/actors/heartbeat.rs:124` (TestRole, in tests)
 - `crates/worker/src/actors/sync.rs:108` (TestSyncRole, in tests)
 
-No call sites change other than the actor's `.await` on the role's
-return value.
+`willow-agent` does **not** implement `WorkerRole` (it's a client
+of `willow-client`, not a worker), so no changes there. No call
+sites change other than the actor's `.await` on the role's return
+value.
 
 ### Wire types in `willow-common`
 
@@ -304,11 +330,16 @@ pub enum FeedbackErrReason {
 ```
 
 **Reporter peer ID.** The reporter's peer ID is **not** carried in
-`FeedbackRequest`. The worker recovers it from the `WireMessage`
-envelope's verified signer via the existing `unpack_wire` path
-(`crates/transport/src/lib.rs`, returning `(WireMessage, EndpointId)`).
-A forged peer ID in any payload would be ignored. A unit test asserts
-this invariant so a future refactor can't silently regress it.
+`FeedbackRequest`. It is delivered to the role via the new `signer`
+parameter on `WorkerRole::handle_request` (see
+[Async trait change](#async-trait-change)). The actor recovers the
+verified `EndpointId` from the existing `unpack_wire` path
+(`crates/transport/src/lib.rs`, returning
+`(WireMessage, EndpointId)`) and passes it through. A forged peer ID
+in any payload field would therefore be ignored — the role only ever
+reads the signer from its trait parameter. A unit test asserts this
+invariant: a `FeedbackRequest` decorated with a peer-ID-shaped field
+in `body` does not influence rate limiting or the salted handle.
 
 **Per-variant size cap.** `WireMessage::Worker(_)` currently inherits
 the 256 KB envelope cap (`crates/common/src/wire.rs:144`). Worst-case
@@ -387,8 +418,25 @@ Implementation:
 5. Maps `FeedbackErrReason` variants to `FeedbackError` variants
    one-to-one, preserving units (ms).
 
-A 30-second total timeout (gossip round-trip + GitHub API) covers the
-client side; longer than that surfaces as `FeedbackError::Timeout`.
+A 30-second total timeout (gossip round-trip + GitHub API) covers
+the client side; longer than that surfaces as
+`FeedbackError::Timeout`.
+
+**Worker-side HTTP timeout (20s).** The worker's GitHub client
+uses a 20-second timeout — strictly less than the client's 30-second
+total — so that GitHub's response usually wins the race. If the
+worker's HTTP call does time out (slow GitHub, network blip), the
+worker logs and replies
+`FeedbackErr { reason: GithubFailure { status: 0, message: Some("timeout") } }`.
+The dedup cache is **not** populated on timeout, so a retry from
+the same client (same `dedup_id`) will re-attempt the call. Because
+the GitHub call may have actually succeeded server-side after the
+worker gave up, the retry can in rare cases create a duplicate
+issue. The UI failure-state copy for `GithubFailure` directs users
+to "check GitHub before retrying" if the issue may already exist;
+maintainers can dedup manually if needed. Building cross-call
+dedup via GitHub's search API is on the follow-up list — for v1,
+this race is bounded by the rare timing window and the rate limits.
 
 **Idempotency**: if the user retries after a network blip, the same
 `dedup_id` MUST be reused. The web UI keeps `dedup_id` in component
@@ -547,8 +595,13 @@ Sanitization rules applied by the worker before assembly:
    escape leading `[` / `]` with backslashes. Final title is
    `[Bug] <user title>` / `[Suggestion] <user title>` /
    `[Other:<detail>] <user title>` (the `<detail>` segment goes
-   through the same sanitizer). Cap final title at 250 chars (200
-   user + ~50 worker overhead).
+   through the same sanitizer). The longest possible prefix is
+   `[Other:<60-char-detail>] ` = 71 chars, so the final title cap
+   is **280 chars** (200 user + 60 detail + 20 fixed overhead with
+   margin). GitHub's issue-title limit is 256 chars; if the
+   assembled title exceeds that, the worker truncates with a
+   trailing `…` rather than rejecting (the user's intent is still
+   captured in the body).
 
 3. **Total body cap.** After assembly, the worker asserts the
    composed issue body is **≤ 65,000 chars** (GitHub's documented
@@ -640,9 +693,13 @@ posted markdown for several inputs.
 ### Abuse protection on the worker
 
 - **Per-peer rate limit:** in-memory token bucket keyed by signer
-  peer ID; default 5 requests / hour with a 1-hour refill.
+  peer ID; default 5 tokens, refilled continuously at a rate of
+  `5 tokens / 3600 s` ≈ 1 token per 12 minutes (i.e. a smooth refill,
+  not a fixed-window reset). On rejection, `retry_after_ms` is the
+  exact time until the next token is available.
 - **Global rate limit:** in-memory token bucket worker-wide; default
-  50 requests / hour with a 1-hour refill. **This is the main
+  50 tokens with the same continuous refill (`50 / 3600 s` ≈ 1 token
+  per 72 seconds). **This is the main
   abuse-bound** because Ed25519 keys are free to generate (per-peer
   buckets do not constrain a determined attacker rotating
   identities). The global cap turns the attack from "unbounded
@@ -783,9 +840,20 @@ added analogously, with explicit first-run idempotency:
      > crates/web/dev_assets/feedback-peer-id.txt
    ```
 
-   The `crates/web/dev_assets/` directory is checked-in (with
-   `.gitignore` excluding the generated `feedback-peer-id.txt`
-   contents) and referenced from `crates/web/index.html` via:
+   The `crates/web/dev_assets/` directory is created in this PR
+   with the following layout (the directory itself is checked-in;
+   the generated peer-id file is gitignored):
+
+   ```
+   crates/web/dev_assets/
+   ├── .gitignore         contents: feedback-peer-id.txt
+   └── .gitkeep           empty placeholder so the directory is checked in
+   ```
+
+   And referenced from `crates/web/index.html` via a new line
+   inserted alongside the existing `data-trunk` directives (the
+   exact location is just before `</head>`, near the existing
+   `<link data-trunk rel="copy-file" href="init.js"/>` entry):
 
    ```html
    <link data-trunk rel="copy-dir" href="dev_assets/" />
@@ -874,6 +942,27 @@ renders `NotConfigured`. The same mechanism cleans up the
 relay-URL build-time-injection drift that exists today; the
 relay-URL part is in scope for this spec because we're touching
 `init.js` and `web.Dockerfile` already.
+
+**Trunk asset path verification.** The entrypoint references
+`/usr/share/nginx/html/init.js` as the served path. `crates/web/index.html`
+declares `init.js` as `data-trunk rel="copy-file"`, which trunk
+copies verbatim to `dist/init.js` *without* asset hashing (hashing
+applies to `rel="rust"` and `rel="css"` outputs, not `copy-file`).
+The Dockerfile copies `dist/` into `/usr/share/nginx/html/`, so
+the entrypoint's hard-coded path is correct. Implementer should
+add a smoke test in CI that checks for the literal placeholders
+in the built image to catch any future trunk behavior change.
+
+**Cache-busting consideration.** Browsers may cache `init.js` from
+a previous deployment. Because the entrypoint's `sed` runs at
+container start and the served file is byte-different across
+deployments (different placeholder substitutions), a cache-busting
+query string on `init.js` in `index.html`
+(`<script src="/init.js?v=__INJECT_BUILD_TAG__"></script>`) plus a
+third entrypoint substitution (`WILLOW_BUILD_TAG`) is added in
+this spec. The dev path uses the same mechanism with
+`WILLOW_BUILD_TAG=dev`, which is fine because dev refreshes are
+manual.
 
 ### Observability
 
@@ -1064,10 +1153,18 @@ behavior to the lowest tier that covers it. Concretely:
 **`willow-feedback` GitHub client unit tests:**
 - Parse representative GitHub API responses (201 created, 422
   validation, 401 unauthorized, 403 secondary-rate-limit, 404 repo
-  not found) into `FeedbackErrReason`.
+  not found) into `FeedbackErrReason`. JSON fixtures live in
+  `crates/feedback/tests/fixtures/github/` (one file per status
+  code) and are recorded straight from
+  [GitHub's REST docs](https://docs.github.com/en/rest/issues/issues#create-an-issue)
+  / a one-time real call captured via `curl`. Implementer captures
+  these as part of the initial test PR.
 - Verify the assembled issue body satisfies all sanitization
   invariants for several adversarial inputs (closing fences,
-  Unicode chars, leading `[`).
+  indented fences, tilde fences, CRLF mixes, info-string tricks,
+  HTML entity-encoded backticks, RTL override codepoints, leading
+  `[`, and a body that's exactly the closing-fence-free worst case
+  of 8000 chars of backticks).
 
 **`willow-client` tests (`just test-client`, in
 `crates/client/src/tests/feedback.rs`):**
