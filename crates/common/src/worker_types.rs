@@ -177,6 +177,29 @@ impl PartialEq for WorkerResponse {
                 WorkerResponse::FeedbackErr { reason: a },
                 WorkerResponse::FeedbackErr { reason: b },
             ) => a == b,
+            (WorkerResponse::SyncBatch { events: a }, WorkerResponse::SyncBatch { events: b }) => {
+                // `Event` does not derive `PartialEq`; compare by the
+                // canonical content hash, which IS each event's identity.
+                a.len() == b.len()
+                    && a.iter().zip(b.iter()).all(|(x, y)| x.hash == y.hash)
+            }
+            (
+                WorkerResponse::Snapshot {
+                    snapshot: a,
+                    post_snapshot_events: ae,
+                },
+                WorkerResponse::Snapshot {
+                    snapshot: b,
+                    post_snapshot_events: be,
+                },
+            ) => {
+                // Compare snapshot by its canonical SHA-256 hash (documented
+                // as the identity of the snapshot) and post-snapshot events
+                // by their content hashes.
+                a.hash == b.hash
+                    && ae.len() == be.len()
+                    && ae.iter().zip(be.iter()).all(|(x, y)| x.hash == y.hash)
+            }
             _ => false,
         }
     }
@@ -761,6 +784,32 @@ mod tests {
                 _ => panic!("expected Response"),
             }
         }
+    }
+
+    #[test]
+    fn worker_response_sync_batch_self_equal() {
+        // Previously SyncBatch fell through to `_ => false`, making
+        // `assert_eq!(resp, resp.clone())` silently fail.
+        let resp = WorkerResponse::SyncBatch { events: Vec::new() };
+        assert_eq!(resp, resp.clone());
+    }
+
+    #[test]
+    fn worker_response_snapshot_self_equal() {
+        use willow_state::{HeadsSummary, ServerState, Snapshot};
+
+        // Previously Snapshot fell through to `_ => false`; ensure the
+        // new arm matches and compares by canonical hash.
+        let id = Identity::generate();
+        let state = ServerState::new("srv-eq", "Eq Server", id.endpoint_id());
+        let heads = HeadsSummary::default();
+        let snapshot = Snapshot::new(state, heads);
+
+        let resp = WorkerResponse::Snapshot {
+            snapshot: Box::new(snapshot),
+            post_snapshot_events: Vec::new(),
+        };
+        assert_eq!(resp, resp.clone());
     }
 
     #[test]
