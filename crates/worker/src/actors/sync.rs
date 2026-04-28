@@ -105,6 +105,7 @@ mod tests {
 
     /// A test role that provides known heads summaries.
     struct TestSyncRole;
+    #[async_trait::async_trait]
     impl crate::WorkerRole for TestSyncRole {
         fn role_info(&self) -> crate::types::WorkerRoleInfo {
             crate::types::WorkerRoleInfo::Replay {
@@ -115,8 +116,9 @@ mod tests {
             }
         }
         fn on_event(&mut self, _event: &willow_state::Event) {}
-        fn handle_request(
+        async fn handle_request(
             &mut self,
+            _signer: willow_identity::EndpointId,
             _req: crate::types::WorkerRequest,
         ) -> crate::types::WorkerResponse {
             crate::types::WorkerResponse::Denied {

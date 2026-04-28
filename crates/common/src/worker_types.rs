@@ -180,8 +180,7 @@ impl PartialEq for WorkerResponse {
             (WorkerResponse::SyncBatch { events: a }, WorkerResponse::SyncBatch { events: b }) => {
                 // `Event` does not derive `PartialEq`; compare by the
                 // canonical content hash, which IS each event's identity.
-                a.len() == b.len()
-                    && a.iter().zip(b.iter()).all(|(x, y)| x.hash == y.hash)
+                a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.hash == y.hash)
             }
             (
                 WorkerResponse::Snapshot {
@@ -209,6 +208,7 @@ impl PartialEq for WorkerResponse {
 ///
 /// The state actor owns the implementor exclusively — `&mut self` is
 /// safe because no other task can access it concurrently.
+#[async_trait::async_trait]
 pub trait WorkerRole: Send + 'static {
     /// Returns combined role identity and capacity info for heartbeats.
     fn role_info(&self) -> WorkerRoleInfo;
@@ -216,8 +216,14 @@ pub trait WorkerRole: Send + 'static {
     /// Called when an event is received from gossipsub.
     fn on_event(&mut self, event: &Event);
 
-    /// Handle an incoming request from a client peer.
-    fn handle_request(&mut self, req: WorkerRequest) -> WorkerResponse;
+    /// Handle an inbound request from a client. `signer` is the
+    /// verified Ed25519 signer of the inbound `WireMessage`; roles
+    /// that don't need it (replay, storage) ignore the parameter.
+    async fn handle_request(
+        &mut self,
+        signer: willow_identity::EndpointId,
+        req: WorkerRequest,
+    ) -> WorkerResponse;
 
     /// Returns heads summaries for all tracked servers.
     /// Used by the sync actor to broadcast current DAG state.

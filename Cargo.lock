@@ -6099,6 +6099,7 @@ dependencies = [
 name = "willow-common"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bincode",
  "serde",
  "tracing",
@@ -6207,6 +6208,7 @@ name = "willow-replay"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "tokio",
  "tracing",
@@ -6235,6 +6237,7 @@ name = "willow-storage"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bincode",
  "clap",
  "rusqlite",

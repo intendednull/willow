@@ -135,7 +135,13 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Handler<GossipEventMsg>
                         request_id,
                         payload,
                     } => {
-                        if let Ok(response) = state_addr.ask(WorkerRequestMsg(payload)).await {
+                        if let Ok(response) = state_addr
+                            .ask(WorkerRequestMsg {
+                                req: payload,
+                                signer: requester,
+                            })
+                            .await
+                        {
                             // target_peer identifies the original requester so
                             // clients can filter responses addressed to them.
                             let reply = WorkerWireMessage::Response {
