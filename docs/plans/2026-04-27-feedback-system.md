@@ -3155,4 +3155,490 @@ git add crates/feedback/src/main.rs
 git commit -m "feat(feedback): main binary — CLI, repo validation, runtime bring-up"
 ```
 
+---
+
+## Phase 3: `willow-client` API
+
+**Why now:** the worker is reachable via the existing gossip request/response pathway. We need a typed client API that constructs `WorkerRequest::Feedback` and parses `WorkerResponse::FeedbackOk/FeedbackErr`.
+
+### Task 3.1: Add `feedback_worker` to `ClientConfig` + `FeedbackError` enum
+
+**Files:**
+- Modify: `crates/client/src/lib.rs` (around line 189 — `ClientConfig`)
+- Create: `crates/client/src/feedback.rs`
+- Modify: `crates/client/Cargo.toml` (add `url`, `rand`)
+
+- [ ] **Step 1: Add the config field**
+
+Edit `crates/client/src/lib.rs` — extend `ClientConfig` (currently around line 189) and the `Default` impl:
+
+```rust
+pub struct ClientConfig {
+    pub relay_addr: Option<String>,
+    pub display_name: Option<String>,
+    pub persistence: bool,
+    pub bootstrap_peers: Vec<willow_identity::EndpointId>,
+    /// Project-run feedback worker peer ID. If `None`, the
+    /// in-app feedback form is disabled and renders a
+    /// "Feedback is not configured for this build" state.
+    pub feedback_worker: Option<willow_identity::EndpointId>,
+}
+
+impl Default for ClientConfig {
+    fn default() -> Self {
+        Self {
+            relay_addr: None,
+            display_name: None,
+            persistence: true,
+            bootstrap_peers: vec![],
+            feedback_worker: None,
+        }
+    }
+}
+```
+
+- [ ] **Step 2: Add `url` and `rand` to client deps**
+
+Add to `crates/client/Cargo.toml` `[dependencies]`:
+
+```toml
+url = "2"
+rand = { version = "0.8", features = ["std", "std_rng"] }
+```
+
+(Workspace may already pin `rand`; use the workspace version if so.)
+
+- [ ] **Step 3: Create the empty `feedback.rs` module**
+
+Create `crates/client/src/feedback.rs` with just the error enum + skeleton, so it compiles before tests are added:
+
+```rust
+//! `Client::submit_feedback` and the `FeedbackError` enum.
+
+#[derive(Debug, thiserror::Error, Clone, PartialEq)]
+pub enum FeedbackError {
+    #[error("client is not connected to a network")]
+    NotConnected,
+    #[error("feedback worker is not configured for this build")]
+    NotConfigured,
+    #[error("feedback worker is unreachable")]
+    WorkerUnreachable,
+    #[error("request timed out")]
+    Timeout,
+    #[error("rate limited; retry after {retry_after_ms}ms")]
+    RateLimited { retry_after_ms: u64 },
+    #[error("invalid input in field {field}: {message}")]
+    InvalidInput { field: String, message: String },
+    #[error("github returned {status}: {message:?}")]
+    GithubFailure {
+        status: u16,
+        message: Option<String>,
+    },
+    /// Inner string is the worker-supplied URL, truncated to 512
+    /// chars on receipt to bound error formatting.
+    #[error("worker returned a malformed issue url: {0}")]
+    BadIssueUrl(String),
+    #[error("internal: {0}")]
+    Internal(String),
+}
+```
+
+- [ ] **Step 4: Wire the module into `lib.rs`**
+
+Add to the `pub mod ...` declarations (alphabetically):
+
+```rust
+pub mod feedback;
+```
+
+- [ ] **Step 5: Verify it compiles**
+
+Run: `cargo check -p willow-client`
+Expected: pass.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/client/Cargo.toml crates/client/src/lib.rs crates/client/src/feedback.rs
+git commit -m "feat(client): add feedback_worker config + FeedbackError"
+```
+
+### Task 3.2: `Client::submit_feedback` (TDD with `MemNetwork`)
+
+**Files:**
+- Modify: `crates/client/src/feedback.rs` (add `submit_feedback` method on `ClientHandle`)
+- Create: `crates/client/src/tests/feedback.rs`
+- Modify: `crates/client/src/tests/mod.rs` (or wherever the test module list lives)
+
+- [ ] **Step 1: Inspect the existing pattern for sending a `WorkerRequest`**
+
+Run: `grep -rn "WorkerRequest::Sync\|WorkerWireMessage::Request" crates/client/src/ | head -10`
+Expected: existing `submit_sync_request` / `submit_history_request` methods (or similar) that build `WorkerRequest`, wrap in `WorkerWireMessage::Request`, gossip on `_willow_workers`, await a matching response. The implementer follows that exact shape.
+
+If no such pattern exists in `willow-client` (the request path may live in worker_cache or another module), look at `crates/client/src/worker_cache.rs` and follow its conventions.
+
+- [ ] **Step 2: Write the failing test**
+
+Create `crates/client/src/tests/feedback.rs`:
+
+```rust
+//! Client-tier integration tests for Client::submit_feedback.
+//! Uses MemNetwork to stand up a mock feedback worker.
+
+use std::time::Duration;
+use willow_client::feedback::FeedbackError;
+use willow_client::{ClientConfig, ClientHandle};
+use willow_common::{
+    FeedbackCategory, FeedbackErrReason, WorkerRequest, WorkerResponse, WorkerWireMessage,
+};
+use willow_network::mem::MemNetwork;
+
+// The exact spawn helper depends on the existing test infra; reuse
+// the helper that other client tests use (e.g. `test_client()` from
+// crates/client/src/tests/multi_peer_sync.rs or similar).
+
+#[tokio::test]
+async fn submit_feedback_returns_not_configured_when_unset() {
+    let (client, _evloop) = make_client(None).await;
+    let err = client
+        .submit_feedback(
+            "title".to_string(),
+            FeedbackCategory::Bug,
+            "body".to_string(),
+            false,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err, FeedbackError::NotConfigured);
+}
+
+#[tokio::test]
+async fn submit_feedback_happy_path_returns_parsed_url() {
+    let (client, worker_peer_id, _evloop_c, _evloop_w, _net) =
+        spawn_client_and_mock_worker(|req| match req {
+            WorkerRequest::Feedback { .. } => WorkerResponse::FeedbackOk {
+                issue_url: "https://github.com/x/y/issues/42".to_string(),
+            },
+            _ => panic!("unexpected request"),
+        })
+        .await;
+    let url = client
+        .submit_feedback(
+            "title".to_string(),
+            FeedbackCategory::Bug,
+            "body".to_string(),
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(url.as_str(), "https://github.com/x/y/issues/42");
+    let _ = worker_peer_id;
+}
+
+#[tokio::test]
+async fn submit_feedback_maps_rate_limited() {
+    let (client, _peer, _e1, _e2, _n) = spawn_client_and_mock_worker(|_req| {
+        WorkerResponse::FeedbackErr {
+            reason: FeedbackErrReason::RateLimited { retry_after_ms: 12_345 },
+        }
+    })
+    .await;
+    let err = client
+        .submit_feedback(
+            "t".to_string(),
+            FeedbackCategory::Bug,
+            "b".to_string(),
+            false,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err, FeedbackError::RateLimited { retry_after_ms: 12_345 });
+}
+
+#[tokio::test]
+async fn submit_feedback_maps_bad_issue_url() {
+    let (client, _peer, _e1, _e2, _n) = spawn_client_and_mock_worker(|_req| {
+        WorkerResponse::FeedbackOk {
+            issue_url: "not a url".to_string(),
+        }
+    })
+    .await;
+    let err = client
+        .submit_feedback(
+            "t".to_string(),
+            FeedbackCategory::Bug,
+            "b".to_string(),
+            false,
+        )
+        .await
+        .unwrap_err();
+    matches!(err, FeedbackError::BadIssueUrl(_));
+}
+
+#[tokio::test]
+async fn submit_feedback_returns_worker_unreachable_when_no_listener() {
+    let fake_peer = willow_identity::Identity::generate().endpoint_id();
+    let (client, _ev) = make_client(Some(fake_peer)).await;
+    // No worker spawned; the request times out / returns unreachable.
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        client.submit_feedback(
+            "t".to_string(),
+            FeedbackCategory::Bug,
+            "b".to_string(),
+            false,
+        ),
+    )
+    .await;
+    assert!(result.is_ok(), "client must surface error within 5s");
+    let err = result.unwrap().unwrap_err();
+    assert!(
+        matches!(
+            err,
+            FeedbackError::WorkerUnreachable | FeedbackError::Timeout
+        ),
+        "got {err:?}"
+    );
+}
+
+// --- helpers ---------------------------------------------------------------
+
+async fn make_client(
+    feedback_worker: Option<willow_identity::EndpointId>,
+) -> (ClientHandle<MemNetwork>, /* event loop join handle */ tokio::task::JoinHandle<()>) {
+    let cfg = ClientConfig {
+        feedback_worker,
+        persistence: false,
+        ..Default::default()
+    };
+    let identity = willow_identity::Identity::generate();
+    // The exact API for spawning a ClientHandle in tests is project-specific —
+    // the implementer follows the pattern in crates/client/src/tests/*.rs,
+    // typically `ClientHandle::<MemNetwork>::new_with(cfg, identity, network)`
+    // or similar. Returns (client, event_loop_handle).
+    todo!("follow existing test_client() helper from crates/client/src/tests/")
+}
+
+async fn spawn_client_and_mock_worker(
+    handler: impl Fn(&WorkerRequest) -> WorkerResponse + Send + Sync + 'static,
+) -> (
+    ClientHandle<MemNetwork>,
+    willow_identity::EndpointId,
+    tokio::task::JoinHandle<()>,
+    tokio::task::JoinHandle<()>,
+    std::sync::Arc<MemNetwork>,
+) {
+    todo!("reuse the multi-peer test harness from crates/client/src/tests/multi_peer_sync.rs")
+}
+```
+
+The two `todo!()` helpers MUST be filled in by following the existing client test harness. The plan can't write them here because the project's helper signatures are project-internal. **The implementer's first concrete action under Step 3 is to read `crates/client/src/tests/multi_peer_sync.rs` (or whichever sibling file currently contains the helpers) and copy-adapt the spawn pattern.**
+
+- [ ] **Step 3: Wire the test module into the test list**
+
+Edit `crates/client/src/tests/mod.rs` (or `crates/client/src/lib.rs`'s `#[cfg(test)] mod tests` declaration if that's the convention) to add `mod feedback;`.
+
+- [ ] **Step 4: Run the tests, expect compile failure on `submit_feedback`**
+
+Run: `cargo test -p willow-client --test feedback 2>&1 | head -20` (or whatever the test invocation pattern is — `cargo test -p willow-client feedback::` if the test module is inline).
+Expected: COMPILE FAIL — `submit_feedback` undefined on `ClientHandle`.
+
+- [ ] **Step 5: Implement `Client::submit_feedback`**
+
+Append to `crates/client/src/feedback.rs`:
+
+```rust
+use std::time::Duration;
+
+use rand::RngCore;
+use willow_common::{
+    FeedbackCategory, FeedbackDiagnostics, FeedbackErrReason, WorkerRequest, WorkerResponse,
+    WorkerWireMessage,
+};
+use willow_identity::EndpointId;
+
+const SUBMIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+impl<N: willow_network::Network> crate::ClientHandle<N> {
+    /// Submit feedback to the configured feedback worker.
+    pub async fn submit_feedback(
+        &self,
+        title: String,
+        category: FeedbackCategory,
+        body: String,
+        include_diagnostics: bool,
+    ) -> Result<url::Url, FeedbackError> {
+        let Some(worker) = self.feedback_worker_peer() else {
+            return Err(FeedbackError::NotConfigured);
+        };
+
+        // Generate a fresh dedup_id per call. Callers that need to
+        // retry idempotently can use submit_feedback_with_dedup_id.
+        let mut dedup_id = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut dedup_id);
+
+        let diagnostics = if include_diagnostics {
+            Some(build_diagnostics())
+        } else {
+            None
+        };
+
+        let req = WorkerRequest::Feedback {
+            dedup_id,
+            title,
+            category,
+            body,
+            diagnostics,
+        };
+
+        // Submit through the same worker request/response path used
+        // by replay/history requests. The exact helper name varies;
+        // the pattern is `self.send_worker_request(worker, req).await`.
+        let resp = match tokio::time::timeout(
+            SUBMIT_TIMEOUT,
+            self.send_worker_request(worker, req),
+        )
+        .await
+        {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => return Err(map_send_err(e)),
+            Err(_) => return Err(FeedbackError::Timeout),
+        };
+
+        match resp {
+            WorkerResponse::FeedbackOk { issue_url } => {
+                let truncated = if issue_url.chars().count() > 512 {
+                    issue_url.chars().take(512).collect()
+                } else {
+                    issue_url
+                };
+                url::Url::parse(&truncated).map_err(|_| FeedbackError::BadIssueUrl(truncated))
+            }
+            WorkerResponse::FeedbackErr { reason } => Err(map_reason(reason)),
+            other => Err(FeedbackError::Internal(format!(
+                "unexpected response shape: {other:?}"
+            ))),
+        }
+    }
+
+    fn feedback_worker_peer(&self) -> Option<EndpointId> {
+        // Implementer wires this to the field stored from
+        // ClientConfig::feedback_worker at construction.
+        self.config.feedback_worker
+    }
+}
+
+fn map_reason(r: FeedbackErrReason) -> FeedbackError {
+    match r {
+        FeedbackErrReason::RateLimited { retry_after_ms } => {
+            FeedbackError::RateLimited { retry_after_ms }
+        }
+        FeedbackErrReason::InvalidInput { field, message } => FeedbackError::InvalidInput {
+            field: truncate(&field, 64),
+            message: truncate(&message, 200),
+        },
+        FeedbackErrReason::GithubFailure { status, message } => FeedbackError::GithubFailure {
+            status,
+            message: message.map(|m| truncate(&m, 200)),
+        },
+        FeedbackErrReason::Unconfigured => FeedbackError::NotConfigured,
+    }
+}
+
+fn map_send_err(e: impl std::fmt::Display) -> FeedbackError {
+    let s = e.to_string();
+    if s.contains("unreachable") || s.contains("no listener") {
+        FeedbackError::WorkerUnreachable
+    } else {
+        FeedbackError::Internal(truncate(&s, 200))
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
+fn build_diagnostics() -> FeedbackDiagnostics {
+    use willow_common::ClientPlatform;
+    let app_version = env!("CARGO_PKG_VERSION").to_string();
+    let build_hash = option_env!("WILLOW_BUILD_SHA").map(|s| s.to_string());
+    #[cfg(target_arch = "wasm32")]
+    let (locale, client) = wasm_diagnostics();
+    #[cfg(not(target_arch = "wasm32"))]
+    let (locale, client) = native_diagnostics();
+    FeedbackDiagnostics {
+        app_version,
+        build_hash,
+        locale,
+        client,
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn wasm_diagnostics() -> (Option<String>, willow_common::ClientPlatform) {
+    use willow_common::ClientPlatform;
+    // Implementer wires this to web_sys / js_sys to read
+    // `navigator.language` and parse the UA string into a coarse
+    // family/major-version. See spec §"FeedbackDiagnostics".
+    let locale = web_sys::window()
+        .and_then(|w| w.navigator().language());
+    let ua = web_sys::window()
+        .map(|w| w.navigator().user_agent().unwrap_or_default())
+        .unwrap_or_default();
+    let ua_family = parse_ua_family(&ua);
+    (locale, ClientPlatform::Web { ua_family })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn parse_ua_family(ua: &str) -> String {
+    // Coarse parser: pick `firefox/<major>` etc. Implementer keeps
+    // it conservative; falls back to "unknown/0" if no match.
+    for (needle, name) in [
+        ("Firefox/", "firefox"),
+        ("Chrome/", "chrome"),
+        ("Safari/", "safari"),
+        ("Edge/", "edge"),
+    ] {
+        if let Some(idx) = ua.find(needle) {
+            let rest = &ua[idx + needle.len()..];
+            let major: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if !major.is_empty() {
+                return format!("{name}/{major}");
+            }
+        }
+    }
+    "unknown/0".to_string()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_diagnostics() -> (Option<String>, willow_common::ClientPlatform) {
+    use willow_common::ClientPlatform;
+    let locale = std::env::var("LANG").ok().and_then(|l| {
+        // Strip ".UTF-8" or "@variant" suffixes to leave bare BCP 47.
+        l.split(['.', '@']).next().map(|s| s.replace('_', "-"))
+    });
+    (
+        locale,
+        ClientPlatform::Native {
+            os: std::env::consts::OS.to_string(),
+            arch: std::env::consts::ARCH.to_string(),
+        },
+    )
+}
+```
+
+The implementer adapts `self.send_worker_request(...)` to the existing project helper for sending a worker request and awaiting a typed response. If no such helper exists, use the same pattern as `crates/client/src/worker_cache.rs` — wrap in `WorkerWireMessage::Request { request_id, target_peer, payload }`, broadcast, listen for the matching `Response`.
+
+- [ ] **Step 6: Run tests**
+
+Run: `cargo test -p willow-client feedback`
+Expected: 4 tests pass.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add crates/client/
+git commit -m "feat(client): Client::submit_feedback + FeedbackError mapping"
+```
+
 
