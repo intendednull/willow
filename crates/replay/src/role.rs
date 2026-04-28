@@ -194,8 +194,8 @@ impl ReplayRole {
                 }
                 Err(InsertError::EncryptedKeyTooLarge { got, max }) => {
                     warn!(
-                        got, max,
-                        "rejected event: RotateChannelKey blob over cap (SEC-V-07)",
+                        got,
+                        max, "rejected event: RotateChannelKey blob over cap (SEC-V-07)",
                     );
                 }
             }
