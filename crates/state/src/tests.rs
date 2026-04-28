@@ -2430,8 +2430,11 @@ fn deep_pending_chain_does_not_stack_overflow() {
 
     let genesis_hash = managed.dag().genesis().unwrap().hash;
 
-    // Build a chain of 3000 events.
-    let chain_len = 3_000;
+    // Build a chain of 1500 events. Kept below the per-author sub-cap
+    // (max_entries / DEFAULT_PENDING_PER_AUTHOR_DIVISOR == 2000) so the
+    // SEC-V-08 cap doesn't drop chain links — this test is about
+    // iterative resolution, not capacity policy.
+    let chain_len = 1_500;
     let mut events = Vec::with_capacity(chain_len);
     let mut prev = genesis_hash;
     for seq_offset in 0..chain_len {
@@ -2874,9 +2877,11 @@ fn pending_buffer_eviction_reduces_count_to_cap() {
     use crate::sync::PendingBuffer;
 
     // Insert more events than the cap and verify cached_count stays <= cap.
+    // Override the SEC-V-08 per-author sub-cap so this test focuses on
+    // global capacity-eviction behaviour.
     let id = Identity::generate();
     let cap = 10usize;
-    let mut buf = PendingBuffer::with_capacity(cap);
+    let mut buf = PendingBuffer::with_capacity(cap).with_per_author_cap(1_000);
 
     for i in 0u64..50 {
         let mut hash_bytes = [0u8; 32];
