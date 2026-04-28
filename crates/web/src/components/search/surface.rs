@@ -147,7 +147,10 @@ pub fn SearchSurface(
 
     view! {
         <div class="search-surface">
-            <SearchInput on_submit=on_submit />
+            // Both the Enter-activate (keyboard) and row-click (mouse)
+            // paths funnel through `on_select_result` so navigation is
+            // identical regardless of input modality (issue #406).
+            <SearchInput on_submit=on_submit on_activate=on_select_result />
             <ScopeChip focused_channel=focused_channel />
             {move || {
                 let q = state.search.query.get();

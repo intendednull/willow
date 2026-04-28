@@ -14,9 +14,14 @@
 //!   target. The active row is also announced via
 //!   `aria-activedescendant`, which points at the row's
 //!   `id="search-row-{message_id}"` per WAI-ARIA listbox guidance.
+//! - `Enter` activates the highlighted row (same path mouse click takes
+//!   on the row) when `active_index` points at a real result; otherwise
+//!   it falls back to the recents-push `on_submit` so the empty-query
+//!   affordance still works. Wired this way per issue #406 — keyboard
+//!   and pointer converge on a single activation path.
 
 use leptos::prelude::*;
-use willow_client::SearchScope;
+use willow_client::{SearchResult, SearchScope};
 
 use crate::state::{AppState, AppWriteSignals};
 
@@ -33,10 +38,17 @@ fn placeholder_for(scope: &SearchScope) -> &'static str {
 /// Sticky search input at the top of the surface.
 #[component]
 pub fn SearchInput(
-    /// Fired with the current query text when the user presses Enter
-    /// (used for recents push).
+    /// Fired with the current query text when Enter is pressed and there
+    /// is no highlighted row to activate (no results, or `active_index`
+    /// out of range). Used for the empty-query "push to recents" path.
     #[prop(into)]
     on_submit: Callback<String>,
+    /// Fired with the highlighted result row when Enter is pressed and
+    /// `active_index` points at a real row. Same path a mouse click on
+    /// the row takes — keyboard and pointer must converge here per
+    /// issue #406.
+    #[prop(into)]
+    on_activate: Callback<SearchResult>,
 ) -> impl IntoView {
     let state = use_context::<AppState>().expect("AppState");
     let write = use_context::<AppWriteSignals>().expect("AppWriteSignals");
@@ -74,8 +86,25 @@ pub fn SearchInput(
             }
         }
         "Enter" => {
+            // Always swallow Enter — the surrounding `<form role="search">`
+            // would otherwise navigate / submit and tear down the surface.
             ev.prevent_default();
-            on_submit.run(state.search.query.get_untracked());
+            // If a result row is highlighted (active_index in range of
+            // the flat, in-display-order results), activate it via the
+            // same callback a click on the row fires. Otherwise (no
+            // results, or stale out-of-bounds index) fall back to the
+            // recents-push submit path so the empty-query affordance
+            // still works. Keeping both paths behind one Enter handler
+            // is what closes #406.
+            let flat = super::results::flat_ordered(
+                &state.search.results.get_untracked(),
+                &state.search.scope.get_untracked(),
+            );
+            let i = state.search.active_index.get_untracked();
+            match flat.get(i) {
+                Some(row) => on_activate.run(row.clone()),
+                None => on_submit.run(state.search.query.get_untracked()),
+            }
         }
         "ArrowDown" => {
             let n = result_count();

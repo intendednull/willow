@@ -9782,6 +9782,199 @@ mod phase_2e_search_active_row {
     }
 }
 
+// ── Phase 2e — Enter activates highlighted row (issue #406) ─────────────────
+//
+// Follow-up to #344 / PR #403. Once `aria-activedescendant` advertised an
+// active row, Enter still routed to the recents-push path instead of
+// activating the highlighted row. These tests pin the keyboard contract:
+//
+//   1. Enter with an active row in range → fires `on_activate(row)` and
+//      does NOT fire the recents-push `on_submit` (keyboard converges on
+//      the same activation path as a mouse click).
+//   2. Enter with no results / no active row → falls back to `on_submit`
+//      so the empty-query "push to recents" affordance is preserved.
+//
+// Pinned to `ThisChannel` scope to keep grouping trivial — the cross-group
+// flat-index walk has its own coverage in `phase_2e_search_active_row`.
+mod phase_2e_search_enter_activate {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use willow_client::{SearchResult, SearchScope};
+    use willow_web::components::SearchInput;
+    use willow_web::state::{create_signals, InitialSignals};
+
+    fn fixture_result(id: &str, body: &str, ts: u64) -> SearchResult {
+        SearchResult {
+            message_id: id.into(),
+            channel_id: "general".into(),
+            channel_name: "general".into(),
+            grove_id: Some("grove-fixture".into()),
+            letter_id: None,
+            author_display_name: "Mira".into(),
+            author_handle: "mira".into(),
+            timestamp_ms: ts,
+            body: body.into(),
+            matched_ranges: Vec::new(),
+        }
+    }
+
+    /// Captured callback invocations from a single test mount. Keeps the
+    /// activate path and the submit path distinct so the test can assert
+    /// exactly which branch the Enter handler chose. `Arc<Mutex<_>>` so
+    /// the shared cell satisfies `Callback::new`'s `Send + Sync` bound.
+    #[derive(Default)]
+    struct Captured {
+        activated: Vec<SearchResult>,
+        submitted: Vec<String>,
+    }
+
+    /// Mount `<SearchInput>` with seeded results / active_index and
+    /// callbacks that record which path Enter took. Returns the container
+    /// and the shared capture cell.
+    fn mount_input_with(
+        results: Vec<SearchResult>,
+        active: usize,
+        query: &str,
+    ) -> (web_sys::HtmlElement, Arc<Mutex<Captured>>) {
+        let captured: Arc<Mutex<Captured>> = Arc::new(Mutex::new(Captured::default()));
+        let captured_for_mount = captured.clone();
+        let query = query.to_string();
+
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+
+            // Pin scope so grouping is trivial; seed results + query so
+            // the input handler observes the same world the user would.
+            write
+                .search
+                .set_scope
+                .set(SearchScope::ThisChannel("general".into()));
+            write.search.set_query.set(query.clone());
+            write.search.set_results.set(results.clone());
+            write.search.set_active_index.set(active);
+
+            provide_context(app_state);
+            provide_context(write);
+
+            let cap_activate = captured_for_mount.clone();
+            let cap_submit = captured_for_mount.clone();
+
+            view! {
+                <SearchInput
+                    on_activate=Callback::new(move |r: SearchResult| {
+                        cap_activate.lock().unwrap().activated.push(r);
+                    })
+                    on_submit=Callback::new(move |q: String| {
+                        cap_submit.lock().unwrap().submitted.push(q);
+                    })
+                />
+            }
+        });
+
+        (container, captured)
+    }
+
+    #[wasm_bindgen_test]
+    async fn enter_with_active_row_activates_that_row_not_recents_push() {
+        // Two rows; active_index = 1 (second row). Enter must activate
+        // the second row via on_activate, NOT push the query to recents.
+        let results = vec![
+            fixture_result("m-0", "first hit", 30_000),
+            fixture_result("m-1", "second hit", 20_000),
+        ];
+        let (container, captured) = mount_input_with(results, 1, "hit");
+        tick().await;
+
+        let pressed = test_support::press_key(&container, ".search-input", "Enter");
+        assert!(pressed, "search-input must exist to receive Enter");
+        tick().await;
+
+        let cap = captured.lock().unwrap();
+        assert_eq!(
+            cap.activated.len(),
+            1,
+            "Enter with a valid active row must fire on_activate exactly once \
+             (regression guard for #406); got {} activations",
+            cap.activated.len()
+        );
+        assert_eq!(
+            cap.activated[0].message_id, "m-1",
+            "on_activate must receive the row at active_index (m-1, the \
+             second row) — not the first row, not a stale row"
+        );
+        assert!(
+            cap.submitted.is_empty(),
+            "Enter on a highlighted row must NOT also fire the recents-push \
+             on_submit path; got {:?}",
+            cap.submitted
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn enter_with_no_results_falls_back_to_recents_push() {
+        // No results. Enter has nothing to activate, so it must fall back
+        // to the legacy "push to recents" submit path so the empty-query
+        // affordance keeps working.
+        let (container, captured) = mount_input_with(Vec::new(), 0, "no-match");
+        tick().await;
+
+        let pressed = test_support::press_key(&container, ".search-input", "Enter");
+        assert!(pressed, "search-input must exist to receive Enter");
+        tick().await;
+
+        let cap = captured.lock().unwrap();
+        assert!(
+            cap.activated.is_empty(),
+            "with no results there is no row to activate — on_activate must \
+             not fire; got {} activations",
+            cap.activated.len()
+        );
+        assert_eq!(
+            cap.submitted.len(),
+            1,
+            "with no results Enter must fall back to on_submit (recents \
+             push); got {} submissions",
+            cap.submitted.len()
+        );
+        assert_eq!(
+            cap.submitted[0], "no-match",
+            "on_submit must receive the current query text"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn enter_with_active_index_past_tail_falls_back_to_submit() {
+        // Defensive: if a stale active_index outlived its result set
+        // (e.g., the surface effect hasn't yet snapped it back to 0),
+        // Enter must not panic and must not invent a row — fall back to
+        // the submit path. This protects callers from a transient
+        // out-of-bounds window.
+        let results = vec![fixture_result("m-0", "only hit", 10_000)];
+        // active_index past tail.
+        let (container, captured) = mount_input_with(results, 5, "stale");
+        tick().await;
+
+        let pressed = test_support::press_key(&container, ".search-input", "Enter");
+        assert!(pressed, "search-input must exist to receive Enter");
+        tick().await;
+
+        let cap = captured.lock().unwrap();
+        assert!(
+            cap.activated.is_empty(),
+            "out-of-bounds active_index must not fabricate an activation"
+        );
+        assert_eq!(
+            cap.submitted.len(),
+            1,
+            "out-of-bounds active_index must fall back to on_submit"
+        );
+    }
+}
+
 // ── Foundation tokens (Phase 0) ─────────────────────────────────────────────
 //
 // Closes Task 14 of `docs/plans/2026-04-19-ui-phase-0-foundation.md`.
