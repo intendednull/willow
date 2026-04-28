@@ -6,6 +6,7 @@
 //! module) stays PascalCase.
 
 use serde::Serialize;
+use willow_state::ChannelKind;
 
 /// One author's DAG head, as exposed to JS.
 #[derive(Serialize)]
@@ -16,12 +17,15 @@ pub struct AuthorHeadDto {
 }
 
 /// One channel's summary, as exposed to JS.
+///
+/// `kind` is forwarded directly through `ChannelKind`'s own `Serialize`
+/// impl so the wire form (`"Text"` / `"Voice"`) is contracted by the
+/// state crate, not by `Debug` formatting.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelDto {
     pub name: String,
-    /// Channel kind serialised as a string (e.g. `"Text"` / `"Voice"`).
-    pub kind: String,
+    pub kind: ChannelKind,
 }
 
 /// Aggregated state snapshot for `expect.poll` matchers.
@@ -103,7 +107,7 @@ pub(crate) async fn build(
             .values()
             .map(|ch| ChannelDto {
                 name: ch.name.clone(),
-                kind: format!("{:?}", ch.kind),
+                kind: ch.kind.clone(),
             })
             .collect::<Vec<_>>()
     })
