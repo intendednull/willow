@@ -1041,4 +1041,201 @@ git add crates/feedback/src/lib.rs crates/feedback/src/sanitize.rs
 git commit -m "feat(feedback): add body + title sanitization"
 ```
 
+### Task 2.3: BIP-39 wordlist + salted reporter handle (`wordlist.rs`, `handle.rs`)
+
+**Files:**
+- Create: `crates/feedback/src/wordlist.rs`
+- Create: `crates/feedback/src/handle.rs`
+- Modify: `crates/feedback/src/lib.rs`
+
+The reporter handle is `blake3(salt || peer_id)[..8]` rendered as 4 BIP-39 English words (44 bits) plus a 5-hex suffix (20 bits).
+
+- [ ] **Step 1: Vendor the BIP-39 English wordlist**
+
+The official BIP-39 English wordlist is 2048 words, ordered, all lowercase. The canonical source is https://github.com/bitcoin/bips/blob/master/bip-0039/english.txt. Implementer downloads the raw file and writes it as a Rust array literal. Approach:
+
+1. Fetch the wordlist (one-time):
+
+   ```bash
+   curl -sSf https://raw.githubusercontent.com/bitcoin/bips/master/bip-0039/english.txt > /tmp/bip39-english.txt
+   wc -l /tmp/bip39-english.txt
+   # expect: 2048
+   ```
+
+2. Generate the Rust file:
+
+   ```bash
+   {
+     echo '//! Vendored BIP-39 English wordlist (2048 words). Source:'
+     echo '//! https://github.com/bitcoin/bips/blob/master/bip-0039/english.txt'
+     echo
+     echo 'pub const WORDS: [&str; 2048] = ['
+     awk '{ printf "    \"%s\",\n", $1 }' /tmp/bip39-english.txt
+     echo '];'
+   } > crates/feedback/src/wordlist.rs
+   ```
+
+3. Spot-check a couple of canonical entries (the first word is `abandon`, the last is `zoo`).
+
+- [ ] **Step 2: Add a sanity test for the wordlist**
+
+Append to `crates/feedback/src/wordlist.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wordlist_has_2048_entries() {
+        assert_eq!(WORDS.len(), 2048);
+    }
+
+    #[test]
+    fn first_and_last_words_are_canonical() {
+        assert_eq!(WORDS[0], "abandon");
+        assert_eq!(WORDS[2047], "zoo");
+    }
+
+    #[test]
+    fn all_words_lowercase_and_nonempty() {
+        for w in WORDS {
+            assert!(!w.is_empty());
+            assert_eq!(w, w.to_lowercase());
+        }
+    }
+}
+```
+
+- [ ] **Step 3: Wire into `lib.rs`**
+
+Edit `crates/feedback/src/lib.rs`:
+
+```rust
+pub mod sanitize;
+pub mod wordlist;
+pub mod handle;
+```
+
+- [ ] **Step 4: Write the failing handle tests**
+
+Create `crates/feedback/src/handle.rs`:
+
+```rust
+//! Salted reporter handle. Renders an opaque human-friendly string
+//! from `(salt, peer_id_bytes)` so maintainers can correlate reports
+//! from the same user without exposing the raw Ed25519 public key.
+
+use willow_identity::EndpointId;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use willow_identity::Identity;
+
+    #[test]
+    fn handle_is_deterministic_for_same_inputs() {
+        let id = Identity::generate().endpoint_id();
+        let salt = [0xABu8; 32];
+        let h1 = compute_handle(&salt, &id);
+        let h2 = compute_handle(&salt, &id);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn handle_changes_when_salt_rotates() {
+        let id = Identity::generate().endpoint_id();
+        let h1 = compute_handle(&[0u8; 32], &id);
+        let h2 = compute_handle(&[1u8; 32], &id);
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn handle_distinguishes_distinct_peers() {
+        let salt = [0u8; 32];
+        let id1 = Identity::generate().endpoint_id();
+        let id2 = Identity::generate().endpoint_id();
+        assert_ne!(compute_handle(&salt, &id1), compute_handle(&salt, &id2));
+    }
+
+    #[test]
+    fn handle_format_is_four_words_dash_five_hex() {
+        let id = Identity::generate().endpoint_id();
+        let h = compute_handle(&[0u8; 32], &id);
+        let parts: Vec<&str> = h.split('-').collect();
+        assert_eq!(parts.len(), 5, "expected 4 words + 5-hex suffix, got {h}");
+        for word in &parts[..4] {
+            assert!(crate::wordlist::WORDS.contains(word), "{word} not in wordlist");
+        }
+        assert_eq!(parts[4].len(), 5);
+        assert!(parts[4].chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(parts[4].chars().all(|c| !c.is_ascii_uppercase()));
+    }
+}
+```
+
+- [ ] **Step 5: Run tests, expect compile failure**
+
+Run: `cargo test -p willow-feedback --lib handle::tests`
+Expected: COMPILE FAIL — `cannot find function compute_handle`.
+
+- [ ] **Step 6: Implement `compute_handle`**
+
+Append to `crates/feedback/src/handle.rs` *above* the test module:
+
+```rust
+use crate::wordlist::WORDS;
+
+/// Compute the salted-hash reporter handle. Layout:
+/// - `blake3(salt || peer_id_bytes)[..8]` = 64 bits.
+/// - First 44 bits → 4 BIP-39 English words (11 bits each).
+/// - Last 20 bits → 5 lowercase hex chars.
+/// Final form: `word-word-word-word-NNNNN`.
+pub fn compute_handle(salt: &[u8; 32], peer_id: &EndpointId) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(salt);
+    hasher.update(peer_id.as_bytes());
+    let digest = hasher.finalize();
+    let bytes = digest.as_bytes();
+    // Pull the first 8 bytes into a u64 (big-endian).
+    let mut h64 = 0u64;
+    for &b in &bytes[..8] {
+        h64 = (h64 << 8) | (b as u64);
+    }
+    // Top 44 bits: four 11-bit words.
+    let mut words: [&'static str; 4] = ["", "", "", ""];
+    for i in 0..4 {
+        let shift = 64 - (i + 1) * 11;
+        let idx = ((h64 >> shift) & 0x7FF) as usize;
+        words[i] = WORDS[idx];
+    }
+    // Bottom 20 bits → 5 hex chars.
+    let suffix_bits = (h64 & 0xF_FFFF) as u32; // 20 bits
+    format!(
+        "{}-{}-{}-{}-{:05x}",
+        words[0], words[1], words[2], words[3], suffix_bits,
+    )
+}
+```
+
+This depends on `EndpointId::as_bytes()`. Verify that method exists:
+
+```bash
+grep -n "fn as_bytes" crates/identity/src/lib.rs
+```
+
+If `as_bytes()` returns `&[u8; N]` for some `N`, the call works as-is. If it returns `Vec<u8>`, replace `peer_id.as_bytes()` with `&peer_id.as_bytes()[..]`. If neither method exists (unlikely), use `peer_id.to_string().as_bytes()` — bech32 form is also fine for this purpose.
+
+- [ ] **Step 7: Run tests, verify all pass**
+
+Run: `cargo test -p willow-feedback --lib handle::tests wordlist::tests`
+Expected: 7 tests pass.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add crates/feedback/src/lib.rs crates/feedback/src/handle.rs crates/feedback/src/wordlist.rs
+git commit -m "feat(feedback): salted-hash reporter handle (blake3 + BIP-39)"
+```
+
 
