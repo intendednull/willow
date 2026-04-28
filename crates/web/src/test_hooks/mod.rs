@@ -110,4 +110,15 @@ impl WillowTestHooks {
             serde_wasm_bindgen::to_value(&map).map_err(Into::into)
         })
     }
+
+    /// Aggregated state snapshot. Resolves to an object matching the spec's
+    /// `Snapshot` interface: `{ eventCount, heads, lastEvent, channels }`.
+    pub fn snapshot(&self) -> js_sys::Promise {
+        let dag_addr = self.dag_addr.clone();
+        let state_addr = self.state_addr.clone();
+        future_to_promise(async move {
+            let snap = snapshot::build(&dag_addr, &state_addr).await;
+            serde_wasm_bindgen::to_value(&snap).map_err(Into::into)
+        })
+    }
 }

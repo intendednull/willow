@@ -81,3 +81,20 @@ async fn heads_returns_empty_map_on_empty_dag() {
         map.keys().collect::<Vec<_>>()
     );
 }
+
+#[wasm_bindgen_test]
+async fn snapshot_returns_empty_dto_on_empty_fixture() {
+    let hooks = empty_hooks();
+    let p = hooks.snapshot();
+    let value = JsFuture::from(p).await.unwrap();
+    let snap: willow_web::test_hooks::SnapshotDto =
+        serde_wasm_bindgen::from_value(value).expect("deserialize snapshot");
+
+    assert_eq!(snap.event_count, 0, "empty DAG => event_count == 0");
+    assert!(snap.heads.is_empty(), "empty DAG => heads map empty");
+    assert!(snap.last_event.is_none(), "empty DAG => last_event None");
+    assert!(
+        snap.channels.is_empty(),
+        "empty ServerState => channels empty"
+    );
+}

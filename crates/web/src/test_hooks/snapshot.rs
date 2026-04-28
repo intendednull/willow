@@ -21,7 +21,7 @@ pub struct AuthorHeadDto {
 /// `kind` is forwarded directly through `ChannelKind`'s own `Serialize`
 /// impl so the wire form (`"Text"` / `"Voice"`) is contracted by the
 /// state crate, not by `Debug` formatting.
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelDto {
     pub name: String,
@@ -29,7 +29,7 @@ pub struct ChannelDto {
 }
 
 /// Aggregated state snapshot for `expect.poll` matchers.
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotDto {
     pub event_count: u32,
