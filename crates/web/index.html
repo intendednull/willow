@@ -2,6 +2,30 @@
 <html lang="en" data-theme="dark">
 <head>
     <meta charset="utf-8">
+    <!--
+        Content-Security-Policy — see GitHub issue #175.
+
+        Directive notes:
+        * script-src includes 'wasm-unsafe-eval' so the Leptos WASM module can
+          execute. 'unsafe-eval' is also required today because several call
+          sites still use js_sys::eval() (theme bootstrap, focus helpers,
+          relay-URL probe). Removing it is tracked separately by issues #171
+          and #425; the CSP must not regress those code paths until then.
+        * style-src needs 'unsafe-inline' because the Leptos views render
+          inline style="…" attributes. Google Fonts is allow-listed because
+          foundation.css @imports the stylesheet from fonts.googleapis.com,
+          and the actual font files are fetched from fonts.gstatic.com
+          (font-src).
+        * connect-src permits ws:/wss: for the relay WebSocket transport
+          (ws://localhost in dev, wss://… in production) and https: for the
+          relay's /bootstrap-id HTTP endpoint.
+        * img-src and media-src include data:/blob: so that avatar data
+          URIs and runtime URL.createObjectURL blobs (file attachments,
+          inline media) render. frame-ancestors 'none' blocks clickjacking;
+          base-uri / form-action / object-src lock down the remaining
+          injection surfaces.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
