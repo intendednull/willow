@@ -9,6 +9,31 @@ use willow_identity::{EndpointId, Identity, Signature};
 
 use crate::hash::EventHash;
 
+// ───── Vector caps (anti-DoS) ──────────────────────────────────────────────
+//
+// These caps bound per-event memory growth so a single misbehaving peer
+// holding a permission can't blow up every other peer's heap by emitting
+// pathologically large vectors. See SEC-V-07 (#236).
+
+/// Maximum number of cross-author causal hashes an event may carry in
+/// `deps`. Legitimate events reference at most a handful of recent
+/// other-author heads; 64 is comfortably above that ceiling and keeps
+/// the per-event payload small.
+pub const MAX_EVENT_DEPS: usize = 64;
+
+/// Maximum byte length of a single encrypted-channel-key blob inside
+/// `EventKind::RotateChannelKey.encrypted_keys`. One X25519-sealed
+/// channel key fits well under 128 bytes (32-byte ciphertext + tag +
+/// ephemeral pubkey = ~80 bytes); 128 leaves slack without giving a
+/// hostile author room to bloat each entry.
+pub const MAX_ENCRYPTED_KEY_BYTES: usize = 128;
+
+/// Slack added to the current member count when capping
+/// `RotateChannelKey.encrypted_keys.len()`. The legitimate ceiling is
+/// "one entry per current member"; epsilon absorbs benign races between
+/// membership changes and key-rotation construction.
+pub const MAX_ENCRYPTED_KEYS_OVER_MEMBERS: usize = 4;
+
 // ───── Permission ──────────────────────────────────────────────────────────
 
 /// Permission types that can be granted directly by any admin.

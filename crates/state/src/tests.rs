@@ -4516,3 +4516,199 @@ fn set_permission_legacy_unknown_string_drops_silently() {
         "unknown legacy permission must apply as a no-op"
     );
 }
+
+// ── Issue #236 (SEC-V-07): vector caps ─────────────────────────────────
+//
+// `Event.deps` and `RotateChannelKey.encrypted_keys` are both attacker-
+// controlled vectors that fan out via `.clone()` into per-peer state.
+// Cap them at the inbound DAG boundary (deps + per-blob byte size) and
+// at the materializer (encrypted_keys.len() vs current member count).
+
+#[test]
+fn dag_insert_rejects_deps_over_cap() {
+    use crate::dag::InsertError;
+    use crate::event::MAX_EVENT_DEPS;
+
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    // Build deps vector one entry over the cap.
+    let bad_deps: Vec<EventHash> = (0..=MAX_EVENT_DEPS)
+        .map(|i| EventHash::from_bytes(&i.to_le_bytes()))
+        .collect();
+    assert_eq!(bad_deps.len(), MAX_EVENT_DEPS + 1);
+
+    let bloated = dag.create_event(
+        &admin,
+        EventKind::SetProfile {
+            display_name: "x".into(),
+        },
+        bad_deps,
+        0,
+    );
+    let err = dag.insert(bloated).unwrap_err();
+    match err {
+        InsertError::DepsTooLong { got, max } => {
+            assert_eq!(got, MAX_EVENT_DEPS + 1);
+            assert_eq!(max, MAX_EVENT_DEPS);
+        }
+        other => panic!("expected DepsTooLong, got {other:?}"),
+    }
+}
+
+#[test]
+fn dag_insert_accepts_deps_at_cap() {
+    use crate::event::MAX_EVENT_DEPS;
+
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    let ok_deps: Vec<EventHash> = (0..MAX_EVENT_DEPS)
+        .map(|i| EventHash::from_bytes(&i.to_le_bytes()))
+        .collect();
+    assert_eq!(ok_deps.len(), MAX_EVENT_DEPS);
+
+    let event = dag.create_event(
+        &admin,
+        EventKind::SetProfile {
+            display_name: "x".into(),
+        },
+        ok_deps,
+        0,
+    );
+    dag.insert(event).expect("deps at cap must be accepted");
+}
+
+#[test]
+fn dag_insert_rejects_oversized_encrypted_key() {
+    use crate::dag::InsertError;
+    use crate::event::MAX_ENCRYPTED_KEY_BYTES;
+
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    // One entry whose blob is one byte over the cap.
+    let too_big = vec![0xab; MAX_ENCRYPTED_KEY_BYTES + 1];
+    let bloated = dag.create_event(
+        &admin,
+        EventKind::RotateChannelKey {
+            channel_id: "ch-1".into(),
+            encrypted_keys: vec![(admin.endpoint_id(), too_big)],
+        },
+        vec![],
+        0,
+    );
+    let err = dag.insert(bloated).unwrap_err();
+    match err {
+        InsertError::EncryptedKeyTooLarge { got, max } => {
+            assert_eq!(got, MAX_ENCRYPTED_KEY_BYTES + 1);
+            assert_eq!(max, MAX_ENCRYPTED_KEY_BYTES);
+        }
+        other => panic!("expected EncryptedKeyTooLarge, got {other:?}"),
+    }
+}
+
+#[test]
+fn apply_rotate_channel_key_rejects_excess_entries_over_member_count() {
+    use crate::event::MAX_ENCRYPTED_KEYS_OVER_MEMBERS;
+    use crate::managed::ManagedDag;
+    use crate::materialize::ApplyResult;
+
+    let admin = Identity::generate();
+    let mut managed = ManagedDag::new(&admin, "S", 5000).unwrap();
+
+    // Create channel.
+    let create = managed.dag().create_event(
+        &admin,
+        EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: "ch-1".into(),
+            kind: crate::types::ChannelKind::Text,
+            ephemeral: None,
+        },
+        vec![],
+        0,
+    );
+    managed.insert_and_apply(create).unwrap();
+
+    // Sole admin = 1 member. Cap = 1 + epsilon. Submit (cap + 1) entries.
+    let member_count = managed.state().members.len();
+    assert_eq!(member_count, 1);
+    let cap = member_count + MAX_ENCRYPTED_KEYS_OVER_MEMBERS;
+    // Use real generated identities so each EndpointId is a valid curve
+    // point (`EndpointId::from_bytes` rejects non-curve inputs).
+    let bloat: Vec<(willow_identity::EndpointId, Vec<u8>)> = (0..(cap + 1))
+        .map(|_| (Identity::generate().endpoint_id(), vec![0xaa]))
+        .collect();
+    assert_eq!(bloat.len(), cap + 1);
+
+    let rotate = managed.dag().create_event(
+        &admin,
+        EventKind::RotateChannelKey {
+            channel_id: "ch-1".into(),
+            encrypted_keys: bloat,
+        },
+        vec![],
+        10,
+    );
+    let outcome = managed.insert_and_apply(rotate).unwrap();
+    assert!(
+        matches!(outcome.apply_result, Some(ApplyResult::Rejected(_))),
+        "over-cap rotate must be rejected at apply: {:?}",
+        outcome.apply_result,
+    );
+    // No channel_keys entry created — state untouched by rejected event.
+    assert!(!managed.state().channel_keys.contains_key("ch-1"));
+}
+
+#[test]
+fn apply_rotate_channel_key_accepts_at_member_count_plus_epsilon() {
+    use crate::event::MAX_ENCRYPTED_KEYS_OVER_MEMBERS;
+    use crate::managed::ManagedDag;
+    use crate::materialize::ApplyResult;
+
+    let admin = Identity::generate();
+    let mut managed = ManagedDag::new(&admin, "S", 5000).unwrap();
+
+    let create = managed.dag().create_event(
+        &admin,
+        EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: "ch-1".into(),
+            kind: crate::types::ChannelKind::Text,
+            ephemeral: None,
+        },
+        vec![],
+        0,
+    );
+    managed.insert_and_apply(create).unwrap();
+
+    // Cap = members + epsilon. Submit exactly that many — must succeed.
+    let member_count = managed.state().members.len();
+    let cap = member_count + MAX_ENCRYPTED_KEYS_OVER_MEMBERS;
+    // Use real generated identities so each EndpointId is a valid curve
+    // point (`EndpointId::from_bytes` rejects non-curve inputs).
+    let entries: Vec<(willow_identity::EndpointId, Vec<u8>)> = (0..cap)
+        .map(|_| (Identity::generate().endpoint_id(), vec![0xaa]))
+        .collect();
+
+    let rotate = managed.dag().create_event(
+        &admin,
+        EventKind::RotateChannelKey {
+            channel_id: "ch-1".into(),
+            encrypted_keys: entries,
+        },
+        vec![],
+        10,
+    );
+    let outcome = managed.insert_and_apply(rotate).unwrap();
+    assert!(
+        matches!(outcome.apply_result, Some(ApplyResult::Applied)),
+        "boundary case (members + epsilon) must apply: {:?}",
+        outcome.apply_result,
+    );
+    assert_eq!(
+        managed.state().channel_keys.get("ch-1").map(|m| m.len()),
+        Some(cap),
+    );
+}
