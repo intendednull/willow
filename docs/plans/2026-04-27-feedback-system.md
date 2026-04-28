@@ -2234,4 +2234,690 @@ git add crates/feedback/
 git commit -m "feat(feedback): GitHub client trait + reqwest impl + fixtures"
 ```
 
+### Task 2.8: `FeedbackRole` (the integration piece) — `role.rs`
+
+**Files:**
+- Create: `crates/feedback/src/role.rs`
+- Modify: `crates/feedback/src/lib.rs`
+
+This is where everything composes. The role:
+
+1. Validates request shape (length caps).
+2. Checks idempotency cache; if hit, returns cached URL.
+3. Checks rate limits.
+4. Computes salted handle.
+5. Wraps body, sanitizes title, builds metadata block.
+6. Calls `GithubClient::create_issue`.
+7. Updates state machine (Unconfigured/cooldown transitions on 401/403).
+8. Updates idempotency cache + counters.
+9. Emits one structured log line.
+
+Tests inject a `MockGithubClient` so no live HTTP is hit.
+
+- [ ] **Step 1: Write the failing test scaffold**
+
+Create `crates/feedback/src/role.rs`:
+
+```rust
+//! `FeedbackRole` — the integration glue. Implements `WorkerRole`.
+
+use std::collections::VecDeque;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use secrecy::SecretString;
+use tokio::sync::Mutex;
+use willow_common::{
+    FeedbackCategory, FeedbackDiagnostics, FeedbackErrReason, WorkerRequest, WorkerResponse,
+    WorkerRole, WorkerRoleInfo,
+};
+use willow_identity::EndpointId;
+use willow_state::{Event, HeadsSummary};
+
+use crate::github::{CreateIssueOutcome, GithubClient, IssueBody};
+use crate::handle::compute_handle;
+use crate::ratelimit::{Clock, RateLimited, RateLimiter, SystemClock};
+use crate::sanitize::{sanitize_title, wrap_body_fenced};
+
+#[cfg(test)]
+mod tests;
+```
+
+- [ ] **Step 2: Create the test module skeleton with the failing tests**
+
+Create `crates/feedback/src/role/tests.rs` (Rust module-style — alternative is to keep tests in `role.rs`; we split into a sibling file because the test set is large). Actually, since `mod tests` is declared inline above, let's keep it as a test child module file. Use `#[path]` if needed.
+
+Replace the `#[cfg(test)] mod tests;` line with an inline `#[cfg(test)] mod tests {` block. Append at the bottom of `role.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use willow_identity::Identity;
+
+    /// Test mock that returns a scripted response.
+    struct MockGithub {
+        outcomes: Mutex<VecDeque<CreateIssueOutcome>>,
+        calls: AtomicUsize,
+    }
+    impl MockGithub {
+        fn new(outcomes: Vec<CreateIssueOutcome>) -> Arc<Self> {
+            Arc::new(Self {
+                outcomes: Mutex::new(outcomes.into()),
+                calls: AtomicUsize::new(0),
+            })
+        }
+        fn call_count(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+    #[async_trait]
+    impl GithubClient for MockGithub {
+        async fn create_issue(&self, _body: IssueBody<'_>) -> CreateIssueOutcome {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.outcomes
+                .lock()
+                .await
+                .pop_front()
+                .unwrap_or(CreateIssueOutcome::Failed {
+                    reason: FeedbackErrReason::Unconfigured,
+                })
+        }
+    }
+
+    fn ok_outcome(url: &str) -> CreateIssueOutcome {
+        CreateIssueOutcome::Created {
+            html_url: url.to_string(),
+        }
+    }
+
+    fn req(dedup: u8, body: &str) -> WorkerRequest {
+        WorkerRequest::Feedback {
+            dedup_id: [dedup; 16],
+            title: "title".to_string(),
+            category: FeedbackCategory::Bug,
+            body: body.to_string(),
+            diagnostics: None,
+        }
+    }
+
+    fn role_with(github: Arc<dyn GithubClient>) -> FeedbackRole {
+        FeedbackRole::new_for_test(FeedbackRoleConfig {
+            github,
+            salt: [0u8; 32],
+            per_peer_per_hour: 5,
+            global_per_hour: 50,
+            repo: "intendednull/willow".to_string(),
+        })
+    }
+
+    fn signer() -> EndpointId {
+        Identity::generate().endpoint_id()
+    }
+
+    #[tokio::test]
+    async fn happy_path_returns_feedback_ok() {
+        let mock = MockGithub::new(vec![ok_outcome("https://github.com/x/y/issues/1")]);
+        let mut role = role_with(mock.clone());
+        let resp = role.handle_request(signer(), req(1, "hi")).await;
+        assert!(matches!(
+            resp,
+            WorkerResponse::FeedbackOk { issue_url } if issue_url == "https://github.com/x/y/issues/1"
+        ));
+        assert_eq!(mock.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn validates_title_length() {
+        let mock = MockGithub::new(vec![]);
+        let mut role = role_with(mock.clone());
+        let req = WorkerRequest::Feedback {
+            dedup_id: [0u8; 16],
+            title: "x".repeat(201),
+            category: FeedbackCategory::Bug,
+            body: "ok".to_string(),
+            diagnostics: None,
+        };
+        match role.handle_request(signer(), req).await {
+            WorkerResponse::FeedbackErr {
+                reason: FeedbackErrReason::InvalidInput { field, .. },
+            } => assert_eq!(field, "title"),
+            other => panic!("expected InvalidInput(title), got {other:?}"),
+        }
+        assert_eq!(mock.call_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn validates_body_length() {
+        let mock = MockGithub::new(vec![]);
+        let mut role = role_with(mock.clone());
+        match role
+            .handle_request(signer(), req(0, &"x".repeat(8001)))
+            .await
+        {
+            WorkerResponse::FeedbackErr {
+                reason: FeedbackErrReason::InvalidInput { field, .. },
+            } => assert_eq!(field, "body"),
+            other => panic!("expected InvalidInput(body), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn validates_other_detail_length() {
+        let mock = MockGithub::new(vec![]);
+        let mut role = role_with(mock.clone());
+        let req = WorkerRequest::Feedback {
+            dedup_id: [0u8; 16],
+            title: "t".to_string(),
+            category: FeedbackCategory::Other {
+                detail: Some("x".repeat(61)),
+            },
+            body: "ok".to_string(),
+            diagnostics: None,
+        };
+        match role.handle_request(signer(), req).await {
+            WorkerResponse::FeedbackErr {
+                reason: FeedbackErrReason::InvalidInput { field, .. },
+            } => assert_eq!(field, "category.detail"),
+            other => panic!("expected InvalidInput(category.detail), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn unconfigured_when_no_github_client() {
+        let mut role = FeedbackRole::new_unconfigured(FeedbackRoleConfig {
+            github: MockGithub::new(vec![]),
+            salt: [0u8; 32],
+            per_peer_per_hour: 5,
+            global_per_hour: 50,
+            repo: "intendednull/willow".to_string(),
+        });
+        assert!(matches!(
+            role.handle_request(signer(), req(0, "hi")).await,
+            WorkerResponse::FeedbackErr {
+                reason: FeedbackErrReason::Unconfigured
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn per_peer_rate_limit_kicks_in() {
+        let outs = (0..5).map(|i| ok_outcome(&format!("https://x/{i}"))).collect();
+        let mock = MockGithub::new(outs);
+        let mut role = role_with(mock.clone());
+        let p = signer();
+        for i in 0..5 {
+            let r = role.handle_request(p, req(i as u8, "ok")).await;
+            assert!(matches!(r, WorkerResponse::FeedbackOk { .. }));
+        }
+        match role.handle_request(p, req(255, "ok")).await {
+            WorkerResponse::FeedbackErr {
+                reason: FeedbackErrReason::RateLimited { .. },
+            } => {}
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
+        assert_eq!(mock.call_count(), 5);
+    }
+
+    #[tokio::test]
+    async fn idempotency_cache_returns_cached_url() {
+        let mock = MockGithub::new(vec![ok_outcome("https://github.com/x/y/issues/9")]);
+        let mut role = role_with(mock.clone());
+        let p = signer();
+        let r1 = role.handle_request(p, req(7, "hi")).await;
+        let r2 = role.handle_request(p, req(7, "hi")).await;
+        assert_eq!(format!("{r1:?}"), format!("{r2:?}"));
+        assert_eq!(mock.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn distinct_signers_with_same_dedup_get_distinct_urls() {
+        let mock = MockGithub::new(vec![
+            ok_outcome("https://github.com/x/y/issues/1"),
+            ok_outcome("https://github.com/x/y/issues/2"),
+        ]);
+        let mut role = role_with(mock.clone());
+        let r1 = role.handle_request(signer(), req(7, "hi")).await;
+        let r2 = role.handle_request(signer(), req(7, "hi")).await;
+        match (&r1, &r2) {
+            (
+                WorkerResponse::FeedbackOk { issue_url: u1 },
+                WorkerResponse::FeedbackOk { issue_url: u2 },
+            ) => assert_ne!(u1, u2),
+            _ => panic!("expected two FeedbackOk, got {r1:?} / {r2:?}"),
+        }
+        assert_eq!(mock.call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn fourzeroone_transitions_to_unconfigured() {
+        let mock = MockGithub::new(vec![CreateIssueOutcome::Failed {
+            reason: FeedbackErrReason::GithubFailure {
+                status: 401,
+                message: Some("Bad credentials".to_string()),
+            },
+        }]);
+        let mut role = role_with(mock.clone());
+        let p = signer();
+        // First call surfaces the 401.
+        let r1 = role.handle_request(p, req(0, "hi")).await;
+        assert!(matches!(
+            r1,
+            WorkerResponse::FeedbackErr {
+                reason: FeedbackErrReason::Unconfigured
+            }
+        ));
+        // Subsequent calls are also Unconfigured without contacting the mock.
+        let r2 = role.handle_request(p, req(1, "hi")).await;
+        assert!(matches!(
+            r2,
+            WorkerResponse::FeedbackErr {
+                reason: FeedbackErrReason::Unconfigured
+            }
+        ));
+        assert_eq!(mock.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn fourohthree_secondary_trips_cooldown() {
+        let mock = MockGithub::new(vec![
+            CreateIssueOutcome::Failed {
+                reason: FeedbackErrReason::RateLimited {
+                    retry_after_ms: 60_000,
+                },
+            },
+            ok_outcome("https://x/1"), // wouldn't be called during cooldown
+        ]);
+        let mut role = role_with(mock.clone());
+        let r1 = role.handle_request(signer(), req(0, "hi")).await;
+        assert!(matches!(
+            r1,
+            WorkerResponse::FeedbackErr {
+                reason: FeedbackErrReason::RateLimited { .. }
+            }
+        ));
+        // Second call returns RateLimited from the cooldown without contacting the mock.
+        let r2 = role.handle_request(signer(), req(1, "hi")).await;
+        assert!(matches!(
+            r2,
+            WorkerResponse::FeedbackErr {
+                reason: FeedbackErrReason::RateLimited { .. }
+            }
+        ));
+        assert_eq!(mock.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn role_info_reports_feedback_with_counters() {
+        let mock = MockGithub::new(vec![ok_outcome("https://x/1")]);
+        let mut role = role_with(mock);
+        role.handle_request(signer(), req(0, "hi")).await;
+        match role.role_info() {
+            WorkerRoleInfo::Feedback {
+                reports_accepted,
+                reports_rejected,
+                ..
+            } => {
+                assert_eq!(reports_accepted, 1);
+                assert_eq!(reports_rejected, 0);
+            }
+            other => panic!("expected Feedback, got {other:?}"),
+        }
+    }
+}
+```
+
+- [ ] **Step 3: Implement `FeedbackRole`**
+
+Append to `crates/feedback/src/role.rs` *between* the `use` block and the `#[cfg(test)] mod tests` block:
+
+```rust
+const TITLE_MAX: usize = 200;
+const BODY_MAX: usize = 8000;
+const DETAIL_MAX: usize = 60;
+const DEDUP_CACHE_CAPACITY: usize = 4096;
+
+pub struct FeedbackRoleConfig {
+    pub github: Arc<dyn GithubClient>,
+    pub salt: [u8; 32],
+    pub per_peer_per_hour: u32,
+    pub global_per_hour: u32,
+    pub repo: String,
+}
+
+/// Internal state machine for the role's GitHub-side health.
+enum GithubState {
+    Configured,
+    /// 401 transitions here permanently for the rest of the process.
+    Unconfigured,
+    /// 403 secondary-rate-limit; while in cooldown, all requests
+    /// reply RateLimited with this `retry_after_ms` (decremented by
+    /// elapsed time on each request).
+    Cooldown {
+        until: std::time::Instant,
+        retry_after_ms: u64,
+    },
+}
+
+pub struct FeedbackRole {
+    github: Arc<dyn GithubClient>,
+    salt: [u8; 32],
+    repo: String,
+    state: GithubState,
+    rate_limiter: RateLimiter,
+    clock: SystemClock,
+    /// LRU-ish: deque + companion vec. Capacity 4096 entries.
+    /// Each entry: (signer, dedup_id, issue_url).
+    dedup_cache: VecDeque<((EndpointId, [u8; 16]), String)>,
+    reports_accepted: u64,
+    reports_rejected: u64,
+}
+
+impl FeedbackRole {
+    pub fn new(config: FeedbackRoleConfig) -> Self {
+        let mut clock = SystemClock;
+        let rate_limiter = RateLimiter::new(
+            config.per_peer_per_hour,
+            config.global_per_hour,
+            &mut clock,
+        );
+        Self {
+            github: config.github,
+            salt: config.salt,
+            repo: config.repo,
+            state: GithubState::Configured,
+            rate_limiter,
+            clock,
+            dedup_cache: VecDeque::with_capacity(DEDUP_CACHE_CAPACITY),
+            reports_accepted: 0,
+            reports_rejected: 0,
+        }
+    }
+
+    /// Construct a role that's permanently `Unconfigured` (used by
+    /// the dev stack when no GITHUB_TOKEN is set).
+    pub fn new_unconfigured(config: FeedbackRoleConfig) -> Self {
+        let mut role = Self::new(config);
+        role.state = GithubState::Unconfigured;
+        role
+    }
+
+    #[cfg(test)]
+    pub fn new_for_test(config: FeedbackRoleConfig) -> Self {
+        Self::new(config)
+    }
+
+    fn validate_request(req: &WorkerRequest) -> Result<(), FeedbackErrReason> {
+        let WorkerRequest::Feedback {
+            title,
+            body,
+            category,
+            ..
+        } = req
+        else {
+            return Err(FeedbackErrReason::InvalidInput {
+                field: "request".to_string(),
+                message: "not a feedback request".to_string(),
+            });
+        };
+        if title.is_empty() || title.len() > TITLE_MAX {
+            return Err(FeedbackErrReason::InvalidInput {
+                field: "title".to_string(),
+                message: format!("must be 1..={TITLE_MAX} bytes"),
+            });
+        }
+        if body.is_empty() || body.len() > BODY_MAX {
+            return Err(FeedbackErrReason::InvalidInput {
+                field: "body".to_string(),
+                message: format!("must be 1..={BODY_MAX} bytes"),
+            });
+        }
+        if let FeedbackCategory::Other {
+            detail: Some(detail),
+        } = category
+        {
+            if detail.len() > DETAIL_MAX {
+                return Err(FeedbackErrReason::InvalidInput {
+                    field: "category.detail".to_string(),
+                    message: format!("must be 0..={DETAIL_MAX} bytes"),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn lookup_cache(&self, key: &(EndpointId, [u8; 16])) -> Option<String> {
+        self.dedup_cache
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    }
+
+    fn record_cache(&mut self, key: (EndpointId, [u8; 16]), url: String) {
+        if self.dedup_cache.len() >= DEDUP_CACHE_CAPACITY {
+            self.dedup_cache.pop_front();
+        }
+        self.dedup_cache.push_back((key, url));
+    }
+
+    fn assemble_issue<'a>(
+        &self,
+        signer: &EndpointId,
+        title: &'a str,
+        category: &FeedbackCategory,
+        body: &str,
+        diagnostics: Option<&FeedbackDiagnostics>,
+    ) -> (String, String, Vec<&'static str>) {
+        let handle = compute_handle(&self.salt, signer);
+        let title_clean = sanitize_title(title);
+        let prefix = match category {
+            FeedbackCategory::Bug => "[Bug] ".to_string(),
+            FeedbackCategory::Suggestion => "[Suggestion] ".to_string(),
+            FeedbackCategory::Other { detail: None } => "[Other] ".to_string(),
+            FeedbackCategory::Other { detail: Some(d) } => {
+                format!("[Other:{}] ", sanitize_title(d))
+            }
+        };
+        let mut full_title = format!("{prefix}{title_clean}");
+        if full_title.chars().count() > 256 {
+            // Truncate to 255 chars + ellipsis (256 total).
+            let mut t: String = full_title.chars().take(255).collect();
+            t.push('…');
+            full_title = t;
+        }
+
+        let category_str = match category {
+            FeedbackCategory::Bug => "Bug".to_string(),
+            FeedbackCategory::Suggestion => "Suggestion".to_string(),
+            FeedbackCategory::Other { detail: None } => "Other".to_string(),
+            FeedbackCategory::Other { detail: Some(d) } => format!("Other ({d})"),
+        };
+        let mut header = format!(
+            "**Reporter (salted hash):** `{handle}`\n**Category:** {category_str}\n",
+        );
+        if let Some(d) = diagnostics {
+            header.push_str(&format!("**App version:** {}\n", d.app_version));
+            if let Some(b) = &d.build_hash {
+                header.push_str(&format!("**Build:** {b}\n"));
+            }
+            if let Some(l) = &d.locale {
+                header.push_str(&format!("**Locale:** {l}\n"));
+            }
+            header.push_str(&format!("**Client:** {:?}\n", d.client));
+        } else {
+            header.push_str("(diagnostics not provided)\n");
+        }
+        let preamble = "\n> Submitted via willow-feedback. The reporter's body is rendered \n> verbatim in the fenced block below; @mentions, links, and image\n> syntax inside it are **not** processed by GitHub.\n\n";
+        let body_block = wrap_body_fenced(body);
+        let full_body = format!("{header}{preamble}{body_block}");
+
+        let labels: Vec<&'static str> = match category {
+            FeedbackCategory::Bug => vec!["feedback", "feedback:bug", "feedback:triage"],
+            FeedbackCategory::Suggestion => {
+                vec!["feedback", "feedback:suggestion", "feedback:triage"]
+            }
+            FeedbackCategory::Other { .. } => vec!["feedback", "feedback:other", "feedback:triage"],
+        };
+        (full_title, full_body, labels)
+    }
+}
+
+#[async_trait]
+impl WorkerRole for FeedbackRole {
+    fn role_info(&self) -> WorkerRoleInfo {
+        WorkerRoleInfo::Feedback {
+            reports_accepted: self.reports_accepted,
+            reports_rejected: self.reports_rejected,
+            currently_rate_limited: self.rate_limiter.currently_rate_limited(&self.clock),
+            global_rate_limited: self.rate_limiter.global_is_throttled(&self.clock),
+        }
+    }
+
+    fn on_event(&mut self, _event: &Event) {
+        // Feedback role doesn't track DAG events.
+    }
+
+    async fn handle_request(
+        &mut self,
+        signer: EndpointId,
+        req: WorkerRequest,
+    ) -> WorkerResponse {
+        // 1. Unconfigured short-circuit.
+        if matches!(self.state, GithubState::Unconfigured) {
+            self.reports_rejected += 1;
+            return WorkerResponse::FeedbackErr {
+                reason: FeedbackErrReason::Unconfigured,
+            };
+        }
+
+        // 2. Cooldown short-circuit.
+        if let GithubState::Cooldown { until, retry_after_ms } = self.state {
+            if std::time::Instant::now() < until {
+                self.reports_rejected += 1;
+                let remaining = until.saturating_duration_since(std::time::Instant::now());
+                return WorkerResponse::FeedbackErr {
+                    reason: FeedbackErrReason::RateLimited {
+                        retry_after_ms: remaining.as_millis() as u64,
+                    },
+                };
+            } else {
+                self.state = GithubState::Configured;
+                let _ = retry_after_ms; // silence unused warning
+            }
+        }
+
+        // 3. Validate shape.
+        if let Err(reason) = Self::validate_request(&req) {
+            self.reports_rejected += 1;
+            return WorkerResponse::FeedbackErr { reason };
+        }
+        let WorkerRequest::Feedback {
+            dedup_id,
+            title,
+            category,
+            body,
+            diagnostics,
+        } = req
+        else {
+            unreachable!("validated above");
+        };
+
+        // 4. Idempotency cache.
+        let cache_key = (signer, dedup_id);
+        if let Some(url) = self.lookup_cache(&cache_key) {
+            return WorkerResponse::FeedbackOk { issue_url: url };
+        }
+
+        // 5. Rate limit.
+        match self.rate_limiter.try_take(&signer, &mut self.clock) {
+            Ok(()) => {}
+            Err(RateLimited::PerPeer { retry_after_ms })
+            | Err(RateLimited::Global { retry_after_ms }) => {
+                self.reports_rejected += 1;
+                return WorkerResponse::FeedbackErr {
+                    reason: FeedbackErrReason::RateLimited { retry_after_ms },
+                };
+            }
+        }
+
+        // 6. Assemble + post.
+        let (full_title, full_body, labels) =
+            self.assemble_issue(&signer, &title, &category, &body, diagnostics.as_ref());
+        let outcome = self
+            .github
+            .create_issue(IssueBody {
+                title: &full_title,
+                body: &full_body,
+                labels: &labels,
+            })
+            .await;
+
+        match outcome {
+            CreateIssueOutcome::Created { html_url } => {
+                self.record_cache(cache_key, html_url.clone());
+                self.reports_accepted += 1;
+                WorkerResponse::FeedbackOk {
+                    issue_url: html_url,
+                }
+            }
+            CreateIssueOutcome::Failed {
+                reason: FeedbackErrReason::GithubFailure { status: 401, .. },
+            } => {
+                self.state = GithubState::Unconfigured;
+                self.reports_rejected += 1;
+                WorkerResponse::FeedbackErr {
+                    reason: FeedbackErrReason::Unconfigured,
+                }
+            }
+            CreateIssueOutcome::Failed {
+                reason: FeedbackErrReason::RateLimited { retry_after_ms },
+            } => {
+                self.state = GithubState::Cooldown {
+                    until: std::time::Instant::now() + std::time::Duration::from_millis(retry_after_ms),
+                    retry_after_ms,
+                };
+                self.reports_rejected += 1;
+                WorkerResponse::FeedbackErr {
+                    reason: FeedbackErrReason::RateLimited { retry_after_ms },
+                }
+            }
+            CreateIssueOutcome::Failed { reason } => {
+                self.reports_rejected += 1;
+                WorkerResponse::FeedbackErr { reason }
+            }
+        }
+    }
+
+    fn heads_summaries(&self) -> Vec<(String, HeadsSummary)> {
+        vec![]
+    }
+}
+```
+
+- [ ] **Step 4: Wire into `lib.rs`**
+
+```rust
+pub mod sanitize;
+pub mod wordlist;
+pub mod handle;
+pub mod ratelimit;
+pub mod salt;
+pub mod throttle;
+pub mod github;
+pub mod role;
+```
+
+- [ ] **Step 5: Run all tests**
+
+Run: `cargo test -p willow-feedback --lib`
+Expected: every module's tests pass — sanitize, wordlist, handle, ratelimit, salt, throttle, github, role.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/feedback/
+git commit -m "feat(feedback): FeedbackRole — sanitization, rate limits, idempotency, cooldown"
+```
+
 
