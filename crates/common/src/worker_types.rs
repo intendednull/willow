@@ -158,6 +158,51 @@ pub enum AllocationStrategy {
     Dynamic,
 }
 
+/// Top-level category for a feedback report. Surfaced as a label and
+/// title prefix on the GitHub issue.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[non_exhaustive]
+pub enum FeedbackCategory {
+    Bug,
+    Suggestion,
+    /// Free-form category. `detail` is a short subcategory string the
+    /// user types (e.g. "performance", "docs"); shown in the issue
+    /// title prefix as `[Other:<detail>]`.
+    Other {
+        /// Optional, <= 60 chars. Validated by the worker.
+        detail: Option<String>,
+    },
+}
+
+/// The submitting client's platform — coarse-grained on purpose so
+/// the issue body cannot include a fingerprintable full UA string.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[non_exhaustive]
+pub enum ClientPlatform {
+    /// Browser submission. `ua_family` is `"<browser>/<major>"`,
+    /// e.g. `"firefox/138"`. <= 40 chars.
+    Web { ua_family: String },
+    /// Native submission. `"linux"` / `"macos"` / `"windows"` and
+    /// e.g. `"x86_64"` / `"aarch64"`.
+    Native { os: String, arch: String },
+}
+
+/// Optional diagnostic info attached to a feedback report. Only
+/// included when the user opts in via the UI checkbox; the disclosure
+/// renders the *exact* value that will be sent.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[non_exhaustive]
+pub struct FeedbackDiagnostics {
+    /// `CARGO_PKG_VERSION` of the submitting client.
+    pub app_version: String,
+    /// Short git SHA from `option_env!("WILLOW_BUILD_SHA")` injected
+    /// by `build.rs`. None in dev builds.
+    pub build_hash: Option<String>,
+    /// IETF BCP 47 locale tag (e.g. `"en-US"`).
+    pub locale: Option<String>,
+    pub client: ClientPlatform,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,5 +548,53 @@ mod tests {
             AllocationStrategy::Global => {}
             _ => panic!("expected Global"),
         }
+    }
+
+    #[test]
+    fn feedback_category_round_trips() {
+        for cat in [
+            FeedbackCategory::Bug,
+            FeedbackCategory::Suggestion,
+            FeedbackCategory::Other { detail: None },
+            FeedbackCategory::Other {
+                detail: Some("performance".to_string()),
+            },
+        ] {
+            let bytes = bincode::serialize(&cat).unwrap();
+            let decoded: FeedbackCategory = bincode::deserialize(&bytes).unwrap();
+            assert_eq!(cat, decoded);
+        }
+    }
+
+    #[test]
+    fn client_platform_round_trips() {
+        for cp in [
+            ClientPlatform::Web {
+                ua_family: "firefox/138".to_string(),
+            },
+            ClientPlatform::Native {
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        ] {
+            let bytes = bincode::serialize(&cp).unwrap();
+            let decoded: ClientPlatform = bincode::deserialize(&bytes).unwrap();
+            assert_eq!(cp, decoded);
+        }
+    }
+
+    #[test]
+    fn feedback_diagnostics_round_trips() {
+        let diag = FeedbackDiagnostics {
+            app_version: "0.1.0".to_string(),
+            build_hash: Some("abc1234".to_string()),
+            locale: Some("en-US".to_string()),
+            client: ClientPlatform::Web {
+                ua_family: "firefox/138".to_string(),
+            },
+        };
+        let bytes = bincode::serialize(&diag).unwrap();
+        let decoded: FeedbackDiagnostics = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(diag, decoded);
     }
 }
