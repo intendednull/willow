@@ -2920,4 +2920,239 @@ git add crates/feedback/
 git commit -m "feat(feedback): FeedbackRole — sanitization, rate limits, idempotency, cooldown"
 ```
 
+### Task 2.9: `main.rs` — CLI, repo validation, IrohNetwork, runtime
+
+**Files:**
+- Modify: `crates/feedback/src/main.rs`
+
+Closely mirrors `crates/storage/src/main.rs`'s shape, with extra steps for salt and the `--generate-salt` CLI flag.
+
+- [ ] **Step 1: Replace the placeholder `main.rs` with the real binary**
+
+Replace `crates/feedback/src/main.rs`:
+
+```rust
+//! Willow Feedback Node — proxies user feedback to GitHub issues.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{anyhow, Context, Result};
+use clap::Parser;
+use regex::Regex;
+use secrecy::SecretString;
+use willow_feedback::github::{GithubClient, ReqwestGithubClient};
+use willow_feedback::role::{FeedbackRole, FeedbackRoleConfig};
+use willow_feedback::salt::{generate_salt, load_salt};
+use willow_feedback::throttle::enforce_throttle;
+
+#[derive(Parser)]
+#[command(name = "willow-feedback", about = "Willow feedback worker node")]
+struct Cli {
+    /// Path to the Ed25519 identity keypair file.
+    #[arg(long, default_value = "/etc/willow/feedback.key")]
+    identity_path: String,
+
+    /// Iroh relay URL to connect through.
+    #[arg(long)]
+    relay_url: Option<String>,
+
+    /// GitHub PAT (`Issues: write` scope, fine-grained, target repo only).
+    /// Can also be supplied via the `GITHUB_TOKEN` env var.
+    #[arg(long, env = "GITHUB_TOKEN")]
+    github_token: Option<String>,
+
+    /// `owner/repo` to file issues against.
+    #[arg(long, env = "FEEDBACK_REPO", default_value = "intendednull/willow")]
+    github_repo: String,
+
+    /// Per-peer rate limit (requests / hour).
+    #[arg(long, default_value = "5")]
+    rate_limit_per_hour: u32,
+
+    /// Worker-wide rate limit (requests / hour).
+    #[arg(long, default_value = "50")]
+    global_rate_limit_per_hour: u32,
+
+    /// Path to the 32-byte reporter-handle salt file.
+    #[arg(long, default_value = "/etc/willow/feedback-salt")]
+    reporter_salt_file: PathBuf,
+
+    /// Generate a new identity at `--identity-path` and exit.
+    #[arg(long)]
+    generate_identity: bool,
+
+    /// Write 32 random bytes to `--reporter-salt-file` if missing and exit.
+    #[arg(long)]
+    generate_salt: bool,
+
+    /// Print the bech32 peer ID for `--identity-path` and exit.
+    #[arg(long)]
+    print_peer_id: bool,
+}
+
+fn validate_repo(repo: &str) -> Result<()> {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$").unwrap());
+    if !re.is_match(repo) {
+        return Err(anyhow!(
+            "invalid FEEDBACK_REPO {:?}: must match owner/repo (alphanumeric, dot, underscore, hyphen)",
+            repo
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
+        .init();
+
+    let cli = Cli::parse();
+
+    if cli.generate_identity {
+        willow_worker::identity::generate_identity(&cli.identity_path)?;
+        tracing::info!("identity generated at {}", cli.identity_path);
+        return Ok(());
+    }
+
+    if cli.generate_salt {
+        generate_salt(&cli.reporter_salt_file)?;
+        tracing::info!("salt generated at {}", cli.reporter_salt_file.display());
+        return Ok(());
+    }
+
+    if cli.print_peer_id {
+        return willow_worker::identity::print_peer_id(&cli.identity_path);
+    }
+
+    validate_repo(&cli.github_repo)?;
+
+    // Enforce 15-second startup throttle.
+    let identity_dir = std::path::Path::new(&cli.identity_path)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("/etc/willow"))
+        .to_path_buf();
+    std::fs::create_dir_all(&identity_dir).ok();
+    let gate = identity_dir.join(".feedback-last-boot");
+    let throttled = enforce_throttle(&gate, Duration::from_secs(15))
+        .context("startup throttle")?;
+    if !throttled.is_zero() {
+        tracing::info!("startup throttle slept for {:?}", throttled);
+    }
+
+    // Load identity.
+    let identity = willow_worker::identity::load_or_generate(&cli.identity_path)?;
+
+    // Load salt (auto-generate if missing — entrypoint may not have run --generate-salt).
+    if !cli.reporter_salt_file.exists() {
+        generate_salt(&cli.reporter_salt_file)
+            .with_context(|| format!("generating salt at {}", cli.reporter_salt_file.display()))?;
+        tracing::info!("salt generated at {}", cli.reporter_salt_file.display());
+    }
+    let salt = load_salt(&cli.reporter_salt_file)?;
+
+    // Resolve relay URL.
+    let relay_url = cli.relay_url.as_deref().map(|url| {
+        url.parse::<willow_network::iroh::RelayUrl>()
+            .expect("invalid relay URL")
+    });
+
+    let iroh_config = willow_network::iroh::Config {
+        secret_key: identity.secret_key().clone(),
+        relay_url,
+        bootstrap_peers: vec![],
+        mdns: false,
+    };
+    let network = willow_network::iroh::IrohNetwork::new(iroh_config).await?;
+
+    // Build the role. If no GITHUB_TOKEN, run permanently Unconfigured
+    // (dev path: every UI flow exercised, no GitHub calls).
+    let role = match cli.github_token.as_deref() {
+        Some(token) if !token.is_empty() => {
+            let client: Arc<dyn GithubClient> = Arc::new(ReqwestGithubClient::new(
+                cli.github_repo.clone(),
+                SecretString::from(token.to_string()),
+            )?);
+            FeedbackRole::new(FeedbackRoleConfig {
+                github: client,
+                salt,
+                per_peer_per_hour: cli.rate_limit_per_hour,
+                global_per_hour: cli.global_rate_limit_per_hour,
+                repo: cli.github_repo.clone(),
+            })
+        }
+        _ => {
+            tracing::warn!("no GITHUB_TOKEN set; running permanently Unconfigured");
+            FeedbackRole::new_unconfigured(FeedbackRoleConfig {
+                github: Arc::new(NullGithubClient) as Arc<dyn GithubClient>,
+                salt,
+                per_peer_per_hour: cli.rate_limit_per_hour,
+                global_per_hour: cli.global_rate_limit_per_hour,
+                repo: cli.github_repo.clone(),
+            })
+        }
+    };
+
+    let config = willow_worker::WorkerConfig {
+        identity_path: cli.identity_path,
+        relay_url: cli.relay_url,
+        sync_interval_secs: 60,
+        allocation: willow_worker::AllocationStrategy::Global,
+    };
+
+    willow_worker::runtime::run(Box::new(role), config, network).await
+}
+
+/// Stub GithubClient that's never called (used when running Unconfigured).
+struct NullGithubClient;
+#[async_trait::async_trait]
+impl GithubClient for NullGithubClient {
+    async fn create_issue(
+        &self,
+        _body: willow_feedback::github::IssueBody<'_>,
+    ) -> willow_feedback::github::CreateIssueOutcome {
+        willow_feedback::github::CreateIssueOutcome::Failed {
+            reason: willow_common::FeedbackErrReason::Unconfigured,
+        }
+    }
+}
+```
+
+- [ ] **Step 2: Add `willow-common` to `dev-dependencies` if needed**
+
+`crates/feedback/Cargo.toml` already lists `willow-common`. The `NullGithubClient` impl uses `willow_common::FeedbackErrReason`; that's already accessible.
+
+- [ ] **Step 3: Verify the binary compiles**
+
+Run: `cargo build -p willow-feedback`
+Expected: pass.
+
+- [ ] **Step 4: Sanity test the CLI subcommands**
+
+Run: `cargo run -p willow-feedback -- --help 2>&1 | head -30`
+Expected: prints help text including `--generate-identity`, `--generate-salt`, `--print-peer-id`, `--github-token`, `--github-repo`, `--reporter-salt-file`.
+
+Run: `cargo run -p willow-feedback -- --github-repo "javascript:alert(1)" --github-token x 2>&1 | head -5`
+Expected: errors with `invalid FEEDBACK_REPO`. Confirms repo validation.
+
+- [ ] **Step 5: Run the full crate test suite + workspace check**
+
+Run: `cargo test -p willow-feedback`
+Expected: every test passes.
+
+Run: `just check-native 2>&1 | tail -10`
+Expected: workspace-wide cargo check passes.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/feedback/src/main.rs
+git commit -m "feat(feedback): main binary — CLI, repo validation, runtime bring-up"
+```
+
 
