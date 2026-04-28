@@ -12380,3 +12380,109 @@ mod service_worker_bridge {
         drop(cb);
     }
 }
+
+// ── STUN configuration (issue #179: privacy-first ICE config) ───────────────
+
+mod stun_config {
+    //! Tests that the WebRTC ICE configuration honours the
+    //! `window.__WILLOW_STUN_URLS` override and defaults to an empty
+    //! `iceServers` list (privacy-first — no third-party STUN by default).
+    //!
+    //! See `crates/web/src/voice.rs::resolve_stun_urls` and
+    //! `crates/web/src/voice.rs::VoiceManager::rtc_config`.
+
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_test::*;
+    use willow_web::voice;
+
+    /// Clear any prior override so each test starts from a clean slate.
+    fn clear_override() {
+        let window = web_sys::window().expect("window exists");
+        let _ = js_sys::Reflect::delete_property(
+            &window,
+            &wasm_bindgen::JsValue::from_str("__WILLOW_STUN_URLS"),
+        );
+    }
+
+    /// Set the global override to the supplied list of URLs.
+    fn set_override(urls: &[&str]) {
+        let window = web_sys::window().expect("window exists");
+        let arr = js_sys::Array::new();
+        for u in urls {
+            arr.push(&wasm_bindgen::JsValue::from_str(u));
+        }
+        js_sys::Reflect::set(
+            &window,
+            &wasm_bindgen::JsValue::from_str("__WILLOW_STUN_URLS"),
+            &arr,
+        )
+        .expect("set window override");
+    }
+
+    #[wasm_bindgen_test]
+    fn default_resolves_to_empty_list() {
+        clear_override();
+        let urls = voice::resolve_stun_urls();
+        assert!(
+            urls.is_empty(),
+            "default STUN URL list must be empty for privacy (got {urls:?})"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn override_resolves_to_supplied_urls() {
+        set_override(&["stun:foo:1234", "stun:bar:5678"]);
+        let urls = voice::resolve_stun_urls();
+        clear_override();
+        assert_eq!(
+            urls,
+            vec!["stun:foo:1234".to_string(), "stun:bar:5678".to_string()]
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn default_rtc_config_has_no_ice_servers() {
+        clear_override();
+        let cfg = voice::VoiceManager::rtc_config_for_test();
+        // The `iceServers` property should either be absent or an empty array.
+        let ice_servers =
+            js_sys::Reflect::get(&cfg, &wasm_bindgen::JsValue::from_str("iceServers"))
+                .expect("read iceServers");
+        if !ice_servers.is_undefined() && !ice_servers.is_null() {
+            let arr: js_sys::Array = ice_servers
+                .dyn_into()
+                .expect("iceServers should be an array if present");
+            assert_eq!(
+                arr.length(),
+                0,
+                "default iceServers must be empty (privacy-first default)"
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn override_rtc_config_includes_supplied_url() {
+        set_override(&["stun:example.com:3478"]);
+        let cfg = voice::VoiceManager::rtc_config_for_test();
+        clear_override();
+
+        let ice_servers =
+            js_sys::Reflect::get(&cfg, &wasm_bindgen::JsValue::from_str("iceServers"))
+                .expect("read iceServers");
+        let arr: js_sys::Array = ice_servers
+            .dyn_into()
+            .expect("iceServers should be an array");
+        assert_eq!(arr.length(), 1, "exactly one ice server entry expected");
+
+        let server = arr.get(0);
+        let urls = js_sys::Reflect::get(&server, &wasm_bindgen::JsValue::from_str("urls"))
+            .expect("read urls");
+
+        // The `urls` field on a single RTCIceServer can be a string or an
+        // array of strings; web-sys's setter wraps in an array.
+        let urls_arr: js_sys::Array = urls.dyn_into().expect("urls should be array");
+        assert_eq!(urls_arr.length(), 1);
+        let first = urls_arr.get(0).as_string().expect("url is a string");
+        assert_eq!(first, "stun:example.com:3478");
+    }
+}
