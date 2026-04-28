@@ -108,7 +108,9 @@ so the new wire types added there (see below) must remain WASM-clean.
 | `--github-repo` | `FEEDBACK_REPO` | yes (default: `intendednull/willow`) | `owner/repo` to file issues against |
 | `--rate-limit-per-hour` | — | optional, default 5 | Per-peer cap |
 | `--global-rate-limit-per-hour` | — | optional, default 50 | Worker-wide ceiling (see [Abuse](#abuse-protection-on-the-worker)) |
+| `--reporter-salt-file` | — | optional, default `/etc/willow/feedback-salt` | 32-byte random salt for the reporter-handle hash (see [GitHub issue format](#github-issue-format)) |
 | `--generate-identity` | — | flag | Generate keypair at `--identity-path` and exit |
+| `--generate-salt` | — | flag | Write 32 random bytes to `--reporter-salt-file` if missing and exit |
 | `--print-peer-id` | — | flag | Print the bech32 peer ID for `--identity-path` and exit (used by `just docker-ids`) |
 
 **PAT handling.** The PAT is wrapped in
@@ -162,11 +164,29 @@ Async-trait is the simpler, smaller diff. The cost — pulling in
 `async-trait` (or using a manually-written `Pin<Box<dyn Future>>`
 return type) — is acceptable.
 
+**Back-pressure scope.** The state-actor invariant is that one
+message at a time is processed per actor instance. With async
+`handle_request`, a slow GitHub call blocks the *feedback role's*
+mailbox specifically — this is the right behavior because
+`FeedbackRole::on_event` is a no-op (the feedback worker doesn't
+track DAG state) and `heads_summaries` returns empty. For the
+replay and storage roles, no message is ever slow enough to matter
+(everything is in-memory or a small SQLite query), so the change
+is observationally identical to today. The async trait is not
+proposing per-actor concurrency — only the ability to `.await`
+inside a handler.
+
 **Migration impact.** Every `impl WorkerRole` must add `async` to
-`handle_request` (replay, storage, the in-test `TestRole` in
-`crates/worker/src/actors/state.rs:113`, and the in-test `TestSyncRole`
-in `crates/worker/src/actors/sync.rs:108`). No call sites change other
-than the actor's `.await`.
+`handle_request`:
+
+- `crates/replay/src/role.rs:264` (ReplayRole)
+- `crates/storage/src/role.rs:62` (StorageRole)
+- `crates/worker/src/actors/state.rs:113` (TestRole, in tests)
+- `crates/worker/src/actors/heartbeat.rs:124` (TestRole, in tests)
+- `crates/worker/src/actors/sync.rs:108` (TestSyncRole, in tests)
+
+No call sites change other than the actor's `.await` on the role's
+return value.
 
 ### Wire types in `willow-common`
 
@@ -266,6 +286,9 @@ pub enum FeedbackErrReason {
     /// WireRejectReason design (docs/specs/2026-04-24-error-prefixes.md).
     /// Consolidating with that enum is on the follow-up list.
     RateLimited { retry_after_ms: u64 },
+    /// `field` is bounded to 64 chars, `message` to 200 chars.
+    /// The worker enforces these caps before constructing the
+    /// reply; the client also enforces them on receipt.
     InvalidInput { field: String, message: String },
     GithubFailure {
         status: u16,
@@ -324,6 +347,8 @@ pub enum FeedbackError {
     InvalidInput { field: String, message: String },
     #[error("github returned {status}: {message:?}")]
     GithubFailure { status: u16, message: Option<String> },
+    /// The inner string is the worker-supplied URL truncated to
+    /// 512 chars on receipt to bound error formatting.
     #[error("worker returned a malformed issue url: {0}")]
     BadIssueUrl(String),
     #[error("internal: {0}")]
@@ -414,9 +439,33 @@ cleared / "Send another" is clicked.
 | `Internal(_)` | Inline error: "Something went wrong. Please retry." Logs full string to console. |
 
 The fallback "file directly on GitHub" link is always present in the
-failure-state UI, hand-built with the user's title and body
-url-encoded (`https://github.com/intendednull/willow/issues/new?title=...&body=...`).
+failure-state UI. The URL is constructed in the web app from a
+**hard-coded** prefix (`https://github.com/`) plus the configured
+`FEEDBACK_REPO` value, plus url-encoded title and body:
+
+```
+https://github.com/{owner}/{repo}/issues/new?title={...}&body={...}
+```
+
+`{owner}/{repo}` is validated against the regex
+`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$` *both* at worker startup (the
+worker refuses to start if `FEEDBACK_REPO` doesn't match) and on
+the web side before constructing the URL. This prevents a
+mis-configured `FEEDBACK_REPO` (e.g. `javascript:alert(1)`) from
+becoming an XSS or open-redirect vector via the fallback link.
 Worst case, every path to feedback works.
+
+Below the Submit button, the modal renders a small italic note:
+
+> Your report and any included diagnostic info are visible to
+> Willow infrastructure peers in transit (the project relay and
+> feedback worker) until end-to-end encryption ships. Don't include
+> passwords, tokens, or other secrets.
+
+This is the user-facing acknowledgment of the unencrypted-transport
+trade-off documented in [Trade-offs](#trade-offs). It shows
+unconditionally — independent of whether the feedback worker is
+configured — so users always know what the privacy posture is.
 
 #### Configuration mechanism
 
@@ -424,17 +473,20 @@ There is **no** existing web-app config for a worker peer ID — relay
 URL is the only externally configured peer in `crates/web/init.js`
 today. We add a parallel mechanism:
 
-- New window global `__WILLOW_FEEDBACK_PEER_ID` (bech32 string), set by
-  `crates/web/init.js` (production: from env injected at container
-  start; dev: from the local-dev plumbing below). If unset, the web
-  app is "not configured" and renders the `NotConfigured` state above.
+- New window global `__WILLOW_FEEDBACK_PEER_ID` set by
+  `crates/web/init.js`. The value is the bech32 form of an
+  `EndpointId` produced by `EndpointId::Display` (the format
+  defined in
+  [`docs/specs/2026-04-24-bech32-identifiers.md`](./2026-04-24-bech32-identifiers.md)).
+  Production: from env injected at container start; dev: from the
+  local-dev plumbing below. If unset, the web app is "not
+  configured" and renders the `NotConfigured` state above.
 - `crates/web/init.js` is already the place that picks up
   `__WILLOW_RELAY_URL` and falls back to localhost in dev; the
-  feedback peer ID follows the same pattern. For dev, when
-  `location.hostname` is `127.0.0.1` or `localhost`, init.js attempts
-  to fetch `/.dev/feedback-peer-id` (a static file served by
-  `trunk serve`) and assigns the result to
-  `__WILLOW_FEEDBACK_PEER_ID`.
+  feedback peer ID follows the same pattern via the production
+  entrypoint substitution and the dev `dev_assets/` fetch
+  described in [Local dev plumbing](#local-dev-plumbing) and
+  [Production peer ID injection](#production-peer-id-injection).
 - The web app reads the global at `Client` construction and stores the
   parsed `EndpointId` in `ClientConfig::feedback_worker`.
 
@@ -463,35 +515,106 @@ this is the single most important sanitization step:
 
 Sanitization rules applied by the worker before assembly:
 
-1. **Body wrapping.** User body is placed inside a `​```text` fenced
-   block. Before insertion, the worker verifies the body does not
-   contain a closing ` ``` ` sequence; if it does, the worker swaps
-   the fence to a longer backtick run (` ```` ` → ` ````` ` etc.)
-   that doesn't appear in the body. This neutralizes `@mention`
-   notification spam, autolinks, image-pixel exfiltration, and
-   metadata-block spoofing.
-2. **Title sanitization.** Strip control chars, collapse internal
-   whitespace, escape leading `[` / `]`. Final title is
+1. **Body wrapping.** User body is placed inside a backtick-fenced
+   markdown block with the `text` info-string. The fence length is
+   chosen to be longer than any backtick run inside the body, per the
+   CommonMark close-fence rule (§4.5):
+
+   - Normalize line endings: `\r\n` → `\n` first.
+   - Scan body for any line matching the regex
+     `` ^[ ]{0,3}`{N,}[ \t]*$ `` (where N ≥ 3) — these are valid
+     closing fences for a backtick block. Track the maximum N
+     observed.
+   - Choose opening/closing fence length = `max(3, N_max + 1)`.
+     This guarantees no line in the body can close the fence.
+   - Backtick fences are *only* closed by backtick fences (and
+     vice-versa for tilde), so tilde-fenced content (`~~~`) inside
+     the body is inert and needs no special handling.
+   - HTML entities like `&#96;` are rendered as text (not parsed)
+     inside any fenced code block, so they don't escape the fence.
+
+   This neutralizes `@mention` notification spam, autolinks,
+   markdown-image exfiltration, and metadata-block spoofing — the
+   core threats the round-1 review identified. A unit test exercises
+   adversarial inputs: closing-fence sequences of varying length,
+   indented fences (1–3 leading spaces), CRLF mix, info-string
+   tricks, raw HTML payloads (`<img onerror=...>`), and HTML
+   entity-encoded backticks.
+
+2. **Title sanitization.** Strip ASCII control chars (0x00–0x1F,
+   0x7F), strip Unicode bidi/RTL override codepoints (U+202A–U+202E,
+   U+2066–U+2069), collapse internal whitespace to single spaces,
+   escape leading `[` / `]` with backslashes. Final title is
    `[Bug] <user title>` / `[Suggestion] <user title>` /
-   `[Other:<detail>] <user title>` (the `<detail>` segment is also
-   sanitized).
+   `[Other:<detail>] <user title>` (the `<detail>` segment goes
+   through the same sanitizer). Cap final title at 250 chars (200
+   user + ~50 worker overhead).
+
 3. **Total body cap.** After assembly, the worker asserts the
-   composed issue body is `<= 60 KB` (well under GitHub's 65 KB
-   limit). Over-cap is a worker-side bug, not a user-facing error;
-   reject with `Internal`.
+   composed issue body is **≤ 65,000 chars** (GitHub's documented
+   issue-body limit is 65,536 chars; we leave a small safety margin).
+   Note this is a *char* count, not a byte count — GitHub counts
+   Unicode codepoints. Over-cap is a worker-side assembly bug
+   (worst-case input is 8,000 body + 60 detail + ~500 metadata =
+   well under 65,000), not a user-facing error; over-cap rejects
+   with `FeedbackErrReason::Internal` after logging.
 
 **Reporter handle.** The peer ID is **not** posted in cleartext.
 The worker computes
-`hash = blake3(worker_salt || peer_id_bytes)[..6]` and renders it
-as a [bip39-style] human-friendly four-word phrase + 4-hex suffix
-(`whisper-quiet-fern-3a9c`). The salt is loaded from
-`--reporter-salt-file` (default: `/etc/willow/feedback-salt`,
-generated on first run with `--generate-salt`). This:
+`hash = blake3(worker_salt || peer_id_bytes)[..8]` (8 bytes = 64
+bits — bumped from 6 bytes per round-2 review to put targeted
+second-preimage attacks beyond practical reach for an open-source
+project's threat model) and renders it as a deterministic 4-word
+phrase plus 4-hex suffix (`whisper-quiet-fern-3a9c`):
+
+- **Wordlist:** the BIP-39 English wordlist (2048 words, 11 bits
+  each) via the existing-in-ecosystem `bip39 = "2"` crate. v1
+  vendors the wordlist into `crates/feedback/src/wordlist.rs` as a
+  static array to avoid pulling the full bip39 dep tree (we only
+  need the words, not bip39's mnemonic checksum).
+- **Mapping:** take 11 bits at a time from the 64-bit hash → 4
+  words consume 44 bits; the remaining 20 bits are rendered as a
+  5-hex-char suffix, *not* 4 — fix to the 4-hex suffix written in
+  the example above. (Round-2 review caught a bit-arithmetic
+  mismatch.) Final form is `word-word-word-word-NNNNN` (lowercase,
+  hyphens, 5 hex).
+
+This:
 - Lets maintainers correlate multiple reports from the same user
   without exposing the public Ed25519 key that signs the user's
   state-DAG events on every Willow server they participate in.
-- Rotating the salt resets all correlation, which is the right
-  knob for incident response.
+- The handle is a **display** aid, not an authenticator. The spec
+  is explicit that maintainers MUST NOT take punitive action based
+  on handle-match alone; the salted hash is a triage ergonomics
+  tool, not an identity claim.
+- Rotating the salt resets all correlation. This is the
+  incident-response knob.
+
+**Salt file.** Stored at `--reporter-salt-file` (default
+`/etc/willow/feedback-salt`, which lives inside the
+`feedback-identity` named docker volume so it survives container
+restarts). The file is 32 random bytes; `--generate-salt` (added to
+the CLI flag table) writes one if missing and exits. The
+`feedback-entrypoint.sh` script runs `--generate-identity` and
+`--generate-salt` if the corresponding files are missing, before
+starting the worker.
+
+**Salt rotation runbook.** When malicious reports require breaking
+correlation across a window (or for routine hygiene):
+
+```sh
+docker compose exec feedback rm /etc/willow/feedback-salt
+docker compose restart feedback
+```
+
+The entrypoint regenerates the salt; all subsequent reports get
+fresh handles. The idempotency cache (`(signer, dedup_id) → url`)
+is also flushed on restart (it's in-memory) — this avoids the case
+where a pre-rotation cache entry leaks the old handle in a retry
+response. Maintainers lose the ability to correlate reports across
+the rotation boundary; this is the documented trade-off for being
+able to break a sustained abuse pattern without coordinating with
+GitHub support.
 
 **Labels.** `feedback`, plus one of `feedback:bug`,
 `feedback:suggestion`, `feedback:other`, plus
@@ -504,6 +627,16 @@ the UI controls `diagnostics: Option<FeedbackDiagnostics>` directly).
 With diagnostics omitted, the metadata block shows
 `(diagnostics not provided)` after the category line.
 
+**Diagnostics non-mutation invariant.** The worker MUST post
+diagnostic field values byte-equal to those received in the
+request — no server-side enrichment (no GeoIP, no reverse-DNS, no
+synthesized fields). The disclosure-UI promise is "what you see is
+what is sent"; this invariant makes that promise enforceable. The
+worker's posting code is implemented as a pure render of
+`(diagnostics, sanitized_body, sanitized_title, hashed_handle)` and
+a unit test asserts each diagnostic field appears verbatim in the
+posted markdown for several inputs.
+
 ### Abuse protection on the worker
 
 - **Per-peer rate limit:** in-memory token bucket keyed by signer
@@ -515,11 +648,31 @@ With diagnostics omitted, the metadata block shows
   identities). The global cap turns the attack from "unbounded
   spam" into "saturate the worker's bucket and stop." Operators can
   raise/lower at runtime via the CLI flags.
-- **Restart-loop hardening:** worker process supervisor (Docker
-  restart policy) uses exponential-backoff restart, and the worker
-  refuses to start more than once per 15 seconds (a tiny gating
-  file under the identity dir, touched on startup). This bounds
-  rate-limit reset abuse without needing persistent buckets.
+- **Restart-loop hardening:** the worker writes a tiny gating file
+  at a fixed path inside the named identity volume —
+  specifically `<dirname(identity_path)>/.feedback-last-boot`
+  (e.g. `/etc/willow/.feedback-last-boot` for the default identity
+  path). On startup, the worker:
+
+  1. Opens the file with `O_CREAT | O_EXCL` → if creation
+     succeeds, this is the first boot ever, write `now()` and
+     proceed.
+  2. If creation fails because the file exists: read its mtime,
+     compute `delta = now() - mtime`. If `delta < 15 seconds`,
+     `sleep(15 - delta)`. Then update the file's mtime
+     (`utime(...)` or rewrite contents) atomically and proceed.
+  3. If the file is missing at read time (unlikely race with step
+     1's open), treat as `delta = 15s` and proceed.
+
+  The gating file lives inside the docker `feedback-identity`
+  volume, so it survives container restarts and is invisible from
+  outside the volume mount. Operators who deliberately recreate the
+  volume reset the throttle along with the identity — that's
+  intended behavior. Compose is configured with
+  `restart: on-failure` (not `restart: always`) and a
+  `max_attempts` of 5 within a window so a wedged worker doesn't
+  flap forever; once `max_attempts` is exceeded, the operator
+  inspects logs and decides.
 - **Length and shape validation:** title 1..=200, body 1..=8000,
   detail 0..=60, dedup_id length, diagnostics field caps. Rejection
   is `InvalidInput` *before* contacting GitHub.
@@ -571,14 +724,30 @@ risk are documented explicitly in [Trade-offs](#trade-offs).
       - RUST_LOG=info,willow_feedback=debug
     volumes:
       - feedback-identity:/etc/willow
+    restart: on-failure:5            # bounded retry, paired with the
+                                     # 15-second startup throttle inside
+                                     # the worker (see Abuse protection)
   volumes:
     feedback-identity:
   ```
 
   `GITHUB_TOKEN` is loaded from `.env` (which `docker-compose` reads
-  natively); `.env` is `.gitignore`-d. There is no `secrets:` block
-  because v1 targets a single-host docker-compose deployment; promoting
-  to a real secrets backend is a follow-up.
+  natively); `.env` MUST be in `.gitignore` (already true for the
+  repo, but a precommit / CI guard rejecting staged `.env` is added
+  to keep it that way). There is no `secrets:` block because v1
+  targets a single-host docker-compose deployment; promoting to a
+  real secrets backend is a follow-up.
+
+  **Blast radius if the PAT leaks** (e.g. accidental `.env`
+  commit): an attacker can file or edit issues on the configured
+  `FEEDBACK_REPO` until the PAT is revoked. They cannot push code,
+  read private repos, or affect any other GitHub account asset
+  because the PAT is fine-grained and scoped to `Issues: write` on
+  one repo. **Revocation runbook**: rotate the PAT in GitHub's
+  fine-grained tokens UI, update `.env`, run
+  `docker compose restart feedback`. The worker will surface
+  `Unconfigured` if it sees a 401 in the meantime, and recover
+  automatically once the new PAT is in place.
 
 **Justfile additions:**
 
@@ -590,31 +759,118 @@ risk are documented explicitly in [Trade-offs](#trade-offs).
 
 **Local dev plumbing.** `scripts/dev.sh` already manages relay,
 replay, and storage workers under `.dev/`. The feedback worker is
-added analogously:
+added analogously, with explicit first-run idempotency:
 
-1. On first run, `scripts/dev.sh` invokes
-   `cargo run -p willow-feedback -- --identity-path .dev/feedback.key
-    --generate-identity` if the keypair is absent.
-2. Then `cargo run -p willow-feedback -- --identity-path
-    .dev/feedback.key --print-peer-id > .dev/feedback-peer-id`.
-3. The dev web app is served from a directory that includes
-   `.dev/feedback-peer-id` as `/.dev/feedback-peer-id` (configure
-   trunk's `--ignore` / static dir as needed; the simplest option is
-   to add a `dev_assets/` symlink). `crates/web/init.js` fetches it
-   on dev hostnames and assigns to `__WILLOW_FEEDBACK_PEER_ID`.
-4. The dev feedback worker runs **without** a `GITHUB_TOKEN`. It
-   accepts and validates requests fully, but every successful path
-   replies `FeedbackErr { reason: Unconfigured }` instead of touching
+1. **Identity keypair generation** (run unconditionally; the
+   command no-ops if the file exists):
+
+   ```sh
+   if [ ! -f .dev/feedback.key ]; then
+     cargo run -q -p willow-feedback -- \
+       --identity-path .dev/feedback.key \
+       --generate-identity
+   fi
+   ```
+
+2. **Print peer ID into a file the dev web build can serve:**
+
+   ```sh
+   cargo run -q -p willow-feedback -- \
+     --identity-path .dev/feedback.key --print-peer-id \
+     > crates/web/dev_assets/feedback-peer-id.txt
+   ```
+
+   The `crates/web/dev_assets/` directory is checked-in (with
+   `.gitignore` excluding the generated `feedback-peer-id.txt`
+   contents) and referenced from `crates/web/index.html` via:
+
+   ```html
+   <link data-trunk rel="copy-dir" href="dev_assets/" />
+   ```
+
+   This causes `trunk serve` to copy the directory into `dist/`,
+   making `/dev_assets/feedback-peer-id.txt` reachable at the served
+   URL `http://localhost:8080/dev_assets/feedback-peer-id.txt`. This
+   is the *concrete* mechanism that replaces the round-1 hand-wave
+   about trunk static-file serving — `trunk serve` has no
+   `--static-dir` flag, so the only supported path is via
+   `data-trunk` directives in `index.html`.
+
+   In production builds the directive is still present, but the
+   directory is empty (or contains a stub), so no production peer ID
+   is ever served from this path. Production injection happens via
+   the entrypoint described below.
+
+3. **Web app fetch in dev:** `crates/web/init.js` already special-cases
+   localhost for the relay URL. Add an analogous fetch for the
+   feedback peer ID:
+
+   ```javascript
+   if (!window.__WILLOW_FEEDBACK_PEER_ID && (h === '127.0.0.1' || h === 'localhost')) {
+     fetch('/dev_assets/feedback-peer-id.txt')
+       .then(r => r.ok ? r.text() : '')
+       .then(s => { window.__WILLOW_FEEDBACK_PEER_ID = s.trim(); })
+       .catch(() => {});
+   }
+   ```
+
+   The fetch is fire-and-forget; if it fails, the app renders the
+   `NotConfigured` state (with the GitHub-direct fallback link).
+
+4. **Dev worker runs without `GITHUB_TOKEN`.** It accepts and
+   validates requests fully but every successful path replies
+   `FeedbackErr { reason: Unconfigured }` instead of touching
    GitHub. This exercises every UI path end-to-end (idempotency
    cache, rate limit, sanitization, error surfaces) without leaking
    a real PAT into local environments.
 
-**Production peer ID injection.** `docker/web.Dockerfile` does not
-own the feedback peer ID — the deployment's web container entrypoint
-reads `WILLOW_FEEDBACK_PEER_ID` from the environment and injects it
-into the served `init.js` at startup (a tiny `sed` step in the
-existing entrypoint, mirroring how the relay URL is injected today).
-If unset, the form renders `NotConfigured`.
+**Production peer ID injection.** Today's `docker/web.Dockerfile` is
+stock `nginx:alpine` with no entrypoint script — and not just for
+feedback: the relay URL has the same gap (it's currently set at
+build time). v1 introduces `docker/web-entrypoint.sh` to fix both:
+
+```sh
+#!/bin/sh
+set -e
+
+INIT_JS=/usr/share/nginx/html/init.js
+
+# Substitute env-injected values into the served init.js. Both vars
+# are optional: if unset, the placeholder remains and the web app
+# treats the corresponding feature as not-configured.
+if [ -n "$WILLOW_RELAY_URL" ]; then
+  sed -i "s|__INJECT_RELAY_URL__|$WILLOW_RELAY_URL|g" "$INIT_JS"
+fi
+if [ -n "$WILLOW_FEEDBACK_PEER_ID" ]; then
+  sed -i "s|__INJECT_FEEDBACK_PEER_ID__|$WILLOW_FEEDBACK_PEER_ID|g" "$INIT_JS"
+fi
+
+exec nginx -g 'daemon off;'
+```
+
+`crates/web/init.js` is updated to use the placeholders:
+
+```javascript
+window.__WILLOW_RELAY_URL = window.__WILLOW_RELAY_URL || "__INJECT_RELAY_URL__";
+window.__WILLOW_FEEDBACK_PEER_ID = window.__WILLOW_FEEDBACK_PEER_ID || "__INJECT_FEEDBACK_PEER_ID__";
+// If the placeholder survived (env not set in production), null it out.
+if (window.__WILLOW_RELAY_URL === "__INJECT_RELAY_URL__") delete window.__WILLOW_RELAY_URL;
+if (window.__WILLOW_FEEDBACK_PEER_ID === "__INJECT_FEEDBACK_PEER_ID__") delete window.__WILLOW_FEEDBACK_PEER_ID;
+```
+
+`docker/web.Dockerfile` is updated to:
+
+```dockerfile
+COPY docker/web-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+ENTRYPOINT ["/docker-entrypoint.sh"]
+```
+
+If `WILLOW_FEEDBACK_PEER_ID` is unset at container start, the form
+renders `NotConfigured`. The same mechanism cleans up the
+relay-URL build-time-injection drift that exists today; the
+relay-URL part is in scope for this spec because we're touching
+`init.js` and `web.Dockerfile` already.
 
 ### Observability
 
@@ -644,8 +900,14 @@ Log fields:
 - `latency_ms` — total request latency.
 
 The PAT, the salt, the user body, and the user title are **never**
-logged. A unit test asserts none of these strings appear in any log
-output the role emits during a happy-path or error-path call.
+logged. A unit test parameterized over every reachable code path
+asserts that none of those four strings (each set to a distinct
+unique sentinel) appears in captured `tracing` output. Paths
+covered: happy path, every `FeedbackErrReason` variant, the
+secondary-rate-limit cooldown, the 401 → permanent-Unconfigured
+transition, the idempotency-cache hit, and a deliberately-panicking
+mock-GitHub path (panics surface as `tracing::error!`, which the
+test also captures).
 
 ## Trade-offs
 
@@ -696,6 +958,10 @@ is acceptable because:
 - The new variants are addressed only at the feedback worker via
   `target_peer`; cross-version chatter that's not feedback isn't
   affected.
+- The mirror case — a v1 client receiving a
+  `WorkerResponse::FeedbackOk` it doesn't know about — is also
+  benign: only feedback-aware clients send the request, so v1
+  clients never receive responses for requests they didn't send.
 
 If future variants need to coexist with strict-version peers,
 `PROTOCOL_VERSION` (currently `1` in
@@ -788,7 +1054,10 @@ behavior to the lowest tier that covers it. Concretely:
     cooldown; subsequent requests get `RateLimited` with the
     advertised `retry-after`.
   - Idempotency cache: the same `(signer, dedup_id)` returns the
-    cached `issue_url` without contacting the mock.
+    cached `issue_url` without contacting the mock; two distinct
+    signers with the *same* `dedup_id` get distinct issue URLs (no
+    cross-signer cache poisoning — guards a future refactor that
+    might accidentally drop `signer` from the cache key).
   - Sanitization: bodies containing closing fence sequences switch
     to a longer fence; `@mentions` and image-exfiltration syntax
     survive intact inside the fence (verified by string assertion).
@@ -852,13 +1121,22 @@ regressions, but not blocking v1.
 
 **Test commands (justfile):**
 
+Add a new `test-feedback` target alongside `test-replay` /
+`test-storage` and append `-p willow-feedback` to the existing
+`test-workers` aggregate (current line passes
+`-p willow-worker -p willow-replay -p willow-storage -p willow-common`):
+
 ```just
 test-feedback:
     cargo test -p willow-feedback
 
-# Folded into existing aggregate targets:
-test-workers: test-replay test-storage test-feedback ...
+test-workers:
+    cargo test -p willow-worker -p willow-replay -p willow-storage -p willow-feedback -p willow-common
 ```
+
+Also append the feedback service to `just docker-ids` so the script
+prints all four worker peer IDs (relay/replay/storage/feedback) in
+one go.
 
 ## Follow-ups
 
