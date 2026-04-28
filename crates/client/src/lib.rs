@@ -68,6 +68,10 @@ mod tests_profile_view;
 #[path = "tests/ephemeral.rs"]
 mod tests_ephemeral;
 
+#[cfg(test)]
+#[path = "tests/actions.rs"]
+mod tests_actions;
+
 /// How long a typing indicator remains visible after the last typing event, in milliseconds.
 pub const TYPING_INDICATOR_TTL_MS: u64 = 5_000;
 
