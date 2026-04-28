@@ -216,4 +216,202 @@ git add crates/common/src/worker_types.rs
 git commit -m "feat(common): add FeedbackCategory, ClientPlatform, FeedbackDiagnostics wire types"
 ```
 
+### Task 1.2: Add `FeedbackErrReason` and feedback variants on `WorkerRequest` / `WorkerResponse` / `WorkerRoleInfo`
+
+**Files:**
+- Modify: `crates/common/src/worker_types.rs`
+
+This task extends three existing enums and adds `#[non_exhaustive]` to each as a forward-compat consumer-side guard. It also extends `WorkerRoleInfo::role_name()` so feedback identifies itself in heartbeats.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to the `#[cfg(test)] mod tests` block:
+
+```rust
+#[test]
+fn feedback_err_reason_variants_round_trip() {
+    for r in [
+        FeedbackErrReason::RateLimited { retry_after_ms: 12_345 },
+        FeedbackErrReason::InvalidInput {
+            field: "title".to_string(),
+            message: "too long".to_string(),
+        },
+        FeedbackErrReason::GithubFailure {
+            status: 422,
+            message: Some("Validation Failed".to_string()),
+        },
+        FeedbackErrReason::GithubFailure { status: 0, message: None },
+        FeedbackErrReason::Unconfigured,
+    ] {
+        let bytes = bincode::serialize(&r).unwrap();
+        let decoded: FeedbackErrReason = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(r, decoded);
+    }
+}
+
+#[test]
+fn worker_request_feedback_round_trip() {
+    let id = Identity::generate();
+    let req = WorkerRequest::Feedback {
+        dedup_id: [7u8; 16],
+        title: "It crashes".to_string(),
+        category: FeedbackCategory::Bug,
+        body: "Steps:\n1. open the app\n2. it crashes".to_string(),
+        diagnostics: Some(FeedbackDiagnostics {
+            app_version: "0.1.0".to_string(),
+            build_hash: Some("abc1234".to_string()),
+            locale: Some("en-US".to_string()),
+            client: ClientPlatform::Web {
+                ua_family: "firefox/138".to_string(),
+            },
+        }),
+    };
+    let msg = WorkerWireMessage::Request {
+        request_id: "rid-1".to_string(),
+        target_peer: id.endpoint_id(),
+        payload: req.clone(),
+    };
+    let decoded = worker_wire_round_trip(msg, &id);
+    match decoded {
+        WorkerWireMessage::Request { payload, .. } => assert_eq!(payload, req),
+        _ => panic!("expected Request"),
+    }
+}
+
+#[test]
+fn worker_response_feedback_round_trip() {
+    let id = Identity::generate();
+    for resp in [
+        WorkerResponse::FeedbackOk {
+            issue_url: "https://github.com/x/y/issues/42".to_string(),
+        },
+        WorkerResponse::FeedbackErr {
+            reason: FeedbackErrReason::RateLimited { retry_after_ms: 60_000 },
+        },
+    ] {
+        let msg = WorkerWireMessage::Response {
+            request_id: "rid-1".to_string(),
+            target_peer: id.endpoint_id(),
+            payload: Box::new(resp.clone()),
+        };
+        let decoded = worker_wire_round_trip(msg, &id);
+        match decoded {
+            WorkerWireMessage::Response { payload, .. } => assert_eq!(*payload, resp),
+            _ => panic!("expected Response"),
+        }
+    }
+}
+
+#[test]
+fn worker_role_info_feedback_round_trip_and_name() {
+    let info = WorkerRoleInfo::Feedback {
+        reports_accepted: 17,
+        reports_rejected: 4,
+        currently_rate_limited: 2,
+        global_rate_limited: false,
+    };
+    let bytes = bincode::serialize(&info).unwrap();
+    let decoded: WorkerRoleInfo = bincode::deserialize(&bytes).unwrap();
+    assert_eq!(info, decoded);
+    assert_eq!(info.role_name(), "feedback");
+}
+```
+
+- [ ] **Step 2: Run tests, verify compile failures**
+
+Run: `cargo test -p willow-common feedback_err_reason_variants_round_trip worker_request_feedback_round_trip worker_response_feedback_round_trip worker_role_info_feedback_round_trip_and_name`
+Expected: COMPILE FAIL — missing variants on `WorkerRequest`, `WorkerResponse`, `WorkerRoleInfo`, and missing `FeedbackErrReason` type.
+
+- [ ] **Step 3: Add the new variants and the error enum**
+
+Edit `crates/common/src/worker_types.rs`:
+
+1. Add `#[non_exhaustive]` to `WorkerRoleInfo`, `WorkerRequest`, and `WorkerResponse` (the existing enum declarations).
+
+2. Add a new `Feedback` variant to `WorkerRoleInfo` (alongside `Replay` and `Storage`):
+
+   ```rust
+   Feedback {
+       reports_accepted: u64,
+       reports_rejected: u64,
+       /// Gauge: peers currently throttled by the per-peer bucket.
+       currently_rate_limited: u32,
+       /// Gauge: true if the worker is hot-tripped on the global cap.
+       global_rate_limited: bool,
+   },
+   ```
+
+3. Extend `WorkerRoleInfo::role_name()` (currently around line 40 of the file) with a new arm:
+
+   ```rust
+   WorkerRoleInfo::Feedback { .. } => "feedback",
+   ```
+
+4. Add a new `Feedback` variant to `WorkerRequest`:
+
+   ```rust
+   Feedback {
+       /// 16-byte client-generated dedup key. Worker maintains an LRU
+       /// cache of (signer, dedup_id) → issue_url so retries return
+       /// the original URL.
+       dedup_id: [u8; 16],
+       /// 1..=200 chars (worker-validated).
+       title: String,
+       category: FeedbackCategory,
+       /// 1..=8000 chars (worker-validated). Worker wraps this
+       /// verbatim in a fenced markdown code block on GitHub.
+       body: String,
+       diagnostics: Option<FeedbackDiagnostics>,
+   },
+   ```
+
+5. Add two new variants to `WorkerResponse`:
+
+   ```rust
+   FeedbackOk { issue_url: String },
+   FeedbackErr { reason: FeedbackErrReason },
+   ```
+
+6. Add the new error enum *above* the `#[cfg(test)] mod tests` block:
+
+   ```rust
+   /// Reason a feedback request was rejected. Units are MILLISECONDS to
+   /// align with the broader `WireRejectReason` design
+   /// ([`docs/specs/2026-04-24-error-prefixes.md`]); consolidating the
+   /// two enums is a follow-up.
+   #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+   #[non_exhaustive]
+   pub enum FeedbackErrReason {
+       RateLimited { retry_after_ms: u64 },
+       /// `field` <= 64 chars; `message` <= 200 chars (worker-enforced
+       /// before constructing the reply, client-enforced on receipt).
+       InvalidInput { field: String, message: String },
+       GithubFailure {
+           status: u16,
+           /// GitHub's `message` field, truncated to 200 chars.
+           message: Option<String>,
+       },
+       /// Worker has no PAT configured, or PAT was revoked (401).
+       Unconfigured,
+   }
+   ```
+
+- [ ] **Step 4: Run tests, verify all pass**
+
+Run: `cargo test -p willow-common`
+Expected: all tests pass — both the four new feedback tests and every pre-existing test (the `#[non_exhaustive]` attributes don't change runtime behavior, only consumer-side compile guards).
+
+- [ ] **Step 5: Verify nothing breaks downstream**
+
+Run: `cargo check --workspace --all-targets 2>&1 | tail -40`
+Expected: pass. The `#[non_exhaustive]` markers will only break callers that match exhaustively — workspace-internal callers all match exhaustively, so any failures here mean we forgot a `_` arm somewhere. Add `_ => unreachable!()` (or a real arm) at every match site that breaks. Likely candidates are display/log code paths in `crates/worker`, `crates/replay`, `crates/storage`.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/common/src/worker_types.rs
+# Add any other files modified in step 5 above
+git commit -m "feat(common): add Feedback variants to worker wire types"
+```
+
 
