@@ -1,3 +1,4 @@
+/* eslint-disable no-restricted-syntax -- migration tracked at https://github.com/intendednull/willow/issues/458 */
 import { test, expect, chromium, firefox, devices } from '@playwright/test';
 
 // Custom Firefox context options — avoids flakiness seen with the full

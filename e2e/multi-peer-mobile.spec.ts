@@ -1,3 +1,4 @@
+/* eslint-disable no-restricted-syntax -- migration tracked at https://github.com/intendednull/willow/issues/458 */
 import { test, expect } from '@playwright/test';
 import {
   sendMessage,

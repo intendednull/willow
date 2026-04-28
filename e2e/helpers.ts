@@ -1,3 +1,4 @@
+/* eslint-disable no-restricted-syntax -- migration tracked at https://github.com/intendednull/willow/issues/458 */
 import { Page, Browser, BrowserContext, Locator, expect } from '@playwright/test';
 
 /** Wait for the WASM app to load (loading spinner disappears). */
