@@ -207,4 +207,40 @@ impl<N: willow_network::Network> ClientHandle<N> {
         })
         .await
     }
+
+    // ── DAG read accessors (test-hooks / test-utils) ─────────────────────
+
+    /// Total number of events in the local DAG.
+    ///
+    /// This async read goes through the `StateActor` so it observes any
+    /// mutations that completed before the calling task yielded.
+    pub async fn dag_event_count(&self) -> usize {
+        willow_actor::state::select(&self.dag_addr, |ds| ds.managed.dag().len()).await
+    }
+
+    /// Hash of the most recently inserted event in the local DAG, across
+    /// all authors in topological order. Returns `None` when the DAG is
+    /// empty.
+    pub async fn dag_last_event_hash(&self) -> Option<willow_state::EventHash> {
+        willow_actor::state::select(&self.dag_addr, |ds| {
+            ds.managed.dag().topological_sort().last().map(|e| e.hash)
+        })
+        .await
+    }
+
+    /// Per-author DAG head summary. Wraps `EventDag::heads_summary()`.
+    pub async fn dag_heads_summary(&self) -> willow_state::sync::HeadsSummary {
+        willow_actor::state::select(&self.dag_addr, |ds| ds.managed.dag().heads_summary()).await
+    }
+
+    /// Clone of the per-author Merkle-DAG actor address.
+    ///
+    /// Useful for callers that need a type-erased handle to the DAG
+    /// (e.g. `WillowTestHooks` in the web crate, which cannot hold a
+    /// generic `ClientHandle<N>` across the wasm_bindgen boundary).
+    pub fn dag_addr_clone(
+        &self,
+    ) -> willow_actor::Addr<willow_actor::StateActor<crate::state_actors::DagState>> {
+        self.dag_addr.clone()
+    }
 }
