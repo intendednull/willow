@@ -60,9 +60,11 @@ land as a follow-up that targets the NixOS modules introduced here.
                                 ┌──────────────────────────────────────┐
                                 │  Hetzner Cloud — Falkenstein (FSN1)  │
                                 │                                      │
-   peers ──── HTTPS/443 ──────► │  caddy ─► /var/www/willow (web)      │
-   peers ──── WSS/443 ────────► │  caddy ─► 127.0.0.1:9091 (relay WS)  │
-   peers ──── TCP/9090 ───────► │  willow-relay (iroh TCP)             │
+   browser ── HTTPS/443 ──────► │  caddy ─► /var/www/willow (web)      │
+   peers ──── HTTPS/443 ──────► │  caddy ─► 127.0.0.1:3340             │
+                                │           (willow-relay HTTP mux:    │
+                                │             /bootstrap-id +          │
+                                │             iroh-relay WS proxy)     │
                                 │                                      │
                                 │  willow-replay  ─┐                   │
                                 │  willow-storage ─┼─► relay (loopback)│
@@ -376,14 +378,17 @@ TTLs and proxy settings live in HCL.
   free. The relay's traffic stays **direct** (unproxied) for two
   reasons: (a) Cloudflare imposes a 100s idle timeout on free/pro
   plans which would forcibly close long-lived gossip WSS
-  connections, and (b) iroh's TCP/9090 is a binary protocol that
-  Cloudflare's HTTP-aware proxy cannot route at all.
+  connections (acceptable as a temporary DDoS mitigation, see §14,
+  but not a steady-state default).
 
 **Rejected alternatives.**
 
-- *Hetzner DNS.* Functional, but slower API and weaker tooling. Pinning
-  DNS to the same vendor as compute also hurts the "swap providers in 30
-  min" risk mitigation.
+- *Hetzner DNS* (the realistic runner-up). Functional and free,
+  with adequate API support. Rejected because: (a) pinning DNS to
+  the same vendor as compute defeats the "swap providers in 30
+  min" risk mitigation in §1; (b) the OpenTofu provider is less
+  mature than Cloudflare's; (c) we lose the optional CDN/proxy
+  toggle for `willow.<domain>` that comes for free with Cloudflare.
 - *Route 53.* Paid, requires AWS account creep for one feature.
 - *Self-hosted bind / NSD.* Adds operational surface for zero benefit.
 
@@ -581,17 +586,26 @@ module (`services.caddy`) accepts a `Caddyfile` (or structured Nix
 expressions producing one) and handles renewal, OCSP stapling, and
 HTTP→HTTPS redirects.
 
-**Role in Willow.** Single ingress for all HTTP-shaped traffic on the VM:
+**Role in Willow.** Single ingress for all peer traffic on the VM:
 
 ```
 willow.<domain>      :443 → /var/www/willow      (static web, HTTP/3)
-relay.<domain>       :443 → 127.0.0.1:9091       (relay WebSocket via WSS)
-relay.<domain>       :80  → ACME challenge + redirect to :443
+relay.<domain>       :443 → 127.0.0.1:3340       (willow-relay HTTP mux)
+*.<domain>           :80  → 301 → :443           (HTTPS redirect)
 ```
 
-iroh's TCP/9090 endpoint is **not** behind Caddy — it's iroh's own binary
-QUIC-over-TCP framing, not HTTP. Caddy doesn't see it. The Hetzner Cloud
-Firewall opens 9090/tcp directly to the relay process.
+The relay binary (`crates/relay/src/main.rs`) binds **one** public TCP
+port (default 3340) and multiplexes `GET /bootstrap-id` + the
+iroh-relay HTTP/WebSocket proxy onto it. Everything peer-facing is
+HTTP, so Caddy is the entire ingress surface — no separate binary-TCP
+port is exposed at the edge. ACME uses DNS-01 (Cloudflare token), so
+:80 is HTTPS-redirect only.
+
+(Historical note: the docker dev stack and the legacy `deploy` skill
+referenced `--tcp-port 9090 --ws-port 9091`. Those flags do not exist
+on the current relay binary; the dev compose entrypoint and the
+`CLAUDE.md` "Local Development Stack" table are stale and tracked for
+separate cleanup.)
 
 **Why chosen.**
 
@@ -673,9 +687,12 @@ the `willow.<domain>` A record** when CDN is desired. This gets:
   one cert; the proxy reuses it as origin cert. No CDN-cert
   juggling.
 - **CDN if and when needed.** Toggling Cloudflare's orange-cloud
-  proxy is a one-line OpenTofu change. No new vendor account, no new
-  build target, no new failure mode. Worker / relay traffic continues
-  to bypass the proxy.
+  proxy on `willow.<domain>` is a one-line OpenTofu change. **Trigger:**
+  sustained 95p egress on the VM ≥ 5 TB/mo, or browser TTFB from the
+  US 95p ≥ 1 s, or any DDoS event hitting the web UI. No new vendor
+  account, no new build target, no new failure mode. Worker / relay
+  traffic continues to bypass the proxy (the relay's WSS connections
+  would die against Cloudflare's free/pro 100s idle timeout).
 - **20 TB/mo Hetzner egress** is room enough that even a viral
   growth event doesn't force the issue.
 
@@ -879,7 +896,7 @@ snapshots:
 
 The LUKS unlock material for the Hetzner Volume is **not** in the
 backup set — the source of truth is the agenix-encrypted blob in git
-plus the offline LUKS recovery key (see DR triplet below). Backing it
+plus the offline LUKS recovery key (see DR offline-secrets list below). Backing it
 up onto the Volume itself would be circular.
 
 **Identity keys at restore vs. cutover.** The relay's identity is
@@ -1002,27 +1019,29 @@ definition.
 | Port | Protocol | Source | Hetzner edge | In-host nftables |
 |---|---|---|---|---|
 | 22 | TCP | deploy CI IPs + admin allowlist | permit | permit + sshd `MaxAuthTries=3` |
-| 80 | TCP | 0.0.0.0/0, ::/0 | permit | permit (HTTP→HTTPS redirect; ACME uses DNS-01) |
-| 443 | TCP + UDP | 0.0.0.0/0, ::/0 | permit | permit |
-| 9090 | TCP | 0.0.0.0/0, ::/0 | permit | per-source limit 60/min, burst 10; global `ct count` ≤ 5000 |
+| 80 | TCP | 0.0.0.0/0, ::/0 | permit | permit (HTTPS redirect only; ACME via DNS-01) |
+| 443 | TCP + UDP | 0.0.0.0/0, ::/0 | permit | permit + per-source connect rate limit 60/min burst 10; global `ct count` ≤ 5000 |
 
-Port 9091 (relay WS) is **not** listed at the edge: it binds to
-`127.0.0.1:9091` only and is reachable solely via Caddy's loopback
-proxy. Listing it with `127.0.0.1` in an *edge* firewall would be
-nonsense — loopback traffic never traverses Hetzner's network. The
-relay binary's listen address is set explicitly to `127.0.0.1:9091`
-in its NixOS module, so the host firewall is not load-bearing for
-this confidentiality property.
+The relay's listen port (default 3340) is **not** exposed at the edge.
+The relay binary binds `0.0.0.0:3340` by default; the NixOS module
+overrides this to `127.0.0.1:3340` so only Caddy's loopback proxy can
+reach it. Public peer traffic enters via Caddy on :443 and is reverse-
+proxied to that loopback port. The host firewall is not load-bearing
+for this confidentiality property — the relay's own bind address is.
 
-**Rate limiting + DDoS posture on 9090.** Cloudflare cannot proxy
-iroh's binary TCP/9090, so the only mitigations are at the host's own
-NIC. The in-host `nftables` rules apply a per-source connection rate
-limit and a global `ct count` cap (see table). This catches noisy
-single-IP misbehaviour, not a coordinated volumetric flood — a
-sufficiently large L4 attack saturates the Hetzner uplink before any
-host rule sees the packet. That residual risk is acknowledged in
-"Future work" with a defined trigger threshold and fallback runbook
-(Floating IP swap to a temporary scrubbing host).
+**Rate limiting + DDoS posture.** Because all peer traffic is now
+HTTPS on :443, the in-host nftables rate limit and `ct count` cap
+apply to the same surface peers and attackers share. This catches
+noisy single-IP misbehaviour but not coordinated volumetric floods —
+a sufficiently large L4/L7 attack saturates the Hetzner uplink before
+any host rule sees the packet. Cloudflare proxy can be turned on for
+`relay.<domain>` to absorb HTTP/WS-shaped attacks (the relay is
+HTTP-multiplexed, so this works in principle), but Cloudflare's free/
+pro 100s idle timeout would forcibly close long-lived gossip
+connections — so proxy is only viable during an active incident as a
+temporary measure, not a steady-state default. That residual risk is
+acknowledged in "Future work" with a defined trigger threshold and a
+fallback runbook (Floating IP swap to a temporary scrubbing host).
 
 In-host (NixOS) — same allow list as a fallback, generated from a
 single Nix definition shared with the OpenTofu locals so the two
@@ -1058,8 +1077,11 @@ hardening.
 
 - *Edge-only firewall.* Single point of misconfig.
 - *In-host-only firewall.* Wastes bandwidth on dropped traffic.
-- *Cloudflare-as-firewall.* Cloudflare's WAF is HTTP-aware; can't filter
-  iroh's TCP/9090. Not the right tool here.
+- *Cloudflare-as-firewall.* Cloudflare's WAF is HTTP-aware and would
+  work in principle (the relay surface is HTTP), but the free/pro
+  100s idle timeout would forcibly close gossip WSS connections.
+  Acceptable only as temporary DDoS mitigation, not as the steady-
+  state firewall.
 
 ## Host configuration baseline
 
@@ -1327,6 +1349,7 @@ infra/
     ├── restic-password.age      # host-decryptable (services.restic)
     ├── willow-volume-luks.age   # host-decryptable (boot-time LUKS unlock)
     ├── nix-signing-pubkey.txt   # plaintext; pinned in trusted-public-keys
+    ├── nix-signing-privkey.age  # CI-decryptable; signs deploy closures
     ├── tfstate-encryption.age   # operator-decryptable (OpenTofu state encryption)
     ├── smtp-credential.age      # host-decryptable (backup-failure alerts)
     ├── hcloud-token.age         # operator + CI; never deployed to host
@@ -1368,9 +1391,12 @@ in
   "restic-password.age"     .publicKeys = hosts ++ operators;
   "willow-volume-luks.age"  .publicKeys = hosts ++ operators;
   "smtp-credential.age"     .publicKeys = hosts;
+  "nix-signing-privkey.age" .publicKeys = operators ++ [ ci ]; # never host
   "tfstate-encryption.age"  .publicKeys = operators ++ [ ci ];
-  "hcloud-token.age"        .publicKeys = operators ++ [ ci ];   # never host
+  "hcloud-token.age"        .publicKeys = operators ++ [ ci ]; # never host
   "cloudflare-token.age"    .publicKeys = hosts ++ operators ++ [ ci ];
+  # nix-signing-pubkey.txt is plaintext (not agenix-encrypted)
+  # — it pins the trust root in nix.settings.trusted-public-keys.
 }
 ```
 
@@ -1582,10 +1608,11 @@ These are tracked separately and explicitly out of scope here.
   keys serve. Annual cadence proposed; ties into Willow's outbox-
   relay-discovery work (`docs/specs/2026-04-24-outbox-relay-discovery.md`).
 - **Observability stack** — see issue #460.
-- **DDoS scrubbing for relay TCP/9090.** A volumetric attack on the
-  relay is currently unmitigated by anything beyond per-source
-  nftables rate limits (see §14). **Trigger:** sustained > 100 Mbps
-  inbound on TCP/9090, or relay reachability < 95% from a third-party
+- **DDoS scrubbing for the relay's :443 ingress.** A volumetric
+  attack on the Caddy → relay surface is currently unmitigated by
+  anything beyond per-source nftables rate limits (see §14).
+  **Trigger:** sustained > 100 Mbps inbound on :443 directed at
+  `relay.<domain>`, or relay reachability < 95% from a third-party
   external probe over a 10-minute window.
   **Fallback runbook:** reassign the Hetzner Floating IP to a
   temporary scrubbing host (a second CAX21 in a different DC running
