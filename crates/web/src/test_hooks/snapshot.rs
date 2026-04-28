@@ -39,17 +39,16 @@ pub struct SnapshotDto {
     pub channels: Vec<ChannelDto>,
 }
 
-// ── Builder functions (Phase 2.5 / 2.7 wiring) ──────────────────────────
+// ── Builder functions ──────────────────────────────────────────────────
 //
 // These take raw actor addresses (`Addr<StateActor<DagState>>` etc.) so
 // they don't depend on the generic `ClientHandle<N>` — the wasm_bindgen
 // boundary in `WillowTestHooks` is monomorphic. Reads go through
 // `willow_actor::state::select` (the standard async ask path).
 //
-// The `build` and `build_heads` functions are not yet wired into the
-// JS-exposed `heads()` / `snapshot()` methods — those land in Tasks 2.5
-// / 2.7 of the PR-1 plan. They compile here as `pub(crate)` stubs so
-// the surrounding scaffolding stays consistent.
+// `mod.rs::heads()` calls `build_heads` from inside a `state::select`
+// closure on the DAG actor; `mod.rs::snapshot()` calls `build` directly
+// (which itself does the two `state::select` round-trips).
 
 use std::collections::BTreeMap;
 use willow_actor::{Addr, StateActor};

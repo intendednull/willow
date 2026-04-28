@@ -129,7 +129,11 @@ fn push_into_buffer(window: &web_sys::Window, js: JsValue) {
         Ok(b) if b.is_object() && b.dyn_ref::<js_sys::Array>().is_some() => b,
         _ => {
             let arr = js_sys::Array::new();
-            let _ = js_sys::Reflect::set(window, &"__willowEventBuffer".into(), &arr);
+            if let Err(e) = js_sys::Reflect::set(window, &"__willowEventBuffer".into(), &arr) {
+                web_sys::console::error_1(
+                    &format!("test-hooks: failed to install __willowEventBuffer: {e:?}").into(),
+                );
+            }
             arr.into()
         }
     };
