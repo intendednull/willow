@@ -147,8 +147,15 @@ PIDS+=($!)
 
 # --- Web UI -------------------------------------------------------------------
 
+FEATURES="${WILLOW_FEATURES:-}"
+FEATURES_FLAG=""
+if [ -n "$FEATURES" ]; then
+    FEATURES_FLAG="--features $FEATURES"
+fi
+
 echo -e "${GREEN}Starting web UI (trunk serve)...${NC}"
-(cd "$ROOT/crates/web" && trunk serve) 2>&1 | while IFS= read -r line; do
+# shellcheck disable=SC2086
+(cd "$ROOT/crates/web" && trunk serve $FEATURES_FLAG) 2>&1 | while IFS= read -r line; do
     echo -e "${GREEN}[web]${NC} $line"
 done &
 PIDS+=($!)
