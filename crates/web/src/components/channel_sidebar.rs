@@ -15,7 +15,7 @@ use leptos::prelude::*;
 use crate::app::WebClientHandle;
 use crate::components::{
     ConfirmDialog, ContextMenu, StatusDot, StatusDotBorder, StatusDotSize, TempChannelCreateForm,
-    VoiceControls, TEMP_DEFAULT_DAYS,
+    ToastStack, VoiceControls, TEMP_DEFAULT_DAYS,
 };
 use crate::icons;
 
@@ -185,13 +185,29 @@ pub fn ChannelSidebar(
                 } else if let Some(kind) = kind {
                     let h = handle_create.clone();
                     let name_owned = name.clone();
+                    // Capture toast stack on the outer reactive frame —
+                    // `spawn_local` strips the owner so `use_context`
+                    // inside the async block would return None.
+                    let toasts = use_context::<ToastStack>();
                     wasm_bindgen_futures::spawn_local(async move {
                         match kind {
                             willow_state::ChannelKind::Voice => {
-                                let _ = h.create_voice_channel(&name_owned).await;
+                                if let Err(e) = h.create_voice_channel(&name_owned).await {
+                                    crate::handlers::warn_and_toast_with(
+                                        "create voice channel",
+                                        &e,
+                                        toasts.as_ref(),
+                                    );
+                                }
                             }
                             _ => {
-                                let _ = h.create_channel(&name_owned).await;
+                                if let Err(e) = h.create_channel(&name_owned).await {
+                                    crate::handlers::warn_and_toast_with(
+                                        "create channel",
+                                        &e,
+                                        toasts.as_ref(),
+                                    );
+                                }
                             }
                         }
                     });
@@ -658,8 +674,15 @@ pub fn ChannelSidebar(
                 on_confirm=Callback::new(move |_| {
                     if let Some(name) = pending_del_channel.get_untracked() {
                         let h = handle_del_confirm.clone();
+                        let toasts = use_context::<ToastStack>();
                         wasm_bindgen_futures::spawn_local(async move {
-                            let _ = h.delete_channel(&name).await;
+                            if let Err(e) = h.delete_channel(&name).await {
+                                crate::handlers::warn_and_toast_with(
+                                    "delete channel",
+                                    &e,
+                                    toasts.as_ref(),
+                                );
+                            }
                         });
                     }
                     set_pending_del_channel.set(None);
@@ -974,8 +997,18 @@ fn render_channel_row(
                             let channel = name_for_mute.clone();
                             let h = handle.clone();
                             let target = !is_muted.get_untracked();
+                            // Capture toast stack on the outer reactive frame —
+                            // `spawn_local` strips the owner so `use_context`
+                            // inside the async block would return None.
+                            let toasts = use_context::<ToastStack>();
                             wasm_bindgen_futures::spawn_local(async move {
-                                let _ = h.mutate_channel_mute(&channel, target).await;
+                                if let Err(e) = h.mutate_channel_mute(&channel, target).await {
+                                    crate::handlers::warn_and_toast_with(
+                                        "mute channel",
+                                        &e,
+                                        toasts.as_ref(),
+                                    );
+                                }
                             });
                         }
                     >

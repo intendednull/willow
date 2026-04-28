@@ -76,8 +76,14 @@ pub fn SyncQueueView() -> impl IntoView {
             busy.set(false);
             return;
         };
+        // Capture toast stack on the outer reactive frame —
+        // `spawn_local` strips the owner so `use_context` inside the
+        // async block would return None.
+        let toasts = use_context::<ToastStack>();
         wasm_bindgen_futures::spawn_local(async move {
-            let _ = h.retry_queue().await;
+            if let Err(e) = h.retry_queue().await {
+                crate::handlers::warn_and_toast_with("retry queue", &e, toasts.as_ref());
+            }
             busy.set(false);
         });
     };
