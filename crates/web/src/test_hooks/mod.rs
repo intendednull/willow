@@ -10,6 +10,9 @@
 
 #![cfg(feature = "test-hooks")]
 
+mod snapshot;
+pub use snapshot::{AuthorHeadDto, ChannelDto, SnapshotDto};
+
 use wasm_bindgen::prelude::*;
 
 /// Read-only test instrumentation handle exposed to JS as `window.__willow`.
