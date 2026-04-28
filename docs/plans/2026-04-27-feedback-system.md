@@ -3641,4 +3641,340 @@ git add crates/client/
 git commit -m "feat(client): Client::submit_feedback + FeedbackError mapping"
 ```
 
+---
+
+## Phase 4: Web UI
+
+**Why now:** the client API is callable. We render the modal, wire it to `Client::submit_feedback`, and add the entry point to the settings panel. Browser tests (`wasm-pack test --headless --firefox`) verify the rendering and event behavior; the multi-peer scenario lives in the client-tier tests already written.
+
+### Task 4.1: Add the `Help` settings tab
+
+**Files:**
+- Modify: `crates/web/src/state.rs` (extend `SettingsTab` enum)
+- Modify: `crates/web/src/components/settings.rs` (add the new tab + body)
+- Create: `crates/web/src/components/feedback.rs` (modal component)
+- Modify: `crates/web/src/components/mod.rs` (`pub mod feedback`)
+
+- [ ] **Step 1: Extend `SettingsTab`**
+
+In `crates/web/src/state.rs` (around line 26), add a `Help` variant:
+
+```rust
+pub enum SettingsTab {
+    #[default]
+    Profile,
+    Server,
+    Roles,
+    Presence,
+    Notifications,
+    /// "Help & Feedback" — shows the Send Feedback button + privacy notes.
+    Help,
+}
+```
+
+The display-name match in `crates/web/src/components/settings.rs` (around line 40) gets a new arm: `SettingsTab::Help => "Help"`.
+
+- [ ] **Step 2: Add a stub feedback component**
+
+Create `crates/web/src/components/feedback.rs`:
+
+```rust
+//! Help & Feedback settings panel + modal.
+
+use leptos::prelude::*;
+use willow_client::feedback::FeedbackError;
+use willow_common::FeedbackCategory;
+
+use crate::app::WebClientHandle;
+
+/// Feedback panel rendered inside SettingsPanel when SettingsTab::Help
+/// is active. Always renders the GitHub-direct fallback link; opens
+/// the modal on Send Feedback click iff a feedback worker is configured.
+#[component]
+pub fn FeedbackPanel(repo: String, configured: ReadSignal<bool>) -> impl IntoView {
+    let (modal_open, set_modal_open) = signal(false);
+    view! {
+        <div class="feedback-panel">
+            <h3>"Send Feedback"</h3>
+            <p class="feedback-fallback-note">
+                "Always available: "
+                <a href=fallback_link(&repo, "", "")>"file an issue on GitHub directly"</a>
+            </p>
+            <Show when=move || configured.get() fallback=move || view! {
+                <p class="feedback-disabled">
+                    "Feedback is not configured for this build."
+                </p>
+            }>
+                <button
+                    class="feedback-open-btn"
+                    on:click=move |_| set_modal_open(true)
+                >
+                    "Send Feedback"
+                </button>
+            </Show>
+            <Show when=move || modal_open.get()>
+                <FeedbackModal
+                    on_close=move || set_modal_open(false)
+                    repo=repo.clone()
+                />
+            </Show>
+        </div>
+    }
+}
+
+#[component]
+fn FeedbackModal(
+    repo: String,
+    on_close: impl Fn() + Send + Sync + Clone + 'static,
+) -> impl IntoView {
+    // State machine for the modal.
+    // Implementer fills in the form fields, validation, dedup_id
+    // retention, submit handler. Driven by the per-state copy table
+    // in the spec §"Failure-state copy".
+    todo!("see Task 4.2")
+}
+
+/// Build the GitHub-direct fallback URL. `repo` is hardcoded
+/// `https://github.com/` prefix + validated `owner/repo`. Title and
+/// body are url-encoded.
+pub fn fallback_link(repo: &str, title: &str, body: &str) -> String {
+    let repo_validated = if is_valid_repo(repo) {
+        repo
+    } else {
+        "intendednull/willow"
+    };
+    format!(
+        "https://github.com/{}/issues/new?title={}&body={}",
+        repo_validated,
+        urlencoding::encode(title),
+        urlencoding::encode(body),
+    )
+}
+
+fn is_valid_repo(repo: &str) -> bool {
+    let mut parts = repo.split('/');
+    let owner = parts.next();
+    let name = parts.next();
+    if parts.next().is_some() || owner.is_none() || name.is_none() {
+        return false;
+    }
+    let valid = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    };
+    valid(owner.unwrap()) && valid(name.unwrap())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_link_url_encodes_title_and_body() {
+        let link = fallback_link("intendednull/willow", "title&with=evil", "body with spaces");
+        assert!(link.contains("title%26with%3Devil"));
+        assert!(link.contains("body%20with%20spaces"));
+    }
+
+    #[test]
+    fn fallback_link_rejects_invalid_repo() {
+        // Mis-set repo falls back to the canonical default rather than
+        // becoming an XSS vector.
+        let link = fallback_link("javascript:alert(1)", "t", "b");
+        assert!(link.starts_with("https://github.com/intendednull/willow/issues/new?"));
+    }
+
+    #[test]
+    fn is_valid_repo_accepts_canonical() {
+        assert!(is_valid_repo("intendednull/willow"));
+        assert!(is_valid_repo("a.b/c-d_e"));
+    }
+
+    #[test]
+    fn is_valid_repo_rejects_bad_input() {
+        assert!(!is_valid_repo("javascript:alert(1)"));
+        assert!(!is_valid_repo(""));
+        assert!(!is_valid_repo("noslash"));
+        assert!(!is_valid_repo("a/b/c"));
+    }
+}
+```
+
+Add `urlencoding = "2"` to `crates/web/Cargo.toml` `[dependencies]`.
+
+- [ ] **Step 3: Wire `feedback` into `crates/web/src/components/mod.rs`**
+
+```rust
+pub mod feedback;
+pub use feedback::FeedbackPanel;
+```
+
+- [ ] **Step 4: Run the unit tests for the helper functions**
+
+Run: `cargo test -p willow-web --lib feedback::tests`
+Expected: 4 tests pass (these are pure-Rust unit tests on the helper, not browser tests).
+
+- [ ] **Step 5: Add the new tab in `SettingsPanel`**
+
+In `crates/web/src/components/settings.rs`, find the existing tab-rendering switch (around line 117 where `<div class="settings-panel">` opens). Add a `Help` arm that renders `<FeedbackPanel ...>`. The `repo` is constant (`"intendednull/willow"` hard-coded — the worker validates it; the web side is just a display string for the fallback link). The `configured` signal is true iff `app_state.feedback_worker_configured` (a new boolean signal you add in step 6).
+
+Sketch:
+
+```rust
+SettingsTab::Help => view! {
+    <FeedbackPanel
+        repo="intendednull/willow".to_string()
+        configured=app_state.feedback_worker_configured
+    />
+}.into_any(),
+```
+
+- [ ] **Step 6: Add `feedback_worker_configured` signal to `AppState`**
+
+In `crates/web/src/state.rs`, add a `feedback_worker_configured: ReadSignal<bool>` field on `AppState`. The signal is derived from whether the parsed `__WILLOW_FEEDBACK_PEER_ID` is `Some`. Initial value is set during client construction (Task 5.x).
+
+- [ ] **Step 7: Verify it compiles**
+
+Run: `just check-wasm` (or `cargo check -p willow-web --target wasm32-unknown-unknown`).
+Expected: pass.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add crates/web/Cargo.toml crates/web/src/components/feedback.rs crates/web/src/components/mod.rs crates/web/src/components/settings.rs crates/web/src/state.rs
+git commit -m "feat(web): Help & Feedback settings tab + fallback link"
+```
+
+### Task 4.2: Modal component (form, states, retry semantics)
+
+**Files:**
+- Modify: `crates/web/src/components/feedback.rs`
+- Create: `crates/web/tests/feedback_modal.rs` (browser test)
+
+This is the form. State machine is `Idle → Submitting → Success | Failure`. `dedup_id` is held in local component state and only regenerates on "Send another" / form-clear; "Retry" preserves it.
+
+- [ ] **Step 1: Write the failing browser test**
+
+Create `crates/web/tests/feedback_modal.rs` (or extend `crates/web/tests/browser.rs` if that's the project pattern). The exact harness is project-specific; reuse the helper that mounts a component and queries the DOM. Each test's intent:
+
+```rust
+//! Browser tests for the feedback modal.
+
+use wasm_bindgen_test::*;
+wasm_bindgen_test_configure!(run_in_browser);
+
+#[wasm_bindgen_test]
+fn modal_renders_form_fields() {
+    // Mount FeedbackModal with a mock submit handler.
+    // Assert: title input, category dropdown, body textarea,
+    // diagnostics checkbox, submit button, cancel button all present.
+    todo!("follow crates/web/tests/browser.rs harness")
+}
+
+#[wasm_bindgen_test]
+fn submit_disabled_when_title_empty() {
+    todo!()
+}
+
+#[wasm_bindgen_test]
+fn other_category_reveals_detail_input() {
+    todo!()
+}
+
+#[wasm_bindgen_test]
+fn diagnostics_disclosure_renders_exact_value() {
+    todo!()
+}
+
+#[wasm_bindgen_test]
+fn rate_limited_failure_shows_retry_after_minutes() {
+    // Mock client returns FeedbackError::RateLimited { retry_after_ms: 720_000 }
+    // Assert: failure inline text mentions "12 minutes".
+    todo!()
+}
+
+#[wasm_bindgen_test]
+fn send_another_clears_dedup_id() {
+    todo!()
+}
+
+#[wasm_bindgen_test]
+fn retry_preserves_dedup_id() {
+    todo!()
+}
+```
+
+- [ ] **Step 2: Run the browser tests, verify failure**
+
+Run: `wasm-pack test --headless --firefox crates/web --test feedback_modal`
+Expected: FAIL — modal is `todo!()`.
+
+- [ ] **Step 3: Implement the modal**
+
+Replace the `todo!()` in `FeedbackModal` in `crates/web/src/components/feedback.rs` with a full implementation. Key pieces:
+
+1. Local signals for `title`, `body`, `category`, `category_detail`, `include_diagnostics`, `state`, `dedup_id`.
+
+2. `dedup_id` is initialized to a fresh random `[u8; 16]` (use `getrandom`) and stored in a `RwSignal` so it persists across `Submitting → Failure → Submitting` retries. Cleared by "Send another".
+
+3. Submit handler:
+
+   ```rust
+   let handle = use_context::<WebClientHandle>().unwrap();
+   let on_submit = move || {
+       set_state.set(ModalState::Submitting);
+       let title = title.get();
+       let body = body.get();
+       let category = match category.get().as_str() {
+           "bug" => FeedbackCategory::Bug,
+           "suggestion" => FeedbackCategory::Suggestion,
+           _ => FeedbackCategory::Other {
+               detail: {
+                   let d = category_detail.get();
+                   if d.is_empty() { None } else { Some(d) }
+               },
+           },
+       };
+       let include_diag = include_diagnostics.get();
+       let dedup = dedup_id.get();
+       leptos::task::spawn_local(async move {
+           // Use the dedup-aware variant that takes the prebuilt dedup_id.
+           let result = handle
+               .submit_feedback_with_dedup(
+                   dedup,
+                   title,
+                   category,
+                   body,
+                   include_diag,
+               )
+               .await;
+           match result {
+               Ok(url) => set_state.set(ModalState::Success(url.to_string())),
+               Err(e) => set_state.set(ModalState::Failure(e)),
+           }
+       });
+   };
+   ```
+
+   This requires a small extension to the client API: `submit_feedback_with_dedup` that takes a caller-provided `[u8; 16]`. Add it to `crates/client/src/feedback.rs` (right above `submit_feedback`); have `submit_feedback` call into it after generating the random ID.
+
+4. Render the failure-state copy table from the spec verbatim. Each `FeedbackError` variant maps to one of the documented inline copy strings.
+
+5. Render the privacy note below the Submit button unconditionally (italic; spec §"Web UI" exact text).
+
+6. Render the diagnostics disclosure: when the checkbox is checked, show a `<details>` block listing `app_version`, `build_hash` if any, `locale`, and the `ClientPlatform` debug rendering — exactly the value that will be sent.
+
+- [ ] **Step 4: Run browser tests, verify all pass**
+
+Run: `just test-browser`
+Expected: all 7 modal tests pass plus all pre-existing browser tests.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/client/src/feedback.rs crates/web/src/components/feedback.rs crates/web/tests/
+git commit -m "feat(web): feedback modal — form, states, dedup retention, failure copy"
+```
+
 
