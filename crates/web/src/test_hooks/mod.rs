@@ -13,6 +13,9 @@
 mod snapshot;
 pub use snapshot::{AuthorHeadDto, ChannelDto, SnapshotDto};
 
+mod wire;
+pub use wire::{to_wire, WireEvent};
+
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
 use willow_actor::{Addr, StateActor};
