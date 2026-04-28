@@ -82,7 +82,8 @@ Fresh agent per issue, scoped to one issue + master branch ref. Steps:
 9. **Merge gate:** if sub-PR CI runs (rare — only when workflow `branches: [main]` filter matches), wait for green. If CI doesn't run (sub-PR base ≠ main is the common case), local `just check` green from step 7 IS the gate. Merge with `mcp__github__merge_pull_request` `merge_method: squash`.
 10. CI red after one fix attempt OR local `just check` red OR mid-fix block → **file a follow-up GH issue** (caveman body, link the original issue + cite the blocker), then **close the sub-PR** (don't leave it as a draft for someone to resume). The next scheduled run will see the follow-up issue in the queue and pick it up. Return control to coordinator.
 11. Tear down worktree on merge OR on close-after-blocker.
-12. **Already-fixed-upstream path:** if pre-flight investigation (e.g. `cargo audit`, file-state grep, `cargo tree`) shows the issue was resolved by a recently-merged upstream PR, do NOT open a dead sub-PR. Leave a caveman comment on the original issue naming the upstream PR + the fix location, close the issue as `completed`, tear down the worktree, report back. Coordinator records this under `## Already-Fixed` in the master PR — NOT under `Fixes`.
+12. **Already-fixed-upstream path:** if pre-flight investigation (e.g. `cargo audit`, file-state grep, `cargo tree`) shows the issue was resolved by a recently-merged upstream PR, do NOT open a dead sub-PR. Leave a caveman comment on the original issue naming the upstream PR + the fix location, close the issue (`completed` if the audit's intent now holds; `not_planned` if the audit's premise is moot — e.g. the targeted code was deleted), tear down the worktree, report back. Coordinator records this under `## Already-Fixed` in the master PR — NOT under `Fixes`.
+13. **Stale-audit-with-residual-gap path:** if pre-flight investigation shows the audit's literal premise is stale (e.g. "zero tests" — but a later PR added some) but its underlying concern is partially valid (some specific gap remains), narrow scope to the residual gap and ship that. Note the audit's stale framing + cite the upstream PR that resolved most of it in the sub-PR body. Coordinator still records under `Fixes #N` because the audit issue is the right closer.
 
 ## Lessons Learned
 
@@ -130,6 +131,7 @@ Never defer skill edits to a follow-up — they ship with the run that surfaced 
 
 - Pre-worktree: `git stash` or `git restore` main dir; `.claude/worktrees/` in `.gitignore`.
 - Worktree per issue, branched off master branch. Tear down after sub-PR merges or parks as draft.
+- **Sandbox-specific worktree fallback.** Some sandboxed environments run a commit-signing service that rejects sources outside `/home/user/<repo>` with `400 missing source`. If `git commit` inside a worktree fails this way, do NOT fight it: keep the worktree's diff intact, switch to the canonical repo dir on the same branch (`git checkout <auto-fix/issue-N-…>` after `git fetch origin <branch>`), copy or stage the modified files, commit + push from there. End state matches the worktree-based flow. Tear down the worktree the same way regardless.
 
 ## Quality
 
