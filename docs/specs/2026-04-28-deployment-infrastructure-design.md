@@ -801,11 +801,18 @@ Outcome: production parity at the staging hostname; production
 
 ### Phase 2 — Cutover (≤ 1 hour, scheduled window)
 
-- Promote staging hostname to the canonical relay address by either:
-  - Re-pointing DNS (preferred — instantaneous via Cloudflare, low TTL),
-    or
-  - Migrating identity keys from Linode to the new Hetzner volume so peer
-    IDs are preserved (decision point — see "Open questions").
+- Migrate the **relay's** Ed25519 identity from Linode to the new Hetzner
+  volume, so the relay's peer ID is preserved across the cutover and
+  existing peers' connection state remains valid. One-time `scp` of
+  `/etc/willow/relay.key` followed by immediate revocation of the
+  source machine's SSH access. Workers (`replay`, `storage`) get
+  **fresh** identities on Hetzner; SyncProvider permission is re-granted
+  to them via a single state event after they connect. This is simpler
+  than migrating worker keys and aligns with the worker model
+  (workers are operationally fungible; relays are addressing
+  endpoints).
+- Re-point DNS in Cloudflare to the new IP. Pre-stage with low TTL
+  (60s) the day before so propagation is effectively instant.
 - Decommission Linode VM after a 7-day soak.
 
 ### Phase 3 — Backups (≤ 2 hours)
@@ -845,37 +852,35 @@ Outcome: production parity at the staging hostname; production
 Comfortably under the €15/mo goal. Adds ~€7/mo for a second Hetzner
 host when Phase 2 multi-region is undertaken.
 
-## Open questions
+## Resolved decisions
 
-These are the decisions that should be resolved before
-`infra/` is implemented in code:
+These were open during initial research and are now settled. Recorded
+here so the trail of "why this and not that" is auditable.
 
-1. **Identity-key continuity at cutover.** Two options:
-   (a) Generate new relay/replay/storage identities on the Hetzner box.
-   Existing peers see "new" workers and need to grant SyncProvider
-   permission again.
-   (b) Migrate the existing Ed25519 keys from Linode to the Hetzner
-   volume. Trust relationships persist transparently. Requires careful
-   one-time `scp` of `/etc/willow/*.key` followed by immediate rotation
-   of the source machine's SSH access. **Recommendation:** option (b)
-   for relay (peer ID changes are user-visible) and option (a) for
-   replay/storage workers (operationally simpler; SyncProvider grant is
-   a one-line state event).
-2. **Domain name.** Spec assumes `willow.<domain>` and `relay.<domain>`
-   exist. Which domain — and is registrar transfer to Cloudflare in
-   scope? **Recommendation:** keep registrar wherever it is; only
-   Cloudflare-as-DNS is required.
-3. **Should peer identity keys be encrypted in `agenix` and
-   committed?** Pro: re-provisioning a fresh volume restores identity
-   from git. Con: adds a high-value secret to the repo. **Recommendation:**
-   no — back them up via `restic` instead. Recovery path is
-   "restore the volume from restic", not "git checkout".
-4. **CI deploy key scope.** Should the GitHub-side SSH key only allow
-   `nix-store --import` + `switch-to-configuration`, or full SSH? The
-   former is more secure but more work to wire (forced-command +
-   `authorized_keys` restrictions). **Recommendation:** start with
-   forced-command using `nix-copy-closure` semantics; document the
-   break-glass procedure for emergency interactive access.
+1. **Identity-key continuity at cutover.** **Resolved:** migrate the
+   relay's Ed25519 key from Linode to Hetzner so the relay peer ID is
+   preserved and existing peers reconnect transparently. Workers
+   (`replay`, `storage`) get fresh identities — SyncProvider is
+   re-granted via a single state event after they're online. Rationale:
+   relays are addressable endpoints (peer ID is user-visible state);
+   workers are operationally fungible. See Phase 2 cutover for the
+   migration mechanics.
+2. **Domain name.** **Resolved:** Cloudflare manages DNS for whichever
+   domain Willow is using. Registrar stays put (no transfer in scope).
+   The OpenTofu config takes the zone name as a variable so the spec is
+   not coupled to a specific domain.
+3. **Identity keys in `agenix`.** **Resolved:** **no.** Identity keys
+   stay on the Hetzner Volume only, with `restic` snapshots as the
+   recovery path. Encrypting and committing them would put high-value
+   long-lived secrets in git history; the operational risk outweighs
+   the convenience of "rebuild from `git checkout`". Volume restore
+   from `restic` is the documented recovery procedure.
+4. **CI deploy key scope.** **Resolved:** start with a
+   `forced-command` SSH key in `authorized_keys`, restricted to the
+   `nix-copy-closure` + `switch-to-configuration` operations
+   `deploy-rs` performs. Full interactive SSH is the break-glass
+   procedure (separate per-developer key, not the CI key). Documented
+   in the runbook section of the implementation plan.
 
 ## Future work
 
