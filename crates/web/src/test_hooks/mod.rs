@@ -99,4 +99,15 @@ impl WillowTestHooks {
             }
         })
     }
+
+    /// Per-author DAG heads, keyed by `EndpointId` hex string. Resolves to
+    /// `Record<string, AuthorHead>`.
+    pub fn heads(&self) -> js_sys::Promise {
+        let addr = self.dag_addr.clone();
+        future_to_promise(async move {
+            let map: std::collections::BTreeMap<String, snapshot::AuthorHeadDto> =
+                willow_actor::state::select(&addr, snapshot::build_heads).await;
+            serde_wasm_bindgen::to_value(&map).map_err(Into::into)
+        })
+    }
 }

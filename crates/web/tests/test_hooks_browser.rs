@@ -67,3 +67,17 @@ async fn empty_hooks_last_event_is_null() {
         "last_event on empty DAG must be null, got {last_js:?}"
     );
 }
+
+#[wasm_bindgen_test]
+async fn heads_returns_empty_map_on_empty_dag() {
+    let hooks = empty_hooks();
+    let p = hooks.heads();
+    let value = JsFuture::from(p).await.unwrap();
+    let map: std::collections::BTreeMap<String, willow_web::test_hooks::AuthorHeadDto> =
+        serde_wasm_bindgen::from_value(value).expect("deserialize heads");
+    assert!(
+        map.is_empty(),
+        "empty DAG must produce empty heads map; got {:?}",
+        map.keys().collect::<Vec<_>>()
+    );
+}

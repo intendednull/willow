@@ -5,11 +5,11 @@
 //! convention; the kind discriminator on `ClientEvent` (a separate
 //! module) stays PascalCase.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use willow_state::ChannelKind;
 
 /// One author's DAG head, as exposed to JS.
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthorHeadDto {
     pub seq: u64,
