@@ -42,7 +42,6 @@ where
 /// [`mount_test_with_shell`] to pin the choice via a `data-shell`
 /// attribute on `<html>`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum TestShell {
     Desktop,
     Mobile,
@@ -54,7 +53,6 @@ pub enum TestShell {
 /// `.shell-desktop` / `.shell-mobile` visibility on that attribute
 /// when present (falls back to the viewport media query when the
 /// attribute is absent).
-#[allow(dead_code)]
 pub fn mount_test_with_shell<F, V>(shell: TestShell, view: F) -> web_sys::HtmlElement
 where
     F: FnOnce() -> V + 'static,
@@ -80,7 +78,6 @@ where
 /// does not pull in the app's CSS via `index.html`; without this, every
 /// element keeps its UA-default `display` and the shell override cannot
 /// be observed.
-#[allow(dead_code)]
 fn ensure_components_css_loaded(doc: &web_sys::Document) {
     const STYLE_ID: &str = "willow-test-components-css";
     if doc.get_element_by_id(STYLE_ID).is_some() {
@@ -5771,7 +5768,6 @@ mod notifications {
 /// `mobile_actions`). Each group used to carry its own copies of
 /// `click_selector` / `fill_selector` / etc.; they are hoisted here so
 /// new modules can reuse them without duplication.
-#[allow(dead_code)]
 mod test_support {
     use super::*;
     use willow_web::app::App;
