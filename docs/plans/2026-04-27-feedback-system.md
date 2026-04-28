@@ -3977,4 +3977,431 @@ git add crates/client/src/feedback.rs crates/web/src/components/feedback.rs crat
 git commit -m "feat(web): feedback modal — form, states, dedup retention, failure copy"
 ```
 
+---
+
+## Phase 5: Deployment + dev plumbing
+
+**Why now:** logic works in unit + browser tests. We need the dev stack to actually start the worker, surface its peer ID to the served web app, and give the production deployment a path to inject the peer ID at container start.
+
+### Task 5.1: `init.js` placeholder substitution + dev fetch
+
+**Files:**
+- Modify: `crates/web/init.js`
+- Modify: `crates/web/index.html` (add `<link data-trunk rel="copy-dir" href="dev_assets/" />`)
+- Create: `crates/web/dev_assets/.gitignore` (single line: `feedback-peer-id.txt`)
+- Create: `crates/web/dev_assets/.gitkeep` (empty)
+
+- [ ] **Step 1: Replace `crates/web/init.js`**
+
+```javascript
+(function() {
+    var theme = localStorage.getItem('willow-theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', theme);
+
+    // Production placeholder substitution. The web container's
+    // entrypoint runs `sed` over /usr/share/nginx/html/init.js to
+    // replace these tokens with env-injected values. If the
+    // placeholder still equals the literal token string, the env
+    // var was unset — we delete the global so the app treats the
+    // feature as not-configured.
+    window.__WILLOW_RELAY_URL = window.__WILLOW_RELAY_URL || "__INJECT_RELAY_URL__";
+    window.__WILLOW_FEEDBACK_PEER_ID = window.__WILLOW_FEEDBACK_PEER_ID || "__INJECT_FEEDBACK_PEER_ID__";
+    if (window.__WILLOW_RELAY_URL === "__INJECT_RELAY_URL__") delete window.__WILLOW_RELAY_URL;
+    if (window.__WILLOW_FEEDBACK_PEER_ID === "__INJECT_FEEDBACK_PEER_ID__") delete window.__WILLOW_FEEDBACK_PEER_ID;
+
+    // Dev defaults: auto-detect localhost relay, fetch dev feedback peer ID.
+    var h = location.hostname;
+    var isDev = (h === '127.0.0.1' || h === 'localhost');
+    if (isDev) {
+        if (!window.__WILLOW_RELAY_URL) {
+            window.__WILLOW_RELAY_URL = 'http://' + h + ':3340';
+        }
+        if (!window.__WILLOW_FEEDBACK_PEER_ID) {
+            // dev_assets/feedback-peer-id.txt is written by scripts/dev.sh
+            // and copied into dist/ by trunk's data-trunk copy-dir directive.
+            fetch('/dev_assets/feedback-peer-id.txt')
+                .then(function(r) { return r.ok ? r.text() : ''; })
+                .then(function(s) {
+                    var id = s.trim();
+                    if (id) window.__WILLOW_FEEDBACK_PEER_ID = id;
+                })
+                .catch(function() { /* ignore — form will render NotConfigured */ });
+        }
+    }
+})();
+```
+
+- [ ] **Step 2: Add the `<link data-trunk>` directive to `index.html`**
+
+In `crates/web/index.html`, just before the existing `<link data-trunk rel="copy-file" href="init.js" />` line (around line 22), add:
+
+```html
+<link data-trunk rel="copy-dir" href="dev_assets/" />
+```
+
+- [ ] **Step 3: Create the dev_assets directory contents**
+
+```bash
+mkdir -p crates/web/dev_assets
+echo 'feedback-peer-id.txt' > crates/web/dev_assets/.gitignore
+touch crates/web/dev_assets/.gitkeep
+```
+
+- [ ] **Step 4: Verify a dev build produces the expected output**
+
+Run: `cd crates/web && trunk build`
+Expected: builds successfully. `ls dist/dev_assets/` should show `.gitkeep` (and any test files you placed there).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/web/index.html crates/web/init.js crates/web/dev_assets/
+git commit -m "feat(web): init.js placeholder substitution + dev_assets dir"
+```
+
+### Task 5.2: Web container entrypoint
+
+**Files:**
+- Create: `docker/web-entrypoint.sh`
+- Modify: `docker/web.Dockerfile`
+
+- [ ] **Step 1: Create `docker/web-entrypoint.sh`**
+
+```sh
+#!/bin/sh
+set -e
+
+INIT_JS=/usr/share/nginx/html/init.js
+
+if [ -n "$WILLOW_RELAY_URL" ]; then
+    # Escape | so URLs containing pipes can't break the sed substitution.
+    safe=$(printf '%s' "$WILLOW_RELAY_URL" | sed 's/|/\\|/g')
+    sed -i "s|__INJECT_RELAY_URL__|$safe|g" "$INIT_JS"
+fi
+if [ -n "$WILLOW_FEEDBACK_PEER_ID" ]; then
+    safe=$(printf '%s' "$WILLOW_FEEDBACK_PEER_ID" | sed 's/|/\\|/g')
+    sed -i "s|__INJECT_FEEDBACK_PEER_ID__|$safe|g" "$INIT_JS"
+fi
+
+exec nginx -g 'daemon off;'
+```
+
+`chmod +x docker/web-entrypoint.sh` after creating.
+
+- [ ] **Step 2: Modify `docker/web.Dockerfile`**
+
+Append to the existing `FROM nginx:alpine` stage (after the `EXPOSE 80` line):
+
+```dockerfile
+COPY docker/web-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+ENTRYPOINT ["/docker-entrypoint.sh"]
+```
+
+- [ ] **Step 3: Smoke test (optional, requires Docker)**
+
+```bash
+docker build -f docker/web.Dockerfile -t willow-web-test .
+docker run --rm -e WILLOW_FEEDBACK_PEER_ID=did:wpid:test123 willow-web-test \
+  cat /usr/share/nginx/html/init.js | grep test123
+```
+
+Expected: the substituted peer ID appears in the served `init.js`.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add docker/web-entrypoint.sh docker/web.Dockerfile
+git commit -m "feat(docker): web entrypoint substitutes WILLOW_RELAY_URL/FEEDBACK_PEER_ID"
+```
+
+### Task 5.3: Feedback worker Dockerfile + entrypoint
+
+**Files:**
+- Create: `docker/feedback.Dockerfile`
+- Create: `docker/feedback-entrypoint.sh`
+
+- [ ] **Step 1: Create `docker/feedback.Dockerfile`**
+
+Mirror `docker/replay.Dockerfile`:
+
+```dockerfile
+FROM rust:latest AS builder
+WORKDIR /build
+COPY . .
+RUN cargo build --release -p willow-feedback
+
+FROM rust:slim
+COPY --from=builder /build/target/release/willow-feedback /usr/local/bin/willow-feedback
+COPY docker/feedback-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+```
+
+- [ ] **Step 2: Create `docker/feedback-entrypoint.sh`**
+
+```sh
+#!/bin/sh
+set -e
+mkdir -p /etc/willow
+
+# Generate identity if needed.
+if [ ! -f /etc/willow/feedback.key ]; then
+    willow-feedback --generate-identity --identity-path /etc/willow/feedback.key
+fi
+
+# Generate salt if needed.
+if [ ! -f /etc/willow/feedback-salt ]; then
+    willow-feedback --generate-salt --reporter-salt-file /etc/willow/feedback-salt
+fi
+
+# Wait for relay peer ID to be published.
+echo "Waiting for relay peer ID..."
+while [ ! -f /shared/relay-peer-id ]; do sleep 1; done
+RELAY_PEER_ID=$(cat /shared/relay-peer-id)
+echo "Relay peer ID: $RELAY_PEER_ID"
+
+RELAY_ADDR="/dns4/relay/tcp/9091/ws/p2p/$RELAY_PEER_ID"
+
+exec willow-feedback \
+    --identity-path /etc/willow/feedback.key \
+    --reporter-salt-file /etc/willow/feedback-salt \
+    --relay-url "$RELAY_ADDR" \
+    --rate-limit-per-hour "${RATE_LIMIT_PER_HOUR:-5}" \
+    --global-rate-limit-per-hour "${GLOBAL_RATE_LIMIT_PER_HOUR:-50}"
+```
+
+`chmod +x docker/feedback-entrypoint.sh`.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add docker/feedback.Dockerfile docker/feedback-entrypoint.sh
+git commit -m "feat(docker): feedback worker Dockerfile + entrypoint"
+```
+
+### Task 5.4: docker-compose service
+
+**Files:**
+- Modify: `docker-compose.yml`
+
+- [ ] **Step 1: Add the `feedback` service**
+
+Insert into `docker-compose.yml` (between the existing `storage-2` and `web` services):
+
+```yaml
+  feedback:
+    build:
+      context: .
+      dockerfile: docker/feedback.Dockerfile
+    volumes:
+      - feedback-identity:/etc/willow
+      - shared:/shared:ro
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - FEEDBACK_REPO=${FEEDBACK_REPO:-intendednull/willow}
+      - RATE_LIMIT_PER_HOUR=5
+      - GLOBAL_RATE_LIMIT_PER_HOUR=50
+      - RUST_LOG=info,willow_feedback=debug
+    depends_on:
+      - relay
+    restart: on-failure:5
+```
+
+Append to the `volumes:` block:
+
+```yaml
+  feedback-identity:
+```
+
+The web service also needs the feedback peer ID. Add an environment block (or extend the existing one if any) to the `web:` service:
+
+```yaml
+  web:
+    # ... existing config ...
+    environment:
+      - WILLOW_FEEDBACK_PEER_ID=${WILLOW_FEEDBACK_PEER_ID:-}
+      - WILLOW_RELAY_URL=${WILLOW_RELAY_URL:-}
+```
+
+The deployment operator sets `WILLOW_FEEDBACK_PEER_ID` in `.env` after running `just docker-ids`.
+
+- [ ] **Step 2: Verify the compose file is valid**
+
+Run: `docker compose config -q`
+Expected: pass.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add docker-compose.yml
+git commit -m "feat(docker-compose): add feedback service + web env wiring"
+```
+
+### Task 5.5: `scripts/dev.sh` integration
+
+**Files:**
+- Modify: `scripts/dev.sh`
+
+- [ ] **Step 1: Inspect existing service-add pattern**
+
+Read the existing replay/storage blocks in `scripts/dev.sh`. The pattern:
+
+```sh
+SERVICE_IDENTITY="$DEV_DIR/<name>.key"
+echo -e "${COLOR}Starting <name> node...${NC}"
+cargo run -p willow-<name> -- ... > "$LOG_DIR/<name>.log" 2>&1 &
+PIDS+=("$!")
+tail -f "$LOG_DIR/<name>.log" 2>/dev/null | while IFS= read -r line; do
+    echo -e "${COLOR}[<name>]${NC} $line"
+done &
+```
+
+- [ ] **Step 2: Add the feedback worker after the storage block**
+
+Insert into `scripts/dev.sh` between the storage launch and the web launch:
+
+```sh
+# --- Feedback ----------------------------------------------------------------
+
+FEEDBACK_IDENTITY="$DEV_DIR/feedback.key"
+FEEDBACK_SALT="$DEV_DIR/feedback-salt"
+
+# First-run idempotent generation.
+if [ ! -f "$FEEDBACK_IDENTITY" ]; then
+    cargo run -q -p willow-feedback -- \
+        --identity-path "$FEEDBACK_IDENTITY" \
+        --generate-identity
+fi
+if [ ! -f "$FEEDBACK_SALT" ]; then
+    cargo run -q -p willow-feedback -- \
+        --reporter-salt-file "$FEEDBACK_SALT" \
+        --generate-salt
+fi
+
+# Print peer ID to dev_assets/feedback-peer-id.txt so the web build serves it.
+mkdir -p "$ROOT/crates/web/dev_assets"
+cargo run -q -p willow-feedback -- \
+    --identity-path "$FEEDBACK_IDENTITY" \
+    --print-peer-id \
+    > "$ROOT/crates/web/dev_assets/feedback-peer-id.txt"
+echo -e "${GREEN}Feedback peer ID written to crates/web/dev_assets/feedback-peer-id.txt${NC}"
+
+# Cyan label.
+CYAN='\033[0;36m'
+echo -e "${CYAN}Starting feedback node...${NC}"
+cargo run -p willow-feedback -- \
+    --identity-path "$FEEDBACK_IDENTITY" \
+    --reporter-salt-file "$FEEDBACK_SALT" \
+    --relay-url "$RELAY_URL" \
+    > "$LOG_DIR/feedback.log" 2>&1 &
+PIDS+=("$!")
+
+tail -f "$LOG_DIR/feedback.log" 2>/dev/null | while IFS= read -r line; do
+    echo -e "${CYAN}[feedback]${NC} $line"
+done &
+PIDS+=("$!")
+```
+
+(`RELAY_URL` is the variable the existing replay/storage blocks read; if your `dev.sh` uses a different name, follow the existing pattern.)
+
+The feedback worker runs **without** `GITHUB_TOKEN` in dev — every successful path replies `Unconfigured`, exercising the UI plumbing without touching GitHub.
+
+- [ ] **Step 3: Update the build line to include feedback**
+
+Find the existing build invocation around line 67:
+
+```sh
+cargo build -p willow-relay -p willow-replay -p willow-storage 2>&1 | ...
+```
+
+Append `-p willow-feedback`.
+
+- [ ] **Step 4: Smoke test the dev stack**
+
+Run: `just dev-clean && just dev`
+Expected: all four workers start (relay, replay, storage, feedback). Open `http://localhost:8080`, navigate to Settings → Help, click "Send Feedback", submit a test report. Result: the modal shows the failure-state copy for `Unconfigured` (since dev has no PAT). The fallback "file directly on GitHub" link works.
+
+`Ctrl+C` to stop. `just dev-clean` to reset.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add scripts/dev.sh
+git commit -m "feat(dev): launch feedback worker, write peer ID to dev_assets"
+```
+
+### Task 5.6: Justfile additions
+
+**Files:**
+- Modify: `justfile`
+
+- [ ] **Step 1: Add `test-feedback` target**
+
+Insert after the existing `test-relay` target (around line 43):
+
+```just
+# Run feedback worker tests
+test-feedback:
+    cargo test -p willow-feedback
+```
+
+- [ ] **Step 2: Append `-p willow-feedback` to `test-workers`**
+
+Edit the existing `test-workers` line (around line 47):
+
+```just
+test-workers:
+    cargo test -p willow-worker -p willow-replay -p willow-storage -p willow-feedback -p willow-common
+```
+
+- [ ] **Step 3: Add `build-feedback` target**
+
+Insert near the existing `build-workers`:
+
+```just
+# Build feedback worker binary (release)
+build-feedback:
+    cargo build --release -p willow-feedback
+```
+
+And update `build-workers` to include feedback:
+
+```just
+build-workers:
+    cargo build --release -p willow-replay -p willow-storage -p willow-feedback
+```
+
+- [ ] **Step 4: Append feedback to `docker-ids`**
+
+In the existing `docker-ids` target (around line 175):
+
+```just
+docker-ids:
+    @docker compose exec replay-1 willow-replay --print-peer-id 2>/dev/null || echo "replay-1: not running"
+    @docker compose exec replay-2 willow-replay --print-peer-id 2>/dev/null || echo "replay-2: not running"
+    @docker compose exec storage-1 willow-storage --print-peer-id 2>/dev/null || echo "storage-1: not running"
+    @docker compose exec storage-2 willow-storage --print-peer-id 2>/dev/null || echo "storage-2: not running"
+    @docker compose exec feedback willow-feedback --print-peer-id 2>/dev/null || echo "feedback: not running"
+```
+
+- [ ] **Step 5: Verify each target works**
+
+Run: `just test-feedback`
+Expected: pass.
+
+Run: `just test-workers`
+Expected: pass (includes the new feedback tests).
+
+Run: `just build-feedback`
+Expected: pass.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add justfile
+git commit -m "feat(justfile): test-feedback, build-feedback, docker-ids feedback"
+```
+
 
