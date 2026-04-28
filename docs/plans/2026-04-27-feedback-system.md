@@ -414,4 +414,229 @@ git add crates/common/src/worker_types.rs
 git commit -m "feat(common): add Feedback variants to worker wire types"
 ```
 
+### Task 1.3: Make `WorkerRole::handle_request` async + add `signer` parameter
+
+**Files:**
+- Modify: `crates/common/src/worker_types.rs` (the `WorkerRole` trait)
+- Modify: `crates/worker/Cargo.toml` (add `async-trait` dep)
+- Modify: `crates/worker/src/actors/mod.rs` (`WorkerRequestMsg` carries signer)
+- Modify: `crates/worker/src/actors/state.rs` (handler awaits role, threads signer)
+- Modify: `crates/worker/src/actors/network.rs` (pass requester signer into `WorkerRequestMsg`)
+- Modify: `crates/worker/src/actors/sync.rs` (test role + internal sync requests pass local peer as signer)
+- Modify: `crates/worker/src/actors/heartbeat.rs` (test role becomes async)
+- Modify: `crates/replay/src/role.rs` (impl becomes `async fn handle_request(_signer, ...)`)
+- Modify: `crates/storage/src/role.rs` (same)
+
+This is the load-bearing change. Approach: extend the message struct first (so the field exists), then update the trait, then fix the four impl sites in lockstep. Compile-driven — `cargo check` tells us when we've covered every site.
+
+- [ ] **Step 1: Inspect every existing `impl WorkerRole` site so the change is covered**
+
+Run: `grep -rn "impl WorkerRole\|fn handle_request" crates/`
+Expected output (the current impls — confirm these match before continuing):
+
+- `crates/replay/src/role.rs:264` — `fn handle_request(&mut self, req: WorkerRequest) -> WorkerResponse`
+- `crates/storage/src/role.rs:62` — same
+- `crates/worker/src/actors/state.rs:127` — TestRole (in tests)
+- `crates/worker/src/actors/sync.rs:108` — TestSyncRole (in tests)
+- `crates/worker/src/actors/heartbeat.rs:124` — TestRole (in tests)
+
+If line numbers drift, follow the names — there are exactly five impls and one trait declaration to update.
+
+- [ ] **Step 2: Add `async-trait` to `crates/worker/Cargo.toml`**
+
+Add under `[dependencies]`:
+
+```toml
+async-trait = "0.1"
+```
+
+Run: `cargo check -p willow-worker`
+Expected: pass (just pulls the dep).
+
+- [ ] **Step 3: Add `EndpointId` to `WorkerRequestMsg`**
+
+In `crates/worker/src/actors/mod.rs` (around line 26), update the message:
+
+```rust
+// Before:
+pub struct WorkerRequestMsg(pub WorkerRequest);
+
+// After:
+pub struct WorkerRequestMsg {
+    pub req: willow_common::WorkerRequest,
+    pub signer: willow_identity::EndpointId,
+}
+```
+
+- [ ] **Step 4: Update the trait declaration in `willow-common`**
+
+In `crates/common/src/worker_types.rs` (around line 131), change:
+
+```rust
+// Before:
+pub trait WorkerRole: Send + 'static {
+    fn role_info(&self) -> WorkerRoleInfo;
+    fn on_event(&mut self, event: &Event);
+    fn handle_request(&mut self, req: WorkerRequest) -> WorkerResponse;
+    fn heads_summaries(&self) -> Vec<(String, HeadsSummary)> {
+        vec![]
+    }
+}
+
+// After:
+#[async_trait::async_trait]
+pub trait WorkerRole: Send + 'static {
+    fn role_info(&self) -> WorkerRoleInfo;
+    fn on_event(&mut self, event: &Event);
+    /// Handle an inbound request from a client. `signer` is the
+    /// verified Ed25519 signer of the inbound `WireMessage`; roles
+    /// that don't need it (replay, storage) ignore the parameter.
+    async fn handle_request(
+        &mut self,
+        signer: willow_identity::EndpointId,
+        req: WorkerRequest,
+    ) -> WorkerResponse;
+    fn heads_summaries(&self) -> Vec<(String, HeadsSummary)> {
+        vec![]
+    }
+}
+```
+
+Add `async-trait` to `crates/common/Cargo.toml` `[dependencies]`:
+
+```toml
+async-trait = "0.1"
+```
+
+- [ ] **Step 5: Run cargo check to discover every impl site that needs updating**
+
+Run: `cargo check --workspace --all-targets 2>&1 | grep -E 'error\[|fn handle_request' | head -40`
+Expected: errors at five impl sites — replay, storage, and the three test roles. Each will say "method `handle_request` has an incompatible type for trait" or similar.
+
+- [ ] **Step 6: Update `ReplayRole` impl in `crates/replay/src/role.rs`**
+
+Find the `impl WorkerRole for ReplayRole` block (currently around line 223 with `handle_request` at ~264). Replace the trait impl:
+
+```rust
+#[async_trait::async_trait]
+impl WorkerRole for ReplayRole {
+    // ... (role_info, on_event unchanged) ...
+
+    async fn handle_request(
+        &mut self,
+        _signer: willow_identity::EndpointId,
+        req: WorkerRequest,
+    ) -> WorkerResponse {
+        // existing body unchanged
+    }
+
+    // ... (heads_summaries unchanged) ...
+}
+```
+
+Add `async-trait = "0.1"` to `crates/replay/Cargo.toml` `[dependencies]`.
+
+Run: `cargo check -p willow-replay`
+Expected: pass.
+
+- [ ] **Step 7: Update `StorageRole` impl in `crates/storage/src/role.rs`**
+
+Same shape as Step 6 — wrap the impl in `#[async_trait::async_trait]`, prepend `async`, accept `_signer: EndpointId`. Add `async-trait = "0.1"` to `crates/storage/Cargo.toml`.
+
+Run: `cargo check -p willow-storage`
+Expected: pass.
+
+- [ ] **Step 8: Update the three test-role impls in `crates/worker/src/actors/`**
+
+For each of `state.rs:113`, `heartbeat.rs:124`, `sync.rs:108`, wrap the impl in `#[async_trait::async_trait]`, change the signature to:
+
+```rust
+async fn handle_request(
+    &mut self,
+    _signer: willow_identity::EndpointId,
+    req: WorkerRequest,
+) -> WorkerResponse {
+    // existing body
+}
+```
+
+Run: `cargo check -p willow-worker --all-targets`
+Expected: pass.
+
+- [ ] **Step 9: Update the state actor's handler to `.await` the role and pass the signer**
+
+In `crates/worker/src/actors/state.rs` (around line 52), the existing handler is:
+
+```rust
+impl Handler<WorkerRequestMsg> for StateActor {
+    fn handle(
+        &mut self,
+        msg: WorkerRequestMsg,
+        _ctx: &mut Context<Self>,
+    ) -> impl std::future::Future<Output = crate::types::WorkerResponse> + Send {
+        let response = self.role.handle_request(msg.0);
+        async move { response }
+    }
+}
+```
+
+Replace with:
+
+```rust
+impl Handler<WorkerRequestMsg> for StateActor {
+    async fn handle(
+        &mut self,
+        msg: WorkerRequestMsg,
+        _ctx: &mut Context<Self>,
+    ) -> crate::types::WorkerResponse {
+        self.role.handle_request(msg.signer, msg.req).await
+    }
+}
+```
+
+- [ ] **Step 10: Update internal `ask` callers in `state.rs` and `sync.rs` that construct `WorkerRequestMsg`**
+
+Internal sync-actor code paths (like `crates/worker/src/actors/state.rs:186`, `:199`, `:244`) currently call `addr.ask(WorkerRequestMsg(WorkerRequest::Sync { ... }))`. These are *internal* synthetic requests, not from the network; they should pass the worker's own peer ID as the signer.
+
+Find each `WorkerRequestMsg(WorkerRequest::...)` construction in `crates/worker/src/`. There's a pre-existing `local_peer_id` in scope at `network.rs`; `state.rs` and `sync.rs` need to obtain it from the actor's stored identity. If the actor doesn't currently hold the peer ID, plumb it in via the actor's constructor. Update each call site to:
+
+```rust
+addr.ask(WorkerRequestMsg {
+    req: WorkerRequest::Sync { /* ... */ },
+    signer: self.local_peer_id, // or whatever the actor field is named
+}).await
+```
+
+Run: `cargo check -p willow-worker --all-targets`
+Expected: pass.
+
+- [ ] **Step 11: Update `network.rs` to pass the verified requester through**
+
+In `crates/worker/src/actors/network.rs` (around line 138), the existing call is:
+
+```rust
+state_addr.ask(WorkerRequestMsg(payload)).await
+```
+
+`requester` (the verified gossip signer) is already in scope at line 133. Replace with:
+
+```rust
+state_addr.ask(WorkerRequestMsg { req: payload, signer: requester }).await
+```
+
+Run: `cargo check -p willow-worker --all-targets`
+Expected: pass.
+
+- [ ] **Step 12: Run all worker-side tests**
+
+Run: `cargo test -p willow-common -p willow-worker -p willow-replay -p willow-storage`
+Expected: all tests pass. The trait change is observationally invisible to existing roles — they ignore the new parameter and don't await anything inside `handle_request`.
+
+- [ ] **Step 13: Commit**
+
+```bash
+git add crates/
+git commit -m "refactor(worker): make WorkerRole::handle_request async + accept signer"
+```
+
 
