@@ -57,13 +57,7 @@ blake3 = { workspace = true }
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
-wasm-bindgen-futures = "0.4"
-# Extra types needed by test_hooks_browser.rs integration test.
-willow-actor = { path = "../actor" }
-willow-state = { path = "../state" }
-willow-identity = { path = "../identity" }
-willow-client = { path = "../client" }
 
 [features]
 default = []
-test-hooks = ["dep:serde-wasm-bindgen"]
+test-hooks = ["dep:serde-wasm-bindgen", "willow-client/test-hooks"]

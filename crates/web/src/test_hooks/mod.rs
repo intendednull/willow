@@ -15,42 +15,50 @@ pub use snapshot::{AuthorHeadDto, ChannelDto, SnapshotDto};
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
+use willow_actor::{Addr, StateActor};
 use willow_client::state_actors::DagState;
 use willow_client::ClientHandle;
 use willow_network::Network;
-
-/// Type alias for the DAG actor address, kept here so the `#[wasm_bindgen]`
-/// struct stays monomorphic.
-type DagAddr = willow_actor::Addr<willow_actor::StateActor<DagState>>;
+use willow_state::ServerState;
 
 /// Read-only test instrumentation handle exposed to JS as `window.__willow`.
 ///
-/// Generic-free by storing only the `DagAddr` extracted from the
-/// `ClientHandle` at construction time. All `#[wasm_bindgen]`-exposed
-/// methods return `js_sys::Promise` so the WASM async runtime (rather than
-/// a blocking call) drives the actor-ask round-trip.
+/// Stores the actor addresses extracted from the `ClientHandle` at
+/// construction time so the `#[wasm_bindgen]` struct stays monomorphic.
+/// All exposed methods return `js_sys::Promise` — the WASM async runtime
+/// drives the actor-ask round-trip rather than blocking on it.
 #[wasm_bindgen]
 pub struct WillowTestHooks {
-    dag_addr: DagAddr,
+    dag_addr: Addr<StateActor<DagState>>,
+    state_addr: Addr<StateActor<ServerState>>,
 }
 
 impl WillowTestHooks {
-    /// Construct from any `ClientHandle<N>`. Captures the DAG actor address
-    /// so the wasm_bindgen-exposed methods stay monomorphic.
-    pub fn new<N: Network + 'static>(handle: ClientHandle<N>) -> Self {
+    /// Construct from a `ClientHandle` (production path: `app.rs` mount).
+    ///
+    /// Borrows the handle so callers don't need to `.clone()` just to
+    /// construct the hooks; the underlying actor addresses are cloned
+    /// internally.
+    pub fn new<N: Network + 'static>(handle: &ClientHandle<N>) -> Self {
         Self {
             dag_addr: handle.dag_addr_clone(),
+            state_addr: handle.event_state_addr_clone(),
         }
     }
 
-    /// Construct directly from a DAG actor address.
+    /// Construct directly from raw actor addresses (test path).
     ///
-    /// Useful in WASM browser tests where `MemNetwork` is unavailable
-    /// (it depends on `tokio::sync::broadcast`, which is native-only).
-    /// Tests that only exercise the DAG read-path can construct a
-    /// `StateActor<DagState>` directly without a full `ClientHandle`.
-    pub fn from_dag_addr(dag_addr: DagAddr) -> Self {
-        Self { dag_addr }
+    /// Bypasses `ClientHandle` entirely so wasm32 browser tests don't
+    /// need `MemNetwork` (which depends on `tokio::sync::broadcast`,
+    /// native-only).
+    pub fn from_actors(
+        dag_addr: Addr<StateActor<DagState>>,
+        state_addr: Addr<StateActor<ServerState>>,
+    ) -> Self {
+        Self {
+            dag_addr,
+            state_addr,
+        }
     }
 }
 

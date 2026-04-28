@@ -20,7 +20,8 @@ pub struct AuthorHeadDto {
 #[serde(rename_all = "camelCase")]
 pub struct ChannelDto {
     pub name: String,
-    pub member_count: u32,
+    /// Channel kind serialised as a string (e.g. `"Text"` / `"Voice"`).
+    pub kind: String,
 }
 
 /// Aggregated state snapshot for `expect.poll` matchers.
@@ -34,44 +35,32 @@ pub struct SnapshotDto {
     pub channels: Vec<ChannelDto>,
 }
 
-// ── Builder functions (Phase 2.6+) ──────────────────────────────────────
+// ── Builder functions (Phase 2.5 / 2.7 wiring) ──────────────────────────
+//
+// These take raw actor addresses (`Addr<StateActor<DagState>>` etc.) so
+// they don't depend on the generic `ClientHandle<N>` — the wasm_bindgen
+// boundary in `WillowTestHooks` is monomorphic. Reads go through
+// `willow_actor::state::select` (the standard async ask path).
+//
+// The `build` and `build_heads` functions are not yet wired into the
+// JS-exposed `heads()` / `snapshot()` methods — those land in Tasks 2.5
+// / 2.7 of the PR-1 plan. They compile here as `pub(crate)` stubs so
+// the surrounding scaffolding stays consistent.
 
-use willow_client::ClientHandle;
-use willow_network::Network;
+use std::collections::BTreeMap;
+use willow_actor::{Addr, StateActor};
+use willow_client::state_actors::DagState;
+use willow_state::ServerState;
 
-/// Build a full `SnapshotDto` from a `ClientHandle`.
+/// Build the per-author heads map from the in-memory `DagState`.
 ///
-/// All underlying reads are async (actor round-trips). Called by the
-/// `snapshot()` method on `WillowTestHooks` (added in Phase 2.6).
-pub(crate) async fn build<N: Network>(handle: &ClientHandle<N>) -> SnapshotDto {
-    let event_count = handle.dag_event_count().await as u32;
-    let heads = build_heads(handle).await;
-    let last_event = handle.dag_last_event_hash().await.map(|h| h.to_string());
-    let channels = handle
-        .channels()
-        .await
-        .into_iter()
-        .map(|name| ChannelDto {
-            name,
-            member_count: 0, // Phase 2.6: wire real member count
-        })
-        .collect();
-    SnapshotDto {
-        event_count,
-        heads,
-        last_event,
-        channels,
-    }
-}
-
-/// Build the per-author heads map from a `ClientHandle`.
-///
-/// Keys are `EndpointId` hex strings; values are `AuthorHeadDto { seq, hash }`.
-pub(crate) async fn build_heads<N: Network>(
-    handle: &ClientHandle<N>,
-) -> std::collections::BTreeMap<String, AuthorHeadDto> {
-    let summary = handle.dag_heads_summary().await;
-    summary
+/// Synchronous helper invoked from inside a `state::select` closure on
+/// the DAG actor. Keys are `EndpointId` hex strings; values are
+/// `AuthorHeadDto { seq, hash }`.
+pub(crate) fn build_heads(ds: &DagState) -> BTreeMap<String, AuthorHeadDto> {
+    ds.managed
+        .dag()
+        .heads_summary()
         .heads
         .into_iter()
         .map(|(endpoint, head)| {
@@ -84,4 +73,45 @@ pub(crate) async fn build_heads<N: Network>(
             )
         })
         .collect()
+}
+
+/// Build a full `SnapshotDto` by reading both the DAG actor and the
+/// materialised `ServerState` actor.
+///
+/// Two actor-asks (cheap, sub-ms each on local mailbox dispatch). The
+/// snapshot is consistent within each ask but not across the pair —
+/// the gap is acceptable for `expect.poll`-style tests, which retry
+/// until the predicate stabilises.
+pub(crate) async fn build(
+    dag_addr: &Addr<StateActor<DagState>>,
+    state_addr: &Addr<StateActor<ServerState>>,
+) -> SnapshotDto {
+    let (event_count, heads, last_event) = willow_actor::state::select(dag_addr, |ds| {
+        (
+            ds.managed.dag().len() as u32,
+            build_heads(ds),
+            ds.managed
+                .dag()
+                .topological_sort()
+                .last()
+                .map(|e| e.hash.to_string()),
+        )
+    })
+    .await;
+    let channels = willow_actor::state::select(state_addr, |ss| {
+        ss.channels
+            .values()
+            .map(|ch| ChannelDto {
+                name: ch.name.clone(),
+                kind: format!("{:?}", ch.kind),
+            })
+            .collect::<Vec<_>>()
+    })
+    .await;
+    SnapshotDto {
+        event_count,
+        heads,
+        last_event,
+        channels,
+    }
 }

@@ -3,59 +3,67 @@
 //! Run with:
 //!   wasm-pack test crates/web --headless --chrome --features test-hooks --test test_hooks_browser
 //!
-//! These tests construct a `StateActor<DagState>` directly (no networking)
-//! and assert the test-hooks pull API observes the expected shape after
-//! known events have been applied.
-//!
 //! ## Why no `MemNetwork`?
 //! `MemNetwork` uses `tokio::sync::broadcast` which is native-only.
-//! These tests therefore construct just the DAG actor they need and hand
-//! it to `WillowTestHooks::from_dag_addr` — no `ClientHandle` required.
+//! These tests therefore construct just the actor addresses they need
+//! (`StateActor<DagState>` + `StateActor<ServerState>`) and hand them
+//! to `WillowTestHooks::from_actors` — no `ClientHandle` required.
+//!
+//! ## What's covered
+//! Empty-DAG invariants of the JS-exposed pull API:
+//! `event_count()` resolves to `0`, `last_event()` resolves to `null`.
+//! Non-empty fixtures (after `append_local`) land in subsequent tasks.
 
 #![cfg(feature = "test-hooks")]
 
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::*;
+use willow_actor::{StateActor, System};
+use willow_client::state_actors::DagState;
+use willow_identity::Identity;
+use willow_state::ServerState;
 use willow_web::test_hooks::WillowTestHooks;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
-/// Construct a `WillowTestHooks` backed by a fresh DAG seeded with one
-/// `CreateServer` genesis event (via `ManagedDag::new`).
-fn make_hooks() -> WillowTestHooks {
-    let identity = willow_identity::Identity::generate();
-    let managed = willow_state::ManagedDag::new(&identity, "test-server", 5_000).expect("genesis");
-    let dag_state = willow_client::state_actors::DagState {
-        managed,
-        stashed: std::collections::HashMap::new(),
-    };
-    let sys = willow_actor::System::new();
-    let dag_addr = sys.spawn(willow_actor::StateActor::new(dag_state));
+/// Construct a `WillowTestHooks` instance backed by empty actor state.
+///
+/// The `DagState` uses `ManagedDag::empty(...)` (no genesis seeded),
+/// and the `ServerState` is a freshly-constructed shell with a
+/// throwaway endpoint id. Neither carries any events.
+fn empty_hooks() -> WillowTestHooks {
+    let sys = System::new();
+    let dag_addr = sys.spawn(StateActor::new(DagState::default()));
+    let throwaway = Identity::generate().endpoint_id();
+    let state_addr = sys.spawn(StateActor::new(ServerState::new("test", "Test", throwaway)));
     // Forget the System to keep the spawned actors alive for the test.
     std::mem::forget(sys);
-    WillowTestHooks::from_dag_addr(dag_addr)
+    WillowTestHooks::from_actors(dag_addr, state_addr)
 }
 
 #[wasm_bindgen_test]
-async fn snapshot_event_count_and_last_event_after_create_server() {
-    let hooks = make_hooks();
+async fn empty_hooks_event_count_is_zero() {
+    let hooks = empty_hooks();
 
-    // event_count() resolves to a JS number.
     let count_js: JsValue = JsFuture::from(hooks.event_count())
         .await
         .expect("event_count");
     let count = count_js.as_f64().expect("event_count is a number") as u32;
 
-    assert_eq!(count, 1, "CreateServer should be event #1");
+    assert_eq!(count, 0, "empty DAG should have event_count = 0");
+}
 
-    // last_event() resolves to a non-null JS string when the DAG is non-empty.
+#[wasm_bindgen_test]
+async fn empty_hooks_last_event_is_null() {
+    let hooks = empty_hooks();
+
     let last_js: JsValue = JsFuture::from(hooks.last_event())
         .await
         .expect("last_event");
 
     assert!(
-        !last_js.is_null() && !last_js.is_undefined(),
-        "last_event should be Some after CreateServer"
+        last_js.is_null(),
+        "last_event on empty DAG must be null, got {last_js:?}"
     );
 }
