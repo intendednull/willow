@@ -11572,3 +11572,24 @@ mod phase_2d_ephemeral_channels {
         assert_eq!(input.value(), "90", "must clamp at 90-day cap");
     }
 }
+
+// ── test-hooks mount verification ────────────────────────────────────────────
+
+/// Verify that `window.__willow` is set when the `test-hooks` feature is on
+/// and `<App/>` has been mounted. The mount block in `app.rs` sets the property
+/// synchronously (before the async dispatcher subscription), so it is already
+/// present by the time this assertion runs.
+#[wasm_bindgen_test]
+#[cfg(feature = "test-hooks")]
+async fn window_willow_is_mounted_under_test_hooks_feature() {
+    use willow_web::app::App;
+
+    let _container = mount_test(|| leptos::view! { <App /> });
+
+    let window = web_sys::window().unwrap();
+    let willow = js_sys::Reflect::get(&window, &"__willow".into()).unwrap();
+    assert!(
+        !willow.is_undefined(),
+        "window.__willow must be present when test-hooks feature is on"
+    );
+}

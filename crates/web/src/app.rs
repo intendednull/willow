@@ -161,6 +161,27 @@ pub fn App() -> impl IntoView {
     let handle_inner = (*handle).clone().with_trust_store(trust_store.clone());
     let handle: WebClientHandle = SendWrapper::new(handle_inner);
 
+    #[cfg(feature = "test-hooks")]
+    {
+        let inner_for_hooks = (*handle).clone();
+        let hooks = crate::test_hooks::WillowTestHooks::new(&inner_for_hooks);
+        if let Some(window) = web_sys::window() {
+            let _ = js_sys::Reflect::set(
+                &window,
+                &"__willow".into(),
+                &wasm_bindgen::JsValue::from(hooks),
+            );
+        }
+        let handle_for_dispatcher = inner_for_hooks.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let rx = handle_for_dispatcher.subscribe_events().await;
+            // Leak the dispatcher: it should live for app lifetime, and in
+            // wasm32 the process IS the app, so leaking is fine.
+            let dispatcher = crate::test_hooks::install_push_dispatcher(rx);
+            std::mem::forget(dispatcher);
+        });
+    }
+
     // Provide context so child components can access the handle and state.
     provide_context(handle.clone());
     provide_context(app_state);
