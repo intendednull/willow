@@ -1,3 +1,20 @@
+//! UI-facing action methods on [`ClientHandle`].
+//!
+//! Most entry points in this module are thin pass-throughs that forward
+//! their arguments to the corresponding method on
+//! [`crate::mutations::ClientMutations`]. Their behaviour is exercised
+//! through the mutation handle directly in `tests/multi_peer_sync.rs`,
+//! `tests/trust_flow.rs`, `tests/ephemeral.rs`, and the inline `tests`
+//! module at the bottom of `lib.rs`. State-machine-level invariants are
+//! covered by `crates/state/src/tests.rs`.
+//!
+//! Methods that do non-trivial translation work *before* delegating —
+//! validation (`share_file_inline`), ID minting (`create_voice_channel`),
+//! direct event assembly with no mutation-handle helper
+//! (`set_permission`, `assign_role`), or derived-view composition
+//! (`pinned_message_ids`, `pinned_messages`, `is_pinned`) — are covered
+//! at the client tier in `tests/actions.rs`.
+
 use super::*;
 
 impl<N: willow_network::Network> ClientHandle<N> {

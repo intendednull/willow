@@ -69,6 +69,10 @@ mod tests_profile_view;
 mod tests_ephemeral;
 
 #[cfg(test)]
+#[path = "tests/actions.rs"]
+mod tests_actions;
+
+#[cfg(test)]
 #[path = "tests/voice.rs"]
 mod tests_voice;
 

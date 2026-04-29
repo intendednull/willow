@@ -6,7 +6,7 @@ user-invocable: true
 
 # Resolving Issues
 
-You = coordinator. Implementer subagents = workers. Read, dispatch, monitor. Never touch files.
+You = coordinator. Implementer subagents = workers. Read, dispatch, monitor. Never touch files (with two narrow exceptions — see ### Coordinator never codes).
 
 ## When
 
@@ -15,34 +15,30 @@ You = coordinator. Implementer subagents = workers. Read, dispatch, monitor. Nev
 
 ## Required Skills
 
-- **REQUIRED:** `superpowers:using-git-worktrees` — isolate each implementer.
 - **REQUIRED:** `caveman` — all GH comms.
-- **REQUIRED for implementers:** `superpowers:test-driven-development`, `superpowers:verification-before-completion`, `superpowers:dispatching-parallel-agents` (for research subagents).
+- **REQUIRED for implementers:** `superpowers:test-driven-development`, `superpowers:verification-before-completion`, `superpowers:dispatching-parallel-agents` (for research subagents inside an implementer).
 - **REQUIRED for implementers when complexity gate trips (see Implementer Agent step 3):** `superpowers:brainstorming` (run automated, single-actor — never ask the human; runs are unattended), `superpowers:writing-plans` (drop a plan file when the brainstorm lands a multi-step plan).
 
-## Master Branch Pattern
+## Workflow Shape
 
-All sub-fixes land on one master branch per session. Master PR is opened **only at the end** of the run, **ready (not draft)**, so the human can't accidentally merge incomplete work mid-flight.
+**One master branch per session. All fixes land on it sequentially. No sub-PRs. No worktrees.** Master PR is opened at the end with everything in it.
 
-### Master branch setup (start of run)
-1. Always create fresh master branch per session. Never reuse an open one.
-2. Branch off latest `main`: `auto-fix/batch-YYYY-MM-DD-HHMMSS` (timestamp = unique per session). Empty session-open commit (`git commit --allow-empty -m "chore: open auto-fix batch ..."`) so the branch is non-empty + sub-PRs have a stable base. Push branch. **Do NOT open a PR yet.**
-3. Track resolved issues locally during the run (commit subjects + a working list in coordinator memory or a scratch file). Assemble the final PR body at end-of-run from this list.
+Why this shape:
 
-### Master PR open (end of run)
-1. After all sub-PRs merge (or get parked as follow-up issues — see below), all skill edits applied, and Lessons Learned drafted, open the PR — **non-draft, ready for review**.
-2. Title: `auto-fix batch YYYY-MM-DD-HHMMSS`. Base: `main`. Apply label `auto-fix-batch`.
-3. PR body: running list of `Fixes #N` lines (one per resolved issue) + `## Skill Evolution` (if skill commits landed) + `## Lessons Learned` section + `## Parked` (if any issues hit a blocker mid-run; cite the follow-up issue per row).
-4. **Always open the master PR with what landed**, even if some attempted issues hit blockers. The PR ships the wins; blockers move to follow-up issues so the next scheduled run picks them up automatically. Never open as draft. If literally nothing landed (zero merged sub-PRs), don't open a PR at all — close the branch out.
-5. **No in-session continuation.** Don't leave a session "to be resumed" — the human must not have to chase a session. The issue queue is the durable handoff.
+- **Sequential between issues** means no parallel writers, so no isolation needed → no worktrees.
+- **No sub-PRs** means no "PR #N base ≠ main → CI silently doesn't run, but we squash-merged anyway" foot-gun, no out-of-order merges, no half-merged batches confusing the human. Git history stays clean.
+- **One master PR at the end** is the only GitHub artifact the human reviews. Single CI run. Single merge.
 
-### Sub-PR rules
-- Sub-PR base = master branch, NOT `main`.
-- Sub-PR body references issue (`Refs #N`) — no `Fixes` keyword. `Fixes` lives only on master PR (assembled at end of run) so issues close when master PR merges.
-- **Sub-PR base ≠ main means GH Actions workflows scoped to `pull_request: branches: [main]` won't fire.** Implementer treats local `just check` green (fmt + clippy + test + wasm) as the merge gate; do not park sub-PR open waiting for CI that won't run. Master PR (base=main, opened end-of-run) runs full CI before human merge — the load-bearing gate.
-- Implementer watches CI on sub-PR ONLY when CI actually runs (rare; usually requires PR base = main). CI green → merge sub-PR into master branch. No CI run → local `just check` green is the gate, then merge.
-- CI red after one fix attempt → file follow-up issue (caveman body, link blocker), close sub-PR. Move on. Do NOT leave it as a draft for someone to resume — the next scheduled run picks up the follow-up issue automatically.
-- **`just` may be absent in some sandboxes.** Fall back to raw `cargo` equivalents — `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo check --target wasm32-unknown-unknown -p <crate>` for dual-target lib crates. Same gate, different binary. Report which path was used in the sub-PR body.
+## Master Branch Setup (start of run)
+
+1. Fresh master branch per session, branched off latest `main`. Name: `auto-fix/batch-YYYY-MM-DD-HHMMSS`. (If the harness pre-assigned a session branch like `claude/<name>`, use that — it's the master branch for this session.)
+2. Empty session-open commit so the branch is non-empty:
+   ```bash
+   git commit --allow-empty -m "chore: open auto-fix batch <branch-name>"
+   git push -u origin <branch-name>
+   ```
+3. **Do NOT open a PR yet.** PR opens only at end of run.
+4. Track resolved issues in coordinator memory or a scratch file — assemble final PR body at end.
 
 ## Core Loop
 
@@ -50,17 +46,21 @@ All sub-fixes land on one master branch per session. Master PR is opened **only 
 2. Pick small-scope fixes. `general-audit` issues = top priority.
 3. Skip big features + major refactors. Out of scope.
 4. No in-scope issues? Noop. Skip the rest. No master branch created, no PR opened.
-5. Create fresh master branch for this session (push, no PR yet — see ### Master branch setup).
+5. Create fresh master branch (see ## Master Branch Setup).
 6. Per issue, sequential, max 10 per run:
-   - **Pre-dispatch sync:** before spawning each implementer, `git fetch origin <master-batch>` + `git reset --hard origin/<master-batch>` in the coordinator's checkout. Prior implementers' merges + your own session-open commit must be the worktree base; stale local state poisons the next worktree.
-   - Spawn fresh implementer agent.
-   - Implementer: worktree off master branch → research subagents if needed → fix → tests → sub-PR into master branch → merge gate → squash-merge.
-   - Track `Fixes #N` for final PR body assembly. **If implementer reports the issue was already fixed upstream and closed it directly with a caveman comment**, do NOT include in `Fixes` list — issue is already closed, `Fixes` keyword would be a no-op or worse a stale link. Note in `## Already-Fixed` master-PR section instead.
-   - Tear down worktree.
+   - **Pre-dispatch sync:** before spawning each implementer, in the coordinator's checkout:
+     ```bash
+     git fetch origin <master-branch>
+     git reset --hard origin/<master-branch>
+     ```
+     Prior implementers' commits must be the implementer's base; stale local state poisons the next dispatch.
+   - Spawn fresh implementer agent (see ## Implementer Agent below).
+   - Implementer commits directly to master branch and pushes. No worktree, no sub-PR.
+   - Track `Fixes #N` for final PR body assembly. **Already-fixed-upstream** issues go under `## Already-Fixed`, not `Fixes`.
    - Next issue.
 7. Implementer finds related rot? File follow-up issue.
-8. Apply Lessons Learned skill edits to `.claude/skills/resolving-issues/SKILL.md`, commit on master branch, push.
-9. Open the master PR — **ready (not draft)** — with full body (`Fixes #N` list + `## Skill Evolution` + `## Lessons Learned`). Master PR runs full CI; human merges when satisfied. If anything's unfinished, leave the branch un-PR'd instead of opening a draft.
+8. Apply Lessons Learned skill edits to `.claude/skills/resolving-issues/SKILL.md`, commit on master branch, push. (Coordinator does this directly — see ### Coordinator never codes.)
+9. Open the master PR — **ready (not draft)** — base `main`, head master branch. Body: `Fixes #N` list + `## Already-Fixed` + `## Parked` + `## Skill Evolution` + `## Lessons Learned`. Master PR runs full CI; human merges when satisfied. If anything's unfinished, leave the branch un-PR'd instead of opening a draft.
 
 ## Implementer Agent
 
@@ -73,35 +73,71 @@ Fresh agent per issue, scoped to one issue + master branch ref. Steps:
    - **Skip when:** issue is a one-liner / config swap / typo / clearly mechanical (single rg-pattern site) / has explicit "Suggested fix" the implementer can follow verbatim.
    - **If triggered, run automated:**
      1. Invoke `superpowers:brainstorming` self-driven — implementer plays both roles (exploration + decision). Do NOT ask the human anything; the run is unattended. Output: a written brief naming the chosen approach, the runner-up, and why rejected. Cap at 5 minutes / a few tool calls.
-     2. If the brainstorm surfaces a multi-step plan, invoke `superpowers:writing-plans` to drop a `docs/plans/YYYY-MM-DD-<issue-N>-<slug>.md` on the worktree branch. Otherwise skip — small fixes don't need a plan file.
-   - Fold the brainstorm + plan into the sub-PR body so the human can review the reasoning, not just the code.
-4. Open worktree branched off master branch. Branch name: `auto-fix/issue-N-short-slug`.
-5. Apply fix. Add tests at lowest tier covering behavior (see `CLAUDE.md`).
+     2. If the brainstorm surfaces a multi-step plan, invoke `superpowers:writing-plans` to drop a `docs/plans/YYYY-MM-DD-<issue-N>-<slug>.md` on the master branch. Otherwise skip — small fixes don't need a plan file.
+   - Fold the brainstorm + plan summary into the commit body so the human can review reasoning, not just code.
+4. **Work directly on the master branch.** Two valid patterns; pick whichever keeps history cleanest:
+   - **Pattern A — direct commit on master.** `git checkout <master-branch>` (already there from coordinator's pre-dispatch sync), apply changes, commit, push. Best for one logical commit per issue.
+   - **Pattern B — local feature branch then merge back, no PR.** `git checkout -b auto-fix/issue-N-slug` off master, do the work in any number of local commits, then `git checkout <master-branch>` + `git merge --no-ff auto-fix/issue-N-slug -m "<conventional-commit-style merge message>"` + push master + delete local feature branch. Use when the work spans several commits worth keeping (e.g. "tests then fix"); the merge commit becomes the per-issue summary.
+   - **Either pattern, no GitHub PR is opened.** No `mcp__github__create_pull_request` for sub-fixes. The master PR (end of run) is the only GitHub artifact.
+5. Apply fix. Add tests at lowest tier covering behavior (see `CLAUDE.md` decision tree).
 6. **Scope-creep guard:** if root-cause fix touches > 5 files OR > 200 LOC AND brainstorm in step 3 didn't already approve that scope, return to coordinator with a brainstorm note before pushing. Coordinator decides: split, defer, or proceed. Don't unilaterally balloon a small-scope ticket.
-7. `just check` green locally before pushing.
-8. Push branch. Open sub-PR with master branch as base.
-9. **Merge gate:** if sub-PR CI runs (rare — only when workflow `branches: [main]` filter matches), wait for green. If CI doesn't run (sub-PR base ≠ main is the common case), local `just check` green from step 7 IS the gate. Merge with `mcp__github__merge_pull_request` `merge_method: squash`.
-10. CI red after one fix attempt OR local `just check` red OR mid-fix block → **file a follow-up GH issue** (caveman body, link the original issue + cite the blocker), then **close the sub-PR** (don't leave it as a draft for someone to resume). The next scheduled run will see the follow-up issue in the queue and pick it up. Return control to coordinator.
-11. Tear down worktree on merge OR on close-after-blocker.
-12. **Already-fixed-upstream path:** if pre-flight investigation (e.g. `cargo audit`, file-state grep, `cargo tree`) shows the issue was resolved by a recently-merged upstream PR, do NOT open a dead sub-PR. Leave a caveman comment on the original issue naming the upstream PR + the fix location, close the issue as `completed`, tear down the worktree, report back. Coordinator records this under `## Already-Fixed` in the master PR — NOT under `Fixes`.
+7. **Local merge gate.** Run, in order:
+   - `cargo fmt --all -- --check` (or `just fmt-check` if available)
+   - `cargo clippy <scope> --all-targets -- -D warnings` — scope to touched crate(s) for speed; workspace-wide if changes ripple
+   - `cargo test <scope>` — ditto on scope
+   - `cargo check --target wasm32-unknown-unknown <scope>` if dual-target lib crate touched
+   - `just check` if available + scope is wide enough to warrant the full sweep
+   
+   Apply `superpowers:verification-before-completion` — confirm command output before claiming done.
+   
+   **`just` may be absent in some sandboxes.** Fall back to raw `cargo` equivalents (same gate, different binary). Note which path was used in the commit body if unusual.
+   
+   **Browser tests (`wasm-pack` + Firefox + geckodriver) may be unavailable.** `cargo check --target wasm32-unknown-unknown -p willow-web --tests` is the fallback gate — confirms the test compiles. Real headless run executes on master-PR CI. Flag the gap in the commit body.
+
+8. **Commit + push.** Use `caveman:caveman-commit` for the message. Conventional Commits format. `Refs #N` (NOT `Fixes` — that lives only on the master PR). Push directly to origin master branch.
+
+9. **Mid-fix block** (CI red on the local gate that won't resolve, brainstorm reveals deeper structural issue, fix demands cross-cutting refactor): **abort the dispatch.** `git checkout <master-branch>` + `git reset --hard origin/<master-branch>` to drop any local work. File a follow-up GH issue (caveman body, link original + cite the blocker). Return to coordinator. The follow-up issue is the durable handoff for the next scheduled run.
+
+10. **Already-fixed-upstream path:** if pre-flight investigation (e.g. `cargo audit`, file-state grep, `cargo tree`) shows the issue was resolved by a recently-merged upstream PR, do NOT make a no-op commit. Leave a caveman comment on the original issue naming the upstream PR + the fix location, close the issue (`completed` if the audit's intent now holds — the upstream fix solved it for us; `not_planned` if the audit's premise is moot — e.g. the targeted code was deleted), report back. Coordinator records under `## Already-Fixed` in the master PR — NOT under `Fixes`.
+
+11. **Stale-audit-with-residual-gap path:** if pre-flight investigation shows the audit's literal premise is stale (e.g. "zero tests" — but a later PR added some) but its underlying concern is partially valid (some specific gap remains), narrow scope to the residual gap and ship that. Note the audit's stale framing + cite the upstream PR that resolved most of it in the commit body. Coordinator still records under `Fixes #N` because the audit issue is the right closer.
+
+12. **Report back** to coordinator: commit SHA on master branch, sites touched, anything unusual.
 
 ## Lessons Learned
 
 End of run, before opening the master PR:
 
 1. Draft `## Lessons Learned` content with caveman bullets: what worked, what didn't, concrete suggested edits to this skill file.
-2. **Apply the skill edits to `.claude/skills/resolving-issues/SKILL.md` on the master branch.** Commit + push. Editing the skill is meta-work, exempt from the "coordinator never codes" rule.
-3. Then open the master PR (ready, not draft) with body containing `Fixes #N` list + `## Skill Evolution` (referencing the skill commit) + `## Lessons Learned`.
+2. **Apply the skill edits** to `.claude/skills/resolving-issues/SKILL.md` directly on the master branch. Commit + push. Editing the skill is meta-work, exempt from the "coordinator never codes" rule.
+3. Open the master PR (ready, not draft) with body containing `Fixes #N` list + `## Already-Fixed` + `## Parked` + `## Skill Evolution` (referencing the skill commit SHA) + `## Lessons Learned`.
 
 Never defer skill edits to a follow-up — they ship with the run that surfaced them, in the same PR.
+
+## Master PR Open (end of run)
+
+1. After all implementers have committed (or been parked as follow-up issues), and skill edits + Lessons Learned are committed, open the PR — **non-draft, ready for review**.
+2. Title: `auto-fix batch <master-branch-name>` (or include date for clarity).
+3. Base: `main`. Head: master branch. Apply label `auto-fix-batch` if it exists.
+4. PR body sections:
+   - `## Fixes` — `Fixes #N` lines, one per resolved issue, with a 1-line summary per row.
+   - `## Already-Fixed` — issues that were already resolved upstream and closed during this run.
+   - `## Parked` — issues that hit a scope blocker mid-run; cite the follow-up issue per row.
+   - `## Skill Evolution` — if the skill was edited, link the commit SHA + summarize what changed.
+   - `## Lessons Learned` — caveman bullets on what worked / what didn't.
+   - `## Test plan` — what the master-PR CI will run + any manual smoke notes.
+5. **Always open the master PR with what landed**, even if some attempted issues hit blockers. The PR ships the wins; blockers move to follow-up issues so the next scheduled run picks them up automatically. Never open as draft. If literally nothing landed (zero implementer commits), don't open a PR at all — close the branch out.
+6. **No in-session continuation.** Don't leave a session "to be resumed". The issue queue is the durable handoff.
 
 ## Rules
 
 ### Coordinator never codes
-- Read, dispatch, monitor. Implementers touch files.
-- One worktree per issue. Sequential between issues. Tear down after merge or draft-park.
-- **Exception:** the master branch's own session-open commit + Lessons Learned skill edits (see ## Lessons Learned). Coordinator commits these directly to the master branch.
-- **Webhook subscriptions are informational.** When `<github-webhook-activity>` arrives for a sub-PR opened by an implementer, the implementer owns its merge gate. Coordinator does NOT investigate CI / review state — that's the implementer's job, and the implementer is still running. Acknowledge briefly + keep waiting. Only act on the webhook if no implementer is running for that PR (i.e. the implementer already finished and the webhook arrived later as a stale event).
+- Read, dispatch, monitor. Implementers touch code files.
+- One implementer at a time. Sequential between issues.
+- **Two narrow exceptions where the coordinator commits directly:**
+  1. The session-open empty commit on the master branch (start of run).
+  2. Lessons Learned skill edits to `.claude/skills/resolving-issues/SKILL.md` on the master branch (end of run).
+- **Webhook subscriptions are informational.** When `<github-webhook-activity>` arrives for the master PR after it opens, the master-PR CI is the authoritative quality net for the run — but the coordinator only acts on review comments, not on raw CI status. Acknowledge briefly, address review comments per the harness instructions, otherwise keep waiting.
 
 ### Sequential between issues
 - One issue at a time. No parallel implementers.
@@ -123,22 +159,14 @@ Never defer skill edits to a follow-up — they ship with the run that surfaced 
 
 ### Autonomy
 - Best judgment. No hand-holding.
-- Mid-fix block? Implementer files a follow-up GH issue (caveman body, link original + cite blocker), closes the sub-PR, moves on. The follow-up issue is the durable handoff for the next scheduled run — don't leave a draft sub-PR for someone to chase.
+- Mid-fix block? Implementer files a follow-up GH issue (caveman body, link original + cite blocker), aborts the dispatch with a hard reset to origin master, moves on.
 - Noop fine. Ship nothing > ship junk.
 - **No in-session continuation.** Sessions don't get resumed. If something doesn't fit in this run, file an issue.
 
-## Setup
-
-- Pre-worktree: `git stash` or `git restore` main dir; `.claude/worktrees/` in `.gitignore`.
-- Worktree per issue, branched off master branch. Tear down after sub-PR merges or parks as draft.
-- **Worktree dir may be pre-populated** with residue from a prior session that didn't tear down cleanly. Inspect first: if it contains the same logical work the implementer would do, incorporate it (run gates, finish the workflow). Don't blindly `git worktree remove --force` — that destroys legitimate in-progress work. Reset only if the residue is from an unrelated branch.
-
 ## Quality
 
-- `just check` green before sub-PR opened.
-- Tests at lowest tier covering behavior (see `CLAUDE.md`).
-- Sub-PR merges into master branch only after merge gate passes (see ### Sub-PR rules — local `just check` is the gate when CI doesn't run, sub-PR CI is the gate when it does).
-- Master PR opened only at end of run, **non-draft**, with whatever sub-PRs landed. Master PR runs full CI when opened — the actual quality net for the run.
-- Anything blocked → follow-up issue, sub-PR closed, next scheduled run picks it up. Never open the master PR as draft. Only skip opening the PR entirely if literally zero sub-PRs landed.
+- Local cargo gate (fmt + clippy + test + wasm-check on touched crates) green before each implementer pushes.
+- Tests at lowest tier covering behavior (see `CLAUDE.md` decision tree).
+- Master PR runs full CI when opened — the load-bearing quality net for the run.
+- Anything blocked mid-run → follow-up issue, dispatch aborted, next scheduled run picks it up. Never open the master PR as draft. Only skip opening the PR entirely if literally zero implementer commits landed.
 - No in-session continuation. The issue queue is the durable handoff.
-- **Browser tests may be compile-only when wasm-pack / firefox / geckodriver are absent in the sandbox.** `cargo check --target wasm32-unknown-unknown -p willow-web --tests` is the fallback gate — it confirms the test compiles. The full headless run executes on real CI when the master PR opens. Implementer must flag the gap explicitly in the sub-PR body so the human knows what was actually run vs. compile-checked.
