@@ -68,6 +68,75 @@ export async function longPress(page: Page, selector: string, durationMs = 600) 
   await page.waitForTimeout(300);
 }
 
+/**
+ * Like `longPress`, but uses `page.clock.runFor(durationMs)` instead of
+ * a real-time wait. Caller must have invoked `installPageClock(page)`
+ * earlier in the test (see `helpers/clock.ts`).
+ *
+ * Use this in tests where the clock is already installed for other
+ * reasons; otherwise prefer the real-time `longPress` to avoid having
+ * to install the clock just for one helper.
+ *
+ * Per docs/specs/2026-04-27-event-based-waits-design.md §`page.clock`.
+ */
+export async function longPressWithClock(page: Page, selector: string, durationMs = 600) {
+  const scoped = isMobile(page) && !selector.startsWith('.shell-')
+    ? `${visibleShell(page)} ${selector}`
+    : selector;
+  const el = page.locator(scoped).first();
+  const box = await el.boundingBox();
+  if (!box) throw new Error(`Element not found: ${selector}`);
+
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+
+  // Dispatch real TouchEvent via page.evaluate.
+  await page.evaluate(({ x, y }) => {
+    const target = document.elementFromPoint(x, y);
+    if (!target) return;
+    const touch = new Touch({
+      identifier: 1,
+      target,
+      clientX: x,
+      clientY: y,
+      pageX: x,
+      pageY: y,
+    });
+    target.dispatchEvent(new TouchEvent('touchstart', {
+      bubbles: true,
+      cancelable: true,
+      touches: [touch],
+      targetTouches: [touch],
+      changedTouches: [touch],
+    }));
+  }, { x, y });
+
+  await page.clock.runFor(durationMs);
+
+  // Dispatch touchend.
+  await page.evaluate(({ x, y }) => {
+    const target = document.elementFromPoint(x, y);
+    if (!target) return;
+    const touch = new Touch({
+      identifier: 1,
+      target,
+      clientX: x,
+      clientY: y,
+      pageX: x,
+      pageY: y,
+    });
+    target.dispatchEvent(new TouchEvent('touchend', {
+      bubbles: true,
+      cancelable: true,
+      touches: [],
+      targetTouches: [],
+      changedTouches: [touch],
+    }));
+  }, { x, y });
+
+  await page.clock.runFor(300);
+}
+
 /** Long-press a peer avatar by name in the member list (mobile only). */
 export async function longPressAvatar(page: Page, peerName: string) {
   await openMemberList(page);
