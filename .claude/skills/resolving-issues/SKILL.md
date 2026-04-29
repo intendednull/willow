@@ -81,6 +81,8 @@ Fresh agent per issue, scoped to one issue + master branch ref. Steps:
    - **Either pattern, no GitHub PR is opened.** No `mcp__github__create_pull_request` for sub-fixes. The master PR (end of run) is the only GitHub artifact.
 5. Apply fix. Add tests at lowest tier covering behavior (see `CLAUDE.md` decision tree).
 6. **Scope-creep guard:** if root-cause fix touches > 5 files OR > 200 LOC AND brainstorm in step 3 didn't already approve that scope, return to coordinator with a brainstorm note before pushing. Coordinator decides: split, defer, or proceed. Don't unilaterally balloon a small-scope ticket.
+
+   **Mechanical call-site migration is part of the fix, not scope creep.** If the fix changes a small API (e.g. swapping `map.insert(k, v)` for `lru.insert(k, v)` to make a new cap take effect), every call-site rewrite is load-bearing — without them the cap is dead code. Count them in the LOC delta but don't abort just because they push past 200. Justify the count in the brainstorm + commit body so the human can see why the fan-out was unavoidable. Real scope creep = unrelated cleanup, drive-by refactors, "while I'm in here" tweaks — those still abort.
 7. **Local merge gate.** Run, in order:
    - `cargo fmt --all -- --check` (or `just fmt-check` if available)
    - `cargo clippy <scope> --all-targets -- -D warnings` — scope to touched crate(s) for speed; workspace-wide if changes ripple
