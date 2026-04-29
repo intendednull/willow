@@ -73,21 +73,9 @@ git diff <pr-base>..<pr-head> -- '*.rs' | rg "^\+\s*pub (async )?fn (\w+)" -or '
 # Then for each fn name: rg "\.<fn_name>\(" crates --glob '!**/tests*'
 ```
 
-### Pass 2: Pre-fetch existing-issue lists
+### Pass 2: Standard sweep grep set
 
-**Critical:** use `mcp__github__search_issues` (not `list_issues`) when a label has ≥25 open issues — `list_issues` exceeds the 78k-char tool-result cap and the workaround (save-to-file + jq) is slow.
-
-```text
-mcp__github__search_issues "is:open repo:intendednull/willow label:audit"
-mcp__github__search_issues "is:open repo:intendednull/willow label:security"
-mcp__github__search_issues "is:open repo:intendednull/willow label:tech-debt"
-```
-
-Hold the union of titles as the inline dedup index for the rest of the audit. Pre-fetch BEFORE any agent spawns, BEFORE any greps run.
-
-### Pass 3: Standard sweep grep set
-
-Run as a checklist; surface anything new vs the dedup index:
+Run as a checklist; record everything found (do NOT pre-filter against existing issues — that contaminates context and biases the sweep):
 
 ```bash
 # Security
@@ -110,25 +98,48 @@ grep -rn "cargo install [^-][^- ]*" docker/ .github/workflows/
 grep -rn "FROM [^@]*$" docker/   # any unpinned base image?
 ```
 
-### Pass 4: cargo-audit ignore-list drift
+### Pass 3: cargo-audit ignore-list drift
 
 After `cargo audit` completes, diff the CI `--ignore` list against the current advisory DB. Stale RUSTSEC IDs that no longer match should be surfaced as low-priority cleanup ("N stale RUSTSEC IDs in ci.yml — can be pruned"). Cosmetic but accumulates.
 
-### Pass 5 (only if agents spawned): timeout backfill
+### Pass 4 (only if agents spawned): timeout backfill
 
 If any agent timed out without writing findings, the orchestrator MUST manually sweep that concern before declaring the audit complete. Gaps from timed-out agents compound across runs (AUD-2 sat undetected for one full audit cycle in #413 → #437 because nobody backfilled the `sec-authperm` agent's concern).
 
 ## Synthesis
 
-Collect findings → master issue (commit hash + all findings list) + child issue per finding. Cross-ref pre-fetched issue index for dedup. Drop dups before file.
+Audit passes finish first. Collect raw findings list. THEN — and only then — dedup against existing issues.
 
-Second pass with fresh agent: verify findings real + non-dup via grep/rg for exact patterns cited. Drop any finding whose verification grep returns 0 hits or hits already-tracked files.
+**No existing-issue lookups during audit passes.** Pre-fetched issue lists contaminate the orchestrator/agent context with prior framings ("this looks like SEC-V-02") and bias the sweep toward known patterns. Dedup happens **after** the fresh sweep is complete, in a separate dedup step.
 
-After issues are created:
+### Dedup step (post-sweep, fresh subagent)
 
-1. **Wire children as sub-issues of master** via `mcp__github__sub_issue_write` — surfaces children in master's UI panel without manual cross-ref.
-2. **File lessons issue** titled `general-audit lessons: YYYY-MM-DD` (caveman body): what worked, what didn't, concrete suggested edits to this skill file. Label: `audit`, `lessons`.
-3. **Open lessons-PR** (next section).
+Spawn a **dedup subagent** (general-purpose, fresh context — orchestrator does NOT load issue lists into its own context). Pass it:
+- the raw findings list
+- a query budget for `mcp__github__search_issues`
+
+Dedup subagent's job:
+1. For each finding, query `mcp__github__search_issues` narrowly — by file path, symbol name, or RUSTSEC ID. **Use `search_issues` (not `list_issues`)** — `list_issues` exceeds the 78k-char tool-result cap when a label has ≥25 open issues.
+   ```text
+   mcp__github__search_issues "is:open repo:intendednull/willow <file-or-symbol>"
+   mcp__github__search_issues "is:open repo:intendednull/willow label:audit <keyword>"
+   ```
+2. For each finding, return: `kept` | `dup of #N` | `superseded by #N`.
+3. Return only the verdict list to the orchestrator. Do NOT echo issue bodies.
+
+Orchestrator drops `dup`/`superseded` findings from the file-list. Survivors get filed.
+
+### Verification step (fresh subagent)
+
+Second fresh subagent verifies surviving findings real via grep/rg for exact patterns cited. Drop any finding whose verification grep returns 0 hits.
+
+### File the issues
+
+1. **Master issue** = commit hash + survivors list.
+2. **Child issue** per surviving finding.
+3. **Wire children as sub-issues of master** via `mcp__github__sub_issue_write` — surfaces children in master's UI panel without manual cross-ref.
+4. **Lessons issue** titled `general-audit lessons: YYYY-MM-DD` (caveman body): what worked, what didn't, concrete suggested edits to this skill file. Label: `audit`, `lessons`.
+5. **Open lessons-PR** (next section).
 
 ## Lessons-Learned PR (self-improvement loop)
 
@@ -155,7 +166,7 @@ This closes the loop: each audit run feeds the next.
 
 ### Scope
 - Audit full tree always. Never scope to diff (PR mode is the only exception, and PR mode files no issues).
-- Agents blind to existing issues. Dedup = synthesis + 2nd pass only.
+- **No existing-issue lookups during audit passes.** Orchestrator + agents stay blind to the open-issue list. Pre-fetching contaminates context and biases the sweep toward known framings. Dedup is a separate post-sweep step in a fresh subagent (see Synthesis).
 - File findings only. **No PRs to fix findings.** No auto-fix. No closing existing issues. **Sole exception: the lessons-learned PR above** — it edits the skill file, never application code.
 
 ### Agent prompts (when used — rare)
