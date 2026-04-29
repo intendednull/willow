@@ -10,8 +10,8 @@ You = master orchestrator. Job = find + file findings + self-improve. Resolution
 
 ## Required Skills
 
-- **REQUIRED:** `superpowers:dispatching-parallel-agents` — only when fan-out justified (rare, see Default Mode).
-- **REQUIRED:** `superpowers:using-git-worktrees` — one worktree per subagent (when agents used) AND for the lessons-PR branch.
+- **REQUIRED:** `superpowers:dispatching-parallel-agents` — every audit run fans out subagents.
+- **REQUIRED:** `superpowers:using-git-worktrees` — one worktree per subagent AND for the lessons-PR branch.
 - **REQUIRED:** `caveman` — all GH comms (issues, comments, reviews, PR title + body). Code blocks + security warnings stay normal.
 - **REQUIRED for verification pass:** `superpowers:verification-before-completion` — spot-check findings before filing.
 
@@ -24,23 +24,24 @@ You = master orchestrator. Job = find + file findings + self-improve. Resolution
 
 Skip if HEAD == commit recorded in most recent `general-audit` master issue. PR-mode rules apply for diff-only review.
 
-## Default Mode: Orchestrator-Direct
+## Approach
 
-**Default to orchestrator-only sweep** when diff < 100 files AND < 2000 LOC since last audit master commit.
+**Full sweep every run with full resources.** Never assume fewer issues since the last run. Every audit fans out subagents in parallel.
 
-History across runs #437, #474, #492: orchestrator-direct produced all findings; agent fan-out (#413) had 7/8 stream-idle timeouts and 1 successful agent. Default = no agents.
+Default split — one agent per concern:
+- security → sub-split: input validation/DoS, auth/permissions, web/WASM, deps/supply-chain
+- tech debt / code quality
+- clean architecture (diff specs vs code; pass spec paths explicitly)
+- test coverage
+- general review
 
-Spawn agents **only when**:
-- Diff > 100 files OR > 2000 LOC, **AND**
-- Specific concern needs deeper grep than single context can hold.
-
-When agents fan out: split **per-crate** (one crate, all concerns). Never per-concern (one concern, whole tree) — per-concern blew context window in #413.
+Spawn more if an area needs depth. For very large diffs, add per-crate agents on top of per-concern agents — both axes, not one or the other.
 
 ## Audit Pass Order
 
-Run passes in order. Sibling-of-closed FIRST — across recent runs it produced 100% of findings on small/medium diffs while the standard sweep was clean.
+Run passes in order. Sibling-of-closed FIRST — small fix-scope mismatches are a top source of real findings on every run.
 
-### Pass 1: Sibling-of-closed (highest yield)
+### Pass 1: Sibling-of-closed (high yield)
 
 Pre-fetch closed PRs since last audit master:
 
@@ -63,9 +64,9 @@ git log --since="$LAST_AUDIT_DATE" --grep "^ci:" --name-only --format="%H %s" \
 # `fix: closes #N`-style commits not touching the file path #N referenced
 ```
 
-**(b) Sibling files.** PR fixed bug in file X — grep for same symptom in adjacent files (handlers vs components, routes vs pages, replay vs storage). Examples that surfaced this way: F2@#474 (handlers got `warn_and_toast`, components missed); AUD-2@#437 (read_resource scope-gate forgotten).
+**(b) Sibling files.** PR fixed bug in file X — grep for same symptom in adjacent files (handlers vs components, routes vs pages, replay vs storage).
 
-**(c) API-added-without-caller.** PR closed issue by adding pub fn (e.g. `clear()`) — verify ≥1 production caller exists. Closure-by-API-only without integration is a finding (e.g. PR #469 closed #178 by adding `RatchetCache::clear()` but `RatchetCache` is unused in production).
+**(c) API-added-without-caller.** PR closed issue by adding `pub fn` — verify ≥1 production caller exists. Closure-by-API-only without integration is a finding.
 
 ```bash
 # For each new pub fn introduced in a closing PR, check production callers
@@ -84,7 +85,7 @@ rg -n "\b(dbg!|todo!\(|unimplemented!\(|FIXME|HACK)" crates --glob '!**/tests*' 
 rg -n "Arc<\s*(parking_lot::)?(Mutex|RwLock)<" crates --glob '!**/tests*' | grep -v "lock-ok"
 rg -n "(js_sys::eval|innerHTML|set_inner_html)" crates --glob '!**/tests*'
 
-# Observability / UX (sibling of `.ok();` swallow — added per lessons #477, validated #493)
+# Observability / UX (sibling of `.ok();` swallow)
 rg -n "let _ = [a-z_]+\.[a-z_]+\(.*\)\.await" crates/web/src/components/ crates/web/src/handlers.rs crates/web/src/app.rs
 rg -n "\.ok\(\);" crates/client/src crates/web/src --glob '!**/tests*' | head -40
 
@@ -102,15 +103,15 @@ grep -rn "FROM [^@]*$" docker/   # any unpinned base image?
 
 After `cargo audit` completes, diff the CI `--ignore` list against the current advisory DB. Stale RUSTSEC IDs that no longer match should be surfaced as low-priority cleanup ("N stale RUSTSEC IDs in ci.yml — can be pruned"). Cosmetic but accumulates.
 
-### Pass 4 (only if agents spawned): timeout backfill
+### Pass 4: timeout backfill
 
-If any agent timed out without writing findings, the orchestrator MUST manually sweep that concern before declaring the audit complete. Gaps from timed-out agents compound across runs (AUD-2 sat undetected for one full audit cycle in #413 → #437 because nobody backfilled the `sec-authperm` agent's concern).
+If any agent timed out without writing findings, the orchestrator MUST manually sweep that concern before declaring the audit complete. Gaps from timed-out agents compound across runs.
 
 ## Synthesis
 
 Audit passes finish first. Collect raw findings list. THEN — and only then — dedup against existing issues.
 
-**No existing-issue lookups during audit passes.** Pre-fetched issue lists contaminate the orchestrator/agent context with prior framings ("this looks like SEC-V-02") and bias the sweep toward known patterns. Dedup happens **after** the fresh sweep is complete, in a separate dedup step.
+**No existing-issue lookups during audit passes.** Pre-fetched issue lists contaminate the orchestrator/agent context with prior framings and bias the sweep toward known patterns. Dedup happens **after** the fresh sweep is complete, in a separate dedup step.
 
 ### Dedup step (post-sweep, fresh subagent)
 
@@ -119,7 +120,7 @@ Spawn a **dedup subagent** (general-purpose, fresh context — orchestrator does
 - a query budget for `mcp__github__search_issues`
 
 Dedup subagent's job:
-1. For each finding, query `mcp__github__search_issues` narrowly — by file path, symbol name, or RUSTSEC ID. **Use `search_issues` (not `list_issues`)** — `list_issues` exceeds the 78k-char tool-result cap when a label has ≥25 open issues.
+1. For each finding, query `mcp__github__search_issues` narrowly — by file path, symbol name, or RUSTSEC ID. **Use `search_issues` (not `list_issues`)** — `list_issues` exceeds the 78k-char tool-result cap when a label has many open issues.
    ```text
    mcp__github__search_issues "is:open repo:intendednull/willow <file-or-symbol>"
    mcp__github__search_issues "is:open repo:intendednull/willow label:audit <keyword>"
@@ -169,18 +170,20 @@ This closes the loop: each audit run feeds the next.
 - **No existing-issue lookups during audit passes.** Orchestrator + agents stay blind to the open-issue list. Pre-fetching contaminates context and biases the sweep toward known framings. Dedup is a separate post-sweep step in a fresh subagent (see Synthesis).
 - File findings only. **No PRs to fix findings.** No auto-fix. No closing existing issues. **Sole exception: the lessons-learned PR above** — it edits the skill file, never application code.
 
-### Agent prompts (when used — rare)
+### Agent prompts (mandatory fields)
+
 - Time budget: 6 min, stop+save if exceeded.
-- **Hard cap: > 5 tool calls without appending one finding ⇒ STOP exploring, write the strongest finding seen so far, then continue.** No exception. Lesson #426: 7/8 agents stream-idle-timed-out at the final batched write.
-- Incremental write: scaffold report file before 2nd tool call; append each finding **complete** before next tool call.
-- Per-finding: file:line, severity (split: security = confidentiality/integrity; robustness = availability/DoS), Obvious? yes/no.
+- **Write findings in small chunks. Never big batches.** Big batched writes are the dominant timeout cause — stream-idle timeouts hit at the final large-write step and lose the entire run's work. Append each finding **as soon as it's identified** — one rg hit + one Read confirmation = one append. One finding per write. Do NOT accumulate findings in memory and dump them at the end.
+- Scaffold report file before 2nd tool call. Then append one finding per write thereafter.
+- Per-finding entry stays small: file:line, severity (split: security = confidentiality/integrity; robustness = availability/DoS), Obvious? yes/no. One short paragraph max. If a finding's evidence is large (a long grep result, a code block), summarise it in the entry and link to file:line — don't paste it inline.
+- **Hard cap: > 5 tool calls without appending one finding ⇒ STOP exploring, write the strongest finding seen so far, then continue.** No exception.
 - Count/ratio claims: verify w/ a second grep cmd proving count.
 - Use general-purpose agent (Explore can't Write).
 - Architecture agents: skip cargo tree/cargo clippy; rg + ls + reads.
 - GitHub comms in caveman mode.
 
 ### Setup
-- Pre-worktree: `git stash` or `git restore` main dir; `.claude/worktrees/` in `.gitignore`. One worktree per subagent (when used) AND one for the lessons-PR. Tear down audit worktrees after report submitted; lessons-PR worktree stays until PR merges/closes.
+- Pre-worktree: `git stash` or `git restore` main dir; `.claude/worktrees/` in `.gitignore`. One worktree per subagent AND one for the lessons-PR. Tear down audit worktrees after report submitted; lessons-PR worktree stays until PR merges/closes.
 - `cargo install --locked cargo-audit` upfront (or verify); orchestrator runs `cargo audit` directly — no agent needed. Yank-check 403s are harmless noise.
 
 ### Quality
