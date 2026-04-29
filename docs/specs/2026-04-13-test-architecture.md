@@ -1,7 +1,7 @@
 # Test Architecture Specification — Willow
 
 **Date**: 2026-04-13
-**Status**: Canonical
+**Status**: Superseded by [docs/specs/2026-04-21-e2e-test-architecture-design.md](2026-04-21-e2e-test-architecture-design.md)
 
 ---
 

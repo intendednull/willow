@@ -6099,6 +6099,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "subtle",
  "tempfile",
  "tokio",
  "tokio-util",

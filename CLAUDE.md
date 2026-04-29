@@ -2,39 +2,22 @@
 
 ## Project Overview
 
-Willow is a P2P Discord replacement built in Rust. It uses iroh for
-networking, Leptos for the web UI, and Ed25519 cryptography for identity.
+Willow = P2P Discord replacement, Rust. Uses iroh for networking, Leptos for web UI, Ed25519 for identity.
 
 ## Dev Guidelines
 
-Quality and longevity beat speed and convenience.
+Quality + longevity beat speed + convenience.
 
-- **Choose the right solution, not the easy one.** Ask: which approach makes most
-  sense long-term, causes least future confusion, lasts? Pick that one.
-- **No hacky workarounds, no shortcuts.** If the obvious fix is a band-aid,
-  keep digging until you find the real fix.
-- **Root-cause every bug.** Don't patch symptoms. Don't disable failing tests.
-  Don't swallow errors. Find why, fix why.
-- **Scope creep is acceptable when warranted, not when speculative.** If doing it
-  right means touching more files or refactoring an abstraction — do it. But
-  don't add features, abstractions, or error handling the task didn't ask for.
-- **When the answer isn't obvious, stop and design.** Two+ reasonable approaches?
-  Write a brief note in `docs/specs/YYYY-MM-DD-<name>-design.md` before coding.
-  Implementation plan goes in `docs/plans/YYYY-MM-DD-<name>.md`. Cheap up front,
-  expensive later. **Specs go in `docs/specs/`, plans in `docs/plans/`.** Do
-  not create `docs/superpowers/`.
-- **Surface tradeoffs explicitly.** When picking between approaches, name the
-  runner-up and why rejected. Commit body or PR description. Future-you needs
-  the reasoning, not just the result.
-- **Mechanical rigor: `just check` before commit.** Fmt, clippy, tests, WASM.
-  Zero warnings.
-- **Semantic rigor: verify before claiming done.** Run the actual test, hit the
-  actual UI, read the actual output. No "should work" assertions. See
-  `superpowers:verification-before-completion`.
-- **Process skills before implementation skills.** Brainstorming and debugging
-  determine *how* to approach. Don't skip them to feel productive.
-- **Tests at the lowest tier that covers the behavior.** State > client >
-  browser > Playwright. See `## Which test tier to use`.
+- **Choose right solution, not easy one.** Ask: which approach makes most sense long-term, causes least future confusion, lasts? Pick that.
+- **No hacky workarounds, no shortcuts.** If obvious fix is band-aid, keep digging for real fix.
+- **Root-cause every bug.** No patching symptoms. No disabling failing tests. No swallowing errors. Find why, fix why.
+- **Scope creep OK when warranted, not speculative.** Doing it right means touching more files / refactoring abstraction — do it. Don't add features, abstractions, error handling task didn't ask for.
+- **Answer not obvious? Stop, design.** Two+ reasonable approaches? Brief note in `docs/specs/YYYY-MM-DD-<name>-design.md` before coding. Plan in `docs/plans/YYYY-MM-DD-<name>.md`. Cheap up front, expensive later. **Specs in `docs/specs/`, plans in `docs/plans/`.** No `docs/superpowers/`.
+- **Surface tradeoffs explicit.** Picking between approaches, name runner-up + why rejected. Commit body or PR description. Future-you needs reasoning, not just result.
+- **Mechanical rigor: `just check` before commit.** Fmt, clippy, tests, WASM. Zero warnings.
+- **Semantic rigor: verify before claiming done.** Run actual test, hit actual UI, read actual output. No "should work" assertions. See `superpowers:verification-before-completion`.
+- **Process skills before implementation skills.** Brainstorming + debugging determine *how*. Don't skip to feel productive.
+- **Tests at lowest tier covering behavior.** State > client > browser > Playwright. See `## Which test tier to use`.
 
 ## Repository Structure
 
@@ -42,6 +25,7 @@ Quality and longevity beat speed and convenience.
 docs/
 ├── plans/              — Implementation plans for features (YYYY-MM-DD-<name>.md)
 ├── specs/              — Design specs and technical specifications (YYYY-MM-DD-<name>-design.md)
+├── design/             — Long-form design documents (UX specs, etc.)
 ├── reference-designs/  — Exploratory UI / design references
 └── reports/            — Ad-hoc audit and investigation reports
 crates/
@@ -70,8 +54,7 @@ crates/
 
 ## State Management
 
-All shared mutable state in library crates lives inside an actor (see
-`crates/actor/`). Default to `StateActor<S>` for new state. Decision tree:
+All shared mutable state in lib crates lives inside actor (see `crates/actor/`). Default `StateActor<S>` for new state. Decision tree:
 
 | Situation | Pattern |
 |---|---|
@@ -86,11 +69,7 @@ All shared mutable state in library crates lives inside an actor (see
 | Web state mutated from non-Leptos context | `StateActor<S>` |
 | Actor coordination signal (ready, cancel, one-shot) | `tokio::sync::watch` / `oneshot` / `broadcast` / `Notify` (never `tokio::sync::Mutex` for business state) |
 
-**No `Arc<Mutex<T>>` / `Arc<RwLock<T>>` / `parking_lot::*` for business state.**
-New locks need a `// state: lock-ok — <reason>` comment with rationale at the
-use site. `MemNetwork` (`crates/network/src/mem.rs`) is test infrastructure and
-exempt; the iroh layer (`crates/network/src/iroh.rs`) is the only production
-exception, justified by iroh's external-callback delivery model.
+**No `Arc<Mutex<T>>` / `Arc<RwLock<T>>` / `parking_lot::*` for business state.** New locks need `// state: lock-ok — <reason>` comment with rationale at use site. `MemNetwork` (`crates/network/src/mem.rs`) = test infra, exempt; iroh layer (`crates/network/src/iroh.rs`) = only production exception, justified by iroh's external-callback delivery model.
 
 Full discussion + audit trail: `docs/specs/2026-04-26-state-management-model-design.md`.
 
@@ -105,11 +84,15 @@ just test-browser   # run in-browser Leptos tests (needs Firefox + geckodriver)
 just test-all       # run ALL tests including browser
 just test-state     # test the pure state machine
 just test-client    # test the client library
+just test-actor     # test the actor framework
 just test-relay     # test relay history sync
 just test-workers   # test worker + replay + storage + common
 just test-agent     # test agent library (MCP server)
 just test-agent-e2e # multi-peer E2E via agent harness
+just test-e2e-full  # setup-e2e + Playwright + teardown (CI-style)
+just test-e2e-ui-headed # Playwright headed (debugging)
 just test-crate X   # test a specific crate
+just check-native   # cargo check (native target)
 just check-wasm     # verify WASM compilation
 just check-all      # fmt + clippy + test + wasm-pack browser + Playwright (PR gate)
 just build-web      # build Leptos web app (crates/web via trunk)
@@ -122,17 +105,19 @@ just relay          # run the relay server
 just dev            # start full local dev stack (relay + workers + web)
 just dev-quick      # same as dev, but skip cargo build
 just dev-clean      # remove .dev/ (keys, logs, storage DB)
+just docker-build   # build all docker images
 just docker-up      # start full stack via docker compose
 just docker-down    # stop docker stack
+just docker-logs    # tail all docker compose logs
+just docker-ids     # print all worker peer IDs
+just clean          # cargo clean + remove crates/web/dist
 ```
 
-**All code must pass `just check` (fmt + clippy + test + WASM) with zero
-warnings before being committed.** Browser tests (`just test-browser`)
-require Firefox and geckodriver installed.
+**All code must pass `just check` (fmt + clippy + test + WASM) zero warnings before commit.** Browser tests (`just test-browser`) need Firefox + geckodriver installed.
 
 ### Local Development Stack
 
-Run `just dev` to start all services locally:
+`just dev` to start all services locally:
 
 | Service | Address | Description |
 |---------|---------|-------------|
@@ -141,24 +126,19 @@ Run `just dev` to start all services locally:
 | Storage node | connects via relay | Archival SQLite storage |
 | Web UI | `http://localhost:8080` | Leptos app via `trunk serve` |
 
-All service logs are color-coded and interleaved in the terminal. Press
-`Ctrl+C` to stop everything. Identity keys and data persist in `.dev/`
-across restarts so peer IDs stay stable. Use `just dev-clean` to reset.
+Service logs color-coded, interleaved in terminal. `Ctrl+C` stops everything. Identity keys + data persist in `.dev/` across restarts so peer IDs stay stable. `just dev-clean` resets.
 
-After the first run, use `just dev-quick` to skip the build step and
-start services immediately.
+After first run, `just dev-quick` skips build, starts services immediately.
 
-If `vibe-annotations-server` is installed, `just dev` starts it automatically
-at `http://127.0.0.1:3846` alongside the other services.
+If `vibe-annotations-server` installed, `just dev` starts it auto at `http://127.0.0.1:3846` alongside other services.
 
 ## Agent Tooling
 
-Two tools are configured for agents working on this project:
+Two tools configured for agents on this project:
 
 ### agent-browser
 
-CLI browser automation tool for driving the Willow web UI directly. Installed
-as a skill at `.agents/skills/agent-browser` (symlinked into `.claude/skills/`).
+CLI browser automation tool driving Willow web UI directly. Installed as skill at `.agents/skills/agent-browser` (symlinked into `.claude/skills/`).
 
 **One-time setup (human):**
 ```bash
@@ -178,50 +158,45 @@ agent-browser screenshot shot.png          # capture screenshot
 agent-browser close                        # close the browser
 ```
 
-Use agent-browser to verify UI features after changes, test flows end-to-end,
-or investigate bugs by navigating the live app. Always run `just dev` first.
+Use agent-browser to verify UI features after changes, test flows end-to-end, investigate bugs by navigating live app. Always run `just dev` first.
 
 ### Vibe Annotations
 
-Browser extension + local MCP server for visual UI feedback. Lets you click
-elements in Chrome and leave annotated feedback that agents read via MCP.
+Browser extension + local MCP server for visual UI feedback. Click elements in Chrome, leave annotated feedback agents read via MCP.
 
-The MCP server is pre-configured in `.mcp.json` at `http://127.0.0.1:3846/mcp`.
+MCP server pre-configured in `.mcp.json` at `http://127.0.0.1:3846/mcp`.
 
 **One-time setup (human):**
-1. Install the [Chrome extension](https://chromewebstore.google.com/detail/vibe-annotations-visual-f/gkofobaeeepjopdpahbicefmljcmpeof)
+1. Install [Chrome extension](https://chromewebstore.google.com/detail/vibe-annotations-visual-f/gkofobaeeepjopdpahbicefmljcmpeof)
 2. `npm install -g vibe-annotations-server`
 
 **Usage:**
-- `just dev` starts the server automatically if installed
-- Open `http://localhost:8080` in Chrome, click the extension to annotate elements
-- Agent reads pending annotations via the `read_annotations` MCP tool
-- Agent deletes annotations after implementing fixes via `delete_annotation`
+- `just dev` starts server auto if installed
+- Open `http://localhost:8080` in Chrome, click extension to annotate elements
+- Agent reads pending annotations via `read_annotations` MCP tool
+- Agent deletes annotations after fixes via `delete_annotation`
 
-**MCP tools available** (requires restarting Claude Code after first setup):
+**MCP tools available** (need restart Claude Code after first setup):
 - `read_annotations` — fetch all pending annotations
 - `watch_annotations` — poll for new annotations
-- `delete_annotation` — mark an annotation as resolved
+- `delete_annotation` — mark annotation resolved
 - `get_project_context` — infer tech stack from URL
 
 ### Dual-Target Support (Native + WASM)
 
-All library crates must compile for both native and `wasm32-unknown-unknown`.
-When adding new code, ensure WASM compatibility:
+All lib crates must compile both native + `wasm32-unknown-unknown`. Adding new code, ensure WASM compat:
 
-- **No `std::fs`** in library crates — gate with `#[cfg(not(target_arch = "wasm32"))]`
+- **No `std::fs`** in lib crates — gate with `#[cfg(not(target_arch = "wasm32"))]`
 - **No `std::time::SystemTime`** — use `js_sys::Date::now()` on WASM
-- **No `std::thread`** or **tokio** in library crates — these are native-only
-- **RNG**: `getrandom` needs the `js` (v0.2) / `wasm_js` (v0.3) features on WASM
-- **UUID**: workspace dep includes the `js` feature for WASM v4 generation
-- **Network**: iroh handles WASM transport differences internally, so most
-  `#[cfg(target_arch = "wasm32")]` gates for networking are no longer needed
-- Use `#[cfg(target_arch = "wasm32")]` / `#[cfg(not(target_arch = "wasm32"))]`
-  for platform-specific code paths (storage backends, timers, etc.)
+- **No `std::thread`** or **tokio** in lib crates — native-only
+- **RNG**: `getrandom` needs `js` (v0.2) / `wasm_js` (v0.3) features on WASM
+- **UUID**: workspace dep includes `js` feature for WASM v4 generation
+- **Network**: iroh handles WASM transport differences internally, so most `#[cfg(target_arch = "wasm32")]` gates for networking no longer needed
+- Use `#[cfg(target_arch = "wasm32")]` / `#[cfg(not(target_arch = "wasm32"))]` for platform-specific paths (storage backends, timers, etc.)
 
 ### Testing Strategy
 
-Willow uses a multi-tier testing strategy:
+Willow uses multi-tier testing:
 
 **1. Pure state machine tests** (`just test-state`):
 - Determinism, idempotency, permission enforcement
@@ -242,13 +217,12 @@ Willow uses a multi-tier testing strategy:
 **4. In-browser Leptos tests** (`just test-browser`):
 - Real DOM rendering in headless Firefox via wasm-pack
 - Signal reactivity, event handling, Effects
-- All components: sidebar, messages, input, channels,
-  settings, member list, server list, connection status
+- All components: sidebar, messages, input, channels, settings, member list, server list, connection status
 - Requires: Firefox + geckodriver + wasm-pack
 
 **5. Playwright E2E tests** (`just test-e2e-ui`, `just test-e2e-sync`):
 - Multi-peer sync, permissions, mobile UI
-- Real browser interaction against the Leptos web app
+- Real browser interaction against Leptos web app
 
 ## Which test tier to use
 
@@ -264,19 +238,15 @@ Decision tree for every new test:
 6. **Touch / gesture / mobile-shell media query behaviour?** → Playwright mobile-chrome.
 7. **Service worker, push, or navigator APIs?** → Playwright.
 
-**Default to the lowest tier that can cover the behaviour.**
+**Default to lowest tier covering behaviour.**
 
-**Rewrite trigger.** When a Playwright test fails because a selector or helper drifts — not because behaviour broke — that test is at the wrong tier. Migrate it down on the same commit.
+**Rewrite trigger.** Playwright test fails because selector/helper drifts — not because behaviour broke — test at wrong tier. Migrate down same commit.
 
 Full discussion: `docs/specs/2026-04-21-e2e-test-architecture-design.md`.
 
 ### Which Test to Write
 
-**When adding a feature or fixing a bug, always add a test at the lowest
-level that covers the behavior.** Prefer state tests over client tests,
-client tests over browser tests, browser tests over Playwright E2E. Use
-E2E tests only for behavior that requires real P2P sync or browser
-interaction.
+**Adding feature or fixing bug, always add test at lowest level covering behavior.** Prefer state > client > browser > Playwright E2E. E2E only for behavior needing real P2P sync or browser interaction.
 
 | What changed | Test type | Location | Command |
 |---|---|---|---|
@@ -295,7 +265,7 @@ interaction.
 3. `cargo test -p willow-state`
 
 **Client API test**:
-1. Add to `crates/client/src/lib.rs` test module
+1. Add to `crates/client/src/tests/` (dominant pattern: e.g. `multi_peer_sync.rs`, `trust_flow.rs`) or to a `#[cfg(test)] mod tests_*` block in `lib.rs`
 2. Use `test_client()` helper — creates ClientHandle without networking
 3. `cargo test -p willow-client`
 
@@ -306,9 +276,9 @@ interaction.
 4. `wasm-pack test --headless --firefox crates/web`
 
 **Playwright E2E test**:
-1. Add to the appropriate `e2e/*.spec.ts` file
+1. Add to appropriate `e2e/*.spec.ts` file
 2. Use helpers from `e2e/helpers.ts` (`setupTwoPeers`, `sendMessage`, etc.)
-3. For multi-peer: use the `browser` fixture, not hardcoded `chromium.launch()`
+3. Multi-peer: use `browser` fixture, not hardcoded `chromium.launch()`
 4. `npx playwright test e2e/your-file.spec.ts`
 
 ## Code Conventions
@@ -316,28 +286,24 @@ interaction.
 - **Crate naming**: `willow-<name>` in Cargo.toml, `willow_<name>` in code
 - **Thread safety**: Use `Arc` (not `Rc`) everywhere — all types must be `Send + Sync`
 - **Error handling**: `thiserror` for library error types, `anyhow` for application code
-- **Documentation**: Every public type and function has a doc comment. Module-level `//!` docs explain the purpose and provide examples.
-- **Testing**: Every crate has unit tests. Use `#[cfg(test)] mod tests` at the bottom of each file.
+- **Documentation**: Every public type + function has doc comment. Module-level `//!` docs explain purpose + provide examples.
+- **Testing**: Every crate has unit tests. Use `#[cfg(test)] mod tests` at bottom of each file.
 - **Serialization**: All wire types derive `Serialize + Deserialize`. Round-trip tests validate compatibility.
-- **Specs & Plans**: Design specs go in `docs/specs/` named `YYYY-MM-DD-<feature-name>-design.md`. Implementation plans go in `docs/plans/` named `YYYY-MM-DD-<feature-name>.md`.
+- **Specs & Plans**: Design specs in `docs/specs/` named `YYYY-MM-DD-<feature-name>-design.md`. Plans in `docs/plans/` named `YYYY-MM-DD-<feature-name>.md`.
 
 ## Architecture Notes
 
 ### Authority Model
 
-See [`docs/specs/2026-04-12-state-authority-and-mutations.md`](docs/specs/2026-04-12-state-authority-and-mutations.md).
-All authority checks live in `willow-state::materialize::apply_event`
-and the `required_permission()` table. Permissions are checked before
-an event is created — rejected events never enter the DAG.
+See [`docs/specs/2026-04-12-state-authority-and-mutations.md`](docs/specs/2026-04-12-state-authority-and-mutations.md). All authority checks live in `willow-state::materialize::apply_event` + `required_permission()` table. Permissions checked before event created — rejected events never enter DAG.
 
 ### Dependency Graph
 
 ```
 willow-web → willow-client  → willow-state
                             → willow-network (iroh, iroh-gossip, iroh-blobs)
-           → willow-crypto  → willow-identity → willow-transport
-           → willow-messaging → willow-identity
-                              (defines SealedContent used by willow-crypto)
+           → willow-crypto  → willow-messaging → willow-identity → willow-transport
+                              (re-exports Content, SealedContent from willow-messaging)
 
 willow-replay  → willow-worker → willow-actor
 willow-storage → willow-worker → willow-actor
@@ -347,95 +313,75 @@ willow-client  → willow-common (shared wire types)
 
 ### Async Model
 
-- **Network layer**: Fully async using iroh's QUIC transport with gossip protocol.
-  Runs on a background thread (native) or via spawn_local (WASM).
-- **Client library**: Async API. Consumers drive it from their own runtime
-  (tokio on native, wasm-bindgen futures in the browser).
-- **Deferred startup**: Network doesn't start until the client explicitly
-  connects, allowing the UI to configure relay addresses first.
+- **Network layer**: Fully async, iroh's QUIC transport + gossip protocol. Runs on background thread (native) or via spawn_local (WASM).
+- **Client library**: Async API. Consumers drive from own runtime (tokio native, wasm-bindgen futures browser).
+- **Deferred startup**: Network doesn't start until client explicitly connects, lets UI configure relay addresses first.
 
 ### Message Flow
 
-1. User types in the UI → `Message::text()` creates cleartext message
+1. User types in UI → `Message::text()` creates cleartext message
 2. If channel key exists → `seal_content()` encrypts Content → `Content::Encrypted`
 3. `pack_wire()` signs with Ed25519 → `TopicHandle::broadcast()` sends to gossip
 4. iroh gossip delivers to subscribed peers
 5. Listener task receives `GossipEvent::Received` → `unpack_wire()` verifies
-6. Client forwards to the UI via its event stream
+6. Client forwards to UI via event stream
 7. `identity::unpack()` verifies signature → `unpack_envelope()`
 8. If `Content::Encrypted`, `open_content()` decrypts
-9. Message rendered in the UI
+9. Message rendered in UI
 
 ### Event-Based Server State Sync
 
-Server mutations (channels, roles, permissions, kicks) are synchronized
-via the event-sourced `willow-state` machine over iroh gossip. Events
-are broadcast and received through the `Network` trait and applied
-deterministically via `apply()`.
+Server mutations (channels, roles, permissions, kicks) sync via event-sourced `willow-state` machine over iroh gossip. Events broadcast + received through `Network` trait, applied deterministically via `apply()`.
 
 ### Event-Sourced State (willow-state)
 
-All shared state is derived from an ordered sequence of deterministic
-events. The `willow-state` crate is pure — zero I/O, zero networking.
+All shared state derived from per-author Merkle DAG of signed events. `willow-state` crate pure — zero I/O, zero networking. See `docs/specs/2026-04-01-per-author-merkle-dag-state-design.md`.
 
-- **Event**: carries unique ID, parent state hash, author PeerId,
-  timestamp hint, and an `EventKind` mutation variant.
-- **EventKind**: 17 variants covering server structure, roles,
-  fine-grained permissions, chat, identity, and encryption.
-- **ServerState**: complete shared state derivable from event replay.
-  Computes a `StateHash` (SHA-256) for divergence detection.
-- **apply()**: the ONLY way to mutate state. Pure function.
-  Enforces permissions, dedup, and parent hash verification.
-- **Permission model**: Owner is root of trust. Fine-grained permissions
-  (SyncProvider, ManageChannels, ManageRoles, KickMembers, SendMessages,
-  CreateInvite, Administrator) granted via GrantPermission events.
-- **merge()**: resolves divergent histories by finding common ancestor,
-  sorting divergent events by timestamp, and replaying.
-- **EventStore trait**: append-only event log abstraction.
+- **Event** (`crates/state/src/event.rs`): signed by author Ed25519 key. Per-author `prev` hash links into the author's chain; cross-author causal `deps` array references other authors' events. Carries `EventKind` mutation variant.
+- **EventKind** (`crates/state/src/event.rs`): variants for server structure, roles, fine-grained permissions, chat, identity, encryption, ephemeral.
+- **EventDag** (`crates/state/src/dag.rs`): in-memory store of all known events, indexed by `EventHash`. `EventDag::insert` validates signature, genesis, `prev`/`deps` linkage. No explicit "merge" — DAG converges as events arrive.
+- **ServerState** (`crates/state/src/server.rs`): materialized state derived by walking the DAG.
+- **`materialize::apply_incremental(state, event)`**: ONLY public mutation entry point. Pure. Internally calls `apply_event` + `required_permission` for authority checks.
+- **Permission model**: Owner = root of trust. Fine-grained permissions (SyncProvider, ManageChannels, ManageRoles, KickMembers, SendMessages, CreateInvite, Administrator) granted via `GrantPermission` events.
+- **Sync** (`crates/state/src/sync.rs`): `HeadsSummary` = compact per-author DAG state for efficient sync; `PendingBuffer` holds events arriving before their `prev` chain predecessors.
 
 ### Trust Model
 
-- Owner has implicit all-permissions (root of trust chain).
-- Permissions are granted via `GrantPermission` events from owner/admin.
-- Invite trust lists are *suggestions* — joining peers verify state from
-  multiple sources and use majority-agreed state.
-- The relay is a regular client — trusted only if explicitly granted
-  SyncProvider permission by the owner.
-- State verification: get state hash from multiple peers, use the hash
-  agreed upon by the most trusted sources.
+- Owner = implicit all-permissions (root of trust chain).
+- Permissions granted via `GrantPermission` events from owner/admin.
+- Invite trust lists = *suggestions* — joining peers verify state from multiple sources, use majority-agreed state.
+- Relay = regular client — trusted only if explicitly granted SyncProvider permission by owner.
+- State verification: get state hash from multiple peers, use hash agreed upon by most trusted sources.
 
 ### Hybrid Logical Clocks (HLC)
 
-Messages are ordered using HLCs (`willow-messaging/src/hlc.rs`). Every node
-maintains an `HLC` instance. Call `hlc.now()` for local events and
-`hlc.receive(remote_ts)` when processing remote messages. This ensures
-consistent ordering even when system clocks drift.
+Messages ordered using HLCs (`willow-messaging/src/hlc.rs`). Every node maintains `HLC` instance. Call `hlc.now()` for local events, `hlc.receive(remote_ts)` for remote messages. Ensures consistent ordering despite system clock drift.
 
 ## Common Tasks
 
 ### Adding a new message type
 
-1. Add a variant to `Content` in `crates/messaging/src/lib.rs`
-2. Add a constructor method on `Message`
+1. Add variant to `Content` in `crates/messaging/src/lib.rs`
+2. Add constructor method on `Message`
 3. Add tests
-4. Handle the new variant in the web UI's message rendering
+4. Handle new variant in web UI's message rendering
 
 ### Adding a new permission
 
-1. Add a variant to `Permission` in `crates/state/src/event.rs`
-2. Add the `EventKind` → `Permission` mapping to `required_permission()` in `crates/state/src/materialize.rs`
+1. Add variant to `Permission` in `crates/state/src/event.rs`
+2. Add `EventKind` → `Permission` mapping to `required_permission()` in `crates/state/src/materialize.rs`
 3. Add state-machine tests: grant, revoke, rejection without permission
 
 ### Adding a new iroh protocol
 
-1. Define the protocol in `crates/network/src/traits.rs` if needed
-2. Implement it in `crates/network/src/iroh.rs` using iroh's ALPN routing
-3. Add a test double in `crates/network/src/mem.rs`
-4. Use the trait in client/worker code
+1. Define protocol in `crates/network/src/traits.rs` if needed
+2. Implement in `crates/network/src/iroh.rs` using iroh's ALPN routing
+3. Add test double in `crates/network/src/mem.rs`
+4. Use trait in client/worker code
 
 ### Adding a new EventKind
 
-1. Add a variant to `EventKind` in `crates/state/src/lib.rs`
-2. Handle it in `apply()` with the appropriate permission checks
-3. Expose a method on `Client` in `crates/client/src/lib.rs` to emit it
-4. Add state-machine tests for dedup, permission rejection, and application
+1. Add variant to `EventKind` in `crates/state/src/event.rs` (re-exported from `lib.rs`)
+2. Handle in `apply_event()` in `crates/state/src/materialize.rs` (add to `required_permission()` if it needs authority)
+3. Expose method on `Client` in `crates/client/src/lib.rs` to emit it
+4. Add state-machine tests for dedup, permission rejection, application

@@ -163,7 +163,16 @@ impl<N: Network> ServerHandler for WillowMcpServer<N> {
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ReadResourceResult, ErrorData>> + Send + '_ {
-        async move { resources::read_resource(&self.client, &request.uri).await }
+        async move {
+            if !self.scope.allows_resource(&request.uri) {
+                return Err(ErrorData::new(
+                    ErrorCode::INVALID_REQUEST,
+                    format!("resource '{}' not allowed by token scope", request.uri),
+                    None,
+                ));
+            }
+            resources::read_resource(&self.client, &request.uri).await
+        }
     }
 }
 
@@ -232,7 +241,7 @@ async fn bearer_auth_middleware(
     match auth_header {
         Some(value) if value.starts_with("Bearer ") => {
             let provided = &value["Bearer ".len()..];
-            if provided == expected_token {
+            if tokens_eq_ct(provided.as_bytes(), expected_token.as_bytes()) {
                 next.run(req).await
             } else {
                 (StatusCode::FORBIDDEN, "invalid bearer token").into_response()
@@ -240,6 +249,20 @@ async fn bearer_auth_middleware(
         }
         _ => (StatusCode::UNAUTHORIZED, "missing bearer token").into_response(),
     }
+}
+
+/// Constant-time equality check for bearer tokens.
+///
+/// Length is compared first to avoid leaking the expected length via timing,
+/// then `subtle::ConstantTimeEq` performs a branch-free byte-wise comparison.
+/// This prevents timing side-channel attacks where an attacker measures
+/// response latency to recover the token byte by byte (issues #301, #304).
+fn tokens_eq_ct(provided: &[u8], expected: &[u8]) -> bool {
+    use subtle::ConstantTimeEq;
+    if provided.len() != expected.len() {
+        return false;
+    }
+    provided.ct_eq(expected).into()
 }
 
 use axum::response::IntoResponse;
