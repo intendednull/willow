@@ -60,7 +60,6 @@ impl MobileTab {
 /// Full-screen pushes that can be stacked over a primary tab. Each
 /// push hides the tab bar and renders translated in from the right.
 #[derive(Clone, PartialEq, Eq, Debug)]
-#[allow(dead_code)]
 pub enum MobilePush {
     /// Channel chat view (name = channel id).
     Channel(String),

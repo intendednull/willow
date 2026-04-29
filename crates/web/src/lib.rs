@@ -17,6 +17,7 @@ pub mod keybindings;
 pub mod notifications;
 pub mod palette_recents;
 pub mod profile;
+pub mod service_worker_bridge;
 pub mod state;
 pub mod state_bridge;
 #[cfg(feature = "test-hooks")]

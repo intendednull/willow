@@ -6,7 +6,28 @@
 //! networking — just DAG operations and deterministic state projection.
 
 #[cfg(test)]
-mod tests;
+#[path = "tests/dag.rs"]
+mod tests_dag;
+
+#[cfg(test)]
+#[path = "tests/materialize.rs"]
+mod tests_materialize;
+
+#[cfg(test)]
+#[path = "tests/permissions.rs"]
+mod tests_permissions;
+
+#[cfg(test)]
+#[path = "tests/stress.rs"]
+mod tests_stress;
+
+#[cfg(test)]
+#[path = "tests/sync.rs"]
+mod tests_sync;
+
+#[cfg(test)]
+#[path = "tests/voting.rs"]
+mod tests_voting;
 
 pub mod dag;
 pub mod ephemeral;

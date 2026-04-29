@@ -13,7 +13,7 @@ use leptos::prelude::*;
 use willow_client::presence::PresenceState;
 use willow_client::{NicknameStoreHandle, ProfileView};
 
-use super::peer_color;
+use super::peer_color_from_str;
 use super::peer_status_label::PeerStatusLabel;
 use super::status_dot::{StatusDot, StatusDotBorder, StatusDotSize};
 use crate::icons;
@@ -176,7 +176,7 @@ pub fn ProfileCardContent(
             // Avatar + presence.
             <div
                 class="profile-card__avatar"
-                style=move || format!("background: {}", peer_color(&view.get().peer_id))
+                style=move || format!("background: {}", peer_color_from_str(&view.get().peer_id))
             >
                 <span class="profile-card__avatar-initial">
                     {move || {

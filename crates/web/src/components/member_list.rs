@@ -309,7 +309,7 @@ pub fn MemberList(
                                 class="member-name member-name-btn"
                                 type="button"
                                 aria-label=format!("{} — open profile", name)
-                                style=format!("color: {}", super::peer_color(&pid))
+                                style=format!("color: {}", super::peer_color_from_str(&pid))
                                 on:click=on_open_profile
                             >
                                 {name.clone()}

@@ -14,6 +14,65 @@ use willow_identity::EndpointId;
 use willow_network::traits::TopicHandle;
 use willow_network::traits::{GossipEvent, TopicEvents};
 
+/// Maximum length (in Unicode scalar values / `char`s) for an attacker-supplied
+/// display name accepted into [`state_actors::ProfileState::names`]. Inputs
+/// longer than this are truncated on receipt and a `tracing::warn!` is logged.
+///
+/// We cap by `char` count rather than UTF-8 bytes to keep the limit friendly
+/// for non-ASCII names. Worst-case memory per entry stays bounded
+/// (`MAX_DISPLAY_NAME_LEN * 4` bytes).
+///
+/// See `[SEC-V-05]` (issue #234) — full mitigation also requires an LRU /
+/// total-entry cap on the map (tracked separately).
+pub(crate) const MAX_DISPLAY_NAME_LEN: usize = 128;
+
+/// Maximum length (in `char`s) for an attacker-supplied typing-channel name
+/// accepted into [`state_actors::NetworkMeta::typing_peers`]. Same rationale
+/// as [`MAX_DISPLAY_NAME_LEN`].
+pub(crate) const MAX_TYPING_CHANNEL_LEN: usize = 128;
+
+/// Maximum number of distinct `channel_id`s tracked in
+/// [`state_actors::VoiceState::participants`]. Caps the outer dimension of
+/// the map so a malicious peer cannot flood `VoiceJoin` with fresh
+/// `channel_id`s and exhaust memory on receiving clients. Real servers
+/// have far fewer than this many voice channels in practice; the cap is
+/// a defensive ceiling, not an expected operating point. See `[SEC-V-03]`
+/// (issue #303).
+pub(crate) const MAX_VOICE_CHANNELS: usize = 256;
+
+/// Maximum number of `peer_id`s tracked per voice channel in
+/// [`state_actors::VoiceState::participants`]. Caps the inner dimension of
+/// the map. Same threat model as [`MAX_VOICE_CHANNELS`]. See `[SEC-V-03]`
+/// (issue #303).
+pub(crate) const MAX_PARTICIPANTS_PER_CHANNEL: usize = 256;
+
+/// Truncate `s` to at most `max` Unicode scalar values, returning the original
+/// string unchanged if it already fits. Splits at `char` boundaries so the
+/// returned `String` is always valid UTF-8.
+pub(crate) fn truncate_to_chars(s: String, max: usize) -> String {
+    if s.chars().count() <= max {
+        s
+    } else {
+        s.chars().take(max).collect()
+    }
+}
+
+/// Log a `tracing::warn!` if `r` is `Err`, otherwise drop the success value.
+///
+/// Used in this listener hot loop to replace bare `.ok();` calls on
+/// "fire-and-forget" sends — broker `do_send`, topic `broadcast`, persistence
+/// `do_send`, etc. The previous pattern silently dropped these failures, so a
+/// dead broker or broken topic would cause the listener to keep running
+/// without any record. We still proceed (the listener should not abort on a
+/// downstream failure), but field logs now surface the issue.
+///
+/// See issue #253.
+fn warn_if_err<T, E: std::fmt::Debug>(r: Result<T, E>, context: &'static str) {
+    if let Err(e) = r {
+        tracing::warn!(?e, "{context}");
+    }
+}
+
 /// Context passed to listener tasks with all the actor addresses they need.
 pub struct ListenerCtx {
     pub event_state: Addr<willow_actor::StateActor<willow_state::ServerState>>,
@@ -89,9 +148,11 @@ async fn topic_listener_loop<T: TopicHandle, E: TopicEvents>(
                     }
                 })
                 .await;
-                ctx.event_broker
-                    .do_send(willow_actor::Publish(ClientEvent::PeerConnected(id)))
-                    .ok();
+                warn_if_err(
+                    ctx.event_broker
+                        .do_send(willow_actor::Publish(ClientEvent::PeerConnected(id))),
+                    "event_broker.do_send Publish(PeerConnected)",
+                );
                 // Re-broadcast local profile so the newly joined peer gets
                 // our display name even if they missed the initial broadcast.
                 if let Some(cb) = &ctx.on_neighbor_up {
@@ -104,9 +165,11 @@ async fn topic_listener_loop<T: TopicHandle, E: TopicEvents>(
                     c.peers.retain(|p| p != &id2);
                 })
                 .await;
-                ctx.event_broker
-                    .do_send(willow_actor::Publish(ClientEvent::PeerDisconnected(id)))
-                    .ok();
+                warn_if_err(
+                    ctx.event_broker
+                        .do_send(willow_actor::Publish(ClientEvent::PeerDisconnected(id))),
+                    "event_broker.do_send Publish(PeerDisconnected)",
+                );
             }
         }
     }
@@ -164,12 +227,17 @@ async fn try_insert_event(ctx: &ListenerCtx, event: willow_state::Event) {
 
         // Persist and emit for each applied event.
         for ev in &all_applied {
-            ctx.persistence
-                .do_send(persistence_actor::PersistEvent { event: ev.clone() })
-                .ok();
+            warn_if_err(
+                ctx.persistence
+                    .do_send(persistence_actor::PersistEvent { event: ev.clone() }),
+                "persistence.do_send PersistEvent",
+            );
             let client_events = mutations::derive_client_events(ev);
             for e in client_events {
-                ctx.event_broker.do_send(willow_actor::Publish(e)).ok();
+                warn_if_err(
+                    ctx.event_broker.do_send(willow_actor::Publish(e)),
+                    "event_broker.do_send Publish(derived ClientEvent)",
+                );
             }
         }
         // Persist the state snapshot so messages survive a page reload
@@ -211,12 +279,14 @@ async fn process_received_message<T: TopicHandle>(
                 p.names.insert(peer_id, display_name);
             })
             .await;
-            ctx.event_broker
-                .do_send(willow_actor::Publish(ClientEvent::ProfileUpdated {
-                    peer_id: profile.peer_id,
-                    display_name: profile.display_name,
-                }))
-                .ok();
+            warn_if_err(
+                ctx.event_broker
+                    .do_send(willow_actor::Publish(ClientEvent::ProfileUpdated {
+                        peer_id: profile.peer_id,
+                        display_name: profile.display_name,
+                    })),
+                "event_broker.do_send Publish(ProfileUpdated from profile broadcast)",
+            );
             return;
         }
         Err(willow_identity::IdentityError::PeerMismatch { claimed, signer }) => {
@@ -286,11 +356,13 @@ async fn process_received_message<T: TopicHandle>(
                 let _is_synced =
                     willow_actor::state::select(&ctx.dag, |ds| ds.managed.is_synced()).await;
 
-                ctx.event_broker
-                    .do_send(willow_actor::Publish(ClientEvent::SyncCompleted {
-                        ops_applied: count,
-                    }))
-                    .ok();
+                warn_if_err(
+                    ctx.event_broker
+                        .do_send(willow_actor::Publish(ClientEvent::SyncCompleted {
+                            ops_applied: count,
+                        })),
+                    "event_broker.do_send Publish(SyncCompleted)",
+                );
             }
         }
         crate::ops::WireMessage::SyncRequest { state_hash, .. } => {
@@ -312,11 +384,24 @@ async fn process_received_message<T: TopicHandle>(
             if !events.is_empty() {
                 let msg = crate::ops::WireMessage::SyncBatch { events };
                 if let Some(data) = crate::ops::pack_wire(&msg, &ctx.identity) {
-                    topic.broadcast(bytes::Bytes::from(data)).await.ok();
+                    warn_if_err(
+                        topic.broadcast(bytes::Bytes::from(data)).await,
+                        "topic.broadcast SyncBatch (SyncRequest reply)",
+                    );
                 }
             }
         }
         crate::ops::WireMessage::TypingIndicator { channel } => {
+            // Bound attacker-supplied input. See `MAX_TYPING_CHANNEL_LEN`
+            // and issue #234 ([SEC-V-05]).
+            let original_len = channel.chars().count();
+            let channel = truncate_to_chars(channel, MAX_TYPING_CHANNEL_LEN);
+            if original_len > MAX_TYPING_CHANNEL_LEN {
+                tracing::warn!(
+                    %signer, original_len, capped_len = MAX_TYPING_CHANNEL_LEN,
+                    "TypingIndicator channel exceeded cap — truncating"
+                );
+            }
             let now = crate::util::current_time_ms();
             willow_actor::state::mutate(&ctx.network, move |n| {
                 n.typing_peers.insert(signer, (channel, now));
@@ -334,22 +419,75 @@ async fn process_received_message<T: TopicHandle>(
             channel_id,
             peer_id,
         } => {
-            let ch = channel_id.clone();
-            willow_actor::state::mutate(&ctx.voice, move |v| {
-                v.participants.entry(ch).or_default().insert(peer_id);
+            // [SEC-V-03] / #303: drop voice messages whose `channel_id`
+            // does not exist in the materialized server state, and bound
+            // both the outer (distinct channels) and inner (participants
+            // per channel) dimensions of `VoiceState.participants`.
+            // Without these gates, any signed peer can flood arbitrary
+            // `channel_id`s and exhaust receiving clients' memory.
+            let known = willow_actor::state::select(&ctx.event_state, {
+                let ch = channel_id.clone();
+                move |es| es.channels.contains_key(&ch)
             })
             .await;
-            ctx.event_broker
-                .do_send(willow_actor::Publish(ClientEvent::VoiceJoined {
-                    channel_id,
-                    peer_id,
-                }))
-                .ok();
+            if !known {
+                tracing::debug!(
+                    %signer, channel_id = %channel_id,
+                    "dropping VoiceJoin: channel_id not in ServerState.channels"
+                );
+                return;
+            }
+            let ch = channel_id.clone();
+            let inserted = willow_actor::state::mutate(&ctx.voice, move |v| {
+                let new_channel = !v.participants.contains_key(&ch);
+                if new_channel && v.participants.len() >= MAX_VOICE_CHANNELS {
+                    return false;
+                }
+                let set = v.participants.entry(ch).or_default();
+                if !set.contains(&peer_id) && set.len() >= MAX_PARTICIPANTS_PER_CHANNEL {
+                    return false;
+                }
+                set.insert(peer_id);
+                true
+            })
+            .await;
+            if !inserted {
+                tracing::debug!(
+                    %signer, channel_id = %channel_id, %peer_id,
+                    "dropping VoiceJoin: VoiceState cap reached"
+                );
+                return;
+            }
+            warn_if_err(
+                ctx.event_broker
+                    .do_send(willow_actor::Publish(ClientEvent::VoiceJoined {
+                        channel_id,
+                        peer_id,
+                    })),
+                "event_broker.do_send Publish(VoiceJoined)",
+            );
         }
         crate::ops::WireMessage::VoiceLeave {
             channel_id,
             peer_id,
         } => {
+            // [SEC-V-03] / #303: drop Leaves for unknown channels so the
+            // event broker never publishes phantom-channel events to the
+            // UI. The `participants` map is unaffected even without the
+            // gate (`get_mut` returns None), but the event-broker fanout
+            // would still leak attacker-controlled `channel_id`s.
+            let known = willow_actor::state::select(&ctx.event_state, {
+                let ch = channel_id.clone();
+                move |es| es.channels.contains_key(&ch)
+            })
+            .await;
+            if !known {
+                tracing::debug!(
+                    %signer, channel_id = %channel_id,
+                    "dropping VoiceLeave: channel_id not in ServerState.channels"
+                );
+                return;
+            }
             let ch = channel_id.clone();
             willow_actor::state::mutate(&ctx.voice, move |v| {
                 if let Some(p) = v.participants.get_mut(&ch) {
@@ -357,12 +495,14 @@ async fn process_received_message<T: TopicHandle>(
                 }
             })
             .await;
-            ctx.event_broker
-                .do_send(willow_actor::Publish(ClientEvent::VoiceLeft {
-                    channel_id,
-                    peer_id,
-                }))
-                .ok();
+            warn_if_err(
+                ctx.event_broker
+                    .do_send(willow_actor::Publish(ClientEvent::VoiceLeft {
+                        channel_id,
+                        peer_id,
+                    })),
+                "event_broker.do_send Publish(VoiceLeft)",
+            );
         }
         crate::ops::WireMessage::VoiceSignal {
             channel_id,
@@ -370,13 +510,32 @@ async fn process_received_message<T: TopicHandle>(
             signal,
         } => {
             if target_peer == ctx.identity.endpoint_id() {
-                ctx.event_broker
-                    .do_send(willow_actor::Publish(ClientEvent::VoiceSignal {
-                        channel_id,
-                        from_peer: signer,
-                        signal,
-                    }))
-                    .ok();
+                // [SEC-V-03] / #303: drop signals for unknown channels so
+                // attacker-supplied `channel_id`s never reach the UI's
+                // event handlers. Signals do not mutate `participants`
+                // directly, but the existence check shuts the same fanout
+                // gap as Join/Leave.
+                let known = willow_actor::state::select(&ctx.event_state, {
+                    let ch = channel_id.clone();
+                    move |es| es.channels.contains_key(&ch)
+                })
+                .await;
+                if !known {
+                    tracing::debug!(
+                        %signer, channel_id = %channel_id,
+                        "dropping VoiceSignal: channel_id not in ServerState.channels"
+                    );
+                    return;
+                }
+                warn_if_err(
+                    ctx.event_broker
+                        .do_send(willow_actor::Publish(ClientEvent::VoiceSignal {
+                            channel_id,
+                            from_peer: signer,
+                            signal,
+                        })),
+                    "event_broker.do_send Publish(VoiceSignal)",
+                );
             }
         }
         crate::ops::WireMessage::JoinRequest { link_id, peer_id } => {
@@ -468,7 +627,10 @@ async fn process_received_message<T: TopicHandle>(
                         invite_data,
                     };
                     if let Some(data) = crate::ops::pack_wire(&msg, &ctx.identity) {
-                        topic.broadcast(bytes::Bytes::from(data)).await.ok();
+                        warn_if_err(
+                            topic.broadcast(bytes::Bytes::from(data)).await,
+                            "topic.broadcast JoinResponse",
+                        );
                     }
 
                     // Grant SendMessages permission to the joining peer so
@@ -504,17 +666,22 @@ async fn process_received_message<T: TopicHandle>(
                         })
                         .await;
                         // Persist.
-                        ctx.persistence
-                            .do_send(crate::persistence_actor::PersistEvent {
-                                event: event.clone(),
-                            })
-                            .ok();
+                        warn_if_err(
+                            ctx.persistence
+                                .do_send(crate::persistence_actor::PersistEvent {
+                                    event: event.clone(),
+                                }),
+                            "persistence.do_send PersistEvent (GrantPermission)",
+                        );
                         // Broadcast to other peers.
                         if let Some(data) = crate::ops::pack_wire(
                             &crate::ops::WireMessage::Event(event),
                             &ctx.identity,
                         ) {
-                            topic.broadcast(bytes::Bytes::from(data)).await.ok();
+                            warn_if_err(
+                                topic.broadcast(bytes::Bytes::from(data)).await,
+                                "topic.broadcast Event(GrantPermission)",
+                            );
                         }
                     }
                 }
@@ -525,11 +692,12 @@ async fn process_received_message<T: TopicHandle>(
             invite_data,
         } => {
             if target_peer == ctx.identity.endpoint_id() {
-                ctx.event_broker
-                    .do_send(willow_actor::Publish(ClientEvent::JoinLinkResponse {
-                        invite_data,
-                    }))
-                    .ok();
+                warn_if_err(
+                    ctx.event_broker.do_send(willow_actor::Publish(
+                        ClientEvent::JoinLinkResponse { invite_data },
+                    )),
+                    "event_broker.do_send Publish(JoinLinkResponse)",
+                );
             }
         }
         crate::ops::WireMessage::JoinDenied {
@@ -537,11 +705,13 @@ async fn process_received_message<T: TopicHandle>(
             reason,
         } => {
             if target_peer == ctx.identity.endpoint_id() {
-                ctx.event_broker
-                    .do_send(willow_actor::Publish(ClientEvent::JoinLinkDenied {
-                        reason,
-                    }))
-                    .ok();
+                warn_if_err(
+                    ctx.event_broker
+                        .do_send(willow_actor::Publish(ClientEvent::JoinLinkDenied {
+                            reason,
+                        })),
+                    "event_broker.do_send Publish(JoinLinkDenied)",
+                );
             }
         }
         // TopicAnnounce is consumed by the relay; clients ignore it.
@@ -550,17 +720,29 @@ async fn process_received_message<T: TopicHandle>(
         // Sent on SERVER_OPS_TOPIC so delivery is guaranteed via the sync path.
         crate::ops::WireMessage::ProfileAnnounce { display_name } => {
             let peer_id = signer;
+            // Bound attacker-supplied input. See `MAX_DISPLAY_NAME_LEN`
+            // and issue #234 ([SEC-V-05]).
+            let original_len = display_name.chars().count();
+            let display_name = truncate_to_chars(display_name, MAX_DISPLAY_NAME_LEN);
+            if original_len > MAX_DISPLAY_NAME_LEN {
+                tracing::warn!(
+                    %peer_id, original_len, capped_len = MAX_DISPLAY_NAME_LEN,
+                    "ProfileAnnounce display_name exceeded cap — truncating"
+                );
+            }
             let name = display_name.clone();
             willow_actor::state::mutate(&ctx.profiles, move |p| {
                 p.names.insert(peer_id, name);
             })
             .await;
-            ctx.event_broker
-                .do_send(willow_actor::Publish(ClientEvent::ProfileUpdated {
-                    peer_id,
-                    display_name,
-                }))
-                .ok();
+            warn_if_err(
+                ctx.event_broker
+                    .do_send(willow_actor::Publish(ClientEvent::ProfileUpdated {
+                        peer_id,
+                        display_name,
+                    })),
+                "event_broker.do_send Publish(ProfileUpdated from ProfileAnnounce)",
+            );
         }
         // Worker messages travel on the _willow_workers topic and are never
         // delivered to the client's server-ops listener.
@@ -572,7 +754,7 @@ async fn process_received_message<T: TopicHandle>(
 mod tests {
     //! Listener tests for the JoinRequest signer guard (SEC-A-03 / #239).
     use super::*;
-    use crate::test_client;
+    use crate::{test_client, ClientHandle};
     use std::sync::Arc;
     use willow_network::Network;
 
@@ -744,5 +926,442 @@ mod tests {
             bob_has,
             "verified signer must be granted SendMessages via join link"
         );
+    }
+
+    // ─── [SEC-V-05] / #234 — bound attacker-supplied strings ───────────────
+
+    #[test]
+    fn truncate_to_chars_passes_short_input_unchanged() {
+        let s = "hello".to_string();
+        assert_eq!(truncate_to_chars(s.clone(), 128), s);
+    }
+
+    #[test]
+    fn truncate_to_chars_caps_long_input_at_char_boundary() {
+        // 200 ASCII chars → cap at 128.
+        let s: String = "x".repeat(200);
+        let out = truncate_to_chars(s, 128);
+        assert_eq!(out.chars().count(), 128);
+        assert_eq!(out.len(), 128); // ASCII so bytes == chars
+    }
+
+    #[test]
+    fn truncate_to_chars_handles_multibyte_at_boundary() {
+        // 200 four-byte chars (each `🌲` is U+1F332, 4 bytes UTF-8). Capping
+        // at 128 must split on a `char` boundary, never mid-codepoint.
+        let s: String = "🌲".repeat(200);
+        let out = truncate_to_chars(s, 128);
+        assert_eq!(out.chars().count(), 128);
+        // Output must still be valid UTF-8 (it is by construction since
+        // `String` enforces it; but assert byte-len matches expectation).
+        assert_eq!(out.len(), 128 * 4);
+    }
+
+    /// A `ProfileAnnounce` with an oversized `display_name` must end up in
+    /// `ProfileState.names` with at most `MAX_DISPLAY_NAME_LEN` chars.
+    /// Without the cap, an attacker could grow the map's per-entry footprint
+    /// without bound (#234, [SEC-V-05]).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn profile_announce_display_name_is_truncated_on_receipt() {
+        let (client, _rx) = test_client();
+
+        let hub = willow_network::mem::MemHub::new();
+        let net = willow_network::mem::MemNetwork::new(&hub);
+        let (topic_handle, _events) = net
+            .subscribe(willow_network::topic_id("unit-test-profile-cap"), vec![])
+            .await
+            .expect("subscribe must succeed");
+
+        let ctx = ListenerCtx {
+            event_state: client.event_state_addr.clone(),
+            chat_meta: client.chat_meta_addr.clone(),
+            profiles: client.profile_state_addr.clone(),
+            network: client.network_meta_addr.clone(),
+            voice: client.voice_state_addr.clone(),
+            persistence: client.persistence_addr.clone(),
+            persistence_enabled: false,
+            event_broker: client.event_broker.clone(),
+            identity: client.identity.clone(),
+            join_links: Arc::clone(&client.join_links),
+            dag: client.dag_addr.clone(),
+            server_registry: client.server_registry_addr.clone(),
+            on_neighbor_up: None,
+        };
+
+        let attacker = willow_identity::Identity::generate();
+        let attacker_id = attacker.endpoint_id();
+
+        // 4096 chars — well past the 128-char cap.
+        let oversized: String = "A".repeat(4096);
+        let msg = crate::ops::WireMessage::ProfileAnnounce {
+            display_name: oversized,
+        };
+        let bytes = crate::ops::pack_wire(&msg, &attacker).expect("pack_wire must succeed");
+
+        process_received_message(&bytes, attacker_id, &ctx, &topic_handle).await;
+
+        // Poll for the entry to land. `mutate` awaits the actor reply, so
+        // the state should already be visible — but poll briefly to absorb
+        // any scheduling jitter on slow CI hosts.
+        let stored_len = poll_until_some(
+            || {
+                willow_actor::state::select(&client.profile_state_addr, move |p| {
+                    p.names.get(&attacker_id).map(|n| n.chars().count())
+                })
+            },
+            std::time::Duration::from_secs(2),
+        )
+        .await;
+
+        assert_eq!(
+            stored_len,
+            Some(MAX_DISPLAY_NAME_LEN),
+            "oversized display_name must be capped at MAX_DISPLAY_NAME_LEN on receipt"
+        );
+    }
+
+    /// A `TypingIndicator` with an oversized `channel` must end up in
+    /// `NetworkMeta.typing_peers` with at most `MAX_TYPING_CHANNEL_LEN` chars.
+    /// Same threat model as the profile case (#234, [SEC-V-05]).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn typing_indicator_channel_is_truncated_on_receipt() {
+        let (client, _rx) = test_client();
+
+        let hub = willow_network::mem::MemHub::new();
+        let net = willow_network::mem::MemNetwork::new(&hub);
+        let (topic_handle, _events) = net
+            .subscribe(willow_network::topic_id("unit-test-typing-cap"), vec![])
+            .await
+            .expect("subscribe must succeed");
+
+        let ctx = ListenerCtx {
+            event_state: client.event_state_addr.clone(),
+            chat_meta: client.chat_meta_addr.clone(),
+            profiles: client.profile_state_addr.clone(),
+            network: client.network_meta_addr.clone(),
+            voice: client.voice_state_addr.clone(),
+            persistence: client.persistence_addr.clone(),
+            persistence_enabled: false,
+            event_broker: client.event_broker.clone(),
+            identity: client.identity.clone(),
+            join_links: Arc::clone(&client.join_links),
+            dag: client.dag_addr.clone(),
+            server_registry: client.server_registry_addr.clone(),
+            on_neighbor_up: None,
+        };
+
+        let attacker = willow_identity::Identity::generate();
+        let attacker_id = attacker.endpoint_id();
+
+        // 1024 ASCII chars — well past the 128-char cap, well under the
+        // 4 KB `SIGNALING_CAP` enforced by `unpack_wire`.
+        let oversized: String = "C".repeat(1024);
+        let msg = crate::ops::WireMessage::TypingIndicator { channel: oversized };
+        let bytes = crate::ops::pack_wire(&msg, &attacker).expect("pack_wire must succeed");
+
+        process_received_message(&bytes, attacker_id, &ctx, &topic_handle).await;
+
+        let stored_len = poll_until_some(
+            || {
+                willow_actor::state::select(&client.network_meta_addr, move |n| {
+                    n.typing_peers
+                        .get(&attacker_id)
+                        .map(|(ch, _ts)| ch.chars().count())
+                })
+            },
+            std::time::Duration::from_secs(2),
+        )
+        .await;
+
+        assert_eq!(
+            stored_len,
+            Some(MAX_TYPING_CHANNEL_LEN),
+            "oversized typing channel must be capped at MAX_TYPING_CHANNEL_LEN on receipt"
+        );
+    }
+
+    // ─── [SEC-V-03] / #303 — voice.participants growth caps ────────────────
+
+    /// Build a `ListenerCtx` from a `test_client()` ClientHandle.
+    fn make_ctx<N: willow_network::Network>(client: &ClientHandle<N>) -> ListenerCtx {
+        ListenerCtx {
+            event_state: client.event_state_addr.clone(),
+            chat_meta: client.chat_meta_addr.clone(),
+            profiles: client.profile_state_addr.clone(),
+            network: client.network_meta_addr.clone(),
+            voice: client.voice_state_addr.clone(),
+            persistence: client.persistence_addr.clone(),
+            persistence_enabled: false,
+            event_broker: client.event_broker.clone(),
+            identity: client.identity.clone(),
+            join_links: Arc::clone(&client.join_links),
+            dag: client.dag_addr.clone(),
+            server_registry: client.server_registry_addr.clone(),
+            on_neighbor_up: None,
+        }
+    }
+
+    /// Helper to read the current `VoiceState`.
+    async fn voice_snapshot<N: willow_network::Network>(
+        client: &ClientHandle<N>,
+    ) -> state_actors::VoiceState {
+        willow_actor::state::select(&client.voice_state_addr, |v| v.clone()).await
+    }
+
+    /// Resolve the test client's known channel id (the "general" channel
+    /// seeded by `test_client()`).
+    async fn known_channel_id<N: willow_network::Network>(client: &ClientHandle<N>) -> String {
+        let snap = client.state_snapshot().await;
+        snap.channels
+            .keys()
+            .next()
+            .cloned()
+            .expect("test_client must seed at least one channel")
+    }
+
+    /// VoiceJoin against an unknown `channel_id` must not mutate
+    /// `VoiceState.participants` (defends against attackers flooding
+    /// random channel ids until memory is exhausted).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn voice_join_with_unknown_channel_is_dropped() {
+        let (client, _rx) = test_client();
+        let hub = willow_network::mem::MemHub::new();
+        let net = willow_network::mem::MemNetwork::new(&hub);
+        let (topic_handle, _events) = net
+            .subscribe(willow_network::topic_id("unit-test-voice-unknown"), vec![])
+            .await
+            .expect("subscribe must succeed");
+        let ctx = make_ctx(&client);
+
+        let attacker = willow_identity::Identity::generate();
+        let attacker_id = attacker.endpoint_id();
+
+        let msg = crate::ops::WireMessage::VoiceJoin {
+            channel_id: "no-such-channel".to_string(),
+            peer_id: attacker_id,
+        };
+        let bytes = crate::ops::pack_wire(&msg, &attacker).expect("pack_wire must succeed");
+        process_received_message(&bytes, attacker_id, &ctx, &topic_handle).await;
+
+        // Brief settle window for actor mailboxes.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let snap = voice_snapshot(&client).await;
+        assert!(
+            snap.participants.is_empty(),
+            "VoiceJoin against an unknown channel_id must not create an entry; got {:?}",
+            snap.participants
+        );
+    }
+
+    /// Sanity check: VoiceJoin against a real channel records the
+    /// participant. Without this we wouldn't know the cap test below
+    /// is exercising the real path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn voice_join_with_known_channel_records_participant() {
+        let (client, _rx) = test_client();
+        let hub = willow_network::mem::MemHub::new();
+        let net = willow_network::mem::MemNetwork::new(&hub);
+        let (topic_handle, _events) = net
+            .subscribe(willow_network::topic_id("unit-test-voice-known"), vec![])
+            .await
+            .expect("subscribe must succeed");
+        let ctx = make_ctx(&client);
+        let channel_id = known_channel_id(&client).await;
+
+        let attacker = willow_identity::Identity::generate();
+        let attacker_id = attacker.endpoint_id();
+        let msg = crate::ops::WireMessage::VoiceJoin {
+            channel_id: channel_id.clone(),
+            peer_id: attacker_id,
+        };
+        let bytes = crate::ops::pack_wire(&msg, &attacker).expect("pack_wire must succeed");
+        process_received_message(&bytes, attacker_id, &ctx, &topic_handle).await;
+
+        let stored = poll_until_some(
+            || {
+                let ch = channel_id.clone();
+                willow_actor::state::select(&client.voice_state_addr, move |v| {
+                    v.participants
+                        .get(&ch)
+                        .filter(|set| set.contains(&attacker_id))
+                        .map(|set| set.len())
+                })
+            },
+            std::time::Duration::from_secs(2),
+        )
+        .await;
+        assert_eq!(
+            stored,
+            Some(1),
+            "VoiceJoin on a known channel must record the participant"
+        );
+    }
+
+    /// Once `MAX_VOICE_CHANNELS` distinct channel_ids have been recorded,
+    /// further VoiceJoin packets that reference *new* channel_ids must be
+    /// dropped — even if the channel exists in `ServerState`. This caps the
+    /// outer dimension of `participants`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn voice_join_rejects_when_distinct_channels_at_cap() {
+        let (client, _rx) = test_client();
+        let hub = willow_network::mem::MemHub::new();
+        let net = willow_network::mem::MemNetwork::new(&hub);
+        let (topic_handle, _events) = net
+            .subscribe(willow_network::topic_id("unit-test-voice-chcap"), vec![])
+            .await
+            .expect("subscribe must succeed");
+        let ctx = make_ctx(&client);
+        let channel_id = known_channel_id(&client).await;
+
+        // Pre-fill `participants` with `MAX_VOICE_CHANNELS` distinct
+        // synthetic channel_ids. We seed directly via the actor — the
+        // listener would normally reject any of these as unknown, but
+        // we want to test the *cap* in isolation. `state_snapshot()`'s
+        // single channel is added below as the (cap+1)-th attempt.
+        willow_actor::state::mutate(&client.voice_state_addr, move |v| {
+            for i in 0..MAX_VOICE_CHANNELS {
+                v.participants.entry(format!("filler-{i}")).or_default();
+            }
+        })
+        .await;
+
+        let attacker = willow_identity::Identity::generate();
+        let attacker_id = attacker.endpoint_id();
+        // Use the *real* channel_id so the existence check passes; the
+        // cap is what must reject this message.
+        let msg = crate::ops::WireMessage::VoiceJoin {
+            channel_id: channel_id.clone(),
+            peer_id: attacker_id,
+        };
+        let bytes = crate::ops::pack_wire(&msg, &attacker).expect("pack_wire must succeed");
+        process_received_message(&bytes, attacker_id, &ctx, &topic_handle).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let snap = voice_snapshot(&client).await;
+        assert_eq!(
+            snap.participants.len(),
+            MAX_VOICE_CHANNELS,
+            "distinct-channels cap must hold against new VoiceJoin entries"
+        );
+        assert!(
+            !snap.participants.contains_key(&channel_id),
+            "VoiceJoin for a new channel_id must be dropped once the cap is reached"
+        );
+    }
+
+    /// Once a single channel has `MAX_PARTICIPANTS_PER_CHANNEL` participants,
+    /// further VoiceJoin packets for that channel must be dropped. This caps
+    /// the inner dimension of `participants`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn voice_join_rejects_when_participants_at_cap() {
+        let (client, _rx) = test_client();
+        let hub = willow_network::mem::MemHub::new();
+        let net = willow_network::mem::MemNetwork::new(&hub);
+        let (topic_handle, _events) = net
+            .subscribe(willow_network::topic_id("unit-test-voice-pcap"), vec![])
+            .await
+            .expect("subscribe must succeed");
+        let ctx = make_ctx(&client);
+        let channel_id = known_channel_id(&client).await;
+
+        // Fill the cap with synthetic participants on the real channel.
+        let cap_channel = channel_id.clone();
+        willow_actor::state::mutate(&client.voice_state_addr, move |v| {
+            let set = v.participants.entry(cap_channel).or_default();
+            for _ in 0..MAX_PARTICIPANTS_PER_CHANNEL {
+                set.insert(willow_identity::Identity::generate().endpoint_id());
+            }
+        })
+        .await;
+
+        // Confirm preconditions.
+        let pre = voice_snapshot(&client).await;
+        assert_eq!(
+            pre.participants.get(&channel_id).map(|s| s.len()),
+            Some(MAX_PARTICIPANTS_PER_CHANNEL),
+            "test setup must fill participants to cap"
+        );
+
+        let attacker = willow_identity::Identity::generate();
+        let attacker_id = attacker.endpoint_id();
+        let msg = crate::ops::WireMessage::VoiceJoin {
+            channel_id: channel_id.clone(),
+            peer_id: attacker_id,
+        };
+        let bytes = crate::ops::pack_wire(&msg, &attacker).expect("pack_wire must succeed");
+        process_received_message(&bytes, attacker_id, &ctx, &topic_handle).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let snap = voice_snapshot(&client).await;
+        let set = snap
+            .participants
+            .get(&channel_id)
+            .expect("channel set must still exist");
+        assert_eq!(
+            set.len(),
+            MAX_PARTICIPANTS_PER_CHANNEL,
+            "participant cap must hold; got {}",
+            set.len()
+        );
+        assert!(
+            !set.contains(&attacker_id),
+            "new participant must be dropped once cap is reached"
+        );
+    }
+
+    /// VoiceLeave against an unknown channel_id must not create an entry
+    /// in `participants`. Without the gate, an attacker can still grow
+    /// the map by sending Leaves first (`get_mut` returns None today, so
+    /// this is effectively a no-op — but we still want to assert the gate
+    /// so future refactors don't reintroduce the hole, and we add a
+    /// `tracing::debug!` for observability symmetry with Join).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn voice_leave_with_unknown_channel_is_dropped() {
+        let (client, _rx) = test_client();
+        let hub = willow_network::mem::MemHub::new();
+        let net = willow_network::mem::MemNetwork::new(&hub);
+        let (topic_handle, _events) = net
+            .subscribe(willow_network::topic_id("unit-test-voice-leave"), vec![])
+            .await
+            .expect("subscribe must succeed");
+        let ctx = make_ctx(&client);
+
+        let attacker = willow_identity::Identity::generate();
+        let attacker_id = attacker.endpoint_id();
+        let msg = crate::ops::WireMessage::VoiceLeave {
+            channel_id: "no-such-channel".to_string(),
+            peer_id: attacker_id,
+        };
+        let bytes = crate::ops::pack_wire(&msg, &attacker).expect("pack_wire must succeed");
+        process_received_message(&bytes, attacker_id, &ctx, &topic_handle).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let snap = voice_snapshot(&client).await;
+        assert!(
+            snap.participants.is_empty(),
+            "VoiceLeave against an unknown channel_id must not produce a state mutation"
+        );
+    }
+
+    /// Poll a closure that returns `impl Future<Output = Option<T>>` until
+    /// it yields `Some` or the deadline expires. Returns the last observed
+    /// value (whether `Some` or `None`).
+    async fn poll_until_some<T, Fut, F>(mut f: F, deadline: std::time::Duration) -> Option<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Option<T>>,
+    {
+        let start = std::time::Instant::now();
+        loop {
+            let v = f().await;
+            if v.is_some() {
+                return v;
+            }
+            if start.elapsed() >= deadline {
+                return v;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
     }
 }
