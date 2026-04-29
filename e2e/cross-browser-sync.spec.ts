@@ -1,5 +1,7 @@
 /* eslint-disable no-restricted-syntax -- migration tracked at https://github.com/intendednull/willow/issues/458 */
+import { existsSync } from 'node:fs';
 import { test, expect, chromium, firefox, devices } from '@playwright/test';
+import { freshStart, createServer, sendMessage, waitForMessage, waitForApp, getPeerId, openSidebar, joinViaInvite, visibleShell } from './helpers';
 
 // Custom Firefox context options — avoids flakiness seen with the full
 // devices['Desktop Firefox'] preset (which sets a Windows UA + specific screen
@@ -9,7 +11,22 @@ const desktopFirefoxContext = {
   viewport: { width: 1280, height: 720 },
   hasTouch: false,
 };
-import { freshStart, createServer, sendMessage, waitForMessage, waitForApp, getPeerId, openSidebar, joinViaInvite, visibleShell } from './helpers';
+
+// Probe whether the Firefox browser binary Playwright expects is actually
+// installed. `firefox.executablePath()` always returns the expected path
+// string even when the binary hasn't been downloaded — so we have to stat
+// the file to confirm it's actually present. `scripts/setup-e2e.sh` only
+// installs Chromium; without this guard these tests fail in ~200ms instead
+// of skipping cleanly. See issue #103.
+function firefoxAvailable(): boolean {
+  try {
+    const p = firefox.executablePath();
+    return p !== '' && existsSync(p);
+  } catch {
+    return false;
+  }
+}
+const FIREFOX_SKIP_REASON = 'Firefox not installed — install via `npx playwright install firefox` to enable';
 
 // Shared relay + gossip mesh — keep tests inside this file sequential
 // so they don't stampede the relay while `fullyParallel: true` runs
@@ -30,6 +47,7 @@ test.describe('Cross-browser peer sync', () => {
   // Only run from one project to avoid duplicating (each test launches its own browsers).
   test.beforeEach(({}, testInfo) => {
     test.skip(testInfo.project.name !== 'desktop-chrome', 'cross-browser tests run once from desktop-chrome');
+    test.skip(!firefoxAvailable(), FIREFOX_SKIP_REASON);
   });
 
   test('mobile Chrome to desktop Firefox — invite + messaging', async () => {
