@@ -144,6 +144,36 @@ export const test = base.extend<{ peer: PeerFactory }>({
 export { expect } from '@playwright/test';
 
 /**
+ * Engine-independent canonical form for a heads map.
+ *
+ * Object.keys(...).sort() makes the JSON serialisation order-independent so
+ * `JSON.stringify` produces the same byte string regardless of insertion order.
+ * The Rust side already serialises a BTreeMap (sorted) but we re-sort defensively.
+ */
+function canonicalHeads(heads: Record<string, AuthorHead>): string {
+  return JSON.stringify(
+    Object.keys(heads).sort().map(k => [k, heads[k].seq, heads[k].hash]),
+  );
+}
+
+/** Build the "A is missing X / B is missing Y" diff used in failure messages. */
+function authorKeyDiff(
+  selfLabel: string,
+  selfHeads: Record<string, AuthorHead>,
+  otherLabel: string,
+  otherHeads: Record<string, AuthorHead>,
+): string {
+  const selfKeys = new Set(Object.keys(selfHeads));
+  const otherKeys = new Set(Object.keys(otherHeads));
+  const selfMissing = [...otherKeys].filter(k => !selfKeys.has(k));
+  const otherMissing = [...selfKeys].filter(k => !otherKeys.has(k));
+  return (
+    `${selfLabel} missing authors: [${selfMissing.join(', ')}]; ` +
+    `${otherLabel} missing authors: [${otherMissing.join(', ')}]`
+  );
+}
+
+/**
  * Test-side wrapper for one Willow peer (one Playwright Page).
  *
  * Construct via `peer` fixture in Task 3 — direct construction works for
@@ -218,5 +248,60 @@ export class Peer {
       `${this.label}.nextEvent timed out after ${timeout}ms. ` +
       `Queue tail (last 5 kinds): ${tail}`,
     );
+  }
+
+  /**
+   * Wait until this peer's heads equal `other`'s heads.
+   *
+   * Uses `expect.poll` with a 30 s default timeout (matches the legacy
+   * `{ timeout: 30_000 }` overrides this method replaces). Each poll
+   * re-fetches BOTH sides' heads — `other` may still be advancing.
+   *
+   * NB: heads-equal is a CRDT pairwise check. Two peers can be equal
+   * yet both still missing an event from a third; use
+   * `waitUntilAllHeadsEqual` for N-peer convergence.
+   */
+  async waitUntilHeadsEqual(
+    other: Peer,
+    opts: { timeout?: number } = {},
+  ): Promise<void> {
+    const timeout = opts.timeout ?? 30_000;
+    const { expect } = await import('@playwright/test');
+    let lastSelf: Record<string, AuthorHead> = {};
+    let lastOther: Record<string, AuthorHead> = {};
+    try {
+      await expect
+        .poll(
+          async () => {
+            lastSelf = await this.heads();
+            lastOther = await other.heads();
+            return canonicalHeads(lastSelf);
+          },
+          {
+            timeout,
+            message: `${this.label} converge with ${other.label}`,
+          },
+        )
+        .toBe(canonicalHeads(lastOther));
+    } catch (e) {
+      // Re-throw with the structured diff appended so missing-author hangs
+      // are debuggable without a manual console.log round-trip.
+      const diff = authorKeyDiff(this.label, lastSelf, other.label, lastOther);
+      throw new Error(`${(e as Error).message}\n  ${diff}`);
+    }
+  }
+
+  /**
+   * Wait until this peer's heads equal each peer in `others`. Sequential
+   * awaits — N-1 calls to `waitUntilHeadsEqual` — so any peer missing an
+   * event from any other peer fails the assertion.
+   */
+  async waitUntilAllHeadsEqual(
+    others: Peer[],
+    opts: { timeout?: number } = {},
+  ): Promise<void> {
+    for (const other of others) {
+      await this.waitUntilHeadsEqual(other, opts);
+    }
   }
 }
