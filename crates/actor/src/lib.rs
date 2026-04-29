@@ -42,7 +42,9 @@ pub mod system;
 
 pub use actor::{Actor, Handler, Message, StreamHandler};
 pub use addr::{Addr, AnyAddr, Recipient};
-pub use broker::{Broker, BrokerSubscribe, BrokerUnsubscribe, Publish, SubscriptionId};
+pub use broker::{
+    Broker, BrokerAttach, BrokerSubscribe, BrokerUnsubscribe, Publish, SubscriptionId,
+};
 pub use context::{Context, IntervalHandle, TimerHandle};
 pub use debounce::{Debounce, Enqueue, Throttle};
 pub use derived::{derived, DeriveSource, DerivedActor};

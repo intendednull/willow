@@ -29,6 +29,20 @@ impl<T: Message<Result = ()>> Message for BrokerSubscribe<T> {
     type Result = SubscriptionId;
 }
 
+/// Fire-and-forget subscribe. Behaves like [`BrokerSubscribe`] but returns
+/// `()` so callers in synchronous contexts can use [`crate::Addr::do_send`]
+/// to enqueue the subscription without awaiting confirmation.
+///
+/// Because the broker's mailbox is FIFO, any [`Publish`] enqueued after
+/// this call is processed after the subscription is registered — no
+/// events are lost as long as no publish was enqueued before this call
+/// returns.
+pub struct BrokerAttach<T: Message<Result = ()>>(pub Recipient<T>);
+
+impl<T: Message<Result = ()>> Message for BrokerAttach<T> {
+    type Result = ();
+}
+
 /// Unsubscribe by ID.
 pub struct BrokerUnsubscribe(pub SubscriptionId);
 
@@ -87,6 +101,19 @@ impl<T: Message<Result = ()> + Clone> Handler<BrokerSubscribe<T>> for Broker<T> 
         self.next_id += 1;
         self.subscribers.push((id, msg.0));
         async move { id }
+    }
+}
+
+impl<T: Message<Result = ()> + Clone> Handler<BrokerAttach<T>> for Broker<T> {
+    fn handle(
+        &mut self,
+        msg: BrokerAttach<T>,
+        _ctx: &mut Context<Self>,
+    ) -> impl Future<Output = ()> + Send {
+        let id = SubscriptionId(self.next_id);
+        self.next_id += 1;
+        self.subscribers.push((id, msg.0));
+        async {}
     }
 }
 

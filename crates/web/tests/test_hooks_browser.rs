@@ -43,19 +43,24 @@ wasm_bindgen_test_configure!(run_in_browser);
 /// The `DagState` uses `ManagedDag::empty(...)` (no genesis seeded),
 /// and the `ServerState` is a freshly-constructed shell with a
 /// throwaway endpoint id. Neither carries any events.
-fn empty_hooks() -> WillowTestHooks {
+///
+/// Returns the `System` alongside the hooks so the caller's scope owns
+/// the system lifetime. Per the `System` docs, dropping the system
+/// without `shutdown()` does not stop already-spawned actors — they
+/// stay alive as long as their `Addr<_>` references (held inside
+/// `WillowTestHooks`) are alive.
+fn empty_hooks() -> (WillowTestHooks, System) {
     let sys = System::new();
     let dag_addr = sys.spawn(StateActor::new(DagState::default()));
     let throwaway = Identity::generate().endpoint_id();
     let state_addr = sys.spawn(StateActor::new(ServerState::new("test", "Test", throwaway)));
-    // Forget the System to keep the spawned actors alive for the test.
-    std::mem::forget(sys);
-    WillowTestHooks::from_actors(dag_addr, state_addr)
+    let hooks = WillowTestHooks::from_actors(dag_addr, state_addr);
+    (hooks, sys)
 }
 
 #[wasm_bindgen_test]
 async fn empty_hooks_event_count_is_zero() {
-    let hooks = empty_hooks();
+    let (hooks, _sys) = empty_hooks();
 
     let count_js: JsValue = JsFuture::from(hooks.event_count())
         .await
@@ -67,7 +72,7 @@ async fn empty_hooks_event_count_is_zero() {
 
 #[wasm_bindgen_test]
 async fn empty_hooks_last_event_is_null() {
-    let hooks = empty_hooks();
+    let (hooks, _sys) = empty_hooks();
 
     let last_js: JsValue = JsFuture::from(hooks.last_event())
         .await
@@ -81,7 +86,7 @@ async fn empty_hooks_last_event_is_null() {
 
 #[wasm_bindgen_test]
 async fn heads_returns_empty_map_on_empty_dag() {
-    let hooks = empty_hooks();
+    let (hooks, _sys) = empty_hooks();
     let p = hooks.heads();
     let value = JsFuture::from(p).await.unwrap();
     let map: std::collections::BTreeMap<String, willow_web::test_hooks::AuthorHeadDto> =
@@ -95,7 +100,7 @@ async fn heads_returns_empty_map_on_empty_dag() {
 
 #[wasm_bindgen_test]
 async fn snapshot_returns_empty_dto_on_empty_fixture() {
-    let hooks = empty_hooks();
+    let (hooks, _sys) = empty_hooks();
     let p = hooks.snapshot();
     let value = JsFuture::from(p).await.unwrap();
     let snap: willow_web::test_hooks::SnapshotDto =
@@ -114,21 +119,22 @@ async fn snapshot_returns_empty_dto_on_empty_fixture() {
 
 /// Build a broker + dispatcher without `ClientHandle` or `MemNetwork`.
 ///
-/// Returns the broker address (for sending test events) and the
-/// `DispatcherHandle` (dropping it stops the loop).  The `System` is
-/// intentionally forgotten to keep the spawned actors alive for the
-/// duration of the test.
+/// Returns the broker address, the `DispatcherHandle` (dropping it
+/// stops the loop), and the `System`. The system is returned to the
+/// caller so its lifetime is scoped to the test — dropping it does not
+/// stop the already-spawned actors (broker, forwarder); those stay
+/// alive as long as their `Addr<_>` references are held by the
+/// returned values.
 async fn fresh_dispatcher_setup() -> (
     willow_actor::Addr<willow_actor::Broker<ClientEvent>>,
     willow_web::test_hooks::DispatcherHandle,
+    System,
 ) {
     let sys = System::new();
     let broker_addr = sys.spawn(Broker::<ClientEvent>::default());
     let rx = EventReceiver::subscribe(&broker_addr, &sys.handle()).await;
     let dispatcher = willow_web::test_hooks::install_push_dispatcher(rx);
-    // Keep the system (and its actors) alive for the test.
-    std::mem::forget(sys);
-    (broker_addr, dispatcher)
+    (broker_addr, dispatcher, sys)
 }
 
 #[wasm_bindgen_test]
@@ -149,7 +155,7 @@ async fn dispatcher_emits_sync_completed_to_window_callback() {
     .unwrap();
     cb.forget();
 
-    let (broker_addr, _dispatcher) = fresh_dispatcher_setup().await;
+    let (broker_addr, _dispatcher, _sys) = fresh_dispatcher_setup().await;
 
     // Send a SyncCompleted event through the broker.
     broker_addr
@@ -200,15 +206,15 @@ async fn dropping_dispatcher_handle_stops_emissions() {
     .unwrap();
     cb.forget();
 
-    let broker_addr = {
-        let (broker_addr, _dispatcher) = fresh_dispatcher_setup().await;
+    let (broker_addr, _sys) = {
+        let (broker_addr, _dispatcher, sys) = fresh_dispatcher_setup().await;
 
         broker_addr
             .do_send(Publish(ClientEvent::SyncCompleted { ops_applied: 1 }))
             .unwrap();
         gloo_timers::future::TimeoutFuture::new(50).await;
 
-        broker_addr
+        (broker_addr, sys)
         // _dispatcher dropped here, abort flag set to true.
     };
 
@@ -262,7 +268,7 @@ async fn buffer_drains_on_first_dispatch_after_binding_appears() {
     .unwrap();
     cb.forget();
 
-    let (broker_addr, _dispatcher) = fresh_dispatcher_setup().await;
+    let (broker_addr, _dispatcher, _sys) = fresh_dispatcher_setup().await;
 
     // Send a real event — this triggers the per-dispatch drain of the pre-seeded buffer.
     broker_addr
@@ -312,7 +318,7 @@ async fn buffer_overflow_calls_willow_overflow_callback() {
     // Do NOT bind __willowEvent — we want push_into_buffer to be the path under test.
     js_sys::Reflect::delete_property(&window, &"__willowEvent".into()).unwrap();
 
-    let (broker_addr, _dispatcher) = fresh_dispatcher_setup().await;
+    let (broker_addr, _dispatcher, _sys) = fresh_dispatcher_setup().await;
 
     // Triggering a new event causes the dispatcher to push into a full buffer.
     broker_addr

@@ -172,14 +172,18 @@ pub fn App() -> impl IntoView {
                 &wasm_bindgen::JsValue::from(hooks),
             );
         }
-        let handle_for_dispatcher = inner_for_hooks.clone();
-        wasm_bindgen_futures::spawn_local(async move {
-            let rx = handle_for_dispatcher.subscribe_events().await;
-            // Leak the dispatcher: it should live for app lifetime, and in
-            // wasm32 the process IS the app, so leaking is fine.
-            let dispatcher = crate::test_hooks::install_push_dispatcher(rx);
-            std::mem::forget(dispatcher);
-        });
+        // Subscribe synchronously: any ClientEvent published after this
+        // call is guaranteed to land in the dispatcher (broker mailbox is
+        // FIFO). An async subscribe would create a window between mount
+        // and confirmation in which boot-time events would be lost.
+        let rx = willow_client::event_receiver::EventReceiver::subscribe_now(
+            inner_for_hooks.event_broker(),
+            inner_for_hooks.system(),
+        );
+        let dispatcher = crate::test_hooks::install_push_dispatcher(rx);
+        // Leak: dispatcher must live for app lifetime; in wasm32 the
+        // process IS the app, so leaking is fine.
+        std::mem::forget(dispatcher);
     }
 
     // Provide context so child components can access the handle and state.
