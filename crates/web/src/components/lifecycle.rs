@@ -62,9 +62,15 @@ pub const fn advance(state: LifecycleState) -> LifecycleState {
 /// are conservatively treated as non-zero unless every component is "0s",
 /// matching the spec's "if computed-zero, skip wait" semantics.
 pub fn is_zero_duration(element: &Element) -> bool {
-    let Some(window) = web_sys::window() else { return false; };
-    let Ok(Some(computed)) = window.get_computed_style(element) else { return false; };
-    let Ok(duration) = computed.get_property_value("transition-duration") else { return false; };
+    let Some(window) = web_sys::window() else {
+        return false;
+    };
+    let Ok(Some(computed)) = window.get_computed_style(element) else {
+        return false;
+    };
+    let Ok(duration) = computed.get_property_value("transition-duration") else {
+        return false;
+    };
     if duration.is_empty() {
         return true;
     }

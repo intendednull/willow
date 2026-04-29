@@ -12532,8 +12532,7 @@ mod data_state_lifecycle {
     fn mount_drawer(open: ReadSignal<bool>) -> web_sys::HtmlElement {
         mount_test(move || {
             let open_sig = leptos::prelude::Signal::derive(move || open.get());
-            let servers_sig =
-                leptos::prelude::Signal::derive(Vec::<(String, String)>::new);
+            let servers_sig = leptos::prelude::Signal::derive(Vec::<(String, String)>::new);
             let active_sig = leptos::prelude::Signal::derive(String::new);
             let peer_sig = leptos::prelude::Signal::derive(|| 0usize);
             let display_sig = leptos::prelude::Signal::derive(String::new);
@@ -12589,7 +12588,9 @@ mod data_state_lifecycle {
 
         // Dispatch transitionend on the driving property — advances if
         // still in opening.
-        drawer.dispatch_event(&make_transition_end("transform")).unwrap();
+        drawer
+            .dispatch_event(&make_transition_end("transform"))
+            .unwrap();
         tick().await;
         assert_eq!(
             drawer.get_attribute("data-state").as_deref(),
@@ -12639,9 +12640,7 @@ mod data_state_lifecycle {
         // we'll be in "opening"; otherwise the shortcut snapped to "open"
         // already and the unrelated-event guard is moot. Skip the rest of
         // this test in that case.
-        let mid = drawer
-            .get_attribute("data-state")
-            .unwrap_or_default();
+        let mid = drawer.get_attribute("data-state").unwrap_or_default();
         if mid == "open" {
             return;
         }
@@ -12652,7 +12651,9 @@ mod data_state_lifecycle {
         );
 
         // Stray transitionend on opacity — must NOT advance lifecycle.
-        drawer.dispatch_event(&make_transition_end("opacity")).unwrap();
+        drawer
+            .dispatch_event(&make_transition_end("opacity"))
+            .unwrap();
         tick().await;
         assert_eq!(
             drawer.get_attribute("data-state").as_deref(),
@@ -12661,7 +12662,9 @@ mod data_state_lifecycle {
         );
 
         // Real driving property — advances.
-        drawer.dispatch_event(&make_transition_end("transform")).unwrap();
+        drawer
+            .dispatch_event(&make_transition_end("transform"))
+            .unwrap();
         tick().await;
         assert_eq!(
             drawer.get_attribute("data-state").as_deref(),
