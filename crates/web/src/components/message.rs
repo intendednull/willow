@@ -385,6 +385,62 @@ pub fn MessageView(
         move || sheet_signal.set(Some(id.clone()))
     };
     let set_show_sheet_close = move || sheet_signal.set(None);
+
+    // Four-phase data-state lifecycle on the inner .mobile-action-sheet
+    // div. Driving property: transform — style.css declares
+    // `.mobile-action-sheet { transform: translateY(100%); transition:
+    // transform 0.3s cubic-bezier(...) }` and `.mobile-action-sheet.open
+    // { transform: translateY(0) }`.
+    //
+    // The lifecycle is mirrored from `show_sheet`. While the user is
+    // dragging the sheet down, the inline style sets `transition: none`
+    // (line ~1274 below); under that condition transitionend doesn't
+    // fire, so the lifecycle simply doesn't advance during drag — the
+    // sheet ends up in either Open or Closing depending on whether the
+    // drag triggered dismissal.
+    //
+    // The existing `mobile-action-sheet open` class binding is kept so
+    // the `.mobile-action-sheet.open` CSS selectors continue to match.
+    //
+    // See docs/specs/2026-04-27-event-based-waits-design.md
+    // §`data-state` attribute pattern.
+    let sheet_ref: NodeRef<leptos::html::Div> = NodeRef::new();
+    let sheet_lifecycle = RwSignal::new(if show_sheet.get_untracked() {
+        crate::components::lifecycle::LifecycleState::Open
+    } else {
+        crate::components::lifecycle::LifecycleState::Closed
+    });
+
+    Effect::new(move |prev: Option<bool>| {
+        use crate::components::lifecycle::{advance, is_zero_duration, LifecycleState};
+        let now_open = show_sheet.get();
+        if prev.is_none() || prev == Some(now_open) {
+            sheet_lifecycle.set(if now_open {
+                LifecycleState::Open
+            } else {
+                LifecycleState::Closed
+            });
+            return now_open;
+        }
+        sheet_lifecycle.set(if now_open {
+            LifecycleState::Opening
+        } else {
+            LifecycleState::Closing
+        });
+        if let Some(el) = sheet_ref.get_untracked() {
+            if is_zero_duration(el.as_ref()) {
+                sheet_lifecycle.set(advance(sheet_lifecycle.get_untracked()));
+            }
+        }
+        now_open
+    });
+
+    let on_sheet_transition_end = move |ev: web_sys::TransitionEvent| {
+        use crate::components::lifecycle::advance;
+        if ev.property_name() == "transform" {
+            sheet_lifecycle.update(|s| *s = advance(*s));
+        }
+    };
     let (long_press_active, set_long_press_active) = signal(false);
     // Swipe-down-to-dismiss state for the action sheet.
     let (sheet_drag_y, set_sheet_drag_y) = signal(0.0f64);
@@ -1267,6 +1323,9 @@ pub fn MessageView(
                     ></div>
                     <div
                         class=move || if show_sheet.get() { "mobile-action-sheet open" } else { "mobile-action-sheet" }
+                        node_ref=sheet_ref
+                        data-state=move || sheet_lifecycle.get().as_str()
+                        on:transitionend=on_sheet_transition_end
                         style=move || {
                             let dy = sheet_drag_y.get();
                             if dy > 0.0 {
