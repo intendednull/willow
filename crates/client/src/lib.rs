@@ -123,7 +123,7 @@ pub enum ClientError {
 /// Helper to bridge `Broker<ClientEvent>` into an async stream receiver.
 pub mod event_receiver {
     use crate::events::ClientEvent;
-    use willow_actor::{Actor, Addr, Broker, BrokerSubscribe, Context, Handler};
+    use willow_actor::{Actor, Addr, Broker, BrokerAttach, BrokerSubscribe, Context, Handler};
 
     /// Async receiver for [`ClientEvent`]s from a [`Broker`].
     ///
@@ -144,6 +144,31 @@ pub mod event_receiver {
             let addr = system.spawn(ForwarderActor { tx });
             let recipient = addr.into();
             broker.ask(BrokerSubscribe(recipient)).await.ok();
+            Self { rx }
+        }
+
+        /// Subscribe synchronously without awaiting confirmation.
+        ///
+        /// Queues `BrokerSubscribe` via `do_send`, returning the receiver
+        /// immediately. The broker's mailbox is FIFO, so any `Publish`
+        /// queued AFTER this call is processed AFTER the subscription
+        /// is registered — no events are lost as long as no publish has
+        /// been queued before this call returns.
+        ///
+        /// Use from synchronous contexts (mount blocks, `Drop`, etc.)
+        /// where awaiting the async [`subscribe`] would create a window
+        /// in which events emitted between scheduling and confirmation
+        /// would be missed.
+        ///
+        /// [`subscribe`]: Self::subscribe
+        pub fn subscribe_now(
+            broker: &Addr<Broker<ClientEvent>>,
+            system: &willow_actor::SystemHandle,
+        ) -> Self {
+            let (tx, rx) =
+                willow_actor::runtime::channel(willow_actor::runtime::DEFAULT_MAILBOX_CAPACITY);
+            let addr = system.spawn(ForwarderActor { tx });
+            broker.do_send(BrokerAttach(addr.into())).ok();
             Self { rx }
         }
 
@@ -2126,5 +2151,42 @@ mod tests {
             !entry.channels.contains(&ch_id),
             "unmute must remove the channel from the set"
         );
+    }
+
+    /// `subscribe_now` registers the recipient before any subsequent
+    /// `Publish` is processed by the broker, eliminating the race where
+    /// the async `subscribe` would miss events emitted between scheduling
+    /// and confirmation.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn subscribe_now_captures_event_published_synchronously_after_subscribe() {
+        use crate::events::ClientEvent;
+        use willow_actor::{Broker, Publish, System};
+
+        let sys = System::new();
+        let broker = sys.spawn(Broker::<ClientEvent>::default());
+
+        // Subscribe + publish without any await between them. The async
+        // `EventReceiver::subscribe` would create a window here in which
+        // the publish could overtake the BrokerSubscribe registration.
+        let mut rx = EventReceiver::subscribe_now(&broker, &sys.handle());
+        broker
+            .do_send(Publish(ClientEvent::SyncCompleted { ops_applied: 7 }))
+            .unwrap();
+
+        let received = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let Some(event) = rx.try_recv() {
+                    return event;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("subscribe_now must capture events published synchronously after subscription");
+
+        match received {
+            ClientEvent::SyncCompleted { ops_applied } => assert_eq!(ops_applied, 7),
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 }

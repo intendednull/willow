@@ -20,6 +20,8 @@ pub mod profile;
 pub mod service_worker_bridge;
 pub mod state;
 pub mod state_bridge;
+#[cfg(feature = "test-hooks")]
+pub mod test_hooks;
 pub mod trust_store;
 pub mod util;
 pub mod voice;

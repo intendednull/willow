@@ -153,6 +153,31 @@ pub fn App() -> impl IntoView {
     let handle_inner = (*handle).clone().with_trust_store(trust_store.clone());
     let handle: WebClientHandle = SendWrapper::new(handle_inner);
 
+    #[cfg(feature = "test-hooks")]
+    {
+        let inner_for_hooks = (*handle).clone();
+        let hooks = crate::test_hooks::WillowTestHooks::new(&inner_for_hooks);
+        if let Some(window) = web_sys::window() {
+            let _ = js_sys::Reflect::set(
+                &window,
+                &"__willow".into(),
+                &wasm_bindgen::JsValue::from(hooks),
+            );
+        }
+        // Subscribe synchronously: any ClientEvent published after this
+        // call is guaranteed to land in the dispatcher (broker mailbox is
+        // FIFO). An async subscribe would create a window between mount
+        // and confirmation in which boot-time events would be lost.
+        let rx = willow_client::event_receiver::EventReceiver::subscribe_now(
+            inner_for_hooks.event_broker(),
+            inner_for_hooks.system(),
+        );
+        let dispatcher = crate::test_hooks::install_push_dispatcher(rx);
+        // Leak: dispatcher must live for app lifetime; in wasm32 the
+        // process IS the app, so leaking is fine.
+        std::mem::forget(dispatcher);
+    }
+
     // Provide context so child components can access the handle and state.
     provide_context(handle.clone());
     provide_context(app_state);
