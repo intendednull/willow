@@ -67,7 +67,7 @@ Why this shape:
 Fresh agent per issue, scoped to one issue + master branch ref. Steps:
 
 1. Read the issue. Decide if more context needed.
-2. **Research (optional, parallel OK):** spawn research subagents for codebase grep, related-file reads, spec lookups. Synthesize before coding.
+2. **Research (optional, parallel OK):** spawn research subagents for codebase grep, related-file reads, spec lookups. Synthesize before coding. Re-grep cited line numbers / LOC counts at HEAD before working from issue-body literal positions — they drift fast across refactors and may be off by hundreds of lines after a recent file move.
 3. **Complexity gate — automated brainstorm + plan when warranted:**
    - **Trigger any of:** issue spans > 1 crate, fix touches state machine / wire format / migration paths, ≥ 2 reasonable approaches exist, root cause not obvious from issue text, fix likely > 5 files OR > 200 LOC, "it depends" question on scope.
    - **Skip when:** issue is a one-liner / config swap / typo / clearly mechanical (single rg-pattern site) / has explicit "Suggested fix" the implementer can follow verbatim.
@@ -102,7 +102,9 @@ Fresh agent per issue, scoped to one issue + master branch ref. Steps:
 
 11. **Stale-audit-with-residual-gap path:** if pre-flight investigation shows the audit's literal premise is stale (e.g. "zero tests" — but a later PR added some) but its underlying concern is partially valid (some specific gap remains), narrow scope to the residual gap and ship that. Note the audit's stale framing + cite the upstream PR that resolved most of it in the commit body. Coordinator still records under `Fixes #N` because the audit issue is the right closer.
 
-12. **Report back** to coordinator: commit SHA on master branch, sites touched, anything unusual.
+12. **Structural-deps follow-up family path:** dependency-multi-version audits (rand, getrandom, convert_case, bincode, etc.) often look "obvious" but are pinned by transitive crates we don't own — no workspace pin / `[patch]` can collapse them without lying about semver. The first 1–2 finds get individual follow-up trackers. On the **3rd** structural-deps follow-up in this family, file or update a single **upstream-domino meta-tracker issue** instead of another standalone TD-NN follow-up — list the holdout crates, the upstream releases that would unblock each version (e.g. `aes-gcm 0.11` stable, `derive_more 3.x`, `iroh ≥ N`), and link prior individual follow-ups under it. Future runs check the meta-tracker, don't refile the same shape.
+
+13. **Report back** to coordinator: commit SHA on master branch, sites touched, anything unusual.
 
 ## Lessons Learned
 
