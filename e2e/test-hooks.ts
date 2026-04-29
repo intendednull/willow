@@ -63,5 +63,47 @@ type PeerInternals = {
   queue: ClientEvent[];
 };
 
-// Stub — runtime classes/fixtures land in later tasks.
-export {};
+/**
+ * Test-side wrapper for one Willow peer (one Playwright Page).
+ *
+ * Construct via `peer` fixture in Task 3 — direct construction works for
+ * the pull-API methods only (snapshot/heads/eventCount/lastEvent).
+ * Push-API methods (nextEvent / waitUntil*) require the fixture's
+ * exposeBinding wiring to populate `queue`.
+ */
+export class Peer {
+  constructor(
+    public readonly page: Page,
+    public readonly label: string,
+    /** Populated by the fixture's `__willowEvent` binding; empty array is valid. */
+    public readonly queue: ClientEvent[] = [],
+  ) {}
+
+  /** Aggregated state snapshot. Round-trips through `window.__willow.snapshot()`. */
+  async snapshot(): Promise<Snapshot> {
+    return this.page.evaluate(
+      () => (window as unknown as { __willow: WillowTestHooksJS }).__willow.snapshot(),
+    );
+  }
+
+  /** Per-author DAG heads. */
+  async heads(): Promise<Record<string, AuthorHead>> {
+    return this.page.evaluate(
+      () => (window as unknown as { __willow: WillowTestHooksJS }).__willow.heads(),
+    );
+  }
+
+  /** Total events applied to the local DAG. */
+  async eventCount(): Promise<number> {
+    return this.page.evaluate(
+      () => (window as unknown as { __willow: WillowTestHooksJS }).__willow.event_count(),
+    );
+  }
+
+  /** Hex hash of the most recently applied event, or null if the DAG is empty. */
+  async lastEvent(): Promise<string | null> {
+    return this.page.evaluate(
+      () => (window as unknown as { __willow: WillowTestHooksJS }).__willow.last_event(),
+    );
+  }
+}
