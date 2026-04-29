@@ -186,4 +186,37 @@ export class Peer {
       () => (window as unknown as { __willow: WillowTestHooksJS }).__willow.last_event(),
     );
   }
+
+  /**
+   * Wait for the next event matching `predicate` and consume it.
+   *
+   * Walks the per-Peer queue from the front; returns the first match and
+   * removes it. Non-matching events stay in the queue (so a later
+   * `nextEvent(other)` can still see them).
+   *
+   * Polls every 50 ms; rejects after `opts.timeout` ms (default 10_000)
+   * with a message naming the peer and showing the queue tail.
+   */
+  async nextEvent(
+    predicate: (e: ClientEvent) => boolean,
+    opts: { timeout?: number } = {},
+  ): Promise<ClientEvent> {
+    const timeout = opts.timeout ?? 10_000;
+    const deadline = Date.now() + timeout;
+
+    while (Date.now() < deadline) {
+      const idx = this.queue.findIndex(predicate);
+      if (idx >= 0) {
+        const [match] = this.queue.splice(idx, 1);
+        return match;
+      }
+      await new Promise(r => setTimeout(r, 50));
+    }
+
+    const tail = this.queue.slice(-5).map(e => e.kind).join(', ') || '(empty)';
+    throw new Error(
+      `${this.label}.nextEvent timed out after ${timeout}ms. ` +
+      `Queue tail (last 5 kinds): ${tail}`,
+    );
+  }
 }
