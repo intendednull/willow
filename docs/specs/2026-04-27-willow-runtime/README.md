@@ -105,6 +105,15 @@ Apps can ship state-only (a pure semantics package), interaction-only
 common case), or any combination. A peer fetches the bundle by hash and
 instantiates only the components it needs for what it intends to do.
 
+**Components are lazy-loaded and hash-cached.** A user in five servers
+across five different apps does not instantiate all five interaction
+components at startup; the kernel loads each component on first use and
+caches by hash thereafter. State components materialize as soon as the
+peer subscribes to a topic (so it can apply incoming events); other
+components instantiate on demand. Worker-computed snapshots can carry
+peers through the warm-up so the UI stays responsive even before all
+interaction components have downloaded.
+
 ## UI is an app
 
 The Leptos web client is, in this model, **the default UI app**. It exports
@@ -142,6 +151,18 @@ App authors target the WIT contract. Their interaction components work
 against any UI app that exports the interfaces they import. UI apps that
 do not export an interface (e.g. a TUI without `ui:rich-card`) cause
 graceful degradation, not breakage.
+
+**Custom-pixel surfaces (whiteboard, code editor, network-graph
+visualizer, 3D voice room) are an explicit out-of-band escape hatch**,
+not part of the `ui:*` contract. On web, these surface as sandboxed
+iframes the default UI app embeds; the iframe communicates with the
+parent through a postMessage protocol that is itself a kernel-mediated
+capability. On other platforms, the equivalent is platform-specific.
+GPU-driven UI substrates (e.g. Bevy as a surface plugin once its web
+tooling matures around 2027–2028) would compose here, not as a
+replacement for the default UI app. The escape hatch is browser/native
+shaped on purpose; a TUI host or an MCP host renders these as
+"unavailable on this surface" rather than attempting fallback.
 
 ## Inter-component composition
 
