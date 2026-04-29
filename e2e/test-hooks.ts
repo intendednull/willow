@@ -74,7 +74,7 @@ import { test as base } from '@playwright/test';
  * `Peer` reads the queue by reference, so any event the WASM dispatcher emits
  * after the binding is installed shows up in `peer.queue` synchronously.
  */
-export type PeerFactory = (page: Page, label: string) => Peer;
+export type PeerFactory = (page: Page, label: string) => Promise<Peer>;
 
 /**
  * Playwright fixture that installs the `__willow` test-hooks plumbing.
@@ -86,48 +86,62 @@ export type PeerFactory = (page: Page, label: string) => Peer;
  *     await a.waitUntilHeadsEqual(b);
  *   });
  *
- * The fixture's scope is `'test'` (default): each test gets a fresh
- * BrowserContext (Playwright's default) and therefore a fresh queue map.
+ * The fixture's scope is `'test'` (default). Bindings are wired lazily on
+ * the page's BrowserContext on first `peer(page, label)` call per context,
+ * so the factory works for both Playwright's default test context AND any
+ * extra contexts a test creates via `browser.newContext()` /
+ * `setupTwoPeers(browser)`.
+ *
+ * `addInitScript` only takes effect on subsequent page loads, so call
+ * `peer()` before the first `goto()` when possible. Bindings registered
+ * via `exposeBinding` apply to existing pages too, so the read path
+ * recovers events as soon as the binding lands.
  */
 export const test = base.extend<{ peer: PeerFactory }>({
-  peer: async ({ context }, use) => {
+  peer: async ({}, use) => {
     // Per-page queues, keyed by the JS Page object the binding callback receives.
     const queues = new WeakMap<Page, ClientEvent[]>();
+    // Track which contexts we've already wired so peer() is idempotent.
+    const wired = new WeakSet<BrowserContext>();
 
-    // 1. exposeBinding — must be called before any page.goto.
-    await context.exposeBinding(
-      '__willowEvent',
-      (source, ev: ClientEvent) => {
-        const q = queues.get(source.page);
-        if (q) q.push(ev);
-        // No queue means the page wasn't registered via peer() — drop silently.
-        // peer() is the gatekeeper that allocates a queue and reloads the page.
-      },
-    );
+    const wireContext = async (context: BrowserContext) => {
+      if (wired.has(context)) return;
+      wired.add(context);
 
-    // 2. Overflow → fail loudly. PR-1's dispatcher calls this with droppedCount
-    //    only when the 65k buffer is exceeded (a real correctness bug, never
-    //    backpressure under normal load).
-    await context.exposeBinding('__willowOverflow', (_source, dropped: number) => {
-      throw new Error(`__willow event queue overflow: ${dropped} dropped`);
-    });
+      // 1. exposeBinding — registers the JS-side proxy. After this returns,
+      //    `window.__willowEvent` is callable in every page of the context
+      //    (existing and future).
+      await context.exposeBinding(
+        '__willowEvent',
+        (source, ev: ClientEvent) => {
+          const q = queues.get(source.page);
+          if (q) q.push(ev);
+          // No queue means the page wasn't registered via peer() — drop silently.
+        },
+      );
 
-    // 3. addInitScript — pre-creates the buffer so the WASM dispatcher's
-    //    fallback path has somewhere to push if it fires before the
-    //    binding is callable. Defence-in-depth; under normal Playwright
-    //    ordering the buffer stays empty.
-    await context.addInitScript(() => {
-      (window as unknown as { __willowEventBuffer: unknown[] }).__willowEventBuffer = [];
-    });
+      // 2. Overflow → fail loudly. PR-1's dispatcher calls this with droppedCount
+      //    only when the 65k buffer is exceeded (a real correctness bug, never
+      //    backpressure under normal load).
+      await context.exposeBinding('__willowOverflow', (_source, dropped: number) => {
+        throw new Error(`__willow event queue overflow: ${dropped} dropped`);
+      });
+
+      // 3. addInitScript — pre-creates the buffer for FUTURE page loads in
+      //    this context. Defence-in-depth for the dispatcher's fallback path
+      //    that runs when `__willowEvent` is briefly absent.
+      await context.addInitScript(() => {
+        (window as unknown as { __willowEventBuffer: unknown[] }).__willowEventBuffer = [];
+      });
+    };
 
     /**
-     * Allocate a queue for `page`, then return a `Peer` bound to it.
+     * Allocate a queue for `page`, lazily wire its context, return a `Peer`.
      *
-     * Caller must invoke this AFTER `context.newPage()` but BEFORE the page's
-     * first `goto()` — the queue must exist when the WASM dispatcher first
-     * tries to push an event after the page loads.
+     * Idempotent: safe to call multiple times for the same page or context.
      */
-    const factory: PeerFactory = (page, label) => {
+    const factory: PeerFactory = async (page, label) => {
+      await wireContext(page.context());
       let queue = queues.get(page);
       if (!queue) {
         queue = [];
