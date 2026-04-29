@@ -288,7 +288,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let pid = self.identity.endpoint_id();
         let name = name.to_string();
         willow_actor::state::mutate(&self.profile_state_addr, move |p| {
-            p.names.insert(pid, name);
+            p.insert_name(pid, name);
         })
         .await;
         self.broadcast_profile_via_network();
@@ -326,8 +326,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let profiles = willow_actor::state::get(&self.profile_state_addr).await;
         willow_actor::state::mutate(&self.network_meta_addr, move |n| {
             let now = util::current_time_ms();
-            n.typing_peers
-                .retain(|_, (_, ts)| now - *ts < crate::TYPING_INDICATOR_TTL_MS);
+            // Keep map + recency in lockstep: helper drops both.
+            n.sweep_typing(now, crate::TYPING_INDICATOR_TTL_MS);
             n.typing_peers
                 .iter()
                 .filter(|(pid, (ch, _))| ch == &channel && *pid != &my_id)

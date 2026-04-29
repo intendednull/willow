@@ -276,7 +276,7 @@ async fn process_received_message<T: TopicHandle>(
             let peer_id = profile.peer_id;
             let display_name = profile.display_name.clone();
             willow_actor::state::mutate(&ctx.profiles, move |p| {
-                p.names.insert(peer_id, display_name);
+                p.insert_name(peer_id, display_name);
             })
             .await;
             warn_if_err(
@@ -404,7 +404,7 @@ async fn process_received_message<T: TopicHandle>(
             }
             let now = crate::util::current_time_ms();
             willow_actor::state::mutate(&ctx.network, move |n| {
-                n.typing_peers.insert(signer, (channel, now));
+                n.insert_typing(signer, channel, now);
             })
             .await;
             let signer2 = signer;
@@ -732,7 +732,7 @@ async fn process_received_message<T: TopicHandle>(
             }
             let name = display_name.clone();
             willow_actor::state::mutate(&ctx.profiles, move |p| {
-                p.names.insert(peer_id, name);
+                p.insert_name(peer_id, name);
             })
             .await;
             warn_if_err(

@@ -678,6 +678,11 @@ impl<N: willow_network::Network> ClientHandle<N> {
         // Load saved display name, or use config override.
         let local_endpoint = identity.endpoint_id();
         if let Some(ref name) = config.display_name {
+            // `state.profiles` is the legacy pre-actor `ProfileStore` —
+            // intentionally a plain `HashMap`. The total-entry cap lives
+            // on the actor-side `state_actors::ProfileState` (#429); this
+            // buffer only holds the local user's own name during init
+            // and is consumed when the actor is spawned below.
             state.profiles.names.insert(local_endpoint, name.clone());
             if config.persistence {
                 storage::save_profile(&storage::LocalProfile {
@@ -723,10 +728,17 @@ impl<N: willow_network::Network> ClientHandle<N> {
             };
             system.spawn(willow_actor::StateActor::new(meta))
         };
-        let profile_state_addr =
-            system.spawn(willow_actor::StateActor::new(state_actors::ProfileState {
-                names: state.profiles.names.clone(),
-            }));
+        let profile_state_addr = {
+            // Seed the actor via `insert_name` so the LRU recency queue
+            // mirrors `names`. Iteration order is irrelevant — at startup
+            // the seed is at most a handful of entries (local user
+            // profile + any persisted state) far below the cap.
+            let mut seeded = state_actors::ProfileState::default();
+            for (pid, name) in state.profiles.names.iter() {
+                seeded.insert_name(*pid, name.clone());
+            }
+            system.spawn(willow_actor::StateActor::new(seeded))
+        };
         let network_meta_addr = system.spawn(willow_actor::StateActor::new(
             state_actors::NetworkMeta::default(),
         ));
@@ -1076,8 +1088,14 @@ pub fn test_client() -> (
         current_channel: state.chat.current_channel.clone(),
         peers: state.chat.peers.clone(),
     }));
-    let profile_state_addr = sys.spawn(willow_actor::StateActor::new(state_actors::ProfileState {
-        names: state.profiles.names.clone(),
+    let profile_state_addr = sys.spawn(willow_actor::StateActor::new({
+        // Seed via `insert_name` so the LRU recency queue mirrors
+        // `names`. See sibling site in `ClientHandle::new` for context.
+        let mut seeded = state_actors::ProfileState::default();
+        for (pid, name) in state.profiles.names.iter() {
+            seeded.insert_name(*pid, name.clone());
+        }
+        seeded
     }));
     let network_meta_addr = sys.spawn(willow_actor::StateActor::new(
         state_actors::NetworkMeta::default(),
@@ -1947,7 +1965,12 @@ mod tests {
         client._set_queue_depth(bob, 2).await;
 
         // Advance one tick while reachable — last_seen stays fresh.
-        connect::tick_once_for_test(&client.presence_meta_addr, &client.chat_meta_addr).await;
+        connect::tick_once_for_test(
+            &client.presence_meta_addr,
+            &client.chat_meta_addr,
+            &client.network_meta_addr,
+        )
+        .await;
         // Drop bob offline and advance a few ticks.
         client.mutations().peer_disconnected(bob).await;
         // queue > 0 + reachable = false ⇒ Queued before gone threshold.
@@ -1967,7 +1990,12 @@ mod tests {
 
         // Advance past gone_ticks (=5) — tick 6 to guarantee we cross it.
         for _ in 0..6 {
-            connect::tick_once_for_test(&client.presence_meta_addr, &client.chat_meta_addr).await;
+            connect::tick_once_for_test(
+                &client.presence_meta_addr,
+                &client.chat_meta_addr,
+                &client.network_meta_addr,
+            )
+            .await;
         }
         // Wait for the derived view to settle on Gone after the burst.
         await_view(|| async {

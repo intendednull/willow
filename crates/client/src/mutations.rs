@@ -757,7 +757,7 @@ impl<N: willow_network::Network> ClientMutations<N> {
     pub async fn update_profile(&self, peer_id: EndpointId, display_name: String) {
         let name = display_name.clone();
         willow_actor::state::mutate(&self.profiles, move |p| {
-            p.names.insert(peer_id, name);
+            p.insert_name(peer_id, name);
         })
         .await;
         self.event_broker
@@ -772,7 +772,7 @@ impl<N: willow_network::Network> ClientMutations<N> {
     pub async fn record_typing(&self, peer_id: EndpointId, channel: String) {
         let now = util::current_time_ms();
         willow_actor::state::mutate(&self.network, move |n| {
-            n.typing_peers.insert(peer_id, (channel, now));
+            n.insert_typing(peer_id, channel, now);
         })
         .await;
         // Also ensure peer is tracked.
