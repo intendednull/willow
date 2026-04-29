@@ -63,6 +63,86 @@ type PeerInternals = {
   queue: ClientEvent[];
 };
 
+import { test as base } from '@playwright/test';
+
+/**
+ * Per-page event queue tracker. The fixture creates one `WeakMap<Page, ClientEvent[]>`
+ * per `BrowserContext` and routes every `__willowEvent` callback to the queue
+ * keyed by the originating Page (Playwright's `exposeBinding` callback receives
+ * `{ page }` as the first argument's source).
+ *
+ * `Peer` reads the queue by reference, so any event the WASM dispatcher emits
+ * after the binding is installed shows up in `peer.queue` synchronously.
+ */
+export type PeerFactory = (page: Page, label: string) => Peer;
+
+/**
+ * Playwright fixture that installs the `__willow` test-hooks plumbing.
+ *
+ * Usage:
+ *   import { test, expect } from './test-hooks';
+ *   test('foo', async ({ peer, browser }) => {
+ *     const a = await peer(page1, 'Alice');
+ *     await a.waitUntilHeadsEqual(b);
+ *   });
+ *
+ * The fixture's scope is `'test'` (default): each test gets a fresh
+ * BrowserContext (Playwright's default) and therefore a fresh queue map.
+ */
+export const test = base.extend<{ peer: PeerFactory }>({
+  peer: async ({ context }, use) => {
+    // Per-page queues, keyed by the JS Page object the binding callback receives.
+    const queues = new WeakMap<Page, ClientEvent[]>();
+
+    // 1. exposeBinding — must be called before any page.goto.
+    await context.exposeBinding(
+      '__willowEvent',
+      (source, ev: ClientEvent) => {
+        const q = queues.get(source.page);
+        if (q) q.push(ev);
+        // No queue means the page wasn't registered via peer() — drop silently.
+        // peer() is the gatekeeper that allocates a queue and reloads the page.
+      },
+    );
+
+    // 2. Overflow → fail loudly. PR-1's dispatcher calls this with droppedCount
+    //    only when the 65k buffer is exceeded (a real correctness bug, never
+    //    backpressure under normal load).
+    await context.exposeBinding('__willowOverflow', (_source, dropped: number) => {
+      throw new Error(`__willow event queue overflow: ${dropped} dropped`);
+    });
+
+    // 3. addInitScript — pre-creates the buffer so the WASM dispatcher's
+    //    fallback path has somewhere to push if it fires before the
+    //    binding is callable. Defence-in-depth; under normal Playwright
+    //    ordering the buffer stays empty.
+    await context.addInitScript(() => {
+      (window as unknown as { __willowEventBuffer: unknown[] }).__willowEventBuffer = [];
+    });
+
+    /**
+     * Allocate a queue for `page`, then return a `Peer` bound to it.
+     *
+     * Caller must invoke this AFTER `context.newPage()` but BEFORE the page's
+     * first `goto()` — the queue must exist when the WASM dispatcher first
+     * tries to push an event after the page loads.
+     */
+    const factory: PeerFactory = (page, label) => {
+      let queue = queues.get(page);
+      if (!queue) {
+        queue = [];
+        queues.set(page, queue);
+      }
+      return new Peer(page, label, queue);
+    };
+
+    await use(factory);
+  },
+});
+
+// Re-export expect so spec authors can `import { test, expect } from './test-hooks';`
+export { expect } from '@playwright/test';
+
 /**
  * Test-side wrapper for one Willow peer (one Playwright Page).
  *
