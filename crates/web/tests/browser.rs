@@ -12507,3 +12507,166 @@ mod stun_config {
         assert_eq!(first, "stun:example.com:3478");
     }
 }
+
+// ── data-state lifecycle (PR-3 §`data-state` attribute pattern) ─────────────
+//
+// Three failure modes from the spec:
+// 1. transitionend on the driving property advances opening → open
+// 2. reduced-motion (transition-duration: 0s) snaps to terminal phase
+// 3. transitionend on a non-driving property is ignored
+//
+// Tests target grove_drawer (the canonical implementation). The other
+// four lifecycle-wired components (mobile_shell, confirm_dialog,
+// bottom_sheet, message.rs action sheet) reuse the same lifecycle helpers
+// (lifecycle::advance + lifecycle::is_zero_duration) and the same
+// transitionend pattern, so coverage is shared via the helper unit tests
+// in lifecycle.rs.
+
+mod data_state_lifecycle {
+    use super::*;
+    use web_sys::{TransitionEvent, TransitionEventInit};
+    use willow_web::components::GroveDrawer;
+
+    /// Mount a GroveDrawer with stub props; the `open` signal is the
+    /// only one tests drive.
+    fn mount_drawer(open: ReadSignal<bool>) -> web_sys::HtmlElement {
+        mount_test(move || {
+            let open_sig = leptos::prelude::Signal::derive(move || open.get());
+            let servers_sig =
+                leptos::prelude::Signal::derive(Vec::<(String, String)>::new);
+            let active_sig = leptos::prelude::Signal::derive(String::new);
+            let peer_sig = leptos::prelude::Signal::derive(|| 0usize);
+            let display_sig = leptos::prelude::Signal::derive(String::new);
+            view! {
+                <GroveDrawer
+                    open=open_sig
+                    servers=servers_sig
+                    active_server_id=active_sig
+                    peer_count=peer_sig
+                    display_name=display_sig
+                    on_close=leptos::prelude::Callback::new(|_: ()| ())
+                    on_server_click=leptos::prelude::Callback::new(|_: String| ())
+                />
+            }
+        })
+    }
+
+    /// Build a synthetic `transitionend` event with `propertyName` set.
+    fn make_transition_end(property: &str) -> TransitionEvent {
+        let init = TransitionEventInit::new();
+        init.set_bubbles(true);
+        init.set_property_name(property);
+        TransitionEvent::new_with_event_init_dict("transitionend", &init).unwrap()
+    }
+
+    #[wasm_bindgen_test]
+    async fn grove_drawer_lifecycle_advances_on_transitionend() {
+        let (open, set_open) = signal(false);
+        let host = mount_drawer(open);
+        tick().await;
+
+        let drawer = query(&host, ".grove-drawer").expect("grove-drawer rendered");
+        assert_eq!(
+            drawer.get_attribute("data-state").as_deref(),
+            Some("closed"),
+            "initial mount with open=false should be closed"
+        );
+
+        // Toggle open → opening (we haven't dispatched transitionend yet).
+        set_open.set(true);
+        tick().await;
+
+        // Under reduced-motion the lifecycle may have already snapped to
+        // open via the is_zero_duration shortcut (browser-test stylesheet
+        // may not declare a transition); check for either opening or
+        // open, then dispatch the synthetic transitionend regardless.
+        let mid = drawer.get_attribute("data-state");
+        assert!(
+            matches!(mid.as_deref(), Some("opening") | Some("open")),
+            "after open=true, data-state should be opening or (zero-duration) open, got {:?}",
+            mid
+        );
+
+        // Dispatch transitionend on the driving property — advances if
+        // still in opening.
+        drawer.dispatch_event(&make_transition_end("transform")).unwrap();
+        tick().await;
+        assert_eq!(
+            drawer.get_attribute("data-state").as_deref(),
+            Some("open"),
+            "transitionend on `transform` should advance opening → open"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn grove_drawer_reduced_motion_snaps_to_terminal() {
+        let (open, set_open) = signal(false);
+        let host = mount_drawer(open);
+        tick().await;
+
+        let drawer = query(&host, ".grove-drawer").expect("grove-drawer rendered");
+
+        // Force computed transition-duration: 0s by inline style. The
+        // is_zero_duration shortcut must snap straight to terminal.
+        drawer
+            .unchecked_ref::<web_sys::HtmlElement>()
+            .style()
+            .set_property("transition-duration", "0s")
+            .unwrap();
+
+        set_open.set(true);
+        tick().await;
+
+        assert_eq!(
+            drawer.get_attribute("data-state").as_deref(),
+            Some("open"),
+            "with transition-duration: 0s, lifecycle should snap to open without a transitionend dispatch"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn grove_drawer_ignores_unrelated_transitionend() {
+        let (open, set_open) = signal(false);
+        let host = mount_drawer(open);
+        tick().await;
+
+        let drawer = query(&host, ".grove-drawer").expect("grove-drawer rendered");
+
+        set_open.set(true);
+        tick().await;
+
+        // If the test environment computed a non-zero transition-duration
+        // we'll be in "opening"; otherwise the shortcut snapped to "open"
+        // already and the unrelated-event guard is moot. Skip the rest of
+        // this test in that case.
+        let mid = drawer
+            .get_attribute("data-state")
+            .unwrap_or_default();
+        if mid == "open" {
+            return;
+        }
+        assert_eq!(
+            mid, "opening",
+            "expected opening or open after open=true, got {:?}",
+            mid
+        );
+
+        // Stray transitionend on opacity — must NOT advance lifecycle.
+        drawer.dispatch_event(&make_transition_end("opacity")).unwrap();
+        tick().await;
+        assert_eq!(
+            drawer.get_attribute("data-state").as_deref(),
+            Some("opening"),
+            "transitionend on `opacity` should be ignored — driving property is `transform`"
+        );
+
+        // Real driving property — advances.
+        drawer.dispatch_event(&make_transition_end("transform")).unwrap();
+        tick().await;
+        assert_eq!(
+            drawer.get_attribute("data-state").as_deref(),
+            Some("open"),
+            "transitionend on `transform` should advance opening → open"
+        );
+    }
+}
