@@ -47,7 +47,18 @@ Why this shape:
 3. Skip big features + major refactors. Out of scope.
 4. No in-scope issues? Noop. Skip the rest. No master branch created, no PR opened.
 5. Create fresh master branch (see ## Master Branch Setup).
-6. Per issue, sequential, max 10 per run:
+6. **Coordinator-direct already-fixed sweep (run BEFORE any implementer dispatch).** For each picked issue, before dispatching, scan recent merged commits + closing PRs against the issue's scope:
+   - `git log --oneline <last-audit-ref>..origin/main -- <relevant paths>` to find candidate fix commits
+   - `mcp__github__search_pull_requests` w/ issue keywords for closure-by-PR cases
+   - cross-check against recent general-audit master tickets ("verified fixed by ..." entries)
+   
+   If the issue is resolved by a landed change, do the close pass directly — no implementer dispatch:
+   - caveman comment on the issue citing the upstream commit / PR + the fix location
+   - close `completed` (audit intent now holds) or `not_planned` (audit premise moot)
+   - record under `## Already-Fixed` for master PR body
+   
+   Closing GH issues = metadata work, not code work; allowed under "coordinator never codes." Implementers only dispatch for *unresolved* issues. This pass typically clears audit lessons (already folded into skills), structural-deps follow-ups (still structural), and audit findings closed by intervening fixes — saves dispatch overhead on no-op work.
+7. Per remaining issue, sequential, max 10 per run:
    - **Pre-dispatch sync:** before spawning each implementer, in the coordinator's checkout:
      ```bash
      git fetch origin <master-branch>
@@ -56,11 +67,11 @@ Why this shape:
      Prior implementers' commits must be the implementer's base; stale local state poisons the next dispatch.
    - Spawn fresh implementer agent (see ## Implementer Agent below).
    - Implementer commits directly to master branch and pushes. No worktree, no sub-PR.
-   - Track `Fixes #N` for final PR body assembly. **Already-fixed-upstream** issues go under `## Already-Fixed`, not `Fixes`.
+   - Track `Fixes #N` for final PR body assembly.
    - Next issue.
-7. Implementer finds related rot? File follow-up issue.
-8. Apply Lessons Learned skill edits to `.claude/skills/resolving-issues/SKILL.md`, commit on master branch, push. (Coordinator does this directly — see ### Coordinator never codes.)
-9. Open the master PR — **ready (not draft)** — base `main`, head master branch. Body: `Fixes #N` list + `## Already-Fixed` + `## Parked` + `## Skill Evolution` + `## Lessons Learned`. Master PR runs full CI; human merges when satisfied. If anything's unfinished, leave the branch un-PR'd instead of opening a draft.
+8. Implementer finds related rot? File follow-up issue.
+9. Apply Lessons Learned skill edits to `.claude/skills/resolving-issues/SKILL.md`, commit on master branch, push. (Coordinator does this directly — see ### Coordinator never codes.)
+10. Open the master PR — **ready (not draft)** — base `main`, head master branch. Body: `Fixes #N` list + `## Already-Fixed` + `## Parked` + `## Skill Evolution` + `## Lessons Learned`. Master PR runs full CI; human merges when satisfied. If anything's unfinished, leave the branch un-PR'd instead of opening a draft.
 
 ## Implementer Agent
 
