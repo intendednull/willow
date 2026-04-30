@@ -46,14 +46,6 @@ jobs:
       - name: Build relay server
         run: cargo build --release -p willow-relay
 
-      # Belt-and-braces: re-run the symbol-leak guard immediately
-      # before the prod build, in addition to the same guard in ci.yml.
-      # Catches a tampered/force-pushed branch reaching the deploy job.
-      # The guard performs its own trunk build, which also warms the
-      # tool cache for the subsequent `Build web app` step.
-      - name: Test-hooks symbol-leak guard
-        run: ./scripts/check-no-test-hooks-in-prod.sh
-
       - name: Build web app
         run: cd crates/web && trunk build --release
 
