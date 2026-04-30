@@ -149,6 +149,19 @@ Never defer skill edits to a follow-up — they ship with the run that surfaced 
 - Research subagents *inside* an implementer may run in parallel.
 - Cap = 10 issues per run.
 
+### Waiting for implementer commits without polling
+- Implementer agent runs in the background. Coordinator gets a notification when the agent's tool call completes — but the agent's *commit* may land seconds before that, and the harness's stop hook fires on uncommitted changes during cargo gates.
+- **Don't sleep, don't poll, don't read the agent's output file.** The system explicitly blocks long sleeps and warns against reading sub-agent transcripts (context overflow).
+- **Use `Monitor` with an `until` loop watching for HEAD to advance** past the prior known SHA. One notification fires when the loop exits; the coordinator stays idle in between. Pattern:
+  ```bash
+  cd /home/user/willow && until [ "$(git log -1 --format='%H')" != "<prior-sha>" ]; do sleep 5; done; echo "agent committed: $(git log -1 --oneline)"
+  ```
+  Set `timeout_ms` to ~5–10 minutes for typical implementer runs (longer for cross-crate gates). The coordinator can do GitHub-API metadata work (filing follow-up issues, drafting PR body) while waiting; just don't touch files in the implementer's scope.
+
+### Implementer-flagged out-of-scope rot
+- When the implementer surfaces pre-existing rot it intentionally doesn't fix (e.g. unrelated wasm break under `--all-features`, dead-code warnings in untouched files), the coordinator files a follow-up GH issue using `mcp__github__issue_write` (metadata work, allowed under the Coordinator-never-codes rule). Cite the discovery context (which dispatch surfaced it, which commit + gate step) so the next run has full provenance.
+- This is the same shape as the "implementer files follow-up" rule — coordinator just does the filing because the implementer is single-task and exits after commit.
+
 ### Fresh agent per issue
 - New implementer each issue. No state leak.
 - Each implementer gets only its issue + master branch ref.
