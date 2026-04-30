@@ -118,7 +118,14 @@ pub fn BottomSheet(
     });
 
     let on_transition_end = move |ev: TransitionEvent| {
-        if ev.property_name() == "transform" {
+        // Accept either driving property: `.bottom-sheet` slides via
+        // `transform` by default, but the prefers-reduced-motion media
+        // query in components.css swaps the transition to
+        // `opacity var(--motion-slow) linear`. Both paths must advance
+        // the lifecycle; `is_zero_duration` cannot short-circuit because
+        // the reduced-motion duration is non-zero.
+        let prop = ev.property_name();
+        if prop == "transform" || prop == "opacity" {
             lifecycle.update(|s| *s = advance(*s));
         }
     };
