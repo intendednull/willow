@@ -56,6 +56,7 @@ Why this shape:
    - caveman comment on the issue citing the upstream commit / PR + the fix location
    - close `completed` (audit intent now holds) or `not_planned` (audit premise moot)
    - record under `## Already-Fixed` for master PR body
+   - if closed issue is a child of a general-audit parent, run parent close-out check (see ## General-audit parent close-out) — close parent too if this was its last open child
    
    Closing GH issues = metadata work, not code work; allowed under "coordinator never codes." Implementers only dispatch for *unresolved* issues. This pass typically clears audit lessons (already folded into skills), structural-deps follow-ups (still structural), and audit findings closed by intervening fixes — saves dispatch overhead on no-op work.
 7. Per remaining issue, sequential, max 10 per run:
@@ -136,7 +137,7 @@ Never defer skill edits to a follow-up — they ship with the run that surfaced 
 2. Title: `auto-fix batch <master-branch-name>` (or include date for clarity).
 3. Base: `main`. Head: master branch. Apply label `auto-fix-batch` if it exists.
 4. PR body sections:
-   - `## Fixes` — `Fixes #N` lines, one per resolved issue, with a 1-line summary per row.
+   - `## Fixes` — `Fixes #N` lines, one per resolved issue, with a 1-line summary per row. If the children listed here would close the last open child of a general-audit parent on merge, add `Fixes #<parent>` so the merge closes the parent atomically (see ## General-audit parent close-out).
    - `## Already-Fixed` — issues that were already resolved upstream and closed during this run.
    - `## Parked` — issues that hit a scope blocker mid-run; cite the follow-up issue per row.
    - `## Skill Evolution` — if the skill was edited, link the commit SHA + summarize what changed.
@@ -144,6 +145,22 @@ Never defer skill edits to a follow-up — they ship with the run that surfaced 
    - `## Test plan` — what the master-PR CI will run + any manual smoke notes.
 5. **Always open the master PR with what landed**, even if some attempted issues hit blockers. The PR ships the wins; blockers move to follow-up issues so the next scheduled run picks them up automatically. Never open as draft. If literally nothing landed (zero implementer commits), don't open a PR at all — close the branch out.
 6. **No in-session continuation.** Don't leave a session "to be resumed". The issue queue is the durable handoff.
+
+## General-audit parent close-out
+
+General-audit issues are parents w/ child issues (sub-issues or body-checklist). Closing last open child must close parent — else parent lingers as zombie ticket.
+
+Coordinator owns this check (metadata work, allowed under "coordinator never codes"). Two trigger points:
+
+1. **Step 6 sweep direct close.** After closing a child via `mcp__github__issue_write`, fetch parent's remaining children. All closed → close parent w/ caveman comment citing the child closures + master branch ref, `state=closed reason=completed` (or `not_planned` if audit premise moot for whole batch). Record parent under `## Already-Fixed` in master PR body.
+2. **Step 10 master PR body assembly.** For each `Fixes #N` where N is a general-audit child, check parent's other children — already-closed + ones this PR will close on merge. If this PR's `Fixes` list completes the parent, add `Fixes #<parent>` to the body. Master PR merge then closes parent atomically w/ children.
+
+**Detect parent.** General-audit skill files them — label `general-audit` or title `general audit YYYY-MM-DD`. Children link via GitHub sub-issue API (preferred — `mcp__github__sub_issue_write` family + `mcp__github__issue_read` to list a parent's sub-issues) or via checklist in parent body (fallback when sub-issue links absent). Prefer sub-issue API.
+
+**Edge cases:**
+- Parent has open children outside this run's scope → leave parent open. Don't force-close to tidy up; remaining children are real work.
+- Child closed `not_planned` (premise moot) → still counts toward parent close. Re-evaluate parent's own close reason: if premise moot for all children, parent likely closes `not_planned`; mixed (some completed, some moot) → use `completed` w/ comment noting the moot ones.
+- Follow-up issues filed mid-run (scope-creep guards, pre-existing rot, structural-deps tracker) ≠ children unless explicitly sub-linked under the parent. Don't conflate.
 
 ## Rules
 
