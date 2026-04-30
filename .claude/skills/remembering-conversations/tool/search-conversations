@@ -62,8 +62,8 @@ QUERY TIPS:
   - Include context: "TypeScript type narrowing in guards"
 
 SEE ALSO:
-  skills/collaboration/remembering-conversations/INDEXING.md - Manage index
-  skills/collaboration/remembering-conversations/SKILL.md - Usage guide
+  skills/remembering-conversations/INDEXING.md - Manage index
+  skills/remembering-conversations/SKILL.md - Usage guide
 EOF
       exit 0
       ;;

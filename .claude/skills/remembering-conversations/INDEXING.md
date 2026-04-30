@@ -6,17 +6,17 @@ Index, archive, and maintain conversations for search.
 
 **Install auto-indexing hook:**
 ```bash
-~/.claude/skills/collaboration/remembering-conversations/tool/install-hook
+~/.claude/skills/remembering-conversations/tool/install-hook
 ```
 
 **Index all conversations:**
 ```bash
-~/.claude/skills/collaboration/remembering-conversations/tool/index-conversations
+~/.claude/skills/remembering-conversations/tool/index-conversations
 ```
 
 **Process unindexed only:**
 ```bash
-~/.claude/skills/collaboration/remembering-conversations/tool/index-conversations --cleanup
+~/.claude/skills/remembering-conversations/tool/index-conversations --cleanup
 ```
 
 ## Features
@@ -32,7 +32,7 @@ Index, archive, and maintain conversations for search.
 ### 1. Install Hook (One-Time)
 
 ```bash
-cd ~/.claude/skills/collaboration/remembering-conversations/tool
+cd ~/.claude/skills/remembering-conversations/tool
 ./install-hook
 ```
 

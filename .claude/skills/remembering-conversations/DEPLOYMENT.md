@@ -5,7 +5,7 @@ Quick reference for deploying and maintaining the conversation indexing system.
 ## Initial Deployment
 
 ```bash
-cd ~/.claude/skills/collaboration/remembering-conversations/tool
+cd ~/.claude/skills/remembering-conversations/tool
 
 # 1. Install hook
 ./install-hook
@@ -39,7 +39,7 @@ cd ~/.claude/skills/collaboration/remembering-conversations/tool
 ### Weekly Health Check
 
 ```bash
-cd ~/.claude/skills/collaboration/remembering-conversations/tool
+cd ~/.claude/skills/remembering-conversations/tool
 ./index-conversations --verify
 ```
 
@@ -137,7 +137,7 @@ echo $SESSION_ID
 # Should show: session ID when in active session
 
 # 3. Check indexer exists
-ls -l ~/.claude/skills/collaboration/remembering-conversations/tool/index-conversations
+ls -l ~/.claude/skills/remembering-conversations/tool/index-conversations
 # Should show: -rwxr-xr-x ... index-conversations
 
 # 4. Test hook manually
@@ -288,7 +288,7 @@ cp ~/.config/superpowers/conversation-index/db.sqlite ~/.config/superpowers/conv
 ~/.claude/
 ├── hooks/
 │   └── sessionEnd                 # Hook that triggers indexing
-└── skills/collaboration/remembering-conversations/
+└── skills/remembering-conversations/
     ├── SKILL.md                   # Main documentation
     ├── DEPLOYMENT.md              # This file
     └── tool/

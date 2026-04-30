@@ -332,7 +332,7 @@ test_scenario_5_subagent_workflow_docs() {
   echo "  To complete Scenario 5 testing:"
   echo "    1. Start a new Claude Code session"
   echo "    2. Ask about a past conversation topic"
-  echo "    3. Dispatch subagent using: skills/collaboration/remembering-conversations/tool/prompts/search-agent.md"
+  echo "    3. Dispatch subagent using: skills/remembering-conversations/tool/prompts/search-agent.md"
   echo "    4. Verify synthesis is 200-1000 words"
   echo "    5. Verify all sources include: project, date, file path, status"
   echo "    6. Ask follow-up question to test iterative refinement"

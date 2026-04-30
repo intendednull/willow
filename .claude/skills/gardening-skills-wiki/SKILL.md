@@ -31,15 +31,15 @@ The skills wiki needs regular maintenance to stay healthy: links break, skills g
 
 ```bash
 # Run all checks
-~/.claude/skills/meta/gardening-skills-wiki/garden.sh
+~/.claude/skills/gardening-skills-wiki/garden.sh
 
 # Or run specific checks
-~/.claude/skills/meta/gardening-skills-wiki/check-links.sh
-~/.claude/skills/meta/gardening-skills-wiki/check-naming.sh
-~/.claude/skills/meta/gardening-skills-wiki/check-index-coverage.sh
+~/.claude/skills/gardening-skills-wiki/check-links.sh
+~/.claude/skills/gardening-skills-wiki/check-naming.sh
+~/.claude/skills/gardening-skills-wiki/check-index-coverage.sh
 
 # Analyze search gaps (what skills are missing)
-~/.claude/skills/meta/gardening-skills-wiki/analyze-search-gaps.sh
+~/.claude/skills/gardening-skills-wiki/analyze-search-gaps.sh
 ```
 
 The master script runs all checks and provides a health report.
@@ -94,8 +94,8 @@ The master script runs all checks and provides a health report.
 ### Broken Links
 
 ```
-❌ BROKEN: skills/debugging/root-cause-tracing
-   Target: /path/to/skills/debugging/root-cause-tracing/SKILL.md
+❌ BROKEN: skills/root-cause-tracing
+   Target: /path/to/skills/root-cause-tracing/SKILL.md
 ```
 
 **Fix:** Update the reference path - skill might have moved or been renamed.
@@ -115,7 +115,7 @@ The master script runs all checks and provides a health report.
 ### Backtick-Wrapped Links
 
 ```
-❌ BACKTICKED: skills/testing/condition-based-waiting on line 31
+❌ BACKTICKED: skills/condition-based-waiting on line 31
    File: getting-started/SKILL.md
    Fix: Remove backticks - use bare @ reference
 ```
@@ -124,10 +124,10 @@ The master script runs all checks and provides a health report.
 
 ```markdown
 # ❌ Bad - backticks disable link resolution
-`skills/testing/condition-based-waiting`
+`skills/condition-based-waiting`
 
 # ✅ Good - bare @ reference
-skills/testing/condition-based-waiting
+skills/condition-based-waiting
 ```
 
 ### Relative Path Links
@@ -141,10 +141,10 @@ skills/testing/condition-based-waiting
 
 ```markdown
 # ❌ Bad - relative paths are brittle
-skills/testing/condition-based-waiting
+skills/condition-based-waiting
 
 # ✅ Good - absolute skills/ path
-skills/testing/condition-based-waiting
+skills/condition-based-waiting
 ```
 
 ### Naming Issues
@@ -222,7 +222,7 @@ vim ~/.claude/skills/category/new-skill/SKILL.md
 vim ~/.claude/skills/category/INDEX.md
 
 # 3. Run health check
-~/.claude/skills/meta/gardening-skills-wiki/garden.sh
+~/.claude/skills/gardening-skills-wiki/garden.sh
 
 # 4. Fix any issues reported
 ```
@@ -237,7 +237,7 @@ mv ~/.claude/skills/old-category/skill ~/.claude/skills/new-category/
 grep -r "skills/gardening-skills-wiki/old-category/skill" ~/.claude/skills/
 
 # 3. Run health check
-~/.claude/skills/meta/gardening-skills-wiki/garden.sh
+~/.claude/skills/gardening-skills-wiki/garden.sh
 
 # 4. Fix broken links
 ```
@@ -246,7 +246,7 @@ grep -r "skills/gardening-skills-wiki/old-category/skill" ~/.claude/skills/
 
 ```bash
 # Monthly: Run full health check
-~/.claude/skills/meta/gardening-skills-wiki/garden.sh
+~/.claude/skills/gardening-skills-wiki/garden.sh
 
 # Review and fix:
 # - ❌ errors (broken links, missing skills)
@@ -261,7 +261,7 @@ Runs all health checks and provides comprehensive report.
 
 **Usage:**
 ```bash
-~/.claude/skills/meta/gardening-skills-wiki/garden.sh [skills_dir]
+~/.claude/skills/gardening-skills-wiki/garden.sh [skills_dir]
 ```
 
 ### `check-links.sh`
@@ -318,7 +318,7 @@ Validates INDEX completeness.
 **Before committing skill changes:**
 
 ```bash
-~/.claude/skills/meta/gardening-skills-wiki/garden.sh
+~/.claude/skills/gardening-skills-wiki/garden.sh
 # Fix all ❌ errors
 # Consider fixing ⚠️  warnings
 git add .
@@ -328,13 +328,13 @@ git commit -m "Add/update skills"
 **When links feel suspicious:**
 
 ```bash
-~/.claude/skills/meta/gardening-skills-wiki/check-links.sh
+~/.claude/skills/gardening-skills-wiki/check-links.sh
 ```
 
 **When INDEX seems incomplete:**
 
 ```bash
-~/.claude/skills/meta/gardening-skills-wiki/check-index-coverage.sh
+~/.claude/skills/gardening-skills-wiki/check-index-coverage.sh
 ```
 
 ## Common Rationalizations

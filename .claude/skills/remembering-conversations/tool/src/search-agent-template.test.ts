@@ -58,7 +58,7 @@ describe('search-agent template', () => {
     const content = fs.readFileSync(templatePath, 'utf-8');
 
     // Should include the search command
-    expect(content).toContain('~/.claude/skills/collaboration/remembering-conversations/tool/search-conversations');
+    expect(content).toContain('~/.claude/skills/remembering-conversations/tool/search-conversations');
   });
 
   it('includes critical rules', () => {

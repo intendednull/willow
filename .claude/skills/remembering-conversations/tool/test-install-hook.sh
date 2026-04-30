@@ -165,7 +165,7 @@ test_already_installed_detection() {
   cat > "$HOME/.claude/hooks/sessionEnd" <<'EOF'
 #!/bin/bash
 # Auto-index conversations (remembering-conversations skill)
-INDEXER="$HOME/.claude/skills/collaboration/remembering-conversations/tool/index-conversations"
+INDEXER="$HOME/.claude/skills/remembering-conversations/tool/index-conversations"
 if [ -n "$SESSION_ID" ] && [ -x "$INDEXER" ]; then
   "$INDEXER" --session "$SESSION_ID" > /dev/null 2>&1 &
 fi
