@@ -110,6 +110,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           targets: wasm32-unknown-unknown
+          components: clippy
       - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
@@ -119,6 +120,8 @@ jobs:
           key: wasm-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: wasm-
       - run: cargo check --target wasm32-unknown-unknown --workspace --exclude willow-relay --exclude willow-worker --exclude willow-replay --exclude willow-storage --exclude willow-agent
+      - name: Clippy (wasm32, willow-web)
+        run: cargo clippy --target wasm32-unknown-unknown -p willow-web --all-targets -- -D warnings
 
   browser:
     name: Browser tests (wasm-pack + Firefox)
