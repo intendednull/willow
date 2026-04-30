@@ -12508,6 +12508,102 @@ mod stun_config {
     }
 }
 
+#[cfg(test)]
+mod pinned_jump_safe_scroll {
+    //! Regression tests for the pinned-message jump callback in
+    //! `crates/web/src/app.rs` (`on_pinned_jump`). The callback used to
+    //! interpolate `msg_id` into a `js_sys::eval(format!(...))` string with
+    //! only single-quote stripping as sanitization; it now uses the safe
+    //! DOM API: `document.getElementById(&format!("msg-{msg_id}"))` plus
+    //! `Element::scroll_into_view_with_scroll_into_view_options`.
+    //!
+    //! These tests exercise the same DOM-lookup pattern the callback now
+    //! relies on. The callback body is inline (no extracted helper), so we
+    //! verify the underlying API contract directly: real-looking IDs hit,
+    //! missing IDs miss cleanly, and adversarial IDs (quotes, backslashes,
+    //! brackets, newlines) are treated as literal element IDs that simply
+    //! match nothing — no DOM injection is possible.
+    //!
+    //! Refs: https://github.com/intendednull/willow/issues/425
+    //!
+    //! Note: this test does not assert that scrolling visually happened
+    //! (jsdom-style headless harnesses don't lay out content). The
+    //! original `eval` path also silently swallowed errors via `.ok()`,
+    //! so the property under test is "no panic + correct lookup result",
+    //! identical for both implementations.
+    use wasm_bindgen_test::*;
+
+    /// Mimic the lookup path used by `on_pinned_jump` in
+    /// `crates/web/src/app.rs`: `window → document → get_element_by_id`
+    /// with the same `msg-{msg_id}` formatting. Returns the matched
+    /// element if any.
+    fn lookup_msg_element(msg_id: &str) -> Option<web_sys::Element> {
+        web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.get_element_by_id(&format!("msg-{msg_id}")))
+    }
+
+    /// Append a `<div id="msg-{id}">` to the body and return the id used.
+    /// Caller is responsible for unique ids per test to avoid cross-test
+    /// pollution in the shared document.
+    fn mount_msg_div(id: &str) {
+        let doc = web_sys::window().expect("window").document().expect("doc");
+        let div = doc.create_element("div").expect("create_element");
+        div.set_id(&format!("msg-{id}"));
+        doc.body()
+            .expect("body")
+            .append_child(&div)
+            .expect("append");
+    }
+
+    #[wasm_bindgen_test]
+    fn lookup_finds_existing_hex_id() {
+        // EventHash::to_string() is a hex digest; verify a realistic id
+        // round-trips through the safe lookup the callback now uses.
+        let id = "deadbeefcafef00d1234567890abcdef";
+        mount_msg_div(id);
+
+        let el = lookup_msg_element(id).expect("element with msg-<hex> id must be found");
+        assert_eq!(el.id(), format!("msg-{id}"));
+    }
+
+    #[wasm_bindgen_test]
+    fn lookup_returns_none_for_missing_id() {
+        // Property the old `eval(...).ok()` chain provided implicitly via
+        // optional chaining and silent error swallowing: a missing id is
+        // a no-op, never a panic. The safe API mirrors this with `None`.
+        let id = "nonexistent_id_does_not_match_any_element_in_the_dom";
+        assert!(
+            lookup_msg_element(id).is_none(),
+            "missing id must return None, not panic"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn lookup_treats_adversarial_id_as_literal_no_injection() {
+        // Cases the old `replace('\'', "")` band-aid did not cover:
+        // double-quote, backslash, newline, brackets, parens. With the
+        // safe DOM API, these become part of the literal id passed to
+        // `getElementById`, which simply finds no match — no JS context
+        // exists for them to break out of, so injection is impossible.
+        let adversarial_ids = [
+            "abc\"';alert(1)//",
+            "id with spaces and 'quotes' and \"double\"",
+            "id\\with\\backslashes",
+            "id\nwith\nnewlines",
+            "id);scrollIntoView({behavior:'smooth'});//",
+            "<script>alert(1)</script>",
+        ];
+
+        for bad in adversarial_ids {
+            assert!(
+                lookup_msg_element(bad).is_none(),
+                "adversarial id {bad:?} must not match any element",
+            );
+        }
+    }
+}
+
 // ── data-state lifecycle (PR-3 §`data-state` attribute pattern) ─────────────
 //
 // Three failure modes from the spec:

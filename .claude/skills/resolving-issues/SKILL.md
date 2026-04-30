@@ -88,6 +88,7 @@ Fresh agent per issue, scoped to one issue + master branch ref. Steps:
    - `cargo clippy <scope> --all-targets -- -D warnings` — scope to touched crate(s) for speed; workspace-wide if changes ripple
    - `cargo test <scope>` — ditto on scope
    - `cargo check --target wasm32-unknown-unknown <scope>` if dual-target lib crate touched
+   - `cargo clippy --target wasm32-unknown-unknown <scope> --all-targets -- -D warnings` if dual-target lib crate touched — wasm-only lints (e.g. unnecessary `as u32` on `js_sys::Date::get_month()` which already returns `u32` on wasm32, or `js_sys`-only call paths under `#[cfg(target_arch = "wasm32")]`) only fire on the wasm target. Native clippy misses them, and CI's `cargo check --target wasm32` catches compile errors but not lint warnings — the wasm-clippy gate is the only path that closes that gap locally
    - `just check` if available + scope is wide enough to warrant the full sweep
    
    Apply `superpowers:verification-before-completion` — confirm command output before claiming done.

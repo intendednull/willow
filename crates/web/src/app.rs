@@ -1176,10 +1176,15 @@ pub fn App() -> impl IntoView {
                                 queue_open_rail.set(false);
                             });
                             let on_pinned_jump = Callback::new(move |msg_id: String| {
-                                js_sys::eval(&format!(
-                                    "document.getElementById('msg-{}')?.scrollIntoView({{behavior:'smooth',block:'center'}})",
-                                    msg_id.replace('\'', "")
-                                )).ok();
+                                if let Some(elem) = web_sys::window()
+                                    .and_then(|w| w.document())
+                                    .and_then(|d| d.get_element_by_id(&format!("msg-{msg_id}")))
+                                {
+                                    let opts = web_sys::ScrollIntoViewOptions::new();
+                                    opts.set_behavior(web_sys::ScrollBehavior::Smooth);
+                                    opts.set_block(web_sys::ScrollLogicalPosition::Center);
+                                    elem.scroll_into_view_with_scroll_into_view_options(&opts);
+                                }
                                 write.ui.set_show_pinned.set(false);
                             });
                             view! {
