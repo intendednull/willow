@@ -158,6 +158,34 @@ jobs:
             echo '</details>'
           } >> "$GITHUB_STEP_SUMMARY"
 
+  test-hooks-guard:
+    name: Test-hooks symbol-leak guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: test-hooks-guard-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: test-hooks-guard-
+      - name: Install trunk
+        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1 # v2.9.4 trunk
+        with:
+          tool: trunk@0.21.14
+      # Warm trunk's tool cache (wasm-bindgen-cli) so the guard's
+      # subsequent `--offline` builds succeed on a fresh CI runner.
+      - name: Warm trunk cache
+        run: cd crates/web && trunk build --release
+      - name: Run symbol-leak guard
+        run: ./scripts/check-no-test-hooks-in-prod.sh
+
   audit:
     name: cargo-audit
     runs-on: ubuntu-latest
