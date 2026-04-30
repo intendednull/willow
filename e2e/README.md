@@ -142,3 +142,33 @@ use real-time timers (gossip heartbeats, retry backoff); installing
 the clock during a multi-peer test could freeze UI/HLC time while iroh
 keeps running. Default e2e tests stay clock-free; only single-peer
 touch specs opt in.
+
+## Wait-timeout ratchet
+
+`scripts/check-wait-timeout-count.sh` enforces a monotone-decreasing
+count of `page.waitForTimeout` calls in `e2e/*.ts`. The current
+allowed count lives in `e2e/.wait-timeout-baseline`.
+
+- **If you add a new `waitForTimeout`**, the ratchet fails. Migrate
+  the new test to event-based waits instead — see "Event-based waits
+  (Peer wrapper)" above for the pattern.
+- **If you remove a `waitForTimeout`**, decrement the baseline file
+  in the same PR. The ratchet's "below baseline" message tells you
+  the new value to write.
+- The ratchet enforces a sunset cutoff: after **2026-09-30** any spec
+  that still carries an `eslint-disable.*no-restricted-syntax` header
+  fails the gate. By then the file-by-file migration tracked at
+  [#458](https://github.com/intendednull/willow/issues/458) must have
+  removed every header.
+
+## Flake harness
+
+```bash
+just test-e2e-flake             # 5 runs (default)
+just test-e2e-flake N=10        # 10 runs
+```
+
+Runs the full Playwright suite N times in sequence and reports pass/fail
+per run. Use when investigating an intermittent failure or before
+merging risky changes to the e2e suite. Not wired into `just
+check-all` — heavy + non-deterministic.
