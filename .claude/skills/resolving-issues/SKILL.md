@@ -56,7 +56,7 @@ Why this shape:
    - caveman comment on the issue citing the upstream commit / PR + the fix location
    - close `completed` (audit intent now holds) or `not_planned` (audit premise moot)
    - record under `## Already-Fixed` for master PR body
-   - if closed issue is a child of a general-audit parent, run parent close-out check (see ## General-audit parent close-out) — close parent too if this was its last open child
+   - if closed issue is a sub-issue of a parent, run parent close-out check (see ## Parent issue close-out) — close parent too if this was its last open child
    
    Closing GH issues = metadata work, not code work; allowed under "coordinator never codes." Implementers only dispatch for *unresolved* issues. This pass typically clears audit lessons (already folded into skills), structural-deps follow-ups (still structural), and audit findings closed by intervening fixes — saves dispatch overhead on no-op work.
 7. Per remaining issue, sequential, max 10 per run:
@@ -137,7 +137,7 @@ Never defer skill edits to a follow-up — they ship with the run that surfaced 
 2. Title: `auto-fix batch <master-branch-name>` (or include date for clarity).
 3. Base: `main`. Head: master branch. Apply label `auto-fix-batch` if it exists.
 4. PR body sections:
-   - `## Fixes` — `Fixes #N` lines, one per resolved issue, with a 1-line summary per row. If the children listed here would close the last open child of a general-audit parent on merge, add `Fixes #<parent>` so the merge closes the parent atomically (see ## General-audit parent close-out).
+   - `## Fixes` — `Fixes #N` lines, one per resolved issue, with a 1-line summary per row. If the children listed here would close the last open sub-issue of a parent on merge, add `Fixes #<parent>` so the merge closes the parent atomically (see ## Parent issue close-out).
    - `## Already-Fixed` — issues that were already resolved upstream and closed during this run.
    - `## Parked` — issues that hit a scope blocker mid-run; cite the follow-up issue per row.
    - `## Skill Evolution` — if the skill was edited, link the commit SHA + summarize what changed.
@@ -146,21 +146,22 @@ Never defer skill edits to a follow-up — they ship with the run that surfaced 
 5. **Always open the master PR with what landed**, even if some attempted issues hit blockers. The PR ships the wins; blockers move to follow-up issues so the next scheduled run picks them up automatically. Never open as draft. If literally nothing landed (zero implementer commits), don't open a PR at all — close the branch out.
 6. **No in-session continuation.** Don't leave a session "to be resumed". The issue queue is the durable handoff.
 
-## General-audit parent close-out
+## Parent issue close-out
 
-General-audit issues are parents w/ child issues (sub-issues or body-checklist). Closing last open child must close parent — else parent lingers as zombie ticket.
+Any issue we resolve may be a sub-issue under a parent (general-audit master ticket, epic, tracker, meta-issue, or any other parent). Closing the last open sub-issue must close the parent — else the parent lingers as a zombie ticket.
 
 Coordinator owns this check (metadata work, allowed under "coordinator never codes"). Two trigger points:
 
-1. **Step 6 sweep direct close.** After closing a child via `mcp__github__issue_write`, fetch parent's remaining children. All closed → close parent w/ caveman comment citing the child closures + master branch ref, `state=closed reason=completed` (or `not_planned` if audit premise moot for whole batch). Record parent under `## Already-Fixed` in master PR body.
-2. **Step 10 master PR body assembly.** For each `Fixes #N` where N is a general-audit child, check parent's other children — already-closed + ones this PR will close on merge. If this PR's `Fixes` list completes the parent, add `Fixes #<parent>` to the body. Master PR merge then closes parent atomically w/ children.
+1. **Step 6 sweep direct close.** After closing a sub-issue via `mcp__github__issue_write`, fetch the parent's remaining sub-issues. All closed → close parent w/ caveman comment citing the child closures + master branch ref, `state=closed reason=completed` (or `not_planned` if the parent's premise is moot for the whole batch). Record parent under `## Already-Fixed` in master PR body.
+2. **Step 10 master PR body assembly.** For each `Fixes #N` where N is a sub-issue, check the parent's other sub-issues — already-closed + ones this PR will close on merge. If this PR's `Fixes` list completes the parent, add `Fixes #<parent>` to the body. Master PR merge then closes parent atomically w/ children.
 
-**Detect parent.** General-audit skill files them — label `general-audit` or title `general audit YYYY-MM-DD`. Children link via GitHub sub-issue API (preferred — `mcp__github__sub_issue_write` family + `mcp__github__issue_read` to list a parent's sub-issues) or via checklist in parent body (fallback when sub-issue links absent). Prefer sub-issue API.
+**Detect parent.** Use GitHub's sub-issue API (preferred — `mcp__github__sub_issue_write` family + `mcp__github__issue_read` to list a parent's sub-issues). Fall back to body-checklist parsing only when sub-issue links are absent (some older trackers list children as a markdown checklist instead of via the sub-issue API).
 
 **Edge cases:**
-- Parent has open children outside this run's scope → leave parent open. Don't force-close to tidy up; remaining children are real work.
-- Child closed `not_planned` (premise moot) → still counts toward parent close. Re-evaluate parent's own close reason: if premise moot for all children, parent likely closes `not_planned`; mixed (some completed, some moot) → use `completed` w/ comment noting the moot ones.
-- Follow-up issues filed mid-run (scope-creep guards, pre-existing rot, structural-deps tracker) ≠ children unless explicitly sub-linked under the parent. Don't conflate.
+- Parent has open sub-issues outside this run's scope → leave parent open. Don't force-close to tidy up; remaining children are real work.
+- Sub-issue closed `not_planned` (premise moot) → still counts toward parent close. Re-evaluate parent's own close reason: if premise moot for all sub-issues, parent likely closes `not_planned`; mixed (some completed, some moot) → use `completed` w/ comment noting the moot ones.
+- Follow-up issues filed mid-run (scope-creep guards, pre-existing rot, structural-deps tracker) ≠ sub-issues unless explicitly linked under the parent via the sub-issue API. Don't conflate.
+- Multi-level nesting (parent → sub-parent → leaf): after closing a sub-parent, recurse the same check up the chain. Each level closes only when its own remaining sub-issues are all closed.
 
 ## Rules
 
