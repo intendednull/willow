@@ -104,3 +104,41 @@ Migration progress for the remaining 7 specs is tracked in
 file-top `eslint-disable` header in the same PR. Each remaining
 disabled file references issue #458; the rule sunsets on 2026-09-30
 (per spec §"Sunset").
+
+## `data-state` lifecycle on animated components
+
+Five animated components (mobile drawer, grove drawer, confirm dialog,
+bottom sheet, mobile action sheet) and the tab bar's active-tab indicator
+expose a `data-state` attribute reflecting one of four phases:
+`closed | opening | open | closing`. Tests gate on the attribute
+rather than sleeping after the click that opens the component.
+
+```ts
+await openSidebarBtn.click();
+await expect(drawer).toHaveAttribute('data-state', 'open');
+```
+
+The lifecycle is driven by `transitionend` on the component's specific
+CSS property (transform for slides, opacity for fades). A reduced-motion
+shortcut snaps to the terminal phase synchronously when computed
+transition-duration is 0s, so tests under `prefers-reduced-motion: reduce`
+don't hang.
+
+**Categorical `data-state` (separate convention.)** `status_dot.rs`,
+`grove_rail.rs`, and `peer_status_label.rs` use `data-state` for
+orthogonal categorical states (`online`/`offline`, `idle`/`loading`).
+The four-phase lifecycle does NOT apply to them. Tests that gate on
+`data-state` must know which component they target.
+
+## `page.clock` for real-duration waits
+
+`longPressWithClock(page, selector, ms)` and `installPageClock(page)`
+in `e2e/helpers/clock.ts` use Playwright's per-page clock to advance
+synthetic time without paying real wall-clock seconds. Use this for
+touch gestures and debounce timers.
+
+**Multi-peer caveat.** The clock is per-page. iroh's WASM transport may
+use real-time timers (gossip heartbeats, retry backoff); installing
+the clock during a multi-peer test could freeze UI/HLC time while iroh
+keeps running. Default e2e tests stay clock-free; only single-peer
+touch specs opt in.

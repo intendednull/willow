@@ -103,6 +103,7 @@ mod inline_queue_note;
 mod input;
 mod join_page;
 mod kind_chip;
+pub mod lifecycle;
 mod long_press;
 mod main_pane_header;
 mod member_list;
