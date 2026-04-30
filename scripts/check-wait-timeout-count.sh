@@ -33,7 +33,14 @@ fi
 # Count occurrences across all .ts files in e2e/. Use grep -roh so we
 # count every occurrence (not just files containing one) and sum to a
 # single integer.
-current=$(grep -roh "waitForTimeout" e2e/ --include='*.ts' 2>/dev/null | wc -l | tr -d ' ')
+#
+# `|| true` on the grep handles the success path under the 2026-09-30
+# sunset: once every spec migrates and zero matches remain, grep
+# returns 1, pipefail propagates, and `set -e` would silently abort
+# the script with an empty `current=`. We want this to evaluate to
+# `current=0` so the ratchet correctly reports `ratchet ok` on a
+# fully-migrated tree.
+current=$( { grep -roh "waitForTimeout" e2e/ --include='*.ts' 2>/dev/null || true; } | wc -l | tr -d ' ')
 
 echo "waitForTimeout count: current=$current baseline=$baseline"
 

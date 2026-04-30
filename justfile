@@ -89,7 +89,7 @@ test-e2e-ui FEATURES="test-hooks":
 test-e2e-flake N="5" FEATURES="test-hooks":
     #!/usr/bin/env bash
     set -uo pipefail
-    @just setup-e2e FEATURES={{FEATURES}}
+    WILLOW_FEATURES="{{FEATURES}}" ./scripts/setup-e2e.sh
     pass=0
     fail=0
     failures=()
