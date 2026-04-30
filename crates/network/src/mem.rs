@@ -277,7 +277,7 @@ impl TopicEvents for MemTopicEvents {
                             // Filter out events about ourselves
                             match &event {
                                 GossipEvent::NeighborUp(id) | GossipEvent::NeighborDown(id) if *id == self.id => continue,
-                                _ => return Some(Ok(event)),
+                                GossipEvent::Received(_) | GossipEvent::NeighborUp(_) | GossipEvent::NeighborDown(_) => return Some(Ok(event)),
                             }
                         }
                         Err(broadcast::error::RecvError::Closed) => return None,
