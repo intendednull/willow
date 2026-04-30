@@ -123,6 +123,7 @@ check-all FEATURES="test-hooks":
     just test-browser
     just test-e2e-ui FEATURES={{FEATURES}}
     ./scripts/check-no-test-hooks-in-prod.sh
+    ./scripts/check-wait-timeout-count.sh
 
 # Run Playwright E2E tests on all browsers
 test-e2e-ui-all:
