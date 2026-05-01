@@ -158,7 +158,7 @@ info "Storage node started (PID $!)"
 # Web UI
 step "Starting web UI (trunk serve)..."
 # shellcheck disable=SC2086
-(cd "$ROOT/crates/web" && trunk serve $FEATURES_FLAG) > "$LOG_DIR/web.log" 2>&1 &
+(cd "$ROOT/crates/web" && trunk serve --no-autoreload $FEATURES_FLAG) > "$LOG_DIR/web.log" 2>&1 &
 WEB_PID=$!
 
 # Wait for web UI
