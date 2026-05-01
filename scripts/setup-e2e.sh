@@ -90,8 +90,25 @@ if [ -n "$FEATURES" ]; then
 fi
 
 step "Building web UI (WASM)..."
+# Trunk injects a `<script type="module">` WASM bootstrap into the
+# rendered index.html on every build. The CSP added in #462 forbids
+# inline scripts (`script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'`
+# — no `'unsafe-inline'`/hash/nonce), so the bootstrap is blocked, the
+# WASM never boots, and every Playwright spec stalls at "Loading
+# Willow…" until `waitForApp` times out.
+#
+# Generate a test-only `index.test.html` with `'unsafe-inline'` added
+# to `script-src`, and point trunk at it via `--target`. The source
+# `crates/web/index.html` (which `static_assets::
+# index_html_declares_content_security_policy` gates on) stays
+# unchanged, so production keeps the strict CSP. Production's own
+# CSP-vs-trunk-bootstrap conflict is a separate concern.
+TEST_HTML="$ROOT/crates/web/index.test.html"
+sed "s|script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'|script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval' 'unsafe-inline'|" \
+    "$ROOT/crates/web/index.html" > "$TEST_HTML"
+
 # shellcheck disable=SC2086
-(cd "$ROOT/crates/web" && trunk build $FEATURES_FLAG 2>&1 | tail -1)
+(cd "$ROOT/crates/web" && trunk build --html-output index.html index.test.html $FEATURES_FLAG 2>&1 | tail -1)
 
 info "All builds complete."
 
@@ -158,7 +175,7 @@ info "Storage node started (PID $!)"
 # Web UI
 step "Starting web UI (trunk serve)..."
 # shellcheck disable=SC2086
-(cd "$ROOT/crates/web" && trunk serve --no-autoreload $FEATURES_FLAG) > "$LOG_DIR/web.log" 2>&1 &
+(cd "$ROOT/crates/web" && trunk serve --no-autoreload --html-output index.html index.test.html $FEATURES_FLAG) > "$LOG_DIR/web.log" 2>&1 &
 WEB_PID=$!
 
 # Wait for web UI

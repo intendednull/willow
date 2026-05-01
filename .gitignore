@@ -1,5 +1,6 @@
 /target
 dist
+crates/web/index.test.html
 project/.obsidian/
 web/pkg/
 .claude/settings.local.json
