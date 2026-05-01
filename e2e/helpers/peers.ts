@@ -101,13 +101,21 @@ export async function createServer(page: Page, name: string, displayName?: strin
   }
 }
 
-/** Get the full peer ID from the welcome screen or settings. */
-export async function getPeerId(page: Page): Promise<string> {
-  // Welcome screen: advance past step 1 (no name), then switch to the
-  // Join tab — the peer id lives inside the Join step list, hidden by
-  // default and revealed by the eye-toggle icon.
+/** Get the full peer ID from the welcome screen or settings.
+ *
+ *  Optionally accepts a `displayName` to fill into the welcome step-1
+ *  name input before advancing. Required when the caller intends to
+ *  `joinViaInvite` afterward: the name input is unmounted once step 2
+ *  renders, so a later `advancePastNameStep(displayName)` no-ops and
+ *  the join confirm closure reads an empty `display_name` signal,
+ *  broadcasting the literal "anonymous" fallback to peers.
+ */
+export async function getPeerId(page: Page, displayName?: string): Promise<string> {
+  // Welcome screen: advance past step 1 (with optional name), then
+  // switch to the Join tab — the peer id lives inside the Join step
+  // list, hidden by default and revealed by the eye-toggle icon.
   if (await page.locator('.welcome-card').isVisible().catch(() => false)) {
-    await advancePastNameStep(page);
+    await advancePastNameStep(page, displayName);
     const joinTab = page.locator('.welcome-tab-btn', { hasText: 'Join' });
     if (await joinTab.isVisible().catch(() => false)) {
       await joinTab.click();
@@ -213,9 +221,13 @@ export async function setupTwoPeers(
   await freshStart(page1);
   await createServer(page1, serverName, peer1Name);
 
-  // Peer 2: Get peer ID from welcome screen.
+  // Peer 2: Get peer ID from welcome screen. Pass `peer2Name` so step 1
+  // captures the display name BEFORE the input unmounts — otherwise
+  // `joinViaInvite`'s own `advancePastNameStep` no-ops, leaving the
+  // welcome `display_name` signal empty and the join broadcasts the
+  // literal "anonymous" fallback (add_server.rs:163-167) to peer 1.
   await freshStart(page2);
-  const peer2Id = await getPeerId(page2);
+  const peer2Id = await getPeerId(page2, peer2Name);
 
   // Peer 1: Generate invite for peer 2.
   const inviteCode = await generateInvite(page1, peer2Id);

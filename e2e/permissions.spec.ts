@@ -1,5 +1,4 @@
-/* eslint-disable no-restricted-syntax -- migration tracked at https://github.com/intendednull/willow/issues/458 */
-import { test, expect } from '@playwright/test';
+import { test, expect } from './test-hooks';
 import {
   sendMessage,
   waitForMessage,
@@ -77,20 +76,23 @@ test.describe('Permissions and trust', () => {
     }
   });
 
-  test('kicked peer messages do not reach owner', async ({ browser }) => {
+  test('kicked peer messages do not reach owner', async ({ peer, browser }) => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Kick Msg', 'Alice', 'Bob');
+    const alice = await peer(page1, 'Alice');
+    const bob = await peer(page2, 'Bob');
     try {
       // Alice kicks Bob.
       await kickPeer(page1, 'Bob');
-      await page1.waitForTimeout(2000);
+
+      // Wait for Bob's DAG to converge with Alice's — once heads match,
+      // Bob's local state has applied the kick event and any send he
+      // attempts will be locally rejected (no SendMessages permission).
+      await bob.waitUntilHeadsEqual(alice);
 
       // Bob tries to send a message that should NOT arrive. Bypass
       // `sendMessage` because, post-kick, Bob's own broadcast is
-      // rejected by the local DAG (he no longer has SendMessages on
-      // this server), so the message body never renders locally and
-      // the helper's `waitFor(.message .body)` times out. Drive the
-      // composer directly and don't assert local render — only the
-      // remote-non-delivery assertion below matters.
+      // rejected by the local DAG, so the message body never renders
+      // locally and the helper's input-clear wait would time out.
       const bobInput = page2
         .locator(`${visibleShell(page2)} .input-area input, ${visibleShell(page2)} .input-area textarea`)
         .first();
@@ -102,11 +104,11 @@ test.describe('Permissions and trust', () => {
       // and that enough real time has elapsed for any P2P delivery to have
       // occurred — without relying on a fixed sleep duration.
       await sendMessage(page1, 'alice sentinel after kick');
-      await waitForMessage(page1, 'alice sentinel after kick', 10_000);
+      await waitForMessage(page1, 'alice sentinel after kick');
 
       // Assert that Bob's message never arrived on Alice's side.
       await expect(page1.locator('.message .body', { hasText: 'kicked but trying' }))
-        .not.toBeVisible({ timeout: 5000 });
+        .not.toBeVisible();
     } finally {
       await ctx1.close();
       await ctx2.close();
@@ -156,19 +158,22 @@ test.describe('Permissions and trust', () => {
     }
   });
 
-  test('non-owner has no action buttons in member list', async ({ browser }, testInfo) => {
+  test('non-owner has no action buttons in member list', async ({ peer, browser }, testInfo) => {
     // Skip on mobile — two-peer setup + member list toggle is flaky on narrow viewports.
     test.skip(testInfo.project.name.startsWith('mobile'), 'desktop only');
 
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'NoActions', 'Alice', 'Bob');
+    const alice = await peer(page1, 'Alice');
+    const bob = await peer(page2, 'Bob');
     try {
-      // Bob opens the member list (he is not the owner).
-      // On desktop, member list is always visible (no toggle needed).
-      await page2.waitForTimeout(1000);
+      // Wait for membership events to converge before asserting on the
+      // member list (Bob's row has to be rendered for `.member-actions`
+      // to mean anything).
+      await bob.waitUntilHeadsEqual(alice);
 
       // Bob should NOT have any trust/kick/untrust action buttons.
       const actionButtons = page2.locator(`${visibleShell(page2)} .member-actions button`);
-      await expect(actionButtons).toHaveCount(0, { timeout: 5000 });
+      await expect(actionButtons).toHaveCount(0);
     } finally {
       await ctx1.close();
       await ctx2.close();
@@ -199,10 +204,13 @@ test.describe('Permissions and trust', () => {
   });
 
   test('compare mismatch keeps peer unverified but messaging still works', async ({
+    peer,
     browser,
   }, testInfo) => {
     test.skip(testInfo.project.name.startsWith('mobile'), 'desktop-chrome path');
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Mismatch', 'Alice', 'Bob');
+    const alice = await peer(page1, 'Alice');
+    const _bob = await peer(page2, 'Bob');
     try {
       await openCompareFingerprints(page1, 'Bob');
       await markFingerprintsMismatch(page1);
@@ -212,11 +220,16 @@ test.describe('Permissions and trust', () => {
       // Bob's row keeps the unverified/downgrade treatment.
       const bobRow = page1.locator(`${visibleShell(page1)} .member-item`, { hasText: 'Bob' });
       await expect(bobRow.locator('.trust-badge--unverified, .trust-badge--downgrade'))
-        .toBeVisible({ timeout: 5_000 });
+        .toBeVisible();
 
-      // Messaging is unaffected.
+      // Messaging is unaffected. Wait for the cross-peer
+      // MessageReceived event before asserting the rendered body.
       await sendMessage(page2, 'mismatch still talks');
-      await waitForMessage(page1, 'mismatch still talks', 30_000);
+      await alice.nextEvent(e =>
+        e.kind === 'MessageReceived' &&
+        !e.isLocal
+      );
+      await waitForMessage(page1, 'mismatch still talks');
     } finally {
       await ctx1.close();
       await ctx2.close();

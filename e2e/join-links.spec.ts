@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './test-hooks';
 import { freshStart, createServer, sendMessage, waitForMessage, waitForApp, openSidebar, visibleShell } from './helpers';
 
 test.describe('Join via shareable link', () => {
@@ -7,20 +7,19 @@ test.describe('Join via shareable link', () => {
     test.skip(testInfo.project.name.includes('firefox'), 'clipboard permissions not supported in Firefox');
   });
 
-  test('peer joins via link URL and sees messages', async ({ browser, baseURL }, testInfo) => {
+  test('peer joins via link URL and sees messages', async ({ peer, browser, baseURL }, testInfo) => {
     // Mobile-chrome takes significantly longer to spin up the second
     // iroh peer + relay handshake; the join page resolves reliably on
     // desktop but flakes past the 60s budget on mobile. Covered at the
     // Rust client tier in Phase B (MemNetwork join-flow test).
     test.skip(testInfo.project.name.startsWith('mobile'), 'mobile P2P join-url real-network flake');
-    // Internal waits chain to >60 s on slow CI: 60 s `.app-shell` wait
-    // + 30 s `.channel-item` attach + 30 s `waitForMessage` round-trip.
-    // The default 60 s test budget is exhausted by the first wait alone.
-    test.setTimeout(180_000);
+    // Two-peer join-flow needs setup + bootstrap + initial-sync headroom.
+    test.setTimeout(120_000);
     const ctxA = await browser.newContext({
       permissions: ['clipboard-read', 'clipboard-write'],
     });
     const pageA = await ctxA.newPage();
+    const alice = await peer(pageA, 'Alice');
     await freshStart(pageA);
     await createServer(pageA, 'Link Test', 'Alice');
 
@@ -50,6 +49,7 @@ test.describe('Join via shareable link', () => {
     // Peer B opens the join link URL directly (full page load with hash).
     const ctxB = await browser.newContext();
     const pageB = await ctxB.newPage();
+    const bob = await peer(pageB, 'Bob');
     await pageB.goto(joinUrl);
     await waitForApp(pageB);
 
@@ -61,32 +61,27 @@ test.describe('Join via shareable link', () => {
     await pageB.locator('.join-card-field input').fill('Bob');
     await pageB.locator('.join-card-btn').click();
 
-    // Wait for join to complete (join page disappears, chat appears).
-    // Both shells mount after join — desktop shows `.app-shell`,
-    // mobile shows `.mobile-top-bar` inside `.shell-mobile`. The
-    // join-via-URL flow performs a fresh-start of peer B's client
-    // (full IDB clear + reload + WASM bootstrap + relay handshake +
-    // accept_invite + initial sync); 60 s is a tight ceiling for the
-    // worst-case slow CI run. 120 s gives the bootstrap room without
-    // slowing the fast happy path.
-    await pageB.waitForSelector('.app-shell, .mobile-top-bar', { timeout: 120_000 });
+    // Wait for the chat shell to mount post-join.
+    await pageB.locator('.app-shell, .mobile-top-bar').first().waitFor();
 
-    // Verify B sees the server — wait for DOM attachment first (gossip
-    // may lag). The post-join initial sync delivers the channel events,
-    // but on slow CI under load the relay round-trip can take 30+ s
-    // before the `general` row reaches B's DOM. Match the 60 s ceiling
-    // used elsewhere for first-channel arrival.
-    await expect(pageB.locator(`${visibleShell(pageB)} .channel-item`, { hasText: 'general' }))
-      .toBeAttached({ timeout: 60_000 });
+    // Wait for Bob's DAG to converge with Alice's — the post-join
+    // initial sync delivers the channel events; once heads match,
+    // every channel from Alice's state is in Bob's local DAG.
+    await bob.waitUntilHeadsEqual(alice);
+
+    // Now the DOM check runs against synced state with the default 5s.
     await openSidebar(pageB);
     await expect(pageB.locator(`${visibleShell(pageB)} .channel-item`, { hasText: 'general' }))
-      .toBeVisible({ timeout: 5_000 });
+      .toBeVisible();
 
-    // A sends a message.
+    // A sends a message; wait for B's MessageReceived event before
+    // asserting the rendered body.
     await sendMessage(pageA, 'Welcome Bob!');
-
-    // B should see it.
-    await waitForMessage(pageB, 'Welcome Bob!', 60_000);
+    await bob.nextEvent(e =>
+      e.kind === 'MessageReceived' &&
+      !e.isLocal
+    );
+    await waitForMessage(pageB, 'Welcome Bob!');
 
     await ctxA.close();
     await ctxB.close();

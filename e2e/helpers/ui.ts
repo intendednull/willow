@@ -181,10 +181,19 @@ export async function createChannel(page: Page, name: string) {
     await page.waitForTimeout(200);
   }
   const scope = visibleShell(page);
+  // The "new" button now opens a kind picker (text / voice / temp)
+  // before the name input renders; the name input itself is
+  // `.tree-slot__input`. The previous `.channel-create-input` selector
+  // and one-shot fill no longer apply (channel_sidebar.rs:317-384).
   await page.locator(`${scope} .channel-add-btn`).first().click();
-  await page.waitForTimeout(200);
-  await page.locator(`${scope} .channel-create-input input`).first().fill(name);
-  await page.locator(`${scope} .channel-create-input input`).first().press('Enter');
+  await page
+    .locator(`${scope} .tree-kind-picker__item`, { hasText: 'text' })
+    .first()
+    .click();
+  const nameInput = page.locator(`${scope} .tree-slot__input`).first();
+  await nameInput.waitFor({ timeout: 5_000 });
+  await nameInput.fill(name);
+  await nameInput.press('Enter');
   await page.locator(`${visibleShell(page)} .channel-item`, { hasText: name })
     .waitFor({ timeout: 10_000 });
 }

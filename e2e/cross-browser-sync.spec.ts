@@ -1,7 +1,7 @@
-/* eslint-disable no-restricted-syntax -- migration tracked at https://github.com/intendednull/willow/issues/458 */
 import { existsSync } from 'node:fs';
-import { test, expect, chromium, firefox, devices } from '@playwright/test';
-import { freshStart, createServer, sendMessage, waitForMessage, waitForApp, getPeerId, openSidebar, joinViaInvite, visibleShell } from './helpers';
+import { chromium, firefox, devices } from '@playwright/test';
+import { test, expect } from './test-hooks';
+import { freshStart, createServer, sendMessage, waitForMessage, getPeerId, openSidebar, joinViaInvite, visibleShell } from './helpers';
 
 // Custom Firefox context options — avoids flakiness seen with the full
 // devices['Desktop Firefox'] preset (which sets a Windows UA + specific screen
@@ -50,7 +50,7 @@ test.describe('Cross-browser peer sync', () => {
     test.skip(!firefoxAvailable(), FIREFOX_SKIP_REASON);
   });
 
-  test('mobile Chrome to desktop Firefox — invite + messaging', async () => {
+  test('mobile Chrome to desktop Firefox — invite + messaging', async ({ peer }) => {
     // Launch mobile Chrome (Pixel 7 viewport).
     const mobileBrowser = await chromium.launch();
     const mobileCtx = await mobileBrowser.newContext({
@@ -65,59 +65,92 @@ test.describe('Cross-browser peer sync', () => {
     });
     const desktopPage = await desktopCtx.newPage();
 
+    // Wire test-hooks BEFORE the first goto on each page (addInitScript
+    // only takes effect on subsequent loads).
+    const mobile = await peer(mobilePage, 'Mobile');
+    const desktop = await peer(desktopPage, 'Desktop');
+
     try {
       // Desktop Firefox: create server.
       await freshStart(desktopPage);
       await createServer(desktopPage, 'CrossBrowser Test', 'DesktopUser');
 
-      // Mobile Chrome: get peer ID from welcome screen.
+      // Mobile Chrome: get peer ID from welcome screen. Pass the
+      // display name so step 1 captures it before the input unmounts —
+      // otherwise the join broadcasts the literal "anonymous" fallback.
       await freshStart(mobilePage);
-      const mobilePeerId = await getPeerId(mobilePage);
+      const mobilePeerId = await getPeerId(mobilePage, 'MobileUser');
       expect(mobilePeerId).toBeTruthy();
 
-      // Desktop Firefox: generate invite for mobile peer.
-      await desktopPage.locator('.server-gear-btn').click();
-      await desktopPage.waitForTimeout(500);
+      // Desktop Firefox: open the grove menu (scoped to the visible
+      // desktop shell so the duplicate `.shell-mobile` button doesn't
+      // trigger Playwright's strict-mode duplicate-match guard).
+      await desktopPage.locator('.shell-desktop [aria-label="grove menu"]').first().click();
+      // Settings panel mounts after the click.
+      await desktopPage.locator('input[placeholder*="12D3KooW"]')
+        .waitFor({ timeout: 10_000 });
       await desktopPage.locator('input[placeholder*="12D3KooW"]').fill(mobilePeerId);
       await desktopPage.locator('button', { hasText: 'Generate Invite' }).click();
-      await desktopPage.waitForTimeout(500);
-      const inviteCode = await desktopPage.locator('.invite-code-display textarea').inputValue();
+      // Wait for the invite-code field to mount with a value.
+      const inviteField = desktopPage.locator('.invite-code-display textarea');
+      await expect(inviteField).not.toHaveValue('');
+      const inviteCode = await inviteField.inputValue();
       expect(inviteCode).toBeTruthy();
 
       // Desktop Firefox: go back to chat.
       await desktopPage.locator('text=Back').click();
-      await desktopPage.waitForTimeout(500);
+      // Wait for the channel sidebar to mount before continuing.
+      await desktopPage.locator(`${visibleShell(desktopPage)} .channel-sidebar`)
+        .first().waitFor({ timeout: 10_000 });
 
       // Mobile Chrome: join via invite.
-      await joinViaInvite(mobilePage, inviteCode);
+      await joinViaInvite(mobilePage, inviteCode, 'MobileUser');
 
-      // Verify mobile sees the server — wait for DOM attachment first (gossip may lag).
-      await expect(mobilePage.locator(`${visibleShell(mobilePage)} .channel-item`, { hasText: 'general' }))
-        .toBeAttached({ timeout: 60_000 });
-      // Now open the sidebar and confirm the item is visible.
+      // Wait for Mobile's DAG to converge with Desktop's — the
+      // post-join initial sync delivers the channel events. After
+      // convergence, every channel from Desktop's state is in Mobile's
+      // local DAG and DOM checks run with the default 5s timeout.
+      await mobile.waitUntilHeadsEqual(desktop);
+
+      // Open the grove drawer briefly to confirm the channel is
+      // visible, then close it (`sendMessage` below pushes into the
+      // channel via the home tab, which the drawer overlay would
+      // otherwise sit on top of and block).
       await openSidebar(mobilePage);
       await expect(mobilePage.locator(`${visibleShell(mobilePage)} .channel-item`, { hasText: 'general' }))
-        .toBeVisible({ timeout: 5_000 });
+        .toBeVisible();
+      const closeBtn = mobilePage.locator(`${visibleShell(mobilePage)} .grove-drawer__close, ${visibleShell(mobilePage)} .mobile-top-bar .top-slot-left`);
+      if (await closeBtn.first().isVisible().catch(() => false)) {
+        await closeBtn.first().click();
+      }
 
-      // Establish bidirectional gossip mesh: Chrome→Firefox is the reliable direction.
-      // Waiting for Firefox to *receive* a Chrome message proves both gossip paths are
-      // open — round-trip delivery requires NeighborUp to have fired on both sides.
-      // (member-item appearance on Firefox alone only confirms Firefox's NeighborUp,
-      // not Chrome's reverse path which is required for the main assertion below.)
+      // Establish bidirectional gossip mesh: Mobile → Desktop is the
+      // reliable direction. Waiting for Desktop's MessageReceived event
+      // proves both gossip paths are open.
       await sendMessage(mobilePage, 'warmup');
-      await waitForMessage(desktopPage, 'warmup', 30_000);
+      await desktop.nextEvent(e =>
+        e.kind === 'MessageReceived' &&
+        !e.isLocal,
+        { timeout: 30_000 },
+      );
 
-      // Desktop Firefox: send a message.
+      // Desktop Firefox: send a message; mobile waits for the event.
       await sendMessage(desktopPage, 'Hello from Firefox desktop');
+      await mobile.nextEvent(e =>
+        e.kind === 'MessageReceived' &&
+        !e.isLocal,
+        { timeout: 30_000 },
+      );
+      await waitForMessage(mobilePage, 'Hello from Firefox desktop');
 
-      // Mobile Chrome: should see the message.
-      await waitForMessage(mobilePage, 'Hello from Firefox desktop', 30_000);
-
-      // Mobile Chrome: send a reply.
+      // Mobile Chrome: send a reply; desktop waits for the event.
       await sendMessage(mobilePage, 'Hello from Chrome mobile');
-
-      // Desktop Firefox: should see the reply.
-      await waitForMessage(desktopPage, 'Hello from Chrome mobile', 30_000);
+      await desktop.nextEvent(e =>
+        e.kind === 'MessageReceived' &&
+        !e.isLocal,
+        { timeout: 30_000 },
+      );
+      await waitForMessage(desktopPage, 'Hello from Chrome mobile');
 
     } finally {
       await mobileCtx.close();
@@ -127,7 +160,7 @@ test.describe('Cross-browser peer sync', () => {
     }
   });
 
-  test('mobile Chrome to desktop Firefox — server owner sends, joiner receives', async () => {
+  test('mobile Chrome to desktop Firefox — server owner sends, joiner receives', async ({ peer }) => {
     const mobileBrowser = await chromium.launch();
     const mobileCtx = await mobileBrowser.newContext({
       ...devices['Pixel 7'],
@@ -140,44 +173,55 @@ test.describe('Cross-browser peer sync', () => {
     });
     const desktopPage = await desktopCtx.newPage();
 
+    const mobile = await peer(mobilePage, 'Mobile');
+    const desktop = await peer(desktopPage, 'Desktop');
+
     try {
       // Mobile Chrome creates the server this time.
       await freshStart(mobilePage);
       await createServer(mobilePage, 'Mobile Server', 'MobileUser');
 
-      // Desktop Firefox gets peer ID.
+      // Desktop Firefox gets peer ID. Pass the display name so step 1
+      // captures it before the input unmounts.
       await freshStart(desktopPage);
-      const desktopPeerId = await getPeerId(desktopPage);
+      const desktopPeerId = await getPeerId(desktopPage, 'DesktopUser');
       expect(desktopPeerId).toBeTruthy();
 
-      // Mobile Chrome: open settings to generate invite.
+      // Mobile Chrome: open the grove drawer + grove menu (scoped to
+      // mobile shell to avoid the strict-mode duplicate-match guard).
       await openSidebar(mobilePage);
-      await mobilePage.locator('.server-gear-btn').click();
-      await mobilePage.waitForTimeout(500);
+      await mobilePage.locator('.shell-mobile [aria-label="grove menu"]').first().click();
+      await mobilePage.locator('input[placeholder*="12D3KooW"]')
+        .waitFor({ timeout: 10_000 });
       await mobilePage.locator('input[placeholder*="12D3KooW"]').fill(desktopPeerId);
       await mobilePage.locator('button', { hasText: 'Generate Invite' }).click();
-      await mobilePage.waitForTimeout(500);
-      const inviteCode = await mobilePage.locator('.invite-code-display textarea').inputValue();
+      const inviteField = mobilePage.locator('.invite-code-display textarea');
+      await expect(inviteField).not.toHaveValue('');
+      const inviteCode = await inviteField.inputValue();
       expect(inviteCode).toBeTruthy();
 
       // Mobile Chrome: go back.
       await mobilePage.locator('text=Back').click();
-      await mobilePage.waitForTimeout(500);
+      // Wait for the home tab to be visible again before continuing.
+      await mobilePage.locator(`${visibleShell(mobilePage)} .mobile-home`)
+        .first().waitFor({ timeout: 10_000 });
 
       // Desktop Firefox: join via invite.
-      await joinViaInvite(desktopPage, inviteCode);
+      await joinViaInvite(desktopPage, inviteCode, 'DesktopUser');
 
-      // Gossip sync after joining can be slow — wait for DOM attachment before visibility.
+      // Wait for Desktop's DAG to converge with Mobile's.
+      await desktop.waitUntilHeadsEqual(mobile);
       await expect(desktopPage.locator(`${visibleShell(desktopPage)} .channel-item`, { hasText: 'general' }))
-        .toBeAttached({ timeout: 60_000 });
-      await expect(desktopPage.locator(`${visibleShell(desktopPage)} .channel-item`, { hasText: 'general' }))
-        .toBeVisible({ timeout: 5_000 });
+        .toBeVisible();
 
-      // Mobile sends a message.
+      // Mobile sends a message; desktop waits for the event.
       await sendMessage(mobilePage, 'Cross browser works!');
-
-      // Desktop should see it.
-      await waitForMessage(desktopPage, 'Cross browser works!', 30_000);
+      await desktop.nextEvent(e =>
+        e.kind === 'MessageReceived' &&
+        !e.isLocal,
+        { timeout: 30_000 },
+      );
+      await waitForMessage(desktopPage, 'Cross browser works!');
 
     } finally {
       await mobileCtx.close();
