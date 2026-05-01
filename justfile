@@ -82,6 +82,36 @@ test-e2e-ui FEATURES="test-hooks":
     @just setup-e2e FEATURES={{FEATURES}}
     npx playwright test --project=desktop-chrome --project=mobile-chrome
 
+# Run the Playwright E2E suite N times to surface intermittent flake.
+# Aggregates pass/fail per run; exits non-zero if ANY run failed.
+# Default N=5 (per docs/specs/2026-04-27-event-based-waits-design.md
+# §Implementation phasing PR 4).
+test-e2e-flake N="5" FEATURES="test-hooks":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    WILLOW_FEATURES="{{FEATURES}}" ./scripts/setup-e2e.sh
+    pass=0
+    fail=0
+    failures=()
+    for i in $(seq 1 {{N}}); do
+        echo
+        echo "════════ flake harness: run $i / {{N}} ════════"
+        if npx playwright test --reporter=line; then
+            pass=$((pass + 1))
+        else
+            fail=$((fail + 1))
+            failures+=("$i")
+        fi
+    done
+    echo
+    echo "════════ flake summary ════════"
+    echo "passed: $pass / {{N}}"
+    echo "failed: $fail / {{N}}"
+    if (( fail > 0 )); then
+        echo "failed runs: ${failures[*]}"
+        exit 1
+    fi
+
 # Full-suite gate: lint + Rust + wasm-pack browser + Playwright, in
 # order, fail-fast. This is the single command a PR must go green on.
 check-all FEATURES="test-hooks":
@@ -93,6 +123,7 @@ check-all FEATURES="test-hooks":
     just test-browser
     just test-e2e-ui FEATURES={{FEATURES}}
     ./scripts/check-no-test-hooks-in-prod.sh
+    ./scripts/check-wait-timeout-count.sh
 
 # Run Playwright E2E tests on all browsers
 test-e2e-ui-all:
