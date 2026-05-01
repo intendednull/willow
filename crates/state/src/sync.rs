@@ -881,7 +881,11 @@ mod tests {
             dag.insert(e).unwrap();
         }
 
-        // Grant permissions to multiple peers.
+        // Grant permissions to multiple peers, recording each grant
+        // hash so peer SetProfile events can causally depend on it.
+        // (SetProfile requires membership — issue #177 — so the grant
+        // must topologically precede the SetProfile.)
+        let mut grant_hashes: std::collections::BTreeMap<_, _> = std::collections::BTreeMap::new();
         for peer in [&peer_a, &peer_b, &peer_c] {
             let e = dag.create_event(
                 &owner,
@@ -892,17 +896,20 @@ mod tests {
                 vec![],
                 0,
             );
+            grant_hashes.insert(peer.endpoint_id(), e.hash);
             dag.insert(e).unwrap();
         }
 
-        // Set profiles from different peers.
+        // Set profiles from different peers, each depending on the
+        // grant that made them a member.
         for (peer, name) in [(&peer_a, "Alice"), (&peer_b, "Bob"), (&peer_c, "Carol")] {
+            let dep = grant_hashes[&peer.endpoint_id()];
             let e = dag.create_event(
                 peer,
                 EventKind::SetProfile {
                     display_name: name.into(),
                 },
-                vec![],
+                vec![dep],
                 0,
             );
             dag.insert(e).unwrap();

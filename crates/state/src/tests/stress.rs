@@ -273,8 +273,28 @@ fn stress_100_authors_deterministic_profiles() {
 
     let authors: Vec<Identity> = (0..9).map(|_| Identity::generate()).collect();
 
+    // Grant SendMessages to every author so they become members.
+    // SetProfile is gated on membership (issue #177); each SetProfile
+    // must causally depend on the author's own grant so topological
+    // sort applies the grant first.
+    let mut grant_hashes: std::collections::BTreeMap<_, _> = std::collections::BTreeMap::new();
     for author in &authors {
-        let deps = vec![*dag.head(&admin.endpoint_id()).unwrap()];
+        let e = dag.create_event(
+            &admin,
+            EventKind::GrantPermission {
+                peer_id: author.endpoint_id(),
+                permission: crate::event::Permission::SendMessages,
+            },
+            vec![],
+            0,
+        );
+        grant_hashes.insert(author.endpoint_id(), e.hash);
+        dag.insert(e).unwrap();
+    }
+
+    for author in &authors {
+        let mut deps = vec![*dag.head(&admin.endpoint_id()).unwrap()];
+        deps.push(grant_hashes[&author.endpoint_id()]);
         let e = dag.create_event(
             author,
             EventKind::SetProfile {
