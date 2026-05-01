@@ -19,7 +19,7 @@ pub mod iroh;
 pub mod topics;
 pub mod traits;
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-utils")))]
 pub mod mem;
 
 // Re-export key types for convenience.

@@ -1085,3 +1085,759 @@ fn set_permission_legacy_unknown_string_drops_silently() {
         "unknown legacy permission must apply as a no-op"
     );
 }
+
+// ───── Membership gate for "unrestricted" event kinds ─────────────────────
+//
+// Issue #177 / SEC: `SetProfile`, `UpdateProfile`, `PinMessage`,
+// `UnpinMessage` are documented as "any member can execute" but the
+// handlers in `apply_mutation` did not actually enforce the membership
+// predicate. Late-arriving events from a kicked or never-joined signer
+// were silently applied, allowing post-kick state mutation.
+//
+// These tests pin down the membership gate at the apply boundary using
+// the same pattern as `RotateChannelKey` (defense-in-depth even when
+// `required_permission()` returns `None`).
+
+/// Helper: set up a server where `peer` was a member then was kicked.
+///
+/// Returns a [`ManagedDag`] whose state has `peer` removed from
+/// `members`, plus the admin and peer identities.
+fn setup_kicked_peer() -> (
+    crate::managed::ManagedDag,
+    Identity,
+    Identity,
+    EventHash, /* kick_proposal_hash */
+) {
+    let admin = Identity::generate();
+    let peer = Identity::generate();
+    let mut managed = crate::managed::ManagedDag::new(&admin, "S", 5000).unwrap();
+
+    // Promote peer to a member by granting SendMessages.
+    let grant = managed.dag().create_event(
+        &admin,
+        EventKind::GrantPermission {
+            peer_id: peer.endpoint_id(),
+            permission: Permission::SendMessages,
+        },
+        vec![],
+        10,
+    );
+    managed.insert_and_apply(grant).unwrap();
+    assert!(managed.state().members.contains_key(&peer.endpoint_id()));
+
+    // Admin is sole admin, so a Majority threshold (default) auto-applies
+    // their own self-vote of 1/1 > 0.5.
+    let kick = managed.dag().create_event(
+        &admin,
+        EventKind::Propose {
+            action: ProposedAction::KickMember {
+                peer_id: peer.endpoint_id(),
+            },
+        },
+        vec![],
+        20,
+    );
+    let kick_hash = kick.hash;
+    managed.insert_and_apply(kick).unwrap();
+    assert!(
+        !managed.state().members.contains_key(&peer.endpoint_id()),
+        "peer must be kicked",
+    );
+
+    (managed, admin, peer, kick_hash)
+}
+
+// SetProfile -----------------------------------------------------------------
+
+#[test]
+fn set_profile_by_member_is_applied() {
+    use crate::materialize::ApplyResult;
+
+    let admin = Identity::generate();
+    let peer = Identity::generate();
+    let mut managed = crate::managed::ManagedDag::new(&admin, "S", 5000).unwrap();
+
+    let grant = managed.dag().create_event(
+        &admin,
+        EventKind::GrantPermission {
+            peer_id: peer.endpoint_id(),
+            permission: Permission::SendMessages,
+        },
+        vec![],
+        10,
+    );
+    managed.insert_and_apply(grant).unwrap();
+
+    let set = managed.dag().create_event(
+        &peer,
+        EventKind::SetProfile {
+            display_name: "Peer".into(),
+        },
+        vec![],
+        20,
+    );
+    let outcome = managed.insert_and_apply(set).unwrap();
+    assert!(
+        matches!(outcome.apply_result, Some(ApplyResult::Applied)),
+        "member SetProfile must apply: {:?}",
+        outcome.apply_result,
+    );
+    assert_eq!(
+        managed
+            .state()
+            .profiles
+            .get(&peer.endpoint_id())
+            .map(|p| p.display_name.as_str()),
+        Some("Peer"),
+    );
+}
+
+#[test]
+fn set_profile_by_kicked_member_is_rejected() {
+    use crate::materialize::ApplyResult;
+
+    let (mut managed, _admin, peer, _kick) = setup_kicked_peer();
+
+    let set = managed.dag().create_event(
+        &peer,
+        EventKind::SetProfile {
+            display_name: "Sneaky".into(),
+        },
+        vec![],
+        30,
+    );
+    let outcome = managed.insert_and_apply(set).unwrap();
+    match &outcome.apply_result {
+        Some(ApplyResult::Rejected(reason)) => {
+            assert!(
+                reason.contains("is not a member"),
+                "rejection reason must mention non-membership: {reason}",
+            );
+        }
+        other => panic!("kicked-member SetProfile must be rejected: {other:?}"),
+    }
+    // State must not reflect the kicked peer's profile change.
+    let dn = managed
+        .state()
+        .profiles
+        .get(&peer.endpoint_id())
+        .map(|p| p.display_name.clone())
+        .unwrap_or_default();
+    assert_ne!(dn, "Sneaky", "kicked peer must not mutate profile state");
+}
+
+#[test]
+fn set_profile_by_non_member_is_rejected() {
+    use crate::materialize::ApplyResult;
+
+    let admin = Identity::generate();
+    let stranger = Identity::generate();
+    let mut managed = crate::managed::ManagedDag::new(&admin, "S", 5000).unwrap();
+
+    let set = managed.dag().create_event(
+        &stranger,
+        EventKind::SetProfile {
+            display_name: "Stranger".into(),
+        },
+        vec![],
+        10,
+    );
+    let outcome = managed.insert_and_apply(set).unwrap();
+    match &outcome.apply_result {
+        Some(ApplyResult::Rejected(reason)) => {
+            assert!(
+                reason.contains("is not a member"),
+                "rejection reason must mention non-membership: {reason}",
+            );
+        }
+        other => panic!("non-member SetProfile must be rejected: {other:?}"),
+    }
+    assert!(
+        !managed
+            .state()
+            .profiles
+            .contains_key(&stranger.endpoint_id()),
+        "non-member must not create profile entry",
+    );
+}
+
+// UpdateProfile --------------------------------------------------------------
+
+#[test]
+fn update_profile_by_member_is_applied() {
+    use crate::materialize::ApplyResult;
+    use crate::types::ProfileDelta;
+
+    let admin = Identity::generate();
+    let peer = Identity::generate();
+    let mut managed = crate::managed::ManagedDag::new(&admin, "S", 5000).unwrap();
+
+    let grant = managed.dag().create_event(
+        &admin,
+        EventKind::GrantPermission {
+            peer_id: peer.endpoint_id(),
+            permission: Permission::SendMessages,
+        },
+        vec![],
+        10,
+    );
+    managed.insert_and_apply(grant).unwrap();
+
+    let upd = managed.dag().create_event(
+        &peer,
+        EventKind::UpdateProfile(Box::new(ProfileDelta {
+            display_name: None,
+            pronouns: Some(Some("they/them".into())),
+            bio: None,
+            tagline: None,
+            crest_pattern: None,
+            crest_color: None,
+            pinned: None,
+            elsewhere: None,
+            since: None,
+        })),
+        vec![],
+        20,
+    );
+    let outcome = managed.insert_and_apply(upd).unwrap();
+    assert!(
+        matches!(outcome.apply_result, Some(ApplyResult::Applied)),
+        "member UpdateProfile must apply: {:?}",
+        outcome.apply_result,
+    );
+    assert_eq!(
+        managed
+            .state()
+            .profiles
+            .get(&peer.endpoint_id())
+            .and_then(|p| p.pronouns.as_deref()),
+        Some("they/them"),
+    );
+}
+
+#[test]
+fn update_profile_by_kicked_member_is_rejected() {
+    use crate::materialize::ApplyResult;
+    use crate::types::ProfileDelta;
+
+    let (mut managed, _admin, peer, _kick) = setup_kicked_peer();
+
+    let upd = managed.dag().create_event(
+        &peer,
+        EventKind::UpdateProfile(Box::new(ProfileDelta {
+            display_name: None,
+            pronouns: Some(Some("rogue".into())),
+            bio: None,
+            tagline: None,
+            crest_pattern: None,
+            crest_color: None,
+            pinned: None,
+            elsewhere: None,
+            since: None,
+        })),
+        vec![],
+        30,
+    );
+    let outcome = managed.insert_and_apply(upd).unwrap();
+    match &outcome.apply_result {
+        Some(ApplyResult::Rejected(reason)) => {
+            assert!(
+                reason.contains("is not a member"),
+                "rejection reason must mention non-membership: {reason}",
+            );
+        }
+        other => panic!("kicked-member UpdateProfile must be rejected: {other:?}"),
+    }
+    assert_ne!(
+        managed
+            .state()
+            .profiles
+            .get(&peer.endpoint_id())
+            .and_then(|p| p.pronouns.as_deref()),
+        Some("rogue"),
+        "kicked peer must not mutate profile state",
+    );
+}
+
+#[test]
+fn update_profile_by_non_member_is_rejected() {
+    use crate::materialize::ApplyResult;
+    use crate::types::ProfileDelta;
+
+    let admin = Identity::generate();
+    let stranger = Identity::generate();
+    let mut managed = crate::managed::ManagedDag::new(&admin, "S", 5000).unwrap();
+
+    let upd = managed.dag().create_event(
+        &stranger,
+        EventKind::UpdateProfile(Box::new(ProfileDelta {
+            display_name: None,
+            pronouns: Some(Some("nope".into())),
+            bio: None,
+            tagline: None,
+            crest_pattern: None,
+            crest_color: None,
+            pinned: None,
+            elsewhere: None,
+            since: None,
+        })),
+        vec![],
+        10,
+    );
+    let outcome = managed.insert_and_apply(upd).unwrap();
+    match &outcome.apply_result {
+        Some(ApplyResult::Rejected(reason)) => {
+            assert!(
+                reason.contains("is not a member"),
+                "rejection reason must mention non-membership: {reason}",
+            );
+        }
+        other => panic!("non-member UpdateProfile must be rejected: {other:?}"),
+    }
+    assert!(
+        !managed
+            .state()
+            .profiles
+            .contains_key(&stranger.endpoint_id()),
+        "non-member must not create profile entry",
+    );
+}
+
+// PinMessage / UnpinMessage --------------------------------------------------
+
+/// Helper: build a server with one channel and one message authored by
+/// `peer` (a member). Returns the message hash, useful for Pin/Unpin
+/// scenarios.
+fn setup_channel_with_peer_message(
+    managed: &mut crate::managed::ManagedDag,
+    admin: &Identity,
+    peer: &Identity,
+    channel_id: &str,
+) -> EventHash {
+    let create = managed.dag().create_event(
+        admin,
+        EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: channel_id.into(),
+            kind: crate::types::ChannelKind::Text,
+            ephemeral: None,
+        },
+        vec![],
+        5,
+    );
+    managed.insert_and_apply(create).unwrap();
+
+    let msg = managed.dag().create_event(
+        peer,
+        EventKind::Message {
+            channel_id: channel_id.into(),
+            body: "hi".into(),
+            reply_to: None,
+        },
+        vec![],
+        15,
+    );
+    let h = msg.hash;
+    managed.insert_and_apply(msg).unwrap();
+    h
+}
+
+#[test]
+fn pin_message_by_member_is_applied() {
+    use crate::materialize::ApplyResult;
+
+    let admin = Identity::generate();
+    let peer = Identity::generate();
+    let mut managed = crate::managed::ManagedDag::new(&admin, "S", 5000).unwrap();
+
+    let grant = managed.dag().create_event(
+        &admin,
+        EventKind::GrantPermission {
+            peer_id: peer.endpoint_id(),
+            permission: Permission::SendMessages,
+        },
+        vec![],
+        1,
+    );
+    managed.insert_and_apply(grant).unwrap();
+
+    let msg_hash = setup_channel_with_peer_message(&mut managed, &admin, &peer, "ch1");
+
+    let pin = managed.dag().create_event(
+        &peer,
+        EventKind::PinMessage {
+            channel_id: "ch1".into(),
+            message_id: msg_hash,
+        },
+        vec![],
+        20,
+    );
+    let outcome = managed.insert_and_apply(pin).unwrap();
+    assert!(
+        matches!(outcome.apply_result, Some(ApplyResult::Applied)),
+        "member PinMessage must apply: {:?}",
+        outcome.apply_result,
+    );
+    assert!(managed
+        .state()
+        .channels
+        .get("ch1")
+        .unwrap()
+        .pinned_messages
+        .contains(&msg_hash));
+}
+
+#[test]
+fn pin_message_by_kicked_member_is_rejected() {
+    use crate::materialize::ApplyResult;
+
+    // Set up: peer is member, posts a message, then is kicked. Late
+    // PinMessage from peer must be rejected.
+    let admin = Identity::generate();
+    let peer = Identity::generate();
+    let mut managed = crate::managed::ManagedDag::new(&admin, "S", 5000).unwrap();
+
+    let grant = managed.dag().create_event(
+        &admin,
+        EventKind::GrantPermission {
+            peer_id: peer.endpoint_id(),
+            permission: Permission::SendMessages,
+        },
+        vec![],
+        1,
+    );
+    managed.insert_and_apply(grant).unwrap();
+
+    let msg_hash = setup_channel_with_peer_message(&mut managed, &admin, &peer, "ch1");
+
+    let kick = managed.dag().create_event(
+        &admin,
+        EventKind::Propose {
+            action: ProposedAction::KickMember {
+                peer_id: peer.endpoint_id(),
+            },
+        },
+        vec![],
+        25,
+    );
+    managed.insert_and_apply(kick).unwrap();
+    assert!(!managed.state().members.contains_key(&peer.endpoint_id()));
+
+    let pin = managed.dag().create_event(
+        &peer,
+        EventKind::PinMessage {
+            channel_id: "ch1".into(),
+            message_id: msg_hash,
+        },
+        vec![],
+        30,
+    );
+    let outcome = managed.insert_and_apply(pin).unwrap();
+    match &outcome.apply_result {
+        Some(ApplyResult::Rejected(reason)) => {
+            assert!(
+                reason.contains("is not a member"),
+                "rejection reason must mention non-membership: {reason}",
+            );
+        }
+        other => panic!("kicked-member PinMessage must be rejected: {other:?}"),
+    }
+    assert!(
+        !managed
+            .state()
+            .channels
+            .get("ch1")
+            .unwrap()
+            .pinned_messages
+            .contains(&msg_hash),
+        "kicked peer must not mutate pinned_messages",
+    );
+}
+
+#[test]
+fn pin_message_by_non_member_is_rejected() {
+    use crate::materialize::ApplyResult;
+
+    let admin = Identity::generate();
+    let stranger = Identity::generate();
+    let mut managed = crate::managed::ManagedDag::new(&admin, "S", 5000).unwrap();
+
+    let create = managed.dag().create_event(
+        &admin,
+        EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: "ch1".into(),
+            kind: crate::types::ChannelKind::Text,
+            ephemeral: None,
+        },
+        vec![],
+        5,
+    );
+    managed.insert_and_apply(create).unwrap();
+
+    // Use admin's own message as the target — stranger never joined,
+    // so they have no events of their own. Authority gate should fire
+    // before message-existence is even checked.
+    let msg = managed.dag().create_event(
+        &admin,
+        EventKind::Message {
+            channel_id: "ch1".into(),
+            body: "hello".into(),
+            reply_to: None,
+        },
+        vec![],
+        10,
+    );
+    let msg_hash = msg.hash;
+    managed.insert_and_apply(msg).unwrap();
+
+    let pin = managed.dag().create_event(
+        &stranger,
+        EventKind::PinMessage {
+            channel_id: "ch1".into(),
+            message_id: msg_hash,
+        },
+        vec![],
+        20,
+    );
+    let outcome = managed.insert_and_apply(pin).unwrap();
+    match &outcome.apply_result {
+        Some(ApplyResult::Rejected(reason)) => {
+            assert!(
+                reason.contains("is not a member"),
+                "rejection reason must mention non-membership: {reason}",
+            );
+        }
+        other => panic!("non-member PinMessage must be rejected: {other:?}"),
+    }
+    assert!(
+        !managed
+            .state()
+            .channels
+            .get("ch1")
+            .unwrap()
+            .pinned_messages
+            .contains(&msg_hash),
+        "non-member must not mutate pinned_messages",
+    );
+}
+
+#[test]
+fn unpin_message_by_member_is_applied() {
+    use crate::materialize::ApplyResult;
+
+    let admin = Identity::generate();
+    let peer = Identity::generate();
+    let mut managed = crate::managed::ManagedDag::new(&admin, "S", 5000).unwrap();
+
+    let grant = managed.dag().create_event(
+        &admin,
+        EventKind::GrantPermission {
+            peer_id: peer.endpoint_id(),
+            permission: Permission::SendMessages,
+        },
+        vec![],
+        1,
+    );
+    managed.insert_and_apply(grant).unwrap();
+
+    let msg_hash = setup_channel_with_peer_message(&mut managed, &admin, &peer, "ch1");
+
+    // Admin pins, then peer unpins.
+    let pin = managed.dag().create_event(
+        &admin,
+        EventKind::PinMessage {
+            channel_id: "ch1".into(),
+            message_id: msg_hash,
+        },
+        vec![],
+        20,
+    );
+    managed.insert_and_apply(pin).unwrap();
+
+    let unpin = managed.dag().create_event(
+        &peer,
+        EventKind::UnpinMessage {
+            channel_id: "ch1".into(),
+            message_id: msg_hash,
+        },
+        vec![],
+        30,
+    );
+    let outcome = managed.insert_and_apply(unpin).unwrap();
+    assert!(
+        matches!(outcome.apply_result, Some(ApplyResult::Applied)),
+        "member UnpinMessage must apply: {:?}",
+        outcome.apply_result,
+    );
+    assert!(!managed
+        .state()
+        .channels
+        .get("ch1")
+        .unwrap()
+        .pinned_messages
+        .contains(&msg_hash));
+}
+
+#[test]
+fn unpin_message_by_kicked_member_is_rejected() {
+    use crate::materialize::ApplyResult;
+
+    let admin = Identity::generate();
+    let peer = Identity::generate();
+    let mut managed = crate::managed::ManagedDag::new(&admin, "S", 5000).unwrap();
+
+    let grant = managed.dag().create_event(
+        &admin,
+        EventKind::GrantPermission {
+            peer_id: peer.endpoint_id(),
+            permission: Permission::SendMessages,
+        },
+        vec![],
+        1,
+    );
+    managed.insert_and_apply(grant).unwrap();
+
+    let msg_hash = setup_channel_with_peer_message(&mut managed, &admin, &peer, "ch1");
+
+    // Admin pins.
+    let pin = managed.dag().create_event(
+        &admin,
+        EventKind::PinMessage {
+            channel_id: "ch1".into(),
+            message_id: msg_hash,
+        },
+        vec![],
+        20,
+    );
+    managed.insert_and_apply(pin).unwrap();
+    assert!(managed
+        .state()
+        .channels
+        .get("ch1")
+        .unwrap()
+        .pinned_messages
+        .contains(&msg_hash));
+
+    // Kick peer.
+    let kick = managed.dag().create_event(
+        &admin,
+        EventKind::Propose {
+            action: ProposedAction::KickMember {
+                peer_id: peer.endpoint_id(),
+            },
+        },
+        vec![],
+        25,
+    );
+    managed.insert_and_apply(kick).unwrap();
+    assert!(!managed.state().members.contains_key(&peer.endpoint_id()));
+
+    // Late UnpinMessage from kicked peer must be rejected.
+    let unpin = managed.dag().create_event(
+        &peer,
+        EventKind::UnpinMessage {
+            channel_id: "ch1".into(),
+            message_id: msg_hash,
+        },
+        vec![],
+        30,
+    );
+    let outcome = managed.insert_and_apply(unpin).unwrap();
+    match &outcome.apply_result {
+        Some(ApplyResult::Rejected(reason)) => {
+            assert!(
+                reason.contains("is not a member"),
+                "rejection reason must mention non-membership: {reason}",
+            );
+        }
+        other => panic!("kicked-member UnpinMessage must be rejected: {other:?}"),
+    }
+    assert!(
+        managed
+            .state()
+            .channels
+            .get("ch1")
+            .unwrap()
+            .pinned_messages
+            .contains(&msg_hash),
+        "kicked peer must not unpin",
+    );
+}
+
+#[test]
+fn unpin_message_by_non_member_is_rejected() {
+    use crate::materialize::ApplyResult;
+
+    let admin = Identity::generate();
+    let stranger = Identity::generate();
+    let mut managed = crate::managed::ManagedDag::new(&admin, "S", 5000).unwrap();
+
+    let create = managed.dag().create_event(
+        &admin,
+        EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: "ch1".into(),
+            kind: crate::types::ChannelKind::Text,
+            ephemeral: None,
+        },
+        vec![],
+        5,
+    );
+    managed.insert_and_apply(create).unwrap();
+
+    let msg = managed.dag().create_event(
+        &admin,
+        EventKind::Message {
+            channel_id: "ch1".into(),
+            body: "hello".into(),
+            reply_to: None,
+        },
+        vec![],
+        10,
+    );
+    let msg_hash = msg.hash;
+    managed.insert_and_apply(msg).unwrap();
+
+    // Admin pins.
+    let pin = managed.dag().create_event(
+        &admin,
+        EventKind::PinMessage {
+            channel_id: "ch1".into(),
+            message_id: msg_hash,
+        },
+        vec![],
+        15,
+    );
+    managed.insert_and_apply(pin).unwrap();
+
+    let unpin = managed.dag().create_event(
+        &stranger,
+        EventKind::UnpinMessage {
+            channel_id: "ch1".into(),
+            message_id: msg_hash,
+        },
+        vec![],
+        20,
+    );
+    let outcome = managed.insert_and_apply(unpin).unwrap();
+    match &outcome.apply_result {
+        Some(ApplyResult::Rejected(reason)) => {
+            assert!(
+                reason.contains("is not a member"),
+                "rejection reason must mention non-membership: {reason}",
+            );
+        }
+        other => panic!("non-member UnpinMessage must be rejected: {other:?}"),
+    }
+    assert!(
+        managed
+            .state()
+            .channels
+            .get("ch1")
+            .unwrap()
+            .pinned_messages
+            .contains(&msg_hash),
+        "non-member must not unpin",
+    );
+}

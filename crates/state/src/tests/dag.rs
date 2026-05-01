@@ -422,12 +422,28 @@ fn managed_dag_insert_remote_event_applies_to_state() {
 
     // Simulate a remote event from a different peer.
     let peer = Identity::generate();
+    // Grant peer membership first — `SetProfile` is gated on
+    // membership (issue #177); the grant adds peer to `state.members`.
+    let grant = managed.dag().create_event(
+        &owner,
+        EventKind::GrantPermission {
+            peer_id: peer.endpoint_id(),
+            permission: crate::event::Permission::SendMessages,
+        },
+        vec![],
+        50,
+    );
+    let grant_hash = grant.hash;
+    managed.insert_and_apply(grant).unwrap();
+
+    // Causally link the SetProfile to the grant so topological sort
+    // applies the grant first.
     let event = managed.dag().create_event(
         &peer,
         EventKind::SetProfile {
             display_name: "Alice".into(),
         },
-        vec![],
+        vec![grant_hash],
         100,
     );
     let outcome = managed.insert_and_apply(event).unwrap();
@@ -450,13 +466,28 @@ fn managed_dag_buffers_gap_events_and_resolves() {
     let peer = Identity::generate();
     let mut managed = ManagedDag::new(&owner, "Test", 5000).unwrap();
 
-    // Create peer's seq=1 event.
+    // Grant peer membership first — `SetProfile` is gated on
+    // membership (issue #177); the grant adds peer to `state.members`.
+    let grant = managed.dag().create_event(
+        &owner,
+        EventKind::GrantPermission {
+            peer_id: peer.endpoint_id(),
+            permission: crate::event::Permission::SendMessages,
+        },
+        vec![],
+        0,
+    );
+    let grant_hash = grant.hash;
+    managed.insert_and_apply(grant).unwrap();
+
+    // Create peer's seq=1 event, depending on the grant so topological
+    // sort guarantees the grant applies first.
     let e1 = managed.dag().create_event(
         &peer,
         EventKind::SetProfile {
             display_name: "first".into(),
         },
-        vec![],
+        vec![grant_hash],
         0,
     );
 

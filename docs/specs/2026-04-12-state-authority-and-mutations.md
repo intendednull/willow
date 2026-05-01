@@ -76,7 +76,8 @@ cases where a remote event is rejected:
 | **Governance (vote)** | `Propose`, `Vote` | `is_admin()` — only admins may propose or vote. Actions auto-apply when vote threshold is met. |
 | **Admin-only** | `GrantPermission`, `RevokePermission`, `RenameServer`, `SetServerDescription` | `is_admin()` — any single admin can execute these directly. |
 | **Permission-gated** | `Message`, `EditMessage`, `DeleteMessage`, `Reaction` → `SendMessages`; `CreateChannel`, `DeleteChannel`, `RenameChannel`, `RotateChannelKey` → `ManageChannels`; `CreateRole`, `DeleteRole`, `SetPermission`, `AssignRole` → `ManageRoles` | `has_permission()` — admins pass implicitly; non-admins need an explicit grant. |
-| **Unrestricted** | `SetProfile`, `UpdateProfile`, `PinMessage`, `UnpinMessage`, `MuteChannel`, `MuteGrove` | No check — any member can execute. |
+| **Member-only (server state)** | `SetProfile`, `UpdateProfile`, `PinMessage`, `UnpinMessage` | `state.members.contains_key(&author)` — any current member can execute. `required_permission()` returns `None`, so the membership gate lives in each handler in `apply_mutation` (defense-in-depth, see issue #177). Note: this is "any current member" — distinct from "any signer" with no gate at all. |
+| **Per-identity preference (no gate)** | `MuteChannel`, `MuteGrove` | No check — these are personal preferences, not shared server state. Preferences persist across kicks. |
 | **Genesis** | `CreateServer` | No-op on replay; the genesis author becomes the sole initial admin. |
 
 Admin status is tracked in `ServerState.admins` and is **not** a variant
@@ -102,10 +103,23 @@ comment so reviewers notice when a new variant is missing:
   admin block
 - `RenameServer`, `SetServerDescription` — admin-only, checked in the
   admin block
-- `SetProfile` — intentionally unrestricted
-- `UpdateProfile` — intentionally unrestricted (any member; self-authorship enforced structurally)
-- `PinMessage`, `UnpinMessage` — intentionally unrestricted
+- `SetProfile` — any current member; membership gate enforced in
+  `apply_mutation` (not in `required_permission()`). See issue #177.
+- `UpdateProfile` — any current member; membership gate enforced in
+  `apply_mutation`. Self-authorship is enforced structurally (only the
+  author's own profile is mutated). See issue #177.
+- `PinMessage`, `UnpinMessage` — any current member; membership gate
+  enforced in `apply_mutation` (not in `required_permission()`). See
+  issue #177.
 - `MuteChannel`, `MuteGrove` — per-identity preference, never gated
+  (preferences are not shared server state and survive a kick)
+
+**"Intentionally unrestricted" still requires membership.** The
+membership gate (`state.members.contains_key(&event.author)`) lives in
+the per-handler block inside `apply_mutation`, not in
+`required_permission()`. This is defense-in-depth: even if a future
+refactor changes the permission table, the handler-local gate keeps
+non-members from mutating server state.
 
 If a variant is not in this list and not in a `required_permission()`
 arm, it is a bug.
