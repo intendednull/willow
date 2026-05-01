@@ -229,6 +229,7 @@ impl ReplayRole {
     }
 }
 
+#[async_trait::async_trait]
 impl WorkerRole for ReplayRole {
     fn role_info(&self) -> WorkerRoleInfo {
         WorkerRoleInfo::Replay {
@@ -270,7 +271,11 @@ impl WorkerRole for ReplayRole {
         self.ingest_event(&server_id, event);
     }
 
-    fn handle_request(&mut self, req: WorkerRequest) -> WorkerResponse {
+    async fn handle_request(
+        &mut self,
+        _signer: willow_identity::EndpointId,
+        req: WorkerRequest,
+    ) -> WorkerResponse {
         match req {
             WorkerRequest::Sync { server_id, heads } => {
                 let data = match self.servers.get(&server_id) {
@@ -326,6 +331,9 @@ impl WorkerRole for ReplayRole {
             WorkerRequest::History { .. } => WorkerResponse::Denied {
                 reason: "replay nodes do not serve history".to_string(),
             },
+            _ => WorkerResponse::Denied {
+                reason: "unsupported request type".to_string(),
+            },
         }
     }
 
@@ -339,6 +347,21 @@ mod tests {
     use super::*;
     use willow_identity::Identity;
     use willow_state::{EventHash, EventKind};
+
+    /// Drive an async `handle_request` call from sync `#[test]` bodies.
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(f)
+    }
+
+    /// Test signer for `handle_request` calls. The replay role ignores the
+    /// signer (it only uses it for permission-aware roles like feedback),
+    /// so any deterministic value works.
+    fn test_signer() -> willow_identity::EndpointId {
+        Identity::generate().endpoint_id()
+    }
 
     fn make_dag_event(id: &Identity, seq: u64, prev: EventHash, kind: EventKind) -> Event {
         Event::new(id, seq, prev, vec![], kind, seq * 1000)
@@ -431,10 +454,13 @@ mod tests {
         }
 
         // Empty heads = new peer, should get all events.
-        let resp = role.handle_request(WorkerRequest::Sync {
-            server_id: "srv-1".to_string(),
-            heads: HeadsSummary::default(),
-        });
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::Sync {
+                server_id: "srv-1".to_string(),
+                heads: HeadsSummary::default(),
+            },
+        ));
 
         match resp {
             WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 4),
@@ -446,10 +472,13 @@ mod tests {
     fn sync_request_unknown_server_denied() {
         let mut role = ReplayRole::new(ReplayConfig::default());
 
-        let resp = role.handle_request(WorkerRequest::Sync {
-            server_id: "nonexistent".to_string(),
-            heads: HeadsSummary::default(),
-        });
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::Sync {
+                server_id: "nonexistent".to_string(),
+                heads: HeadsSummary::default(),
+            },
+        ));
 
         match resp {
             WorkerResponse::Denied { reason } => assert!(reason.contains("unknown server")),
@@ -481,10 +510,13 @@ mod tests {
                 hash: EventHash::from_bytes(b"doesnt-matter-for-delta"),
             },
         );
-        let resp = role.handle_request(WorkerRequest::Sync {
-            server_id: "srv-1".to_string(),
-            heads: HeadsSummary { heads: their_heads },
-        });
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::Sync {
+                server_id: "srv-1".to_string(),
+                heads: HeadsSummary { heads: their_heads },
+            },
+        ));
 
         match resp {
             WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 2),
@@ -496,12 +528,15 @@ mod tests {
     fn history_request_denied_by_replay_node() {
         let mut role = ReplayRole::new(ReplayConfig::default());
 
-        let resp = role.handle_request(WorkerRequest::History {
-            server_id: "srv-1".to_string(),
-            channel: Some("general".to_string()),
-            before: None,
-            limit: 50,
-        });
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::History {
+                server_id: "srv-1".to_string(),
+                channel: Some("general".to_string()),
+                before: None,
+                limit: 50,
+            },
+        ));
 
         match resp {
             WorkerResponse::Denied { reason } => assert!(reason.contains("history")),
@@ -695,10 +730,13 @@ mod tests {
             },
         );
 
-        let resp = role.handle_request(WorkerRequest::Sync {
-            server_id: "srv-1".to_string(),
-            heads: HeadsSummary { heads: their_heads },
-        });
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::Sync {
+                server_id: "srv-1".to_string(),
+                heads: HeadsSummary { heads: their_heads },
+            },
+        ));
 
         match resp {
             WorkerResponse::SyncBatch { events } => assert!(
@@ -727,10 +765,13 @@ mod tests {
         // Brand-new peer with no heads at all → delta condition fires
         // (heads.heads.is_empty() skips the they_are_behind check) and
         // events_since returns all 5 events.
-        let resp = role.handle_request(WorkerRequest::Sync {
-            server_id: "srv-1".to_string(),
-            heads: HeadsSummary::default(),
-        });
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::Sync {
+                server_id: "srv-1".to_string(),
+                heads: HeadsSummary::default(),
+            },
+        ));
 
         match resp {
             WorkerResponse::SyncBatch { events } => assert_eq!(
@@ -817,12 +858,15 @@ mod tests {
             },
         );
 
-        let resp = role.handle_request(WorkerRequest::Sync {
-            server_id: "srv-1".to_string(),
-            heads: HeadsSummary {
-                heads: their_heads.clone(),
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::Sync {
+                server_id: "srv-1".to_string(),
+                heads: HeadsSummary {
+                    heads: their_heads.clone(),
+                },
             },
-        });
+        ));
 
         // Pre-compaction: member's events are still in memory so we get a
         // SyncBatch with them rather than a Snapshot.
@@ -911,10 +955,13 @@ mod tests {
             },
         );
 
-        let resp = role.handle_request(WorkerRequest::Sync {
-            server_id: "srv-1".to_string(),
-            heads: HeadsSummary { heads: their_heads },
-        });
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::Sync {
+                server_id: "srv-1".to_string(),
+                heads: HeadsSummary { heads: their_heads },
+            },
+        ));
 
         match resp {
             WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 2),
@@ -948,10 +995,13 @@ mod tests {
             },
         );
 
-        let resp = role.handle_request(WorkerRequest::Sync {
-            server_id: "srv-1".to_string(),
-            heads: HeadsSummary { heads: their_heads },
-        });
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::Sync {
+                server_id: "srv-1".to_string(),
+                heads: HeadsSummary { heads: their_heads },
+            },
+        ));
 
         match resp {
             WorkerResponse::SyncBatch { events } => {

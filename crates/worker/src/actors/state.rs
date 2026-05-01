@@ -50,13 +50,12 @@ impl Handler<EventMsg> for StateActor {
 }
 
 impl Handler<WorkerRequestMsg> for StateActor {
-    fn handle(
+    async fn handle(
         &mut self,
         msg: WorkerRequestMsg,
         _ctx: &mut Context<Self>,
-    ) -> impl std::future::Future<Output = crate::types::WorkerResponse> + Send {
-        let response = self.role.handle_request(msg.0);
-        async move { response }
+    ) -> crate::types::WorkerResponse {
+        self.role.handle_request(msg.signer, msg.req).await
     }
 }
 
@@ -110,6 +109,7 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl WorkerRole for TestRole {
         fn role_info(&self) -> WorkerRoleInfo {
             WorkerRoleInfo::Replay {
@@ -124,11 +124,18 @@ mod tests {
             self.event_count += 1;
         }
 
-        fn handle_request(&mut self, req: WorkerRequest) -> WorkerResponse {
+        async fn handle_request(
+            &mut self,
+            _signer: willow_identity::EndpointId,
+            req: WorkerRequest,
+        ) -> WorkerResponse {
             match req {
                 WorkerRequest::Sync { .. } => WorkerResponse::SyncBatch { events: vec![] },
                 WorkerRequest::History { .. } => WorkerResponse::Denied {
                     reason: "not a storage node".to_string(),
+                },
+                _ => WorkerResponse::Denied {
+                    reason: "unsupported request type".to_string(),
                 },
             }
         }
@@ -181,12 +188,17 @@ mod tests {
             ready: None,
         });
 
+        let signer = willow_identity::Identity::generate().endpoint_id();
+
         // Sync request.
         let resp = addr
-            .ask(WorkerRequestMsg(WorkerRequest::Sync {
-                server_id: "srv".to_string(),
-                heads: HeadsSummary::default(),
-            }))
+            .ask(WorkerRequestMsg {
+                req: WorkerRequest::Sync {
+                    server_id: "srv".to_string(),
+                    heads: HeadsSummary::default(),
+                },
+                signer,
+            })
             .await
             .unwrap();
         match resp {
@@ -196,12 +208,15 @@ mod tests {
 
         // History request (denied by replay role).
         let resp = addr
-            .ask(WorkerRequestMsg(WorkerRequest::History {
-                server_id: "srv".to_string(),
-                channel: Some("general".to_string()),
-                before: None,
-                limit: 50,
-            }))
+            .ask(WorkerRequestMsg {
+                req: WorkerRequest::History {
+                    server_id: "srv".to_string(),
+                    channel: Some("general".to_string()),
+                    before: None,
+                    limit: 50,
+                },
+                signer,
+            })
             .await
             .unwrap();
         match resp {
@@ -239,12 +254,16 @@ mod tests {
             ready: None,
         });
 
+        let signer = willow_identity::Identity::generate().endpoint_id();
         let mut futs = vec![];
         for _ in 0..10 {
-            let f = addr.ask(WorkerRequestMsg(WorkerRequest::Sync {
-                server_id: "srv".to_string(),
-                heads: HeadsSummary::default(),
-            }));
+            let f = addr.ask(WorkerRequestMsg {
+                req: WorkerRequest::Sync {
+                    server_id: "srv".to_string(),
+                    heads: HeadsSummary::default(),
+                },
+                signer,
+            });
             futs.push(f);
         }
 

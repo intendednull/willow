@@ -34,6 +34,7 @@ impl TestReplayRole {
     }
 }
 
+#[async_trait::async_trait]
 impl WorkerRole for TestReplayRole {
     fn role_info(&self) -> WorkerRoleInfo {
         WorkerRoleInfo::Replay {
@@ -54,7 +55,11 @@ impl WorkerRole for TestReplayRole {
         }
     }
 
-    fn handle_request(&mut self, req: WorkerRequest) -> WorkerResponse {
+    async fn handle_request(
+        &mut self,
+        _signer: willow_identity::EndpointId,
+        req: WorkerRequest,
+    ) -> WorkerResponse {
         match req {
             WorkerRequest::Sync { heads, .. } => {
                 if heads.heads.is_empty() {
@@ -71,6 +76,9 @@ impl WorkerRole for TestReplayRole {
             }
             WorkerRequest::History { .. } => WorkerResponse::Denied {
                 reason: "not a storage node".to_string(),
+            },
+            _ => WorkerResponse::Denied {
+                reason: "unsupported request type".to_string(),
             },
         }
     }
@@ -129,12 +137,17 @@ async fn state_actor_with_replay_role_full_flow() {
         _ => panic!("expected Replay"),
     }
 
+    let signer = Identity::generate().endpoint_id();
+
     // 3. Sync request with empty heads — should return all events.
     let resp = addr
-        .ask(WorkerRequestMsg(WorkerRequest::Sync {
-            server_id: "srv-1".to_string(),
-            heads: HeadsSummary::default(),
-        }))
+        .ask(WorkerRequestMsg {
+            req: WorkerRequest::Sync {
+                server_id: "srv-1".to_string(),
+                heads: HeadsSummary::default(),
+            },
+            signer,
+        })
         .await
         .unwrap();
     match resp {
@@ -144,12 +157,15 @@ async fn state_actor_with_replay_role_full_flow() {
 
     // 4. History request — should be denied.
     let resp = addr
-        .ask(WorkerRequestMsg(WorkerRequest::History {
-            server_id: "srv-1".to_string(),
-            channel: Some("general".to_string()),
-            before: None,
-            limit: 10,
-        }))
+        .ask(WorkerRequestMsg {
+            req: WorkerRequest::History {
+                server_id: "srv-1".to_string(),
+                channel: Some("general".to_string()),
+                before: None,
+                limit: 10,
+            },
+            signer,
+        })
         .await
         .unwrap();
     match resp {
@@ -228,13 +244,18 @@ async fn concurrent_requests_all_resolve() {
         ready: None,
     });
 
+    let signer = Identity::generate().endpoint_id();
+
     // Fire 50 concurrent requests.
     let mut futs = vec![];
     for _ in 0..50 {
-        let f = addr.ask(WorkerRequestMsg(WorkerRequest::Sync {
-            server_id: "srv-1".to_string(),
-            heads: HeadsSummary::default(),
-        }));
+        let f = addr.ask(WorkerRequestMsg {
+            req: WorkerRequest::Sync {
+                server_id: "srv-1".to_string(),
+                heads: HeadsSummary::default(),
+            },
+            signer,
+        });
         futs.push(f);
     }
 
@@ -279,12 +300,17 @@ async fn events_applied_then_queried_via_request() {
         addr.do_send(EventMsg(e)).unwrap();
     }
 
+    let signer = Identity::generate().endpoint_id();
+
     // Query — should only get 5 (buffer evicted oldest).
     let resp = addr
-        .ask(WorkerRequestMsg(WorkerRequest::Sync {
-            server_id: "srv-1".to_string(),
-            heads: HeadsSummary::default(),
-        }))
+        .ask(WorkerRequestMsg {
+            req: WorkerRequest::Sync {
+                server_id: "srv-1".to_string(),
+                heads: HeadsSummary::default(),
+            },
+            signer,
+        })
         .await
         .unwrap();
     match resp {
@@ -809,6 +835,7 @@ impl TestHeadsRole {
     }
 }
 
+#[async_trait::async_trait]
 impl willow_common::WorkerRole for TestHeadsRole {
     fn role_info(&self) -> willow_common::WorkerRoleInfo {
         willow_common::WorkerRoleInfo::Replay {
@@ -821,8 +848,9 @@ impl willow_common::WorkerRole for TestHeadsRole {
 
     fn on_event(&mut self, _event: &willow_state::Event) {}
 
-    fn handle_request(
+    async fn handle_request(
         &mut self,
+        _signer: willow_identity::EndpointId,
         _req: willow_common::WorkerRequest,
     ) -> willow_common::WorkerResponse {
         willow_common::WorkerResponse::Denied {
@@ -957,10 +985,13 @@ async fn sync_request_response_returns_known_events() {
 
     // A peer that has no events sends Sync with empty heads.
     let resp = state_addr
-        .ask(WorkerRequestMsg(willow_common::WorkerRequest::Sync {
-            server_id: "srv-conv".to_string(),
-            heads: willow_state::HeadsSummary::default(),
-        }))
+        .ask(WorkerRequestMsg {
+            req: willow_common::WorkerRequest::Sync {
+                server_id: "srv-conv".to_string(),
+                heads: willow_state::HeadsSummary::default(),
+            },
+            signer: Identity::generate().endpoint_id(),
+        })
         .await
         .unwrap();
 

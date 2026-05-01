@@ -23,7 +23,10 @@ impl Message for EventMsg {
 }
 
 /// A client request that needs a response.
-pub struct WorkerRequestMsg(pub WorkerRequest);
+pub struct WorkerRequestMsg {
+    pub req: WorkerRequest,
+    pub signer: willow_identity::EndpointId,
+}
 impl Message for WorkerRequestMsg {
     type Result = WorkerResponse;
 }
