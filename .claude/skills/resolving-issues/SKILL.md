@@ -181,11 +181,32 @@ Coordinator owns this check (metadata work, allowed under "coordinator never cod
 ### Waiting for implementer commits without polling
 - Implementer agent runs in the background. Coordinator gets a notification when the agent's tool call completes — but the agent's *commit* may land seconds before that, and the harness's stop hook fires on uncommitted changes during cargo gates.
 - **Don't sleep, don't poll, don't read the agent's output file.** The system explicitly blocks long sleeps and warns against reading sub-agent transcripts (context overflow).
-- **Use `Monitor` with an `until` loop watching for HEAD to advance** past the prior known SHA. One notification fires when the loop exits; the coordinator stays idle in between. Pattern:
+- **Capture the full pre-dispatch SHA via `git log -1 --format='%H' <branch>` BEFORE arming the wait.** Use that exact 40-char string in the until-condition. Never type/synthesize the hash from a short prefix (`31c7851` ≠ `31c7851bf8c6...` — the loop will exit immediately on the mismatched comparison and you'll spuriously conclude the agent committed). Pattern: capture into a shell variable, interpolate into the loop.
+- **Use `Monitor` (or `Bash` background with an `until` loop) watching for HEAD to advance** past the captured SHA. One notification fires when the loop exits; the coordinator stays idle in between. Pattern:
   ```bash
-  cd /home/user/willow && until [ "$(git log -1 --format='%H')" != "<prior-sha>" ]; do sleep 5; done; echo "agent committed: $(git log -1 --oneline)"
+  PRIOR=$(git log -1 --format='%H' <branch>)
+  until [ "$(git log -1 --format='%H' <branch>)" != "$PRIOR" ]; do sleep 10; done
+  git log -1 --oneline <branch>
   ```
-  Set `timeout_ms` to ~5–10 minutes for typical implementer runs (longer for cross-crate gates). The coordinator can do GitHub-API metadata work (filing follow-up issues, drafting PR body) while waiting; just don't touch files in the implementer's scope.
+  Set `timeout` to ~10–15 minutes for typical implementer runs (longer for cross-crate gates). The coordinator can do GitHub-API metadata work (filing follow-up issues, drafting PR body) while waiting; just don't touch files in the implementer's scope.
+- **Two independent signals: SHA-advance + agent-completion notification.** They arrive on their own schedules — agent-completion can lag the commit by minutes (or vice versa, agent can complete WITHOUT committing — see "Implementer cuts off mid-flight" below). Trust whichever signal answers your immediate question:
+  - "Did the implementer's work land on master?" → check git ref / wait for SHA-advance.
+  - "Did the implementer agent terminate?" → wait for agent-completion notification.
+  Don't treat them as redundant — and don't preemptively conclude the implementer crashed just because one arrived first.
+
+### Implementer cuts off mid-flight (uncommitted edits, agent terminated)
+- A surprisingly common failure mode: the implementer agent gets cut off (token budget, time slice, harness limit) AFTER making the substantive edits but BEFORE running the local merge gate or committing. Symptoms:
+  - Agent-completion notification arrives with a truncated/incomplete summary (e.g. "Spec doc looks good. Let me check the test result." mid-thought).
+  - `git status` shows uncommitted changes matching the issue's expected scope.
+  - Stop hook fires complaining about uncommitted changes.
+- **Don't conclude the work is wrong** — inspect the diff. If it matches the issue's intent, the edits are usually correct; the agent just ran out of runway before the gate-and-commit step.
+- **Don't restart the issue from scratch.** Dispatch a thin **finalize-implementer** agent: brief it on the existing uncommitted state, hand it the gate list + commit-and-push instructions verbatim, no need to re-do brainstorming or TDD-red. The previous implementer's substance stands; the finalize agent's job is the mechanical close-out (verify gates, commit, push, report SHA).
+- **Brief the finalize agent on what's already done** — paste a `git diff --stat` summary so it knows the scope and doesn't redo the work or panic at the size. Cite the previous agent's brainstorm decision (Option A/B etc.) so it carries the same reasoning into the commit body.
+- **Stop-hook noise is normal mid-implementer.** A `git status` showing uncommitted changes during a cargo gate run does NOT mean the implementer crashed. Only suspect crash-before-commit if (a) sufficient time has passed for the gates to finish (typically 5–10 min for a small fix, longer for `just check` workspace-wide), AND (b) the agent-completion notification has arrived AND no commit was made. Don't preemptively dispatch a finalize agent based on stop-hook chatter alone.
+- **Two false-alarm patterns to avoid:**
+  1. *Wrong-SHA wait exits immediately, you assume the implementer never started.* (See "Capture the full pre-dispatch SHA" above.) Result: redundant finalize dispatch on a tree the original agent already cleanly committed.
+  2. *Agent-completion notification lags the commit.* By the time you see the agent's summary, the work has been on origin for minutes. The redundant finalize agent will report "no changes to commit, gates green" — harmless but wasteful (~5 min cargo lock contention).
+  Both are mitigated by: capture full SHA → arm SHA-watch → wait for either signal → on signal arrival, `git status` first to disambiguate (clean tree = real commit landed; uncommitted edits matching scope = mid-flight, dispatch finalize).
 
 ### Implementer-flagged out-of-scope rot
 - When the implementer surfaces pre-existing rot it intentionally doesn't fix (e.g. unrelated wasm break under `--all-features`, dead-code warnings in untouched files), the coordinator files a follow-up GH issue using `mcp__github__issue_write` (metadata work, allowed under the Coordinator-never-codes rule). Cite the discovery context (which dispatch surfaced it, which commit + gate step) so the next run has full provenance.
