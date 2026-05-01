@@ -215,7 +215,10 @@ mod tests {
     struct StrictDoor;
 
     #[derive(Debug, Clone, PartialEq)]
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "Open variant exists for completeness; tests start in Closed and assert StrictDoor rejects further transitions."
+    )]
     enum DoorState {
         Open,
         Closed,

@@ -68,6 +68,18 @@ mod tests_profile_view;
 #[path = "tests/ephemeral.rs"]
 mod tests_ephemeral;
 
+#[cfg(test)]
+#[path = "tests/actions.rs"]
+mod tests_actions;
+
+#[cfg(test)]
+#[path = "tests/voice.rs"]
+mod tests_voice;
+
+#[cfg(test)]
+#[path = "tests/governance.rs"]
+mod tests_governance;
+
 /// How long a typing indicator remains visible after the last typing event, in milliseconds.
 pub const TYPING_INDICATOR_TTL_MS: u64 = 5_000;
 
@@ -111,7 +123,7 @@ pub enum ClientError {
 /// Helper to bridge `Broker<ClientEvent>` into an async stream receiver.
 pub mod event_receiver {
     use crate::events::ClientEvent;
-    use willow_actor::{Actor, Addr, Broker, BrokerSubscribe, Context, Handler};
+    use willow_actor::{Actor, Addr, Broker, BrokerAttach, BrokerSubscribe, Context, Handler};
 
     /// Async receiver for [`ClientEvent`]s from a [`Broker`].
     ///
@@ -132,6 +144,31 @@ pub mod event_receiver {
             let addr = system.spawn(ForwarderActor { tx });
             let recipient = addr.into();
             broker.ask(BrokerSubscribe(recipient)).await.ok();
+            Self { rx }
+        }
+
+        /// Subscribe synchronously without awaiting confirmation.
+        ///
+        /// Queues `BrokerSubscribe` via `do_send`, returning the receiver
+        /// immediately. The broker's mailbox is FIFO, so any `Publish`
+        /// queued AFTER this call is processed AFTER the subscription
+        /// is registered — no events are lost as long as no publish has
+        /// been queued before this call returns.
+        ///
+        /// Use from synchronous contexts (mount blocks, `Drop`, etc.)
+        /// where awaiting the async [`subscribe`] would create a window
+        /// in which events emitted between scheduling and confirmation
+        /// would be missed.
+        ///
+        /// [`subscribe`]: Self::subscribe
+        pub fn subscribe_now(
+            broker: &Addr<Broker<ClientEvent>>,
+            system: &willow_actor::SystemHandle,
+        ) -> Self {
+            let (tx, rx) =
+                willow_actor::runtime::channel(willow_actor::runtime::DEFAULT_MAILBOX_CAPACITY);
+            let addr = system.spawn(ForwarderActor { tx });
+            broker.do_send(BrokerAttach(addr.into())).ok();
             Self { rx }
         }
 
@@ -641,6 +678,11 @@ impl<N: willow_network::Network> ClientHandle<N> {
         // Load saved display name, or use config override.
         let local_endpoint = identity.endpoint_id();
         if let Some(ref name) = config.display_name {
+            // `state.profiles` is the legacy pre-actor `ProfileStore` —
+            // intentionally a plain `HashMap`. The total-entry cap lives
+            // on the actor-side `state_actors::ProfileState` (#429); this
+            // buffer only holds the local user's own name during init
+            // and is consumed when the actor is spawned below.
             state.profiles.names.insert(local_endpoint, name.clone());
             if config.persistence {
                 storage::save_profile(&storage::LocalProfile {
@@ -686,10 +728,17 @@ impl<N: willow_network::Network> ClientHandle<N> {
             };
             system.spawn(willow_actor::StateActor::new(meta))
         };
-        let profile_state_addr =
-            system.spawn(willow_actor::StateActor::new(state_actors::ProfileState {
-                names: state.profiles.names.clone(),
-            }));
+        let profile_state_addr = {
+            // Seed the actor via `insert_name` so the LRU recency queue
+            // mirrors `names`. Iteration order is irrelevant — at startup
+            // the seed is at most a handful of entries (local user
+            // profile + any persisted state) far below the cap.
+            let mut seeded = state_actors::ProfileState::default();
+            for (pid, name) in state.profiles.names.iter() {
+                seeded.insert_name(*pid, name.clone());
+            }
+            system.spawn(willow_actor::StateActor::new(seeded))
+        };
         let network_meta_addr = system.spawn(willow_actor::StateActor::new(
             state_actors::NetworkMeta::default(),
         ));
@@ -1039,8 +1088,14 @@ pub fn test_client() -> (
         current_channel: state.chat.current_channel.clone(),
         peers: state.chat.peers.clone(),
     }));
-    let profile_state_addr = sys.spawn(willow_actor::StateActor::new(state_actors::ProfileState {
-        names: state.profiles.names.clone(),
+    let profile_state_addr = sys.spawn(willow_actor::StateActor::new({
+        // Seed via `insert_name` so the LRU recency queue mirrors
+        // `names`. See sibling site in `ClientHandle::new` for context.
+        let mut seeded = state_actors::ProfileState::default();
+        for (pid, name) in state.profiles.names.iter() {
+            seeded.insert_name(*pid, name.clone());
+        }
+        seeded
     }));
     let network_meta_addr = sys.spawn(willow_actor::StateActor::new(
         state_actors::NetworkMeta::default(),
@@ -1248,6 +1303,26 @@ pub async fn test_client_on_hub(
 mod tests {
     use super::*;
 
+    /// Poll a derived view until `predicate` returns `true`, yielding
+    /// between attempts. Used in place of fixed `sleep(50ms)` waits after
+    /// mutations on a *source* actor whose change must propagate through
+    /// a `DerivedActor` recompute (Notify → spawn → UpdateCache hop).
+    /// Panics on a 5-second deadline so a real regression surfaces fast.
+    async fn await_view<F, Fut>(mut probe: F)
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = bool>,
+    {
+        let deadline = std::time::Duration::from_secs(5);
+        let ok = tokio::time::timeout(deadline, async {
+            while !probe().await {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(ok.is_ok(), "derived view did not converge within 5s");
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn actor_system_creates_and_responds() {
         let (client, _rx) = test_client();
@@ -1259,8 +1334,9 @@ mod tests {
     async fn send_message_and_read_back() {
         let (client, _rx) = test_client();
         client.send_message("general", "hello").await.unwrap();
-        // Give actor time to process
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // send_message awaits state::mutate(event_state) inside apply_event,
+        // and messages() reads the same actor — the FIFO mailbox guarantees
+        // the mutation is visible without a wall-clock wait.
         let msgs = client.messages("general").await;
         assert!(!msgs.is_empty());
         assert_eq!(msgs.last().unwrap().body, "hello");
@@ -1306,18 +1382,19 @@ mod tests {
             .send_message("general", "hello server2")
             .await
             .unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        // Verify the message is on the current (server2) state.
+        // Verify the message is on the current (server2) state. send_message
+        // awaits the event_state mutation; messages() reads the same actor.
         let msgs = client.messages("general").await;
         assert!(
             msgs.iter().any(|m| m.body == "hello server2"),
             "message should be on server2"
         );
 
-        // Switch back to server1.
+        // Switch back to server1. switch_server awaits every actor mutation
+        // it issues (dag, event_state, server_registry, chat_meta), so the
+        // subsequent messages() read sees the restored state immediately.
         client.switch_server(&server1_id).await;
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // After switching, messages should NOT contain server2's message.
         let msgs = client.messages("general").await;
@@ -1349,11 +1426,10 @@ mod tests {
             "Bob should not have SendMessages before invite"
         );
 
-        // Alice generates an invite for Bob.
+        // Alice generates an invite for Bob. The GrantPermission event is
+        // built and applied via apply_event, which awaits the event_state
+        // mutate; the subsequent select() on the same actor sees the grant.
         alice.generate_invite(&bob_id).await.unwrap();
-
-        // Give the actor system a tick to process the mutation.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // Now Bob should have SendMessages permission in Alice's state.
         let has_after = willow_actor::state::select(&alice.event_state_addr, move |es| {
@@ -1403,9 +1479,18 @@ mod tests {
         // a UUID. This is the exact failure mode #115 describes: an
         // invite that looks valid right up to the point where we ask
         // parsing as a UUID for the server ID.
+        //
+        // Topics also have to be re-pointed at the new server_id so the
+        // payload still passes the topic-confusion validator added for
+        // issue #197 — otherwise the invite would be rejected at the
+        // topic-prefix check instead of reaching the UUID-parse check
+        // we want to exercise here.
         let raw = base64::decode(&valid_code).unwrap();
         let mut payload: invite::InvitePayload = willow_transport::unpack(&raw).unwrap();
         payload.server_id = "not-a-uuid".to_string();
+        for ch in &mut payload.channels {
+            ch.topic = format!("{}/{}", payload.server_id, ch.name);
+        }
         let tampered_bytes = willow_transport::pack(&payload).unwrap();
         let tampered_code = base64::encode(&tampered_bytes);
 
@@ -1830,8 +1915,13 @@ mod tests {
         client
             .set_self_presence(presence::PresenceOverride::Away)
             .await;
-        // Give the derived view a tick to recompute.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // The derived presence view must recompute (Notify → selector →
+        // UpdateCache) before reflecting the source mutation. Poll the
+        // cached value rather than hard-waiting on wall-clock time.
+        await_view(|| async {
+            client.view_handle.presence.get().await.self_state == presence::PresenceState::Away
+        })
+        .await;
 
         let after = client.view_handle.presence.get().await;
         assert_eq!(after.self_state, presence::PresenceState::Away);
@@ -1845,7 +1935,12 @@ mod tests {
         let bob = willow_identity::Identity::generate().endpoint_id();
 
         client.mutations().peer_connected(bob).await;
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Wait for the derived presence view to pick up bob from the
+        // updated chat_meta source — same race the old sleep papered over.
+        await_view(|| async {
+            client.observe_peer_presence(bob).await == presence::PresenceState::Here
+        })
+        .await;
 
         let state = client.observe_peer_presence(bob).await;
         assert_eq!(state, presence::PresenceState::Here);
@@ -1870,12 +1965,23 @@ mod tests {
         client._set_queue_depth(bob, 2).await;
 
         // Advance one tick while reachable — last_seen stays fresh.
-        connect::tick_once_for_test(&client.presence_meta_addr, &client.chat_meta_addr).await;
+        connect::tick_once_for_test(
+            &client.presence_meta_addr,
+            &client.chat_meta_addr,
+            &client.network_meta_addr,
+        )
+        .await;
         // Drop bob offline and advance a few ticks.
         client.mutations().peer_disconnected(bob).await;
-        // Allow the derived view to recompute.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         // queue > 0 + reachable = false ⇒ Queued before gone threshold.
+        // Poll the derived view until it reflects the source mutation.
+        await_view(|| async {
+            matches!(
+                client.observe_peer_presence(bob).await,
+                presence::PresenceState::Queued(_)
+            )
+        })
+        .await;
         let before = client.observe_peer_presence(bob).await;
         assert!(
             matches!(before, presence::PresenceState::Queued(_)),
@@ -1884,10 +1990,18 @@ mod tests {
 
         // Advance past gone_ticks (=5) — tick 6 to guarantee we cross it.
         for _ in 0..6 {
-            connect::tick_once_for_test(&client.presence_meta_addr, &client.chat_meta_addr).await;
+            connect::tick_once_for_test(
+                &client.presence_meta_addr,
+                &client.chat_meta_addr,
+                &client.network_meta_addr,
+            )
+            .await;
         }
-        // Let the derived view settle after the mutation burst.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Wait for the derived view to settle on Gone after the burst.
+        await_view(|| async {
+            client.observe_peer_presence(bob).await == presence::PresenceState::Gone
+        })
+        .await;
         let pm = willow_actor::state::get(&client.presence_meta_addr).await;
         let elapsed = pm
             .now
@@ -1955,8 +2069,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn mutate_channel_mute_emits_event_and_flips_stats() {
         let (client, _broker) = test_client();
+        // create_channel awaits apply_event (event_state mutate). No need
+        // to wait for broker delivery here — subscribe_events comes after,
+        // so the prior CreateChannel publish cannot leak into the receiver.
         client.create_channel("quiet").await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         let mut rx = client.subscribe_events().await;
         client.mutate_channel_mute("quiet", true).await.unwrap();
@@ -2040,8 +2156,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn mutate_channel_mute_toggle_off_clears_set() {
         let (client, _broker) = test_client();
+        // Both create_channel and the two mutate_channel_mute calls await
+        // their apply_event → state::mutate(event_state), so the final get
+        // sees the toggled-off set without a wall-clock delay.
         client.create_channel("noisy").await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         client.mutate_channel_mute("noisy", true).await.unwrap();
         client.mutate_channel_mute("noisy", false).await.unwrap();
@@ -2061,5 +2179,42 @@ mod tests {
             !entry.channels.contains(&ch_id),
             "unmute must remove the channel from the set"
         );
+    }
+
+    /// `subscribe_now` registers the recipient before any subsequent
+    /// `Publish` is processed by the broker, eliminating the race where
+    /// the async `subscribe` would miss events emitted between scheduling
+    /// and confirmation.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn subscribe_now_captures_event_published_synchronously_after_subscribe() {
+        use crate::events::ClientEvent;
+        use willow_actor::{Broker, Publish, System};
+
+        let sys = System::new();
+        let broker = sys.spawn(Broker::<ClientEvent>::default());
+
+        // Subscribe + publish without any await between them. The async
+        // `EventReceiver::subscribe` would create a window here in which
+        // the publish could overtake the BrokerSubscribe registration.
+        let mut rx = EventReceiver::subscribe_now(&broker, &sys.handle());
+        broker
+            .do_send(Publish(ClientEvent::SyncCompleted { ops_applied: 7 }))
+            .unwrap();
+
+        let received = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let Some(event) = rx.try_recv() {
+                    return event;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("subscribe_now must capture events published synchronously after subscription");
+
+        match received {
+            ClientEvent::SyncCompleted { ops_applied } => assert_eq!(ops_applied, 7),
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 }

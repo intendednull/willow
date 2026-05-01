@@ -229,17 +229,6 @@ pub fn load_events(server_id: &str) -> Vec<willow_state::Event> {
 // Vec<Event> in memory. Removed as part of compat.rs deletion.
 // See SqliteDagStore above for the live DAG persistence path.
 
-/// Save a downloaded file to the downloads directory. Returns the path.
-#[cfg(not(target_arch = "wasm32"))]
-#[allow(dead_code)]
-pub fn save_download(filename: &str, data: &[u8]) -> Option<std::path::PathBuf> {
-    let dir = dirs::download_dir().unwrap_or_else(|| data_dir().join("downloads"));
-    std::fs::create_dir_all(&dir).ok();
-    let path = dir.join(filename);
-    std::fs::write(&path, data).ok()?;
-    Some(path)
-}
-
 // ---- Native implementation --------------------------------------------------
 
 #[cfg(not(target_arch = "wasm32"))]

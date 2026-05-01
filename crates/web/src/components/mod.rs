@@ -1,10 +1,17 @@
-/// Derive a unique, vibrant color from a peer ID string.
+/// Derive a unique, vibrant color from a peer's [`EndpointId`].
 ///
-/// Uses a hash of the peer ID bytes to pick a hue on the color wheel,
+/// Uses a hash of the endpoint id bytes to pick a hue on the color wheel,
 /// producing visually distinct colors for different peers. The saturation
 /// and lightness are tuned for readability on both dark and light themes.
-pub fn peer_color(peer_id: &str) -> String {
-    let hash = peer_id
+///
+/// Taking `&EndpointId` rather than `&str` makes CSS injection impossible at
+/// the type level: callers cannot pass attacker-controlled strings into the
+/// inline `style=` attributes that consume this output.
+pub fn peer_color(peer_id: &willow_identity::EndpointId) -> String {
+    // Hash the canonical base32 string form so colors stay stable across
+    // call sites that historically passed `endpoint_id.to_string()`.
+    let id_str = peer_id.to_string();
+    let hash = id_str
         .bytes()
         .fold(2166136261u32, |h, b| h.wrapping_mul(16777619) ^ (b as u32));
     let hue = hash % 360;
@@ -13,6 +20,68 @@ pub fn peer_color(peer_id: &str) -> String {
     let sat = 55 + (hash / 360) % 20; // 55-74%
     let lit = 65 + (hash / 7200) % 10; // 65-74%
     format!("hsl({hue}, {sat}%, {lit}%)")
+}
+
+/// Fallback color used when a peer id string cannot be parsed into an
+/// [`willow_identity::EndpointId`]. Neutral mid-grey hue so it does not
+/// masquerade as a real peer's identity color.
+const PEER_COLOR_FALLBACK: &str = "hsl(0, 0%, 70%)";
+
+/// Convenience wrapper for call sites that only have a peer id as a string
+/// (typically because surrounding state stores it as `String`). Parses the
+/// string to an [`willow_identity::EndpointId`] before delegating to
+/// [`peer_color`]; returns a neutral fallback if parsing fails.
+///
+/// This keeps the type-safe boundary in [`peer_color`] while limiting churn
+/// at the legacy string-typed call sites.
+pub fn peer_color_from_str(peer_id: &str) -> String {
+    match peer_id.parse::<willow_identity::EndpointId>() {
+        Ok(eid) => peer_color(&eid),
+        Err(_) => PEER_COLOR_FALLBACK.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod peer_color_tests {
+    use super::*;
+
+    /// Validates the output charset to lock in the invariant that
+    /// `peer_color` cannot leak attacker-controlled characters into an
+    /// inline CSS context, regardless of the input.
+    #[test]
+    fn peer_color_output_charset_is_safe() {
+        let id = willow_identity::Identity::generate().endpoint_id();
+        let out = peer_color(&id);
+        for ch in out.chars() {
+            assert!(
+                ch.is_ascii_digit() || matches!(ch, 'h' | 's' | 'l' | '(' | ')' | ',' | ' ' | '%'),
+                "peer_color output contains unexpected char {ch:?}: {out}"
+            );
+        }
+        // Sanity: shape is `hsl(<hue>, <sat>%, <lit>%)`.
+        assert!(out.starts_with("hsl("));
+        assert!(out.ends_with(')'));
+    }
+
+    #[test]
+    fn peer_color_is_deterministic_for_same_id() {
+        let id = willow_identity::Identity::generate().endpoint_id();
+        assert_eq!(peer_color(&id), peer_color(&id));
+    }
+
+    #[test]
+    fn peer_color_from_str_matches_typed_for_valid_id() {
+        let id = willow_identity::Identity::generate().endpoint_id();
+        assert_eq!(peer_color(&id), peer_color_from_str(&id.to_string()));
+    }
+
+    #[test]
+    fn peer_color_from_str_returns_fallback_for_garbage() {
+        assert_eq!(
+            peer_color_from_str("not a valid endpoint id"),
+            PEER_COLOR_FALLBACK
+        );
+    }
 }
 
 mod add_friend;
@@ -34,6 +103,7 @@ mod inline_queue_note;
 mod input;
 mod join_page;
 mod kind_chip;
+pub mod lifecycle;
 mod long_press;
 mod main_pane_header;
 mod member_list;

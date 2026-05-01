@@ -1,4 +1,7 @@
+/* eslint-disable no-restricted-syntax -- migration tracked at https://github.com/intendednull/willow/issues/458 */
+import { existsSync } from 'node:fs';
 import { test, expect, chromium, firefox, devices } from '@playwright/test';
+import { freshStart, createServer, sendMessage, waitForMessage, waitForApp, getPeerId, openSidebar, joinViaInvite, visibleShell } from './helpers';
 
 // Custom Firefox context options — avoids flakiness seen with the full
 // devices['Desktop Firefox'] preset (which sets a Windows UA + specific screen
@@ -8,7 +11,22 @@ const desktopFirefoxContext = {
   viewport: { width: 1280, height: 720 },
   hasTouch: false,
 };
-import { freshStart, createServer, sendMessage, waitForMessage, waitForApp, getPeerId, openSidebar, closeSidebar, joinViaInvite, visibleShell } from './helpers';
+
+// Probe whether the Firefox browser binary Playwright expects is actually
+// installed. `firefox.executablePath()` always returns the expected path
+// string even when the binary hasn't been downloaded — so we have to stat
+// the file to confirm it's actually present. `scripts/setup-e2e.sh` only
+// installs Chromium; without this guard these tests fail in ~200ms instead
+// of skipping cleanly. See issue #103.
+function firefoxAvailable(): boolean {
+  try {
+    const p = firefox.executablePath();
+    return p !== '' && existsSync(p);
+  } catch {
+    return false;
+  }
+}
+const FIREFOX_SKIP_REASON = 'Firefox not installed — install via `npx playwright install firefox` to enable';
 
 // Shared relay + gossip mesh — keep tests inside this file sequential
 // so they don't stampede the relay while `fullyParallel: true` runs
@@ -23,19 +41,13 @@ test.describe.configure({ mode: 'serial' });
  * They do NOT use the Playwright project's browser fixture — they launch browsers directly.
  */
 test.describe('Cross-browser peer sync', () => {
-  // These tests are slow — they launch two separate browser engines and
-  // exercise the full joinViaInvite + warmup + bidirectional-message
-  // path. Helper waits inside joinViaInvite extended to 60 s for slow-CI
-  // gossip in 7f88280; 120 s is no longer enough headroom on top of
-  // double-browser launch + two .channel-item waits + two sendMessage
-  // round-trips. 240 s matches multi-peer-sync.spec.ts (which compounds
-  // the same setupTwoPeers-style waits) and gives slow-CI headroom for
-  // the cross-engine handshake without slowing the happy path.
-  test.setTimeout(240_000);
+  // These tests are slow — they launch two separate browser engines.
+  test.setTimeout(120_000);
 
   // Only run from one project to avoid duplicating (each test launches its own browsers).
   test.beforeEach(({}, testInfo) => {
     test.skip(testInfo.project.name !== 'desktop-chrome', 'cross-browser tests run once from desktop-chrome');
+    test.skip(!firefoxAvailable(), FIREFOX_SKIP_REASON);
   });
 
   test('mobile Chrome to desktop Firefox — invite + messaging', async () => {
@@ -63,12 +75,8 @@ test.describe('Cross-browser peer sync', () => {
       const mobilePeerId = await getPeerId(mobilePage);
       expect(mobilePeerId).toBeTruthy();
 
-      // Desktop Firefox: generate invite for mobile peer. Both shells
-      // mount a `[aria-label="grove menu"]` button (one in `.shell-desktop`,
-      // one in `.shell-mobile`); scope to the visible-shell + `.first()`
-      // so Playwright's strict mode picks exactly the one rendered for
-      // this viewport instead of throwing on the duplicate match.
-      await desktopPage.locator('.shell-desktop [aria-label="grove menu"]').first().click();
+      // Desktop Firefox: generate invite for mobile peer.
+      await desktopPage.locator('.server-gear-btn').click();
       await desktopPage.waitForTimeout(500);
       await desktopPage.locator('input[placeholder*="12D3KooW"]').fill(mobilePeerId);
       await desktopPage.locator('button', { hasText: 'Generate Invite' }).click();
@@ -83,18 +91,13 @@ test.describe('Cross-browser peer sync', () => {
       // Mobile Chrome: join via invite.
       await joinViaInvite(mobilePage, inviteCode);
 
-      // Verify mobile sees the server — wait for DOM attachment first
-      // (gossip may lag).
+      // Verify mobile sees the server — wait for DOM attachment first (gossip may lag).
       await expect(mobilePage.locator(`${visibleShell(mobilePage)} .channel-item`, { hasText: 'general' }))
         .toBeAttached({ timeout: 60_000 });
-      // Briefly open the sidebar and confirm the item is visible, then
-      // close it. `sendMessage` below pushes into the channel via the
-      // home tab, which the grove-drawer overlay would otherwise sit on
-      // top of and block.
+      // Now open the sidebar and confirm the item is visible.
       await openSidebar(mobilePage);
       await expect(mobilePage.locator(`${visibleShell(mobilePage)} .channel-item`, { hasText: 'general' }))
         .toBeVisible({ timeout: 5_000 });
-      await closeSidebar(mobilePage);
 
       // Establish bidirectional gossip mesh: Chrome→Firefox is the reliable direction.
       // Waiting for Firefox to *receive* a Chrome message proves both gossip paths are
@@ -102,19 +105,19 @@ test.describe('Cross-browser peer sync', () => {
       // (member-item appearance on Firefox alone only confirms Firefox's NeighborUp,
       // not Chrome's reverse path which is required for the main assertion below.)
       await sendMessage(mobilePage, 'warmup');
-      await waitForMessage(desktopPage, 'warmup', 60_000);
+      await waitForMessage(desktopPage, 'warmup', 30_000);
 
       // Desktop Firefox: send a message.
       await sendMessage(desktopPage, 'Hello from Firefox desktop');
 
       // Mobile Chrome: should see the message.
-      await waitForMessage(mobilePage, 'Hello from Firefox desktop', 60_000);
+      await waitForMessage(mobilePage, 'Hello from Firefox desktop', 30_000);
 
       // Mobile Chrome: send a reply.
       await sendMessage(mobilePage, 'Hello from Chrome mobile');
 
       // Desktop Firefox: should see the reply.
-      await waitForMessage(desktopPage, 'Hello from Chrome mobile', 60_000);
+      await waitForMessage(desktopPage, 'Hello from Chrome mobile', 30_000);
 
     } finally {
       await mobileCtx.close();
@@ -147,12 +150,9 @@ test.describe('Cross-browser peer sync', () => {
       const desktopPeerId = await getPeerId(desktopPage);
       expect(desktopPeerId).toBeTruthy();
 
-      // Mobile Chrome: open settings to generate invite. Scope to the
-      // visible mobile shell + `.first()` so the duplicate grove-menu
-      // button mounted on the inactive desktop shell doesn't trigger a
-      // Playwright strict-mode violation.
+      // Mobile Chrome: open settings to generate invite.
       await openSidebar(mobilePage);
-      await mobilePage.locator('.shell-mobile [aria-label="grove menu"]').first().click();
+      await mobilePage.locator('.server-gear-btn').click();
       await mobilePage.waitForTimeout(500);
       await mobilePage.locator('input[placeholder*="12D3KooW"]').fill(desktopPeerId);
       await mobilePage.locator('button', { hasText: 'Generate Invite' }).click();
@@ -177,7 +177,7 @@ test.describe('Cross-browser peer sync', () => {
       await sendMessage(mobilePage, 'Cross browser works!');
 
       // Desktop should see it.
-      await waitForMessage(desktopPage, 'Cross browser works!', 60_000);
+      await waitForMessage(desktopPage, 'Cross browser works!', 30_000);
 
     } finally {
       await mobileCtx.close();

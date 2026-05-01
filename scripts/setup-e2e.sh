@@ -83,8 +83,15 @@ info "Tooling ready: trunk=$(trunk --version 2>/dev/null || echo missing), just=
 step "Building relay, replay, and storage..."
 cargo build -p willow-relay -p willow-replay -p willow-storage 2>&1 | tail -1
 
+FEATURES="${WILLOW_FEATURES:-}"
+FEATURES_FLAG=""
+if [ -n "$FEATURES" ]; then
+    FEATURES_FLAG="--features $FEATURES"
+fi
+
 step "Building web UI (WASM)..."
-(cd "$ROOT/crates/web" && trunk build 2>&1 | tail -1)
+# shellcheck disable=SC2086
+(cd "$ROOT/crates/web" && trunk build $FEATURES_FLAG 2>&1 | tail -1)
 
 info "All builds complete."
 
@@ -150,7 +157,8 @@ info "Storage node started (PID $!)"
 
 # Web UI
 step "Starting web UI (trunk serve)..."
-(cd "$ROOT/crates/web" && trunk serve) > "$LOG_DIR/web.log" 2>&1 &
+# shellcheck disable=SC2086
+(cd "$ROOT/crates/web" && trunk serve $FEATURES_FLAG) > "$LOG_DIR/web.log" 2>&1 &
 WEB_PID=$!
 
 # Wait for web UI

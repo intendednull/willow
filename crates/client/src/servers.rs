@@ -198,7 +198,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let pid = self.identity.endpoint_id();
         let n = name.clone();
         willow_actor::state::mutate(&self.profile_state_addr, move |p| {
-            p.names.insert(pid, n);
+            p.insert_name(pid, n);
         })
         .await;
         // Persist to localStorage so broadcast_profile_via_network() can read

@@ -111,8 +111,9 @@ pub fn day_bucket(ts_ms: u64) -> DayBucket {
     use wasm_bindgen::JsValue;
 
     // Out-of-range timestamps make `js_sys::Date` accessors return NaN;
-    // the `as i32` / `as u32` casts then collapse to 0, which would index
-    // into `WEEKDAYS`/`MONTHS` and produce a bogus "sunday · 0 january"
+    // the `as i32` cast (and the implicit `u32` return on `get_month` /
+    // `get_date`) then collapse to 0, which would index into
+    // `WEEKDAYS`/`MONTHS` and produce a bogus "sunday · 0 january"
     // label. Bail to a stable fallback variant instead.
     if ts_ms > MAX_VALID_TS_MS as u64 {
         return DayBucket::Older {
@@ -127,11 +128,11 @@ pub fn day_bucket(ts_ms: u64) -> DayBucket {
     let now = js_sys::Date::new_0();
 
     let ts_y = ts.get_full_year() as i32;
-    let ts_m = ts.get_month() as u32;
+    let ts_m = ts.get_month();
     let ts_d = ts.get_date();
 
     let now_y = now.get_full_year() as i32;
-    let now_m = now.get_month() as u32;
+    let now_m = now.get_month();
     let now_d = now.get_date();
 
     if (ts_y, ts_m, ts_d) == (now_y, now_m, now_d) {
@@ -152,7 +153,7 @@ pub fn day_bucket(ts_ms: u64) -> DayBucket {
         0,
     );
     let y_y = yesterday.get_full_year() as i32;
-    let y_m = yesterday.get_month() as u32;
+    let y_m = yesterday.get_month();
     let y_d = yesterday.get_date();
     if (ts_y, ts_m, ts_d) == (y_y, y_m, y_d) {
         return DayBucket::Yesterday;

@@ -209,7 +209,14 @@ pub fn GroveRail(
                                 let cx = touch.client_x() as f64;
                                 let cy = touch.client_y() as f64;
                                 if let Some(window) = web_sys::window() {
-                                    let cb = wasm_bindgen::closure::Closure::once(move || {
+                                    // `once_into_js` hands the closure
+                                    // to JS so it is reclaimed by GC
+                                    // after fire (or after
+                                    // `clear_timeout_with_handle` on
+                                    // touchend / touchmove). `.forget()`
+                                    // would leak one closure per
+                                    // touchstart (issue #193).
+                                    let cb = wasm_bindgen::closure::Closure::once_into_js(move || {
                                         set_menu_server_id.set(Some(id_for_timer));
                                         set_menu_x.set(cx);
                                         set_menu_y.set(cy);
@@ -228,13 +235,12 @@ pub fn GroveRail(
                                     });
                                     if let Ok(timer_id) =
                                         window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                                            cb.as_ref().unchecked_ref(),
+                                            cb.unchecked_ref(),
                                             500,
                                         )
                                     {
                                         lp.set(timer_id);
                                     }
-                                    cb.forget();
                                 }
                             }
                         };

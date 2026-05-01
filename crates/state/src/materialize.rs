@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use willow_identity::EndpointId;
 
 use crate::dag::EventDag;
-use crate::event::{Event, EventKind, Permission, ProposedAction};
+use crate::event::{Event, EventKind, Permission, ProposedAction, MAX_ENCRYPTED_KEYS_OVER_MEMBERS};
 use crate::hash::EventHash;
 use crate::server::{PendingProposal, ServerState};
 use crate::types::{
@@ -301,16 +301,23 @@ fn required_permission(kind: &EventKind) -> Option<Permission> {
         //   RevokePermission,
         //   RenameServer,
         //   SetServerDescription — admin-only, checked in the admin block above
-        //   SetProfile          — unrestricted (any member)
-        //   UpdateProfile       — unrestricted (any member; self-authorship
-        //                         is the only identity check)
+        //   SetProfile          — any current member; membership gate
+        //                         lives in apply_mutation (issue #177)
+        //   UpdateProfile       — any current member; membership gate
+        //                         lives in apply_mutation. Self-
+        //                         authorship is enforced structurally
+        //                         (only the author's own profile is
+        //                         mutated). See issue #177.
         //   PinMessage,
-        //   UnpinMessage        — unrestricted (any member)
+        //   UnpinMessage        — any current member; membership gate
+        //                         lives in apply_mutation (issue #177)
         //   ChannelRevive       — membership check lives in apply_mutation
         //                         (does not require SendMessages so a muted
         //                         member can still un-archive)
         //   MuteChannel,
         //   MuteGrove           — per-identity preference, never gated
+        //                         (preferences are not server state and
+        //                         survive a kick)
         //
         // If a new EventKind variant is added and is NOT listed here or
         // in an arm above, it will silently get no permission check.
@@ -418,9 +425,20 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
             permission,
             granted,
         } => {
+            // Drop the unknown-legacy sentinel produced by the
+            // back-compat deserialize path so a rogue / future client
+            // can never inject an unrecognised permission name into a
+            // role's permission set.
+            if matches!(permission, Permission::__UnknownLegacy) {
+                tracing::warn!(
+                    role_id = %role_id,
+                    "SetPermission with unknown legacy permission; dropping",
+                );
+                return ApplyResult::Applied;
+            }
             if let Some(role) = state.roles.get_mut(role_id) {
                 if *granted {
-                    role.permissions.insert(permission.clone());
+                    role.permissions.insert(*permission);
                 } else {
                     role.permissions.remove(permission);
                 }
@@ -528,6 +546,15 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
         }
 
         EventKind::SetProfile { display_name } => {
+            // Defense-in-depth: reject if the author isn't a member of
+            // the server. `required_permission()` returns `None` for
+            // SetProfile (it's "any current member"), so the membership
+            // gate must live here. Without it, late-arriving events
+            // from a kicked or never-joined signer would silently
+            // mutate `state.profiles`. See issue #177.
+            if !state.members.contains_key(&event.author) {
+                return ApplyResult::Rejected(format!("author '{}' is not a member", event.author));
+            }
             if display_name.chars().count() > 64 {
                 return ApplyResult::Rejected(format!(
                     "display name exceeds 64 chars ({} chars)",
@@ -545,6 +572,17 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
         }
 
         EventKind::UpdateProfile(delta) => {
+            // Defense-in-depth: reject if the author isn't a member of
+            // the server. `required_permission()` returns `None` for
+            // UpdateProfile (it's "any current member"; self-authorship
+            // is already structurally enforced by mutating only the
+            // author's own profile). The membership gate must live
+            // here so late-arriving events from a kicked or never-
+            // joined signer cannot silently mutate `state.profiles`.
+            // See issue #177.
+            if !state.members.contains_key(&event.author) {
+                return ApplyResult::Rejected(format!("author '{}' is not a member", event.author));
+            }
             let crate::types::ProfileDelta {
                 display_name,
                 pronouns,
@@ -620,6 +658,25 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
             if !state.members.contains_key(&event.author) {
                 return ApplyResult::Rejected(format!("author '{}' is not a member", event.author));
             }
+            // Anti-DoS cap (SEC-V-07). A legitimate RotateChannelKey
+            // carries at most one entry per current member; epsilon
+            // absorbs benign races between membership changes and key
+            // rotation. Anything beyond that is a fabricated-id flood —
+            // every entry would otherwise `.clone()` into the per-server
+            // `BTreeMap<EndpointId, Vec<u8>>` on every peer.
+            let cap = state
+                .members
+                .len()
+                .saturating_add(MAX_ENCRYPTED_KEYS_OVER_MEMBERS);
+            if encrypted_keys.len() > cap {
+                return ApplyResult::Rejected(format!(
+                    "RotateChannelKey: {} encrypted_keys exceeds cap {} (members={} + epsilon={})",
+                    encrypted_keys.len(),
+                    cap,
+                    state.members.len(),
+                    MAX_ENCRYPTED_KEYS_OVER_MEMBERS,
+                ));
+            }
             if !encrypted_keys.is_empty() {
                 let keys = state.channel_keys.entry(channel_id.clone()).or_default();
                 for (peer_id, key_bytes) in encrypted_keys {
@@ -632,6 +689,15 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
             channel_id,
             message_id,
         } => {
+            // Defense-in-depth: reject if the author isn't a member of
+            // the server. `required_permission()` returns `None` for
+            // PinMessage (it's "any current member"), so the membership
+            // gate must live here. Without it, late-arriving events
+            // from a kicked or never-joined signer would silently
+            // mutate `pinned_messages`. See issue #177.
+            if !state.members.contains_key(&event.author) {
+                return ApplyResult::Rejected(format!("author '{}' is not a member", event.author));
+            }
             if let Some(ch) = state.channels.get_mut(channel_id) {
                 ch.pinned_messages.insert(*message_id);
             }
@@ -641,6 +707,15 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
             channel_id,
             message_id,
         } => {
+            // Defense-in-depth: reject if the author isn't a member of
+            // the server. `required_permission()` returns `None` for
+            // UnpinMessage (it's "any current member"), so the
+            // membership gate must live here. Without it, late-
+            // arriving events from a kicked or never-joined signer
+            // would silently mutate `pinned_messages`. See issue #177.
+            if !state.members.contains_key(&event.author) {
+                return ApplyResult::Rejected(format!("author '{}' is not a member", event.author));
+            }
             if let Some(ch) = state.channels.get_mut(channel_id) {
                 ch.pinned_messages.remove(message_id);
             }

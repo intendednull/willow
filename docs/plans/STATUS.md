@@ -1,0 +1,33 @@
+# Phase-plan status
+
+At a glance, for each UI-design phase plan in `docs/plans/`, which state-layer prerequisites are already in `crates/state/src/event.rs` and which still need to land.
+
+**Rationale.** Per `docs/specs/2026-04-19-ui-design/README.md`, "Feature disparity between spec and client is expected and acceptable." This file makes that disparity legible without grepping across crates. It exists to answer one question quickly: when a plan reserves a wire type or `EventKind` variant that has not shipped, can a reader spot the gap before tracing it through the spec? The audit that prompted this file (issue #337, ARCH-07) flagged exactly that pattern: phase-2e reserves `SearchScope::ThisLetter` / `SearchScope::AllLetters` while the DAG has no `Letter` `EventKind`.
+
+**Maintenance.** This is a snapshot in time, not a live tracker. Updated by hand when plans land or new state primitives ship. If the table drifts from `crates/state/src/event.rs`, treat the source as canonical and patch the table.
+
+## Status table
+
+| Plan | UI scope | State-layer prereq | Landed? | Notes |
+|------|----------|--------------------|---------|-------|
+| [`2026-04-19-ui-phase-0-foundation.md`](2026-04-19-ui-phase-0-foundation.md) | Design tokens (palette, typography, motion) reskin | none — view layer only | yes | Pure CSS / token plumbing; no Rust state changes. |
+| [`2026-04-20-ui-phase-1a-desktop-shell.md`](2026-04-20-ui-phase-1a-desktop-shell.md) | Desktop three-pane shell, grove rail, channel sidebar, right rail | none new — consumes existing `CreateChannel`, `ChannelKind`, members | yes | Plan explicitly defers ephemeral / archive / muted / per-grove-accent flags to later phases (covered by 2d / 1f). |
+| [`2026-04-20-ui-phase-1b-mobile-shell.md`](2026-04-20-ui-phase-1b-mobile-shell.md) | Mobile shell — tab bar, top bar, grove drawer, bottom sheets | none — view layer only | yes | No new events; mounts on existing channel / member views. |
+| [`2026-04-20-ui-phase-1c-palette-a11y.md`](2026-04-20-ui-phase-1c-palette-a11y.md) | Command palette, ARIA landmarks, keyboard close-stack | none — view layer only | yes | Local-search handoff is surface only; index ships in 2e. |
+| [`2026-04-20-ui-phase-1d-trust-verification.md`](2026-04-20-ui-phase-1d-trust-verification.md) | SAS fingerprints, trust badges, compare-friend flow | none new — local-only per-device belief | yes | Plan §Architecture: "no new `EventKind`. Trust is local per-device." Shared-trust event explicitly out of scope. |
+| [`2026-04-20-ui-phase-1e-presence.md`](2026-04-20-ui-phase-1e-presence.md) | 7-state presence, status dot, presence menu | none new — derived from network reachability + local override | yes | Plan §Architecture: "Presence is derived, not event-sourced in 1e." `PresenceHeartbeat` `EventKind` flagged as future work. |
+| [`2026-04-20-ui-phase-1f-notifications.md`](2026-04-20-ui-phase-1f-notifications.md) | Toast stack, unread badges, OS push contract, per-surface mute | `MuteChannel` + `MuteGrove` `EventKind` | yes | Both variants present in `event.rs` (lines ~355, ~361). VAPID wire format + relay-side dispatch are out of scope. |
+| [`2026-04-20-ui-phase-2a-message-row.md`](2026-04-20-ui-phase-2a-message-row.md) | Message row anatomy, mentions, code, day separators, jump-to-latest | uses existing `Message`, `EditMessage`, `DeleteMessage`, `PinMessage` | partial | Plan gates a `WhisperStart` placeholder behind always-false flag — `WhisperStart` `EventKind` is not in `event.rs`; whisper body styling deferred to `whisper-mode.md` (no plan yet). Quote-reply uses existing `Message.reply_to`. |
+| [`2026-04-21-ui-phase-2b-sync-queue.md`](2026-04-21-ui-phase-2b-sync-queue.md) | Offline strip, queue pills, sync-queue screen, reconnection toast | none new — `ServerState` unchanged; `MessageStore::delivery_state` + relay status are local | partial | Plan §Architecture: "No new `EventKind`. Queue state is purely local / per-device." Peer-identity tombstone signal flagged as out of scope (deferred to `letters-dms.md`); inbound queue heartbeat extension is an open dep. |
+| [`2026-04-21-ui-phase-2c-profile-card.md`](2026-04-21-ui-phase-2c-profile-card.md) | Profile popover / sheet, 17 fields, crest banner, nickname editor | `EventKind::UpdateProfile(Box<ProfileDelta>)` + extended `Profile` fields (pronouns, bio, tagline, crest, pinned, elsewhere, since) | yes | `UpdateProfile` present (line ~322). Nickname store is local-only per spec — no event needed. |
+| [`2026-04-21-ui-phase-2e-local-search.md`](2026-04-21-ui-phase-2e-local-search.md) | On-device search index, scope ladder, results surface, palette bridge | no new `EventKind`; `SearchScope::ThisLetter` + `SearchScope::AllLetters` reserved on the client side | partial | The two letter scopes have no backing `EventKind` — there is no `Letter` / DM variant in `event.rs`. Plan flags this with `TODO(letters-dms.md)` on letter-scope filter branches. The audit that prompted this status file (issue #337) called out exactly this drift. |
+| [`2026-04-25-ui-phase-2d-ephemeral-channels.md`](2026-04-25-ui-phase-2d-ephemeral-channels.md) | Auto-archive on inactivity, archives surface, kind chip, revive | `CreateChannel.ephemeral: Option<EphemeralConfig>` + `EventKind::ChannelRevive { channel_id }` + `Channel.last_activity_hlc` | yes | Both present (lines ~250, ~263). Replaces the `_ephemeral-` name-prefix heuristic from 1a. |
+
+## Aggregate
+
+- **12 plans tabulated.**
+- **9 yes** (state-layer prereqs all landed or none required).
+- **3 partial** — 2a (whisper placeholder gate, no `WhisperStart`), 2b (peer tombstone + inbound heartbeat deferred), 2e (letter scopes reserved with no `Letter` `EventKind`).
+- **0 no** — every plan has at least started landing in `crates/state/src/event.rs` or is intentionally view-layer-only.
+
+The recurring blocker across the partial rows is the absence of a `Letter` / DM family of `EventKind` variants. `letters-dms.md` is a spec but has no implementation plan yet; until one lands, plans 2a / 2b / 2e all carry forward-references that are correct but unbacked.

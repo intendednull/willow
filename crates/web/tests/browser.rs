@@ -42,7 +42,6 @@ where
 /// [`mount_test_with_shell`] to pin the choice via a `data-shell`
 /// attribute on `<html>`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum TestShell {
     Desktop,
     Mobile,
@@ -54,7 +53,6 @@ pub enum TestShell {
 /// `.shell-desktop` / `.shell-mobile` visibility on that attribute
 /// when present (falls back to the viewport media query when the
 /// attribute is absent).
-#[allow(dead_code)]
 pub fn mount_test_with_shell<F, V>(shell: TestShell, view: F) -> web_sys::HtmlElement
 where
     F: FnOnce() -> V + 'static,
@@ -80,7 +78,6 @@ where
 /// does not pull in the app's CSS via `index.html`; without this, every
 /// element keeps its UA-default `display` and the shell override cannot
 /// be observed.
-#[allow(dead_code)]
 fn ensure_components_css_loaded(doc: &web_sys::Document) {
     const STYLE_ID: &str = "willow-test-components-css";
     if doc.get_element_by_id(STYLE_ID).is_some() {
@@ -5771,7 +5768,6 @@ mod notifications {
 /// `mobile_actions`). Each group used to carry its own copies of
 /// `click_selector` / `fill_selector` / etc.; they are hoisted here so
 /// new modules can reuse them without duplication.
-#[allow(dead_code)]
 mod test_support {
     use super::*;
     use willow_web::app::App;
@@ -9562,6 +9558,399 @@ async fn phase_2e_recent_chip_has_listitem_role() {
     assert_eq!(text(&clear).trim(), "clear all recents");
 }
 
+// ── Phase 2e — active-row a11y wiring ───────────────────────────────────────
+//
+// Closes #344. The listbox previously hard-coded `selected=false` on every
+// `<ResultRow>`, so keyboard / AT users had no way to tell which row Enter
+// would activate. These tests verify the data wiring: the row whose flat
+// (in-display-order) index equals `SearchUiState::active_index` carries
+// `aria-selected="true"`, every other row carries `aria-selected="false"`,
+// and moving `active_index` reactively swaps that bit.
+
+mod phase_2e_search_active_row {
+    use super::*;
+    use willow_client::{SearchResult, SearchScope};
+    use willow_web::components::ResultsList;
+    use willow_web::state::{create_signals, InitialSignals};
+
+    fn fixture_result(id: &str, body: &str, ts: u64) -> SearchResult {
+        SearchResult {
+            message_id: id.into(),
+            channel_id: "general".into(),
+            channel_name: "general".into(),
+            grove_id: Some("grove-fixture".into()),
+            letter_id: None,
+            author_display_name: "Mira".into(),
+            author_handle: "mira".into(),
+            timestamp_ms: ts,
+            body: body.into(),
+            matched_ranges: Vec::new(),
+        }
+    }
+
+    /// Mount `<ResultsList>` with a seeded result set. Pins scope to
+    /// `ThisChannel` so grouping is the trivial single-implicit-group
+    /// shape — keeps the test focused on the active-row wiring rather
+    /// than the cross-group flat-index walk (which has its own
+    /// dedicated test).
+    /// Tuple of writers stashed during mount so the test body can drive
+    /// the seeded `<ResultsList>` after it's on the DOM.
+    type StashedWriters = (WriteSignal<usize>, WriteSignal<Vec<SearchResult>>);
+
+    fn mount_results_with(
+        results: Vec<SearchResult>,
+        active: usize,
+    ) -> (web_sys::HtmlElement, StashedWriters) {
+        let cell: std::rc::Rc<std::cell::Cell<Option<StashedWriters>>> =
+            std::rc::Rc::new(std::cell::Cell::new(None));
+        let cell_for_mount = cell.clone();
+
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+
+            // Seed: we're scoped to one channel and have N results. The
+            // surface effect that resets `active_index` on result-set
+            // change is *not* mounted here, so the test owns the
+            // signal directly.
+            write
+                .search
+                .set_scope
+                .set(SearchScope::ThisChannel("general".into()));
+            write.search.set_results.set(results.clone());
+            write.search.set_active_index.set(active);
+
+            cell_for_mount.set(Some((
+                write.search.set_active_index,
+                write.search.set_results,
+            )));
+
+            provide_context(app_state);
+            provide_context(write);
+
+            view! {
+                <ResultsList on_select=Callback::new(move |_: SearchResult| {}) />
+            }
+        });
+
+        let writers = cell.take().expect("signals stashed during mount");
+        (container, writers)
+    }
+
+    #[wasm_bindgen_test]
+    async fn active_row_carries_aria_selected_true_others_false() {
+        let results = vec![
+            fixture_result("m-0", "first hit", 30_000),
+            fixture_result("m-1", "second hit", 20_000),
+            fixture_result("m-2", "third hit", 10_000),
+        ];
+        let (container, _writers) = mount_results_with(results, 1);
+        tick().await;
+
+        let rows = query_all(&container, ".search-result-row");
+        assert_eq!(
+            rows.len(),
+            3,
+            "fixture mounts three rows; got {}",
+            rows.len()
+        );
+
+        // Row 0 — not active.
+        assert_eq!(
+            rows[0].get_attribute("aria-selected").as_deref(),
+            Some("false"),
+            "non-active rows must report aria-selected=\"false\""
+        );
+        // Row 1 — active.
+        assert_eq!(
+            rows[1].get_attribute("aria-selected").as_deref(),
+            Some("true"),
+            "the row at active_index must carry aria-selected=\"true\" \
+             — without this, screen readers never see a selected option \
+             in the listbox (regression guard for #344)"
+        );
+        // Row 2 — not active.
+        assert_eq!(
+            rows[2].get_attribute("aria-selected").as_deref(),
+            Some("false")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn moving_active_index_swaps_selected_row_reactively() {
+        let results = vec![
+            fixture_result("m-0", "first", 30_000),
+            fixture_result("m-1", "second", 20_000),
+        ];
+        let (container, (set_active, _set_results)) = mount_results_with(results, 0);
+        tick().await;
+
+        let rows = query_all(&container, ".search-result-row");
+        assert_eq!(
+            rows[0].get_attribute("aria-selected").as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            rows[1].get_attribute("aria-selected").as_deref(),
+            Some("false")
+        );
+
+        set_active.set(1);
+        tick().await;
+
+        let rows = query_all(&container, ".search-result-row");
+        assert_eq!(
+            rows[0].get_attribute("aria-selected").as_deref(),
+            Some("false"),
+            "row 0 must lose its selection when active_index moves to 1"
+        );
+        assert_eq!(
+            rows[1].get_attribute("aria-selected").as_deref(),
+            Some("true"),
+            "row 1 must claim selection when active_index moves to 1"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn active_index_indexes_flat_in_display_order_across_groups() {
+        // Scope `AllGrovesAndLetters` groups by grove id (BTreeMap-sorted),
+        // so this fixture lands two grove-a rows before three grove-b
+        // rows. `active_index = 3` therefore must select the *first*
+        // grove-b row — proving `active_index` indexes into the flat
+        // in-display-order list, not the unsorted raw results vec.
+        let cell: std::rc::Rc<std::cell::Cell<Option<WriteSignal<usize>>>> =
+            std::rc::Rc::new(std::cell::Cell::new(None));
+        let cell_for_mount = cell.clone();
+
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+
+            // Push the grove-b rows first to prove ordering doesn't come
+            // from input order — only from the grouped display order.
+            let mut results = Vec::new();
+            for (i, ts) in [(0u32, 10_000u64), (1, 20_000), (2, 30_000)].iter() {
+                let mut r = fixture_result(&format!("b-{i}"), "body b", *ts);
+                r.grove_id = Some("grove-b".into());
+                results.push(r);
+            }
+            for (i, ts) in [(0u32, 40_000u64), (1, 50_000)].iter() {
+                let mut r = fixture_result(&format!("a-{i}"), "body a", *ts);
+                r.grove_id = Some("grove-a".into());
+                results.push(r);
+            }
+
+            write.search.set_scope.set(SearchScope::AllGrovesAndLetters);
+            write.search.set_results.set(results);
+            write.search.set_active_index.set(3);
+
+            cell_for_mount.set(Some(write.search.set_active_index));
+
+            provide_context(app_state);
+            provide_context(write);
+
+            view! {
+                <ResultsList on_select=Callback::new(move |_: SearchResult| {}) />
+            }
+        });
+        let _ = cell.take();
+        tick().await;
+
+        let rows = query_all(&container, ".search-result-row");
+        assert_eq!(
+            rows.len(),
+            5,
+            "two grove-a rows + three grove-b rows = 5 visible rows"
+        );
+
+        // The selected row's id encodes its `message_id`. grove-a sorts
+        // before grove-b under BTreeMap, so flat index 3 = first grove-b
+        // row, which (sorted by timestamp_ms desc) is `b-2`.
+        let selected = query(&container, ".search-result-row[aria-selected=\"true\"]")
+            .expect("exactly one row must claim aria-selected=\"true\"");
+        assert_eq!(
+            selected.id(),
+            "search-row-b-2",
+            "active_index=3 under grove grouping must light up the first \
+             grove-b row (b-2 by ts-desc), not a raw-index row"
+        );
+
+        // And no other row may share the bit.
+        let all_selected = query_all(&container, ".search-result-row[aria-selected=\"true\"]");
+        assert_eq!(
+            all_selected.len(),
+            1,
+            "exactly one row may carry aria-selected=\"true\" at a time"
+        );
+    }
+}
+
+// ── Phase 2e — Enter activates highlighted row (#406) ───────────────────────
+//
+// Follow-up to #344. After the active-row a11y wiring landed, Enter still
+// routed to the recents-push path instead of activating the highlighted row.
+// These tests pin the corrected contract:
+//
+// - With ≥1 result and a highlighted row, Enter must invoke the row-select
+//   callback with the row at `active_index`, NOT push to recents with the
+//   raw query string.
+// - With zero results, Enter must fall back to the recents-push path so the
+//   "submit query for later recall" affordance still works on misses.
+
+mod phase_2e_search_enter_activates {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use willow_client::{SearchResult, SearchScope};
+    use willow_web::components::SearchInput;
+    use willow_web::state::{create_signals, InitialSignals};
+
+    fn fixture_result(id: &str, body: &str, ts: u64) -> SearchResult {
+        SearchResult {
+            message_id: id.into(),
+            channel_id: "general".into(),
+            channel_name: "general".into(),
+            grove_id: Some("grove-fixture".into()),
+            letter_id: None,
+            author_display_name: "Mira".into(),
+            author_handle: "mira".into(),
+            timestamp_ms: ts,
+            body: body.into(),
+            matched_ranges: Vec::new(),
+        }
+    }
+
+    /// Captures invocations of `on_submit` (recents path) and `on_select`
+    /// (row-activation path). `Arc<Mutex<...>>` so they're `Send + Sync`
+    /// and satisfy `Callback::new`'s bound; that's overhead the harness
+    /// pays gladly to use the real callback path.
+    type SubmitLog = Arc<Mutex<Vec<String>>>;
+    type SelectLog = Arc<Mutex<Vec<SearchResult>>>;
+
+    fn mount_input_with(
+        results: Vec<SearchResult>,
+        query_text: &str,
+        active: usize,
+    ) -> (web_sys::HtmlElement, SubmitLog, SelectLog) {
+        let submitted: SubmitLog = Arc::new(Mutex::new(Vec::new()));
+        let selected: SelectLog = Arc::new(Mutex::new(Vec::new()));
+
+        let submitted_for_mount = submitted.clone();
+        let selected_for_mount = selected.clone();
+        let query_text_owned = query_text.to_string();
+
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+
+            // Pin scope to ThisChannel so the flat (in-display-order)
+            // list is just the raw results in the order we passed them
+            // — keeps the test focused on Enter wiring, not grouping.
+            write
+                .search
+                .set_scope
+                .set(SearchScope::ThisChannel("general".into()));
+            write.search.set_query.set(query_text_owned.clone());
+            write.search.set_results.set(results.clone());
+            write.search.set_active_index.set(active);
+
+            provide_context(app_state);
+            provide_context(write);
+
+            let on_submit = {
+                let log = submitted_for_mount.clone();
+                Callback::new(move |q: String| log.lock().unwrap().push(q))
+            };
+            let on_select = {
+                let log = selected_for_mount.clone();
+                Callback::new(move |r: SearchResult| log.lock().unwrap().push(r))
+            };
+
+            view! { <SearchInput on_submit=on_submit on_select=on_select /> }
+        });
+
+        (container, submitted, selected)
+    }
+
+    /// Dispatch a bubbling `keydown` of the given `key` on `el`.
+    fn dispatch_keydown(el: &web_sys::Element, key: &str) {
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_key(key);
+        init.set_bubbles(true);
+        let ev =
+            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        el.dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&ev)
+            .unwrap();
+    }
+
+    #[wasm_bindgen_test]
+    async fn enter_with_active_row_invokes_on_select_not_on_submit() {
+        let results = vec![
+            fixture_result("m-0", "first hit", 30_000),
+            fixture_result("m-1", "second hit", 20_000),
+            fixture_result("m-2", "third hit", 10_000),
+        ];
+        let (container, submitted, selected) = mount_input_with(results, "hit", 1);
+        tick().await;
+
+        let input = query(&container, ".search-input").expect("search input mounted");
+        dispatch_keydown(&input, "Enter");
+        tick().await;
+
+        // The bug: Enter was routing to on_submit("hit") instead of the
+        // row activation path.
+        let submits = submitted.lock().unwrap();
+        assert!(
+            submits.is_empty(),
+            "Enter with a highlighted row must NOT push to recents \
+             (got submits: {:?})",
+            *submits
+        );
+        drop(submits);
+
+        let picks = selected.lock().unwrap();
+        assert_eq!(
+            picks.len(),
+            1,
+            "Enter with a highlighted row must invoke on_select exactly once"
+        );
+        assert_eq!(
+            picks[0].message_id, "m-1",
+            "on_select must receive the row at active_index (1), not the first row"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn enter_with_no_results_falls_back_to_on_submit() {
+        let (container, submitted, selected) = mount_input_with(Vec::new(), "nothing", 0);
+        tick().await;
+
+        let input = query(&container, ".search-input").expect("search input mounted");
+        dispatch_keydown(&input, "Enter");
+        tick().await;
+
+        assert!(
+            selected.lock().unwrap().is_empty(),
+            "with zero results there is no row to activate; on_select must not fire"
+        );
+        assert_eq!(
+            submitted.lock().unwrap().as_slice(),
+            &["nothing".to_string()],
+            "with zero results Enter must fall through to the recents-push path"
+        );
+    }
+}
+
 // ── Foundation tokens (Phase 0) ─────────────────────────────────────────────
 //
 // Closes Task 14 of `docs/plans/2026-04-19-ui-phase-0-foundation.md`.
@@ -10825,6 +11214,62 @@ mod phase_2b_sync_queue {
     }
 
     #[wasm_bindgen_test]
+    async fn sync_queue_view_mark_as_read_button_has_busy_attrs() {
+        // Issue #345: the mark-as-read button must carry an explicit
+        // busy gate (aria-busy + a `disabled` attribute path) so it
+        // cannot be spam-clicked while a per-peer batch is in flight.
+        // Without a `WebClientHandle` in context the click handler
+        // exits immediately, but the structural attributes guarantee
+        // the busy contract is wired even before the runtime handle
+        // arrives.
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            provide_context(app_state);
+            provide_context(write);
+            view! { <SyncQueueView /> }
+        });
+        tick().await;
+
+        let tabs = query_all(&container, "[role='tab']");
+        let inbound_tab = tabs
+            .iter()
+            .find(|t| text(t) == "inbound")
+            .expect("inbound tab must exist");
+        simulate_click(inbound_tab);
+        tick().await;
+
+        let btn = query(&container, ".sync-queue-view__mark-read")
+            .expect("mark-as-read button must render on inbound tab");
+        assert_eq!(
+            btn.get_attribute("aria-busy").as_deref(),
+            Some("false"),
+            "mark-as-read must expose aria-busy so AT clients see the in-flight gate"
+        );
+        // Idle copy comes from the spec; busy copy is the
+        // accessibility refinement parallel to ACTION_RETRY_BUSY.
+        assert_eq!(
+            text(&btn).trim(),
+            sync_queue_copy::ACTION_MARK_READ,
+            "idle label must be the spec copy"
+        );
+
+        // Smoke-click to ensure the handler runs without panicking
+        // when no `WebClientHandle` is provided (the test harness
+        // path) — exercises the early-return reset of `mark_busy`.
+        simulate_click(&btn);
+        tick().await;
+        assert_eq!(
+            btn.get_attribute("aria-busy").as_deref(),
+            Some("false"),
+            "mark-as-read must drop back to aria-busy=false once the early-return path runs"
+        );
+    }
+
+    #[wasm_bindgen_test]
     async fn sync_queue_view_no_delete_action_anywhere() {
         // Spec is explicit: the queue is authoritative — no destructive
         // action is permitted. Walk the DOM and guard against any
@@ -11285,6 +11730,128 @@ mod phase_2b_sync_queue {
         );
     }
 
+    /// Issue #352 — Escape on the popover closes it. The popover is
+    /// outside the global close-stack in `keybindings::install`, so
+    /// without a local handler keyboard users could not dismiss it.
+    #[wasm_bindgen_test]
+    async fn relay_signal_button_escape_closes_popover() {
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.queue.set_relay_status.set(RelayStatus::Reachable);
+            provide_context(app_state);
+            provide_context(write);
+            view! { <RelaySignalButton /> }
+        });
+        tick().await;
+
+        let btn = query(&container, ".relay-signal-button").expect("button must render");
+        simulate_click(&btn);
+        tick().await;
+
+        let popover = query(&container, ".relay-popover").expect("popover must be open");
+
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_key("Escape");
+        let escape =
+            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        popover
+            .dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&escape)
+            .unwrap();
+        tick().await;
+
+        assert!(
+            query(&container, ".relay-popover").is_none(),
+            "Escape keydown on the popover must close it"
+        );
+        assert_eq!(
+            btn.get_attribute("aria-expanded").as_deref(),
+            Some("false"),
+            "aria-expanded must flip back to false after Escape"
+        );
+    }
+
+    /// Issue #352 — opening the popover seeds focus on the
+    /// settings-link button so keyboard users land inside the dialog.
+    #[wasm_bindgen_test]
+    async fn relay_signal_button_focuses_settings_link_on_open() {
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.queue.set_relay_status.set(RelayStatus::Reachable);
+            provide_context(app_state);
+            provide_context(write);
+            view! { <RelaySignalButton /> }
+        });
+        tick().await;
+
+        let btn = query(&container, ".relay-signal-button").expect("button must render");
+        simulate_click(&btn);
+        tick().await;
+
+        // Focus is queued via `request_animation_frame`, so wait one
+        // frame before asserting `document.activeElement`. A short
+        // timeout is more than long enough for rAF to fire in the
+        // headless test browser and matches the timing pattern used
+        // elsewhere in this file.
+        gloo_timers::future::TimeoutFuture::new(40).await;
+        tick().await;
+
+        let active = web_sys::window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .active_element()
+            .expect("active element after open");
+        assert!(
+            active.class_list().contains("relay-popover__settings-link"),
+            "settings-link button must receive focus when the popover opens"
+        );
+    }
+
+    /// Issue #352 — popover advertises itself as a non-modal dialog.
+    /// The popover does not trap focus, so `aria-modal="false"` is the
+    /// honest signal to assistive tech.
+    #[wasm_bindgen_test]
+    async fn relay_signal_button_popover_is_non_modal() {
+        let container = mount_test(move || {
+            let InitialSignals {
+                app_state,
+                write,
+                trust_store: _,
+            } = create_signals();
+            write.queue.set_relay_status.set(RelayStatus::Reachable);
+            provide_context(app_state);
+            provide_context(write);
+            view! { <RelaySignalButton /> }
+        });
+        tick().await;
+
+        let btn = query(&container, ".relay-signal-button").expect("button must render");
+        simulate_click(&btn);
+        tick().await;
+
+        let popover = query(&container, ".relay-popover").expect("popover must be open");
+        assert_eq!(
+            popover.get_attribute("aria-modal").as_deref(),
+            Some("false"),
+            "popover is non-modal — must advertise aria-modal=\"false\""
+        );
+        assert_eq!(
+            popover.get_attribute("role").as_deref(),
+            Some("dialog"),
+            "popover must keep role=dialog so aria-haspopup=\"dialog\" stays accurate"
+        );
+    }
+
     /// Schedule a closure for the next animation frame. Used by the
     /// reconnection-toast / welcome-back-banner tests to flip
     /// `device_online` *after* the component's `Effect` has run once
@@ -11649,5 +12216,673 @@ mod phase_2d_ephemeral_channels {
         input.dispatch_event(&ev).unwrap();
         tick().await;
         assert_eq!(input.value(), "90", "must clamp at 90-day cap");
+    }
+}
+
+// ── test-hooks mount verification ────────────────────────────────────────────
+
+/// Verify that `window.__willow` is set when the `test-hooks` feature is on
+/// and `<App/>` has been mounted. The mount block in `app.rs` sets the property
+/// synchronously (before the async dispatcher subscription), so it is already
+/// present by the time this assertion runs.
+#[wasm_bindgen_test]
+#[cfg(feature = "test-hooks")]
+async fn window_willow_is_mounted_under_test_hooks_feature() {
+    use willow_web::app::App;
+
+    let _container = mount_test(|| leptos::view! { <App /> });
+
+    let window = web_sys::window().unwrap();
+    let willow = js_sys::Reflect::get(&window, &"__willow".into()).unwrap();
+    assert!(
+        !willow.is_undefined(),
+        "window.__willow must be present when test-hooks feature is on"
+    );
+}
+
+// ── Issue #350: handler error reporting ─────────────────────────────────────
+//
+// `crates/web/src/handlers.rs` previously discarded every async-action
+// error with `let _ = ...`. The new `warn_and_toast_with` helper logs
+// via `tracing::warn!` and pushes an err toast onto the captured
+// `ToastStack` so the user gets feedback when send/edit/delete/react/
+// pin fails.
+//
+// We test the helper directly rather than driving a fake-failing
+// client through the closures: the handler closures are pinned to the
+// real `ClientHandle<IrohNetwork>` type and there's no trait seam to
+// inject a failing double. The helper *is* the production code path
+// that every handler now goes through (handlers capture the stack via
+// `use_context` outside their `spawn_local` block, then call
+// `warn_and_toast_with` from inside), so exercising it covers all 7
+// `let _ = h.<action>(...).await` sites.
+mod handler_error_toasts {
+    use super::*;
+    use willow_web::components::{ToastStack, ToastStackView};
+    use willow_web::handlers::warn_and_toast_with;
+
+    /// `warn_and_toast_with` pushes an `err` toast onto the supplied
+    /// `ToastStack` whose copy names the action that failed. Without
+    /// this, action handlers would still be silently dropping errors.
+    #[wasm_bindgen_test]
+    async fn warn_and_toast_with_pushes_err_toast() {
+        let stack = ToastStack::new();
+        let stack_for_mount = stack.clone();
+        let container = mount_test(move || {
+            provide_context(stack_for_mount.clone());
+            view! { <ToastStackView/> }
+        });
+
+        // No toasts yet.
+        tick().await;
+        assert_eq!(query_all(&container, ".toast").len(), 0);
+
+        // Simulate a handler failure. Any `Debug`-able error stands in
+        // for the real `anyhow::Error` the production handlers pass
+        // through.
+        warn_and_toast_with("send message", &"boom", Some(&stack));
+        tick().await;
+
+        let toasts = query_all(&container, ".toast");
+        assert_eq!(
+            toasts.len(),
+            1,
+            "warn_and_toast_with must push exactly one toast"
+        );
+        let t = &toasts[0];
+        assert_eq!(
+            t.get_attribute("role").as_deref(),
+            Some("alert"),
+            "err severity routes to assertive aria-live (role=alert)"
+        );
+        let title = t
+            .query_selector(".toast-title")
+            .unwrap()
+            .expect("toast title element");
+        let title_text = text(&title);
+        assert!(
+            title_text.contains("send message"),
+            "toast title must name the failed action. got: {title_text:?}"
+        );
+    }
+
+    /// Two failures of the same action coalesce via the `dedup` key —
+    /// the user sees a single err toast updated in place rather than
+    /// a stack of identical entries piling up if the network flaps.
+    #[wasm_bindgen_test]
+    async fn warn_and_toast_with_dedups_per_action() {
+        let stack = ToastStack::new();
+        let stack_for_mount = stack.clone();
+        let container = mount_test(move || {
+            provide_context(stack_for_mount.clone());
+            view! { <ToastStackView/> }
+        });
+        tick().await;
+
+        warn_and_toast_with("send message", &"first", Some(&stack));
+        warn_and_toast_with("send message", &"second", Some(&stack));
+        tick().await;
+
+        let toasts = query_all(&container, ".toast");
+        assert_eq!(
+            toasts.len(),
+            1,
+            "two failures of the same action must coalesce, not stack"
+        );
+    }
+
+    /// When the supplied stack is `None` (early boot, stripped-down
+    /// test harness), `warn_and_toast_with` must still log without
+    /// panicking. The toast push is a best-effort surface; the
+    /// `tracing::warn!` is the load-bearing record.
+    #[wasm_bindgen_test]
+    async fn warn_and_toast_with_no_stack_does_not_panic() {
+        warn_and_toast_with("send message", &"boom", None);
+        tick().await;
+    }
+}
+
+// ── Service-worker postMessage validation (issue #244) ──────────────────────
+//
+// `validate_payload` is the kind-discriminator gate. We test it
+// directly because driving a real `ServiceWorker` under wasm-pack is
+// infeasible — and the gate is the load-bearing piece. The
+// `store_and_dispatch` helper is exercised separately to confirm a
+// validated payload reaches `take_last_push` and fires the
+// `willow-push` window event.
+mod service_worker_bridge {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::JsValue;
+    use wasm_bindgen_test::*;
+    use willow_web::service_worker_bridge::{
+        store_and_dispatch, take_last_push, validate_payload, PushPayload, NOTIFICATION_CLICK_KIND,
+        PUSH_EVENT, PUSH_KIND,
+    };
+
+    /// Build a JS `{ kind, cat, ref }` object for `MessageEvent.data`.
+    fn make_data(kind: Option<&str>, cat: Option<&str>, reference: Option<&str>) -> JsValue {
+        let obj = js_sys::Object::new();
+        if let Some(k) = kind {
+            js_sys::Reflect::set(&obj, &"kind".into(), &k.into()).unwrap();
+        }
+        if let Some(c) = cat {
+            js_sys::Reflect::set(&obj, &"cat".into(), &c.into()).unwrap();
+        }
+        if let Some(r) = reference {
+            js_sys::Reflect::set(&obj, &"ref".into(), &r.into()).unwrap();
+        }
+        obj.into()
+    }
+
+    #[wasm_bindgen_test]
+    fn validate_accepts_well_formed_push() {
+        let data = make_data(Some(PUSH_KIND), Some("mention"), Some("ch:42"));
+        let payload = validate_payload(&data).expect("valid push must pass");
+        assert_eq!(
+            payload,
+            PushPayload {
+                kind: PUSH_KIND.to_string(),
+                cat: "mention".to_string(),
+                reference: Some("ch:42".to_string()),
+            }
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn validate_accepts_notification_click_kind() {
+        // Both kinds the SW posts must clear the gate so a future
+        // reader can subscribe without a second validator.
+        let data = make_data(Some(NOTIFICATION_CLICK_KIND), Some("msg"), None);
+        let payload = validate_payload(&data).expect("notification-click must pass");
+        assert_eq!(payload.kind, NOTIFICATION_CLICK_KIND);
+    }
+
+    #[wasm_bindgen_test]
+    fn validate_drops_payload_missing_kind() {
+        // The whole point of issue #244 — no `kind`, no admission.
+        let data = make_data(None, Some("msg"), Some("anything"));
+        assert!(
+            validate_payload(&data).is_none(),
+            "missing kind must be rejected"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn validate_drops_payload_with_wrong_kind() {
+        let data = make_data(Some("attacker-kind"), Some("msg"), None);
+        assert!(
+            validate_payload(&data).is_none(),
+            "unknown kind must be rejected"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn validate_drops_non_object_payload() {
+        // postMessage(string) etc. — the SW never sends these but a
+        // hostile sender might.
+        assert!(validate_payload(&JsValue::from_str("willow-push")).is_none());
+        assert!(validate_payload(&JsValue::from_f64(42.0)).is_none());
+        assert!(validate_payload(&JsValue::NULL).is_none());
+        assert!(validate_payload(&JsValue::UNDEFINED).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn validate_defaults_missing_cat_to_msg() {
+        let data = make_data(Some(PUSH_KIND), None, None);
+        let payload = validate_payload(&data).expect("kind alone is enough");
+        assert_eq!(payload.cat, "msg");
+        assert!(payload.reference.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    async fn store_and_dispatch_round_trips_through_window_event() {
+        use wasm_bindgen::closure::Closure;
+
+        // Drain any leftover payload from prior tests in the same
+        // browser document so this case starts from a known state.
+        let _ = take_last_push();
+
+        let window = web_sys::window().expect("window exists");
+        let fired = Rc::new(Cell::new(false));
+        let fired_for_cb = fired.clone();
+        let cb = Closure::<dyn Fn(web_sys::Event)>::new(move |_| {
+            fired_for_cb.set(true);
+        });
+        window
+            .add_event_listener_with_callback(PUSH_EVENT, cb.as_ref().unchecked_ref())
+            .unwrap();
+
+        let payload = PushPayload {
+            kind: PUSH_KIND.to_string(),
+            cat: "mention".to_string(),
+            reference: Some("msg:abc".to_string()),
+        };
+        store_and_dispatch(&window, payload.clone());
+
+        // Synchronous dispatch_event: the listener has already run.
+        assert!(fired.get(), "willow-push event must fire");
+        assert_eq!(
+            take_last_push(),
+            Some(payload),
+            "validated payload must be retrievable"
+        );
+        assert!(
+            take_last_push().is_none(),
+            "take_last_push must drain the slot"
+        );
+
+        window
+            .remove_event_listener_with_callback(PUSH_EVENT, cb.as_ref().unchecked_ref())
+            .unwrap();
+        drop(cb);
+    }
+}
+
+// ── STUN configuration (issue #179: privacy-first ICE config) ───────────────
+
+mod stun_config {
+    //! Tests that the WebRTC ICE configuration honours the
+    //! `window.__WILLOW_STUN_URLS` override and defaults to an empty
+    //! `iceServers` list (privacy-first — no third-party STUN by default).
+    //!
+    //! See `crates/web/src/voice.rs::resolve_stun_urls` and
+    //! `crates/web/src/voice.rs::VoiceManager::rtc_config`.
+
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_test::*;
+    use willow_web::voice;
+
+    /// Clear any prior override so each test starts from a clean slate.
+    fn clear_override() {
+        let window = web_sys::window().expect("window exists");
+        let _ = js_sys::Reflect::delete_property(
+            &window,
+            &wasm_bindgen::JsValue::from_str("__WILLOW_STUN_URLS"),
+        );
+    }
+
+    /// Set the global override to the supplied list of URLs.
+    fn set_override(urls: &[&str]) {
+        let window = web_sys::window().expect("window exists");
+        let arr = js_sys::Array::new();
+        for u in urls {
+            arr.push(&wasm_bindgen::JsValue::from_str(u));
+        }
+        js_sys::Reflect::set(
+            &window,
+            &wasm_bindgen::JsValue::from_str("__WILLOW_STUN_URLS"),
+            &arr,
+        )
+        .expect("set window override");
+    }
+
+    #[wasm_bindgen_test]
+    fn default_resolves_to_empty_list() {
+        clear_override();
+        let urls = voice::resolve_stun_urls();
+        assert!(
+            urls.is_empty(),
+            "default STUN URL list must be empty for privacy (got {urls:?})"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn override_resolves_to_supplied_urls() {
+        set_override(&["stun:foo:1234", "stun:bar:5678"]);
+        let urls = voice::resolve_stun_urls();
+        clear_override();
+        assert_eq!(
+            urls,
+            vec!["stun:foo:1234".to_string(), "stun:bar:5678".to_string()]
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn default_rtc_config_has_no_ice_servers() {
+        clear_override();
+        let cfg = voice::VoiceManager::rtc_config_for_test();
+        // The `iceServers` property should either be absent or an empty array.
+        let ice_servers =
+            js_sys::Reflect::get(&cfg, &wasm_bindgen::JsValue::from_str("iceServers"))
+                .expect("read iceServers");
+        if !ice_servers.is_undefined() && !ice_servers.is_null() {
+            let arr: js_sys::Array = ice_servers
+                .dyn_into()
+                .expect("iceServers should be an array if present");
+            assert_eq!(
+                arr.length(),
+                0,
+                "default iceServers must be empty (privacy-first default)"
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn override_rtc_config_includes_supplied_url() {
+        set_override(&["stun:example.com:3478"]);
+        let cfg = voice::VoiceManager::rtc_config_for_test();
+        clear_override();
+
+        let ice_servers =
+            js_sys::Reflect::get(&cfg, &wasm_bindgen::JsValue::from_str("iceServers"))
+                .expect("read iceServers");
+        let arr: js_sys::Array = ice_servers
+            .dyn_into()
+            .expect("iceServers should be an array");
+        assert_eq!(arr.length(), 1, "exactly one ice server entry expected");
+
+        let server = arr.get(0);
+        let urls = js_sys::Reflect::get(&server, &wasm_bindgen::JsValue::from_str("urls"))
+            .expect("read urls");
+
+        // The `urls` field on a single RTCIceServer can be a string or an
+        // array of strings; web-sys's setter wraps in an array.
+        let urls_arr: js_sys::Array = urls.dyn_into().expect("urls should be array");
+        assert_eq!(urls_arr.length(), 1);
+        let first = urls_arr.get(0).as_string().expect("url is a string");
+        assert_eq!(first, "stun:example.com:3478");
+    }
+}
+
+#[cfg(test)]
+mod pinned_jump_safe_scroll {
+    //! Regression tests for the pinned-message jump callback in
+    //! `crates/web/src/app.rs` (`on_pinned_jump`). The callback used to
+    //! interpolate `msg_id` into a `js_sys::eval(format!(...))` string with
+    //! only single-quote stripping as sanitization; it now uses the safe
+    //! DOM API: `document.getElementById(&format!("msg-{msg_id}"))` plus
+    //! `Element::scroll_into_view_with_scroll_into_view_options`.
+    //!
+    //! These tests exercise the same DOM-lookup pattern the callback now
+    //! relies on. The callback body is inline (no extracted helper), so we
+    //! verify the underlying API contract directly: real-looking IDs hit,
+    //! missing IDs miss cleanly, and adversarial IDs (quotes, backslashes,
+    //! brackets, newlines) are treated as literal element IDs that simply
+    //! match nothing — no DOM injection is possible.
+    //!
+    //! Refs: https://github.com/intendednull/willow/issues/425
+    //!
+    //! Note: this test does not assert that scrolling visually happened
+    //! (jsdom-style headless harnesses don't lay out content). The
+    //! original `eval` path also silently swallowed errors via `.ok()`,
+    //! so the property under test is "no panic + correct lookup result",
+    //! identical for both implementations.
+    use wasm_bindgen_test::*;
+
+    /// Mimic the lookup path used by `on_pinned_jump` in
+    /// `crates/web/src/app.rs`: `window → document → get_element_by_id`
+    /// with the same `msg-{msg_id}` formatting. Returns the matched
+    /// element if any.
+    fn lookup_msg_element(msg_id: &str) -> Option<web_sys::Element> {
+        web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.get_element_by_id(&format!("msg-{msg_id}")))
+    }
+
+    /// Append a `<div id="msg-{id}">` to the body and return the id used.
+    /// Caller is responsible for unique ids per test to avoid cross-test
+    /// pollution in the shared document.
+    fn mount_msg_div(id: &str) {
+        let doc = web_sys::window().expect("window").document().expect("doc");
+        let div = doc.create_element("div").expect("create_element");
+        div.set_id(&format!("msg-{id}"));
+        doc.body()
+            .expect("body")
+            .append_child(&div)
+            .expect("append");
+    }
+
+    #[wasm_bindgen_test]
+    fn lookup_finds_existing_hex_id() {
+        // EventHash::to_string() is a hex digest; verify a realistic id
+        // round-trips through the safe lookup the callback now uses.
+        let id = "deadbeefcafef00d1234567890abcdef";
+        mount_msg_div(id);
+
+        let el = lookup_msg_element(id).expect("element with msg-<hex> id must be found");
+        assert_eq!(el.id(), format!("msg-{id}"));
+    }
+
+    #[wasm_bindgen_test]
+    fn lookup_returns_none_for_missing_id() {
+        // Property the old `eval(...).ok()` chain provided implicitly via
+        // optional chaining and silent error swallowing: a missing id is
+        // a no-op, never a panic. The safe API mirrors this with `None`.
+        let id = "nonexistent_id_does_not_match_any_element_in_the_dom";
+        assert!(
+            lookup_msg_element(id).is_none(),
+            "missing id must return None, not panic"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn lookup_treats_adversarial_id_as_literal_no_injection() {
+        // Cases the old `replace('\'', "")` band-aid did not cover:
+        // double-quote, backslash, newline, brackets, parens. With the
+        // safe DOM API, these become part of the literal id passed to
+        // `getElementById`, which simply finds no match — no JS context
+        // exists for them to break out of, so injection is impossible.
+        let adversarial_ids = [
+            "abc\"';alert(1)//",
+            "id with spaces and 'quotes' and \"double\"",
+            "id\\with\\backslashes",
+            "id\nwith\nnewlines",
+            "id);scrollIntoView({behavior:'smooth'});//",
+            "<script>alert(1)</script>",
+        ];
+
+        for bad in adversarial_ids {
+            assert!(
+                lookup_msg_element(bad).is_none(),
+                "adversarial id {bad:?} must not match any element",
+            );
+        }
+    }
+}
+
+// ── data-state lifecycle (PR-3 §`data-state` attribute pattern) ─────────────
+//
+// Three failure modes from the spec:
+// 1. transitionend on the driving property advances opening → open
+// 2. reduced-motion (transition-duration: 0s) snaps to terminal phase
+// 3. transitionend on a non-driving property is ignored
+//
+// Tests target grove_drawer (the canonical implementation). The other
+// four lifecycle-wired components (mobile_shell, confirm_dialog,
+// bottom_sheet, message.rs action sheet) reuse the same lifecycle helpers
+// (lifecycle::advance + lifecycle::is_zero_duration) and the same
+// transitionend pattern, so coverage is shared via the helper unit tests
+// in lifecycle.rs.
+
+mod data_state_lifecycle {
+    use super::*;
+    use web_sys::{TransitionEvent, TransitionEventInit};
+    use willow_web::components::GroveDrawer;
+
+    /// Mount a GroveDrawer with stub props; the `open` signal is the
+    /// only one tests drive.
+    fn mount_drawer(open: ReadSignal<bool>) -> web_sys::HtmlElement {
+        mount_test(move || {
+            let open_sig = leptos::prelude::Signal::derive(move || open.get());
+            let servers_sig = leptos::prelude::Signal::derive(Vec::<(String, String)>::new);
+            let active_sig = leptos::prelude::Signal::derive(String::new);
+            let peer_sig = leptos::prelude::Signal::derive(|| 0usize);
+            let display_sig = leptos::prelude::Signal::derive(String::new);
+            view! {
+                <GroveDrawer
+                    open=open_sig
+                    servers=servers_sig
+                    active_server_id=active_sig
+                    peer_count=peer_sig
+                    display_name=display_sig
+                    on_close=leptos::prelude::Callback::new(|_: ()| ())
+                    on_server_click=leptos::prelude::Callback::new(|_: String| ())
+                />
+            }
+        })
+    }
+
+    /// Build a synthetic `transitionend` event with `propertyName` set.
+    fn make_transition_end(property: &str) -> TransitionEvent {
+        let init = TransitionEventInit::new();
+        init.set_bubbles(true);
+        init.set_property_name(property);
+        TransitionEvent::new_with_event_init_dict("transitionend", &init).unwrap()
+    }
+
+    /// Force an inline non-zero transition on the drawer so the
+    /// `is_zero_duration` shortcut does NOT fire, regardless of which
+    /// stylesheets `wasm-pack` loaded (foundation.css's `--motion-slow`
+    /// is not injected by `ensure_components_css_loaded`, so the
+    /// stylesheet-derived `transition: transform var(--motion-slow)`
+    /// resolves to invalid → 0s and would otherwise short-circuit
+    /// every test through the reduced-motion path).
+    fn force_transition(drawer: &web_sys::Element, value: &str) {
+        drawer
+            .unchecked_ref::<web_sys::HtmlElement>()
+            .style()
+            .set_property("transition", value)
+            .unwrap();
+    }
+
+    #[wasm_bindgen_test]
+    async fn grove_drawer_lifecycle_advances_on_transform_transitionend() {
+        let (open, set_open) = signal(false);
+        let host = mount_drawer(open);
+        tick().await;
+
+        let drawer = query(&host, ".grove-drawer").expect("grove-drawer rendered");
+        force_transition(&drawer, "transform 240ms linear");
+
+        assert_eq!(
+            drawer.get_attribute("data-state").as_deref(),
+            Some("closed"),
+            "initial mount with open=false should be closed"
+        );
+
+        set_open.set(true);
+        tick().await;
+        assert_eq!(
+            drawer.get_attribute("data-state").as_deref(),
+            Some("opening"),
+            "with non-zero transition-duration, open=true should set opening (no shortcut)"
+        );
+
+        drawer
+            .dispatch_event(&make_transition_end("transform"))
+            .unwrap();
+        tick().await;
+        assert_eq!(
+            drawer.get_attribute("data-state").as_deref(),
+            Some("open"),
+            "transitionend on `transform` should advance opening → open"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn grove_drawer_lifecycle_advances_on_opacity_transitionend() {
+        // Regression for the reduced-motion driving-property bug: under
+        // `prefers-reduced-motion: reduce` components.css swaps the
+        // .grove-drawer transition to `opacity var(--motion-slow) linear`,
+        // so transitionend fires with property_name == "opacity". The
+        // listener must accept it; otherwise the lifecycle would freeze
+        // in `opening` / `closing`.
+        let (open, set_open) = signal(false);
+        let host = mount_drawer(open);
+        tick().await;
+
+        let drawer = query(&host, ".grove-drawer").expect("grove-drawer rendered");
+        force_transition(&drawer, "opacity 240ms linear");
+
+        set_open.set(true);
+        tick().await;
+        assert_eq!(
+            drawer.get_attribute("data-state").as_deref(),
+            Some("opening"),
+            "with non-zero opacity transition, open=true should set opening (no shortcut)"
+        );
+
+        drawer
+            .dispatch_event(&make_transition_end("opacity"))
+            .unwrap();
+        tick().await;
+        assert_eq!(
+            drawer.get_attribute("data-state").as_deref(),
+            Some("open"),
+            "transitionend on `opacity` should advance opening → open under reduced motion"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn grove_drawer_reduced_motion_snaps_to_terminal() {
+        let (open, set_open) = signal(false);
+        let host = mount_drawer(open);
+        tick().await;
+
+        let drawer = query(&host, ".grove-drawer").expect("grove-drawer rendered");
+
+        // Force computed transition-duration: 0s. The is_zero_duration
+        // shortcut must snap straight to terminal without a transitionend
+        // dispatch. This is what fires when no transition is declared
+        // OR when prefers-reduced-motion zeroes the duration.
+        drawer
+            .unchecked_ref::<web_sys::HtmlElement>()
+            .style()
+            .set_property("transition-duration", "0s")
+            .unwrap();
+
+        set_open.set(true);
+        tick().await;
+        assert_eq!(
+            drawer.get_attribute("data-state").as_deref(),
+            Some("open"),
+            "with transition-duration: 0s, lifecycle should snap to open without a transitionend dispatch"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn grove_drawer_ignores_unrelated_transitionend() {
+        let (open, set_open) = signal(false);
+        let host = mount_drawer(open);
+        tick().await;
+
+        let drawer = query(&host, ".grove-drawer").expect("grove-drawer rendered");
+        force_transition(&drawer, "transform 240ms linear");
+
+        set_open.set(true);
+        tick().await;
+        assert_eq!(
+            drawer.get_attribute("data-state").as_deref(),
+            Some("opening"),
+            "expected opening after open=true with non-zero transition"
+        );
+
+        // Stray transitionend on a non-driving property — must NOT
+        // advance lifecycle. `color` and `box-shadow` are intentionally
+        // not in the driving-property accept list (which is
+        // `transform` | `opacity`).
+        drawer
+            .dispatch_event(&make_transition_end("color"))
+            .unwrap();
+        tick().await;
+        assert_eq!(
+            drawer.get_attribute("data-state").as_deref(),
+            Some("opening"),
+            "transitionend on `color` should be ignored — not in the driving-property accept list"
+        );
+
+        // Real driving property — advances.
+        drawer
+            .dispatch_event(&make_transition_end("transform"))
+            .unwrap();
+        tick().await;
+        assert_eq!(
+            drawer.get_attribute("data-state").as_deref(),
+            Some("open"),
+            "transitionend on `transform` should advance opening → open"
+        );
     }
 }

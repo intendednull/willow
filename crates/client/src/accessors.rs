@@ -197,8 +197,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let my_id = self.identity.endpoint_id();
         willow_actor::state::mutate(&self.network_meta_addr, move |n| {
             let now = crate::util::current_time_ms();
-            n.typing_peers
-                .retain(|_, (_, ts)| now - *ts < crate::TYPING_INDICATOR_TTL_MS);
+            // Keep map + recency in lockstep: helper drops both.
+            n.sweep_typing(now, crate::TYPING_INDICATOR_TTL_MS);
             n.typing_peers
                 .iter()
                 .filter(|(pid, _)| *pid != &my_id)
@@ -206,5 +206,33 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 .collect()
         })
         .await
+    }
+}
+
+// ── Test-only address getters (test-hooks feature) ────────────────────────
+//
+// Gated behind `test-hooks` so non-test consumers (`willow-agent`,
+// `willow-replay`, etc.) never see them. The address itself doesn't grant
+// write access without an active mutator — these are a read-only handle
+// for `WillowTestHooks` in the web crate, which cannot hold a generic
+// `ClientHandle<N>` across the wasm_bindgen boundary.
+
+#[cfg(feature = "test-hooks")]
+impl<N: willow_network::Network> ClientHandle<N> {
+    /// Clone the per-author Merkle-DAG actor address. Test-only.
+    pub fn dag_addr_clone(
+        &self,
+    ) -> willow_actor::Addr<willow_actor::StateActor<crate::state_actors::DagState>> {
+        self.dag_addr.clone()
+    }
+
+    /// Clone the materialised `ServerState` actor address. Test-only.
+    ///
+    /// Used by the snapshot builder in `WillowTestHooks` to read the
+    /// channels view for assertion-style polling.
+    pub fn event_state_addr_clone(
+        &self,
+    ) -> willow_actor::Addr<willow_actor::StateActor<willow_state::ServerState>> {
+        self.event_state_addr.clone()
     }
 }

@@ -72,7 +72,7 @@ services:
       context: .
       dockerfile: docker/web.Dockerfile
     ports:
-      - "${WILLOW_WEB_PORT:-8080}:80"
+      - "${WILLOW_WEB_PORT:-8080}:8080"
     depends_on:
       - relay
     restart: unless-stopped

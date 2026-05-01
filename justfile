@@ -56,8 +56,8 @@ test-browser:
     wasm-pack test --headless --firefox crates/web
 
 # Bootstrap the E2E test environment (install tooling, build, start services)
-setup-e2e:
-    ./scripts/setup-e2e.sh
+setup-e2e FEATURES="":
+    WILLOW_FEATURES="{{FEATURES}}" ./scripts/setup-e2e.sh
 
 # Install/build for E2E but don't start services
 setup-e2e-no-start:
@@ -68,29 +68,62 @@ teardown-e2e:
     ./scripts/teardown-e2e.sh
 
 # Run the full E2E flow: setup, run tests, teardown (teardown runs even on failure)
-test-e2e-full:
+test-e2e-full FEATURES="test-hooks":
     #!/usr/bin/env bash
     set -u
-    ./scripts/setup-e2e.sh
+    WILLOW_FEATURES="{{FEATURES}}" ./scripts/setup-e2e.sh
     EXIT_CODE=0
     npx playwright test --project=desktop-chrome --project=mobile-chrome || EXIT_CODE=$?
     ./scripts/teardown-e2e.sh
     exit $EXIT_CODE
 
 # Run Playwright E2E tests against deployed site
-test-e2e-ui:
+test-e2e-ui FEATURES="test-hooks":
+    @just setup-e2e FEATURES={{FEATURES}}
     npx playwright test --project=desktop-chrome --project=mobile-chrome
+
+# Run the Playwright E2E suite N times to surface intermittent flake.
+# Aggregates pass/fail per run; exits non-zero if ANY run failed.
+# Default N=5 (per docs/specs/2026-04-27-event-based-waits-design.md
+# §Implementation phasing PR 4).
+test-e2e-flake N="5" FEATURES="test-hooks":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    WILLOW_FEATURES="{{FEATURES}}" ./scripts/setup-e2e.sh
+    pass=0
+    fail=0
+    failures=()
+    for i in $(seq 1 {{N}}); do
+        echo
+        echo "════════ flake harness: run $i / {{N}} ════════"
+        if npx playwright test --reporter=line; then
+            pass=$((pass + 1))
+        else
+            fail=$((fail + 1))
+            failures+=("$i")
+        fi
+    done
+    echo
+    echo "════════ flake summary ════════"
+    echo "passed: $pass / {{N}}"
+    echo "failed: $fail / {{N}}"
+    if (( fail > 0 )); then
+        echo "failed runs: ${failures[*]}"
+        exit 1
+    fi
 
 # Full-suite gate: lint + Rust + wasm-pack browser + Playwright, in
 # order, fail-fast. This is the single command a PR must go green on.
-check-all:
+check-all FEATURES="test-hooks":
     #!/usr/bin/env bash
     set -euo pipefail
     just fmt
     just clippy
     just test
     just test-browser
-    just test-e2e-ui
+    just test-e2e-ui FEATURES={{FEATURES}}
+    ./scripts/check-no-test-hooks-in-prod.sh
+    ./scripts/check-wait-timeout-count.sh
 
 # Run Playwright E2E tests on all browsers
 test-e2e-ui-all:
@@ -101,11 +134,13 @@ test-e2e-ui-headed:
     npx playwright test --headed
 
 # Run multi-peer sync tests (desktop-chrome for quick iteration)
-test-e2e-sync:
+test-e2e-sync FEATURES="test-hooks":
+    @just setup-e2e FEATURES={{FEATURES}}
     npx playwright test e2e/multi-peer-sync.spec.ts --project=desktop-chrome
 
 # Run permission tests
-test-e2e-perms:
+test-e2e-perms FEATURES="test-hooks":
+    @just setup-e2e FEATURES={{FEATURES}}
     npx playwright test e2e/permissions.spec.ts --project=desktop-chrome
 
 # Run agent unit + integration tests
@@ -179,8 +214,8 @@ docker-ids:
     @docker compose exec storage-2 willow-storage --print-peer-id 2>/dev/null || echo "storage-2: not running"
 
 # Start all services for local development (relay, workers, web UI)
-dev:
-    ./scripts/dev.sh
+dev FEATURES="":
+    WILLOW_FEATURES="{{FEATURES}}" ./scripts/dev.sh
 
 # Start all services, skipping the build step
 dev-quick:

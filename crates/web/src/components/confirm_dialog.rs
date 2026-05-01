@@ -1,5 +1,9 @@
+use leptos::ev::TransitionEvent;
+use leptos::html::Div;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
+
+use crate::components::lifecycle::{advance, is_zero_duration, LifecycleState};
 
 /// Reusable modal confirmation dialog with Cancel / Confirm buttons.
 ///
@@ -39,6 +43,50 @@ pub fn ConfirmDialog(
     let confirm_button_ref = NodeRef::<leptos::html::Button>::new();
     let cancel_button_ref = NodeRef::<leptos::html::Button>::new();
 
+    // Four-phase data-state lifecycle on the .confirm-overlay root.
+    // Driving property: opacity (the dialog fades in/out). The element
+    // is conditionally rendered, so the Closing phase is observable only
+    // for the brief moment between visible.set(false) and the subtree
+    // being unmounted; tests should gate on Open / Closed (or absence).
+    //
+    // See docs/specs/2026-04-27-event-based-waits-design.md
+    // §`data-state` attribute pattern.
+    let overlay_ref: NodeRef<Div> = NodeRef::new();
+    let lifecycle = RwSignal::new(if visible.get_untracked() {
+        LifecycleState::Open
+    } else {
+        LifecycleState::Closed
+    });
+
+    Effect::new(move |prev: Option<bool>| {
+        let now_visible = visible.get();
+        if prev.is_none() || prev == Some(now_visible) {
+            lifecycle.set(if now_visible {
+                LifecycleState::Open
+            } else {
+                LifecycleState::Closed
+            });
+            return now_visible;
+        }
+        lifecycle.set(if now_visible {
+            LifecycleState::Opening
+        } else {
+            LifecycleState::Closing
+        });
+        if let Some(el) = overlay_ref.get_untracked() {
+            if is_zero_duration(el.as_ref()) {
+                lifecycle.set(advance(lifecycle.get_untracked()));
+            }
+        }
+        now_visible
+    });
+
+    let on_transition_end = move |ev: TransitionEvent| {
+        if ev.property_name() == "opacity" {
+            lifecycle.update(|s| *s = advance(*s));
+        }
+    };
+
     // Auto-focus the confirm button when the dialog becomes visible so
     // keyboard users are pulled into the modal and Escape/Tab work as
     // expected per WAI-ARIA APG.
@@ -67,6 +115,9 @@ pub fn ConfirmDialog(
             Some(view! {
                 <div
                     class="confirm-overlay"
+                    node_ref=overlay_ref
+                    data-state=move || lifecycle.get().as_str()
+                    on:transitionend=on_transition_end
                     role="dialog"
                     aria-modal="true"
                     aria-labelledby="confirm-dialog-title"

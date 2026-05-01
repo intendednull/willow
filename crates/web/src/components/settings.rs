@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use willow_client::presence::{PresenceOverride, PresenceState};
 
 use crate::app::WebClientHandle;
-use crate::components::{RoleManager, StatusDot, StatusDotBorder, StatusDotSize};
+use crate::components::{RoleManager, StatusDot, StatusDotBorder, StatusDotSize, ToastStack};
 use crate::icons;
 use crate::state::{AppState, SettingsTab};
 use crate::util::copy_to_clipboard;
@@ -54,8 +54,18 @@ pub fn SettingsPanel(
         if !name.trim().is_empty() {
             let h = handle_save.clone();
             let name = name.trim().to_string();
+            // Capture toast stack on the outer reactive frame —
+            // `spawn_local` strips the owner so `use_context` inside
+            // the async block would return None.
+            let toasts = use_context::<ToastStack>();
             wasm_bindgen_futures::spawn_local(async move {
-                let _ = h.set_server_display_name(&name).await;
+                if let Err(e) = h.set_server_display_name(&name).await {
+                    crate::handlers::warn_and_toast_with(
+                        "set server display name",
+                        &e,
+                        toasts.as_ref(),
+                    );
+                }
             });
         }
         set_status_msg.set("Saved.".to_string());
@@ -435,8 +445,14 @@ fn NotificationsTabPlaceholder() -> impl IntoView {
             let target = !local_muted.get_untracked();
             set_local_muted.set(target);
             let h = handle.clone();
+            // Capture toast stack on the outer reactive frame —
+            // `spawn_local` strips the owner so `use_context` inside
+            // the async block would return None.
+            let toasts = use_context::<ToastStack>();
             wasm_bindgen_futures::spawn_local(async move {
-                let _ = h.mutate_grove_mute(target).await;
+                if let Err(e) = h.mutate_grove_mute(target).await {
+                    crate::handlers::warn_and_toast_with("mute server", &e, toasts.as_ref());
+                }
             });
         }
     };

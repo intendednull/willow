@@ -2,14 +2,28 @@
 
 pub mod role;
 
+use std::path::PathBuf;
+
 use clap::Parser;
 use role::{ReplayConfig, ReplayRole};
+
+/// Compute the platform-aware default path for the replay identity key.
+///
+/// Prefers the user's config dir (e.g. `$XDG_CONFIG_HOME/willow/replay.key`
+/// on Linux, `~/Library/Application Support/willow/replay.key` on macOS),
+/// falling back to `/etc/willow/replay.key` when no config dir is available
+/// (matches the historical Linux deployment path used by the Docker images).
+fn default_replay_key() -> PathBuf {
+    dirs::config_dir()
+        .map(|d| d.join("willow").join("replay.key"))
+        .unwrap_or_else(|| PathBuf::from("/etc/willow/replay.key"))
+}
 
 #[derive(Parser)]
 #[command(name = "willow-replay", about = "Willow replay worker node")]
 struct Cli {
     /// Path to the Ed25519 identity keypair file.
-    #[arg(long, default_value = "/etc/willow/replay.key")]
+    #[arg(long, default_value_t = default_replay_key().display().to_string())]
     identity_path: String,
 
     /// Iroh relay URL to connect through.
@@ -92,4 +106,28 @@ async fn main() -> anyhow::Result<()> {
     };
 
     willow_worker::runtime::run(Box::new(role), config, network).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn default_replay_key_targets_willow_subdir() {
+        let p = default_replay_key();
+        assert_eq!(p.file_name().and_then(|s| s.to_str()), Some("replay.key"));
+        let parent = p.parent().expect("default path has parent");
+        assert_eq!(
+            parent.file_name().and_then(|s| s.to_str()),
+            Some("willow"),
+            "expected willow/ as parent dir, got {parent:?}"
+        );
+        assert!(p.is_absolute(), "default path must be absolute, got {p:?}");
+        // Sanity: path contains at least the `willow/replay.key` tail.
+        assert!(
+            p.ends_with(Path::new("willow/replay.key")),
+            "expected path to end with willow/replay.key, got {p:?}"
+        );
+    }
 }

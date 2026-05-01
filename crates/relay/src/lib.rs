@@ -41,15 +41,16 @@
 //! merge/replay correctness. Relayed bytes are never trusted on the
 //! strength of having passed through this crate.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
 use tracing::{info, warn};
+use willow_identity::EndpointId;
 use willow_network::traits::{GossipEvent, TopicEvents};
 use willow_network::Network;
 
@@ -74,14 +75,59 @@ const PROXY_REQUEST_LINE_BUFFER: usize = 8 * 1024;
 /// connection. Slow clients (Slowloris) are dropped at this deadline.
 pub const BOOTSTRAP_IO_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Maximum number of bytes buffered while draining the remainder of a
+/// bootstrap-id request looking for the end-of-headers marker
+/// (`\r\n\r\n`). Real HTTP requests for our single-route endpoint never
+/// approach this size; a client that exceeds it is malformed or
+/// abusive, and we close the connection rather than keep reading until
+/// [`BOOTSTRAP_IO_TIMEOUT`]. Matches [`PROXY_REQUEST_LINE_BUFFER`] so
+/// the relay applies a single, symmetric budget for header bytes.
+pub const BOOTSTRAP_DRAIN_BUFFER_CAP: usize = 8 * 1024;
+
 /// Maximum number of distinct channel topics the topic-announce
 /// listener will subscribe to. Once this cap is reached the listener
-/// silently drops further unique announces (after a one-shot warn).
+/// drops further unique announces (with rate-limited warns; see
+/// [`WARN_RATE_LIMIT`]).
 pub const MAX_TOPICS: usize = 10_000;
 
 /// Maximum length, in bytes, of a topic string accepted from a
 /// `TopicAnnounce` message. Anything longer is rejected outright.
 pub const MAX_TOPIC_LEN: usize = 256;
+
+/// Maximum number of topic entries accepted in a single `TopicAnnounce`
+/// wire message. Larger announces are rejected outright before any
+/// per-topic work runs (validation + blake3 hash). Without this cap a
+/// peer can ship a 256 KB envelope containing ~128 000 two-byte topics
+/// and force the relay to do O(n) work per message — a CPU-amplification
+/// vector. 64 distinct channels per announce is comfortably more than
+/// any legitimate client subscribes to in a single batch.
+pub const MAX_TOPICS_PER_ANNOUNCE: usize = 64;
+
+/// Maximum number of distinct topic subscriptions the relay will hold
+/// on behalf of a single signer (`EndpointId`). Once a signer reaches
+/// this cap, announcing a new topic evicts that signer's least-recently
+/// used topic (LRU). This prevents one peer from monopolising the
+/// global slot table ([`MAX_TOPICS`]) and starving other clients.
+pub const MAX_TOPICS_PER_SIGNER: usize = 100;
+
+/// Minimum gap between repeated cap-hit warns. Replaces the previous
+/// once-per-session flag so operators see ongoing pressure without
+/// having the log spammed by every announce that overflows the cap.
+pub const WARN_RATE_LIMIT: Duration = Duration::from_secs(60);
+
+/// Returns `true` and updates `last_warn` to `now` iff a warn should be
+/// emitted now: either no warn has been emitted yet, or the previous
+/// warn is older than `interval`. Pulled out so tests can exercise the
+/// rate-limiter directly without poking at the tracing subscriber.
+pub fn should_emit_warn(last_warn: &mut Option<Instant>, now: Instant, interval: Duration) -> bool {
+    match *last_warn {
+        Some(prev) if now.duration_since(prev) < interval => false,
+        _ => {
+            *last_warn = Some(now);
+            true
+        }
+    }
+}
 
 /// Returns `true` iff `s` is a syntactically valid channel topic
 /// string: non-empty, no longer than [`MAX_TOPIC_LEN`] bytes, and
@@ -272,6 +318,22 @@ async fn handle_bootstrap_request_after_line(
     // end-of-headers marker "\r\n\r\n" is already in what we read, we
     // don't need to read more.
     if !already_read.windows(4).any(|w| w == b"\r\n\r\n") {
+        // Accumulate every chunk we read into a single buffer and
+        // search the *whole* buffer for "\r\n\r\n" each iteration.
+        // Searching only the latest chunk would miss a marker that
+        // straddles a chunk boundary, leaving the loop spinning until
+        // BOOTSTRAP_IO_TIMEOUT (issue #238).
+        //
+        // Seed the accumulator with the trailing 3 bytes of
+        // `already_read` so a marker straddling the boundary between
+        // the request line and the first newly-read chunk is also
+        // caught. (3 bytes is the most that can contribute to a
+        // 4-byte marker without itself containing the full marker —
+        // if `already_read` already held it, we wouldn't be here.)
+        let mut buffered: Vec<u8> = Vec::with_capacity(1024);
+        let seed_start = already_read.len().saturating_sub(3);
+        buffered.extend_from_slice(&already_read[seed_start..]);
+
         let mut chunk = [0u8; 1024];
         let deadline = tokio::time::sleep(BOOTSTRAP_IO_TIMEOUT);
         tokio::pin!(deadline);
@@ -280,11 +342,20 @@ async fn handle_bootstrap_request_after_line(
                 _ = &mut deadline => break,
                 res = client.read(&mut chunk) => match res {
                     Ok(0) => break,
-                    Ok(_n) => {
-                        // We don't care about the content; just look
-                        // for the blank line terminator.
-                        if chunk.windows(4).any(|w| w == b"\r\n\r\n") {
+                    Ok(n) => {
+                        buffered.extend_from_slice(&chunk[..n]);
+                        if buffered.windows(4).any(|w| w == b"\r\n\r\n") {
                             break;
+                        }
+                        if buffered.len() >= BOOTSTRAP_DRAIN_BUFFER_CAP {
+                            warn!(
+                                cap = BOOTSTRAP_DRAIN_BUFFER_CAP,
+                                "bootstrap request headers exceeded drain cap; closing"
+                            );
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "bootstrap request headers exceeded drain cap",
+                            ));
                         }
                     }
                     Err(e) => return Err(e),
@@ -356,10 +427,125 @@ pub async fn run_proxy_listener(
     }
 }
 
+/// In-memory state for [`topic_announce_listener`].
+///
+/// Pulled out of the listener's stack so the per-message processing
+/// step can be exercised by unit tests against a `MemNetwork` without
+/// having to drive the full `events` stream. Each field's invariants
+/// are documented inline.
+#[derive(Default)]
+struct AnnounceState {
+    /// Reference count of how many distinct signers currently hold a
+    /// subscription on each topic. The relay holds exactly one gossip
+    /// subscription per topic with a non-zero refcount; the entry is
+    /// removed (and the subscription torn down) when the count hits 0.
+    /// Size is bounded by [`MAX_TOPICS`].
+    topic_refcount: HashMap<String, usize>,
+
+    /// Per-signer LRU of currently-held topics, oldest at the front.
+    /// Bounded by [`MAX_TOPICS_PER_SIGNER`] entries per signer; on
+    /// overflow the front entry is evicted (and its global refcount
+    /// decremented) before the new topic is inserted at the back.
+    /// Re-announcing an existing topic promotes it to the back.
+    signer_topics: HashMap<EndpointId, VecDeque<String>>,
+
+    /// Last time a per-message-cap warn was emitted; throttles the log
+    /// at [`WARN_RATE_LIMIT`] so an attacker cannot spam the log.
+    warn_per_msg_last: Option<Instant>,
+    /// Last time a global-cap warn was emitted (rate-limited).
+    warn_global_full_last: Option<Instant>,
+    /// Last time a per-signer-eviction warn was emitted (rate-limited).
+    warn_signer_evict_last: Option<Instant>,
+}
+
+/// Outcome of processing a single topic for a given signer. The
+/// network-level effects (subscribe / unsubscribe) are returned so the
+/// caller drives them outside `&mut self`. A single announce can yield
+/// up to two actions: an LRU eviction may free a global slot
+/// (Unsubscribe) and the new topic may need joining (Subscribe).
+#[derive(Debug, Default, PartialEq, Eq)]
+struct TopicActions {
+    /// Topic to unsubscribe from (LRU eviction freed the last reference).
+    pub unsubscribe: Option<String>,
+    /// Topic to subscribe to (first reference globally).
+    pub subscribe: Option<String>,
+    /// True iff this topic was rejected by the global cap.
+    pub rejected_global: bool,
+    /// True iff this topic triggered a per-signer LRU eviction.
+    pub evicted_for_signer: bool,
+}
+
+impl AnnounceState {
+    /// Apply one announced topic from `signer`. Returns network-level
+    /// effects the caller must drive. Pure with respect to the network.
+    fn process_topic(&mut self, signer: EndpointId, topic_str: &str) -> TopicActions {
+        let mut actions = TopicActions::default();
+
+        let entry = self.signer_topics.entry(signer).or_default();
+
+        // If signer already holds this topic, promote it (LRU touch).
+        if let Some(pos) = entry.iter().position(|t| t == topic_str) {
+            if let Some(t) = entry.remove(pos) {
+                entry.push_back(t);
+            }
+            return actions;
+        }
+
+        // Per-signer cap: evict signer's LRU topic to make room.
+        if entry.len() >= MAX_TOPICS_PER_SIGNER {
+            actions.evicted_for_signer = true;
+            if let Some(oldest) = entry.pop_front() {
+                if let Some(count) = self.topic_refcount.get_mut(&oldest) {
+                    *count -= 1;
+                    if *count == 0 {
+                        self.topic_refcount.remove(&oldest);
+                        actions.unsubscribe = Some(oldest);
+                    }
+                }
+            }
+        }
+
+        // Global cap: reject if topic is new globally and table is full.
+        let already_global = self.topic_refcount.contains_key(topic_str);
+        if !already_global && self.topic_refcount.len() >= MAX_TOPICS {
+            actions.rejected_global = true;
+            return actions;
+        }
+
+        // Accept: append to signer queue and bump global refcount.
+        let entry = self.signer_topics.entry(signer).or_default();
+        entry.push_back(topic_str.to_string());
+        let count = self
+            .topic_refcount
+            .entry(topic_str.to_string())
+            .or_insert(0);
+        *count += 1;
+        if *count == 1 {
+            actions.subscribe = Some(topic_str.to_string());
+        }
+        actions
+    }
+}
+
 /// Listen for `TopicAnnounce` messages on the server-ops topic and
 /// dynamically subscribe to announced channel topics. Topics are
 /// validated against [`topic_str_is_valid`] and the number of distinct
 /// subscribed topics is capped at [`MAX_TOPICS`].
+///
+/// Three layered caps protect the relay from CPU amplification and
+/// slot-table exhaustion:
+///
+/// 1. **[`MAX_TOPICS_PER_ANNOUNCE`]** — per-message ceiling. Announces
+///    carrying more entries than this are rejected outright before any
+///    per-topic validation or hashing runs. Without this cap an
+///    attacker can pack ~128 000 two-byte topics into a 256 KB
+///    envelope and force the relay to do O(n) work per message.
+/// 2. **[`MAX_TOPICS_PER_SIGNER`]** — per-signer slot cap with LRU
+///    eviction. Stops one peer from monopolising the global slot
+///    table by pumping ~10 000 unique topics into it.
+/// 3. **[`MAX_TOPICS`]** — global slot cap. Once reached, additional
+///    new topics are dropped and the warn is rate-limited at
+///    [`WARN_RATE_LIMIT`].
 ///
 /// This is a **transport-layer** routine. The relay simply joins the
 /// announced gossip topics so clients on those topics can reach each
@@ -372,18 +558,37 @@ pub async fn topic_announce_listener<N>(mut events: N::Events, network: N)
 where
     N: Network,
 {
-    let mut subscribed: HashSet<String> = HashSet::new();
-    let mut warned_full = false;
+    let mut state = AnnounceState::default();
 
     while let Some(Ok(event)) = events.next().await {
         let GossipEvent::Received(msg) = event else {
             continue;
         };
-        let Some((willow_common::WireMessage::TopicAnnounce { topics }, _)) =
+        let Some((willow_common::WireMessage::TopicAnnounce { topics }, signer)) =
             willow_common::unpack_wire(&msg.content)
         else {
             continue;
         };
+
+        // Per-message cap: drop the whole announce if it exceeds the
+        // per-message limit. Done BEFORE any per-topic loop so an
+        // oversized announce costs O(1) work, not O(n).
+        if topics.len() > MAX_TOPICS_PER_ANNOUNCE {
+            if should_emit_warn(
+                &mut state.warn_per_msg_last,
+                Instant::now(),
+                WARN_RATE_LIMIT,
+            ) {
+                warn!(
+                    cap = MAX_TOPICS_PER_ANNOUNCE,
+                    count = topics.len(),
+                    %signer,
+                    "rejecting TopicAnnounce exceeding per-message cap"
+                );
+            }
+            continue;
+        }
+
         for topic_str in topics {
             if !topic_str_is_valid(&topic_str) {
                 warn!(
@@ -392,30 +597,63 @@ where
                 );
                 continue;
             }
-            if subscribed.contains(&topic_str) {
-                continue;
+
+            let actions = state.process_topic(signer, &topic_str);
+
+            if actions.evicted_for_signer
+                && should_emit_warn(
+                    &mut state.warn_signer_evict_last,
+                    Instant::now(),
+                    WARN_RATE_LIMIT,
+                )
+            {
+                warn!(
+                    cap = MAX_TOPICS_PER_SIGNER,
+                    %signer,
+                    "per-signer topic cap reached; evicting LRU topic"
+                );
             }
-            if subscribed.len() >= MAX_TOPICS {
-                if !warned_full {
-                    warn!(
-                        cap = MAX_TOPICS,
-                        "topic subscription cap reached; dropping further announces"
-                    );
-                    warned_full = true;
-                }
-                continue;
+            if actions.rejected_global
+                && should_emit_warn(
+                    &mut state.warn_global_full_last,
+                    Instant::now(),
+                    WARN_RATE_LIMIT,
+                )
+            {
+                warn!(
+                    cap = MAX_TOPICS,
+                    "topic subscription cap reached; dropping further announces"
+                );
             }
-            subscribed.insert(topic_str.clone());
-            let topic_id = willow_network::topic_id(&topic_str);
-            match network.subscribe(topic_id, vec![]).await {
-                Ok(_) => {
-                    info!(topic = %topic_str, "subscribed to announced channel topic");
+
+            // Drive the eviction unsubscribe FIRST so the global slot
+            // is freed before any subsequent subscribe attempt.
+            if let Some(topic) = actions.unsubscribe {
+                let topic_id = willow_network::topic_id(&topic);
+                match network.unsubscribe(topic_id).await {
+                    Ok(_) => {
+                        info!(topic = %topic, "unsubscribed evicted topic");
+                    }
+                    Err(e) => {
+                        warn!(
+                            topic = %topic, %e,
+                            "failed to unsubscribe evicted topic"
+                        );
+                    }
                 }
-                Err(e) => {
-                    warn!(
-                        topic = %topic_str, %e,
-                        "failed to subscribe to announced topic"
-                    );
+            }
+            if let Some(topic) = actions.subscribe {
+                let topic_id = willow_network::topic_id(&topic);
+                match network.subscribe(topic_id, vec![]).await {
+                    Ok(_) => {
+                        info!(topic = %topic, "subscribed to announced channel topic");
+                    }
+                    Err(e) => {
+                        warn!(
+                            topic = %topic, %e,
+                            "failed to subscribe to announced topic"
+                        );
+                    }
                 }
             }
         }
@@ -618,46 +856,45 @@ mod tests {
         listener.abort();
     }
 
-    /// topic_announce_listener enforces MAX_TOPICS: after reaching the cap it
-    /// stops subscribing to additional unique topics.
+    /// topic_announce_listener enforces MAX_TOPICS_PER_ANNOUNCE: an announce
+    /// carrying more entries than the per-message cap is rejected outright.
     ///
-    /// We send MAX_TOPICS + 1 distinct valid topics in a single announce.
-    /// We confirm:
-    /// - The first topic ("t0") IS subscribed — observer sees NeighborUp.
-    /// - The last topic ("t{MAX_TOPICS}") is NOT subscribed — no NeighborUp.
-    ///
-    /// Since the listener processes all topics in one synchronous for loop
-    /// within a single async task poll, seeing NeighborUp for the first topic
-    /// guarantees the entire for loop has already run before we check the
-    /// overflow topic.
+    /// We send MAX_TOPICS_PER_ANNOUNCE + 1 valid topics in one announce, then
+    /// — to confirm the listener is still alive and processing — send a
+    /// follow-up announce with a smaller, valid sentinel batch from the same
+    /// signer. The sentinel must succeed (NeighborUp on its topic) while the
+    /// oversized topics must NOT (no NeighborUp).
     #[tokio::test]
-    async fn topic_announce_listener_enforces_max_topics_cap() {
+    async fn topic_announce_listener_rejects_oversized_announce() {
         use willow_network::mem::{MemHub, MemNetwork};
         use willow_network::traits::{GossipEvent, Network, TopicEvents};
 
         let hub = MemHub::new();
         let announcer_net = MemNetwork::new(&hub);
         let relay_net = MemNetwork::new(&hub);
-        let first_observer = MemNetwork::new(&hub);
-        let overflow_observer = MemNetwork::new(&hub);
+        let oversized_observer = MemNetwork::new(&hub);
+        let sentinel_observer = MemNetwork::new(&hub);
         let announcer_identity = announcer_net.identity().clone();
 
         let ops_topic = willow_network::topic_id("_willow_server_ops");
 
-        // Build MAX_TOPICS + 1 distinct, valid topic strings.
-        let topics: Vec<String> = (0..=(MAX_TOPICS as u64)).map(|i| format!("t{i}")).collect();
+        // Oversized batch: MAX_TOPICS_PER_ANNOUNCE + 1 valid topics.
+        let oversized: Vec<String> = (0..=(MAX_TOPICS_PER_ANNOUNCE as u64))
+            .map(|i| format!("over-{i}"))
+            .collect();
+        let oversized_first_id = willow_network::topic_id(&oversized[0]);
 
-        let first_topic_id = willow_network::topic_id(topics.first().unwrap());
-        let overflow_topic_id = willow_network::topic_id(topics.last().unwrap());
+        // Sentinel: a small valid announce that must still be processed
+        // (proves the listener didn't crash on the oversized announce).
+        let sentinel = "sentinel-after-overflow".to_string();
+        let sentinel_id = willow_network::topic_id(&sentinel);
 
-        // Subscribe observers BEFORE the relay listener runs so NeighborUp
-        // fires toward the observer when the relay joins each topic.
-        let (_, mut first_events) = first_observer
-            .subscribe(first_topic_id, vec![])
+        let (_, mut oversized_events) = oversized_observer
+            .subscribe(oversized_first_id, vec![])
             .await
             .unwrap();
-        let (_, mut overflow_events) = overflow_observer
-            .subscribe(overflow_topic_id, vec![])
+        let (_, mut sentinel_events) = sentinel_observer
+            .subscribe(sentinel_id, vec![])
             .await
             .unwrap();
 
@@ -670,37 +907,34 @@ mod tests {
             relay_net,
         ));
 
-        // Broadcast all MAX_TOPICS + 1 topics in a single announce.
-        let data = pack_topic_announce(topics, &announcer_identity);
         use willow_network::traits::TopicHandle;
+        // Send the oversized announce — must be rejected.
+        let data = pack_topic_announce(oversized, &announcer_identity);
         ops_handle.broadcast(data).await.expect("broadcast failed");
+        // Then send the small sentinel announce.
+        send_announce_and_wait(&ops_handle, vec![sentinel.clone()], &announcer_identity).await;
 
-        // Wait for the first-topic observer to see NeighborUp — proves the
-        // listener ran and subscriptions began.
-        let first_neighbor = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        // Sentinel must arrive — proves listener is still alive and
+        // processing announces past the rejected one.
+        let sentinel_neighbor = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                match first_events.next().await {
-                    Some(Ok(GossipEvent::NeighborUp(id))) => return id,
+                match sentinel_events.next().await {
+                    Some(Ok(GossipEvent::NeighborUp(id))) if id == relay_id => return id,
                     Some(_) => continue,
-                    None => panic!("first_observer stream closed unexpectedly"),
+                    None => panic!("sentinel observer stream closed"),
                 }
             }
         })
         .await
-        .expect("timed out waiting for relay to subscribe to the first topic");
-        assert_eq!(
-            first_neighbor, relay_id,
-            "NeighborUp on first topic should be from relay"
-        );
+        .expect("timed out waiting for sentinel subscription");
+        assert_eq!(sentinel_neighbor, relay_id);
 
-        // Give the listener a moment to finish the remainder of the for loop
-        // and all the async subscribe() calls inside it.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // The overflow topic (index MAX_TOPICS) must NOT be subscribed — no NeighborUp.
-        let overflow_result = tokio::time::timeout(std::time::Duration::from_millis(100), async {
+        // The oversized announce's first topic must NOT have produced a
+        // subscription — checking after the sentinel arrives gives the
+        // listener ample time to have processed both announces.
+        let oversized_result = tokio::time::timeout(std::time::Duration::from_millis(100), async {
             loop {
-                match overflow_events.next().await {
+                match oversized_events.next().await {
                     Some(Ok(GossipEvent::NeighborUp(id))) if id == relay_id => return true,
                     Some(_) => continue,
                     None => return false,
@@ -708,14 +942,173 @@ mod tests {
             }
         })
         .await;
-
         assert!(
-            overflow_result.is_err() || overflow_result == Ok(false),
-            "relay must NOT subscribe to the overflow topic (cap at MAX_TOPICS={MAX_TOPICS})"
+            oversized_result.is_err() || oversized_result == Ok(false),
+            "oversized announce must be rejected; first topic must NOT be subscribed"
         );
 
         drop(hub);
         listener.abort();
+    }
+
+    // ── AnnounceState unit tests ────────────────────────────────────────────
+    //
+    // These exercise the per-signer LRU and global slot accounting directly,
+    // without driving the full listener task. The state machine is the load-
+    // bearing piece — running it through MemNetwork at MAX_TOPICS scale
+    // (10 000 entries) is wasteful when the same invariants hold per call.
+
+    fn fresh_signer() -> EndpointId {
+        willow_identity::Identity::generate().endpoint_id()
+    }
+
+    #[test]
+    fn announce_state_per_signer_lru_evicts_oldest() {
+        // Add MAX_TOPICS_PER_SIGNER topics for one signer, then add one more.
+        // The oldest must be evicted; the newest must be present.
+        let mut state = AnnounceState::default();
+        let signer = fresh_signer();
+        for i in 0..MAX_TOPICS_PER_SIGNER as u64 {
+            let actions = state.process_topic(signer, &format!("t{i}"));
+            assert_eq!(
+                actions.subscribe.as_deref(),
+                Some(format!("t{i}").as_str()),
+                "first reference should produce Subscribe"
+            );
+            assert!(actions.unsubscribe.is_none());
+            assert!(!actions.evicted_for_signer);
+            assert!(!actions.rejected_global);
+        }
+        assert_eq!(
+            state.signer_topics.get(&signer).map(|q| q.len()),
+            Some(MAX_TOPICS_PER_SIGNER)
+        );
+
+        // The 101st: must evict t0 (oldest) and subscribe to the new one.
+        let actions = state.process_topic(signer, "t-new");
+        assert!(actions.evicted_for_signer);
+        assert_eq!(actions.unsubscribe.as_deref(), Some("t0"));
+        assert_eq!(actions.subscribe.as_deref(), Some("t-new"));
+        assert!(!actions.rejected_global);
+
+        // Signer still holds exactly MAX_TOPICS_PER_SIGNER entries.
+        let queue = state.signer_topics.get(&signer).unwrap();
+        assert_eq!(queue.len(), MAX_TOPICS_PER_SIGNER);
+        // t0 gone; t-new present.
+        assert!(!queue.contains(&"t0".to_string()));
+        assert!(queue.contains(&"t-new".to_string()));
+        // t0 fully removed from the global table.
+        assert!(!state.topic_refcount.contains_key("t0"));
+    }
+
+    #[test]
+    fn announce_state_per_signer_lru_does_not_starve_other_signers() {
+        // Signer A pumps MAX_TOPICS_PER_SIGNER topics; Signer B can still
+        // announce successfully — its quota is independent.
+        let mut state = AnnounceState::default();
+        let signer_a = fresh_signer();
+        let signer_b = fresh_signer();
+        for i in 0..MAX_TOPICS_PER_SIGNER as u64 {
+            state.process_topic(signer_a, &format!("a-{i}"));
+        }
+        // B's first announce must subscribe (no eviction, no rejection).
+        let actions = state.process_topic(signer_b, "b-first");
+        assert_eq!(actions.subscribe.as_deref(), Some("b-first"));
+        assert!(!actions.evicted_for_signer);
+        assert!(!actions.rejected_global);
+        assert!(actions.unsubscribe.is_none());
+        // B's slot is recorded under B (not under A).
+        assert_eq!(state.signer_topics.get(&signer_b).map(|q| q.len()), Some(1));
+    }
+
+    #[test]
+    fn announce_state_repeat_announce_promotes_lru_no_resubscribe() {
+        // Re-announcing a topic the signer already holds is a no-op on the
+        // network and promotes the topic to the back of the LRU queue.
+        let mut state = AnnounceState::default();
+        let signer = fresh_signer();
+        state.process_topic(signer, "first");
+        state.process_topic(signer, "second");
+        let actions = state.process_topic(signer, "first");
+        assert!(actions.subscribe.is_none());
+        assert!(actions.unsubscribe.is_none());
+        assert!(!actions.evicted_for_signer);
+        // After re-announce, "first" is the most recent entry.
+        let queue = state.signer_topics.get(&signer).unwrap();
+        assert_eq!(queue.back().map(|s| s.as_str()), Some("first"));
+        assert_eq!(queue.front().map(|s| s.as_str()), Some("second"));
+    }
+
+    #[test]
+    fn announce_state_shared_topic_refcount_keeps_subscription() {
+        // Two signers announce the same topic. Only the first results in a
+        // Subscribe; both signers contribute to the refcount. Evicting the
+        // first signer's topic must NOT unsubscribe (the second still holds it).
+        let mut state = AnnounceState::default();
+        let signer_a = fresh_signer();
+        let signer_b = fresh_signer();
+        let actions = state.process_topic(signer_a, "shared");
+        assert_eq!(actions.subscribe.as_deref(), Some("shared"));
+        let actions = state.process_topic(signer_b, "shared");
+        assert!(actions.subscribe.is_none());
+
+        // Force eviction on signer A by filling its quota.
+        for i in 0..MAX_TOPICS_PER_SIGNER as u64 {
+            state.process_topic(signer_a, &format!("filler-{i}"));
+        }
+        // "shared" should have been evicted from A but the global subscription
+        // is still held by B — no Unsubscribe action.
+        assert!(state.topic_refcount.contains_key("shared"));
+        assert_eq!(state.topic_refcount.get("shared"), Some(&1));
+    }
+
+    #[test]
+    fn should_emit_warn_rate_limits_to_one_per_window() {
+        // Two warn attempts inside the window: first true, second false.
+        // After the window: true again.
+        let mut last = None;
+        let t0 = Instant::now();
+        let interval = Duration::from_millis(100);
+        assert!(should_emit_warn(&mut last, t0, interval));
+        assert!(!should_emit_warn(
+            &mut last,
+            t0 + Duration::from_millis(50),
+            interval
+        ));
+        assert!(should_emit_warn(
+            &mut last,
+            t0 + Duration::from_millis(150),
+            interval
+        ));
+    }
+
+    #[test]
+    fn announce_state_rejects_at_global_cap() {
+        // Fill the global table by spreading entries across many signers
+        // (because per-signer cap is lower than global cap). Then a fresh
+        // signer's new topic must be rejected globally.
+        let mut state = AnnounceState::default();
+        let mut signers = Vec::new();
+        let mut idx: u64 = 0;
+        while state.topic_refcount.len() < MAX_TOPICS {
+            let s = fresh_signer();
+            for _ in 0..MAX_TOPICS_PER_SIGNER {
+                if state.topic_refcount.len() >= MAX_TOPICS {
+                    break;
+                }
+                state.process_topic(s, &format!("g-{idx}"));
+                idx += 1;
+            }
+            signers.push(s);
+        }
+        assert_eq!(state.topic_refcount.len(), MAX_TOPICS);
+
+        // Fresh signer's new topic — must be rejected (global table full,
+        // topic not already present).
+        let outsider = fresh_signer();
+        let actions = state.process_topic(outsider, "new-after-full");
+        assert!(actions.rejected_global);
+        assert!(actions.subscribe.is_none());
     }
 
     // ── topic_str_is_valid unit tests ────────────────────────────────────────

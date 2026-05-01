@@ -45,14 +45,6 @@ fn detect_platform() -> &'static str {
     }
 }
 
-#[allow(dead_code)]
-pub fn toggle_theme() {
-    js_sys::eval(
-        r#"var h=document.documentElement;var c=h.getAttribute('data-theme')||'dark';var n=c==='dark'?'light':'dark';h.setAttribute('data-theme',n);localStorage.setItem('willow-theme',n);"#,
-    )
-    .ok();
-}
-
 /// How many milliseconds to wait before clearing the loading state automatically.
 const LOADING_TIMEOUT_MS: u32 = 5_000;
 
@@ -160,6 +152,31 @@ pub fn App() -> impl IntoView {
     // from the same localStorage-backed source the UI subscribes to.
     let handle_inner = (*handle).clone().with_trust_store(trust_store.clone());
     let handle: WebClientHandle = SendWrapper::new(handle_inner);
+
+    #[cfg(feature = "test-hooks")]
+    {
+        let inner_for_hooks = (*handle).clone();
+        let hooks = crate::test_hooks::WillowTestHooks::new(&inner_for_hooks);
+        if let Some(window) = web_sys::window() {
+            let _ = js_sys::Reflect::set(
+                &window,
+                &"__willow".into(),
+                &wasm_bindgen::JsValue::from(hooks),
+            );
+        }
+        // Subscribe synchronously: any ClientEvent published after this
+        // call is guaranteed to land in the dispatcher (broker mailbox is
+        // FIFO). An async subscribe would create a window between mount
+        // and confirmation in which boot-time events would be lost.
+        let rx = willow_client::event_receiver::EventReceiver::subscribe_now(
+            inner_for_hooks.event_broker(),
+            inner_for_hooks.system(),
+        );
+        let dispatcher = crate::test_hooks::install_push_dispatcher(rx);
+        // Leak: dispatcher must live for app lifetime; in wasm32 the
+        // process IS the app, so leaking is fine.
+        std::mem::forget(dispatcher);
+    }
 
     // Provide context so child components can access the handle and state.
     provide_context(handle.clone());
@@ -293,29 +310,18 @@ pub fn App() -> impl IntoView {
 
     // Wire the service-worker bridge — the `willow-push` window event
     // fires whenever the SW forwards a focused-client push payload.
-    // Reads the payload out of `window.__willowLastPush` (stashed by
-    // `main.rs::wire_service_worker_bridge`) and routes it through the
-    // Notifier.
+    // Pulls the validated payload from `service_worker_bridge` (a
+    // module-local cell, not a global window property — issue #244)
+    // and routes it through the Notifier.
     {
         use wasm_bindgen::closure::Closure;
         use wasm_bindgen::JsCast;
         let notifier = notifier.clone();
         let closure = Closure::<dyn Fn(web_sys::Event)>::new(move |_ev: web_sys::Event| {
-            let Some(window) = web_sys::window() else {
+            let Some(payload) = crate::service_worker_bridge::take_last_push() else {
                 return;
             };
-            let payload = js_sys::Reflect::get(
-                &window,
-                &wasm_bindgen::JsValue::from_str("__willowLastPush"),
-            )
-            .ok();
-            let Some(payload) = payload else {
-                return;
-            };
-            let cat = js_sys::Reflect::get(&payload, &"cat".into())
-                .ok()
-                .and_then(|v| v.as_string())
-                .unwrap_or_else(|| "msg".to_string());
+            let cat = payload.cat;
             let cat_enum = match cat.as_str() {
                 "mention" => crate::notifications::Category::Mention,
                 "letter" => crate::notifications::Category::Letter,
@@ -333,8 +339,10 @@ pub fn App() -> impl IntoView {
             });
         });
         if let Some(window) = web_sys::window() {
-            let _ = window
-                .add_event_listener_with_callback("willow-push", closure.as_ref().unchecked_ref());
+            let _ = window.add_event_listener_with_callback(
+                crate::service_worker_bridge::PUSH_EVENT,
+                closure.as_ref().unchecked_ref(),
+            );
         }
         closure.forget();
     }
@@ -379,33 +387,26 @@ pub fn App() -> impl IntoView {
             let grove_id = active_server_sig.get();
             let local_peer = peer_id_sig.get();
 
+            // `IndexableMessage::from_display_message` derives the
+            // `has_image` / `has_file` / `has_link` operator flags
+            // from the body so `has:image` / `has:file` / `has:link`
+            // queries actually match. `letter_id` stays `None` here —
+            // the active-letter signal isn't yet wired into this
+            // effect; tracked as a follow-up to issue #355.
+            let grove = if grove_id.is_empty() {
+                None
+            } else {
+                Some(grove_id.clone())
+            };
             let indexable: Vec<willow_client::IndexableMessage> = msgs
                 .into_iter()
                 .map(|m| {
-                    let author_peer_id = m.author_peer_id;
-                    // Lightweight link detection — `has:link` operator
-                    // key. Proper URL parsing lives in message-row
-                    // rendering; this is the cheap version.
-                    let has_link = m.body.contains("http://") || m.body.contains("https://");
-                    willow_client::IndexableMessage {
-                        message_id: m.id,
-                        channel_id: m.channel_id.clone(),
-                        channel_name: current_ch.clone(),
-                        grove_id: if grove_id.is_empty() {
-                            None
-                        } else {
-                            Some(grove_id.clone())
-                        },
-                        letter_id: None,
-                        author_peer_id,
-                        author_handle: m.author_display_name.to_lowercase(),
-                        author_display_name: m.author_display_name,
-                        timestamp_ms: m.timestamp_ms,
-                        body: m.body,
-                        has_image: false,
-                        has_file: false,
-                        has_link,
-                    }
+                    willow_client::IndexableMessage::from_display_message(
+                        &m,
+                        &current_ch,
+                        grove.clone(),
+                        None,
+                    )
                 })
                 .collect();
             // Ignore local peer binding to avoid unused_variables clippy
@@ -1175,10 +1176,15 @@ pub fn App() -> impl IntoView {
                                 queue_open_rail.set(false);
                             });
                             let on_pinned_jump = Callback::new(move |msg_id: String| {
-                                js_sys::eval(&format!(
-                                    "document.getElementById('msg-{}')?.scrollIntoView({{behavior:'smooth',block:'center'}})",
-                                    msg_id.replace('\'', "")
-                                )).ok();
+                                if let Some(elem) = web_sys::window()
+                                    .and_then(|w| w.document())
+                                    .and_then(|d| d.get_element_by_id(&format!("msg-{msg_id}")))
+                                {
+                                    let opts = web_sys::ScrollIntoViewOptions::new();
+                                    opts.set_behavior(web_sys::ScrollBehavior::Smooth);
+                                    opts.set_block(web_sys::ScrollLogicalPosition::Center);
+                                    elem.scroll_into_view_with_scroll_into_view_options(&opts);
+                                }
                                 write.ui.set_show_pinned.set(false);
                             });
                             view! {
