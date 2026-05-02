@@ -843,7 +843,7 @@ async fn process_received_message<T: TopicHandle>(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     //! Listener tests for the JoinRequest signer guard (SEC-A-03 / #239).
     use super::*;

@@ -1031,7 +1031,7 @@ pub fn resolve_display_name(
     "unknown peer".to_string()
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     //! Projection tests for Phase 2a Task 4 — populated `mentions` in
     //! `DisplayMessage` and `mentioned` flag in `UnreadStats`.

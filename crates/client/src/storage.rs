@@ -274,7 +274,7 @@ fn load_raw(key: &str) -> Option<Vec<u8>> {
 
 // ---- Tests ------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 

@@ -48,35 +48,35 @@ mod joining;
 mod servers;
 mod voice;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/trust_flow.rs"]
 mod tests_trust_flow;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/multi_peer_sync.rs"]
 mod tests_multi_peer_sync;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/queue.rs"]
 mod tests_queue;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/profile_view.rs"]
 mod tests_profile_view;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/ephemeral.rs"]
 mod tests_ephemeral;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/actions.rs"]
 mod tests_actions;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/voice.rs"]
 mod tests_voice;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/governance.rs"]
 mod tests_governance;
 
@@ -1036,7 +1036,7 @@ pub fn reconcile_topic_map<V: Clone>(
 }
 
 /// Create a test-only ClientHandle without connecting to the network.
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-utils")))]
 pub fn test_client() -> (
     ClientHandle<willow_network::mem::MemNetwork>,
     willow_actor::Addr<willow_actor::Broker<ClientEvent>>,
@@ -1310,7 +1310,7 @@ pub fn test_client() -> (
 ///
 /// Unlike `test_client()`, multiple clients created with the same `hub`
 /// can exchange messages through the in-memory gossip mesh.
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-utils")))]
 pub async fn test_client_on_hub(
     hub: &std::sync::Arc<willow_network::mem::MemHub>,
 ) -> (
@@ -1323,7 +1323,7 @@ pub async fn test_client_on_hub(
     (client, broker)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 

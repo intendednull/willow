@@ -76,7 +76,7 @@ pub fn current_time_ms() -> u64 {
     js_sys::Date::now() as u64
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 

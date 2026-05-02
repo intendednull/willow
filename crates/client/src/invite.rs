@@ -211,7 +211,7 @@ pub fn endpoint_id_to_ed25519_public(endpoint_id: &willow_identity::EndpointId) 
     *endpoint_id.as_bytes()
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use willow_identity::Identity;
