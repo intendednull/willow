@@ -31,6 +31,14 @@ pub(crate) const MAX_DISPLAY_NAME_LEN: usize = 128;
 /// as [`MAX_DISPLAY_NAME_LEN`].
 pub(crate) const MAX_TYPING_CHANNEL_LEN: usize = 128;
 
+/// Maximum length (in `char`s) for an attacker-supplied `reason` string on
+/// [`crate::ops::WireMessage::JoinDenied`] before it is propagated to the
+/// UI via [`crate::events::ClientEvent::JoinLinkDenied`]. The reason is
+/// shown to the joining user verbatim, so it is both a phishing surface
+/// and a memory-amplification vector — bound it tightly. See `[SEC-A-07]`
+/// (issue #309).
+pub(crate) const MAX_JOIN_DENIED_REASON_LEN: usize = 256;
+
 /// Maximum number of distinct `channel_id`s tracked in
 /// [`state_actors::VoiceState::participants`]. Caps the outer dimension of
 /// the map so a malicious peer cannot flood `VoiceJoin` with fresh
@@ -55,6 +63,18 @@ pub(crate) fn truncate_to_chars(s: String, max: usize) -> String {
     } else {
         s.chars().take(max).collect()
     }
+}
+
+/// Sanitize an attacker-supplied `JoinDenied.reason` string before it is
+/// surfaced to the UI: strip control characters (anything matching
+/// [`char::is_control`]) and cap the remaining length at
+/// [`MAX_JOIN_DENIED_REASON_LEN`]. Stripping control characters first
+/// means the cap counts only displayable code points, so the user sees
+/// at most `MAX_JOIN_DENIED_REASON_LEN` real characters. See `[SEC-A-07]`
+/// (issue #309).
+pub(crate) fn sanitize_reason(s: String) -> String {
+    let stripped: String = s.chars().filter(|c| !c.is_control()).collect();
+    truncate_to_chars(stripped, MAX_JOIN_DENIED_REASON_LEN)
 }
 
 /// Log a `tracing::warn!` if `r` is `Err`, otherwise drop the success value.
@@ -88,6 +108,11 @@ pub struct ListenerCtx {
     // state: lock-ok — mirrors `ClientHandle.join_links`; actor migration
     // tracked in docs/specs/2026-04-26-state-management-model-design.md § F4.
     pub join_links: Arc<Mutex<Vec<crate::ops::JoinLink>>>,
+    /// Mirrors `ClientHandle.pending_joins`; required for the SEC-A-07
+    /// signer-binding check on `JoinResponse` / `JoinDenied` (issue
+    /// #309).
+    // state: lock-ok — same rationale as `join_links`.
+    pub pending_joins: Arc<Mutex<std::collections::HashMap<String, EndpointId>>>,
     pub dag: Addr<willow_actor::StateActor<state_actors::DagState>>,
     pub server_registry: Addr<willow_actor::StateActor<state_actors::ServerRegistry>>,
     /// Optional callback invoked on `NeighborUp`. Used by the profile topic
@@ -110,6 +135,7 @@ impl Clone for ListenerCtx {
             event_broker: self.event_broker.clone(),
             identity: self.identity.clone(),
             join_links: Arc::clone(&self.join_links),
+            pending_joins: Arc::clone(&self.pending_joins),
             dag: self.dag.clone(),
             server_registry: self.server_registry.clone(),
             on_neighbor_up: self.on_neighbor_up.clone(),
@@ -623,6 +649,7 @@ async fn process_received_message<T: TopicHandle>(
                 };
                 if let Some(invite_data) = invite_result {
                     let msg = crate::ops::WireMessage::JoinResponse {
+                        link_id: link_id.clone(),
                         target_peer: peer_endpoint,
                         invite_data,
                     };
@@ -688,31 +715,97 @@ async fn process_received_message<T: TopicHandle>(
             }
         }
         crate::ops::WireMessage::JoinResponse {
+            link_id,
             target_peer,
             invite_data,
         } => {
-            if target_peer == ctx.identity.endpoint_id() {
-                warn_if_err(
-                    ctx.event_broker.do_send(willow_actor::Publish(
-                        ClientEvent::JoinLinkResponse { invite_data },
-                    )),
-                    "event_broker.do_send Publish(JoinLinkResponse)",
-                );
+            // Three independent gates — all must pass before we surface
+            // the response to the UI:
+            //   1. `target_peer` is us (cheap rejection of unrelated traffic).
+            //   2. We have an outstanding join attempt for this `link_id`.
+            //   3. The packet was signed by the inviter we sent the
+            //      original `JoinRequest` to.
+            // Without (3), any peer that observed the `JoinRequest` (or
+            // simply guessed our `target_peer`) could spoof a response
+            // and force us to attempt invite decryption — a DoS surface
+            // even though `invite_data` is encrypted to our pubkey. See
+            // issue #309 / SEC-A-07.
+            if target_peer != ctx.identity.endpoint_id() {
+                return;
             }
+            let expected_inviter = {
+                let mut pending = ctx.pending_joins.lock();
+                pending.remove(&link_id)
+            };
+            let Some(expected_inviter) = expected_inviter else {
+                tracing::debug!(
+                    %signer, %link_id,
+                    "dropping JoinResponse: no outstanding join request for this link_id"
+                );
+                return;
+            };
+            if signer != expected_inviter {
+                tracing::debug!(
+                    %signer, %expected_inviter, %link_id,
+                    "dropping JoinResponse: signer is not the expected inviter"
+                );
+                // Reinsert so a later legitimate response from the real
+                // inviter still resolves the join attempt.
+                ctx.pending_joins.lock().insert(link_id, expected_inviter);
+                return;
+            }
+            warn_if_err(
+                ctx.event_broker
+                    .do_send(willow_actor::Publish(ClientEvent::JoinLinkResponse {
+                        invite_data,
+                    })),
+                "event_broker.do_send Publish(JoinLinkResponse)",
+            );
         }
         crate::ops::WireMessage::JoinDenied {
+            link_id,
             target_peer,
             reason,
         } => {
-            if target_peer == ctx.identity.endpoint_id() {
-                warn_if_err(
-                    ctx.event_broker
-                        .do_send(willow_actor::Publish(ClientEvent::JoinLinkDenied {
-                            reason,
-                        })),
-                    "event_broker.do_send Publish(JoinLinkDenied)",
-                );
+            // Same three-gate check as `JoinResponse`. The unencrypted
+            // `reason` makes spoofing especially dangerous here: an
+            // attacker could inject a phishing string ("invite link
+            // expired — please re-enter your seed phrase at evil.example")
+            // that the UI shows verbatim. We additionally sanitize the
+            // reason (control chars stripped, length capped) before
+            // surfacing it, even when the signer check passes — defense
+            // in depth against a misbehaving but otherwise legitimate
+            // inviter. See issue #309 / SEC-A-07.
+            if target_peer != ctx.identity.endpoint_id() {
+                return;
             }
+            let expected_inviter = {
+                let mut pending = ctx.pending_joins.lock();
+                pending.remove(&link_id)
+            };
+            let Some(expected_inviter) = expected_inviter else {
+                tracing::debug!(
+                    %signer, %link_id,
+                    "dropping JoinDenied: no outstanding join request for this link_id"
+                );
+                return;
+            };
+            if signer != expected_inviter {
+                tracing::debug!(
+                    %signer, %expected_inviter, %link_id,
+                    "dropping JoinDenied: signer is not the expected inviter"
+                );
+                ctx.pending_joins.lock().insert(link_id, expected_inviter);
+                return;
+            }
+            let reason = sanitize_reason(reason);
+            warn_if_err(
+                ctx.event_broker
+                    .do_send(willow_actor::Publish(ClientEvent::JoinLinkDenied {
+                        reason,
+                    })),
+                "event_broker.do_send Publish(JoinLinkDenied)",
+            );
         }
         // TopicAnnounce is consumed by the relay; clients ignore it.
         crate::ops::WireMessage::TopicAnnounce { .. } => {}
@@ -808,6 +901,7 @@ mod tests {
             event_broker: client.event_broker.clone(),
             identity: client.identity.clone(),
             join_links: Arc::clone(&client.join_links),
+            pending_joins: Arc::clone(&client.pending_joins),
             dag: client.dag_addr.clone(),
             server_registry: client.server_registry_addr.clone(),
             on_neighbor_up: None,
@@ -902,6 +996,7 @@ mod tests {
             event_broker: client.event_broker.clone(),
             identity: client.identity.clone(),
             join_links: Arc::clone(&client.join_links),
+            pending_joins: Arc::clone(&client.pending_joins),
             dag: client.dag_addr.clone(),
             server_registry: client.server_registry_addr.clone(),
             on_neighbor_up: None,
@@ -983,6 +1078,7 @@ mod tests {
             event_broker: client.event_broker.clone(),
             identity: client.identity.clone(),
             join_links: Arc::clone(&client.join_links),
+            pending_joins: Arc::clone(&client.pending_joins),
             dag: client.dag_addr.clone(),
             server_registry: client.server_registry_addr.clone(),
             on_neighbor_up: None,
@@ -1045,6 +1141,7 @@ mod tests {
             event_broker: client.event_broker.clone(),
             identity: client.identity.clone(),
             join_links: Arc::clone(&client.join_links),
+            pending_joins: Arc::clone(&client.pending_joins),
             dag: client.dag_addr.clone(),
             server_registry: client.server_registry_addr.clone(),
             on_neighbor_up: None,
@@ -1095,6 +1192,7 @@ mod tests {
             event_broker: client.event_broker.clone(),
             identity: client.identity.clone(),
             join_links: Arc::clone(&client.join_links),
+            pending_joins: Arc::clone(&client.pending_joins),
             dag: client.dag_addr.clone(),
             server_registry: client.server_registry_addr.clone(),
             on_neighbor_up: None,
@@ -1363,5 +1461,315 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
+    }
+
+    // ─── [SEC-A-07] / #309 — JoinResponse / JoinDenied signer guard ──
+    //
+    // Without the fix, the requester accepted any signed packet whose
+    // `target_peer == self.endpoint_id()` — meaning any peer that could
+    // observe the topic (or simply guess the requester's `EndpointId`)
+    // could:
+    //
+    //   * Spoof a `JoinDenied` carrying an attacker-chosen `reason`,
+    //     surfaced verbatim to the user via `ClientEvent::JoinLinkDenied`
+    //     — a phishing surface.
+    //   * Spoof a `JoinResponse` with a bogus `invite_data`, forcing the
+    //     requester to attempt decryption / UI churn — a DoS surface
+    //     even though the payload is encrypted to the requester's pubkey.
+    //
+    // The tests below drive `process_received_message` with synthetic
+    // packets and assert that responses signed by anyone other than the
+    // inviter the requester sent its `JoinRequest` to are dropped. They
+    // also cover the `reason`-string sanitization that runs after the
+    // signer check passes.
+
+    /// Build a `ListenerCtx` from a `test_client()` plus a `MemNetwork`
+    /// topic handle, mirroring the pattern used by the JoinRequest guard
+    /// tests above.
+    async fn make_join_guard_ctx() -> (
+        ClientHandle<willow_network::mem::MemNetwork>,
+        ListenerCtx,
+        <willow_network::mem::MemNetwork as Network>::Topic,
+    ) {
+        let (client, _rx) = test_client();
+        let hub = willow_network::mem::MemHub::new();
+        let net = willow_network::mem::MemNetwork::new(&hub);
+        let (topic, _events) = net
+            .subscribe(willow_network::topic_id("sec-a-07-test"), vec![])
+            .await
+            .expect("subscribe must succeed");
+        let ctx = ListenerCtx {
+            event_state: client.event_state_addr.clone(),
+            chat_meta: client.chat_meta_addr.clone(),
+            profiles: client.profile_state_addr.clone(),
+            network: client.network_meta_addr.clone(),
+            voice: client.voice_state_addr.clone(),
+            persistence: client.persistence_addr.clone(),
+            persistence_enabled: false,
+            event_broker: client.event_broker.clone(),
+            identity: client.identity.clone(),
+            join_links: Arc::clone(&client.join_links),
+            pending_joins: Arc::clone(&client.pending_joins),
+            dag: client.dag_addr.clone(),
+            server_registry: client.server_registry_addr.clone(),
+            on_neighbor_up: None,
+        };
+        (client, ctx, topic)
+    }
+
+    /// Drain pending `ClientEvent`s from `rx` after a short settle window.
+    async fn drain_events(
+        rx: &mut crate::EventReceiver,
+        settle: std::time::Duration,
+    ) -> Vec<ClientEvent> {
+        tokio::time::sleep(settle).await;
+        let mut out = Vec::new();
+        while let Ok(ev) =
+            tokio::time::timeout(std::time::Duration::from_millis(5), rx.recv()).await
+        {
+            match ev {
+                Some(e) => out.push(e),
+                None => break,
+            }
+        }
+        out
+    }
+
+    // ─── reason-string sanitization (pure-function tests) ────────────
+
+    #[test]
+    fn sanitize_reason_strips_control_chars() {
+        let dirty = "hello\nworld\t\u{7}!\u{1b}[31mred".to_string();
+        let clean = sanitize_reason(dirty);
+        // Control chars stripped; printable text preserved verbatim.
+        assert_eq!(clean, "helloworld![31mred");
+        assert!(
+            !clean.chars().any(|c| c.is_control()),
+            "no control chars must survive"
+        );
+    }
+
+    #[test]
+    fn sanitize_reason_caps_length() {
+        let huge: String = "a".repeat(MAX_JOIN_DENIED_REASON_LEN * 4);
+        let clean = sanitize_reason(huge);
+        assert_eq!(clean.chars().count(), MAX_JOIN_DENIED_REASON_LEN);
+    }
+
+    #[test]
+    fn sanitize_reason_caps_after_stripping_controls() {
+        // Control chars should be removed *first*, so the cap counts only
+        // the displayable code points the user would actually see.
+        let mixed: String = "\n".repeat(1000) + &"x".repeat(MAX_JOIN_DENIED_REASON_LEN);
+        let clean = sanitize_reason(mixed);
+        assert_eq!(clean.chars().count(), MAX_JOIN_DENIED_REASON_LEN);
+        assert!(clean.chars().all(|c| c == 'x'));
+    }
+
+    #[test]
+    fn sanitize_reason_passes_short_clean_input_unchanged() {
+        let s = "link expired".to_string();
+        assert_eq!(sanitize_reason(s.clone()), s);
+    }
+
+    // ─── signer-binding guard — the SEC-A-07 fix ─────────────────────
+
+    /// A `JoinDenied` whose `signer` is *not* the inviter the requester
+    /// sent its `JoinRequest` to must be dropped silently — no
+    /// `JoinLinkDenied` event surfaces the attacker-controlled `reason`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn join_denied_from_non_inviter_is_dropped() {
+        let (client, ctx, topic) = make_join_guard_ctx().await;
+        let mut rx = client.subscribe_events().await;
+
+        // Set up: requester is mid-join, expecting a reply from `alice`.
+        let alice = willow_identity::Identity::generate();
+        let alice_id = alice.endpoint_id();
+        let link_id = "test-link-spoof-denied".to_string();
+        client
+            .pending_joins
+            .lock()
+            .insert(link_id.clone(), alice_id);
+
+        // Mallory (not Alice) signs a JoinDenied with a phishing reason.
+        let mallory = willow_identity::Identity::generate();
+        let phishing = "Your invite expired. Re-enter your seed phrase             at evil.example to recover access.";
+        let msg = crate::ops::WireMessage::JoinDenied {
+            link_id: link_id.clone(),
+            target_peer: client.identity.endpoint_id(),
+            reason: phishing.to_string(),
+        };
+        let bytes = crate::ops::pack_wire(&msg, &mallory).expect("pack must succeed");
+
+        process_received_message(&bytes, mallory.endpoint_id(), &ctx, &topic).await;
+
+        let events = drain_events(&mut rx, std::time::Duration::from_millis(50)).await;
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ClientEvent::JoinLinkDenied { .. })),
+            "spoofed JoinDenied must not surface a JoinLinkDenied event, got: {events:?}"
+        );
+
+        // The pending entry must still be there — a later legitimate
+        // denial from Alice should still resolve the join attempt.
+        assert_eq!(
+            client.pending_joins.lock().get(&link_id).copied(),
+            Some(alice_id),
+            "rejected JoinDenied must not consume the pending-join entry"
+        );
+    }
+
+    /// A `JoinResponse` whose `signer` is *not* the expected inviter must
+    /// be dropped silently — no `JoinLinkResponse` event surfaces, so the
+    /// requester never wastes work attempting to decrypt the bogus
+    /// payload.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn join_response_from_non_inviter_is_dropped() {
+        let (client, ctx, topic) = make_join_guard_ctx().await;
+        let mut rx = client.subscribe_events().await;
+
+        let alice = willow_identity::Identity::generate();
+        let alice_id = alice.endpoint_id();
+        let link_id = "test-link-spoof-resp".to_string();
+        client
+            .pending_joins
+            .lock()
+            .insert(link_id.clone(), alice_id);
+
+        let mallory = willow_identity::Identity::generate();
+        let msg = crate::ops::WireMessage::JoinResponse {
+            link_id: link_id.clone(),
+            target_peer: client.identity.endpoint_id(),
+            invite_data: "garbage that would fail to decrypt anyway".to_string(),
+        };
+        let bytes = crate::ops::pack_wire(&msg, &mallory).expect("pack must succeed");
+
+        process_received_message(&bytes, mallory.endpoint_id(), &ctx, &topic).await;
+
+        let events = drain_events(&mut rx, std::time::Duration::from_millis(50)).await;
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ClientEvent::JoinLinkResponse { .. })),
+            "spoofed JoinResponse must not surface a JoinLinkResponse event, got: {events:?}"
+        );
+        assert_eq!(
+            client.pending_joins.lock().get(&link_id).copied(),
+            Some(alice_id),
+        );
+    }
+
+    /// Regression: a `JoinDenied` signed by the actual inviter must
+    /// surface a `JoinLinkDenied` event with a sanitized `reason`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn join_denied_from_real_inviter_surfaces_sanitized_event() {
+        let (client, ctx, topic) = make_join_guard_ctx().await;
+        let mut rx = client.subscribe_events().await;
+
+        let alice = willow_identity::Identity::generate();
+        let alice_id = alice.endpoint_id();
+        let link_id = "test-link-real-denied".to_string();
+        client
+            .pending_joins
+            .lock()
+            .insert(link_id.clone(), alice_id);
+
+        // Alice's reason carries control chars + ANSI noise we want
+        // stripped before display.
+        let raw_reason = "link\u{7} expired\n";
+        let msg = crate::ops::WireMessage::JoinDenied {
+            link_id: link_id.clone(),
+            target_peer: client.identity.endpoint_id(),
+            reason: raw_reason.to_string(),
+        };
+        let bytes = crate::ops::pack_wire(&msg, &alice).expect("pack must succeed");
+
+        process_received_message(&bytes, alice_id, &ctx, &topic).await;
+
+        let events = drain_events(&mut rx, std::time::Duration::from_millis(50)).await;
+        let denied: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                ClientEvent::JoinLinkDenied { reason } => Some(reason.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(denied.len(), 1, "expected exactly one JoinLinkDenied event");
+        assert_eq!(denied[0], "link expired");
+        assert!(
+            client.pending_joins.lock().get(&link_id).is_none(),
+            "legitimate JoinDenied must consume the pending-join entry"
+        );
+    }
+
+    /// Regression: a `JoinResponse` signed by the actual inviter must
+    /// surface a `JoinLinkResponse` event with the original
+    /// `invite_data`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn join_response_from_real_inviter_surfaces_event() {
+        let (client, ctx, topic) = make_join_guard_ctx().await;
+        let mut rx = client.subscribe_events().await;
+
+        let alice = willow_identity::Identity::generate();
+        let alice_id = alice.endpoint_id();
+        let link_id = "test-link-real-resp".to_string();
+        client
+            .pending_joins
+            .lock()
+            .insert(link_id.clone(), alice_id);
+
+        let invite = "real-invite-payload-base64";
+        let msg = crate::ops::WireMessage::JoinResponse {
+            link_id: link_id.clone(),
+            target_peer: client.identity.endpoint_id(),
+            invite_data: invite.to_string(),
+        };
+        let bytes = crate::ops::pack_wire(&msg, &alice).expect("pack must succeed");
+
+        process_received_message(&bytes, alice_id, &ctx, &topic).await;
+
+        let events = drain_events(&mut rx, std::time::Duration::from_millis(50)).await;
+        let responses: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                ClientEvent::JoinLinkResponse { invite_data } => Some(invite_data.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0], invite);
+        assert!(
+            client.pending_joins.lock().get(&link_id).is_none(),
+            "legitimate JoinResponse must consume the pending-join entry"
+        );
+    }
+
+    /// A `JoinResponse` with no matching `pending_joins` entry must be
+    /// dropped — for example, if it arrives long after the requester
+    /// abandoned the join attempt and cleared local state.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn join_response_without_pending_entry_is_dropped() {
+        let (client, ctx, topic) = make_join_guard_ctx().await;
+        let mut rx = client.subscribe_events().await;
+        // Note: no `pending_joins` insert.
+
+        let alice = willow_identity::Identity::generate();
+        let msg = crate::ops::WireMessage::JoinResponse {
+            link_id: "unknown-link".to_string(),
+            target_peer: client.identity.endpoint_id(),
+            invite_data: "anything".to_string(),
+        };
+        let bytes = crate::ops::pack_wire(&msg, &alice).expect("pack must succeed");
+
+        process_received_message(&bytes, alice.endpoint_id(), &ctx, &topic).await;
+
+        let events = drain_events(&mut rx, std::time::Duration::from_millis(50)).await;
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ClientEvent::JoinLinkResponse { .. })),
+            "JoinResponse without matching pending entry must be ignored"
+        );
     }
 }

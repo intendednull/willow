@@ -314,6 +314,7 @@ mod tests {
         let id = Identity::generate();
         let joiner = Identity::generate();
         let msg = WireMessage::JoinResponse {
+            link_id: "link-1".to_string(),
             target_peer: joiner.endpoint_id(),
             invite_data: "base64inviteblob".to_string(),
         };
@@ -321,9 +322,11 @@ mod tests {
         let (decoded, _) = unpack_wire(&data).unwrap();
         match decoded {
             WireMessage::JoinResponse {
+                link_id,
                 target_peer,
                 invite_data,
             } => {
+                assert_eq!(link_id, "link-1");
                 assert_eq!(target_peer, joiner.endpoint_id());
                 assert_eq!(invite_data, "base64inviteblob");
             }
@@ -336,6 +339,7 @@ mod tests {
         let id = Identity::generate();
         let joiner = Identity::generate();
         let msg = WireMessage::JoinDenied {
+            link_id: "link-1".to_string(),
             target_peer: joiner.endpoint_id(),
             reason: "link_expired".to_string(),
         };
@@ -343,9 +347,11 @@ mod tests {
         let (decoded, _) = unpack_wire(&data).unwrap();
         match decoded {
             WireMessage::JoinDenied {
+                link_id,
                 target_peer,
                 reason,
             } => {
+                assert_eq!(link_id, "link-1");
                 assert_eq!(target_peer, joiner.endpoint_id());
                 assert_eq!(reason, "link_expired");
             }

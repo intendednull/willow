@@ -60,12 +60,23 @@ pub enum WireMessage {
         peer_id: EndpointId,
     },
     /// The inviter's response with an encrypted invite for the requester.
+    ///
+    /// `link_id` echoes the originating `JoinRequest.link_id` so the requester
+    /// can scope the reply to the specific outstanding join attempt and verify
+    /// that the message `signer` is the inviter it sent the request to. Without
+    /// this binding any peer with `target_peer` could spoof a response (see
+    /// issue #309 / SEC-A-07).
     JoinResponse {
+        link_id: String,
         target_peer: EndpointId,
         invite_data: String,
     },
     /// The inviter denied the join request.
+    ///
+    /// `link_id` echoes the originating `JoinRequest.link_id`; see
+    /// [`WireMessage::JoinResponse`] for the rationale.
     JoinDenied {
+        link_id: String,
         target_peer: EndpointId,
         reason: String,
     },
@@ -424,6 +435,7 @@ mod tests {
         let id = Identity::generate();
         let target = Identity::generate().endpoint_id();
         let msg = WireMessage::JoinResponse {
+            link_id: "link-xyz".to_string(),
             target_peer: target,
             invite_data: "encrypted-invite-payload".to_string(),
         };
@@ -431,9 +443,11 @@ mod tests {
         let (decoded, _) = unpack_wire(&data).unwrap();
         match decoded {
             WireMessage::JoinResponse {
+                link_id,
                 target_peer,
                 invite_data,
             } => {
+                assert_eq!(link_id, "link-xyz");
                 assert_eq!(target_peer, target);
                 assert_eq!(invite_data, "encrypted-invite-payload");
             }
@@ -446,6 +460,7 @@ mod tests {
         let id = Identity::generate();
         let target = Identity::generate().endpoint_id();
         let msg = WireMessage::JoinDenied {
+            link_id: "link-xyz".to_string(),
             target_peer: target,
             reason: "invite expired".to_string(),
         };
@@ -453,9 +468,11 @@ mod tests {
         let (decoded, _) = unpack_wire(&data).unwrap();
         match decoded {
             WireMessage::JoinDenied {
+                link_id,
                 target_peer,
                 reason,
             } => {
+                assert_eq!(link_id, "link-xyz");
                 assert_eq!(target_peer, target);
                 assert_eq!(reason, "invite expired");
             }

@@ -435,6 +435,7 @@ pub fn App() -> impl IntoView {
                 write.ui.set_join_token.set(Some(state::ParsedJoinToken {
                     raw: token_str.clone(),
                     link_id: token.link_id,
+                    inviter_peer_id: token.inviter_peer_id,
                     server_name: token.server_name,
                     inviter_name: token.inviter_name,
                 }));
@@ -461,6 +462,7 @@ pub fn App() -> impl IntoView {
                             .set(Some(state::ParsedJoinToken {
                                 raw: token_str.clone(),
                                 link_id: token.link_id,
+                                inviter_peer_id: token.inviter_peer_id,
                                 server_name: token.server_name,
                                 inviter_name: token.inviter_name,
                             }));
@@ -555,7 +557,8 @@ pub fn App() -> impl IntoView {
                     let status = state_for_events.ui.join_status.get_untracked();
                     if status == "connecting" {
                         if let Some(token) = state_for_events.ui.join_token.get_untracked() {
-                            handle_for_events.send_join_request(&token.link_id);
+                            handle_for_events
+                                .send_join_request(&token.link_id, token.inviter_peer_id);
                         }
                     }
                 }

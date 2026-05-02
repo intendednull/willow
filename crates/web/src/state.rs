@@ -73,6 +73,11 @@ pub struct ParsedJoinToken {
     /// Original base64 for re-encoding.
     pub raw: String,
     pub link_id: String,
+    /// Endpoint ID of the inviter who minted this link. Required for
+    /// the SEC-A-07 signer-binding check on `JoinResponse` /
+    /// `JoinDenied` (issue #309) — must be plumbed through to
+    /// `send_join_request`.
+    pub inviter_peer_id: willow_identity::EndpointId,
     pub server_name: String,
     pub inviter_name: String,
 }

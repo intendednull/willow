@@ -36,7 +36,7 @@ pub fn JoinPage() -> impl IntoView {
                     break;
                 }
                 if let Some(t) = token.get_untracked() {
-                    handle_retry.send_join_request(&t.link_id);
+                    handle_retry.send_join_request(&t.link_id, t.inviter_peer_id);
                 }
                 backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF);
             }
@@ -56,7 +56,7 @@ pub fn JoinPage() -> impl IntoView {
                 write.ui.set_join_status.set("connecting".to_string());
                 // Send initial JoinRequest.
                 if let Some(t) = t {
-                    h2.send_join_request(&t.link_id);
+                    h2.send_join_request(&t.link_id, t.inviter_peer_id);
                 }
             });
         }

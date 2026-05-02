@@ -302,6 +302,25 @@ pub struct ClientHandle<N: willow_network::Network> {
     // docs/specs/2026-04-26-state-management-model-design.md § 4 and § F4.
     // Single guard; deferred to keep this PR scoped.
     pub(crate) join_links: Arc<parking_lot::Mutex<Vec<ops::JoinLink>>>,
+    /// In-flight join attempts initiated by this client, keyed by the
+    /// `link_id` of the outgoing [`ops::WireMessage::JoinRequest`]. The
+    /// value is the `EndpointId` of the inviter the request was sent to
+    /// (extracted from the `JoinToken`). Listeners use this map to verify
+    /// that incoming `JoinResponse` / `JoinDenied` messages were signed
+    /// by the expected inviter — without it, any signer with a guessed
+    /// `target_peer` could spoof a denial or trigger redundant decryption
+    /// work on the requester (see issue #309 / SEC-A-07).
+    ///
+    /// Entries are inserted by `send_join_request` and removed when a
+    /// matching response/denial arrives. Stale entries persist until the
+    /// process restarts; the worst case is a small bounded leak
+    /// proportional to the number of join links a user clicks without
+    /// ever receiving a reply.
+    // state: lock-ok — same rationale as `join_links`; tiny map, rarely
+    // mutated, actor migration tracked alongside `join_links` in
+    // docs/specs/2026-04-26-state-management-model-design.md § F4.
+    pub(crate) pending_joins:
+        Arc<parking_lot::Mutex<std::collections::HashMap<String, willow_identity::EndpointId>>>,
     /// Bootstrap peers for gossip topic subscriptions.
     pub bootstrap_peers: Vec<willow_identity::EndpointId>,
     /// The per-author Merkle-DAG actor — source of truth for all events.
@@ -340,6 +359,7 @@ impl<N: willow_network::Network> Clone for ClientHandle<N> {
             persistence_addr: self.persistence_addr.clone(),
             persistence_enabled: self.persistence_enabled,
             join_links: Arc::clone(&self.join_links),
+            pending_joins: Arc::clone(&self.pending_joins),
             bootstrap_peers: self.bootstrap_peers.clone(),
             dag_addr: self.dag_addr.clone(),
             view_handle: self.view_handle.clone(),
@@ -774,6 +794,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         ));
         let topics: Arc<RwLock<HashMap<String, N::Topic>>> = Arc::new(RwLock::new(HashMap::new()));
         let join_links = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let pending_joins = Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
 
         // Build StateRefs for derived actor sources.
         let event_ref = willow_actor::state::StateRef::from(&event_state_addr);
@@ -931,6 +952,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             persistence_addr,
             persistence_enabled,
             join_links,
+            pending_joins,
             bootstrap_peers: config.bootstrap_peers,
             dag_addr: dag_addr.clone(),
             view_handle,
@@ -1119,6 +1141,7 @@ pub fn test_client() -> (
         >,
     > = Arc::new(RwLock::new(HashMap::new()));
     let join_links = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let pending_joins = Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
 
     // Build StateRefs and derived views.
     let event_ref = willow_actor::state::StateRef::from(&event_state_addr);
@@ -1272,6 +1295,7 @@ pub fn test_client() -> (
         persistence_addr,
         persistence_enabled: false,
         join_links,
+        pending_joins,
         bootstrap_peers: vec![],
         dag_addr: dag_addr.clone(),
         view_handle,
