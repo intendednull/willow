@@ -23,6 +23,22 @@ use rusqlite::{params, Connection};
 use willow_common::SYNC_BATCH_LIMIT;
 use willow_state::{Event, EventKind, HeadsSummary};
 
+/// Maximum number of `(author, head)` entries accepted from a peer-supplied
+/// [`HeadsSummary`] in a single `sync_since` / `history` call.
+///
+/// `sync_since` and `history` build their SQL clauses by concatenating one
+/// `(author = ? AND seq <op> ?)` fragment per entry. A peer-supplied summary
+/// with thousands of entries (still well within the transport envelope cap)
+/// would either exceed rusqlite's bind-parameter limit (default 32766) or
+/// waste CPU compiling a giant prepared statement.
+///
+/// 256 is well above any plausible honest server's distinct-author count
+/// while keeping the bind-parameter count (~512 per call) and the SQL
+/// expression-tree depth safely below SQLite's defaults
+/// (32766 binds, depth 1000). Requests over the cap are rejected at the store layer;
+/// the caller in `role.rs` maps the error to a `WorkerResponse::Denied`.
+pub const MAX_AUTHORS_PER_SYNC: usize = 256;
+
 /// Ordered list of schema migrations. Each entry is run inside its own
 /// transaction the first time the database is opened. Once a migration is
 /// shipped, never edit or reorder it — only append new entries.
@@ -192,6 +208,19 @@ impl StorageEventStore {
         before: Option<&HeadsSummary>,
         limit: u32,
     ) -> anyhow::Result<(Vec<Event>, bool)> {
+        // Reject peer-supplied cursors that would balloon SQL construction
+        // (see `MAX_AUTHORS_PER_SYNC`). Done before any allocation or SQL
+        // building so a hostile request fails fast.
+        if let Some(heads) = before {
+            if heads.heads.len() > MAX_AUTHORS_PER_SYNC {
+                anyhow::bail!(
+                    "too many heads in history cursor: {} > {}",
+                    heads.heads.len(),
+                    MAX_AUTHORS_PER_SYNC
+                );
+            }
+        }
+
         let capped = (limit as usize).min(SYNC_BATCH_LIMIT);
         let fetch_limit = capped + 1;
 
@@ -291,6 +320,17 @@ impl StorageEventStore {
     /// Defined once in `willow_common::SYNC_BATCH_LIMIT` so storage
     /// production and client validation cannot drift apart.
     pub fn sync_since(&self, server_id: &str, heads: &HeadsSummary) -> anyhow::Result<Vec<Event>> {
+        // Reject peer-supplied summaries that would balloon SQL construction
+        // (see `MAX_AUTHORS_PER_SYNC`). Done before any allocation or SQL
+        // building so a hostile request fails fast.
+        if heads.heads.len() > MAX_AUTHORS_PER_SYNC {
+            anyhow::bail!(
+                "too many heads in sync request: {} > {}",
+                heads.heads.len(),
+                MAX_AUTHORS_PER_SYNC
+            );
+        }
+
         if heads.heads.is_empty() {
             // New peer — send up to SYNC_BATCH_LIMIT events for this server.
             let mut stmt = self.conn.prepare(
@@ -1168,5 +1208,83 @@ mod tests {
             orig_bytes, rec_bytes,
             "serialized bytes of recovered event must match original after reopen"
         );
+    }
+
+    /// Build a `HeadsSummary` with `n` distinct random authors for cap tests.
+    fn heads_summary_with_authors(n: usize) -> HeadsSummary {
+        use willow_state::AuthorHead;
+        let mut heads = std::collections::BTreeMap::new();
+        for _ in 0..n {
+            let id = Identity::generate();
+            heads.insert(
+                id.endpoint_id(),
+                AuthorHead {
+                    seq: 1,
+                    hash: EventHash::ZERO,
+                },
+            );
+        }
+        HeadsSummary { heads }
+    }
+
+    /// A peer-supplied `HeadsSummary` with more than `MAX_AUTHORS_PER_SYNC`
+    /// entries must be rejected by `sync_since` before any SQL is built.
+    /// Without the cap, the rusqlite bind-parameter limit (default 32766) or
+    /// CPU spent compiling the giant prepared statement is the failure mode.
+    #[test]
+    fn sync_since_rejects_oversize_heads() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let oversize = heads_summary_with_authors(MAX_AUTHORS_PER_SYNC + 1);
+
+        let err = store
+            .sync_since("srv-1", &oversize)
+            .expect_err("oversize heads must be rejected, not processed");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("too many heads"),
+            "error message should mention the cap; got: {msg}"
+        );
+    }
+
+    /// `sync_since` must accept exactly `MAX_AUTHORS_PER_SYNC` entries — the
+    /// cap is inclusive on the legal side.
+    #[test]
+    fn sync_since_accepts_exact_cap() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let at_cap = heads_summary_with_authors(MAX_AUTHORS_PER_SYNC);
+        // No events stored, so the result is empty — but it must not error.
+        let events = store
+            .sync_since("srv-1", &at_cap)
+            .expect("exactly MAX_AUTHORS_PER_SYNC entries must be accepted");
+        assert!(events.is_empty());
+    }
+
+    /// A peer-supplied `before` cursor with more than `MAX_AUTHORS_PER_SYNC`
+    /// entries must be rejected by `history` before any SQL is built.
+    #[test]
+    fn history_rejects_oversize_before_cursor() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let oversize = heads_summary_with_authors(MAX_AUTHORS_PER_SYNC + 1);
+
+        let err = store
+            .history("srv-1", None, Some(&oversize), 10)
+            .expect_err("oversize cursor must be rejected, not processed");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("too many heads"),
+            "error message should mention the cap; got: {msg}"
+        );
+    }
+
+    /// `history` must accept exactly `MAX_AUTHORS_PER_SYNC` cursor entries.
+    #[test]
+    fn history_accepts_exact_cap_cursor() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let at_cap = heads_summary_with_authors(MAX_AUTHORS_PER_SYNC);
+        let (events, has_more) = store
+            .history("srv-1", None, Some(&at_cap), 10)
+            .expect("exactly MAX_AUTHORS_PER_SYNC entries must be accepted");
+        assert!(events.is_empty());
+        assert!(!has_more);
     }
 }
