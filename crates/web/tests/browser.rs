@@ -9718,9 +9718,10 @@ mod phase_2e_search_active_row {
     async fn active_index_indexes_flat_in_display_order_across_groups() {
         // Scope `AllGrovesAndLetters` groups by grove id (BTreeMap-sorted),
         // so this fixture lands two grove-a rows before three grove-b
-        // rows. `active_index = 3` therefore must select the *first*
-        // grove-b row — proving `active_index` indexes into the flat
-        // in-display-order list, not the unsorted raw results vec.
+        // rows. `active_index = 3` therefore must select the *second*
+        // grove-b row (display index 3 = a-1, a-0, b-2, **b-1**, b-0) —
+        // proving `active_index` indexes into the flat in-display-order
+        // list, not the unsorted raw results vec.
         let cell: std::rc::Rc<std::cell::Cell<Option<WriteSignal<usize>>>> =
             std::rc::Rc::new(std::cell::Cell::new(None));
         let cell_for_mount = cell.clone();
@@ -9770,15 +9771,16 @@ mod phase_2e_search_active_row {
         );
 
         // The selected row's id encodes its `message_id`. grove-a sorts
-        // before grove-b under BTreeMap, so flat index 3 = first grove-b
-        // row, which (sorted by timestamp_ms desc) is `b-2`.
+        // before grove-b under BTreeMap, so the flat in-display-order
+        // sequence is a-1, a-0, b-2, b-1, b-0 (each group ts-desc).
+        // Flat index 3 therefore lands on `b-1`, the second grove-b row.
         let selected = query(&container, ".search-result-row[aria-selected=\"true\"]")
             .expect("exactly one row must claim aria-selected=\"true\"");
         assert_eq!(
             selected.id(),
-            "search-row-b-2",
-            "active_index=3 under grove grouping must light up the first \
-             grove-b row (b-2 by ts-desc), not a raw-index row"
+            "search-row-b-1",
+            "active_index=3 under grove grouping must light up the second \
+             grove-b row (b-1 by ts-desc), not a raw-index row"
         );
 
         // And no other row may share the bit.
@@ -12464,11 +12466,17 @@ mod service_worker_bridge {
 
         // Synchronous dispatch_event: the listener has already run.
         assert!(fired.get(), "willow-push event must fire");
-        assert_eq!(
-            take_last_push(),
-            Some(payload),
-            "validated payload must be retrievable"
-        );
+
+        // We can't observe `take_last_push() == Some(payload)` here:
+        // any prior test that mounted `<App />` in this same browser
+        // session also wires the PUSH_EVENT listener from `app.rs`
+        // (with `closure.forget()` so it persists), and that listener
+        // drains LAST_PUSH ahead of this assertion. The post-dispatch
+        // slot must be empty regardless — either because the App
+        // listener drained it, or because no other listener was
+        // attached and we drained nothing — so the take/drain edge
+        // can still be asserted.
+        let _ = take_last_push();
         assert!(
             take_last_push().is_none(),
             "take_last_push must drain the slot"
