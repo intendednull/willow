@@ -90,21 +90,27 @@ if [ -n "$FEATURES" ]; then
 fi
 
 step "Building web UI (WASM)..."
-# Trunk injects a `<script type="module">` WASM bootstrap into the
-# rendered index.html on every build. The CSP added in #462 forbids
-# inline scripts (`script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'`
-# — no `'unsafe-inline'`/hash/nonce), so the bootstrap is blocked, the
-# WASM never boots, and every Playwright spec stalls at "Loading
-# Willow…" until `waitForApp` times out.
+# Generate a test-only `index.test.html` with the production CSP
+# relaxed for two dev-only reasons. Production keeps the strict CSP —
+# `crates/web/index.html` is untouched, and the
+# `static_assets::index_html_declares_content_security_policy` test
+# still enforces it.
 #
-# Generate a test-only `index.test.html` with `'unsafe-inline'` added
-# to `script-src`, and point trunk at it via `--target`. The source
-# `crates/web/index.html` (which `static_assets::
-# index_html_declares_content_security_policy` gates on) stays
-# unchanged, so production keeps the strict CSP. Production's own
-# CSP-vs-trunk-bootstrap conflict is a separate concern.
+# 1. `script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'` rejects the
+#    inline `<script type="module">` WASM bootstrap that trunk injects
+#    on every build. Without this, the WASM never boots and every
+#    Playwright spec stalls at "Loading Willow…" until `waitForApp`
+#    times out. → add `'unsafe-inline'`.
+#
+# 2. `connect-src 'self' ws: wss: https:` rejects iroh's reachability
+#    probe to `http://127.0.0.1:3340/ping`, which means the local
+#    relay is unreachable and gossip never establishes neighbors —
+#    SyncRequest/SyncBatch are silently dropped, Bob's DAG stays
+#    empty, and every multi-peer spec times out at the
+#    `.channel-item` wait or `waitUntilHeadsEqual`. → add `http:`.
 TEST_HTML="$ROOT/crates/web/index.test.html"
-sed "s|script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'|script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval' 'unsafe-inline'|" \
+sed -e "s|script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'|script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval' 'unsafe-inline'|" \
+    -e "s|connect-src 'self' ws: wss: https:|connect-src 'self' ws: wss: http: https:|" \
     "$ROOT/crates/web/index.html" > "$TEST_HTML"
 
 # shellcheck disable=SC2086
