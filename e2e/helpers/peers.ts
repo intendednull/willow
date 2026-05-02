@@ -157,7 +157,11 @@ export async function openServerSettings(page: Page) {
     await page.locator('.mobile-tab-bar .tab[data-tab="home"]').click();
     await page.waitForTimeout(200);
   }
-  await page.locator(`${visibleShell(page)} .server-gear-btn`).first().click();
+  // The grove-header button in `.channel-sidebar` is the server-settings
+  // entry point on both shells (it fires `on_server_settings_click`).
+  // The legacy `.server-gear-btn` was removed by the vibe-annotations
+  // pass (commit 0861f26) — keep the selector aligned with the markup.
+  await page.locator(`${visibleShell(page)} .channel-sidebar .grove-header`).first().click();
   await page.locator('.settings-panel, .settings-overlay').first()
     .waitFor({ timeout: 5_000 });
 }
