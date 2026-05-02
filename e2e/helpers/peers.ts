@@ -200,13 +200,18 @@ export async function joinViaInvite(page: Page, inviteCode: string, displayName?
       timeout: 20_000,
     });
   }
-  // Deterministic post-join settle: wait for the sidebar + first channel
-  // to materialise. Covers both shells.
+  // Deterministic post-join settle: wait for the sidebar + first
+  // channel to materialise. Covers both shells. The channel-item
+  // wait depends on the SyncBatch round-trip landing — when two
+  // workers are bootstrapping their relay handshake at the same
+  // time the first pair can take 30–50 s before iroh-gossip dials
+  // through. 60 s mirrors `waitUntilHeadsEqual`'s default cold-start
+  // budget; warm tests still settle in <5 s.
   await page.locator(`${visibleShell(page)} .channel-sidebar, ${visibleShell(page)} .mobile-home`)
     .first()
     .waitFor({ timeout: 20_000 });
   await page.locator(`${visibleShell(page)} .channel-item`).first()
-    .waitFor({ timeout: 20_000 });
+    .waitFor({ timeout: 60_000 });
 }
 
 /** Sets up two peers: peer1 creates a server, peer2 joins via invite. */
