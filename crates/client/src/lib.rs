@@ -80,6 +80,10 @@ mod tests_voice;
 #[path = "tests/governance.rs"]
 mod tests_governance;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "tests/sync_reply_cache.rs"]
+mod tests_sync_reply_cache;
+
 /// How long a typing indicator remains visible after the last typing event, in milliseconds.
 pub const TYPING_INDICATOR_TTL_MS: u64 = 5_000;
 
@@ -1055,6 +1059,7 @@ pub fn test_client() -> (
         )
         .expect("genesis insert must succeed in test helper"),
         stashed: HashMap::new(),
+        sync_reply_cache: None,
     };
 
     // Create the general channel in the DAG.
@@ -1849,6 +1854,7 @@ mod tests {
                     for event in events_for_b {
                         ds.managed.insert_and_apply(event).ok();
                     }
+                    ds.invalidate_sync_reply_cache();
                 })
                 .await;
                 // Sync B's event_state mirror from the DAG.

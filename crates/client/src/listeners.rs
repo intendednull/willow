@@ -203,6 +203,17 @@ async fn topic_listener_loop<T: TopicHandle, E: TopicEvents>(
 
 // ───── DAG helpers ──────────────────────────────────────────────────────────
 
+/// Compute the cached `WireMessage::SyncRequest` reply payload — the
+/// first [`SYNC_REPLY_LIMIT`](state_actors::SYNC_REPLY_LIMIT) events of
+/// the DAG's deterministic topological sort. Cache populated lazily on
+/// first read after invalidation; cleared by every successful insertion
+/// path on `DagState`. See GEN-08 / issue #268.
+pub(crate) async fn compute_sync_reply(
+    dag: &Addr<willow_actor::StateActor<state_actors::DagState>>,
+) -> Vec<willow_state::Event> {
+    willow_actor::state::mutate(dag, |ds| ds.sync_reply_events()).await
+}
+
 /// Try to insert an event into the DAG. On success, ManagedDag atomically
 /// applies it to state and resolves pending events. On chain gap, the
 /// event is buffered. Duplicates are silently ignored.
@@ -220,6 +231,13 @@ async fn try_insert_event(ctx: &ListenerCtx, event: willow_state::Event) {
                 }
                 for r in &outcome.resolved {
                     all.push(r.clone());
+                }
+                // Any event entering the DAG (including chains drained
+                // from the pending buffer) changes the topological-sort
+                // prefix, so invalidate the SyncRequest-reply cache.
+                // See GEN-08 / issue #268.
+                if outcome.applied.is_some() || !outcome.resolved.is_empty() {
+                    ds.invalidate_sync_reply_cache();
                 }
                 (outcome.applied, all)
             }
@@ -393,20 +411,13 @@ async fn process_received_message<T: TopicHandle>(
         }
         crate::ops::WireMessage::SyncRequest { state_hash, .. } => {
             let _ = state_hash; // Legacy field — can't filter by state hash in DAG model.
-                                // TODO: Migrate clients to worker's heads-based sync protocol
+                                // TODO(#65): Migrate clients to worker's heads-based sync protocol
                                 // (WorkerRequest::Sync { heads }) for efficient delta sync.
-                                // For now, send the first 500 events from topological sort.
-                                // Receiver will dedup via InsertError::Duplicate.
-            let events: Vec<willow_state::Event> = willow_actor::state::select(&ctx.dag, |ds| {
-                ds.managed
-                    .dag()
-                    .topological_sort()
-                    .into_iter()
-                    .take(500)
-                    .cloned()
-                    .collect()
-            })
-            .await;
+                                // For now, send the first SYNC_REPLY_LIMIT events from
+                                // topological sort. Receiver will dedup via InsertError::Duplicate.
+                                // The reply Vec is cached on `DagState` and invalidated on
+                                // every successful DAG insert; see GEN-08 / issue #268.
+            let events = compute_sync_reply(&ctx.dag).await;
             if !events.is_empty() {
                 let msg = crate::ops::WireMessage::SyncBatch { events };
                 if let Some(data) = crate::ops::pack_wire(&msg, &ctx.identity) {
@@ -671,7 +682,8 @@ async fn process_received_message<T: TopicHandle>(
                     let granted_peer = peer_endpoint;
                     let ts = crate::util::current_time_ms();
                     let grant_event = willow_actor::state::mutate(&ctx.dag, move |ds| {
-                        ds.managed
+                        let ev = ds
+                            .managed
                             .create_and_insert(
                                 &identity,
                                 willow_state::EventKind::GrantPermission {
@@ -680,7 +692,13 @@ async fn process_received_message<T: TopicHandle>(
                                 },
                                 ts,
                             )
-                            .ok()
+                            .ok();
+                        if ev.is_some() {
+                            // SyncRequest-reply cache must be invalidated on every
+                            // successful insertion path; see GEN-08 / issue #268.
+                            ds.invalidate_sync_reply_cache();
+                        }
+                        ev
                     })
                     .await;
                     if let Some(event) = grant_event {
