@@ -11,6 +11,7 @@ import {
   joinViaInvite,
   createChannel,
   openSidebar,
+  openMemberList,
   visibleShell,
 } from './helpers';
 
@@ -158,7 +159,13 @@ test.describe('Multi-peer state synchronization', () => {
     }
   });
 
-  test('both peers appear in member list', async ({ peer, browser }) => {
+  test('both peers appear in member list', async ({ peer, browser }, testInfo) => {
+    // Mobile shell wires the members action button to a no-op callback
+    // (mobile_shell.rs ~L386 `on_set_which=Callback::new(|_| ())`) so
+    // there's no right-rail member pane to assert on. Re-enable when
+    // mobile-shell exposes the member list (Phase 1c).
+    test.skip(testInfo.project.name.startsWith('mobile'), 'mobile shell does not expose member list');
+
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser);
     const alice = await peer(page1, 'Alice');
     const bob = await peer(page2, 'Bob');
@@ -166,8 +173,7 @@ test.describe('Multi-peer state synchronization', () => {
       // Wait for the membership events to converge before opening the panel.
       await bob.waitUntilHeadsEqual(alice);
 
-      await page1.locator(`${visibleShell(page1)} button[aria-label="members"]`)
-        .first().click();
+      await openMemberList(page1);
 
       // Default expect timeout (5s) is plenty after convergence.
       const memberList = page1.locator(`${visibleShell(page1)} .member-item`);

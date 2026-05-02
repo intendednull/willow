@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { chromium, firefox, devices } from '@playwright/test';
 import { test, expect } from './test-hooks';
-import { freshStart, createServer, sendMessage, waitForMessage, getPeerId, openSidebar, joinViaInvite, visibleShell } from './helpers';
+import { freshStart, createServer, sendMessage, waitForMessage, getPeerId, openSidebar, closeSidebar, openServerSettings, joinViaInvite, visibleShell } from './helpers';
 
 // Custom Firefox context options — avoids flakiness seen with the full
 // devices['Desktop Firefox'] preset (which sets a Windows UA + specific screen
@@ -42,7 +42,11 @@ test.describe.configure({ mode: 'serial' });
  */
 test.describe('Cross-browser peer sync', () => {
   // These tests are slow — they launch two separate browser engines.
-  test.setTimeout(120_000);
+  // Per-test deadline (not a sleep) — Firefox's iroh bootstrap is
+  // measurably slower than Chromium on a freshly-spun mesh, so the
+  // join-side `joinViaInvite.channel-item` wait commonly runs past the
+  // legacy 120 s budget before SyncBatch lands.
+  test.setTimeout(180_000);
 
   // Only run from one project to avoid duplicating (each test launches its own browsers).
   test.beforeEach(({}, testInfo) => {
@@ -115,14 +119,16 @@ test.describe('Cross-browser peer sync', () => {
       // Open the grove drawer briefly to confirm the channel is
       // visible, then close it (`sendMessage` below pushes into the
       // channel via the home tab, which the drawer overlay would
-      // otherwise sit on top of and block).
+      // otherwise sit on top of and block). Use the helper so the
+      // close path is the same backdrop-click `closeSidebar` uses
+      // elsewhere — the previous `.grove-drawer__close, .top-slot-left`
+      // composite locator picked up `.top-slot-left` (which OPENS
+      // the drawer further) when the dedicated close button was
+      // missing, hanging until the test deadline.
       await openSidebar(mobilePage);
       await expect(mobilePage.locator(`${visibleShell(mobilePage)} .channel-item`, { hasText: 'general' }))
         .toBeVisible();
-      const closeBtn = mobilePage.locator(`${visibleShell(mobilePage)} .grove-drawer__close, ${visibleShell(mobilePage)} .mobile-top-bar .top-slot-left`);
-      if (await closeBtn.first().isVisible().catch(() => false)) {
-        await closeBtn.first().click();
-      }
+      await closeSidebar(mobilePage);
 
       // Establish bidirectional gossip mesh: Mobile → Desktop is the
       // reliable direction. Waiting for Desktop's MessageReceived event
@@ -187,10 +193,11 @@ test.describe('Cross-browser peer sync', () => {
       const desktopPeerId = await getPeerId(desktopPage, 'DesktopUser');
       expect(desktopPeerId).toBeTruthy();
 
-      // Mobile Chrome: open the grove drawer + grove menu (scoped to
-      // mobile shell to avoid the strict-mode duplicate-match guard).
-      await openSidebar(mobilePage);
-      await mobilePage.locator('.shell-mobile [aria-label="grove menu"]').first().click();
+      // Mobile Chrome: open the server settings via the grove menu.
+      // The grove menu button lives in `.channel-sidebar .grove-header`
+      // which is mounted on the home tab — pop any push first and tap
+      // home so the click doesn't fall behind the drawer overlay.
+      await openServerSettings(mobilePage);
       await mobilePage.locator('input[placeholder*="12D3KooW"]')
         .waitFor({ timeout: 10_000 });
       await mobilePage.locator('input[placeholder*="12D3KooW"]').fill(desktopPeerId);
