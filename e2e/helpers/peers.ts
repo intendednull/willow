@@ -10,6 +10,7 @@ import {
   visibleShell,
   openMemberList,
   closeMemberList,
+  closeSidebar,
 } from './ui';
 
 /** Wait for the WASM app to load (loading spinner disappears). */
@@ -133,10 +134,12 @@ export async function getPeerId(page: Page, displayName?: string): Promise<strin
     }
   }
 
-  // Fallback: read it from settings.
+  // Fallback: read it from settings. Wait for the panel to mount
+  // before reading instead of guessing how long the click animation
+  // takes.
   await page.locator('text=Settings').click();
-  await page.waitForTimeout(300);
   const settingsPeerId = page.locator('.peer-id-text').first();
+  await settingsPeerId.waitFor({ state: 'visible', timeout: 5_000 });
   return (
     (await settingsPeerId.getAttribute('data-full-id')) ||
     (await settingsPeerId.textContent()) ||
@@ -148,14 +151,20 @@ export async function getPeerId(page: Page, displayName?: string): Promise<strin
 export async function openServerSettings(page: Page) {
   if (isMobile(page)) {
     // Channel list is on the home tab; the gear lives in the sidebar
-    // header rendered inside `.mobile-home`. No drawer needed.
+    // header rendered inside `.mobile-home`. The grove drawer overlay
+    // covers the bottom tab bar — close it first or the home-tab click
+    // below silently waits forever for actionability.
+    await closeSidebar(page);
+    // Each back-tap removes one push frame; gate on the chevron
+    // disappearing rather than a fixed sleep so deeply nested pushes
+    // drain reliably.
     const backSlot = page.locator('.mobile-top-bar .top-slot-left .top-back');
     while (await backSlot.isVisible().catch(() => false)) {
       await page.locator('.mobile-top-bar .top-slot-left').click();
-      await page.waitForTimeout(300);
+      await backSlot.waitFor({ state: 'hidden', timeout: 2_000 }).catch(() => {});
     }
     await page.locator('.mobile-tab-bar .tab[data-tab="home"]').click();
-    await page.waitForTimeout(200);
+    await page.locator('.shell-mobile .mobile-home').waitFor({ state: 'visible', timeout: 5_000 });
   }
   // The grove-header button in `.channel-sidebar` is the server-settings
   // entry point on both shells (it fires `on_server_settings_click`).
@@ -171,10 +180,18 @@ export async function generateInvite(page: Page, recipientPeerId: string): Promi
   await openServerSettings(page);
   await page.locator('input[placeholder*="12D3KooW"]').fill(recipientPeerId);
   await page.locator('button', { hasText: 'Generate Invite' }).click();
-  await page.waitForTimeout(500);
-  const inviteCode = await page.locator('.invite-code-display textarea').inputValue();
+  // Wait for the invite-code field to mount with a non-empty value
+  // rather than guessing how long the build step takes.
+  const inviteField = page.locator('.invite-code-display textarea');
+  await inviteField.waitFor({ state: 'visible', timeout: 5_000 });
+  await expect(inviteField).not.toHaveValue('', { timeout: 5_000 });
+  const inviteCode = await inviteField.inputValue();
   await page.locator('text=Back').click();
-  await page.waitForTimeout(500);
+  // Settings panel unmounts on Back; gate on the channel sidebar
+  // returning rather than a fixed sleep.
+  await page.locator(`${visibleShell(page)} .channel-sidebar, ${visibleShell(page)} .mobile-home`)
+    .first()
+    .waitFor({ state: 'visible', timeout: 5_000 });
   return inviteCode;
 }
 
@@ -205,13 +222,14 @@ export async function joinViaInvite(page: Page, inviteCode: string, displayName?
   // wait depends on the SyncBatch round-trip landing — when two
   // workers are bootstrapping their relay handshake at the same
   // time the first pair can take 30–50 s before iroh-gossip dials
-  // through. 60 s mirrors `waitUntilHeadsEqual`'s default cold-start
-  // budget; warm tests still settle in <5 s.
+  // through, and Firefox's iroh bootstrap takes longer still in the
+  // cross-browser scenarios. 90 s covers both cases without padding
+  // warm tests, which still settle in <5 s.
   await page.locator(`${visibleShell(page)} .channel-sidebar, ${visibleShell(page)} .mobile-home`)
     .first()
     .waitFor({ timeout: 20_000 });
   await page.locator(`${visibleShell(page)} .channel-item`).first()
-    .waitFor({ timeout: 60_000 });
+    .waitFor({ timeout: 90_000 });
 }
 
 /** Sets up two peers: peer1 creates a server, peer2 joins via invite. */
@@ -260,10 +278,11 @@ export async function setupTwoPeers(
       console.warn('[setupTwoPeers] peer2 display name did not sync in time — P2P may be slow');
     }
     await closeMemberList(page1);
-  } else if (peer2Name) {
-    // On mobile, just sleep a bit to let gossip propagate.
-    await page1.waitForTimeout(1500);
   }
+  // No mobile-side fixed sleep here — callers that need cross-peer
+  // sync should explicitly await `bob.waitUntilHeadsEqual(alice)` or
+  // an event-based predicate via the `peer()` fixture. Sleeps masked
+  // gossip propagation issues without surfacing them.
 
   return { ctx1, ctx2, page1, page2 };
 }
