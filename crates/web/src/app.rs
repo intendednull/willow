@@ -365,62 +365,96 @@ pub fn App() -> impl IntoView {
     // Alt+↑ / Alt+↓ grove switch, `/` focus + ⌘F scope-flip for search).
     crate::keybindings::install(app_state, write);
 
-    // Hydrate the search index from the messages signal. Runs on every
-    // message-list change; the index itself dedups by message_id so
-    // repeated rebuilds are idempotent.
+    // Spawn the search indexer. One long-lived task hydrates the index
+    // from existing state on entry, then keeps it fresh by subscribing
+    // to `ClientEvent`s and routing message lifecycle events into the
+    // index incrementally. Replaces the prior signal-driven full
+    // `Rebuild` Effect (issue #354) — that destroyed + rebuilt every
+    // posting on every send/receive/edit AND only fed in the current
+    // channel's messages, so switching channels wiped the index for
+    // the previous channel.
     //
-    // Per `local-search.md` §Build behaviour: incremental on arrival,
-    // lazy on historical scan. We do a simple full rebuild here in v1
-    // since the in-memory backend is fast enough for typical corpora
-    // (< 10k messages). A future phase can switch to incremental insert
-    // via `ClientEvent::MessageReceived`.
+    // Bootstrap timing: `ClientHandle::new` synchronously materializes
+    // anything in `crate::storage`, so by the time we reach this point
+    // the on-disk corpus is already in the state actor. Live events
+    // arriving before the bootstrap walk completes are picked up by
+    // the subscriber loop below; `SearchIndex::insert` is idempotent
+    // on `message_id` so a doubled hit is a no-op.
+    //
+    // Letter scope (`letter_id`) stays `None` — the active-letter
+    // signal isn't yet wired into this path; tracked as the follow-up
+    // referenced from issue #355.
     {
-        let messages_sig = app_state.chat.messages;
-        let current_channel_sig = app_state.chat.current_channel;
-        let peer_id_sig = app_state.network.peer_id;
-        let active_server_sig = app_state.server.active_server_id;
+        let handle = handle.clone();
         let search = search_index.clone();
-        let write_local = write;
-        Effect::new(move |_| {
-            let msgs = messages_sig.get();
-            let current_ch = current_channel_sig.get();
-            let grove_id = active_server_sig.get();
-            let local_peer = peer_id_sig.get();
-
-            // `IndexableMessage::from_display_message` derives the
-            // `has_image` / `has_file` / `has_link` operator flags
-            // from the body so `has:image` / `has:file` / `has:link`
-            // queries actually match. `letter_id` stays `None` here —
-            // the active-letter signal isn't yet wired into this
-            // effect; tracked as a follow-up to issue #355.
-            let grove = if grove_id.is_empty() {
-                None
-            } else {
-                Some(grove_id.clone())
+        let active_server_sig = app_state.server.active_server_id;
+        let set_status = write.search.set_status;
+        wasm_bindgen_futures::spawn_local(async move {
+            let grove_id = {
+                let g = active_server_sig.get_untracked();
+                if g.is_empty() {
+                    None
+                } else {
+                    Some(g)
+                }
             };
-            let indexable: Vec<willow_client::IndexableMessage> = msgs
-                .into_iter()
-                .map(|m| {
-                    willow_client::IndexableMessage::from_display_message(
-                        &m,
-                        &current_ch,
-                        grove.clone(),
-                        None,
-                    )
-                })
-                .collect();
-            // Ignore local peer binding to avoid unused_variables clippy
-            // noise — we keep the read so the effect subscribes in case
-            // a later phase filters by author presence.
-            let _ = local_peer;
-            let search = search.clone();
-            let set_status = write_local.search.set_status;
-            leptos::task::spawn_local(async move {
-                search.rebuild(indexable).await;
-                // `Rebuild` always settles status to `Idle` before the
-                // future resolves; no need for a second round-trip.
-                set_status.set(willow_client::SearchIndexBuildStatus::Idle);
-            });
+
+            // One-shot hydration over every channel + message
+            // currently in state.
+            willow_client::search::hydrate_index(&handle, &search, grove_id.clone()).await;
+            set_status.set(willow_client::SearchIndexBuildStatus::Idle);
+
+            // Subscribe to live events and update incrementally.
+            let mut rx = handle.subscribe_events().await;
+            while let Some(event) = rx.recv().await {
+                // Re-read grove on each event so a future multi-grove
+                // client picks up the right id without us caching it.
+                let grove_id = {
+                    let g = active_server_sig.get_untracked();
+                    if g.is_empty() {
+                        None
+                    } else {
+                        Some(g)
+                    }
+                };
+                match event {
+                    ClientEvent::MessageReceived {
+                        channel,
+                        message_id,
+                        ..
+                    } => {
+                        willow_client::search::index_message(
+                            &handle,
+                            &search,
+                            &channel,
+                            &message_id,
+                            grove_id,
+                        )
+                        .await;
+                    }
+                    ClientEvent::MessageEdited {
+                        channel,
+                        message_id,
+                        ..
+                    } => {
+                        willow_client::search::reindex_message(
+                            &handle,
+                            &search,
+                            &channel,
+                            &message_id,
+                            grove_id,
+                        )
+                        .await;
+                    }
+                    ClientEvent::MessageDeleted { message_id, .. } => {
+                        search.remove_message(&message_id);
+                    }
+                    ClientEvent::ChannelDeleted(channel_id) => {
+                        search.remove_channel(&channel_id);
+                    }
+                    _ => {}
+                }
+            }
         });
     }
 

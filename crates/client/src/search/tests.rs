@@ -1039,3 +1039,162 @@ mod from_display_message_tests {
         assert_eq!(ix.letter_id.as_deref(), Some("L1"));
     }
 }
+
+/// Bootstrap + incremental hooks (issue #354). Verifies that the
+/// hydrate / index / reindex helpers feed the index correctly without
+/// invoking the destructive `Rebuild` path.
+mod bootstrap_tests {
+    use super::super::*;
+    use crate::test_client;
+    use willow_actor::System;
+    use willow_state::EventHash;
+
+    /// `hydrate_index` walks every channel and seeds the index with
+    /// every non-deleted message. Cross-channel content survives — the
+    /// regression in issue #354 was that the prior signal-driven path
+    /// only ever held the active channel's messages.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hydrate_indexes_all_channels() {
+        let (client, _broker) = test_client();
+
+        client.send_message("general", "alpha hello").await.unwrap();
+        client.create_channel("dev").await.unwrap();
+        // create_channel is async — wait for the channel to land before
+        // sending into it.
+        for _ in 0..50 {
+            if client.channels().await.iter().any(|n| n == "dev") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        client.send_message("dev", "beta progress").await.unwrap();
+        // Let the message events apply.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let sys = System::new();
+        let search = SearchIndexHandle::new_in_memory(&sys.handle());
+        bootstrap::hydrate_index(&client, &search, Some("g0".into())).await;
+
+        // Both channels' content lands in the same index.
+        let general_hits = search
+            .query(&parse_query("alpha"), &SearchScope::AllGrovesAndLetters)
+            .await;
+        assert_eq!(general_hits.len(), 1, "alpha must be indexed");
+        let dev_hits = search
+            .query(&parse_query("beta"), &SearchScope::AllGrovesAndLetters)
+            .await;
+        assert_eq!(
+            dev_hits.len(),
+            1,
+            "beta from a non-active channel must be indexed"
+        );
+    }
+
+    /// `hydrate_index` is idempotent — `SearchIndex::insert` short-
+    /// circuits on a known `message_id`, so re-running on the same
+    /// state must not double-count.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hydrate_is_idempotent() {
+        let (client, _broker) = test_client();
+
+        client.send_message("general", "ping").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let sys = System::new();
+        let search = SearchIndexHandle::new_in_memory(&sys.handle());
+        bootstrap::hydrate_index(&client, &search, None).await;
+        let after_first = search.message_count().await;
+        bootstrap::hydrate_index(&client, &search, None).await;
+        let after_second = search.message_count().await;
+        assert_eq!(after_first, after_second, "second hydrate must be no-op");
+    }
+
+    /// `index_message` inserts one message by id — the incremental
+    /// hook the indexer task calls on `ClientEvent::MessageReceived`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn index_message_inserts_by_id() {
+        let (client, _broker) = test_client();
+
+        client.send_message("general", "fresh news").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let snap = client.state_snapshot().await;
+        let (channel_id, _) = snap
+            .channels
+            .iter()
+            .find(|(_, c)| c.name == "general")
+            .expect("general channel must exist");
+        let msg = snap
+            .messages
+            .iter()
+            .find(|m| m.body == "fresh news")
+            .expect("message must be in state");
+        let message_id = msg.id.to_string();
+
+        let sys = System::new();
+        let search = SearchIndexHandle::new_in_memory(&sys.handle());
+        // Index is empty up front — only the incremental hook runs.
+        assert_eq!(search.message_count().await, 0);
+        bootstrap::index_message(&client, &search, channel_id, &message_id, None).await;
+        assert_eq!(search.message_count().await, 1);
+
+        let hits = search
+            .query(&parse_query("fresh"), &SearchScope::AllGrovesAndLetters)
+            .await;
+        assert_eq!(hits.len(), 1);
+    }
+
+    /// `reindex_message` removes-then-reinserts so an edited body
+    /// replaces the old posting. Without the explicit remove,
+    /// `SearchIndex::insert` would short-circuit on the existing
+    /// `message_id` and the new body would never land.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reindex_replaces_edited_body() {
+        let (client, _broker) = test_client();
+
+        client.send_message("general", "old body").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let snap = client.state_snapshot().await;
+        let (channel_id, _) = snap
+            .channels
+            .iter()
+            .find(|(_, c)| c.name == "general")
+            .expect("general channel must exist");
+        let msg = snap
+            .messages
+            .iter()
+            .find(|m| m.body == "old body")
+            .expect("message must be in state");
+        let message_id = msg.id.to_string();
+        let event_hash: EventHash = msg.id;
+
+        let sys = System::new();
+        let search = SearchIndexHandle::new_in_memory(&sys.handle());
+        bootstrap::index_message(&client, &search, channel_id, &message_id, None).await;
+        let pre = search
+            .query(&parse_query("old"), &SearchScope::AllGrovesAndLetters)
+            .await;
+        assert_eq!(pre.len(), 1, "pre-edit body must be queryable");
+
+        // Edit the message and let the event apply.
+        client
+            .edit_message("general", &event_hash, "shiny new body")
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        bootstrap::reindex_message(&client, &search, channel_id, &message_id, None).await;
+        let stale = search
+            .query(&parse_query("old"), &SearchScope::AllGrovesAndLetters)
+            .await;
+        assert!(
+            stale.is_empty(),
+            "old body must no longer match after reindex"
+        );
+        let fresh = search
+            .query(&parse_query("shiny"), &SearchScope::AllGrovesAndLetters)
+            .await;
+        assert_eq!(fresh.len(), 1, "new body must match after reindex");
+    }
+}
