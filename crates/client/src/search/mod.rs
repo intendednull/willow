@@ -10,6 +10,7 @@
 //! Today (Task 1): [`query`] only.
 
 pub mod actor;
+pub mod bootstrap;
 pub mod config;
 pub mod execute;
 pub mod handle;
@@ -22,6 +23,7 @@ pub mod tokenize;
 #[cfg(test)]
 mod tests;
 
+pub use bootstrap::{hydrate_index, index_message, reindex_message};
 pub use config::{
     clear_all_recents, forget_recent, push_recent, RecentQuery, SearchIndexConfig, MAX_RECENTS,
 };

@@ -184,6 +184,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             event_broker: self.event_broker.clone(),
             identity: self.identity.clone(),
             join_links: Arc::clone(&self.join_links),
+            pending_joins: Arc::clone(&self.pending_joins),
             dag: self.dag_addr.clone(),
             server_registry: self.server_registry_addr.clone(),
             on_neighbor_up: None,

@@ -216,7 +216,23 @@ impl<N: willow_network::Network> ClientHandle<N> {
         self.mutation_handle.broadcast_on_topic(topic, data);
     }
 
-    pub fn send_join_request(&self, link_id: &str) {
+    /// Broadcast a `JoinRequest` to the inviter for `link_id` and
+    /// record the pending attempt so subsequent `JoinResponse` /
+    /// `JoinDenied` messages can be authenticated against the expected
+    /// `inviter_peer_id`.
+    ///
+    /// `inviter_peer_id` is taken straight from the
+    /// [`ops::JoinToken::inviter_peer_id`] the caller decoded; the
+    /// listener uses it to drop spoofed responses signed by anyone else
+    /// (issue #309 / SEC-A-07).
+    pub fn send_join_request(&self, link_id: &str, inviter_peer_id: willow_identity::EndpointId) {
+        // Record the pending attempt BEFORE broadcasting. If the inviter
+        // races us and replies before we've populated the map, the
+        // listener would otherwise drop the legitimate response with a
+        // "no outstanding join request" debug log.
+        self.pending_joins
+            .lock()
+            .insert(link_id.to_string(), inviter_peer_id);
         let msg = ops::WireMessage::JoinRequest {
             link_id: link_id.to_string(),
             peer_id: self.identity.endpoint_id(),
