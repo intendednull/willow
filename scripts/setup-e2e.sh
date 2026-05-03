@@ -55,7 +55,7 @@ fi
 # npm dependencies
 if [ ! -d "$ROOT/node_modules" ]; then
     step "Installing npm dependencies..."
-    (cd "$ROOT" && npm install)
+    (cd "$ROOT" && npm ci)
 fi
 
 # Playwright browsers. `--dry-run` prints the install location whether
