@@ -20,24 +20,8 @@
 //! never reordered or rewritten so existing databases stay consistent.
 
 use rusqlite::{params, Connection};
-use willow_common::SYNC_BATCH_LIMIT;
+use willow_common::{MAX_AUTHORS_PER_SYNC, SYNC_BATCH_LIMIT};
 use willow_state::{Event, EventKind, HeadsSummary};
-
-/// Maximum number of `(author, head)` entries accepted from a peer-supplied
-/// [`HeadsSummary`] in a single `sync_since` / `history` call.
-///
-/// `sync_since` and `history` build their SQL clauses by concatenating one
-/// `(author = ? AND seq <op> ?)` fragment per entry. A peer-supplied summary
-/// with thousands of entries (still well within the transport envelope cap)
-/// would either exceed rusqlite's bind-parameter limit (default 32766) or
-/// waste CPU compiling a giant prepared statement.
-///
-/// 256 is well above any plausible honest server's distinct-author count
-/// while keeping the bind-parameter count (~512 per call) and the SQL
-/// expression-tree depth safely below SQLite's defaults
-/// (32766 binds, depth 1000). Requests over the cap are rejected at the store layer;
-/// the caller in `role.rs` maps the error to a `WorkerResponse::Denied`.
-pub const MAX_AUTHORS_PER_SYNC: usize = 256;
 
 /// Ordered list of schema migrations. Each entry is run inside its own
 /// transaction the first time the database is opened. Once a migration is

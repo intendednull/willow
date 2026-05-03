@@ -24,3 +24,21 @@ pub use worker_types::*;
 /// `willow-common` (already a dep of both crates) guarantees they stay
 /// aligned at compile time.
 pub const SYNC_BATCH_LIMIT: usize = 10_000;
+
+/// Maximum number of `(author, head)` entries accepted from a peer-supplied
+/// [`willow_state::HeadsSummary`] in a single sync / history call.
+///
+/// Single source of truth shared by:
+/// - `willow-storage` — `sync_since` / `history` build SQL by concatenating
+///   one `(author = ? AND seq <op> ?)` fragment per entry; an oversize
+///   summary would either exceed rusqlite's bind-parameter limit
+///   (default 32766) or waste CPU compiling a giant prepared statement.
+/// - `willow-replay` — `handle_request(Sync)` iterates per-author into a
+///   `BTreeMap` then walks the in-memory DAG; an oversize summary forces
+///   O(N) work and is the same DoS shape as the storage path.
+///
+/// 256 is well above any plausible honest server's distinct-author count
+/// while keeping bind-parameter and BTreeMap-construction costs bounded.
+/// Both production sites MUST agree on this value, so the canonical
+/// definition lives here alongside [`SYNC_BATCH_LIMIT`].
+pub const MAX_AUTHORS_PER_SYNC: usize = 256;

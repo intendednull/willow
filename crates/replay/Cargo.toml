@@ -12,6 +12,7 @@ willow-worker = { path = "../worker" }
 willow-state = { path = "../state" }
 willow-identity = { path = "../identity" }
 willow-network = { path = "../network" }
+willow-common = { path = "../common" }
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
 anyhow = { workspace = true }
