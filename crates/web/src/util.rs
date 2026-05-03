@@ -1,20 +1,46 @@
 /// Copy text to the clipboard.
 ///
 /// Tries `navigator.clipboard.writeText` first (modern API, requires HTTPS).
-/// Falls back to creating a temporary textarea and using `execCommand('copy')`.
+/// Falls back to creating a temporary textarea and using `execCommand('copy')`
+/// only if the modern API rejects (non-HTTPS, no user gesture, browser
+/// restrictions). The signature stays sync so Leptos `on:click` handlers can
+/// call it directly; the Promise returned by `writeText` is awaited inside a
+/// `spawn_local` task so the fallback never runs on the happy path.
 pub fn copy_to_clipboard(text: &str) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+
+    // Kick off the modern clipboard API and await its Promise. The textarea
+    // fallback only runs if the Promise rejects.
+    let clipboard = window.navigator().clipboard();
+    let promise = clipboard.write_text(text);
+    let owned = text.to_owned();
+    wasm_bindgen_futures::spawn_local(async move {
+        match wasm_bindgen_futures::JsFuture::from(promise).await {
+            Ok(_) => {
+                tracing::debug!("clipboard.writeText succeeded");
+            }
+            Err(err) => {
+                tracing::debug!(
+                    ?err,
+                    "clipboard.writeText rejected; using textarea fallback"
+                );
+                exec_command_copy_fallback(&owned);
+            }
+        }
+    });
+}
+
+/// Legacy clipboard path: append a hidden textarea, select its contents,
+/// invoke `document.execCommand('copy')`, and remove the textarea. Only
+/// invoked when the modern `navigator.clipboard.writeText` Promise rejects.
+fn exec_command_copy_fallback(text: &str) {
     use wasm_bindgen::JsCast;
 
     let Some(window) = web_sys::window() else {
         return;
     };
-
-    // Try modern clipboard API first.
-    let clipboard = window.navigator().clipboard();
-    let _ = clipboard.write_text(text);
-
-    // Also do the textarea fallback in case clipboard API fails silently
-    // (e.g. non-HTTPS, no user gesture, browser restrictions).
     let Some(document) = window.document() else {
         return;
     };
