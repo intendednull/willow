@@ -215,6 +215,7 @@ Coordinator owns this check (metadata work, allowed under "coordinator never cod
 ### Implementer-flagged out-of-scope rot
 - When the implementer surfaces pre-existing rot it intentionally doesn't fix (e.g. unrelated wasm break under `--all-features`, dead-code warnings in untouched files), the coordinator files a follow-up GH issue using `mcp__github__issue_write` (metadata work, allowed under the Coordinator-never-codes rule). Cite the discovery context (which dispatch surfaced it, which commit + gate step) so the next run has full provenance.
 - This is the same shape as the "implementer files follow-up" rule — coordinator just does the filing because the implementer is single-task and exits after commit.
+- **Always reproduce the failure on coordinator HEAD before filing OR dismissing.** A prior run dismissing the same shape as a "sandbox-side flake" doesn't mean it stays a flake — rot accumulates as PRs merge, and a previously-flaky symptom can become a real regression once a related change lands. Run the failing command in the coordinator's checkout (single shot, no retry loops); if it reproduces, file the follow-up with the exact assertion + the git history that exposed it (e.g. `git log --oneline <last-fix-attempt>..HEAD -- <relevant-paths>` to find the PR that flipped flake → real). If it doesn't reproduce, don't file — but note the dismissal in the run-end Lessons Learned so the next run has the audit trail. Never rely on a prior dismissal alone; always re-verify.
 
 ### Fresh agent per issue
 - New implementer each issue. No state leak.
