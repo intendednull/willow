@@ -29,7 +29,12 @@ Skip if HEAD == commit recorded in most recent `general-audit` master issue. PR-
 **Full sweep every run with full resources.** Never assume fewer issues since the last run. Every audit fans out subagents in parallel.
 
 Default split — one agent per concern:
-- security → sub-split: input validation/DoS, auth/permissions, web/WASM, deps/supply-chain
+- security → sub-split:
+  - input validation/DoS
+  - auth/permissions
+  - **web/WASM CSP+headers+injection** (separate from localStorage/persistence)
+  - **web/WASM localStorage + identity persistence** (separate agent — sec-web has historically been the longest-running concern; sub-splitting keeps each agent inside the 6-min budget)
+  - deps/supply-chain
 - tech debt / code quality
 - clean architecture (diff specs vs code; pass spec paths explicitly)
 - test coverage
@@ -111,7 +116,7 @@ grep -rn "FROM [^@]*$" docker/   # any unpinned base image?
 
 ### Pass 3: cargo-audit ignore-list drift
 
-After `cargo audit` completes, diff the CI `--ignore` list against the current advisory DB. Stale RUSTSEC IDs that no longer match should be surfaced as low-priority cleanup ("N stale RUSTSEC IDs in ci.yml — can be pruned"). Cosmetic but accumulates.
+After `cargo audit` completes, diff the CI `--ignore` list against the current advisory DB. Stale RUSTSEC IDs that no longer match are a **canonical Pass 3 finding — must emit a child issue if any stale ID is found.** Don't treat as optional/cosmetic. The ignore list grows over time and reviewers can't easily tell which entries are still real.
 
 **First-run advisory-db prefetch.** `cargo audit -n` (no-fetch) requires `~/.cargo/advisory-db` to already be cached. On fresh runners / first runs, drop `-n` so cargo-audit fetches the advisory DB. Subsequent runs may keep `-n` for speed:
 
@@ -126,6 +131,8 @@ cargo audit -n --ignore RUSTSEC-XXXX-NNNN ...
 ### Pass 4: timeout backfill
 
 If any agent timed out without writing findings, the orchestrator MUST manually sweep that concern before declaring the audit complete. Gaps from timed-out agents compound across runs.
+
+**Stalled-agent early detection.** Don't wait for the 10-min watchdog. While other agents run, periodically (every ~2 min) `ls -la audit-findings/` and check whether each `<concern>.md` file size has grown since last poll. If a finding-file is stuck at scaffold-only size (≤ ~200 bytes) for ≥ 5 min while at least one other agent has progressed, treat that concern as stalled and dispatch the manual backfill agent in parallel — don't block the rest of the audit waiting for the stalled agent to time out. This recovers ~4 min of wall time per stall.
 
 ## Synthesis
 
@@ -166,6 +173,10 @@ Second fresh subagent verifies surviving findings real via grep/rg for exact pat
 5. **Open lessons-PR** (next section).
 
 **Filing performance.** N survivors = N issue creates + N sub-issue links + 1 master + 1 lessons ≈ 2N+2 MCP calls. For N=38 that's ~80 calls. Budget for it: batch issue creates in parallel (8-10 per message), then sub-issue links in parallel (10-14 per message). Don't sequentialize — orchestrator wall time scales with batch count, not call count.
+
+**Sub-issue link parallelism is the dominant filing cost.** Each `mcp__github__sub_issue_write` call returns the full master-issue body (~2-3 KB) — 25 sequential calls echo ~60 KB into context. Always batch ≥ 8 sub-issue links per message in parallel. For N ≥ 14 surviving findings, a single 14-wide parallel batch should be the default; if more, split into 2 batches of similar width. Reaffirm: don't fall back to sequential after the first link.
+
+**Master issue body — keep dedup metadata minimal.** Don't embed the full dup/superseded id list in the master issue body. The dedup verdict block lives in the lessons issue body (where it gives context for "why we filed N out of M"). Master should just state the survivor count + survivors-by-concern. Avoids two places drifting out of sync as later runs re-classify.
 
 ## Lessons-Learned PR (self-improvement loop)
 
