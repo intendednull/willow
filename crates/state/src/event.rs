@@ -86,6 +86,30 @@ impl Permission {
     }
 }
 
+/// Human-readable permission labels for UI surfaces.
+///
+/// Centralising the strings here keeps UX wording in one place and
+/// avoids leaking the `Debug`-derived variant identifiers (e.g.
+/// `SyncProvider`) into role lists, settings panes, or MCP resources.
+/// `Debug` remains available for logs and developer-facing output.
+impl std::fmt::Display for Permission {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Self::SyncProvider => "Sync provider",
+            Self::ManageChannels => "Manage channels",
+            Self::ManageRoles => "Manage roles",
+            Self::SendMessages => "Send messages",
+            Self::CreateInvite => "Create invite",
+            // Sentinel from a future/unknown client. Should never reach
+            // a UI render path in practice — `apply_event` drops these
+            // before they enter any role's permission set — but Display
+            // must be total, so emit a clearly-flagged placeholder.
+            Self::__UnknownLegacy => "Unknown",
+        };
+        f.write_str(label)
+    }
+}
+
 impl<'de> Deserialize<'de> for Permission {
     /// Custom deserialize that accepts both the enum form (default for
     /// any format — bincode emits a u32 discriminant, JSON emits the
@@ -552,5 +576,18 @@ mod tests {
         // Replace author with a different key (but keep the original sig).
         event.author = id_b.endpoint_id();
         assert!(!event.verify());
+    }
+
+    #[test]
+    fn permission_display_strings() {
+        // UI surfaces (role lists, settings, MCP resources) render
+        // permissions via Display. Locking these strings here keeps the
+        // wording stable and surfaces wording changes as test diffs.
+        assert_eq!(Permission::SyncProvider.to_string(), "Sync provider");
+        assert_eq!(Permission::ManageChannels.to_string(), "Manage channels");
+        assert_eq!(Permission::ManageRoles.to_string(), "Manage roles");
+        assert_eq!(Permission::SendMessages.to_string(), "Send messages");
+        assert_eq!(Permission::CreateInvite.to_string(), "Create invite");
+        assert_eq!(Permission::__UnknownLegacy.to_string(), "Unknown");
     }
 }

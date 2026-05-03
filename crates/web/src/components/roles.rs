@@ -1,16 +1,22 @@
 use leptos::prelude::*;
+use willow_state::Permission;
 
 use crate::app::WebClientHandle;
 use crate::components::{ConfirmDialog, ToastStack};
 use crate::state::AppState;
 
-/// List of all permission names that can be toggled on a role.
-const PERMISSION_NAMES: &[&str] = &[
-    "SyncProvider",
-    "ManageChannels",
-    "ManageRoles",
-    "SendMessages",
-    "CreateInvite",
+/// All non-sentinel permissions that can be toggled on a role.
+///
+/// Order is the order they appear in the UI. The
+/// [`Permission::__UnknownLegacy`] sentinel is intentionally excluded —
+/// it represents a value emitted by an unknown future client and must
+/// never be presented as a togglable option.
+const TOGGLABLE_PERMISSIONS: &[Permission] = &[
+    Permission::SyncProvider,
+    Permission::ManageChannels,
+    Permission::ManageRoles,
+    Permission::SendMessages,
+    Permission::CreateInvite,
 ];
 
 /// A single role entry: (role_id, role_name, set of granted permission strings).
@@ -183,15 +189,15 @@ pub fn RoleManager(
                                     let hp = handle_perm.clone();
                                     let rid = role_id_perms.clone();
                                     let perms = permissions.clone();
-                                    PERMISSION_NAMES.iter().map(|perm_name| {
-                                        let perm = perm_name.to_string();
-                                        let perm_label = perm.clone();
-                                        let perm_check = perm.clone();
-                                        let perm_toggle = perm.clone();
+                                    TOGGLABLE_PERMISSIONS.iter().copied().map(|perm| {
+                                        // The role view layer renders permissions
+                                        // via `Display`, so membership compares
+                                        // against the same `Display` string.
+                                        let perm_label = perm.to_string();
+                                        let checked = perms.contains(&perm_label);
                                         let rid_t = rid.clone();
                                         let hp_t = hp.clone();
                                         let oc_t = oc;
-                                        let checked = perms.contains(&perm_check);
                                         view! {
                                             <label class="permission-toggle">
                                                 <input
@@ -202,22 +208,14 @@ pub fn RoleManager(
                                                         let granted = event_target_checked(&ev);
                                                         let h = hp_t.clone();
                                                         let rid = rid_t.clone();
-                                                        let perm = perm_toggle.clone();
                                                         let toasts = use_context::<ToastStack>();
                                                         wasm_bindgen_futures::spawn_local(async move {
-                                                            // Names come from PERMISSION_NAMES which is
-                                                            // kept in sync with willow_state::Permission;
-                                                            // an unparsed name is a bug, not user input.
-                                                            if let Some(parsed) =
-                                                                willow_state::Permission::from_name(&perm)
-                                                            {
-                                                                if let Err(e) = h.set_permission(&rid, parsed, granted).await {
-                                                                    crate::handlers::warn_and_toast_with(
-                                                                        "set permission",
-                                                                        &e,
-                                                                        toasts.as_ref(),
-                                                                    );
-                                                                }
+                                                            if let Err(e) = h.set_permission(&rid, perm, granted).await {
+                                                                crate::handlers::warn_and_toast_with(
+                                                                    "set permission",
+                                                                    &e,
+                                                                    toasts.as_ref(),
+                                                                );
                                                             }
                                                         });
                                                     }

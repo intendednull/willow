@@ -794,7 +794,7 @@ pub fn compute_roles_view(events: &Arc<willow_state::ServerState>) -> RolesView 
         .map(|role| RoleEntry {
             id: role.id.clone(),
             name: role.name.clone(),
-            permissions: role.permissions.iter().map(|p| format!("{p:?}")).collect(),
+            permissions: role.permissions.iter().map(|p| p.to_string()).collect(),
         })
         .collect();
     roles.sort_by(|a, b| a.name.cmp(&b.name));

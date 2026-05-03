@@ -863,8 +863,7 @@ pub fn wire_derived_signals<N: willow_network::Network>(
         es.roles
             .iter()
             .map(|(id, role)| {
-                let perms: Vec<String> =
-                    role.permissions.iter().map(|p| format!("{p:?}")).collect();
+                let perms: Vec<String> = role.permissions.iter().map(|p| p.to_string()).collect();
                 (id.clone(), role.name.clone(), perms)
             })
             .collect::<Vec<_>>()
