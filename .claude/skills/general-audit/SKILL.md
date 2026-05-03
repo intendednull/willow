@@ -74,6 +74,16 @@ git diff <pr-base>..<pr-head> -- '*.rs' | rg "^\+\s*pub (async )?fn (\w+)" -or '
 # Then for each fn name: rg "\.<fn_name>\(" crates --glob '!**/tests*'
 ```
 
+**Commit-prefix filter when N merged PRs > 5.** Auto-fix-batch PRs (`#auto-fix batch ...`) + skill-only PRs add noise. Drilling each commit per-PR is expensive. Pre-filter by commit-subject prefix:
+
+```bash
+# Only fix:/feat:/perf:/refactor: commits since cutoff carry sibling-of-closed risk
+git log --since="$LAST_AUDIT_DATE" --oneline \
+  | rg "^[a-f0-9]+ (fix|feat|perf|refactor)(\(|:)"
+```
+
+Skip `docs:`/`chore:`/`ci:` (unless `ci:` claim-vs-scope mismatch — sub-pattern (a)) and skill-only commits.
+
 ### Pass 2: Standard sweep grep set
 
 Run as a checklist; record everything found (do NOT pre-filter against existing issues — that contaminates context and biases the sweep):
@@ -103,6 +113,16 @@ grep -rn "FROM [^@]*$" docker/   # any unpinned base image?
 
 After `cargo audit` completes, diff the CI `--ignore` list against the current advisory DB. Stale RUSTSEC IDs that no longer match should be surfaced as low-priority cleanup ("N stale RUSTSEC IDs in ci.yml — can be pruned"). Cosmetic but accumulates.
 
+**First-run advisory-db prefetch.** `cargo audit -n` (no-fetch) requires `~/.cargo/advisory-db` to already be cached. On fresh runners / first runs, drop `-n` so cargo-audit fetches the advisory DB. Subsequent runs may keep `-n` for speed:
+
+```bash
+# First run after toolchain rebuild — prefetch advisory-db:
+cargo audit --ignore RUSTSEC-XXXX-NNNN ...   # no -n
+
+# Cached subsequent runs:
+cargo audit -n --ignore RUSTSEC-XXXX-NNNN ...
+```
+
 ### Pass 4: timeout backfill
 
 If any agent timed out without writing findings, the orchestrator MUST manually sweep that concern before declaring the audit complete. Gaps from timed-out agents compound across runs.
@@ -125,6 +145,7 @@ Dedup subagent's job:
    mcp__github__search_issues "is:open repo:intendednull/willow <file-or-symbol>"
    mcp__github__search_issues "is:open repo:intendednull/willow label:audit <keyword>"
    ```
+   **NEVER bare-keyword queries** like `"general-audit"` / `"audit"` / `"label:audit"` alone — audit-labeled issues accumulate and overflow the 78k-char cap. Always pin a file path, symbol, or RUSTSEC ID.
 2. For each finding, return: `kept` | `dup of #N` | `superseded by #N`.
 3. Return only the verdict list to the orchestrator. Do NOT echo issue bodies.
 
@@ -134,6 +155,8 @@ Orchestrator drops `dup`/`superseded` findings from the file-list. Survivors get
 
 Second fresh subagent verifies surviving findings real via grep/rg for exact patterns cited. Drop any finding whose verification grep returns 0 hits.
 
+**Drop `partially-verified` findings whose body claim contradicts the verification spot-check, not just `FAILED`.** A finding marked "lock-ok marker missing at line 31" verified with "marker exists at line 23" is contradicted, not partially supported — drop it. Filing inaccurate child issues wastes reviewer time and undermines confidence in audit output. Orchestrator must enforce this drop, not just defer to the subagent's softer "accepted on review" verdict.
+
 ### File the issues
 
 1. **Master issue** = commit hash + survivors list.
@@ -141,6 +164,8 @@ Second fresh subagent verifies surviving findings real via grep/rg for exact pat
 3. **Wire children as sub-issues of master** via `mcp__github__sub_issue_write` — surfaces children in master's UI panel without manual cross-ref.
 4. **Lessons issue** titled `general-audit lessons: YYYY-MM-DD` (caveman body): what worked, what didn't, concrete suggested edits to this skill file. Label: `audit`, `lessons`.
 5. **Open lessons-PR** (next section).
+
+**Filing performance.** N survivors = N issue creates + N sub-issue links + 1 master + 1 lessons ≈ 2N+2 MCP calls. For N=38 that's ~80 calls. Budget for it: batch issue creates in parallel (8-10 per message), then sub-issue links in parallel (10-14 per message). Don't sequentialize — orchestrator wall time scales with batch count, not call count.
 
 ## Lessons-Learned PR (self-improvement loop)
 
@@ -178,6 +203,7 @@ This closes the loop: each audit run feeds the next.
 - Per-finding entry stays small: file:line, severity (split: security = confidentiality/integrity; robustness = availability/DoS), Obvious? yes/no. One short paragraph max. If a finding's evidence is large (a long grep result, a code block), summarise it in the entry and link to file:line — don't paste it inline.
 - **Hard cap: > 5 tool calls without appending one finding ⇒ STOP exploring, write the strongest finding seen so far, then continue.** No exception.
 - Count/ratio claims: verify w/ a second grep cmd proving count.
+- **Read ±10 lines around any cited line before asserting "missing"/"absent"/"no X exists".** False-premise findings (e.g. "lock-ok marker missing at line 31" when marker is at line 23) survive dedup because keywords match plausibly; only the verification step or the human reviewer catches them. The cheapest fix is to require the originating sweep agent to Read ±10 lines around the citation before claiming absence.
 - Use general-purpose agent (Explore can't Write).
 - Architecture agents: skip cargo tree/cargo clippy; rg + ls + reads.
 - GitHub comms in caveman mode.
