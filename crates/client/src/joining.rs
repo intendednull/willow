@@ -354,7 +354,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     //! Tests for the client-side auth guards on invite generation.
     //!

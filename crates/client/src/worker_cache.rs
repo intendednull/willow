@@ -58,7 +58,15 @@ impl WorkerCache {
 
     /// Evict workers that haven't sent a heartbeat within the TTL.
     pub fn evict_stale(&mut self) {
-        let cutoff = Instant::now() - self.ttl;
+        self.evict_stale_at(Instant::now());
+    }
+
+    /// Evict workers stale relative to an injected `now`.
+    ///
+    /// Used by tests to remove timing dependencies; production callers should
+    /// use [`Self::evict_stale`].
+    pub(crate) fn evict_stale_at(&mut self, now: Instant) {
+        let cutoff = now - self.ttl;
         self.workers.retain(|_, info| info.last_seen > cutoff);
     }
 
@@ -107,7 +115,7 @@ impl WorkerCache {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use willow_identity::Identity;
@@ -171,10 +179,11 @@ mod tests {
 
     #[test]
     fn evict_stale_removes_expired() {
-        let mut cache = WorkerCache::new(Duration::from_millis(1));
+        let mut cache = WorkerCache::new(Duration::from_secs(30));
         cache.update(&make_replay_announcement(gen_id(), vec!["srv-1"]));
-        std::thread::sleep(Duration::from_millis(10));
-        cache.evict_stale();
+        // Simulate "now" being well past the TTL boundary instead of sleeping.
+        let future = Instant::now() + Duration::from_secs(60);
+        cache.evict_stale_at(future);
         assert!(cache.is_empty());
     }
 

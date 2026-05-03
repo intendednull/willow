@@ -26,13 +26,23 @@ export function visibleShell(page: Page): string {
 export async function sendMessage(page: Page, text: string) {
   const scope = isMobile(page) ? '.shell-mobile' : '.shell-desktop';
   if (isMobile(page)) {
+    // The grove drawer overlay covers the home tab — close it before
+    // we try to surface the channel push, otherwise the click below
+    // silently waits forever for actionability. Idempotent.
+    await closeSidebar(page);
     const inPush = await page
       .locator('.shell-mobile .mobile-push--channel')
       .isVisible()
       .catch(() => false);
     if (!inPush) {
       await page.locator('.shell-mobile .mobile-home .channel-item').first().click();
-      await page.waitForTimeout(400);
+      // Wait for the chat view push to settle deterministically rather
+      // than relying on a fixed sleep — the composer is mounted inside
+      // `.mobile-push--channel`, so until that's visible the input
+      // selector below would race against the push transition.
+      await page
+        .locator('.shell-mobile .mobile-push--channel')
+        .waitFor({ state: 'visible', timeout: 5_000 });
     }
   }
   const input = page
@@ -61,19 +71,31 @@ export async function getMessages(page: Page): Promise<string[]> {
  *  then tap the row (which pushes the chat view). */
 export async function switchChannel(page: Page, channelName: string) {
   if (isMobile(page)) {
-    // Pop back to home if we are currently on a pushed screen.
+    // The grove drawer overlay covers the bottom tab bar — close it
+    // first or the home-tab click below silently waits forever for
+    // actionability. Idempotent: no-op if the drawer is already shut.
+    await closeSidebar(page);
+    // Pop back to home if we are currently on a pushed screen. Each
+    // back-tap removes one push frame; gate on the chevron disappearing
+    // rather than a fixed sleep so deeply nested pushes drain reliably.
     const backSlot = page.locator('.mobile-top-bar .top-slot-left .top-back');
     while (await backSlot.isVisible().catch(() => false)) {
       await page.locator('.mobile-top-bar .top-slot-left').click();
-      await page.waitForTimeout(300);
+      await backSlot.waitFor({ state: 'hidden', timeout: 2_000 }).catch(() => {});
     }
-    // Make sure we are on the home tab.
+    // Make sure we are on the home tab — wait for the home pane to
+    // mount before trying to tap a channel row inside it.
     await page.locator('.mobile-tab-bar .tab[data-tab="home"]').click();
-    await page.waitForTimeout(200);
+    await page.locator('.shell-mobile .mobile-home').waitFor({ state: 'visible', timeout: 5_000 });
     await page
       .locator('.mobile-home .channel-item', { hasText: channelName })
       .click();
-    await page.waitForTimeout(400);
+    // Tapping a channel row pushes the chat view; wait for the push
+    // frame so the composer + message list are mounted before callers
+    // start interacting with them.
+    await page
+      .locator('.shell-mobile .mobile-push--channel')
+      .waitFor({ state: 'visible', timeout: 5_000 });
     return;
   }
   await page
@@ -98,22 +120,34 @@ export async function waitForMessage(page: Page, text: string, timeout = 20_000)
  */
 export async function openSidebar(page: Page) {
   if (!isMobile(page)) return;
-  const alreadyOpen = await page.locator('.grove-drawer.open').isVisible().catch(() => false);
-  if (alreadyOpen) return;
+  const drawer = page.locator('.grove-drawer.open');
+  if (await drawer.isVisible().catch(() => false)) return;
+  // `.top-slot-left` doubles as the back chevron when a channel push
+  // is active; clicking it then would pop the push instead of opening
+  // the drawer. Drain push frames first so the slot becomes the grove
+  // glyph that actually opens the sidebar.
+  const backSlot = page.locator('.mobile-top-bar .top-slot-left .top-back');
+  while (await backSlot.isVisible().catch(() => false)) {
+    await page.locator('.mobile-top-bar .top-slot-left').click();
+    await backSlot.waitFor({ state: 'hidden', timeout: 2_000 }).catch(() => {});
+  }
   await page.locator('.mobile-top-bar .top-slot-left').click();
-  await page.waitForTimeout(500);
+  // The slide-in transition can run for ~300ms; the .open class is
+  // toggled at animation start so a state-visible wait settles within
+  // the first frame rather than a fixed-duration sleep.
+  await drawer.waitFor({ state: 'visible', timeout: 3_000 });
 }
 
 /** Closes the grove drawer on mobile by tapping the backdrop. No-op
  *  on desktop or when the drawer is already closed. */
 export async function closeSidebar(page: Page) {
   if (!isMobile(page)) return;
-  const drawerOpen = await page.locator('.grove-drawer.open').isVisible().catch(() => false);
-  if (!drawerOpen) return;
+  const drawer = page.locator('.grove-drawer.open');
+  if (!(await drawer.isVisible().catch(() => false))) return;
   // Backdrop covers the full viewport; dispatch bypasses Playwright's
   // hit-test which rightly warns about overlapping layers.
   await page.locator('.grove-drawer-backdrop').dispatchEvent('click');
-  await page.waitForTimeout(300);
+  await drawer.waitFor({ state: 'hidden', timeout: 3_000 });
 }
 
 /** Switch to a given mobile primary tab (home / letters / discover / you).
@@ -141,7 +175,9 @@ export async function openMemberList(page: Page) {
     const inPush = await page.locator('.mobile-push--channel').isVisible().catch(() => false);
     if (!inPush) {
       await page.locator('.mobile-home .channel-item').first().click();
-      await page.waitForTimeout(400);
+      await page
+        .locator('.shell-mobile .mobile-push--channel')
+        .waitFor({ state: 'visible', timeout: 5_000 });
     }
   }
 
@@ -171,20 +207,35 @@ export async function closeMemberList(page: Page) {
  *  home tab — no drawer needed to reach `.channel-add-btn`. */
 export async function createChannel(page: Page, name: string) {
   if (isMobile(page)) {
-    // Pop any pushed screen so the home tab is visible.
+    // The grove drawer overlay covers the bottom tab bar — close it
+    // first or the home-tab click below silently waits forever for
+    // actionability. Idempotent: no-op if the drawer is already shut.
+    await closeSidebar(page);
+    // Pop any pushed screen so the home tab is visible. Each back-tap
+    // removes one push frame; gate on the chevron disappearing rather
+    // than a fixed sleep so deeply nested pushes drain reliably.
     const backSlot = page.locator('.mobile-top-bar .top-slot-left .top-back');
     while (await backSlot.isVisible().catch(() => false)) {
       await page.locator('.mobile-top-bar .top-slot-left').click();
-      await page.waitForTimeout(300);
+      await backSlot.waitFor({ state: 'hidden', timeout: 2_000 }).catch(() => {});
     }
     await page.locator('.mobile-tab-bar .tab[data-tab="home"]').click();
-    await page.waitForTimeout(200);
+    await page.locator('.shell-mobile .mobile-home').waitFor({ state: 'visible', timeout: 5_000 });
   }
   const scope = visibleShell(page);
+  // The "new" button now opens a kind picker (text / voice / temp)
+  // before the name input renders; the name input itself is
+  // `.tree-slot__input`. The previous `.channel-create-input` selector
+  // and one-shot fill no longer apply (channel_sidebar.rs:317-384).
   await page.locator(`${scope} .channel-add-btn`).first().click();
-  await page.waitForTimeout(200);
-  await page.locator(`${scope} .channel-create-input input`).first().fill(name);
-  await page.locator(`${scope} .channel-create-input input`).first().press('Enter');
+  await page
+    .locator(`${scope} .tree-kind-picker__item`, { hasText: 'text' })
+    .first()
+    .click();
+  const nameInput = page.locator(`${scope} .tree-slot__input`).first();
+  await nameInput.waitFor({ timeout: 5_000 });
+  await nameInput.fill(name);
+  await nameInput.press('Enter');
   await page.locator(`${visibleShell(page)} .channel-item`, { hasText: name })
     .waitFor({ timeout: 10_000 });
 }

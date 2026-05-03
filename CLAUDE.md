@@ -342,7 +342,7 @@ All shared state derived from per-author Merkle DAG of signed events. `willow-st
 - **EventDag** (`crates/state/src/dag.rs`): in-memory store of all known events, indexed by `EventHash`. `EventDag::insert` validates signature, genesis, `prev`/`deps` linkage. No explicit "merge" — DAG converges as events arrive.
 - **ServerState** (`crates/state/src/server.rs`): materialized state derived by walking the DAG.
 - **`materialize::apply_incremental(state, event)`**: ONLY public mutation entry point. Pure. Internally calls `apply_event` + `required_permission` for authority checks.
-- **Permission model**: Owner = root of trust. Fine-grained permissions (SyncProvider, ManageChannels, ManageRoles, KickMembers, SendMessages, CreateInvite, Administrator) granted via `GrantPermission` events.
+- **Permission model**: Owner = root of trust. Fine-grained permissions (SyncProvider, ManageChannels, ManageRoles, SendMessages, CreateInvite) granted via `GrantPermission` events. Admin status is structurally separate — managed exclusively through `ProposedAction` + vote path, never via `GrantPermission`. Kicks are an admin-only `ProposedAction` (no granular "can kick" permission).
 - **Sync** (`crates/state/src/sync.rs`): `HeadsSummary` = compact per-author DAG state for efficient sync; `PendingBuffer` holds events arriving before their `prev` chain predecessors.
 
 ### Trust Model

@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use tracing::warn;
+use willow_common::MAX_AUTHORS_PER_SYNC;
 use willow_state::{
     apply_incremental, Event, EventDag, EventHash, EventKind, HeadsSummary, InsertError,
     PendingBuffer, ServerState, Snapshot, DEFAULT_PENDING_MAX_AGE_MS, DEFAULT_PENDING_MAX_ENTRIES,
@@ -273,6 +274,21 @@ impl WorkerRole for ReplayRole {
     fn handle_request(&mut self, req: WorkerRequest) -> WorkerResponse {
         match req {
             WorkerRequest::Sync { server_id, heads } => {
+                // Reject peer-supplied summaries that would force O(N)
+                // BTreeMap construction and DAG walks (see
+                // `MAX_AUTHORS_PER_SYNC`). Mirrors the storage cap added in
+                // PR #507 / b075140; gated before any allocation so a hostile
+                // request fails fast.
+                if heads.heads.len() > MAX_AUTHORS_PER_SYNC {
+                    return WorkerResponse::Denied {
+                        reason: format!(
+                            "too many heads in sync request: {} > {}",
+                            heads.heads.len(),
+                            MAX_AUTHORS_PER_SYNC
+                        ),
+                    };
+                }
+
                 let data = match self.servers.get(&server_id) {
                     Some(d) => d,
                     None => {
@@ -1455,6 +1471,80 @@ mod tests {
                 assert_eq!(pending_count, 0, "pending_count should drop to zero");
             }
             _ => panic!("expected Replay"),
+        }
+    }
+
+    // ── Issue #514: oversize HeadsSummary rejection ──────────────────────
+    //
+    // Mirrors the storage cap added by PR #507 / b075140. Without a guard
+    // here, a malicious peer could send a multi-thousand-entry HeadsSummary
+    // and force replay to do per-author BTreeMap inserts and DAG walks for
+    // every entry — same DoS shape as the storage path the sibling PR fixed.
+
+    /// Build a `HeadsSummary` with `n` distinct random authors. Mirrors the
+    /// helper in `crates/storage/src/store.rs` (sibling cap test infra).
+    fn heads_summary_with_authors(n: usize) -> HeadsSummary {
+        use willow_state::AuthorHead;
+        let mut heads = BTreeMap::new();
+        for _ in 0..n {
+            let id = Identity::generate();
+            heads.insert(
+                id.endpoint_id(),
+                AuthorHead {
+                    seq: 1,
+                    hash: EventHash::ZERO,
+                },
+            );
+        }
+        HeadsSummary { heads }
+    }
+
+    /// A peer-supplied `HeadsSummary` with more than `MAX_AUTHORS_PER_SYNC`
+    /// entries must be rejected by `handle_request(Sync)` before any
+    /// per-author BTreeMap construction or DAG walk occurs.
+    #[test]
+    fn sync_request_rejects_oversize_heads() {
+        use willow_common::MAX_AUTHORS_PER_SYNC;
+        let mut role = ReplayRole::new(ReplayConfig::default());
+        let (_, _) = setup_server(&mut role, "srv-1");
+
+        let oversize = heads_summary_with_authors(MAX_AUTHORS_PER_SYNC + 1);
+        let resp = role.handle_request(WorkerRequest::Sync {
+            server_id: "srv-1".to_string(),
+            heads: oversize,
+        });
+
+        match resp {
+            WorkerResponse::Denied { reason } => {
+                assert!(
+                    reason.contains("too many heads"),
+                    "denial reason should mention the cap; got: {reason}"
+                );
+            }
+            other => panic!("expected Denied for oversize heads, got: {other:?}"),
+        }
+    }
+
+    /// `handle_request(Sync)` must accept exactly `MAX_AUTHORS_PER_SYNC`
+    /// entries — the cap is inclusive on the legal side.
+    #[test]
+    fn sync_request_accepts_exact_cap_heads() {
+        use willow_common::MAX_AUTHORS_PER_SYNC;
+        let mut role = ReplayRole::new(ReplayConfig::default());
+        let (_, _) = setup_server(&mut role, "srv-1");
+
+        let at_cap = heads_summary_with_authors(MAX_AUTHORS_PER_SYNC);
+        let resp = role.handle_request(WorkerRequest::Sync {
+            server_id: "srv-1".to_string(),
+            heads: at_cap,
+        });
+
+        // The peer's heads mention authors we don't know, so events_since
+        // returns the genesis event; our store has 1 author the peer doesn't,
+        // so they_are_behind is true. Either branch is acceptable — the only
+        // forbidden outcome is Denied for at-cap input.
+        if let WorkerResponse::Denied { reason } = resp {
+            panic!("at-cap heads must not be denied; got reason: {reason}");
         }
     }
 

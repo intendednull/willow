@@ -21,7 +21,9 @@ use std::rc::Rc;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::spawn_local;
-use willow_client::EventReceiver;
+use willow_actor::{Addr, StateActor};
+use willow_client::{ClientEvent, EventReceiver};
+use willow_state::ServerState;
 
 use super::wire::to_wire;
 
@@ -44,8 +46,19 @@ impl Drop for DispatcherHandle {
 /// converts each [`ClientEvent`] to its wire shape, and forwards to
 /// `window.__willowEvent`.
 ///
+/// `state_addr` is used to resolve `channel_id` (UUID) → channel `name`
+/// for `MessageReceived` events at dispatch time. Test predicates filter
+/// by friendly name (`e.channel === 'dev'`) but the internal `ClientEvent`
+/// carries the channel UUID; resolving here keeps the wire shape
+/// test-friendly without changing the public client/agent API. Falls
+/// back to the raw channel_id when the channel is not yet materialised
+/// in state (very rare race during initial sync).
+///
 /// Returns a [`DispatcherHandle`] — dropping it stops the dispatch loop.
-pub fn install_push_dispatcher(mut rx: EventReceiver) -> DispatcherHandle {
+pub fn install_push_dispatcher(
+    mut rx: EventReceiver,
+    state_addr: Addr<StateActor<ServerState>>,
+) -> DispatcherHandle {
     let abort = Rc::new(RefCell::new(false));
     let abort_clone = abort.clone();
 
@@ -55,6 +68,7 @@ pub fn install_push_dispatcher(mut rx: EventReceiver) -> DispatcherHandle {
 
         while !*abort_clone.borrow() {
             let Some(event) = rx.recv().await else { break };
+            let event = resolve_channel_name(event, &state_addr).await;
             let Some(wire) = to_wire(&event) else {
                 continue;
             };
@@ -170,4 +184,36 @@ fn signal_overflow(window: &web_sys::Window, dropped: u32) {
     web_sys::console::error_1(
         &format!("test-hooks: __willow buffer overflow ({dropped} dropped)").into(),
     );
+}
+
+/// Substitute the channel UUID with its display name on `MessageReceived`.
+///
+/// `ClientEvent::MessageReceived.channel` carries the channel UUID
+/// (set by `derive_client_events` from `EventKind::Message::channel_id`).
+/// E2E predicates filter by name (`e.channel === 'dev'`), so the wire
+/// dispatch path resolves UUID → name from materialised state. Falls
+/// back to the raw UUID if the channel hasn't materialised yet.
+async fn resolve_channel_name(
+    event: ClientEvent,
+    state_addr: &Addr<StateActor<ServerState>>,
+) -> ClientEvent {
+    match event {
+        ClientEvent::MessageReceived {
+            channel,
+            message_id,
+            is_local,
+        } => {
+            let chan_id = channel.clone();
+            let resolved = willow_actor::state::select(state_addr, move |s: &ServerState| {
+                s.channels.get(&chan_id).map(|c| c.name.clone())
+            })
+            .await;
+            ClientEvent::MessageReceived {
+                channel: resolved.unwrap_or(channel),
+                message_id,
+                is_local,
+            }
+        }
+        other => other,
+    }
 }

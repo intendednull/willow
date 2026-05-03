@@ -169,12 +169,18 @@ export class Peer {
   /**
    * Wait until this peer's heads equal `other`'s heads.
    *
-   * Uses `expect.poll` with a 30 s default timeout (matches the legacy
-   * `{ timeout: 30_000 }` overrides this method replaces). Each poll
-   * re-fetches BOTH sides' heads — `other` may still be advancing — and
-   * returns whether they match. The matcher target is the constant
-   * `true`, so the assertion is symmetric in `self` and `other` and does
-   * not freeze on a stale snapshot.
+   * Uses `expect.poll` with a 90 s default timeout. The first
+   * multi-peer assertion in a project pays an iroh-gossip cold-start
+   * cost (the bootstrap peer hasn't met its first neighbour yet, so
+   * SyncRequest is broadcast into an empty mesh and only re-sends on
+   * the next NeighborUp). The relay log shows ~30s of dial timeouts
+   * before the first peer-pair handshake completes. On a warm relay
+   * subsequent calls converge in well under 10 s; the larger window
+   * absorbs the cold case without padding warm-path runtime. Each
+   * poll re-fetches BOTH sides' heads — `other` may still be
+   * advancing — and returns whether they match. The matcher target
+   * is the constant `true`, so the assertion is symmetric in `self`
+   * and `other` and does not freeze on a stale snapshot.
    *
    * NB: heads-equal is a CRDT pairwise check. Two peers can be equal
    * yet both still missing an event from a third; use
@@ -184,7 +190,7 @@ export class Peer {
     other: Peer,
     opts: { timeout?: number } = {},
   ): Promise<void> {
-    const timeout = opts.timeout ?? 30_000;
+    const timeout = opts.timeout ?? 90_000;
     let lastSelf: Record<string, AuthorHead> = {};
     let lastOther: Record<string, AuthorHead> = {};
     try {
@@ -301,6 +307,29 @@ export const test = base.extend<{ peer: PeerFactory }>({
         queue = [];
         queues.set(page, queue);
       }
+      // Drain any events the WASM dispatcher buffered in
+      // `window.__willowEventBuffer` before `exposeBinding` made
+      // `__willowEvent` callable. The dispatcher only auto-drains the
+      // buffer on its NEXT receive — so for a page that has gone quiet
+      // between `freshStart` and `peer(page, …)` the buffered events
+      // (e.g. the first SyncCompleted after a join) sit there forever
+      // and `nextEvent` waits on a queue that never fills. Calling
+      // `__willowEvent` directly here moves them into the JS-side
+      // queue without needing a fresh wasm event to trigger the
+      // built-in drain.
+      await page.evaluate(() => {
+        const w = window as unknown as {
+          __willowEvent?: (ev: unknown) => void;
+          __willowEventBuffer?: unknown[];
+        };
+        const buf = w.__willowEventBuffer;
+        const cb = w.__willowEvent;
+        if (Array.isArray(buf) && typeof cb === 'function') {
+          while (buf.length > 0) {
+            cb(buf.shift());
+          }
+        }
+      });
       return new Peer(page, label, queue);
     };
 

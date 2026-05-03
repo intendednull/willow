@@ -48,41 +48,45 @@ mod joining;
 mod servers;
 mod voice;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/trust_flow.rs"]
 mod tests_trust_flow;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/multi_peer_sync.rs"]
 mod tests_multi_peer_sync;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/queue.rs"]
 mod tests_queue;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/profile_view.rs"]
 mod tests_profile_view;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/ephemeral.rs"]
 mod tests_ephemeral;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/actions.rs"]
 mod tests_actions;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/voice.rs"]
 mod tests_voice;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/governance.rs"]
 mod tests_governance;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/search.rs"]
 mod tests_search;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "tests/sync_reply_cache.rs"]
+mod tests_sync_reply_cache;
 
 /// How long a typing indicator remains visible after the last typing event, in milliseconds.
 pub const TYPING_INDICATOR_TTL_MS: u64 = 5_000;
@@ -1040,7 +1044,7 @@ pub fn reconcile_topic_map<V: Clone>(
 }
 
 /// Create a test-only ClientHandle without connecting to the network.
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-utils")))]
 pub fn test_client() -> (
     ClientHandle<willow_network::mem::MemNetwork>,
     willow_actor::Addr<willow_actor::Broker<ClientEvent>>,
@@ -1059,6 +1063,7 @@ pub fn test_client() -> (
         )
         .expect("genesis insert must succeed in test helper"),
         stashed: HashMap::new(),
+        sync_reply_cache: None,
     };
 
     // Create the general channel in the DAG.
@@ -1314,7 +1319,7 @@ pub fn test_client() -> (
 ///
 /// Unlike `test_client()`, multiple clients created with the same `hub`
 /// can exchange messages through the in-memory gossip mesh.
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-utils")))]
 pub async fn test_client_on_hub(
     hub: &std::sync::Arc<willow_network::mem::MemHub>,
 ) -> (
@@ -1327,7 +1332,7 @@ pub async fn test_client_on_hub(
     (client, broker)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 
@@ -1853,6 +1858,7 @@ mod tests {
                     for event in events_for_b {
                         ds.managed.insert_and_apply(event).ok();
                     }
+                    ds.invalidate_sync_reply_cache();
                 })
                 .await;
                 // Sync B's event_state mirror from the DAG.

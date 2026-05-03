@@ -230,8 +230,8 @@ string (the Ed25519 public key of the target peer).
 
 | Tool | Parameters | Description |
 |---|---|---|
-| `trust_peer` | `peer_id` | Grant Administrator permission |
-| `untrust_peer` | `peer_id` | Revoke Administrator permission |
+| `trust_peer` | `peer_id` | Grant admin status (via vote) |
+| `untrust_peer` | `peer_id` | Revoke admin status (via vote) |
 | `kick_member` | `peer_id` | Remove member, rotate keys |
 | `create_role` | `name` | Create a permission role |
 | `delete_role` | `role_id` | Delete a role |
@@ -240,8 +240,10 @@ string (the Ed25519 public key of the target peer).
 | `authorize_workers` | `worker_peer_ids` | Grant SyncProvider to workers |
 
 Valid `permission` values: `SyncProvider`, `ManageChannels`,
-`ManageRoles`, `KickMembers`, `SendMessages`, `CreateInvite`,
-`Administrator`.
+`ManageRoles`, `SendMessages`, `CreateInvite`. Admin status is not a
+`Permission` — `trust_peer` / `untrust_peer` go through the
+`ProposedAction` + vote path. There is no `KickMembers` permission;
+kicks are admin-only via `ProposedAction::KickMember`.
 
 #### Identity
 

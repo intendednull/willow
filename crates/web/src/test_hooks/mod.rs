@@ -19,6 +19,7 @@ pub use snapshot::{AuthorHeadDto, ChannelDto, SnapshotDto};
 mod wire;
 pub use wire::{to_wire, WireEvent};
 
+use serde::Serialize;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
 use willow_actor::{Addr, StateActor};
@@ -113,7 +114,7 @@ impl WillowTestHooks {
         future_to_promise(async move {
             let map: std::collections::BTreeMap<String, snapshot::AuthorHeadDto> =
                 willow_actor::state::select(&addr, snapshot::build_heads).await;
-            serde_wasm_bindgen::to_value(&map).map_err(Into::into)
+            map.serialize(&js_object_serializer()).map_err(Into::into)
         })
     }
 
@@ -124,7 +125,19 @@ impl WillowTestHooks {
         let state_addr = self.state_addr.clone();
         future_to_promise(async move {
             let snap = snapshot::build(&dag_addr, &state_addr).await;
-            serde_wasm_bindgen::to_value(&snap).map_err(Into::into)
+            snap.serialize(&js_object_serializer()).map_err(Into::into)
         })
     }
+}
+
+/// `serde_wasm_bindgen::Serializer` configured to emit Rust maps as plain
+/// JS objects rather than `Map` instances.
+///
+/// The TypeScript bindings type heads as `Record<string, AuthorHead>` and
+/// callers reach for `Object.keys(snap.heads)`. The crate's default
+/// `to_value` serialises every `BTreeMap`/`HashMap` as a `Map`, so
+/// `Object.keys` returns `[]` and tests asserting non-empty heads
+/// silently see a length of zero.
+fn js_object_serializer() -> serde_wasm_bindgen::Serializer {
+    serde_wasm_bindgen::Serializer::new().serialize_maps_as_objects(true)
 }
