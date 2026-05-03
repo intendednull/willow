@@ -923,7 +923,10 @@ pub fn App() -> impl IntoView {
 
                                     // Request mic permission SYNCHRONOUSLY in the click handler
                                     // to preserve the user gesture chain (required on mobile).
-                                    let window = web_sys::window().unwrap();
+                                    let Some(window) = web_sys::window() else {
+                                        tracing::error!("No browser window context for getUserMedia");
+                                        return;
+                                    };
                                     let navigator = window.navigator();
                                     let Ok(media_devices) = navigator.media_devices() else {
                                         tracing::error!("No media devices available");

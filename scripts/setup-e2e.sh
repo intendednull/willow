@@ -43,19 +43,19 @@ fi
 # trunk
 if ! command -v trunk &>/dev/null; then
     step "Installing trunk (WASM bundler)..."
-    cargo install trunk 2>&1 | tail -1
+    cargo install --locked --version 0.21.14 trunk 2>&1 | tail -1
 fi
 
 # just
 if ! command -v just &>/dev/null; then
     step "Installing just (task runner)..."
-    cargo install just 2>&1 | tail -1
+    cargo install --locked --version 1.50.0 just 2>&1 | tail -1
 fi
 
 # npm dependencies
 if [ ! -d "$ROOT/node_modules" ]; then
     step "Installing npm dependencies..."
-    (cd "$ROOT" && npm install)
+    (cd "$ROOT" && npm ci)
 fi
 
 # Playwright browsers. `--dry-run` prints the install location whether

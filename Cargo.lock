@@ -6201,7 +6201,6 @@ dependencies = [
  "serde",
  "tempfile",
  "thiserror 2.0.18",
- "tokio",
  "willow-transport",
  "zeroize",
 ]
@@ -6274,6 +6273,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "willow-common",
  "willow-identity",
  "willow-network",
  "willow-state",
