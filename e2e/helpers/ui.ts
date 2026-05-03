@@ -158,7 +158,12 @@ export async function switchTab(
 ) {
   if (!isMobile(page)) return;
   await page.locator(`.mobile-tab-bar .tab[data-tab="${tabId}"]`).click();
-  await page.waitForTimeout(200);
+  // Tab activation flips `aria-selected` on the target button — wait for
+  // that rather than a fixed sleep so the transition settles before the
+  // caller starts interacting with the new tab's panel.
+  await page
+    .locator(`.mobile-tab-bar .tab[data-tab="${tabId}"][aria-selected="true"]`)
+    .waitFor({ state: 'visible', timeout: 3_000 });
 }
 
 /** Opens the member list in the right rail. On desktop clicks the
@@ -256,16 +261,24 @@ export async function messageAction(page: Page, messageText: string, actionName:
     await page
       .locator('.shell-mobile .mobile-action-sheet.open .sheet-item', { hasText: actionRe })
       .click();
-    await page.waitForTimeout(300);
+    // Sheet item drops the `.open` class — wait for the open-sheet
+    // selector to disappear instead of a fixed sleep.
+    await page
+      .locator('.shell-mobile .mobile-action-sheet.open')
+      .waitFor({ state: 'hidden', timeout: 3_000 });
   } else {
     const msg = page.locator('.shell-desktop .message', { hasText: messageText }).last();
     // Desktop: hover to reveal action trigger, click dropdown item.
     await msg.hover();
-    await page.waitForTimeout(200);
+    await msg.locator('.action-trigger').waitFor({ state: 'visible', timeout: 3_000 });
     await msg.locator('.action-trigger').click();
-    await page.waitForTimeout(200);
+    await page
+      .locator('.dropdown-item', { hasText: actionName })
+      .waitFor({ state: 'visible', timeout: 3_000 });
     await page.locator('.dropdown-item', { hasText: actionName }).click();
-    await page.waitForTimeout(200);
+    // Clicking a dropdown-item closes the dropdown (set_show_dropdown
+    // → false in message.rs); gate on the items unmounting.
+    await page.locator('.dropdown-item').first().waitFor({ state: 'hidden', timeout: 3_000 });
   }
 }
 
@@ -275,7 +288,10 @@ export async function editMessage(page: Page, originalText: string, newText: str
   const input = page.locator('.input-area input, .input-area textarea').first();
   await input.fill(newText);
   await input.press('Enter');
-  await page.waitForTimeout(500);
+  // Submitting clears the editing signal — the `.edit-bar` (rendered
+  // only while editing in input.rs) unmounts. Gate on that instead of
+  // a fixed sleep.
+  await page.locator(`${visibleShell(page)} .edit-bar`).waitFor({ state: 'hidden', timeout: 5_000 });
 }
 
 /** Deletes a message (desktop or mobile). */
@@ -285,7 +301,9 @@ export async function deleteMessage(page: Page, text: string) {
   const confirmBtn = page.locator('.confirm-dialog .btn-danger', { hasText: 'Delete' });
   await confirmBtn.waitFor({ timeout: 3000 });
   await confirmBtn.click();
-  await page.waitForTimeout(500);
+  // Confirmation closes the dialog — wait for the overlay to unmount
+  // rather than a fixed sleep.
+  await page.locator('.confirm-dialog').waitFor({ state: 'hidden', timeout: 5_000 });
 }
 
 /** Reacts to a message with an emoji (desktop or mobile). */
@@ -296,17 +314,30 @@ export async function reactToMessage(page: Page, messageText: string, emojiIndex
       .waitFor({ timeout: 3000 });
     await page.locator('.shell-mobile .mobile-action-sheet.open .sheet-emoji-row button')
       .nth(emojiIndex).click();
-    await page.waitForTimeout(500);
+    // Tapping a quick-emoji button closes the sheet — gate on the
+    // open-class disappearing instead of a fixed sleep.
+    await page
+      .locator('.shell-mobile .mobile-action-sheet.open')
+      .waitFor({ state: 'hidden', timeout: 3_000 });
   } else {
     const msg = page.locator('.shell-desktop .message', { hasText: messageText }).last();
     await msg.hover();
-    await page.waitForTimeout(200);
+    await msg.locator('.action-trigger').waitFor({ state: 'visible', timeout: 3_000 });
     await msg.locator('.action-trigger').click();
-    await page.waitForTimeout(200);
+    await page
+      .locator('.dropdown-item', { hasText: 'React' })
+      .waitFor({ state: 'visible', timeout: 3_000 });
     await page.locator('.dropdown-item', { hasText: 'React' }).click();
-    await page.waitForTimeout(200);
+    // Clicking React reveals the dropdown emoji row — wait for the
+    // first emoji button to mount before clicking by index.
+    await page
+      .locator('.dropdown-emoji-row button')
+      .first()
+      .waitFor({ state: 'visible', timeout: 3_000 });
     await page.locator('.dropdown-emoji-row button').nth(emojiIndex).click();
-    await page.waitForTimeout(500);
+    // Selecting an emoji closes the dropdown — gate on the items
+    // unmounting rather than a fixed sleep.
+    await page.locator('.dropdown-item').first().waitFor({ state: 'hidden', timeout: 3_000 });
   }
 }
 
@@ -319,6 +350,12 @@ export async function trustPeer(page: Page, peerName: string) {
   await member.hover();
   // Use a regex to avoid matching "Untrust" when looking for "Trust".
   await member.locator('button').filter({ hasText: /^Trust$/ }).click();
+  // TODO(#589): no-condition wait — needs design. Trust dispatches a
+  // `propose_grant_admin` event whose effect (target peer's row picking
+  // up the "Trusted" badge) only materialises once the proposed-action
+  // vote applies, which is async / multi-peer dependent. The button
+  // itself doesn't change locally on click. Callers verify post-trust
+  // behaviour separately, so the prior 500ms sleep was a fudge factor.
   await page.waitForTimeout(500);
   await closeMemberList(page);
 }
@@ -331,6 +368,9 @@ export async function untrustPeer(page: Page, peerName: string) {
   // Hover to reveal action buttons (desktop hides them until hover).
   await member.hover();
   await member.locator('button', { hasText: 'Untrust' }).click();
+  // TODO(#589): no-condition wait — needs design. Same reasoning as
+  // `trustPeer` above: `propose_revoke_admin` is async and the local
+  // row doesn't flip until the proposal vote applies.
   await page.waitForTimeout(500);
   await closeMemberList(page);
 }
@@ -377,11 +417,14 @@ export async function kickPeer(page: Page, peerName: string) {
   // Hover to reveal action buttons (desktop hides them until hover).
   await member.hover();
   await member.locator('.btn-danger', { hasText: 'Kick' }).click();
-  await page.waitForTimeout(500);
+  // The Kick click opens the confirm dialog; the next `confirmBtn.waitFor`
+  // already gates on it appearing, so the prior 500ms sleep was redundant.
   // Confirm the kick dialog.
   const confirmBtn = page.locator('.confirm-dialog .btn-danger', { hasText: 'Kick' });
   await confirmBtn.waitFor({ timeout: 5_000 });
   await confirmBtn.click();
-  await page.waitForTimeout(500);
+  // Confirmation closes the dialog — gate on the overlay unmounting
+  // rather than a fixed sleep before closing the member list.
+  await page.locator('.confirm-dialog').waitFor({ state: 'hidden', timeout: 5_000 });
   await closeMemberList(page);
 }
