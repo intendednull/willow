@@ -473,7 +473,17 @@ impl Event {
             kind: &self.kind,
             timestamp_hint_ms: self.timestamp_hint_ms,
         };
-        let bytes = bincode::serialize(&signable).expect("event serialization should not fail");
+        // Defense-in-depth: bincode of owned Vec/String/integers shouldn't
+        // fail in practice, but `kind` is attacker-controlled. A malformed
+        // String produced via `unsafe` could in theory fail to serialize.
+        // Reject the event instead of panicking on the hot verify path.
+        let bytes = match bincode::serialize(&signable) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(error = %e, "event verify: bincode serialize failed; rejecting");
+                return false;
+            }
+        };
 
         // Verify hash matches content.
         if self.hash != EventHash::from_bytes(&bytes) {
@@ -575,6 +585,21 @@ mod tests {
         let mut event = make_event(&id_a, test_kind());
         // Replace author with a different key (but keep the original sig).
         event.author = id_b.endpoint_id();
+        assert!(!event.verify());
+    }
+
+    #[test]
+    fn verify_returns_false_on_garbage_event() {
+        // Defense-in-depth: verify() should never panic on adversarial
+        // input, even if the hash and signature are obviously bogus.
+        // The bincode-failure branch in verify() is unreachable from safe
+        // Rust on the current types (owned Vec/String/integers), so this
+        // test exercises the adjacent hash/sig mismatch path to confirm
+        // the function returns gracefully instead of panicking.
+        let id = Identity::generate();
+        let mut event = make_event(&id, test_kind());
+        event.hash = EventHash::from_bytes(b"not-the-real-hash");
+        event.sig = Signature::from_bytes(&[0u8; 64]);
         assert!(!event.verify());
     }
 
