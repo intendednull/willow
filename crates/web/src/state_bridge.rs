@@ -48,6 +48,7 @@ impl<T: Send + Sync + 'static, U: PartialEq + Clone + Send + Sync + 'static> Act
         async move {
             let snapshot = source.get().await;
             let result = selector(&snapshot);
+            // state: lock-ok — see `DerivedStateActor::cached` doc; mailbox serializes handlers, no contention.
             *cached.lock().expect("cached mutex poisoned") = Some(result.clone());
             (*write).set(result);
         }
@@ -70,6 +71,7 @@ impl<T: Send + Sync + 'static, U: PartialEq + Clone + Send + Sync + 'static> Han
         async move {
             let snapshot = source.get().await;
             let result = selector(&snapshot);
+            // state: lock-ok — see `DerivedStateActor::cached` doc; mailbox serializes handlers, no contention.
             let mut guard = cached.lock().expect("cached mutex poisoned");
             let changed = match &*guard {
                 Some(old) => old != &result,
