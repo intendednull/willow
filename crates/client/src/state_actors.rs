@@ -480,6 +480,13 @@ pub struct VoiceState {
 /// or misbehaving peers sending events with chain gaps.
 pub(crate) const MAX_CLIENT_PENDING: usize = 5_000;
 
+/// Maximum number of events sent in a single `WireMessage::SyncRequest`
+/// reply (a `WireMessage::SyncBatch`). The first N events of the
+/// deterministic topological sort. Receiver dedups via
+/// `InsertError::Duplicate`. Long-term migration to heads-based sync is
+/// tracked under #65; this cap remains until that lands.
+pub(crate) const SYNC_REPLY_LIMIT: usize = 500;
+
 /// Combined EventDag + ServerState + PendingBuffer, held in a single
 /// StateActor via [`ManagedDag`](willow_state::ManagedDag).
 ///
@@ -495,6 +502,15 @@ pub struct DagState {
     /// When switching servers, the current DAG is stashed and the
     /// target server's DAG is restored (or a fresh one is created).
     pub stashed: HashMap<String, willow_state::ManagedDag>,
+    /// Cached materialized first-`SYNC_REPLY_LIMIT` events of the
+    /// topological sort, used to answer `WireMessage::SyncRequest`.
+    /// `None` = stale; will be recomputed on next read. Set to `None`
+    /// by [`DagState::invalidate_sync_reply_cache`] after every
+    /// successful DAG insertion (see GEN-08 / issue #268). Lives here
+    /// rather than on `EventDag` because `willow-state` is intentionally
+    /// pure / zero-I/O / no-interior-mutability — caching is a listener
+    /// concern that belongs at the actor-state layer.
+    pub(crate) sync_reply_cache: Option<Vec<willow_state::Event>>,
 }
 
 impl DagState {
@@ -515,6 +531,40 @@ impl DagState {
     pub fn synced(&self) -> bool {
         self.managed.is_synced()
     }
+
+    /// Mark the SyncRequest-reply cache as stale. Must be called after
+    /// every code path that successfully inserts an event into
+    /// `self.managed` (i.e. whenever `topological_sort()` would return a
+    /// different prefix). See GEN-08 / issue #268.
+    pub(crate) fn invalidate_sync_reply_cache(&mut self) {
+        self.sync_reply_cache = None;
+    }
+
+    /// Materialize the first [`SYNC_REPLY_LIMIT`] events of the DAG's
+    /// topological sort, populating the cache on first call after
+    /// invalidation. Returns a fresh `Vec` (cloned from the cache) ready
+    /// to ship as a `WireMessage::SyncBatch` payload.
+    ///
+    /// Cost on cache hit: one `Vec<Event>` clone (~SYNC_REPLY_LIMIT
+    /// shallow clones). Cost on miss: one `topological_sort()` over the
+    /// whole DAG plus the same clone. Without this cache every
+    /// `SyncRequest` paid the full O(N) sort even on a 50k-event DAG —
+    /// see GEN-08 / issue #268.
+    pub(crate) fn sync_reply_events(&mut self) -> Vec<willow_state::Event> {
+        if let Some(cached) = &self.sync_reply_cache {
+            return cached.clone();
+        }
+        let events: Vec<willow_state::Event> = self
+            .managed
+            .dag()
+            .topological_sort()
+            .into_iter()
+            .take(SYNC_REPLY_LIMIT)
+            .cloned()
+            .collect();
+        self.sync_reply_cache = Some(events.clone());
+        events
+    }
 }
 
 impl Default for DagState {
@@ -522,6 +572,7 @@ impl Default for DagState {
         Self {
             managed: willow_state::ManagedDag::empty(MAX_CLIENT_PENDING),
             stashed: HashMap::new(),
+            sync_reply_cache: None,
         }
     }
 }
@@ -565,7 +616,7 @@ impl Clone for SourceState {
 
 // ───── Tests ─────────────────────────────────────────────────────────────
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use willow_identity::Identity;

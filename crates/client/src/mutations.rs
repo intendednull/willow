@@ -100,6 +100,9 @@ impl<N: willow_network::Network> ClientMutations<N> {
             ds.managed
                 .insert_and_apply(genesis)
                 .expect("genesis event must insert successfully");
+            // SyncRequest-reply cache must be invalidated on every
+            // successful insertion path; see GEN-08 / issue #268.
+            ds.invalidate_sync_reply_cache();
             ds.managed.state().clone()
         })
         .await;
@@ -118,9 +121,16 @@ impl<N: willow_network::Network> ClientMutations<N> {
         let dag = self.dag.clone();
         util::with_timeout("build_event", async move {
             willow_actor::state::mutate(&dag, move |ds| {
-                ds.managed
+                let result = ds
+                    .managed
                     .create_and_insert(&identity, kind, ts)
-                    .map_err(|e| anyhow::anyhow!("DAG insert failed: {e:?}"))
+                    .map_err(|e| anyhow::anyhow!("DAG insert failed: {e:?}"));
+                if result.is_ok() {
+                    // SyncRequest-reply cache must be invalidated on every
+                    // successful insertion path; see GEN-08 / issue #268.
+                    ds.invalidate_sync_reply_cache();
+                }
+                result
             })
             .await
         })

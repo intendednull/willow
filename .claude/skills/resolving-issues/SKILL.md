@@ -127,6 +127,8 @@ Fresh agent per issue, scoped to one issue + master branch ref. Steps:
 
 12. **Structural-deps follow-up family path:** dependency-multi-version audits (rand, getrandom, convert_case, bincode, etc.) often look "obvious" but are pinned by transitive crates we don't own — no workspace pin / `[patch]` can collapse them without lying about semver. The first 1–2 finds get individual follow-up trackers. On the **3rd** structural-deps follow-up in this family, file or update a single **upstream-domino meta-tracker issue** instead of another standalone TD-NN follow-up — list the holdout crates, the upstream releases that would unblock each version (e.g. `aes-gcm 0.11` stable, `derive_more 3.x`, `iroh ≥ N`), and link prior individual follow-ups under it. Future runs check the meta-tracker, don't refile the same shape.
 
+   **Retroactive meta-tracker fill-in (coordinator-direct, no implementer dispatch).** When a run's triage finds 3+ structural-deps trackers already exist *without* a consolidating meta-tracker, the coordinator files the meta-tracker as part of the step 6 already-fixed sweep — same pattern as closing already-fixed issues, pure metadata work, falls under the "Coordinator never codes" exceptions because no source files are touched. List rows for every active tracker, link them under the meta, comment on each individual tracker citing the meta. Skill compliance is *retroactive*: fix the gap when you spot it, don't leave the next run to re-derive the consolidation. Record the new meta issue under `## Skill Evolution` in the master PR body alongside the lessons.
+
 13. **Report back** to coordinator: commit SHA on master branch, sites touched, anything unusual.
 
 ## Lessons Learned

@@ -20,7 +20,7 @@ pub mod query;
 pub mod status;
 pub mod tokenize;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
 pub use bootstrap::{hydrate_index, index_message, reindex_message};

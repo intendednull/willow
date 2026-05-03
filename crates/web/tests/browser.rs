@@ -3440,7 +3440,7 @@ async fn url_with_image_extension_embeds_inline() {
                                 let url_clone = url.clone();
                                 view! {
                                     <a href=url target="_blank" rel="noopener noreferrer" class="embed-link">
-                                        <img class="embed-image" src=url_clone alt="embedded image" loading="lazy" />
+                                        <img class="embed-image" src=url_clone alt="embedded image" loading="lazy" referrerpolicy="no-referrer" />
                                     </a>
                                 }
                             }).collect::<Vec<_>>()}
@@ -3465,6 +3465,16 @@ async fn url_with_image_extension_embeds_inline() {
     assert_eq!(
         img.get_attribute("src").unwrap_or_default(),
         "https://example.com/cat.png"
+    );
+
+    // SEC-W-04 (#243): peer-supplied auto-embedded images must carry
+    // `referrerpolicy="no-referrer"` so the browser does not leak the
+    // page URL (channel/message context) via the Referer header to a
+    // hostile peer's chosen host.
+    assert_eq!(
+        img.get_attribute("referrerpolicy").unwrap_or_default(),
+        "no-referrer",
+        "auto-embedded peer-supplied images must set referrerpolicy=no-referrer"
     );
 }
 

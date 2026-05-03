@@ -972,7 +972,7 @@ pub fn MessageView(
                                     let url_clone = url.clone();
                                     view! {
                                         <a href=url.clone() target="_blank" rel="noopener noreferrer" class="embed-link">
-                                            <img class="embed-image" src=url_clone alt="embedded image" loading="lazy" />
+                                            <img class="embed-image" src=url_clone alt="embedded image" loading="lazy" referrerpolicy="no-referrer" />
                                         </a>
                                     }
                                 }).collect::<Vec<_>>()}
