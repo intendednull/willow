@@ -62,9 +62,7 @@ pub fn install_push_dispatcher(mut rx: EventReceiver) -> DispatcherHandle {
             let js = match serde_wasm_bindgen::to_value(&wire) {
                 Ok(v) => v,
                 Err(e) => {
-                    web_sys::console::error_1(
-                        &format!("test-hooks: serialize failed: {e:?}").into(),
-                    );
+                    web_sys::console::error_1(&format!("test-hooks: serialize failed: {e}").into());
                     continue;
                 }
             };
@@ -86,7 +84,13 @@ fn dispatch_or_buffer(js: JsValue) {
     if let Ok(callback) = js_sys::Reflect::get(&window, &"__willowEvent".into()) {
         if let Some(func) = callback.dyn_ref::<js_sys::Function>() {
             if let Err(e) = func.call1(&JsValue::NULL, &js) {
-                web_sys::console::warn_1(&format!("test-hooks: __willowEvent threw: {e:?}").into());
+                web_sys::console::warn_1(
+                    &format!(
+                        "test-hooks: __willowEvent threw: {}",
+                        e.as_string().unwrap_or_else(|| format!("{e:?}"))
+                    )
+                    .into(),
+                );
             }
             return;
         }
@@ -118,7 +122,11 @@ fn drain_buffer_into_callback() {
         let item = arr.shift();
         if let Err(e) = func.call1(&JsValue::NULL, &item) {
             web_sys::console::warn_1(
-                &format!("test-hooks: __willowEvent (drain) threw: {e:?}").into(),
+                &format!(
+                    "test-hooks: __willowEvent (drain) threw: {}",
+                    e.as_string().unwrap_or_else(|| format!("{e:?}"))
+                )
+                .into(),
             );
         }
     }
@@ -131,7 +139,11 @@ fn push_into_buffer(window: &web_sys::Window, js: JsValue) {
             let arr = js_sys::Array::new();
             if let Err(e) = js_sys::Reflect::set(window, &"__willowEventBuffer".into(), &arr) {
                 web_sys::console::error_1(
-                    &format!("test-hooks: failed to install __willowEventBuffer: {e:?}").into(),
+                    &format!(
+                        "test-hooks: failed to install __willowEventBuffer: {}",
+                        e.as_string().unwrap_or_else(|| format!("{e:?}"))
+                    )
+                    .into(),
                 );
             }
             arr.into()
