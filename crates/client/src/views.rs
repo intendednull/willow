@@ -92,13 +92,13 @@ impl ServerRegistry {
     /// exposes its full membership — see the multi-grove TODO on
     /// `servers.rs`).
     pub fn shared_groves(&self, _local: &EndpointId, _other: &EndpointId) -> Vec<String> {
-        // TODO(multi-grove): plumb `state.members` into `ServerEntry`
-        // so the intersection can walk every grove the local peer is
-        // in. Until then, the helper returns the active grove's name
-        // when we know both peers are members (check deferred to the
-        // UI which reads `MembersView` for the active server). Return
-        // an empty Vec rather than fabricating a match — the spec's
-        // edge case "no shared groves → omit section" covers this.
+        // TODO(#563): plumb `state.members` into `ServerEntry` so the
+        // intersection can walk every grove the local peer is in. Until
+        // then, the helper returns the active grove's name when we know
+        // both peers are members (check deferred to the UI which reads
+        // `MembersView` for the active server). Return an empty Vec rather
+        // than fabricating a match — the spec's edge case "no shared
+        // groves → omit section" covers this.
         Vec::new()
     }
 }
@@ -477,8 +477,10 @@ impl ClientViewHandle {
 /// Phase 2b: accepts a `queue_meta` snapshot so the projection can
 /// derive real `QueueNote::Pending` / `QueueNote::LateArrival` values
 /// for each row via [`crate::queue::derive_pending`] +
-/// [`crate::queue::derive_late_arrival`]. Closes the
-/// `TODO(sync-queue.md)` gate in this function and in the Phase 2a
+/// [`crate::queue::derive_late_arrival`]. Closes the original
+/// sync-queue gate (see plan
+/// `docs/plans/2026-04-21-ui-phase-2b-sync-queue.md`) in this function
+/// and in the Phase 2a plan
 /// `docs/plans/2026-04-20-ui-phase-2a-message-row.md` at line 490.
 pub fn compute_messages_view(
     events: &Arc<willow_state::ServerState>,
@@ -508,8 +510,9 @@ pub fn compute_messages_view(
     // track a distinct `@handle` (see `profile-card.md` for the target
     // profile data model); as a stand-in we derive a handle from the
     // display name via `display_name.to_lowercase().replace(' ', '.')`.
-    // TODO(profile-card.md): replace the display-name-derived handle
-    // with the real handle field once profile data is plumbed.
+    // TODO(plan: docs/plans/2026-04-21-ui-phase-2c-profile-card.md):
+    // replace the display-name-derived handle with the real handle field
+    // once profile data is plumbed.
     let peer_refs: Vec<PeerRef> = events
         .members
         .keys()
@@ -597,11 +600,11 @@ pub fn compute_messages_view(
             } else {
                 QueueNote::None
             };
-            // TODO(whisper-mode.md): flip via WhisperStart event when
-            // that phase lands. Phase 2a Task 8 reserves the row
-            // styling surface (message--whisper class + whisper-badge)
-            // behind this always-false gate so later work only has to
-            // swap the projection lookup.
+            // TODO(#562): flip via WhisperStart event when that phase
+            // lands. Phase 2a Task 8 reserves the row styling surface
+            // (message--whisper class + whisper-badge) behind this
+            // always-false gate so later work only has to swap the
+            // projection lookup.
             let whisper = false;
             DisplayMessage {
                 id: m.id.to_string(),
@@ -697,8 +700,10 @@ pub fn compute_unread_view(
     let mute = event_state.mute_state.get(&local_peer_id).cloned();
 
     // Build a PeerRef list once for the mention parser. Mirrors the
-    // build in `compute_messages_view`; TODO(profile-card.md) tracks
-    // swapping display-name-derived handles for real profile handles.
+    // build in `compute_messages_view`; the
+    // TODO(plan: docs/plans/2026-04-21-ui-phase-2c-profile-card.md)
+    // there tracks swapping display-name-derived handles for real
+    // profile handles.
     //
     // `resolve_display_name` needs a `ProfileState` — we only have the
     // event-state profiles here, so fall back to the event-state entry

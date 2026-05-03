@@ -264,9 +264,9 @@ pub fn MessageView(
     let has_queue_note = queue_note != QueueNote::None;
     // Phase 2a Task 8: reserve the whisper surface. `message.whisper`
     // is gated always-false in the projection today (see
-    // `client/src/views.rs` TODO(whisper-mode.md)); once that phase
-    // lands the projection will flip it and the class + badge below
-    // light up automatically.
+    // `client/src/views.rs` TODO(#562)); once that phase lands the
+    // projection will flip it and the class + badge below light up
+    // automatically.
     let is_whisper = message.whisper;
 
     let reply_preview = message.reply_preview.clone();
@@ -854,7 +854,8 @@ pub fn MessageView(
                 // members registry so `@handle` resolves in the row.
                 // The display-name → handle derivation mirrors
                 // `views::compute_messages_view` (see there for the
-                // `profile-card.md` TODO).
+                // profile-card plan TODO —
+                // `docs/plans/2026-04-21-ui-phase-2c-profile-card.md`).
                 use leptos::context::use_context;
                 let app_state = use_context::<crate::state::AppState>();
                 let local_peer_str = app_state
@@ -863,10 +864,10 @@ pub fn MessageView(
                     .unwrap_or_default();
                 let local_peer: Option<willow_identity::EndpointId> =
                     local_peer_str.parse().ok();
-                // TODO(profile-card.md): use real handles when profile
-                // data is plumbed. For now handle ≈ display-name
-                // lowercased with spaces → dots, matching the
-                // client-side projection.
+                // TODO(plan: docs/plans/2026-04-21-ui-phase-2c-profile-card.md):
+                // use real handles when profile data is plumbed. For
+                // now handle ≈ display-name lowercased with spaces →
+                // dots, matching the client-side projection.
                 let peers_vec: Vec<willow_client::mentions::PeerRef> = app_state
                     .as_ref()
                     .map(|a| {
@@ -1122,10 +1123,10 @@ pub fn MessageView(
                                 class="toolbar-btn"
                                 type="button"
                                 aria-label="whisper reply"
-                                // TODO(whisper-mode.md): permission-gated; no-op
-                                // until `WhisperStart` EventKind lands and the
-                                // local peer has permission to send a whisper
-                                // reply to this row's author.
+                                // TODO(#562): permission-gated; no-op until
+                                // `WhisperStart` EventKind lands and the local
+                                // peer has permission to send a whisper reply
+                                // to this row's author.
                                 on:click=move |ev| { ev.stop_propagation(); }
                             >
                                 {icons::icon_ear()}
@@ -1340,9 +1341,9 @@ pub fn MessageView(
                         on:touchend=on_sheet_touchend
                     >
                         // Quick-emoji row — six hit targets from recency.
-                        // TODO(reactions-pins.md): swap `REACTION_EMOJI`
-                        // for the channel-scoped recency list once that
-                        // spec lands. Rendered first so the sheet opens
+                        // TODO(#564): swap `REACTION_EMOJI` for the
+                        // channel-scoped recency list once that spec
+                        // lands. Rendered first so the sheet opens
                         // with the common case one tap away.
                         {if has_react {
                             let cb = react_cb2;
@@ -1403,10 +1404,10 @@ pub fn MessageView(
                         // will route there instead.
                         {has_react.then(|| view! {
                             <button class="sheet-item" on:click=move |ev| {
-                                // TODO(reactions-pins.md): route to the
-                                // full emoji picker here. For now the
-                                // quick-emoji row above is the only
-                                // path, so we keep the sheet open.
+                                // TODO(#564): route to the full emoji
+                                // picker here. For now the quick-emoji
+                                // row above is the only path, so we
+                                // keep the sheet open.
                                 ev.stop_propagation();
                             }>"add reaction"</button>
                         })}
