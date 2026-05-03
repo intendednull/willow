@@ -10,6 +10,7 @@ import {
   visibleShell,
   openMemberList,
   closeMemberList,
+  closeSidebar,
 } from './ui';
 
 /** Wait for the WASM app to load (loading spinner disappears). */
@@ -101,13 +102,21 @@ export async function createServer(page: Page, name: string, displayName?: strin
   }
 }
 
-/** Get the full peer ID from the welcome screen or settings. */
-export async function getPeerId(page: Page): Promise<string> {
-  // Welcome screen: advance past step 1 (no name), then switch to the
-  // Join tab — the peer id lives inside the Join step list, hidden by
-  // default and revealed by the eye-toggle icon.
+/** Get the full peer ID from the welcome screen or settings.
+ *
+ *  Optionally accepts a `displayName` to fill into the welcome step-1
+ *  name input before advancing. Required when the caller intends to
+ *  `joinViaInvite` afterward: the name input is unmounted once step 2
+ *  renders, so a later `advancePastNameStep(displayName)` no-ops and
+ *  the join confirm closure reads an empty `display_name` signal,
+ *  broadcasting the literal "anonymous" fallback to peers.
+ */
+export async function getPeerId(page: Page, displayName?: string): Promise<string> {
+  // Welcome screen: advance past step 1 (with optional name), then
+  // switch to the Join tab — the peer id lives inside the Join step
+  // list, hidden by default and revealed by the eye-toggle icon.
   if (await page.locator('.welcome-card').isVisible().catch(() => false)) {
-    await advancePastNameStep(page);
+    await advancePastNameStep(page, displayName);
     const joinTab = page.locator('.welcome-tab-btn', { hasText: 'Join' });
     if (await joinTab.isVisible().catch(() => false)) {
       await joinTab.click();
@@ -125,10 +134,12 @@ export async function getPeerId(page: Page): Promise<string> {
     }
   }
 
-  // Fallback: read it from settings.
+  // Fallback: read it from settings. Wait for the panel to mount
+  // before reading instead of guessing how long the click animation
+  // takes.
   await page.locator('text=Settings').click();
-  await page.waitForTimeout(300);
   const settingsPeerId = page.locator('.peer-id-text').first();
+  await settingsPeerId.waitFor({ state: 'visible', timeout: 5_000 });
   return (
     (await settingsPeerId.getAttribute('data-full-id')) ||
     (await settingsPeerId.textContent()) ||
@@ -140,16 +151,26 @@ export async function getPeerId(page: Page): Promise<string> {
 export async function openServerSettings(page: Page) {
   if (isMobile(page)) {
     // Channel list is on the home tab; the gear lives in the sidebar
-    // header rendered inside `.mobile-home`. No drawer needed.
+    // header rendered inside `.mobile-home`. The grove drawer overlay
+    // covers the bottom tab bar — close it first or the home-tab click
+    // below silently waits forever for actionability.
+    await closeSidebar(page);
+    // Each back-tap removes one push frame; gate on the chevron
+    // disappearing rather than a fixed sleep so deeply nested pushes
+    // drain reliably.
     const backSlot = page.locator('.mobile-top-bar .top-slot-left .top-back');
     while (await backSlot.isVisible().catch(() => false)) {
       await page.locator('.mobile-top-bar .top-slot-left').click();
-      await page.waitForTimeout(300);
+      await backSlot.waitFor({ state: 'hidden', timeout: 2_000 }).catch(() => {});
     }
     await page.locator('.mobile-tab-bar .tab[data-tab="home"]').click();
-    await page.waitForTimeout(200);
+    await page.locator('.shell-mobile .mobile-home').waitFor({ state: 'visible', timeout: 5_000 });
   }
-  await page.locator(`${visibleShell(page)} .server-gear-btn`).first().click();
+  // The grove-header button in `.channel-sidebar` is the server-settings
+  // entry point on both shells (it fires `on_server_settings_click`).
+  // The legacy `.server-gear-btn` was removed by the vibe-annotations
+  // pass (commit 0861f26) — keep the selector aligned with the markup.
+  await page.locator(`${visibleShell(page)} .channel-sidebar .grove-header`).first().click();
   await page.locator('.settings-panel, .settings-overlay').first()
     .waitFor({ timeout: 5_000 });
 }
@@ -159,10 +180,18 @@ export async function generateInvite(page: Page, recipientPeerId: string): Promi
   await openServerSettings(page);
   await page.locator('input[placeholder*="12D3KooW"]').fill(recipientPeerId);
   await page.locator('button', { hasText: 'Generate Invite' }).click();
-  await page.waitForTimeout(500);
-  const inviteCode = await page.locator('.invite-code-display textarea').inputValue();
+  // Wait for the invite-code field to mount with a non-empty value
+  // rather than guessing how long the build step takes.
+  const inviteField = page.locator('.invite-code-display textarea');
+  await inviteField.waitFor({ state: 'visible', timeout: 5_000 });
+  await expect(inviteField).not.toHaveValue('', { timeout: 5_000 });
+  const inviteCode = await inviteField.inputValue();
   await page.locator('text=Back').click();
-  await page.waitForTimeout(500);
+  // Settings panel unmounts on Back; gate on the channel sidebar
+  // returning rather than a fixed sleep.
+  await page.locator(`${visibleShell(page)} .channel-sidebar, ${visibleShell(page)} .mobile-home`)
+    .first()
+    .waitFor({ state: 'visible', timeout: 5_000 });
   return inviteCode;
 }
 
@@ -188,13 +217,19 @@ export async function joinViaInvite(page: Page, inviteCode: string, displayName?
       timeout: 20_000,
     });
   }
-  // Deterministic post-join settle: wait for the sidebar + first channel
-  // to materialise. Covers both shells.
+  // Deterministic post-join settle: wait for the sidebar + first
+  // channel to materialise. Covers both shells. The channel-item
+  // wait depends on the SyncBatch round-trip landing — when two
+  // workers are bootstrapping their relay handshake at the same
+  // time the first pair can take 30–50 s before iroh-gossip dials
+  // through, and Firefox's iroh bootstrap takes longer still in the
+  // cross-browser scenarios. 90 s covers both cases without padding
+  // warm tests, which still settle in <5 s.
   await page.locator(`${visibleShell(page)} .channel-sidebar, ${visibleShell(page)} .mobile-home`)
     .first()
     .waitFor({ timeout: 20_000 });
   await page.locator(`${visibleShell(page)} .channel-item`).first()
-    .waitFor({ timeout: 20_000 });
+    .waitFor({ timeout: 90_000 });
 }
 
 /** Sets up two peers: peer1 creates a server, peer2 joins via invite. */
@@ -213,9 +248,13 @@ export async function setupTwoPeers(
   await freshStart(page1);
   await createServer(page1, serverName, peer1Name);
 
-  // Peer 2: Get peer ID from welcome screen.
+  // Peer 2: Get peer ID from welcome screen. Pass `peer2Name` so step 1
+  // captures the display name BEFORE the input unmounts — otherwise
+  // `joinViaInvite`'s own `advancePastNameStep` no-ops, leaving the
+  // welcome `display_name` signal empty and the join broadcasts the
+  // literal "anonymous" fallback (add_server.rs:163-167) to peer 1.
   await freshStart(page2);
-  const peer2Id = await getPeerId(page2);
+  const peer2Id = await getPeerId(page2, peer2Name);
 
   // Peer 1: Generate invite for peer 2.
   const inviteCode = await generateInvite(page1, peer2Id);
@@ -239,10 +278,11 @@ export async function setupTwoPeers(
       console.warn('[setupTwoPeers] peer2 display name did not sync in time — P2P may be slow');
     }
     await closeMemberList(page1);
-  } else if (peer2Name) {
-    // On mobile, just sleep a bit to let gossip propagate.
-    await page1.waitForTimeout(1500);
   }
+  // No mobile-side fixed sleep here — callers that need cross-peer
+  // sync should explicitly await `bob.waitUntilHeadsEqual(alice)` or
+  // an event-based predicate via the `peer()` fixture. Sleeps masked
+  // gossip propagation issues without surfacing them.
 
   return { ctx1, ctx2, page1, page2 };
 }

@@ -42,6 +42,19 @@ jobs:
 
       - name: Run full E2E flow (setup + tests + teardown)
         id: e2e
+        shell: bash --noprofile --norc -eo pipefail {0}
+        # PLAYWRIGHT_WORKERS=1: the multi-peer + cross-browser specs
+        # share a single relay + iroh-gossip mesh, and parallel cold
+        # starts make two peer pairs race on the relay handshake, so
+        # the first 30–50 s of dial timeouts blow past the per-spec
+        # deadline. Sequential execution keeps the warm-relay path
+        # the dominant cost; the full suite settles in ~8–10 min on
+        # a fresh runner. PLAYWRIGHT_RETRIES=0 mirrors local CI runs
+        # and keeps failures actionable instead of papering over them
+        # with flake retries.
+        env:
+          PLAYWRIGHT_WORKERS: '1'
+          PLAYWRIGHT_RETRIES: '0'
         run: just test-e2e-full 2>&1 | tee /tmp/e2e.log
       - name: Surface E2E failure
         if: failure() && steps.e2e.conclusion == 'failure'

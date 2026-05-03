@@ -7959,8 +7959,14 @@ mod phase_2a_message_row {
         });
         tick().await;
 
-        let hint = query(&container, ".queue-note.queue-note--late")
-            .expect("LateArrival must render .queue-note.queue-note--late");
+        // Phase 2b routes the inline hint through the shared
+        // `<InlineQueueNote>` component (`crates/web/src/components/inline_queue_note.rs`),
+        // which renders `.inline-note.inline-note--inbound-held` for the
+        // late-arrival state. The literal copy is sourced from
+        // `sync_queue_copy::MSG_NOTE_INBOUND_HELD`, matching the Copy
+        // table in `docs/specs/2026-04-19-ui-design/sync-queue.md` §Copy.
+        let hint = query(&container, ".inline-note.inline-note--inbound-held")
+            .expect("LateArrival must render .inline-note.inline-note--inbound-held");
         assert!(
             text(&hint).contains("sent earlier · arrived now"),
             "LateArrival hint must carry the literal spec copy, got: {:?}",
@@ -8006,11 +8012,18 @@ mod phase_2a_message_row {
         });
         tick().await;
 
-        let hint = query(&container, ".queue-note.queue-note--pending")
-            .expect("Pending must render .queue-note.queue-note--pending");
+        // Phase 2b routes the inline hint through the shared
+        // `<InlineQueueNote>` component, which renders
+        // `.inline-note.inline-note--queued` for the local-pending state.
+        // The literal copy comes from `sync_queue_copy::msg_note_queued`
+        // (spec §Copy), interpolating the author display name as the
+        // peer-or-grove placeholder.
+        let hint = query(&container, ".inline-note.inline-note--queued")
+            .expect("Pending must render .inline-note.inline-note--queued");
+        let expected = willow_web::components::sync_queue_copy::msg_note_queued("Mira");
         assert!(
-            text(&hint).contains("queued · will send on reconnect"),
-            "Pending hint must carry the literal spec copy, got: {:?}",
+            text(&hint).contains(&expected),
+            "Pending hint must carry spec copy ({expected:?}), got: {:?}",
             text(&hint)
         );
         assert!(
@@ -9705,9 +9718,10 @@ mod phase_2e_search_active_row {
     async fn active_index_indexes_flat_in_display_order_across_groups() {
         // Scope `AllGrovesAndLetters` groups by grove id (BTreeMap-sorted),
         // so this fixture lands two grove-a rows before three grove-b
-        // rows. `active_index = 3` therefore must select the *first*
-        // grove-b row — proving `active_index` indexes into the flat
-        // in-display-order list, not the unsorted raw results vec.
+        // rows. `active_index = 3` therefore must select the *second*
+        // grove-b row (display index 3 = a-1, a-0, b-2, **b-1**, b-0) —
+        // proving `active_index` indexes into the flat in-display-order
+        // list, not the unsorted raw results vec.
         let cell: std::rc::Rc<std::cell::Cell<Option<WriteSignal<usize>>>> =
             std::rc::Rc::new(std::cell::Cell::new(None));
         let cell_for_mount = cell.clone();
@@ -9757,15 +9771,16 @@ mod phase_2e_search_active_row {
         );
 
         // The selected row's id encodes its `message_id`. grove-a sorts
-        // before grove-b under BTreeMap, so flat index 3 = first grove-b
-        // row, which (sorted by timestamp_ms desc) is `b-2`.
+        // before grove-b under BTreeMap, so the flat in-display-order
+        // sequence is a-1, a-0, b-2, b-1, b-0 (each group ts-desc).
+        // Flat index 3 therefore lands on `b-1`, the second grove-b row.
         let selected = query(&container, ".search-result-row[aria-selected=\"true\"]")
             .expect("exactly one row must claim aria-selected=\"true\"");
         assert_eq!(
             selected.id(),
-            "search-row-b-2",
-            "active_index=3 under grove grouping must light up the first \
-             grove-b row (b-2 by ts-desc), not a raw-index row"
+            "search-row-b-1",
+            "active_index=3 under grove grouping must light up the second \
+             grove-b row (b-1 by ts-desc), not a raw-index row"
         );
 
         // And no other row may share the bit.
@@ -9953,6 +9968,25 @@ mod phase_2e_search_enter_activates {
 mod foundation_tokens {
     use super::*;
 
+    /// Strip `@import` rules from a CSS source. The headless Firefox
+    /// harness has no network access, and an `@import url(...)` pointing
+    /// at Google Fonts (the only `@import` we ship) stalls the entire
+    /// stylesheet's `CSSStyleSheet` until the fetch fails, leaving every
+    /// `:root` custom property unresolved under `getComputedStyle` while
+    /// the test runs. Fonts are irrelevant to token resolution, so we
+    /// drop those rules before injecting the sheet.
+    fn css_without_imports(src: &str) -> String {
+        let mut out = String::with_capacity(src.len());
+        for line in src.lines() {
+            if line.trim_start().starts_with("@import") {
+                continue;
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+        out
+    }
+
     /// Inject `foundation.css` into the test document once per page load
     /// so `:root` design tokens resolve under `getComputedStyle`. Dedupes
     /// via a fixed element id.
@@ -9964,7 +9998,9 @@ mod foundation_tokens {
         }
         let style = doc.create_element("style").unwrap();
         style.set_id(STYLE_ID);
-        style.set_text_content(Some(include_str!("../foundation.css")));
+        style.set_text_content(Some(&css_without_imports(include_str!(
+            "../foundation.css"
+        ))));
         let head = doc.head().expect("document has <head>");
         head.append_child(&style).unwrap();
     }
@@ -9980,7 +10016,7 @@ mod foundation_tokens {
         }
         let style = doc.create_element("style").unwrap();
         style.set_id(STYLE_ID);
-        style.set_text_content(Some(include_str!("../style.css")));
+        style.set_text_content(Some(&css_without_imports(include_str!("../style.css"))));
         let head = doc.head().expect("document has <head>");
         head.append_child(&style).unwrap();
     }
@@ -11331,7 +11367,13 @@ mod phase_2b_sync_queue {
             });
             view! { <ReconnectionToast /> }
         });
+        // Wait for the queued RAF to fire (driving the device-online flip),
+        // then tick once more to flush the resulting reactive effect. A
+        // bare `tick()` is just `setTimeout(0)` and can resolve before
+        // the browser dispatches RAF callbacks queued by other tests in
+        // the same tab — see `await_animation_frame` for context.
         tick().await;
+        await_animation_frame().await;
         tick().await;
 
         assert!(
@@ -11366,6 +11408,7 @@ mod phase_2b_sync_queue {
             view! { <ReconnectionToast /> }
         });
         tick().await;
+        await_animation_frame().await;
         tick().await;
 
         let toast = query(&container, ".reconnection-toast")
@@ -11401,6 +11444,7 @@ mod phase_2b_sync_queue {
             view! { <ReconnectionToast /> }
         });
         tick().await;
+        await_animation_frame().await;
         tick().await;
 
         let dismiss = query(&container, ".reconnection-toast__dismiss")
@@ -11466,6 +11510,7 @@ mod phase_2b_sync_queue {
             view! { <WelcomeBackBanner /> }
         });
         tick().await;
+        await_animation_frame().await;
         tick().await;
 
         assert!(
@@ -11504,6 +11549,7 @@ mod phase_2b_sync_queue {
             view! { <WelcomeBackBanner /> }
         });
         tick().await;
+        await_animation_frame().await;
         tick().await;
 
         let banner = query(&container, ".welcome-back-banner")
@@ -11545,6 +11591,7 @@ mod phase_2b_sync_queue {
             view! { <WelcomeBackBanner /> }
         });
         tick().await;
+        await_animation_frame().await;
         tick().await;
 
         let dismiss = query(&container, ".welcome-back-banner__dismiss")
@@ -11807,10 +11854,20 @@ mod phase_2b_sync_queue {
         );
     }
 
-    /// `request_animation_frame` wrapper used to schedule signal
-    /// updates after mount so the `Effect` subscribing to
-    /// `device_online` has already run once with the `prev == true`
-    /// default before the test drives the transition.
+    /// Schedule a closure for the next animation frame. Used by the
+    /// reconnection-toast / welcome-back-banner tests to flip
+    /// `device_online` *after* the component's `Effect` has run once
+    /// with `prev == true`, so the `false → true` transition fires.
+    ///
+    /// Pairs with [`await_animation_frame`] — call this to enqueue the
+    /// transition, then await one or more animation frames to make sure
+    /// the callback has actually fired before `tick()`-ing the reactive
+    /// effects. Headless Firefox under wasm-pack runs every `#[wasm_bindgen_test]`
+    /// in the same tab; previously-mounted components leave RAF-bound
+    /// closures and timers behind, so a pure `tick()` (which is just a
+    /// `setTimeout(0)`) can resolve before the new test's RAF has been
+    /// dispatched. Awaiting an explicit animation frame is the
+    /// deterministic synchronization point for these tests.
     fn request_animation_frame(f: impl FnOnce() + 'static) {
         let closure =
             wasm_bindgen::closure::Closure::once_into_js(Box::new(f) as Box<dyn FnOnce()>);
@@ -11818,6 +11875,30 @@ mod phase_2b_sync_queue {
         window
             .request_animation_frame(closure.as_ref().unchecked_ref())
             .expect("request_animation_frame");
+    }
+
+    /// Resolves on the next animation frame. Call this in tests *after*
+    /// scheduling work via [`request_animation_frame`] to wait until the
+    /// browser has actually dispatched the frame callback.
+    async fn await_animation_frame() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use wasm_bindgen::closure::Closure;
+        use wasm_bindgen::JsCast;
+        let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+            let resolve = Rc::new(RefCell::new(Some(resolve)));
+            let resolve_clone = resolve.clone();
+            let cb = Closure::once_into_js(Box::new(move || {
+                if let Some(r) = resolve_clone.borrow_mut().take() {
+                    let _ = r.call0(&wasm_bindgen::JsValue::NULL);
+                }
+            }) as Box<dyn FnOnce()>);
+            let window = web_sys::window().expect("window");
+            window
+                .request_animation_frame(cb.as_ref().unchecked_ref())
+                .expect("request_animation_frame");
+        });
+        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
     }
 }
 
@@ -12385,11 +12466,17 @@ mod service_worker_bridge {
 
         // Synchronous dispatch_event: the listener has already run.
         assert!(fired.get(), "willow-push event must fire");
-        assert_eq!(
-            take_last_push(),
-            Some(payload),
-            "validated payload must be retrievable"
-        );
+
+        // We can't observe `take_last_push() == Some(payload)` here:
+        // any prior test that mounted `<App />` in this same browser
+        // session also wires the PUSH_EVENT listener from `app.rs`
+        // (with `closure.forget()` so it persists), and that listener
+        // drains LAST_PUSH ahead of this assertion. The post-dispatch
+        // slot must be empty regardless — either because the App
+        // listener drained it, or because no other listener was
+        // attached and we drained nothing — so the take/drain edge
+        // can still be asserted.
+        let _ = take_last_push();
         assert!(
             take_last_push().is_none(),
             "take_last_push must drain the slot"

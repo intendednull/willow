@@ -5,7 +5,11 @@ import { freshStart, createServer, setupTwoPeers } from './helpers';
 test.describe.configure({ mode: 'serial' });
 
 test.describe('Peer wrapper smoke', () => {
-  test.setTimeout(60_000);
+  // setupTwoPeers + waitUntilHeadsEqual cold-start can run up to ~70s
+  // on a freshly-spun gossip mesh; pad the per-test budget so the slow
+  // path doesn't fail at the playwright-level timeout instead of the
+  // helper-level one (which has the structured-diff error message).
+  test.setTimeout(120_000);
 
   test('snapshot returns the expected shape after createServer', async ({ peer, browser }) => {
     const ctx = await browser.newContext();

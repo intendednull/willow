@@ -133,7 +133,9 @@ async fn fresh_dispatcher_setup() -> (
     let sys = System::new();
     let broker_addr = sys.spawn(Broker::<ClientEvent>::default());
     let rx = EventReceiver::subscribe(&broker_addr, &sys.handle()).await;
-    let dispatcher = willow_web::test_hooks::install_push_dispatcher(rx);
+    let throwaway = Identity::generate().endpoint_id();
+    let state_addr = sys.spawn(StateActor::new(ServerState::new("test", "Test", throwaway)));
+    let dispatcher = willow_web::test_hooks::install_push_dispatcher(rx, state_addr);
     (broker_addr, dispatcher, sys)
 }
 

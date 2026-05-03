@@ -172,7 +172,8 @@ pub fn App() -> impl IntoView {
             inner_for_hooks.event_broker(),
             inner_for_hooks.system(),
         );
-        let dispatcher = crate::test_hooks::install_push_dispatcher(rx);
+        let state_addr = inner_for_hooks.event_state_addr_clone();
+        let dispatcher = crate::test_hooks::install_push_dispatcher(rx, state_addr);
         // Leak: dispatcher must live for app lifetime; in wasm32 the
         // process IS the app, so leaking is fine.
         std::mem::forget(dispatcher);

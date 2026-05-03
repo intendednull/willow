@@ -43,8 +43,11 @@
     --shadow-lg:         0 8px 32px rgba(0, 0, 0, 0.4);
     --shadow-inset:      inset 0 1px 3px rgba(0, 0, 0, 0.2);
 
-    /* Keep legacy focus-ring shape but re-seat on the foundation token. */
-    --focus-ring:        var(--focus-ring, 0 0 0 2px var(--moss-1), 0 0 0 3px rgba(106, 141, 94, 0.6));
+    /* --focus-ring is owned by foundation.css; redeclaring it here as
+       `var(--focus-ring, ...)` introduces a same-selector self-reference
+       cycle that resolves to the guaranteed-invalid value, blanking the
+       focus ring on every element that consumes it. Foundation already
+       defines the token, so style.css inherits it without a redeclare. */
 
     --overlay-bg:        rgba(0, 0, 0, 0.6);
     --backdrop-blur:     blur(4px);

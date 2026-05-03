@@ -53,6 +53,9 @@ jobs:
           key: clippy-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: clippy-
       - id: clippy
+        # Steps with `id:` end up with `bash -e {0}` (no pipefail) on this runner,
+        # so `... | tee` would silently mask failures. Force pipefail on.
+        shell: bash --noprofile --norc -eo pipefail {0}
         run: cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee /tmp/clippy.log
       - name: Surface clippy failure
         if: failure() && steps.clippy.conclusion == 'failure'
@@ -85,6 +88,7 @@ jobs:
           key: test-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: test-
       - id: test
+        shell: bash --noprofile --norc -eo pipefail {0}
         run: cargo test --workspace 2>&1 | tee /tmp/test.log
       - name: Surface test failure
         if: failure() && steps.test.conclusion == 'failure'
@@ -145,6 +149,10 @@ jobs:
         with:
           tool: wasm-pack
       - id: browser
+        # `bash -e {0}` (default) does NOT enable pipefail, so `wasm-pack ... | tee`
+        # would silently mask failures (tee always exits 0). Use an explicit shell
+        # invocation that turns pipefail on so the link/test exit code surfaces.
+        shell: bash --noprofile --norc -eo pipefail {0}
         run: wasm-pack test --headless --firefox crates/web 2>&1 | tee /tmp/browser.log
       - name: Surface browser-test failure
         if: failure() && steps.browser.conclusion == 'failure'

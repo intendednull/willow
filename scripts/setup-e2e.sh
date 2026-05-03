@@ -68,6 +68,14 @@ if ! ls "$HOME/.cache/ms-playwright" 2>/dev/null | grep -q '^chromium-'; then
     npx playwright install chromium
 fi
 
+# Firefox is required by `e2e/cross-browser-sync.spec.ts`, which launches
+# both Chromium and Firefox to verify cross-browser P2P connectivity. Use
+# the same filesystem guard as Chromium so re-runs skip the download.
+if ! ls "$HOME/.cache/ms-playwright" 2>/dev/null | grep -q '^firefox-'; then
+    step "Installing Playwright Firefox..."
+    npx playwright install firefox
+fi
+
 info "Tooling ready: trunk=$(trunk --version 2>/dev/null || echo missing), just=$(just --version 2>/dev/null || echo missing)"
 
 # ── 2. Build all services ───────────────────────────────────────────────
@@ -82,8 +90,31 @@ if [ -n "$FEATURES" ]; then
 fi
 
 step "Building web UI (WASM)..."
+# Generate a test-only `index.test.html` with the production CSP
+# relaxed for two dev-only reasons. Production keeps the strict CSP —
+# `crates/web/index.html` is untouched, and the
+# `static_assets::index_html_declares_content_security_policy` test
+# still enforces it.
+#
+# 1. `script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'` rejects the
+#    inline `<script type="module">` WASM bootstrap that trunk injects
+#    on every build. Without this, the WASM never boots and every
+#    Playwright spec stalls at "Loading Willow…" until `waitForApp`
+#    times out. → add `'unsafe-inline'`.
+#
+# 2. `connect-src 'self' ws: wss: https:` rejects iroh's reachability
+#    probe to `http://127.0.0.1:3340/ping`, which means the local
+#    relay is unreachable and gossip never establishes neighbors —
+#    SyncRequest/SyncBatch are silently dropped, Bob's DAG stays
+#    empty, and every multi-peer spec times out at the
+#    `.channel-item` wait or `waitUntilHeadsEqual`. → add `http:`.
+TEST_HTML="$ROOT/crates/web/index.test.html"
+sed -e "s|script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'|script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval' 'unsafe-inline'|" \
+    -e "s|connect-src 'self' ws: wss: https:|connect-src 'self' ws: wss: http: https:|" \
+    "$ROOT/crates/web/index.html" > "$TEST_HTML"
+
 # shellcheck disable=SC2086
-(cd "$ROOT/crates/web" && trunk build $FEATURES_FLAG 2>&1 | tail -1)
+(cd "$ROOT/crates/web" && trunk build --html-output index.html index.test.html $FEATURES_FLAG 2>&1 | tail -1)
 
 info "All builds complete."
 
@@ -150,7 +181,7 @@ info "Storage node started (PID $!)"
 # Web UI
 step "Starting web UI (trunk serve)..."
 # shellcheck disable=SC2086
-(cd "$ROOT/crates/web" && trunk serve $FEATURES_FLAG) > "$LOG_DIR/web.log" 2>&1 &
+(cd "$ROOT/crates/web" && trunk serve --no-autoreload --html-output index.html index.test.html $FEATURES_FLAG) > "$LOG_DIR/web.log" 2>&1 &
 WEB_PID=$!
 
 # Wait for web UI
