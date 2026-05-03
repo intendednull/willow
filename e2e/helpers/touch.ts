@@ -86,7 +86,10 @@ export async function longPress(page: Page, selector: string, durationMs = 600) 
     }));
   }, { x, y });
 
-  await page.waitForTimeout(300);
+  // No post-touchend settle: callers must `waitFor` whatever the press
+  // produces (typically `.shell-mobile .mobile-action-sheet.open`). A
+  // bare `waitForTimeout` here was unobservable dead weight and coupled
+  // the gesture helper to a single outcome (issue #590).
 }
 
 /**
