@@ -80,6 +80,10 @@ mod tests_voice;
 #[path = "tests/governance.rs"]
 mod tests_governance;
 
+#[cfg(test)]
+#[path = "tests/search.rs"]
+mod tests_search;
+
 /// How long a typing indicator remains visible after the last typing event, in milliseconds.
 pub const TYPING_INDICATOR_TTL_MS: u64 = 5_000;
 
