@@ -33,6 +33,7 @@ uuid = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 futures = { workspace = true }
+web-time = { workspace = true }
 regex = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

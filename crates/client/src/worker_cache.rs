@@ -5,8 +5,9 @@
 //! (default 30s) without a heartbeat.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use web_time::Instant;
 use willow_common::{WorkerAnnouncement, WorkerRoleInfo};
 use willow_identity::EndpointId;
 
