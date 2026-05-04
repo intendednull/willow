@@ -46,7 +46,7 @@ fn non_admin_set_profile_is_accepted() {
     let alice = Identity::generate();
 
     // Grant SendMessages so alice is a member.
-    do_emit(
+    let grant = do_emit(
         &mut dag,
         &admin,
         EventKind::GrantPermission {
@@ -54,14 +54,19 @@ fn non_admin_set_profile_is_accepted() {
             permission: Permission::SendMessages,
         },
     );
-    // Alice sets her own profile (no admin needed).
-    do_emit(
-        &mut dag,
+    // Alice sets her own profile (no admin needed). Explicit causal
+    // dep on `grant` so topological_sort always applies the grant
+    // before the SetProfile — otherwise hash ordering can flip the
+    // order and the post-#505 membership gate silently rejects.
+    let set_profile = dag.create_event(
         &alice,
         EventKind::SetProfile {
             display_name: "Alice".to_string(),
         },
+        vec![grant.hash],
+        0,
     );
+    dag.insert(set_profile).unwrap();
 
     let state = materialize(&dag);
     assert_eq!(
