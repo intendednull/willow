@@ -594,6 +594,21 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
                 elsewhere,
                 since,
             } = delta.as_ref();
+            // Mirror SetProfile's display_name cap: reject the entire
+            // event if display_name exceeds 64 chars. Rejection (not
+            // silent truncation like the sibling profile fields) is
+            // chosen for parity with SetProfile and because display_name
+            // is identity-tier — silent truncation could produce
+            // confusing duplicate names ("alice" vs a truncated
+            // "alice…"). See issue #614.
+            if let Some(name) = display_name {
+                if name.chars().count() > 64 {
+                    return ApplyResult::Rejected(format!(
+                        "display name exceeds 64 chars ({} chars)",
+                        name.chars().count()
+                    ));
+                }
+            }
             let entry = state
                 .profiles
                 .entry(event.author)
@@ -1598,6 +1613,81 @@ mod tests {
         assert_eq!(
             state.profiles[&admin.endpoint_id()].display_name,
             ok_display
+        );
+    }
+
+    #[test]
+    fn update_profile_display_name_over_64_chars_rejected() {
+        // Mirrors the SetProfile cap (issue #614): an UpdateProfile event
+        // carrying a >64-char display_name must be rejected so a
+        // misbehaving peer cannot DoS receivers by broadcasting a
+        // multi-megabyte name (`Some("a".repeat(10_000_000))`). At the
+        // same time, a 64-char display name must still apply, and the
+        // sibling fields (which use silent truncation) must not regress.
+        let admin = Identity::generate();
+        let mut dag = test_dag(&admin);
+
+        // First, set a known-good display name via SetProfile so we have
+        // a baseline value to assert against after the rejected event.
+        let baseline = "alice".to_string();
+        emit(
+            &mut dag,
+            &admin,
+            EventKind::SetProfile {
+                display_name: baseline.clone(),
+            },
+        );
+
+        // 64 crabs (256 bytes) must apply — char-count, not byte-length.
+        let ok_display: String = "🦀".repeat(64);
+        emit(
+            &mut dag,
+            &admin,
+            EventKind::UpdateProfile(Box::new(crate::types::ProfileDelta {
+                display_name: Some(ok_display.clone()),
+                ..Default::default()
+            })),
+        );
+        let state_after_ok = materialize(&dag);
+        assert_eq!(
+            state_after_ok.profiles[&admin.endpoint_id()].display_name,
+            ok_display,
+            "64-char UpdateProfile display_name must apply",
+        );
+        assert_eq!(
+            state_after_ok.members[&admin.endpoint_id()].display_name,
+            Some(ok_display.clone()),
+            "members entry must mirror profiles entry",
+        );
+
+        // 65 crabs must be rejected — and the prior value must remain.
+        let bad_display: String = "🦀".repeat(65);
+        emit(
+            &mut dag,
+            &admin,
+            EventKind::UpdateProfile(Box::new(crate::types::ProfileDelta {
+                display_name: Some(bad_display),
+                // Pair with a benign sibling field; if the event were
+                // (incorrectly) applied with truncation instead of
+                // rejection, the pronouns side-effect would still land.
+                // Rejection must drop the *whole* event.
+                pronouns: Some(Some("they/them".into())),
+                ..Default::default()
+            })),
+        );
+        let state = materialize(&dag);
+        // Display name pinned at the prior 64-char value.
+        assert_eq!(
+            state.profiles[&admin.endpoint_id()].display_name,
+            ok_display,
+            "rejected UpdateProfile must leave display_name unchanged",
+        );
+        // Sibling field must NOT have been applied — rejection drops the
+        // whole event, not just the offending field.
+        assert_eq!(
+            state.profiles[&admin.endpoint_id()].pronouns,
+            None,
+            "rejected UpdateProfile must not apply sibling fields",
         );
     }
 
