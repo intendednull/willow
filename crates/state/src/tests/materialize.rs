@@ -46,7 +46,7 @@ fn non_admin_set_profile_is_accepted() {
     let alice = Identity::generate();
 
     // Grant SendMessages so alice is a member.
-    do_emit(
+    let grant = do_emit(
         &mut dag,
         &admin,
         EventKind::GrantPermission {
@@ -55,13 +55,18 @@ fn non_admin_set_profile_is_accepted() {
         },
     );
     // Alice sets her own profile (no admin needed).
-    do_emit(
-        &mut dag,
+    // Causal dep on grant ensures topo-sort applies GrantPermission first
+    // (PR #505's membership gate); without this dep the test was flaky
+    // depending on HashMap iter order. See issue #565.
+    let set_profile = dag.create_event(
         &alice,
         EventKind::SetProfile {
             display_name: "Alice".to_string(),
         },
+        vec![grant.hash],
+        0,
     );
+    dag.insert(set_profile).unwrap();
 
     let state = materialize(&dag);
     assert_eq!(
