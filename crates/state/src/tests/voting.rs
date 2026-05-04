@@ -455,3 +455,85 @@ fn no_vote_proposal_does_not_auto_apply_with_two_admins() {
         "target should have been kicked"
     );
 }
+
+// ───── Display impls (issue #571) ──────────────────────────────────────────
+//
+// These tests pin the exact rendered text used by the client's
+// `ClientEvent::ProposalCreated { action_description, .. }` payload (see
+// `crates/client/src/mutations.rs` — the `Propose` arm formats with `{}`).
+// Previously that site used `{:?}`, leaking Rust Debug rendering into UI
+// strings (e.g. "KickMember { peer_id: EndpointId(...) }"). The structural
+// peer-id rendering uses `EndpointId`'s own `Display` (64-char hex). UI
+// layers that want display-name resolution should consume the typed
+// `ProposedAction` directly rather than substring-matching this string.
+
+#[cfg(test)]
+mod display_tests {
+    use crate::event::{ProposedAction, VoteThreshold};
+    use willow_identity::EndpointId;
+
+    /// Construct a deterministic peer id from fixed bytes. `[0u8; 32]` is
+    /// accepted by `EndpointId::from_bytes` (it's the curve identity), so
+    /// the output is stable across test runs.
+    fn fixed_peer() -> EndpointId {
+        EndpointId::from_bytes(&[0u8; 32]).unwrap()
+    }
+
+    #[test]
+    fn display_grant_admin() {
+        let peer = fixed_peer();
+        let action = ProposedAction::GrantAdmin { peer_id: peer };
+        // Use peer.to_string() to avoid hard-coding iroh's hex encoding.
+        let expected = format!("Grant admin to {peer}");
+        assert_eq!(format!("{action}"), expected);
+    }
+
+    #[test]
+    fn display_revoke_admin() {
+        let peer = fixed_peer();
+        let action = ProposedAction::RevokeAdmin { peer_id: peer };
+        let expected = format!("Revoke admin from {peer}");
+        assert_eq!(format!("{action}"), expected);
+    }
+
+    #[test]
+    fn display_kick_member() {
+        let peer = fixed_peer();
+        let action = ProposedAction::KickMember { peer_id: peer };
+        let expected = format!("Kick {peer}");
+        assert_eq!(format!("{action}"), expected);
+    }
+
+    #[test]
+    fn display_set_vote_threshold_majority() {
+        let action = ProposedAction::SetVoteThreshold {
+            threshold: VoteThreshold::Majority,
+        };
+        assert_eq!(format!("{action}"), "Set vote threshold to majority");
+    }
+
+    #[test]
+    fn display_set_vote_threshold_unanimous() {
+        let action = ProposedAction::SetVoteThreshold {
+            threshold: VoteThreshold::Unanimous,
+        };
+        assert_eq!(format!("{action}"), "Set vote threshold to unanimous");
+    }
+
+    #[test]
+    fn display_set_vote_threshold_count() {
+        let action = ProposedAction::SetVoteThreshold {
+            threshold: VoteThreshold::Count(3),
+        };
+        assert_eq!(format!("{action}"), "Set vote threshold to 3 admins");
+    }
+
+    #[test]
+    fn display_vote_threshold_variants() {
+        assert_eq!(format!("{}", VoteThreshold::Majority), "majority");
+        assert_eq!(format!("{}", VoteThreshold::Unanimous), "unanimous");
+        assert_eq!(format!("{}", VoteThreshold::Count(0)), "0 admins");
+        assert_eq!(format!("{}", VoteThreshold::Count(1)), "1 admins");
+        assert_eq!(format!("{}", VoteThreshold::Count(42)), "42 admins");
+    }
+}

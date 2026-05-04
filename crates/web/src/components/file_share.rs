@@ -66,7 +66,8 @@ pub fn FileShareButton(channel: ReadSignal<String>) -> impl IntoView {
             let result = match reader_clone.result() {
                 Ok(r) => r,
                 Err(e) => {
-                    tracing::error!("FileReader result error: {e:?}");
+                    let msg = e.as_string().unwrap_or_else(|| format!("{e:?}"));
+                    tracing::error!(error = %msg, "FileReader result failure");
                     return;
                 }
             };
