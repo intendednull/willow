@@ -130,7 +130,7 @@ const REQUIRED_CSP_DIRECTIVES: &[&str] = &[
     // ws/wss for relay transport, https for the relay HTTP bootstrap probe.
     "connect-src 'self' ws: wss: https:",
     // data: for avatar URIs, blob: for runtime createObjectURL attachments.
-    "img-src 'self' data: blob:",
+    "img-src 'self' https: data: blob:",
     "media-src 'self' blob:",
     "worker-src 'self'",
     "object-src 'none'",
