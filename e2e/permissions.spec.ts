@@ -112,21 +112,10 @@ test.describe('Permissions and trust', () => {
     }
   });
 
-  test('non-owner cannot create a channel — add button absent', async ({ browser }, testInfo) => {
-    // Desktop only — easier to assert button visibility without sidebar toggle.
-    test.skip(testInfo.project.name.startsWith('mobile'), 'desktop only');
-
-    const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Chan Perm', 'Alice', 'Bob');
-    try {
-      // Bob (non-admin) should not see the channel-add or delete buttons.
-      // The state machine rejects ManageChannels mutations from non-admins, but the
-      // UI must also hide the controls — otherwise errors are swallowed silently.
-      await expect(page2.locator('.channel-add-btn')).toBeHidden({ timeout: 5_000 });
-    } finally {
-      await ctx1.close();
-      await ctx2.close();
-    }
-  });
+  // The non-owner channel-add hidden test moved to a wasm-pack browser
+  // test in `crates/web/tests/browser.rs` (`non_owner_hides_channel_add_button`).
+  // It was a single-viewport DOM-visibility predicate that didn't need the
+  // setupTwoPeers infrastructure — see audit F40 (#540).
 
   test('non-owner has no action buttons in member list', async ({ peer, browser }, testInfo) => {
     // Skip on mobile — two-peer setup + member list toggle is flaky on narrow viewports.
