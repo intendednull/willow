@@ -333,6 +333,14 @@ impl std::fmt::Debug for Identity {
 // ───── Standalone verification ──────────────────────────────────────────────
 
 /// Verify a signature against a public key without needing an [`Identity`].
+///
+/// This delegates to [`PublicKey::verify`] from `iroh-base`, which internally
+/// uses `ed25519_dalek::VerifyingKey::verify_strict` (RFC 8032 strict mode).
+/// Strict verification rejects non-canonical signature encodings — in particular,
+/// signatures whose `S` component is not reduced modulo the curve order — which
+/// closes off Ed25519 signature malleability vectors. Defense in depth: any
+/// future change that bypasses `iroh-base`'s wrapper must continue to use the
+/// strict primitive.
 pub fn verify(key: &PublicKey, data: &[u8], sig: &Signature) -> bool {
     key.verify(data, sig).is_ok()
 }
@@ -743,6 +751,37 @@ mod tests {
 
         assert!(verify(&id.public_key(), data, &sig));
         assert!(!verify(&id.public_key(), b"wrong data", &sig));
+    }
+
+    /// Regression: `verify` must use strict Ed25519 verification (RFC 8032),
+    /// rejecting signatures whose `S` component is non-canonical (S ≥ ℓ).
+    ///
+    /// Setting the top bit of byte 63 of `S` makes `S` larger than the curve
+    /// order ℓ ≈ 2^252 + …, so non-strict verification might accept it while
+    /// strict verification must reject it. This pins the call-site invariant:
+    /// the underlying primitive is `verify_strict`, providing defense in depth
+    /// against signature malleability.
+    #[test]
+    fn verify_rejects_non_canonical_s_component() {
+        let id = Identity::generate();
+        let data = b"test data";
+        let sig = id.sign(data);
+
+        // Original signature is valid.
+        assert!(verify(&id.public_key(), data, &sig));
+
+        // Mutate the S scalar's high bit. S occupies bytes 32..64 of the
+        // signature; its most-significant byte is at index 63. Flipping the top
+        // bit pushes S above the curve order, producing a non-canonical encoding
+        // that strict verification rejects.
+        let mut bytes = sig.to_bytes();
+        bytes[63] ^= 0x80;
+        let mutated = Signature::from_bytes(&bytes);
+
+        assert!(
+            !verify(&id.public_key(), data, &mutated),
+            "verify must reject non-canonical S (signature malleability vector)"
+        );
     }
 
     #[test]
