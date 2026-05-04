@@ -99,6 +99,9 @@ Fresh agent per issue, scoped to one issue + master branch ref. Steps:
 6. **Scope-creep guard:** if root-cause fix touches > 5 files OR > 200 LOC AND brainstorm in step 3 didn't already approve that scope, return to coordinator with a brainstorm note before pushing. Coordinator decides: split, defer, or proceed. Don't unilaterally balloon a small-scope ticket.
 
    **Mechanical call-site migration is part of the fix, not scope creep.** If the fix changes a small API (e.g. swapping `map.insert(k, v)` for `lru.insert(k, v)` to make a new cap take effect), every call-site rewrite is load-bearing — without them the cap is dead code. Count them in the LOC delta but don't abort just because they push past 200. Justify the count in the brainstorm + commit body so the human can see why the fan-out was unavoidable. Real scope creep = unrelated cleanup, drive-by refactors, "while I'm in here" tweaks — those still abort.
+
+   **Cargo.lock conflicts with in-flight PRs are usually additive — don't refuse the dep.** When a fix needs a new workspace dep and `Cargo.lock` is in another open PR's file list, don't abort: dep additions are strictly additive in `Cargo.lock` (your row gets appended; the other PR's rows stay untouched). Merge resolution post-PR-#X is mechanical. Note the `Cargo.lock` churn in the commit body so the human reviewer expects a small textual conflict on the master PR's merge. Refusing on this basis creates infinite "wait for PR X to merge" deadlocks that block dependency upgrades and dual-target fixes indefinitely. Same logic applies to additive-only edits in any "shared by every change" file (e.g. workspace `Cargo.toml`'s `[workspace.dependencies]` table) — coordinator-narrowed briefs should explicitly authorise additive churn.
+
 7. **Local merge gate.** Run, in order:
    - `cargo fmt --all -- --check` (or `just fmt-check` if available)
    - `cargo clippy <scope> --all-targets -- -D warnings` — scope to touched crate(s) for speed; workspace-wide if changes ripple
@@ -112,6 +115,8 @@ Fresh agent per issue, scoped to one issue + master branch ref. Steps:
    **`just` may be absent in some sandboxes.** Fall back to raw `cargo` equivalents (same gate, different binary). Note which path was used in the commit body if unusual.
    
    **Browser tests (`wasm-pack` + Firefox + geckodriver) may be unavailable.** `cargo check --target wasm32-unknown-unknown -p willow-web --tests` is the fallback gate — confirms the test compiles. Real headless run executes on master-PR CI. Flag the gap in the commit body.
+
+   **Non-Rust file changes still need `cargo test` on related crates.** Coordinator briefs sometimes argue "CSS / HTML / JSON / YAML / `.well-known` change — no Rust touched, skip cargo test." This is a trap: integration tests (`crates/<x>/tests/*.rs`) commonly assert on the contents of static assets — e.g. `crates/web/tests/static_assets.rs` greps `index.html` for required CSP directives, manifest.json for icon refs, etc. A non-Rust change that flips an asserted substring is a CI-red landmine. **Default rule:** if you touched any file in `crates/<x>/` or anywhere those crates' tests read at runtime (HTML / CSS / JSON / TOML / YAML / sw.js), still run `cargo test -p <x>` (or at minimum `cargo test -p <x> --test <integration_test_name>` if you can identify the relevant integration suite). Cost is a few seconds; saves a master-PR CI-rescue dispatch (~5-10 min) and a noisy `wip`-shape commit on the master branch.
 
 8. **Commit + push.** Use `caveman:caveman-commit` for the message. Conventional Commits format. `Refs #N` (NOT `Fixes` — that lives only on the master PR). Push directly to origin master branch.
 

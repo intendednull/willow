@@ -127,18 +127,21 @@ impl EventDag {
     /// The first event must be `EventKind::CreateServer` with seq=1 and
     /// prev=ZERO. Unknown deps are silently accepted (soft-accept).
     pub fn insert(&mut self, event: Event) -> Result<(), InsertError> {
-        // 1. Verify signature.
-        if !event.verify() {
-            return Err(InsertError::InvalidSignature);
-        }
-
-        // 2. Anti-DoS vector caps (SEC-V-07).
+        // 1. Anti-DoS vector caps (SEC-V-07).
         //
         // A peer holding any permission could otherwise broadcast events
         // with pathologically large `deps` or `encrypted_keys` blobs that
         // every other peer would clone into a `BTreeMap` during apply.
         // Reject at the inbound DAG boundary so over-cap events never
         // even reach `applied_events` / `materialize`.
+        //
+        // ORDERING: cheap structural caps first; signature verify last to
+        // short-circuit DoS. Ed25519 + bincode + blake3 verify costs ~50µs
+        // per event — an attacker with `SendMessages` could otherwise force
+        // every receiver to pay that cost on each over-cap event before
+        // rejection. The syntactic checks here are O(1) / O(n) over already-
+        // deserialized fields, so running them first lets us drop pathological
+        // payloads without ever invoking the expensive crypto path.
         if event.deps.len() > MAX_EVENT_DEPS {
             return Err(InsertError::DepsTooLong {
                 got: event.deps.len(),
@@ -154,6 +157,11 @@ impl EventDag {
                     });
                 }
             }
+        }
+
+        // 2. Verify signature.
+        if !event.verify() {
+            return Err(InsertError::InvalidSignature);
         }
 
         // 3. Check duplicate.
@@ -679,6 +687,48 @@ mod tests {
         event.author = id_b.endpoint_id();
         let err = dag.insert(event).unwrap_err();
         assert!(matches!(err, InsertError::InvalidSignature));
+    }
+
+    /// SEC-V-07 regression: structural caps must short-circuit BEFORE the
+    /// expensive Ed25519 verify path, so an attacker with `SendMessages`
+    /// permission cannot force receivers to pay sig-verify cost on
+    /// pathologically over-cap events. Construct an event whose signature
+    /// is obviously bogus AND whose deps exceed `MAX_EVENT_DEPS`; we expect
+    /// `DepsTooLong` (not `InvalidSignature`), which proves the cheap cap
+    /// was checked first.
+    #[test]
+    fn insert_deps_cap_rejects_before_signature_verify() {
+        use willow_identity::Signature;
+
+        let id = Identity::generate();
+        let mut dag = test_dag(&id);
+
+        // Build an event with deps.len() > MAX_EVENT_DEPS, then clobber the
+        // signature with all-zero bytes so that any attempt to verify would
+        // fail. If verify ran first we'd see `InvalidSignature`; if the
+        // structural cap runs first we get `DepsTooLong`.
+        let oversize_deps = vec![EventHash::ZERO; MAX_EVENT_DEPS + 1];
+        let mut event = dag.create_event(
+            &id,
+            EventKind::SetProfile {
+                display_name: "dos".into(),
+            },
+            oversize_deps,
+            0,
+        );
+        event.sig = Signature::from_bytes(&[0u8; 64]);
+
+        let err = dag.insert(event).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                InsertError::DepsTooLong {
+                    got,
+                    max: MAX_EVENT_DEPS,
+                } if got == MAX_EVENT_DEPS + 1
+            ),
+            "expected DepsTooLong (cheap cap first), got {err:?}",
+        );
     }
 
     #[test]
