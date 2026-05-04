@@ -158,7 +158,7 @@ pub trait Network: Send + Sync + 'static {
     /// Access the blob store.
     fn blobs(&self) -> &dyn BlobStore;
 
-    // TODO(#119): add connection_events() — stream relay up/down and direct
+    // TODO(#561): add connection_events() — stream relay up/down and direct
     // peer connect/disconnect events so the client can surface connectivity
     // status in the UI.
 
