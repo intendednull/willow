@@ -1,6 +1,6 @@
 # Willow — P2P encrypted chat
 
-# Run ALL checks (fmt, clippy, test, wasm, browser). Use before committing.
+# Run ALL checks (fmt, clippy, test, wasm). Use before committing.
 check: fmt clippy test check-wasm
 
 # Format all code
