@@ -5,7 +5,6 @@ import {
   setupTwoPeers,
   kickPeer,
   openMemberList,
-  openServerSettings,
   openCompareFingerprints,
   markFingerprintsMatch,
   markFingerprintsMismatch,
@@ -40,7 +39,7 @@ test.describe('Permissions and trust', () => {
   //     (`trust_badge_dom` — `.trust-badge--verified` / `--unverified`).
   // Only the real-multi-peer behaviours stay in Playwright.
   test.beforeEach(async ({}, testInfo) => {
-    const mobileSkipPattern = /kicks member|kicked peer|server settings panel/;
+    const mobileSkipPattern = /kicks member|kicked peer/;
     if (testInfo.project.name.startsWith('mobile') && mobileSkipPattern.test(testInfo.title)) {
       testInfo.skip(true, 'mobile member-list surface deferred — tracked in onboarding phase followup');
     }
@@ -113,48 +112,10 @@ test.describe('Permissions and trust', () => {
     }
   });
 
-  test('server settings panel opens and back button returns to chat', async ({ browser }) => {
-    // NOTE: Role creation UI is not yet implemented. This test was previously
-    // guarded by an `if (await roleInput.isVisible())` check that made the
-    // entire test body optional — the test passed vacuously whether or not the
-    // UI existed. Until roles are added, this test verifies that the settings
-    // panel opens and the Back button returns to the chat view, which is a real
-    // and unconditional assertion. Add role creation assertions here once the
-    // UI lands.
-    const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Role Server', 'Alice', 'Bob');
-    try {
-      // Open server settings.
-      await openServerSettings(page1);
-
-      // Settings panel should be visible.
-      await expect(page1.locator('.server-settings, .settings-panel')).toBeVisible({ timeout: 5000 });
-
-      // Go back to chat.
-      await page1.locator('text=Back').click();
-
-      // Sidebar / chat area should be visible again.
-      await expect(page1.locator(`${visibleShell(page1)} .channel-sidebar, ${visibleShell(page1)} .mobile-home`).first()).toBeVisible({ timeout: 5000 });
-    } finally {
-      await ctx1.close();
-      await ctx2.close();
-    }
-  });
-
-  test('non-owner cannot create a channel — add button absent', async ({ browser }, testInfo) => {
-    // Desktop only — easier to assert button visibility without sidebar toggle.
-    test.skip(testInfo.project.name.startsWith('mobile'), 'desktop only');
-
-    const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Chan Perm', 'Alice', 'Bob');
-    try {
-      // Bob (non-admin) should not see the channel-add or delete buttons.
-      // The state machine rejects ManageChannels mutations from non-admins, but the
-      // UI must also hide the controls — otherwise errors are swallowed silently.
-      await expect(page2.locator('.channel-add-btn')).toBeHidden({ timeout: 5_000 });
-    } finally {
-      await ctx1.close();
-      await ctx2.close();
-    }
-  });
+  // The non-owner channel-add hidden test moved to a wasm-pack browser
+  // test in `crates/web/tests/browser.rs` (`non_owner_hides_channel_add_button`).
+  // It was a single-viewport DOM-visibility predicate that didn't need the
+  // setupTwoPeers infrastructure — see audit F40 (#540).
 
   test('non-owner has no action buttons in member list', async ({ peer, browser }, testInfo) => {
     // Skip on mobile — two-peer setup + member list toggle is flaky on narrow viewports.
