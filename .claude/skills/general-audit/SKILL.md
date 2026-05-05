@@ -29,13 +29,20 @@ Skip if HEAD == commit recorded in most recent `general-audit` master issue. PR-
 **Full sweep every run with full resources.** Never assume fewer issues since the last run. Every audit fans out subagents in parallel.
 
 Default split — one agent per concern:
-- security → sub-split: input validation/DoS, auth/permissions, web/WASM, deps/supply-chain
+- security → sub-split:
+  - input validation/DoS
+  - auth/permissions
+  - **web/WASM CSP+headers+injection** (separate from localStorage/persistence)
+  - **web/WASM localStorage + identity persistence** (separate agent — sec-web has historically been the longest-running concern; sub-splitting keeps each agent inside the 6-min budget)
+  - deps/supply-chain
 - tech debt / code quality
 - clean architecture (diff specs vs code; pass spec paths explicitly)
 - test coverage
 - general review
 
 Spawn more if an area needs depth. For very large diffs, add per-crate agents on top of per-concern agents — both axes, not one or the other.
+
+**Authority-spec drift is an architecture concern, not a security concern by framing.** Events emitted outside `apply_event` / authority not centralised in `required_permission()` (e.g. invite-mint as an out-of-band side channel) belongs in the architecture lane. The security/auth lane should look but the architecture lane owns it. The 2026-05-04 audit caught the invite-mint authority case ONLY in the architecture-backfill agent — the security-auth agent's framing assumed all authority lives in `apply_event`, so it missed events that don't.
 
 ## Audit Pass Order
 
@@ -74,6 +81,8 @@ git diff <pr-base>..<pr-head> -- '*.rs' | rg "^\+\s*pub (async )?fn (\w+)" -or '
 # Then for each fn name: rg "\.<fn_name>\(" crates --glob '!**/tests*'
 ```
 
+**(d) Validator scope creep.** When a closed PR added a per-field validator/cap on **one** variant of an enum / map / struct, look for the same shape on **all** other variants. PR #583 added `Content::File` filename + mime caps; the 2026-05-04 audit found `Content::Text/Reply/Edit/System/Reaction` + `SealedContent.ciphertext` + per-field `EventKind` String fields are all unbounded by the same logic. Single-variant validator is almost always wrong scope — emit a finding for every sibling variant left uncapped.
+
 **Commit-prefix filter when N merged PRs > 5.** Auto-fix-batch PRs (`#auto-fix batch ...`) + skill-only PRs add noise. Drilling each commit per-PR is expensive. Pre-filter by commit-subject prefix:
 
 ```bash
@@ -111,7 +120,7 @@ grep -rn "FROM [^@]*$" docker/   # any unpinned base image?
 
 ### Pass 3: cargo-audit ignore-list drift
 
-After `cargo audit` completes, diff the CI `--ignore` list against the current advisory DB. Stale RUSTSEC IDs that no longer match should be surfaced as low-priority cleanup ("N stale RUSTSEC IDs in ci.yml — can be pruned"). Cosmetic but accumulates.
+After `cargo audit` completes, diff the CI `--ignore` list against the current advisory DB. Stale RUSTSEC IDs that no longer match are a **canonical Pass 3 finding — must emit a child issue if any stale ID is found.** Don't treat as optional/cosmetic. The ignore list grows over time and reviewers can't easily tell which entries are still real.
 
 **First-run advisory-db prefetch.** `cargo audit -n` (no-fetch) requires `~/.cargo/advisory-db` to already be cached. On fresh runners / first runs, drop `-n` so cargo-audit fetches the advisory DB. Subsequent runs may keep `-n` for speed:
 
@@ -126,6 +135,8 @@ cargo audit -n --ignore RUSTSEC-XXXX-NNNN ...
 ### Pass 4: timeout backfill
 
 If any agent timed out without writing findings, the orchestrator MUST manually sweep that concern before declaring the audit complete. Gaps from timed-out agents compound across runs.
+
+**Stalled-agent early detection.** Don't wait for the 10-min watchdog. While other agents run, periodically (every ~2 min) `ls -la audit-findings/` and check whether each `<concern>.md` file size has grown since last poll. If a finding-file is stuck at scaffold-only size (≤ ~200 bytes) for ≥ 5 min while at least one other agent has progressed, treat that concern as stalled and dispatch the manual backfill agent in parallel — don't block the rest of the audit waiting for the stalled agent to time out. This recovers ~4 min of wall time per stall.
 
 ## Synthesis
 
@@ -151,11 +162,15 @@ Dedup subagent's job:
 
 Orchestrator drops `dup`/`superseded` findings from the file-list. Survivors get filed.
 
+**Don't dispatch the dedup subagent until ALL sweep agents have written their final batch.** Recompute the raw-findings file count immediately before dispatching dedup — if it differs from the count when the dedup brief was prepared, append the new entries to the brief before sending. Stragglers slipping through a second, less-rigorous dedup path is the most common way bad dupes leak into filed issues.
+
 ### Verification step (fresh subagent)
 
 Second fresh subagent verifies surviving findings real via grep/rg for exact patterns cited. Drop any finding whose verification grep returns 0 hits.
 
 **Drop `partially-verified` findings whose body claim contradicts the verification spot-check, not just `FAILED`.** A finding marked "lock-ok marker missing at line 31" verified with "marker exists at line 23" is contradicted, not partially supported — drop it. Filing inaccurate child issues wastes reviewer time and undermines confidence in audit output. Orchestrator must enforce this drop, not just defer to the subagent's softer "accepted on review" verdict.
+
+**Verification subagent has access to `mcp__github__issue_read`.** When a finding cites a closed-issue number (e.g. `TODO(#119)`), the agent should verify the issue is actually closed via that tool rather than returning `partially-verified` for "could not verify issue closed via gh CLI." Brief the verification subagent explicitly that the GitHub MCP is available — the previous run had to close one such finding post-hoc in the orchestrator.
 
 ### File the issues
 
@@ -166,6 +181,10 @@ Second fresh subagent verifies surviving findings real via grep/rg for exact pat
 5. **Open lessons-PR** (next section).
 
 **Filing performance.** N survivors = N issue creates + N sub-issue links + 1 master + 1 lessons ≈ 2N+2 MCP calls. For N=38 that's ~80 calls. Budget for it: batch issue creates in parallel (8-10 per message), then sub-issue links in parallel (10-14 per message). Don't sequentialize — orchestrator wall time scales with batch count, not call count.
+
+**Sub-issue link parallelism is the dominant filing cost.** Each `mcp__github__sub_issue_write` call returns the full master-issue body (~2-3 KB) — 25 sequential calls echo ~60 KB into context. Always batch ≥ 8 sub-issue links per message in parallel. For N ≥ 14 surviving findings, a single 14-wide parallel batch should be the default; if more, split into 2 batches of similar width. Reaffirm: don't fall back to sequential after the first link.
+
+**Master issue body — keep dedup metadata minimal.** Don't embed the full dup/superseded id list in the master issue body. The dedup verdict block lives in the lessons issue body (where it gives context for "why we filed N out of M"). Master should just state the survivor count + survivors-by-concern. Avoids two places drifting out of sync as later runs re-classify.
 
 ## Lessons-Learned PR (self-improvement loop)
 
@@ -197,7 +216,8 @@ This closes the loop: each audit run feeds the next.
 
 ### Agent prompts (mandatory fields)
 
-- Time budget: 6 min, stop+save if exceeded.
+- Time budget: 6 min default, stop+save if exceeded. **Broad-scope agents (`general` review, `sibling-of-closed`) get 8 min** — both have wider sweeps than per-concern agents and consistently brush against the 6-min cap. Hard kill at 10 min.
+- **Final summary message: "N findings written to `<path>`. <one-line strongest finding>." Do NOT echo finding bodies in the summary** — they're already on disk and re-echoing inflates orchestrator context. Per-finding rationale belongs in the appended file, not the agent's return summary.
 - **Write findings in small chunks. Never big batches.** Big batched writes are the dominant timeout cause — stream-idle timeouts hit at the final large-write step and lose the entire run's work. Append each finding **as soon as it's identified** — one rg hit + one Read confirmation = one append. One finding per write. Do NOT accumulate findings in memory and dump them at the end.
 - Scaffold report file before 2nd tool call. Then append one finding per write thereafter.
 - Per-finding entry stays small: file:line, severity (split: security = confidentiality/integrity; robustness = availability/DoS), Obvious? yes/no. One short paragraph max. If a finding's evidence is large (a long grep result, a code block), summarise it in the entry and link to file:line — don't paste it inline.
@@ -211,6 +231,7 @@ This closes the loop: each audit run feeds the next.
 ### Setup
 - Pre-worktree: `git stash` or `git restore` main dir; `.claude/worktrees/` in `.gitignore`. One worktree per subagent AND one for the lessons-PR. Tear down audit worktrees after report submitted; lessons-PR worktree stays until PR merges/closes.
 - `cargo install --locked cargo-audit` upfront (or verify); orchestrator runs `cargo audit` directly — no agent needed. Yank-check 403s are harmless noise.
+- **Pre-fetch the available severity-label set** before filing child issues — scan a couple of recent audit issues' `labels` arrays to learn what's defined (`tech-debt`, `audit`, etc.). Don't guess `security`/`robustness` exist; pass the verified label set to the issue-filing step. Severity that has no label gets captured in the title + body only, not as a filterable label.
 
 ### Quality
 - Quality > speed. Always thorough path.

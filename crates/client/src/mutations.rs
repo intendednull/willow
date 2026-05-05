@@ -945,7 +945,7 @@ pub(crate) fn derive_client_events(event: &willow_state::Event) -> Vec<ClientEve
         EventKind::Propose { action } => {
             out.push(ClientEvent::ProposalCreated {
                 proposal_hash: event.hash.to_string(),
-                action_description: format!("{action:?}"),
+                action_description: format!("{action}"),
             });
         }
         EventKind::Vote { proposal, accept } => {

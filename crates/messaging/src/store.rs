@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use willow_identity::EndpointId;
 
-use crate::{hlc::HlcTimestamp, ChannelId, Message, MessageId};
+use crate::{hlc::HlcTimestamp, ChannelId, Message, MessageId, MessageValidationError};
 
 /// Delivery state for a single message.
 ///
@@ -48,6 +48,12 @@ pub enum StoreError {
     /// The requested message was not found.
     #[error("message not found: {0}")]
     NotFound(MessageId),
+
+    /// Attempted to insert a message that failed structural validation
+    /// (e.g. peer-supplied `Content::File` with an oversized filename
+    /// or MIME type). See [`MessageValidationError`] for the variants.
+    #[error("invalid message: {0}")]
+    Invalid(#[from] MessageValidationError),
 }
 
 /// Trait for message storage backends.
@@ -184,6 +190,18 @@ impl InMemoryStore {
 
 impl MessageStore for InMemoryStore {
     fn insert(&mut self, message: Message) -> Result<(), StoreError> {
+        // Structural validation guards against unbounded peer-supplied
+        // `Content::File` strings (filename, mime_type) being persisted
+        // without ever passing through a length check. Tracked in #583.
+        //
+        // NOTE: Ideally validation also gates earlier, at the network
+        // ingress in `crates/client/src/listeners.rs`, before a `Message`
+        // ever reaches a store. Those files are in flight under PR #566
+        // (coordinator decision); revisit after merge so peers can't
+        // pin oversized payloads in client memory even when the store
+        // is bypassed.
+        message.validate()?;
+
         if self.messages.contains_key(&message.id) {
             return Err(StoreError::DuplicateId(message.id));
         }

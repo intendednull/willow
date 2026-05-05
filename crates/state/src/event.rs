@@ -230,6 +230,41 @@ pub enum VoteThreshold {
     Count(u32),
 }
 
+impl std::fmt::Display for ProposedAction {
+    /// Render a structural, human-readable description of the action.
+    ///
+    /// Peer ids are rendered via [`EndpointId`]'s own `Display` (64-char
+    /// hex). UI layers that want richer rendering (e.g. resolving a peer
+    /// id to a display name) should consume the typed [`ProposedAction`]
+    /// directly instead of substring-matching on this string.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProposedAction::GrantAdmin { peer_id } => {
+                write!(f, "Grant admin to {peer_id}")
+            }
+            ProposedAction::RevokeAdmin { peer_id } => {
+                write!(f, "Revoke admin from {peer_id}")
+            }
+            ProposedAction::KickMember { peer_id } => {
+                write!(f, "Kick {peer_id}")
+            }
+            ProposedAction::SetVoteThreshold { threshold } => {
+                write!(f, "Set vote threshold to {threshold}")
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for VoteThreshold {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VoteThreshold::Majority => f.write_str("majority"),
+            VoteThreshold::Unanimous => f.write_str("unanimous"),
+            VoteThreshold::Count(n) => write!(f, "{n} admins"),
+        }
+    }
+}
+
 // ───── EventKind ───────────────────────────────────────────────────────────
 
 /// All possible state mutations — 22 variants.

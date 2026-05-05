@@ -125,7 +125,9 @@ pub fn process_event_batch(
                         wasm_bindgen_futures::spawn_local(handle_voice_answer(vm, from, s));
                     }
                     VoiceSignalPayload::IceCandidate(json) => {
-                        let _ = vm.borrow().handle_ice_candidate(&from, json);
+                        if let Err(e) = vm.borrow().handle_ice_candidate(&from, json) {
+                            tracing::warn!(?e, "handle_ice_candidate failed");
+                        }
                     }
                 }
             }

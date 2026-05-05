@@ -54,10 +54,10 @@ fn non_admin_set_profile_is_accepted() {
             permission: Permission::SendMessages,
         },
     );
-    // Alice sets her own profile (no admin needed). Explicit causal
-    // dep on `grant` so topological_sort always applies the grant
-    // before the SetProfile — otherwise hash ordering can flip the
-    // order and the post-#505 membership gate silently rejects.
+    // Alice sets her own profile (no admin needed).
+    // Causal dep on grant ensures topo-sort applies GrantPermission first
+    // (PR #505's membership gate); without this dep the test was flaky
+    // depending on HashMap iter order. See issue #565.
     let set_profile = dag.create_event(
         &alice,
         EventKind::SetProfile {

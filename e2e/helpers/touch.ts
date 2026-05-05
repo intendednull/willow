@@ -7,6 +7,27 @@
 import { Page, Locator } from '@playwright/test';
 import { isMobile, visibleShell, openMemberList } from './ui';
 
+/**
+ * Mirrors the product-side long-press hold threshold.
+ *
+ * Source of truth: `HOLD_MS` in `crates/web/src/components/long_press.rs`
+ * (currently 350 ms; spec: `docs/specs/2026-04-19-ui-design/trust-verification.md`
+ * §Long-press SAS on mobile).
+ *
+ * Keep this in sync with the product constant. If `HOLD_MS` moves, this
+ * must move too — otherwise `longPressAvatar` will arm-or-not based on
+ * whatever buffer is left, producing flaky false negatives (issue #591).
+ */
+export const LONG_PRESS_MS = 350;
+
+/**
+ * Buffer added on top of {@link LONG_PRESS_MS} to absorb scheduler jitter
+ * under CI load. The total wait is `LONG_PRESS_MS + LONG_PRESS_BUFFER_MS`,
+ * which crosses the product threshold deterministically without coupling
+ * tests to the exact threshold value.
+ */
+export const LONG_PRESS_BUFFER_MS = 250;
+
 /** Simulate a long-press on an element to open the mobile action sheet.
  *  Prefixes the selector with the visible-shell scope so a raw `.message`
  *  picks the mobile copy, not the hidden desktop one. */
@@ -65,7 +86,10 @@ export async function longPress(page: Page, selector: string, durationMs = 600) 
     }));
   }, { x, y });
 
-  await page.waitForTimeout(300);
+  // No post-touchend settle: callers must `waitFor` whatever the press
+  // produces (typically `.shell-mobile .mobile-action-sheet.open`). A
+  // bare `waitForTimeout` here was unobservable dead weight and coupled
+  // the gesture helper to a single outcome (issue #590).
 }
 
 /**
@@ -137,8 +161,20 @@ export async function longPressWithClock(page: Page, selector: string, durationM
   await page.clock.runFor(300);
 }
 
-/** Long-press a peer avatar by name in the member list (mobile only). */
-export async function longPressAvatar(page: Page, peerName: string) {
+/** Long-press a peer avatar by name in the member list (mobile only).
+ *
+ * The hold duration is parameterised over {@link LONG_PRESS_MS} (mirror
+ * of the product's `HOLD_MS`) plus {@link LONG_PRESS_BUFFER_MS}. Callers
+ * may override `durationMs` if they need a different timing, but the
+ * default crosses the product threshold deterministically — no longer
+ * coupled to a bare `500` literal that could fall under the threshold
+ * if `HOLD_MS` ever shifts up (issue #591).
+ */
+export async function longPressAvatar(
+  page: Page,
+  peerName: string,
+  durationMs: number = LONG_PRESS_MS + LONG_PRESS_BUFFER_MS,
+) {
   await openMemberList(page);
   const member = page.locator(`${visibleShell(page)} .member-item`, { hasText: peerName });
   await member.waitFor({ timeout: 10_000 });
@@ -147,7 +183,7 @@ export async function longPressAvatar(page: Page, peerName: string) {
   if (!box) throw new Error('avatar not measurable');
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
-  await page.waitForTimeout(500);
+  await page.waitForTimeout(durationMs);
   await page.mouse.up();
 }
 

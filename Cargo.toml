@@ -36,6 +36,10 @@ blake3 = "1"
 # Time & IDs
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde", "js"] }
+# Portable monotonic clock. Native uses `std::time::Instant`; WASM uses
+# `Performance.now()`. Drop-in replacement for `std::time::Instant` so
+# lib crates can build for both targets without `#[cfg]` gates.
+web-time = "1"
 
 # Logging
 tracing = "0.1"

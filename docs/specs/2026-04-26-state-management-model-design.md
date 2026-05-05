@@ -216,6 +216,7 @@ Add a `## State Management` section between the existing `## Repository Structur
 > | WASM single-threaded interior mut | `Rc<RefCell<_>>` (web only) |
 > | Reactive UI state in web | Leptos signal (`RwSignal`, `Resource`) |
 > | Web state mutated from non-Leptos context | `StateActor<S>` |
+> | Web actor-handler dedup cache (deferred to F2) | `Arc<Mutex<Option<U>>>` + `// state: lock-ok` citing § F2 |
 >
 > No `Arc<Mutex<T>>` / `Arc<RwLock<T>>` / `parking_lot::*` for business state. New locks need a `// state: lock-ok` comment with rationale. Full discussion: `docs/specs/2026-04-26-state-management-model-design.md`.
 
@@ -277,7 +278,7 @@ Trigger: open as a dedicated PR titled `refactor(client+web): eliminate Nickname
 
 ### F2. Re-evaluate `state_bridge.rs` cache shape
 
-The `Arc<Mutex<Option<U>>>` async result cache in `crates/web/src/state_bridge.rs` is annotated `// state: lock-ok` in this PR. Whether the right replacement is a Leptos `Resource`, an explicit derived state actor, or a redesign that eliminates the cache entirely needs a closer look at the bridge's call sites. Touch this when F1 lands, since the trait elimination will simplify the bridge.
+The `Arc<Mutex<Option<U>>>` async result cache in `crates/web/src/state_bridge.rs` is annotated `// state: lock-ok` in this PR. Whether the right replacement is a Leptos `Resource`, an explicit derived state actor, or a redesign that eliminates the cache entirely needs a closer look at the bridge's call sites. Touch this when F1 lands, since the trait elimination will simplify the bridge. The CLAUDE.md-addition decision table above carries a row for this exception so the spec stays self-consistent until F2 lands.
 
 ### F3. Custom clippy lint or grep gate (optional)
 

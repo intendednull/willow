@@ -21,11 +21,15 @@
           relay's /bootstrap-id HTTP endpoint.
         * img-src and media-src include data:/blob: so that avatar data
           URIs and runtime URL.createObjectURL blobs (file attachments,
-          inline media) render. frame-ancestors 'none' blocks clickjacking;
+          inline media) render. img-src additionally allows https: so the
+          chat auto-embed code path (see issue #584 / PR #243, which added
+          referrerpolicy="no-referrer" to external <img> tags) can fetch
+          remote images over HTTPS without a mixed-content downgrade.
+          frame-ancestors 'none' blocks clickjacking;
           base-uri / form-action / object-src lock down the remaining
           injection surfaces.
     -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' ws: wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' ws: wss: https:; img-src 'self' https: data: blob:; media-src 'self' blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
