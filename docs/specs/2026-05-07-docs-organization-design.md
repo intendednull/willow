@@ -195,15 +195,53 @@ Includes a short "Adding a new spec/plan" checklist:
 4. Plans must reference their spec in the header.
 5. Multi-file specs nest under `YYYY-MM-DD-<topic>/` with a required `README.md`.
 
-## CLAUDE.md role
+## Discovery surfaces
+
+The conventions in this spec are surfaced to agents and humans through three
+deliberately redundant channels. Each has a different access pattern; together
+they ensure an agent always finds the rules without grepping.
+
+### Primary — `docs/README.md`
+
+The master index. Self-documenting: the conventions live in section 4
+alongside the catalog so anyone browsing the docs sees them in passing. This
+is the canonical copy. If the other two surfaces drift, the README is right.
+
+### Skill mirror — `organizing-willow-docs`
+
+A project-local skill at `.claude/skills/organizing-willow-docs/SKILL.md`
+that mirrors the conventions and the "Adding a new spec/plan" checklist. An
+agent loads this skill on demand when:
+
+- Adding a new spec, plan, or report.
+- Modifying the structure (adding a feature area, splitting a spec into a
+  nested folder, deprecating/superseding a doc).
+- Reorganizing the catalog.
+
+The skill exists for two reasons:
+
+1. **Discoverability via metadata.** Skills surface in the agent's
+   available-skills list with their `description`; `docs/README.md` does not.
+   An agent with no prior context can find the skill from its trigger
+   description alone.
+2. **Token efficiency.** The skill loads only the rules — not the catalog —
+   so an agent making structural changes does not need to read 60+ catalog
+   entries to find the conventions.
+
+The skill is not the source of truth. It points back at this spec and at
+`docs/README.md` for the canonical text. When the canonical text changes,
+the skill is updated in the same commit.
+
+### Pointer — `CLAUDE.md`
 
 `CLAUDE.md` retains all build/test/dev/architecture content. The "Specs &
-Plans" line in *Code Conventions* is replaced with a short pointer:
+Plans" line in *Code Conventions* is replaced with a short pointer to both
+of the surfaces above:
 
 > **Docs entry point:** `docs/README.md` is the master index of specs and
 > plans, grouped by feature area. Read it before adding any new spec or plan,
-> or before searching for an existing one. The naming and nesting conventions
-> are cemented there.
+> or before searching for an existing one. The `organizing-willow-docs` skill
+> mirrors the conventions for on-demand loading.
 
 Existing CLAUDE.md sections that duplicate doc-discovery information (e.g.
 the per-task "see `docs/specs/...`" pointers in *Architecture Notes*) are
