@@ -84,12 +84,13 @@ plan in `ls` output. Plans omit it.
 
 ## Document headers
 
-Every spec, plan, and report opens with a small header:
+Every new spec, plan, and report opens with a small header. Existing files
+predating this convention are not retrofitted (see *Non-goals*).
 
 ```
 **Date:** YYYY-MM-DD
 **Status:** draft | active | landed | superseded
-**Spec:** docs/specs/...      (plans only — points at the spec being realized)
+**Spec:** docs/specs/...      (plans only — REQUIRED, points at the spec being realized)
 **Supersedes:** docs/specs/... (if applicable)
 ```
 
