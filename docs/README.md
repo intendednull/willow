@@ -40,7 +40,7 @@ Every entry below carries one of:
 
 - [State authority and mutations](specs/2026-04-12-state-authority-and-mutations.md) — single authority model: all state changes checked in `apply_event()` before entering the DAG. `[landed]`
 - [Per-author Merkle DAG state machine](specs/2026-04-01-per-author-merkle-dag-state-design.md) — replaces linear chain with per-author DAG enabling concurrent event production. `[landed]`
-- [State management model](specs/2026-04-26-state-management-model-design.md) — audit and rules for actors, locks, and shared mutable state across crates. `[landed]`
+- [State management model](specs/2026-04-26-state-management-model-design.md) — audit and rules for actors, locks, and shared mutable state across crates. `[draft]`
 - [Reactive client state — domain actor decomposition](specs/2026-03-31-reactive-client-state-design.md) — replaces monolithic `SharedState` with domain `StateActor`s and derived views. `[active]`
 
 **Plans**
@@ -145,7 +145,7 @@ See also: [`plans/STATUS.md`](plans/STATUS.md) — point-in-time audit of which 
 
 **Specs**
 
-- [E2E test architecture](specs/2026-04-21-e2e-test-architecture-design.md) — tier decision tree pushing tests to the lowest level covering each behavior. `[landed]`
+- [E2E test architecture](specs/2026-04-21-e2e-test-architecture-design.md) — tier decision tree pushing tests to the lowest level covering each behavior. `[draft]`
 - [Test architecture](specs/2026-04-13-test-architecture.md) — earlier test philosophy and per-crate coverage targets. `[superseded]`
 - [Event-based waits in Playwright suite](specs/2026-04-27-event-based-waits-design.md) — replaces magic-number sleeps with `WillowTestHooks` WASM API and `data-state` lifecycle. `[active]`
 - [Multi-peer E2E browser tests](specs/2026-03-24-multi-peer-e2e-tests-design.md) — Playwright suite covering sync, permissions, and mobile flows across four browser projects. `[active]`
