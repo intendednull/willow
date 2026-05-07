@@ -23,11 +23,11 @@ Quality + longevity beat speed + convenience.
 
 ```
 docs/
-├── plans/              — Implementation plans for features (YYYY-MM-DD-<name>.md)
-├── specs/              — Design specs and technical specifications (YYYY-MM-DD-<name>-design.md)
-├── design/             — Long-form design documents (UX specs, etc.)
-├── reference-designs/  — Exploratory UI / design references
-└── reports/            — Ad-hoc audit and investigation reports
+├── README.md           — Master index of specs, plans, and reports (start here)
+├── specs/              — Target state — what we are building toward (YYYY-MM-DD-<name>-design.md)
+├── plans/              — Migration steps — how we get to the target (YYYY-MM-DD-<name>.md)
+├── reports/            — One-shot audits and investigations
+└── reference-designs/  — Archived design bundles (immutable)
 crates/
 ├── state/       — Pure event-sourced state machine, zero I/O (willow-state)
 ├── client/      — UI-agnostic client library wrapping state + networking (willow-client)
@@ -289,7 +289,7 @@ Full discussion: `docs/specs/2026-04-21-e2e-test-architecture-design.md`.
 - **Documentation**: Every public type + function has doc comment. Module-level `//!` docs explain purpose + provide examples.
 - **Testing**: Every crate has unit tests. Use `#[cfg(test)] mod tests` at bottom of each file.
 - **Serialization**: All wire types derive `Serialize + Deserialize`. Round-trip tests validate compatibility.
-- **Specs & Plans**: Design specs in `docs/specs/` named `YYYY-MM-DD-<feature-name>-design.md`. Plans in `docs/plans/` named `YYYY-MM-DD-<feature-name>.md`.
+- **Docs entry point**: `docs/README.md` is the master index of specs and plans, grouped by feature area. Read it before adding any new spec or plan, or before searching for an existing one. The `organizing-willow-docs` skill mirrors the conventions for on-demand loading. Cemented in `docs/specs/2026-05-07-docs-organization-design.md`.
 
 ## Architecture Notes
 
