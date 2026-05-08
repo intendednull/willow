@@ -721,6 +721,8 @@ mod tests {
                 filename: "photo.jpg".into(),
                 mime_type: "image/jpeg".into(),
                 size_bytes: 1024,
+                width: None,
+                height: None,
             },
             Content::Reaction {
                 target: target.clone(),
