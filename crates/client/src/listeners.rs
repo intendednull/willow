@@ -411,9 +411,9 @@ async fn process_received_message<T: TopicHandle>(
         }
         crate::ops::WireMessage::SyncRequest { state_hash, .. } => {
             let _ = state_hash; // Legacy field — can't filter by state hash in DAG model.
-                                // TODO(#65): Migrate clients to worker's heads-based sync protocol
-                                // (WorkerRequest::Sync { heads }) for efficient delta sync.
-                                // For now, send the first SYNC_REPLY_LIMIT events from
+                                // TODO(#382): Migrate clients to worker's heads-based sync
+                                // protocol (WorkerRequest::Sync { heads }) for efficient delta
+                                // sync. For now, send the first SYNC_REPLY_LIMIT events from
                                 // topological sort. Receiver will dedup via InsertError::Duplicate.
                                 // The reply Vec is cached on `DagState` and invalidated on
                                 // every successful DAG insert; see GEN-08 / issue #268.

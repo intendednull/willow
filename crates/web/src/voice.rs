@@ -56,8 +56,12 @@ impl SpeakingDetector {
     /// The `AudioContext` is created immediately (caller must ensure a user
     /// gesture has already occurred so the browser allows it).
     pub fn new(on_change: impl Fn(HashSet<String>) + 'static) -> Result<Self, String> {
-        let audio_context =
-            AudioContext::new().map_err(|e| format!("AudioContext::new failed: {e:?}"))?;
+        let audio_context = AudioContext::new().map_err(|e| {
+            format!(
+                "AudioContext::new failed: {}",
+                e.as_string().unwrap_or_else(|| format!("{e:?}"))
+            )
+        })?;
         // Resume the context in case it was created in a suspended state.
         let _ = audio_context.resume();
         Ok(Self {

@@ -283,6 +283,121 @@ mod tests {
     }
 
     #[test]
+    fn set_default_server_routes_subsequent_events() {
+        // Focused round-trip test for `set_default_server`.
+        //
+        // The setter mutates an in-memory field (no SQLite persistence — the
+        // field exists only on `StorageRole`, not the `StorageEventStore`),
+        // so we verify the change via the observable read path: `on_event`
+        // routes events through the configured server ID, which `handle_request`
+        // then queries by server ID.
+        //
+        // Asserts:
+        //   1. Default ID is `"default"` (events stored without calling the
+        //      setter are queryable under `"default"`).
+        //   2. After `set_default_server("srv-A")`, new events route to
+        //      `"srv-A"` and are NOT visible under the previous ID.
+        //   3. Last-write-wins: after a second `set_default_server("srv-B")`,
+        //      newer events route to `"srv-B"` and earlier ones remain under
+        //      their original server.
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let mut role = StorageRole::new(store);
+        let id = Identity::generate();
+
+        // (1) Default value — no setter call yet.
+        let e1 = make_message(&id, 1, EventHash::ZERO, "general");
+        role.on_event(&e1);
+
+        let resp = role.handle_request(WorkerRequest::History {
+            server_id: "default".to_string(),
+            channel: Some("general".to_string()),
+            before: None,
+            limit: 10,
+        });
+        match resp {
+            WorkerResponse::HistoryPage { events, .. } => assert_eq!(
+                events.len(),
+                1,
+                "event before set_default_server should land under \"default\""
+            ),
+            _ => panic!("expected HistoryPage"),
+        }
+
+        // (2) Set to "srv-A" and verify routing changes.
+        role.set_default_server("srv-A".to_string());
+        let e2 = make_message(&id, 2, e1.hash, "general");
+        role.on_event(&e2);
+
+        let resp = role.handle_request(WorkerRequest::History {
+            server_id: "srv-A".to_string(),
+            channel: Some("general".to_string()),
+            before: None,
+            limit: 10,
+        });
+        match resp {
+            WorkerResponse::HistoryPage { events, .. } => assert_eq!(
+                events.len(),
+                1,
+                "event after set_default_server(\"srv-A\") should land under \"srv-A\""
+            ),
+            _ => panic!("expected HistoryPage"),
+        }
+
+        // The "default" bucket still has only the first event — proves the
+        // setter took effect rather than aliasing both IDs.
+        let resp = role.handle_request(WorkerRequest::History {
+            server_id: "default".to_string(),
+            channel: Some("general".to_string()),
+            before: None,
+            limit: 10,
+        });
+        match resp {
+            WorkerResponse::HistoryPage { events, .. } => assert_eq!(
+                events.len(),
+                1,
+                "\"default\" bucket should not gain events after switching servers"
+            ),
+            _ => panic!("expected HistoryPage"),
+        }
+
+        // (3) Last-write-wins: switch again to "srv-B".
+        role.set_default_server("srv-B".to_string());
+        let e3 = make_message(&id, 3, e2.hash, "general");
+        role.on_event(&e3);
+
+        let resp = role.handle_request(WorkerRequest::History {
+            server_id: "srv-B".to_string(),
+            channel: Some("general".to_string()),
+            before: None,
+            limit: 10,
+        });
+        match resp {
+            WorkerResponse::HistoryPage { events, .. } => assert_eq!(
+                events.len(),
+                1,
+                "event after second set_default_server should land under \"srv-B\""
+            ),
+            _ => panic!("expected HistoryPage"),
+        }
+
+        // "srv-A" bucket retains its single event.
+        let resp = role.handle_request(WorkerRequest::History {
+            server_id: "srv-A".to_string(),
+            channel: Some("general".to_string()),
+            before: None,
+            limit: 10,
+        });
+        match resp {
+            WorkerResponse::HistoryPage { events, .. } => assert_eq!(
+                events.len(),
+                1,
+                "\"srv-A\" bucket should be unchanged after switching to \"srv-B\""
+            ),
+            _ => panic!("expected HistoryPage"),
+        }
+    }
+
+    #[test]
     fn history_for_unknown_channel_returns_empty() {
         let store = StorageEventStore::open(":memory:").unwrap();
         let mut role = StorageRole::new(store);

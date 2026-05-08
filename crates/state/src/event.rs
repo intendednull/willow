@@ -86,6 +86,30 @@ impl Permission {
     }
 }
 
+/// Human-readable permission labels for UI surfaces.
+///
+/// Centralising the strings here keeps UX wording in one place and
+/// avoids leaking the `Debug`-derived variant identifiers (e.g.
+/// `SyncProvider`) into role lists, settings panes, or MCP resources.
+/// `Debug` remains available for logs and developer-facing output.
+impl std::fmt::Display for Permission {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Self::SyncProvider => "Sync provider",
+            Self::ManageChannels => "Manage channels",
+            Self::ManageRoles => "Manage roles",
+            Self::SendMessages => "Send messages",
+            Self::CreateInvite => "Create invite",
+            // Sentinel from a future/unknown client. Should never reach
+            // a UI render path in practice — `apply_event` drops these
+            // before they enter any role's permission set — but Display
+            // must be total, so emit a clearly-flagged placeholder.
+            Self::__UnknownLegacy => "Unknown",
+        };
+        f.write_str(label)
+    }
+}
+
 impl<'de> Deserialize<'de> for Permission {
     /// Custom deserialize that accepts both the enum form (default for
     /// any format — bincode emits a u32 discriminant, JSON emits the
@@ -484,7 +508,17 @@ impl Event {
             kind: &self.kind,
             timestamp_hint_ms: self.timestamp_hint_ms,
         };
-        let bytes = bincode::serialize(&signable).expect("event serialization should not fail");
+        // Defense-in-depth: bincode of owned Vec/String/integers shouldn't
+        // fail in practice, but `kind` is attacker-controlled. A malformed
+        // String produced via `unsafe` could in theory fail to serialize.
+        // Reject the event instead of panicking on the hot verify path.
+        let bytes = match bincode::serialize(&signable) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(error = %e, "event verify: bincode serialize failed; rejecting");
+                return false;
+            }
+        };
 
         // Verify hash matches content.
         if self.hash != EventHash::from_bytes(&bytes) {
@@ -587,5 +621,33 @@ mod tests {
         // Replace author with a different key (but keep the original sig).
         event.author = id_b.endpoint_id();
         assert!(!event.verify());
+    }
+
+    #[test]
+    fn verify_returns_false_on_garbage_event() {
+        // Defense-in-depth: verify() should never panic on adversarial
+        // input, even if the hash and signature are obviously bogus.
+        // The bincode-failure branch in verify() is unreachable from safe
+        // Rust on the current types (owned Vec/String/integers), so this
+        // test exercises the adjacent hash/sig mismatch path to confirm
+        // the function returns gracefully instead of panicking.
+        let id = Identity::generate();
+        let mut event = make_event(&id, test_kind());
+        event.hash = EventHash::from_bytes(b"not-the-real-hash");
+        event.sig = Signature::from_bytes(&[0u8; 64]);
+        assert!(!event.verify());
+    }
+
+    #[test]
+    fn permission_display_strings() {
+        // UI surfaces (role lists, settings, MCP resources) render
+        // permissions via Display. Locking these strings here keeps the
+        // wording stable and surfaces wording changes as test diffs.
+        assert_eq!(Permission::SyncProvider.to_string(), "Sync provider");
+        assert_eq!(Permission::ManageChannels.to_string(), "Manage channels");
+        assert_eq!(Permission::ManageRoles.to_string(), "Manage roles");
+        assert_eq!(Permission::SendMessages.to_string(), "Send messages");
+        assert_eq!(Permission::CreateInvite.to_string(), "Create invite");
+        assert_eq!(Permission::__UnknownLegacy.to_string(), "Unknown");
     }
 }

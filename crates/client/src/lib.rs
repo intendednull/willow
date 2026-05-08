@@ -81,6 +81,10 @@ mod tests_voice;
 mod tests_governance;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "tests/search.rs"]
+mod tests_search;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/sync_reply_cache.rs"]
 mod tests_sync_reply_cache;
 

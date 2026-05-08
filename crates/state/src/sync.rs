@@ -92,7 +92,14 @@ impl Snapshot {
             state: &state,
             heads: sorted_heads,
         };
-        let bytes = bincode::serialize(&input).expect("snapshot serialization should not fail");
+        // `state` is locally materialized via `apply_incremental`, which
+        // rejects malformed events before they enter the DAG. Any failure
+        // here would indicate an invariant violation, not attacker input.
+        // Returning Result would ripple through every call site; keep the
+        // panic but document the invariant.
+        let bytes = bincode::serialize(&input).expect(
+            "snapshot serialization invariant violated; should be unreachable post-validation",
+        );
         let hash = EventHash::from_bytes(&bytes);
         Self { state, heads, hash }
     }
