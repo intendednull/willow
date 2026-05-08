@@ -300,21 +300,16 @@ pub fn Composer(
         }
     });
 
-    // Full keydown table per `composer.md` §Keyboard (desktop) +
-    // §Keyboard (mobile):
+    // Full keydown table per `composer.md` §Keyboard:
     //
     //   Ctrl|Cmd + Enter        → force-send (both shells).
-    //   Enter (no modifiers)    → desktop sends; mobile inserts newline.
+    //   Enter (no modifiers)    → send (both shells).
     //   Shift + Enter           → newline (default — no preventDefault).
     //   Escape                  → unwind: edit → reply → blur.
     //   Tab inside textarea     → insert two spaces (no focus move).
     //   ArrowUp on empty input  → fire `on_arrow_up_edit` (parent decides).
     //   `@` and other keys      → fall through (mention autocomplete + IME
     //                             land in T13).
-    //
-    // Mobile is detected by reading `data-shell` from the `<html>`
-    // root each keydown. `mobile_shell` sets it at runtime; the
-    // wasm-pack test harness sets it via `mount_test_with_shell`.
     let cancel_reply_cb = on_cancel_reply;
     let cancel_edit_cb = on_cancel_edit;
     let edit_send_cb = on_edit_send;
@@ -447,10 +442,7 @@ pub fn Composer(
                 // the browser do the default insert.
                 return;
             }
-            // Plain Enter: desktop sends, mobile inserts newline.
-            if is_mobile_shell() {
-                return;
-            }
+            // Plain Enter sends on both shells.
             ev.prevent_default();
             submit_for_key();
             return;

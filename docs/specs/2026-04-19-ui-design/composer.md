@@ -87,8 +87,12 @@ Vertical stack: optional reply bar → optional edit bar → compose surface.
 
 ### Keyboard (mobile)
 
-`Enter` inserts newline (mobile convention); send button is the only
-way to submit. `@` still opens mention autocomplete.
+Same keyboard table as desktop. Mobile users on touchscreens primarily
+submit via the send button, but for users on physical keyboards
+(iPad + Magic Keyboard, foldables, Bluetooth setups) `Enter` sends and
+`Shift+Enter` inserts a newline — matching the desktop convention so
+muscle memory carries across shells. `@` still opens mention
+autocomplete.
 
 ### Mention autocomplete
 

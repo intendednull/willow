@@ -6833,8 +6833,8 @@ mod mobile_actions {
         simulate_click(reply);
         tick().await;
         assert!(
-            wait_for(&container, ".shell-mobile .reply-bar", 5_000).await,
-            "reply-bar did not appear after tapping Reply"
+            wait_for(&container, ".shell-mobile .composer__reply-bar", 5_000).await,
+            "reply bar did not appear after tapping Reply"
         );
     }
 
@@ -13234,10 +13234,13 @@ mod phase_3a_composer {
     }
 
     #[wasm_bindgen_test]
-    async fn composer_ctrl_enter_force_sends_on_mobile() {
-        // Ctrl/Cmd+Enter is the only way to submit on mobile per spec
-        // §Keyboard (mobile). Mounting under the mobile shell proves
-        // the modifier path bypasses the plain-Enter newline rule.
+    async fn composer_enter_sends_on_mobile() {
+        // Plain Enter, Ctrl+Enter, and Cmd+Enter all submit on mobile.
+        // Mobile users on physical keyboards (iPad + Magic Keyboard,
+        // foldables, Bluetooth) expect the desktop convention; the
+        // modifier paths are kept so users with Enter-as-newline muscle
+        // memory still have an explicit force-send chord. Spec
+        // `composer.md` §Keyboard (mobile).
         let sent: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let captured = sent.clone();
         let container = mount_test_with_shell(TestShell::Mobile, move || {
@@ -13252,21 +13255,24 @@ mod phase_3a_composer {
         type_into(&ta, "hi");
         tick().await;
 
-        // First sanity: plain Enter on mobile must NOT send.
+        // Plain Enter on mobile sends.
         let target = ta.dyn_ref::<web_sys::EventTarget>().unwrap();
         let plain = make_key_event("keydown", "Enter", false, false, false);
         let plain_prevented = dispatch(target, &plain);
         tick().await;
         assert!(
-            !plain_prevented,
-            "plain Enter on mobile must let the browser insert a newline"
+            plain_prevented,
+            "plain Enter on mobile must call prevent_default (submit path)"
         );
-        assert!(
-            sent.lock().unwrap().is_empty(),
-            "plain Enter on mobile must not fire on_send"
+        assert_eq!(
+            sent.lock().unwrap().as_slice(),
+            &["hi".to_string()],
+            "plain Enter on mobile must fire on_send once"
         );
 
-        // Now Ctrl+Enter — must force-send regardless of shell.
+        // Ctrl+Enter — force-send regardless of shell.
+        type_into(&ta, "ho");
+        tick().await;
         let ctrl = make_key_event("keydown", "Enter", false, true, false);
         let ctrl_prevented = dispatch(target, &ctrl);
         tick().await;
@@ -13275,14 +13281,14 @@ mod phase_3a_composer {
             "Ctrl+Enter must call prevent_default (force-send path)"
         );
         assert_eq!(
-            sent.lock().unwrap().as_slice(),
-            &["hi".to_string()],
-            "Ctrl+Enter must fire on_send once"
+            sent.lock().unwrap().len(),
+            2,
+            "Ctrl+Enter must fire on_send a second time"
         );
 
         // And Cmd+Enter (meta) — same effect, exercised in a single
         // test so we cover both modifier flags.
-        type_into(&ta, "ho");
+        type_into(&ta, "hum");
         tick().await;
         let meta = make_key_event("keydown", "Enter", false, false, true);
         let meta_prevented = dispatch(target, &meta);
@@ -13293,8 +13299,8 @@ mod phase_3a_composer {
         );
         assert_eq!(
             sent.lock().unwrap().len(),
-            2,
-            "Cmd+Enter must fire on_send a second time"
+            3,
+            "Cmd+Enter must fire on_send a third time"
         );
 
         reset_shell();
