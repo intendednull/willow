@@ -1,6 +1,6 @@
 # UI Phase 3b — Files & Inline Attachments Implementation Plan
 
-**Status:** draft
+**Status:** landed (e98ed26, 2026-05-08)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development + superpowers:test-driven-development. Every task = one commit; tick the checkbox in the same commit.
 
