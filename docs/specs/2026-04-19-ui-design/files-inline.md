@@ -1,7 +1,7 @@
 # Files and inline attachments — file cards, images, voice notes, upload
 
 **Parent:** [README.md](README.md)
-**Status:** implementing (phase 3b PR #633 — `docs/plans/2026-05-08-ui-phase-3b-files-inline.md`)
+**Status:** landed (e98ed26, 2026-05-08)
 **Dependencies:** [`foundation.md`](foundation.md),
 [`layout-primitives.md`](layout-primitives.md),
 [`message-row.md`](message-row.md),

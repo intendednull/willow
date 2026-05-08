@@ -97,6 +97,7 @@ pub mod composer;
 mod confirm_dialog;
 mod context_menu;
 mod downgrade_banner;
+pub mod emoji_picker;
 mod file_share;
 mod grove_drawer;
 mod grove_rail;

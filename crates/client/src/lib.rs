@@ -759,6 +759,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             let meta = state_actors::ChatMeta {
                 current_channel: state.chat.current_channel.clone(),
                 peers: state.chat.peers.clone(),
+                reaction_recency: Default::default(),
             };
             system.spawn(willow_actor::StateActor::new(meta))
         };
@@ -1124,6 +1125,7 @@ pub fn test_client() -> (
     let chat_meta_addr = sys.spawn(willow_actor::StateActor::new(state_actors::ChatMeta {
         current_channel: state.chat.current_channel.clone(),
         peers: state.chat.peers.clone(),
+        reaction_recency: Default::default(),
     }));
     let profile_state_addr = sys.spawn(willow_actor::StateActor::new({
         // Seed via `insert_name` so the LRU recency queue mirrors
@@ -2256,5 +2258,92 @@ mod tests {
             ClientEvent::SyncCompleted { ops_applied } => assert_eq!(ops_applied, 7),
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    // ── Reaction recency LRU (phase 3c) ─────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recent_reactions_starts_with_spec_default() {
+        // Channel with no reactions yet: returns the spec-default
+        // shelf `👍 ❤️ 🍃 💚 👀` per
+        // `docs/specs/2026-04-19-ui-design/reactions-pins.md`
+        // §Quick reactions.
+        let (client, _rx) = test_client();
+        let recent = client.recent_reactions("general").await;
+        assert_eq!(
+            recent,
+            vec!["👍", "❤️", "🍃", "💚", "👀"],
+            "untouched channel must surface the spec-default shelf"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recent_reactions_lru_caps_at_5() {
+        // Recording 7 distinct emojis must keep only the 5 most-recent,
+        // MRU-first. Re-recording an emoji moves it to the front
+        // (dedupe semantics) so the user sees a stable, non-duplicated
+        // shelf even after spamming the same reaction.
+        let (client, _rx) = test_client();
+        // Mutate the ChatMeta directly — the public `react()` flow
+        // requires a real message hash + the message-store; the LRU
+        // contract itself is what we want to pin here.
+        let chat_meta_addr = client.chat_meta_addr.clone();
+        for emoji in ["a", "b", "c", "d", "e", "f", "g"] {
+            let emoji = emoji.to_string();
+            willow_actor::state::mutate(&chat_meta_addr, move |cm| {
+                cm.note_reaction("general", &emoji);
+            })
+            .await;
+        }
+        let recent = client.recent_reactions("general").await;
+        // The 5 most recent in MRU-first order are g, f, e, d, c.
+        assert_eq!(
+            recent.iter().take(5).cloned().collect::<Vec<_>>(),
+            vec!["g", "f", "e", "d", "c"],
+            "LRU must cap at 5 entries and surface MRU-first"
+        );
+
+        // Re-react with `c` — should jump back to the front, dropping
+        // the oldest (`c` is already in the LRU; it moves to MRU).
+        willow_actor::state::mutate(&chat_meta_addr, |cm| {
+            cm.note_reaction("general", "c");
+        })
+        .await;
+        let recent = client.recent_reactions("general").await;
+        assert_eq!(
+            recent[0],
+            "c".to_string(),
+            "re-reacting must promote the emoji back to MRU"
+        );
+        assert_eq!(
+            recent[1..5].to_vec(),
+            vec!["g", "f", "e", "d"],
+            "re-reaction with existing entry dedupes, doesn't grow the LRU"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recent_reactions_per_channel_isolation() {
+        // Two channels keep separate recency shelves — a reaction in
+        // `general` must not pollute `random`'s shelf and vice versa.
+        let (client, _rx) = test_client();
+        let chat_meta_addr = client.chat_meta_addr.clone();
+        willow_actor::state::mutate(&chat_meta_addr, |cm| {
+            cm.note_reaction("general", "🚀");
+            cm.note_reaction("random", "🐌");
+        })
+        .await;
+        let general = client.recent_reactions("general").await;
+        let random = client.recent_reactions("random").await;
+        assert_eq!(general[0], "🚀");
+        assert_eq!(random[0], "🐌");
+        assert!(
+            !general.contains(&"🐌".to_string()),
+            "random's reaction must not appear in general's shelf"
+        );
+        assert!(
+            !random.contains(&"🚀".to_string()),
+            "general's reaction must not appear in random's shelf"
+        );
     }
 }

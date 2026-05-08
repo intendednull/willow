@@ -54,6 +54,13 @@ pub fn MainPaneHeader(
     /// Topic string beside the title (truncates).
     #[prop(optional, into)]
     topic: Option<Signal<String>>,
+    /// Pinned-message count for the active channel. When `> 0`, the
+    /// pin IconBtn picks up the spec's `--amber` tint and renders a
+    /// mono superscript count overlay. Per
+    /// `docs/specs/2026-04-19-ui-design/reactions-pins.md` §Header
+    /// entry point.
+    #[prop(optional, into)]
+    pinned_count: Option<Signal<usize>>,
 ) -> impl IntoView {
     let is_members = Signal::derive(move || which.get() == RightRailWhich::Members);
     let is_pinned = Signal::derive(move || which.get() == RightRailWhich::Pinned);
@@ -125,8 +132,31 @@ pub fn MainPaneHeader(
                     }
                 </button>
                 <button
-                    class=move || if is_pinned.get() { "action-btn active" } else { "action-btn" }
-                    aria-label="pinned"
+                    class=move || {
+                        let mut classes = String::from("action-btn");
+                        if is_pinned.get() {
+                            classes.push_str(" active");
+                        }
+                        // Amber tint when channel has pinned messages.
+                        // Spec §Header entry point: "tints `--amber`
+                        // when the channel has pinned messages, with
+                        // a mono superscript count".
+                        let lit = pinned_count
+                            .map(|s| s.get() > 0)
+                            .unwrap_or(false);
+                        if lit {
+                            classes.push_str(" action-btn--lit");
+                        }
+                        classes
+                    }
+                    aria-label=move || {
+                        let n = pinned_count.map(|s| s.get()).unwrap_or(0);
+                        if n > 0 {
+                            format!("pinned messages ({n})")
+                        } else {
+                            "pinned messages".to_string()
+                        }
+                    }
                     aria-pressed=move || if is_pinned.get() { "true" } else { "false" }
                     title="pinned"
                     on:click=move |_| {
@@ -135,6 +165,14 @@ pub fn MainPaneHeader(
                     }
                 >
                     {icons::icon_pin()}
+                    {move || pinned_count.and_then(|s| {
+                        let n = s.get();
+                        (n > 0).then(|| view! {
+                            <span class="action-btn__count action-btn__count--pin">
+                                {n.to_string()}
+                            </span>
+                        })
+                    })}
                 </button>
                 <button
                     class="action-btn"

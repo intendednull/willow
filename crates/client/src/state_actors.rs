@@ -92,6 +92,14 @@ impl ServerEntry {
     }
 }
 
+/// Spec-default reaction shelf used until the per-channel LRU has 5
+/// distinct emojis recorded. From `docs/specs/2026-04-19-ui-design/reactions-pins.md`
+/// §Quick reactions: "Quick reactions default to `👍 ❤️ 🍃 💚 👀`".
+const REACTION_RECENCY_DEFAULT: &[&str] = &["👍", "❤️", "🍃", "💚", "👀"];
+
+/// Cap on the per-channel recency LRU. Spec calls for a 5-slot shelf.
+pub const REACTION_RECENCY_CAP: usize = 5;
+
 /// Chat session metadata.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChatMeta {
@@ -99,6 +107,14 @@ pub struct ChatMeta {
     pub current_channel: String,
     /// Online peers.
     pub peers: Vec<EndpointId>,
+    /// Per-channel reaction recency LRU (newest at the back).
+    /// Capped at [`REACTION_RECENCY_CAP`] entries per channel; oldest
+    /// emoji is dropped when the cap is reached. Drives the row's
+    /// quick-react row, the action sheet's quick-react row, and the
+    /// emoji picker's "recent" category. In-memory only (does not
+    /// persist across app restarts) per phase-3c plan §Ambiguity
+    /// decisions §1.
+    pub reaction_recency: HashMap<String, VecDeque<String>>,
 }
 
 impl Default for ChatMeta {
@@ -106,7 +122,54 @@ impl Default for ChatMeta {
         Self {
             current_channel: crate::state::DEFAULT_CHANNEL.to_string(),
             peers: Vec::new(),
+            reaction_recency: HashMap::new(),
         }
+    }
+}
+
+impl ChatMeta {
+    /// Note a successful reaction in `channel`. Moves `emoji` to the
+    /// most-recent end of the channel's LRU; if the emoji is already
+    /// in the LRU, it's removed first so the new entry shows MRU.
+    /// Caps the LRU at [`REACTION_RECENCY_CAP`].
+    ///
+    /// Spec: `docs/specs/2026-04-19-ui-design/reactions-pins.md`
+    /// §Quick reactions — "Override with the five most recent reactions
+    /// used in *this channel*".
+    pub fn note_reaction(&mut self, channel: &str, emoji: &str) {
+        let entry = self
+            .reaction_recency
+            .entry(channel.to_string())
+            .or_default();
+        // Dedupe: remove any previous occurrence so the LRU stays
+        // unique and the most-recent click wins ordering.
+        entry.retain(|e| e != emoji);
+        entry.push_back(emoji.to_string());
+        while entry.len() > REACTION_RECENCY_CAP {
+            entry.pop_front();
+        }
+    }
+
+    /// Return the 5 most-recent reactions for `channel`, MRU-first.
+    /// Falls back to the spec default until the LRU has 5 entries —
+    /// the missing slots are filled from `REACTION_RECENCY_DEFAULT`
+    /// in spec order, deduped against the LRU.
+    pub fn recent_reactions(&self, channel: &str) -> Vec<String> {
+        let lru = self.reaction_recency.get(channel);
+        let mut out: Vec<String> = lru
+            .map(|q| q.iter().rev().cloned().collect())
+            .unwrap_or_default();
+        for default in REACTION_RECENCY_DEFAULT {
+            if out.len() >= REACTION_RECENCY_CAP {
+                break;
+            }
+            let s = (*default).to_string();
+            if !out.contains(&s) {
+                out.push(s);
+            }
+        }
+        out.truncate(REACTION_RECENCY_CAP);
+        out
     }
 }
 

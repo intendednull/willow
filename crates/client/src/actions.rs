@@ -155,11 +155,37 @@ impl<N: willow_network::Network> ClientHandle<N> {
 
     pub async fn react(
         &self,
-        _channel: &str,
+        channel: &str,
         message_id: &willow_state::EventHash,
         emoji: &str,
     ) -> anyhow::Result<()> {
-        self.mutation_handle.react(message_id, emoji).await
+        self.mutation_handle.react(message_id, emoji).await?;
+        // Note the reaction in the per-channel recency LRU so the
+        // emoji picker's "recent" category and the row hover toolbar's
+        // quick-react row update on the next read. Per phase-3c
+        // §Quick reactions: "Override [the default] with the five most
+        // recent reactions used in this channel".
+        let channel = channel.to_string();
+        let emoji = emoji.to_string();
+        willow_actor::state::mutate(&self.chat_meta_addr, move |cm| {
+            cm.note_reaction(&channel, &emoji);
+        })
+        .await;
+        Ok(())
+    }
+
+    /// Most-recent 5 reactions in `channel` (MRU-first), falling back
+    /// to the spec default `👍 ❤️ 🍃 💚 👀` for slots not yet filled
+    /// by a real reaction in that channel.
+    ///
+    /// Spec: `docs/specs/2026-04-19-ui-design/reactions-pins.md`
+    /// §Quick reactions.
+    pub async fn recent_reactions(&self, channel: &str) -> Vec<String> {
+        let channel = channel.to_string();
+        willow_actor::state::select(&self.chat_meta_addr, move |cm| {
+            cm.recent_reactions(&channel)
+        })
+        .await
     }
 
     pub async fn pin_message(
