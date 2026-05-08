@@ -1,6 +1,6 @@
 # Willow — P2P encrypted chat
 
-# Run ALL checks (fmt, clippy, test, wasm, browser). Use before committing.
+# Run ALL checks (fmt, clippy, test, wasm). Use before committing.
 check: fmt clippy test check-wasm
 
 # Format all code
@@ -186,7 +186,7 @@ serve-web:
 build-relay:
     cargo build --release -p willow-relay
 
-# Run the relay server (TCP 9090, WebSocket 9091)
+# Run the relay server (HTTP 3340)
 relay *args:
     cargo run -p willow-relay -- {{args}}
 

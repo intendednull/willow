@@ -125,6 +125,22 @@ pub const MAX_MIME_BYTES: usize = 255;
 /// vector lives entirely below it.
 pub const MAX_DIMENSION_PX: u32 = 16_384;
 
+/// Maximum allowed length, in bytes, for [`SealedContent::ciphertext`].
+///
+/// `SealedContent::ciphertext` is opaque before AEAD verification, so a
+/// peer can broadcast an arbitrarily large blob and force receivers to
+/// allocate it during deserialise and during decryption before any
+/// authentication failure surfaces. Capping the wire length closes that
+/// pre-decrypt DoS surface.
+///
+/// 64 KiB comfortably exceeds any realistic chat payload (text bodies,
+/// reactions, replies, edits, system messages) plus the 16-byte
+/// ChaCha20-Poly1305 auth tag, while bounding worst-case allocations
+/// from a single message at a level that's cheap to absorb. Peer-supplied
+/// `Content::Encrypted` values whose `ciphertext` exceeds this bound are
+/// rejected by [`Content::validate`].
+pub const MAX_SEALED_CIPHERTEXT_BYTES: usize = 64 * 1024;
+
 /// Errors returned by [`Content::validate`] / [`Message::validate`] when a
 /// peer-supplied payload exceeds the structural bounds enforced by this
 /// crate.
@@ -162,6 +178,16 @@ pub enum MessageValidationError {
         actual: u32,
         /// Configured maximum.
         max: u32,
+    },
+
+    /// `Content::Encrypted` carried a `SealedContent::ciphertext` that
+    /// exceeded [`MAX_SEALED_CIPHERTEXT_BYTES`].
+    #[error("sealed ciphertext too long: {actual} bytes (max {max})")]
+    SealedCiphertextTooLong {
+        /// Observed length in bytes.
+        actual: usize,
+        /// Configured maximum.
+        max: usize,
     },
 }
 
@@ -262,55 +288,71 @@ impl Content {
     /// `Content` is a wire enum decoded with `bincode` before any
     /// structural check runs, so callers handling peer-supplied values
     /// MUST invoke this method after decoding and before trusting the
-    /// fields. Currently bounded fields:
+    /// fields. Bounded fields:
     ///
-    /// - [`Content::File::filename`] — ≤ [`MAX_FILENAME_BYTES`].
-    /// - [`Content::File::mime_type`] — ≤ [`MAX_MIME_BYTES`].
-    /// - [`Content::File::width`] / `height` — ≤ [`MAX_DIMENSION_PX`].
+    /// - [`Content::File::filename`] (≤ [`MAX_FILENAME_BYTES`])
+    /// - [`Content::File::mime_type`] (≤ [`MAX_MIME_BYTES`])
+    /// - [`Content::File::width`] / `height` (≤ [`MAX_DIMENSION_PX`])
+    /// - [`SealedContent::ciphertext`] inside [`Content::Encrypted`]
+    ///   (≤ [`MAX_SEALED_CIPHERTEXT_BYTES`])
     ///
     /// Other variants always validate successfully.
     ///
-    /// `Content::Encrypted` is intentionally not recursed into here —
-    /// the inner `Content` is opaque ciphertext until the channel key
-    /// is applied; callers should re-invoke `validate()` on the
-    /// decrypted `Content` before using its fields.
+    /// The plaintext inside `Content::Encrypted` is opaque until the
+    /// channel key is applied; callers should re-invoke `validate()`
+    /// on the decrypted `Content` before trusting its inner fields.
     pub fn validate(&self) -> Result<(), MessageValidationError> {
-        if let Content::File {
-            filename,
-            mime_type,
-            width,
-            height,
-            ..
-        } = self
-        {
-            if let Some(w) = *width {
-                if w > MAX_DIMENSION_PX {
-                    return Err(MessageValidationError::DimensionTooLarge {
-                        actual: w,
-                        max: MAX_DIMENSION_PX,
+        match self {
+            Content::File {
+                filename,
+                mime_type,
+                width,
+                height,
+                ..
+            } => {
+                if let Some(w) = *width {
+                    if w > MAX_DIMENSION_PX {
+                        return Err(MessageValidationError::DimensionTooLarge {
+                            actual: w,
+                            max: MAX_DIMENSION_PX,
+                        });
+                    }
+                }
+                if let Some(h) = *height {
+                    if h > MAX_DIMENSION_PX {
+                        return Err(MessageValidationError::DimensionTooLarge {
+                            actual: h,
+                            max: MAX_DIMENSION_PX,
+                        });
+                    }
+                }
+                if filename.len() > MAX_FILENAME_BYTES {
+                    return Err(MessageValidationError::FilenameTooLong {
+                        actual: filename.len(),
+                        max: MAX_FILENAME_BYTES,
+                    });
+                }
+                if mime_type.len() > MAX_MIME_BYTES {
+                    return Err(MessageValidationError::MimeTypeTooLong {
+                        actual: mime_type.len(),
+                        max: MAX_MIME_BYTES,
                     });
                 }
             }
-            if let Some(h) = *height {
-                if h > MAX_DIMENSION_PX {
-                    return Err(MessageValidationError::DimensionTooLarge {
-                        actual: h,
-                        max: MAX_DIMENSION_PX,
+            Content::Encrypted(sealed) => {
+                if sealed.ciphertext.len() > MAX_SEALED_CIPHERTEXT_BYTES {
+                    return Err(MessageValidationError::SealedCiphertextTooLong {
+                        actual: sealed.ciphertext.len(),
+                        max: MAX_SEALED_CIPHERTEXT_BYTES,
                     });
                 }
             }
-            if filename.len() > MAX_FILENAME_BYTES {
-                return Err(MessageValidationError::FilenameTooLong {
-                    actual: filename.len(),
-                    max: MAX_FILENAME_BYTES,
-                });
-            }
-            if mime_type.len() > MAX_MIME_BYTES {
-                return Err(MessageValidationError::MimeTypeTooLong {
-                    actual: mime_type.len(),
-                    max: MAX_MIME_BYTES,
-                });
-            }
+            Content::Text { .. }
+            | Content::Reaction { .. }
+            | Content::Reply { .. }
+            | Content::Edit { .. }
+            | Content::Delete { .. }
+            | Content::System { .. } => {}
         }
         Ok(())
     }
@@ -828,6 +870,34 @@ mod tests {
         for content in &cases {
             assert!(content.validate().is_ok(), "expected ok for {content:?}");
         }
+    }
+
+    #[test]
+    fn validate_rejects_oversized_sealed_ciphertext() {
+        let content = Content::Encrypted(SealedContent {
+            ciphertext: vec![0u8; MAX_SEALED_CIPHERTEXT_BYTES + 1],
+            nonce: [0u8; 12],
+            key_epoch: 0,
+            ratchet_counter: 0,
+        });
+        assert_eq!(
+            content.validate(),
+            Err(MessageValidationError::SealedCiphertextTooLong {
+                actual: MAX_SEALED_CIPHERTEXT_BYTES + 1,
+                max: MAX_SEALED_CIPHERTEXT_BYTES,
+            })
+        );
+    }
+
+    #[test]
+    fn validate_accepts_sealed_ciphertext_at_boundary() {
+        let content = Content::Encrypted(SealedContent {
+            ciphertext: vec![0u8; MAX_SEALED_CIPHERTEXT_BYTES],
+            nonce: [0u8; 12],
+            key_epoch: 0,
+            ratchet_counter: 0,
+        });
+        assert!(content.validate().is_ok());
     }
 
     #[test]

@@ -730,6 +730,19 @@ fn check_permission_rejects_non_admin_rename_server() {
 }
 
 #[test]
+fn check_permission_rejects_non_admin_set_server_description() {
+    let owner = Identity::generate();
+    let peer = Identity::generate();
+    let dag = test_dag(&owner);
+    let state = materialize(&dag);
+
+    let kind = EventKind::SetServerDescription {
+        description: "hacked".into(),
+    };
+    assert!(crate::materialize::check_permission(&state, &peer.endpoint_id(), &kind).is_err());
+}
+
+#[test]
 fn create_and_insert_rejects_without_permission() {
     use crate::dag::InsertError;
     use crate::managed::ManagedDag;

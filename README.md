@@ -127,7 +127,7 @@ This launches all services:
 
 | Service | Address | Description |
 |---------|---------|-------------|
-| Relay | `localhost:9090` (TCP), `localhost:9091` (WS) | Bridges peers |
+| Relay | `localhost:3340` | iroh relay HTTP + bootstrap |
 | Replay node | connects via relay | In-memory state sync (max 1000 events/server) |
 | Storage node | connects via relay | Archival SQLite storage |
 | Web UI | `http://localhost:8080` | Leptos app via trunk serve |
