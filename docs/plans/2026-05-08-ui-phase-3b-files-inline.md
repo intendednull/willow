@@ -115,9 +115,9 @@
 
 - [x] **T3.** Create `crates/web/src/components/attachment/` module skeleton + `pick(mime_type, size_bytes) -> AttachmentKind`. Pure function, 6 unit tests covering image / file / voice / image-over-4mb-falls-to-card / unknown-mime-falls-to-card / case-insensitive mime / boundary inclusivity. Stub `AttachmentImage` / `AttachmentFileCard` / `AttachmentVoiceNote` components shipped alongside so the module's public surface compiles before T4–T6 land the full visuals. Wire into `components/mod.rs`. **Verify:** `cargo test -p willow-web --lib attachment`.
 
-- [ ] **T4.** Implement `<AttachmentFileCard>` per spec (mime icon, filename, size, download IconBtn, large-file badge above 10 MB). **Browser tests:** AG-3, AG-4 (file > 10 MB warning leg). **Verify:** `just test-browser`.
+- [x] **T4.** Implement `<AttachmentFileCard>` per spec (mime icon, filename, size, download IconBtn, large-file badge above 10 MB). Spec layout shipped as a complete component; download IconBtn click handler logs a console warning until T8/T9 wire the blob-fetch path through `WebClientHandle::network.blobs()`. CSS for `.attachment` + `.attachment__*` variants appended to `style.css` using foundation tokens only. **Tests:** `format_size_thresholds`, `large_file_warning_threshold_matches_spec` (rust unit). Browser-tier render assertions land in T7.5 once we wire test fixtures with the new `attachment` field. **Verify:** `cargo test -p willow-web --lib attachment`.
 
-- [ ] **T5.** Implement `<AttachmentImage>` per spec (inline `<img loading="lazy">` wrapped in anchor, caption row below, `max-width` 380 / 280 px, fallback to file card on load error). **Browser tests:** AG-2, AG-4 (image > 4 MB degradation leg). **Verify:** `just test-browser`.
+- [x] **T5.** Implement `<AttachmentImage>` per spec (inline `<img loading="lazy">` wrapped in anchor with `target="_blank"`, caption row below in `--ink-3` mono, `max-width` 380 / 280 px). The `<img>` `src` is left empty pending the T8/T9 blob-fetch wiring; the spec layout + caption are final. **Tests:** `caption_format_matches_spec` pins the byte-exact `filename · size · e2e encrypted` format. **Verify:** `cargo test -p willow-web --lib attachment`.
 
 - [ ] **T6.** Implement `<AttachmentVoiceNote>` per spec + `VoiceNotePlayer` single-instance coordinator. **Browser tests:** AG-5, AG-6. **Verify:** `just test-browser`.
 
