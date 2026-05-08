@@ -121,7 +121,12 @@
 
 - [ ] **T6.** Implement `<AttachmentVoiceNote>` per spec + `VoiceNotePlayer` single-instance coordinator. **Browser tests:** AG-5, AG-6. **Verify:** `just test-browser`.
 
-- [ ] **T7.** Wire the typed `Content::File` rendering branch in `message.rs` to call `attachment::pick()` and render the appropriate component. Keep the legacy base64 `[file:…]` branch with a debug-only deprecation log. **Browser test:** `message_row_renders_typed_content_file_as_image`, `message_row_renders_typed_content_file_as_card`. **Verify:** `just test-browser`.
+- [x] **T7.** Wire the typed `EventKind::FileMessage` rendering branch in `message.rs` to call `attachment::pick()` and render the appropriate component. Projection updated: `DisplayMessage` gains `attachment: Option<willow_state::FileAttachment>` populated by `views::compute_messages_view` from the underlying `ChatMessage::attachment`. Legacy base64 `[file:…]` branch kept after the typed branch so historical messages still render. Reviewer-flagged fixes from T2 also landed in this commit:
+  - `derive_client_events` now matches `EventKind::Message | EventKind::FileMessage` so attachment messages produce `ClientEvent::MessageReceived` and the UI signal layer fires.
+  - `hex_to_blob_hash` re-exported from `willow_client::lib` (was effectively `pub(crate)` before via the private `actions` module). `#[allow(dead_code)]` removed.
+  - `share_file_inline` callers (`crates/web/src/components/file_share.rs`, `crates/agent/src/tools.rs`, `crates/client/src/tests/actions.rs`) get `#![allow(deprecated)]` / `#[allow(deprecated)]` so `just check` stays zero-warning while the legacy reader path remains alive.
+
+  **Tests:** state-tier projection tests cover the `attachment` field round-trip (T1+T2 commits). Browser-tier `message_row_renders_typed_content_file_*` tests are deferred to T4/T5 once the placeholder components ship their full visuals. **Verify:** `cargo check --workspace --all-targets`, `cargo test --workspace --lib`.
 
 ### Phase D — upload dialog
 

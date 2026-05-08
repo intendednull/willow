@@ -146,6 +146,19 @@ pub struct DisplayMessage {
     /// run-break per
     /// `docs/specs/2026-04-19-ui-design/message-row.md` §Queue notes.
     pub queue_note: QueueNote,
+    /// `Some(_)` when this message carries a file attachment (any
+    /// `EventKind::FileMessage`). `None` for plain text. Populated by
+    /// the view projection in `views::compute_messages_view` from the
+    /// underlying `ChatMessage::attachment` field.
+    ///
+    /// The renderer in `message.rs` uses this as the discriminator
+    /// between the text-body branch and the
+    /// `crates/web/src/components/attachment/` rendering branch
+    /// (`pick(mime, size)` → `<AttachmentImage>` /
+    /// `<AttachmentFileCard>` / `<AttachmentVoiceNote>`).
+    ///
+    /// Spec: `docs/specs/2026-04-19-ui-design/files-inline.md`.
+    pub attachment: Option<willow_state::FileAttachment>,
 }
 
 /// Maps EndpointId -> display names. Updated from profile broadcasts.

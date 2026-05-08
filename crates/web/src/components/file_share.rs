@@ -1,3 +1,12 @@
+// `<FileShareButton>` calls the legacy `ClientHandle::share_file_inline`,
+// which is `#[deprecated]` in favour of `upload_attachment` +
+// `send_attachment_message`. The button is scheduled for removal once
+// T9 wires the composer attach button to `<UploadDialog>`. Until
+// then, suppress the deprecation warning module-wide to keep
+// `just check` clean — the legacy reader path stays alive so
+// historical `[file:NAME:base64]` messages keep rendering.
+#![allow(deprecated)]
+
 use leptos::prelude::*;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;

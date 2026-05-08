@@ -971,6 +971,7 @@ mod from_display_message_tests {
             pinned: false,
             whisper: false,
             queue_note: QueueNote::None,
+            attachment: None,
         }
     }
 

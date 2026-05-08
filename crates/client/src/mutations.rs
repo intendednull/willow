@@ -962,7 +962,13 @@ impl<N: willow_network::Network> ClientMutations<N> {
 pub(crate) fn derive_client_events(event: &willow_state::Event) -> Vec<ClientEvent> {
     let mut out = Vec::new();
     match &event.kind {
-        EventKind::Message { channel_id, .. } => {
+        EventKind::Message { channel_id, .. }
+        | EventKind::FileMessage { channel_id, .. } => {
+            // Both text + file messages produce a `MessageReceived`
+            // notification on the client event bus. Without the
+            // `FileMessage` arm here, attachments would land silently:
+            // the message-store would update but no toast / unread
+            // badge / channel-list reactivity would fire.
             out.push(ClientEvent::MessageReceived {
                 channel: channel_id.clone(),
                 message_id: event.hash.to_string(),

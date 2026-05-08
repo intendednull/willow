@@ -357,9 +357,9 @@ pub fn blob_hash_to_hex(hash: &willow_network::BlobHash) -> String {
 /// Inverse of [`blob_hash_to_hex`]. Returns `None` on malformed input
 /// (non-hex characters or wrong length).
 ///
-/// `#[allow(dead_code)]`: only used by downstream renderers (web crate)
-/// which can't be referenced from `willow-client` directly.
-#[allow(dead_code)]
+/// Re-exported from `crate::lib` so downstream crates (e.g. the web
+/// renderer) can decode the wire-event hash before calling
+/// [`willow_network::BlobStore::get`].
 pub fn hex_to_blob_hash(hex: &str) -> Option<willow_network::BlobHash> {
     if hex.len() != 64 {
         return None;
