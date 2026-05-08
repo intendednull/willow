@@ -14,7 +14,7 @@ use crate::event::{Event, EventKind, Permission, ProposedAction, MAX_ENCRYPTED_K
 use crate::hash::EventHash;
 use crate::server::{PendingProposal, ServerState};
 use crate::types::{
-    Channel, ChatMessage, Member, PinnedFragment, Profile, PROFILE_CAP_BIO,
+    Channel, ChatMessage, FileAttachment, Member, PinnedFragment, Profile, PROFILE_CAP_BIO,
     PROFILE_CAP_CREST_COLOR, PROFILE_CAP_ELSEWHERE_ENTRY, PROFILE_CAP_ELSEWHERE_LEN,
     PROFILE_CAP_PINNED_BODY, PROFILE_CAP_PRONOUNS, PROFILE_CAP_SINCE, PROFILE_CAP_TAGLINE,
 };
@@ -280,6 +280,7 @@ fn reevaluate_all_proposals(state: &mut ServerState) {
 fn required_permission(kind: &EventKind) -> Option<Permission> {
     match kind {
         EventKind::Message { .. }
+        | EventKind::FileMessage { .. }
         | EventKind::EditMessage { .. }
         | EventKind::DeleteMessage { .. }
         | EventKind::Reaction { .. } => Some(Permission::SendMessages),
@@ -497,12 +498,91 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
                 deleted: false,
                 reactions: BTreeMap::new(),
                 reply_to: *reply_to,
+                attachment: None,
             });
             state.message_index.insert(event.hash, idx);
             // Advance the channel's last_activity_hlc on every Message.
             // Tracked unconditionally — permanent channels carry it too —
             // so the branch stays simple and a future feature can reuse
             // it. Spec: ephemeral-channels.md §Inactivity ladder.
+            if let Some(ch) = state.channels.get_mut(channel_id) {
+                ch.last_activity_hlc = Some(event.timestamp_hint_ms);
+            }
+        }
+
+        EventKind::FileMessage {
+            channel_id,
+            hash,
+            filename,
+            mime_type,
+            size_bytes,
+            width,
+            height,
+            body,
+            reply_to,
+        } => {
+            // Defense-in-depth bounds. The send-side already enforces
+            // `MAX_ATTACHMENT_FILENAME_BYTES` / `MAX_ATTACHMENT_MIME_BYTES`
+            // / `FileAttachment::MAX_DIMENSION_PX`, but the wire is
+            // peer-controlled — silently dropping over-cap attachments
+            // here keeps the in-memory `ServerState` from carrying
+            // them onward. Compared to bailing, dropping mirrors the
+            // existing pattern for over-cap profile fields and keeps
+            // the materialize signature `Result`-free.
+            if filename.len() > crate::event::MAX_ATTACHMENT_FILENAME_BYTES {
+                return ApplyResult::Rejected(format!(
+                    "FileMessage filename too long: {} bytes (max {})",
+                    filename.len(),
+                    crate::event::MAX_ATTACHMENT_FILENAME_BYTES
+                ));
+            }
+            if mime_type.len() > crate::event::MAX_ATTACHMENT_MIME_BYTES {
+                return ApplyResult::Rejected(format!(
+                    "FileMessage mime_type too long: {} bytes (max {})",
+                    mime_type.len(),
+                    crate::event::MAX_ATTACHMENT_MIME_BYTES
+                ));
+            }
+            if let Some(w) = *width {
+                if w > FileAttachment::MAX_DIMENSION_PX {
+                    return ApplyResult::Rejected(format!(
+                        "FileMessage width {}px exceeds max {}px",
+                        w,
+                        FileAttachment::MAX_DIMENSION_PX
+                    ));
+                }
+            }
+            if let Some(h) = *height {
+                if h > FileAttachment::MAX_DIMENSION_PX {
+                    return ApplyResult::Rejected(format!(
+                        "FileMessage height {}px exceeds max {}px",
+                        h,
+                        FileAttachment::MAX_DIMENSION_PX
+                    ));
+                }
+            }
+            let idx = state.messages.len();
+            state.messages.push(ChatMessage {
+                id: event.hash,
+                channel_id: channel_id.clone(),
+                author: event.author,
+                body: body.clone(),
+                timestamp_ms: event.timestamp_hint_ms,
+                edited: false,
+                deleted: false,
+                reactions: BTreeMap::new(),
+                reply_to: *reply_to,
+                attachment: Some(FileAttachment {
+                    hash: hash.clone(),
+                    filename: filename.clone(),
+                    mime_type: mime_type.clone(),
+                    size_bytes: *size_bytes,
+                    width: *width,
+                    height: *height,
+                }),
+            });
+            state.message_index.insert(event.hash, idx);
+            // Advance last_activity_hlc just like the text Message arm.
             if let Some(ch) = state.channels.get_mut(channel_id) {
                 ch.last_activity_hlc = Some(event.timestamp_hint_ms);
             }

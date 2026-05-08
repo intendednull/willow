@@ -267,6 +267,50 @@ impl<N: willow_network::Network> ClientMutations<N> {
         Ok(())
     }
 
+    /// Send a file-attachment message.
+    ///
+    /// Constructs an [`EventKind::FileMessage`] from the supplied
+    /// metadata + caption. The blob bytes themselves are uploaded
+    /// separately via [`crate::ClientHandle::upload_attachment`]; this
+    /// method just publishes the metadata event so receivers learn the
+    /// hash and can fetch from the blob store.
+    ///
+    /// `width` / `height` are `Some(_)` for image attachments whose
+    /// pixel dimensions were extracted at upload time; receivers use
+    /// them to reserve correct-aspect layout space while bytes stream.
+    /// Both should be `None` for non-images.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_file_message(
+        &self,
+        channel: &str,
+        hash: &str,
+        filename: &str,
+        mime_type: &str,
+        size_bytes: u64,
+        width: Option<u32>,
+        height: Option<u32>,
+        caption: &str,
+        reply_to: Option<EventHash>,
+    ) -> anyhow::Result<()> {
+        let channel_id = self.resolve_channel_id(channel).await?;
+        let event = self
+            .build_event(EventKind::FileMessage {
+                channel_id,
+                hash: hash.to_string(),
+                filename: filename.to_string(),
+                mime_type: mime_type.to_string(),
+                size_bytes,
+                width,
+                height,
+                body: caption.to_string(),
+                reply_to,
+            })
+            .await?;
+        self.apply_event(&event).await;
+        self.broadcast_event(&event);
+        Ok(())
+    }
+
     /// Send a reply to a specific message.
     pub async fn send_reply(
         &self,

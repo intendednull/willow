@@ -56,6 +56,6 @@ pub use sync::{
     DEFAULT_PENDING_MAX_AGE_MS, DEFAULT_PENDING_MAX_ENTRIES,
 };
 pub use types::{
-    Channel, ChannelKind, ChatMessage, CrestPattern, Member, MuteState, PinnedFragment, PinnedKind,
-    Profile, ProfileDelta, Role,
+    Channel, ChannelKind, ChatMessage, CrestPattern, FileAttachment, Member, MuteState,
+    PinnedFragment, PinnedKind, Profile, ProfileDelta, Role,
 };

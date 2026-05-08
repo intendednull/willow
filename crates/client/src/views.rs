@@ -1211,6 +1211,7 @@ mod tests {
             deleted: false,
             reactions: BTreeMap::new(),
             reply_to: None,
+            attachment: None,
         });
         id
     }

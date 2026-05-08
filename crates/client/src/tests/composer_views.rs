@@ -167,6 +167,7 @@ async fn last_own_message_returns_most_recent_in_channel() {
                 deleted: false,
                 reactions: Default::default(),
                 reply_to: None,
+                attachment: None,
             });
         };
         push(es, &general_id, local, "first", 1_000);
@@ -216,6 +217,7 @@ async fn last_own_message_none_when_no_own_messages() {
             deleted: false,
             reactions: Default::default(),
             reply_to: None,
+            attachment: None,
         });
     })
     .await;
