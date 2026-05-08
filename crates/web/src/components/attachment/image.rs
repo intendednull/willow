@@ -53,6 +53,10 @@ pub fn AttachmentImage(
 
     // Fetch the bytes once per mount. The Effect captures `hash` /
     // `mime_type` by clone so the component stays cheap to render.
+    // Revokes the Object URL on dispose via `on_cleanup` so a
+    // session that scrolls through hundreds of image messages
+    // doesn't leak per-image `blob:` URLs into the browser's
+    // reference-counted URL store.
     let fetch_hash = hash.clone();
     let fetch_mime = mime_type.clone();
     Effect::new(move |_| {
@@ -76,6 +80,10 @@ pub fn AttachmentImage(
             match handle.fetch_blob(blob_hash).await {
                 Ok(Some(bytes)) => {
                     if let Some(url) = bytes_to_object_url(&bytes, &mime) {
+                        let url_for_cleanup = url.clone();
+                        on_cleanup(move || {
+                            revoke_object_url(&url_for_cleanup);
+                        });
                         setter.set(url);
                     }
                 }
@@ -145,6 +153,16 @@ fn bytes_to_object_url(data: &[u8], mime: &str) -> Option<String> {
 fn bytes_to_object_url(_data: &[u8], _mime: &str) -> Option<String> {
     None
 }
+
+/// Revoke an Object URL so the browser frees the underlying blob
+/// reference. Called from `on_cleanup` when the component disposes.
+#[cfg(target_arch = "wasm32")]
+fn revoke_object_url(url: &str) {
+    let _ = web_sys::Url::revoke_object_url(url);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn revoke_object_url(_url: &str) {}
 
 #[cfg(test)]
 mod tests {
