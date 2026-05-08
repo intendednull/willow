@@ -851,6 +851,7 @@ pub fn MessageView(
                     .into_any(),
                     AttachmentKind::FileCard => view! {
                         <AttachmentFileCard
+                            hash=attachment.hash.clone()
                             filename=attachment.filename.clone()
                             size_bytes=attachment.size_bytes
                         />

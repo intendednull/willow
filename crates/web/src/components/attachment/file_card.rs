@@ -9,13 +9,14 @@
 //! size + mime hint, and a download IconBtn. Files above 10 MB get
 //! the `large · downloads on click` warning badge in `--amber`.
 //!
-//! The download IconBtn is wired to a click handler that fetches the
-//! blob bytes from `WebClientHandle::network.blobs()` (T7 wiring) and
-//! triggers the browser download via a synthesised `<a download>` link,
-//! mirroring the legacy `<FileCard>` flow in `file_share.rs`.
+//! The download IconBtn fetches the blob bytes from
+//! `WebClientHandle::network.blobs()` (decoding the hex-encoded hash
+//! from the wire event) and triggers the browser download via the
+//! shared [`super::trigger_download`] helper.
 
 use leptos::prelude::*;
 
+use crate::app::WebClientHandle;
 use crate::icons;
 
 /// Threshold above which a file gets the `large · downloads on click`
@@ -44,13 +45,19 @@ pub(super) fn format_size(bytes: u64) -> String {
 /// layout and, when `size_bytes > 10 MB`, prepends the
 /// `large · downloads on click` warning badge.
 ///
-/// The download click handler is wired to fetch via the
-/// [`willow_network::BlobStore`] context (T8/T9 will wire the upload
-/// dialog to actually populate the blob store). For now the click
-/// handler emits a console warning when the WebClientHandle context
-/// is absent — keeps the visual shipping ahead of the full fetch path.
+/// `hash` is the 64-char lowercase hex encoding of the
+/// content-addressed blob (see `willow_client::blob_hash_to_hex`).
+/// Click on the download button decodes the hex back to a
+/// [`willow_network::BlobHash`], fetches via
+/// `WebClientHandle::network.blobs().get(...)`, and triggers a browser
+/// download. When the network handle isn't available (offline /
+/// pre-connect) or the blob isn't yet known to this peer, the button
+/// disables itself with an `aria-disabled` hint rather than silently
+/// dropping the click.
 #[component]
 pub fn AttachmentFileCard(
+    /// Hex-encoded blob hash from `EventKind::FileMessage::hash`.
+    hash: String,
     /// Original filename from `EventKind::FileMessage::filename`.
     filename: String,
     /// Sender-declared file size in bytes. **Attacker-declared.**
@@ -61,23 +68,40 @@ pub fn AttachmentFileCard(
     let aria_label = format!("download {filename}");
     let size_label = format_size(size_bytes);
     let large = size_bytes > LARGE_FILE_WARNING_BYTES;
+    let handle = use_context::<WebClientHandle>();
+    let download_disabled = handle.is_none();
 
-    // The legacy `<FileCard>` in `file_share.rs` had the file bytes in
-    // hand (inline base64). The typed `EventKind::FileMessage` carries
-    // only a hash, so the click handler must fetch first. T8/T9 wire
-    // that path through the blob store; for now the IconBtn emits a
-    // console warning so the card visually ships even before the full
-    // download flow lands. Receivers without bytes still see the
-    // metadata correctly.
+    let download_filename = filename.clone();
+    let download_hash = hash.clone();
     let on_download = move |_ev: web_sys::MouseEvent| {
-        // Emit a console warning so the missing-fetch path is
-        // discoverable in dev. T8/T9 wires the actual blob fetch +
-        // browser download via the `WebClientHandle::network.blobs()`
-        // path; this stub keeps the visual card shipping ahead of
-        // that work without silently dropping clicks.
-        web_sys::console::warn_1(
-            &"AttachmentFileCard download: blob-fetch wiring lands in T8/T9 — no bytes yet".into(),
-        );
+        let Some(handle) = handle.clone() else {
+            return;
+        };
+        let Some(blob_hash) = willow_client::hex_to_blob_hash(&download_hash) else {
+            tracing::warn!(hash = %download_hash, "AttachmentFileCard: malformed hex hash");
+            return;
+        };
+        let filename = download_filename.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            match handle.fetch_blob(blob_hash).await {
+                Ok(Some(bytes)) => {
+                    super::trigger_download(&bytes, &filename);
+                }
+                Ok(None) => {
+                    tracing::warn!(
+                        filename = %filename,
+                        "AttachmentFileCard: blob not available locally"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        filename = %filename,
+                        error = ?e,
+                        "AttachmentFileCard: blob fetch failed"
+                    );
+                }
+            }
+        });
     };
 
     view! {
@@ -87,7 +111,6 @@ pub fn AttachmentFileCard(
             } else {
                 "attachment attachment--file-card"
             }
-            data-mime=""
         >
             <span class="attachment__icon">{icons::icon_file()}</span>
             <div class="attachment__meta">
@@ -102,6 +125,8 @@ pub fn AttachmentFileCard(
             <button
                 class="attachment__download"
                 aria-label=aria_label
+                aria-disabled=move || if download_disabled { "true" } else { "false" }
+                disabled=download_disabled
                 on:click=on_download
             >
                 {icons::icon_download()}

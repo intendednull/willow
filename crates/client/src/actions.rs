@@ -61,6 +61,25 @@ impl<N: willow_network::Network> ClientHandle<N> {
         self.send_message(channel, &body).await
     }
 
+    /// Fetch attachment bytes by hash from the blob store.
+    ///
+    /// Returns `Ok(Some(bytes))` when the local blob store has the
+    /// content, `Ok(None)` when the hash is unknown, and `Err(_)` on
+    /// transport failures (e.g. the network has not been started).
+    /// Used by `<AttachmentFileCard>` and `<AttachmentImage>` on the
+    /// receive side; pair with [`Self::upload_attachment`] +
+    /// [`Self::send_attachment_message`] on the send side.
+    pub async fn fetch_blob(
+        &self,
+        hash: willow_network::BlobHash,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        let network = self
+            .network
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("network not connected"))?;
+        crate::files::download_file(network.blobs(), hash).await
+    }
+
     /// Upload bytes to the blob store and return the content hash + size.
     ///
     /// The blob store dedupes by hash, so re-uploading the same bytes

@@ -21,6 +21,56 @@ pub use file_card::AttachmentFileCard;
 pub use image::AttachmentImage;
 pub use voice_note::AttachmentVoiceNote;
 
+/// Trigger a browser download for already-fetched bytes.
+///
+/// Mirrors `crate::components::message::download_blob` (the legacy
+/// inline-base64 path) but lives here so the new attachment surfaces
+/// don't reach across modules. Synthesises a hidden `<a download>`
+/// link, clicks it, and revokes the object URL once the download
+/// kicks off — same pattern the rest of the web crate uses.
+#[cfg(target_arch = "wasm32")]
+pub(super) fn trigger_download(data: &[u8], filename: &str) {
+    use wasm_bindgen::JsCast;
+
+    let array = js_sys::Uint8Array::from(data);
+    let parts = js_sys::Array::new();
+    parts.push(&array.buffer());
+    let Ok(blob) = web_sys::Blob::new_with_u8_array_sequence(&parts) else {
+        return;
+    };
+    let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else {
+        return;
+    };
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(document) = window.document() else {
+        return;
+    };
+    let Some(body) = document.body() else {
+        return;
+    };
+    let Ok(a) = document.create_element("a") else {
+        return;
+    };
+    let _ = a.set_attribute("href", &url);
+    let _ = a.set_attribute("download", filename);
+    let _ = a.set_attribute("style", "display:none");
+    let _ = body.append_child(&a);
+    if let Ok(html_a) = a.clone().dyn_into::<web_sys::HtmlElement>() {
+        html_a.click();
+    }
+    let _ = body.remove_child(&a);
+    let _ = web_sys::Url::revoke_object_url(&url);
+}
+
+/// Native-target stub so non-WASM builds (cargo test on the host) can
+/// still link the attachment module without dragging the `web_sys`
+/// surface in. The browser-tier tests run under wasm-pack and exercise
+/// the wasm32 implementation above.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn trigger_download(_data: &[u8], _filename: &str) {}
+
 /// Which surface the message row should render for a given attachment.
 ///
 /// The variants map 1-to-1 to the components exported from this module
