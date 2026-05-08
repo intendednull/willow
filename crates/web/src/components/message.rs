@@ -844,8 +844,10 @@ pub fn MessageView(
                 let inner = match kind {
                     AttachmentKind::Image => view! {
                         <AttachmentImage
+                            hash=attachment.hash.clone()
                             filename=attachment.filename.clone()
                             size_bytes=attachment.size_bytes
+                            mime_type=attachment.mime_type.clone()
                         />
                     }
                     .into_any(),
