@@ -13,6 +13,7 @@
 //!
 //! See: GitHub issue #312 (SEC-W-07).
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 /// The complete set of SVG icon paths permitted to appear in the web
@@ -112,32 +113,80 @@ fn index_html_only_references_bundled_svg_icons() {
     assert_all_in_allow_list("index.html", &refs);
 }
 
-/// Required directives for the CSP meta tag baked into `index.html`.
+/// Expected directives for the CSP meta tag baked into `index.html`.
 ///
-/// Each entry is a substring search against the meta tag's `content` value;
-/// they collectively encode the policy decisions described in the inline
-/// HTML comment beside the tag (see GitHub issue #175). If you intentionally
-/// loosen or tighten one of these directives, update both this list and the
-/// inline comment so the rationale stays in sync.
-const REQUIRED_CSP_DIRECTIVES: &[&str] = &[
-    "default-src 'self'",
+/// Each entry is `(directive-name, &[expected source tokens])`. The test
+/// parses the meta tag's `content` attribute and asserts that the parsed
+/// directive set equals this expected set *exactly* — no missing
+/// directives, no extra directives, and no extra source tokens within a
+/// directive. Token order is irrelevant (compared as sets).
+///
+/// The exact-match shape is deliberate: a substring-only check let
+/// additions like widening `script-src` with `'unsafe-inline'` slip
+/// through unnoticed (see GitHub issue #619). If you intentionally loosen
+/// or tighten one of these directives, update both this list and the
+/// rationale comment beside the meta tag in `index.html` so the
+/// reasoning stays in sync (issue #175).
+const EXPECTED_CSP_DIRECTIVES: &[(&str, &[&str])] = &[
+    ("default-src", &["'self'"]),
     // WASM module + the still-extant js_sys::eval() sites (tracked by
     // issues #171 / #425). Drop 'unsafe-eval' once those are gone.
-    "script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'",
+    (
+        "script-src",
+        &["'self'", "'wasm-unsafe-eval'", "'unsafe-eval'"],
+    ),
     // Inline style="…" attrs from Leptos views + Google Fonts CSS @import.
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-    "font-src 'self' https://fonts.gstatic.com",
+    (
+        "style-src",
+        &["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+    ),
+    ("font-src", &["'self'", "https://fonts.gstatic.com"]),
     // ws/wss for relay transport, https for the relay HTTP bootstrap probe.
-    "connect-src 'self' ws: wss: https:",
+    ("connect-src", &["'self'", "ws:", "wss:", "https:"]),
     // data: for avatar URIs, blob: for runtime createObjectURL attachments.
-    "img-src 'self' https: data: blob:",
-    "media-src 'self' blob:",
-    "worker-src 'self'",
-    "object-src 'none'",
-    "base-uri 'self'",
-    "form-action 'self'",
-    "frame-ancestors 'none'",
+    ("img-src", &["'self'", "https:", "data:", "blob:"]),
+    ("media-src", &["'self'", "blob:"]),
+    ("worker-src", &["'self'"]),
+    ("object-src", &["'none'"]),
+    ("base-uri", &["'self'"]),
+    ("form-action", &["'self'"]),
+    ("frame-ancestors", &["'none'"]),
 ];
+
+/// Extract the `content="…"` attribute value of the
+/// `<meta http-equiv="Content-Security-Policy" …>` tag from `index.html`.
+fn extract_csp_content(html: &str) -> Option<&str> {
+    let needle = "http-equiv=\"Content-Security-Policy\"";
+    let pos = html.find(needle)?;
+    // Find `content="…"` after the http-equiv attribute (within the same tag).
+    let after = &html[pos..];
+    let tag_end = after.find('>')?;
+    let tag = &after[..tag_end];
+    let content_marker = "content=\"";
+    let content_start = tag.find(content_marker)? + content_marker.len();
+    let content_rel = tag[content_start..].find('"')?;
+    Some(&tag[content_start..content_start + content_rel])
+}
+
+/// Parse a CSP `content` attribute value into a directive → token-set map.
+///
+/// Splits on `;`, trims, then within each directive splits on whitespace,
+/// taking the first token as the directive name and the rest as its
+/// source tokens.
+fn parse_csp(content: &str) -> BTreeMap<&str, BTreeSet<&str>> {
+    content
+        .split(';')
+        .filter_map(|d| {
+            let d = d.trim();
+            if d.is_empty() {
+                return None;
+            }
+            let mut parts = d.split_whitespace();
+            let name = parts.next()?;
+            Some((name, parts.collect()))
+        })
+        .collect()
+}
 
 #[test]
 fn index_html_declares_content_security_policy() {
@@ -149,12 +198,75 @@ fn index_html_declares_content_security_policy() {
          See GitHub issue #175 — the CSP guards against script injection \
          and clickjacking and must stay in the document head.",
     );
-    for directive in REQUIRED_CSP_DIRECTIVES {
+
+    let csp = extract_csp_content(&contents).expect(
+        "could not extract content=\"…\" from the Content-Security-Policy meta tag in index.html",
+    );
+    let actual = parse_csp(csp);
+    let expected: BTreeMap<&str, BTreeSet<&str>> = EXPECTED_CSP_DIRECTIVES
+        .iter()
+        .map(|(name, tokens)| (*name, tokens.iter().copied().collect()))
+        .collect();
+
+    // Exact-set comparison: catches missing directives, extra directives,
+    // missing tokens, and — most importantly for issue #619 — additions
+    // of source tokens (e.g. widening script-src with 'unsafe-inline')
+    // that a substring check would silently allow through.
+    assert_eq!(
+        actual, expected,
+        "index.html CSP does not match the expected directive set.\n\
+         Update both the meta tag in index.html AND \
+         EXPECTED_CSP_DIRECTIVES in this test (and the rationale comment \
+         beside the meta tag) if you are intentionally changing the CSP.\n\
+         Expected: {expected:#?}\nActual:   {actual:#?}",
+    );
+}
+
+/// Defense-in-depth: even if a future maintainer updates both the meta
+/// tag and `EXPECTED_CSP_DIRECTIVES` together, certain source tokens are
+/// dangerous enough that they should never appear outside specific
+/// directives. This test bypasses the expected-set comparison and asserts
+/// those invariants directly.
+#[test]
+fn csp_rejects_unsafe_inline_outside_style_src() {
+    let contents = read_asset("index.html");
+    let csp = extract_csp_content(&contents).expect("CSP meta tag missing");
+    let parsed = parse_csp(csp);
+    for (name, tokens) in &parsed {
+        if *name == "style-src" {
+            // 'unsafe-inline' is intentionally allowed here for Leptos
+            // inline style="…" attributes. See the comment beside the
+            // meta tag in index.html.
+            continue;
+        }
         assert!(
-            contents.contains(directive),
-            "index.html CSP is missing required directive `{directive}`. \
-             Update both the meta tag in index.html and the rationale \
-             comment beside it if you are intentionally changing this.",
+            !tokens.contains("'unsafe-inline'"),
+            "CSP directive `{name}` contains 'unsafe-inline'. \
+             Only `style-src` is permitted to use 'unsafe-inline'; any \
+             other directive (especially script-src) opens an XSS vector. \
+             See GitHub issue #619.",
+        );
+        assert!(
+            !tokens.contains("'unsafe-hashes'"),
+            "CSP directive `{name}` contains 'unsafe-hashes'. \
+             'unsafe-hashes' relaxes hash matching to apply to inline \
+             event handlers; it should not be added to any directive \
+             without an explicit security review. See issue #619.",
+        );
+    }
+}
+
+#[test]
+fn csp_rejects_data_in_script_src() {
+    let contents = read_asset("index.html");
+    let csp = extract_csp_content(&contents).expect("CSP meta tag missing");
+    let parsed = parse_csp(csp);
+    if let Some(tokens) = parsed.get("script-src") {
+        assert!(
+            !tokens.contains("data:"),
+            "CSP `script-src` contains `data:`. This permits inline \
+             scripts to be sourced from data: URIs and is a known XSS \
+             vector — never add it. See GitHub issue #619.",
         );
     }
 }

@@ -29,6 +29,23 @@ fn truncate_chars(s: &str, cap: usize) -> String {
     s.chars().take(cap).collect()
 }
 
+/// Maximum UTF-8 byte length of a `Reaction.emoji` string.
+///
+/// Emoji codepoints are short — even multi-codepoint ZWJ sequences fit
+/// in ~28 bytes. Capping at 32 bytes prevents a peer with
+/// `SendMessages` permission from broadcasting multi-MB strings as
+/// reaction keys, which would replicate to every receiver. Measured in
+/// bytes (not chars) because byte length is what drives wire-format
+/// storage cost. See issue #615.
+pub const MAX_REACTION_EMOJI_BYTES: usize = 32;
+
+/// Maximum number of distinct reaction keys per message.
+///
+/// Without this cap, a single peer can issue N events with N distinct
+/// emoji to grow `ChatMessage.reactions` cardinality unboundedly,
+/// since each unique key clones at every replay. See issue #615.
+pub const MAX_REACTIONS_PER_MESSAGE: usize = 32;
+
 /// Result of applying an event to state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApplyResult {
@@ -535,8 +552,30 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
         }
 
         EventKind::Reaction { message_id, emoji } => {
+            // Reject oversized emoji strings — bounds DAG-time storage
+            // cost, since each unique emoji is cloned as a BTreeMap key
+            // on every receiver. See issue #615.
+            if emoji.len() > MAX_REACTION_EMOJI_BYTES {
+                return ApplyResult::Rejected(format!(
+                    "reaction emoji exceeds {} bytes ({} bytes)",
+                    MAX_REACTION_EMOJI_BYTES,
+                    emoji.len()
+                ));
+            }
             if let Some(&idx) = state.message_index.get(message_id) {
                 if let Some(msg) = state.messages.get_mut(idx) {
+                    // Reject if adding a *new* reaction key would push
+                    // cardinality past the cap. Adding an author to an
+                    // existing emoji key is fine — that doesn't grow
+                    // cardinality. See issue #615.
+                    if !msg.reactions.contains_key(emoji)
+                        && msg.reactions.len() >= MAX_REACTIONS_PER_MESSAGE
+                    {
+                        return ApplyResult::Rejected(format!(
+                            "message already has {} distinct reactions (cap)",
+                            MAX_REACTIONS_PER_MESSAGE
+                        ));
+                    }
                     msg.reactions
                         .entry(emoji.clone())
                         .or_default()
@@ -594,6 +633,21 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
                 elsewhere,
                 since,
             } = delta.as_ref();
+            // Mirror SetProfile's display_name cap: reject the entire
+            // event if display_name exceeds 64 chars. Rejection (not
+            // silent truncation like the sibling profile fields) is
+            // chosen for parity with SetProfile and because display_name
+            // is identity-tier — silent truncation could produce
+            // confusing duplicate names ("alice" vs a truncated
+            // "alice…"). See issue #614.
+            if let Some(name) = display_name {
+                if name.chars().count() > 64 {
+                    return ApplyResult::Rejected(format!(
+                        "display name exceeds 64 chars ({} chars)",
+                        name.chars().count()
+                    ));
+                }
+            }
             let entry = state
                 .profiles
                 .entry(event.author)
@@ -1602,6 +1656,81 @@ mod tests {
     }
 
     #[test]
+    fn update_profile_display_name_over_64_chars_rejected() {
+        // Mirrors the SetProfile cap (issue #614): an UpdateProfile event
+        // carrying a >64-char display_name must be rejected so a
+        // misbehaving peer cannot DoS receivers by broadcasting a
+        // multi-megabyte name (`Some("a".repeat(10_000_000))`). At the
+        // same time, a 64-char display name must still apply, and the
+        // sibling fields (which use silent truncation) must not regress.
+        let admin = Identity::generate();
+        let mut dag = test_dag(&admin);
+
+        // First, set a known-good display name via SetProfile so we have
+        // a baseline value to assert against after the rejected event.
+        let baseline = "alice".to_string();
+        emit(
+            &mut dag,
+            &admin,
+            EventKind::SetProfile {
+                display_name: baseline.clone(),
+            },
+        );
+
+        // 64 crabs (256 bytes) must apply — char-count, not byte-length.
+        let ok_display: String = "🦀".repeat(64);
+        emit(
+            &mut dag,
+            &admin,
+            EventKind::UpdateProfile(Box::new(crate::types::ProfileDelta {
+                display_name: Some(ok_display.clone()),
+                ..Default::default()
+            })),
+        );
+        let state_after_ok = materialize(&dag);
+        assert_eq!(
+            state_after_ok.profiles[&admin.endpoint_id()].display_name,
+            ok_display,
+            "64-char UpdateProfile display_name must apply",
+        );
+        assert_eq!(
+            state_after_ok.members[&admin.endpoint_id()].display_name,
+            Some(ok_display.clone()),
+            "members entry must mirror profiles entry",
+        );
+
+        // 65 crabs must be rejected — and the prior value must remain.
+        let bad_display: String = "🦀".repeat(65);
+        emit(
+            &mut dag,
+            &admin,
+            EventKind::UpdateProfile(Box::new(crate::types::ProfileDelta {
+                display_name: Some(bad_display),
+                // Pair with a benign sibling field; if the event were
+                // (incorrectly) applied with truncation instead of
+                // rejection, the pronouns side-effect would still land.
+                // Rejection must drop the *whole* event.
+                pronouns: Some(Some("they/them".into())),
+                ..Default::default()
+            })),
+        );
+        let state = materialize(&dag);
+        // Display name pinned at the prior 64-char value.
+        assert_eq!(
+            state.profiles[&admin.endpoint_id()].display_name,
+            ok_display,
+            "rejected UpdateProfile must leave display_name unchanged",
+        );
+        // Sibling field must NOT have been applied — rejection drops the
+        // whole event, not just the offending field.
+        assert_eq!(
+            state.profiles[&admin.endpoint_id()].pronouns,
+            None,
+            "rejected UpdateProfile must not apply sibling fields",
+        );
+    }
+
+    #[test]
     fn kick_cleans_up_pending_votes() {
         let admin = Identity::generate();
         let alice = Identity::generate();
@@ -1666,5 +1795,178 @@ mod tests {
 
         let state = materialize(&dag);
         assert_eq!(state.vote_threshold, VoteThreshold::Unanimous);
+    }
+
+    #[test]
+    fn reaction_emoji_over_32_bytes_rejected() {
+        // Issue #615: an oversized Reaction.emoji must be rejected, not
+        // applied as a BTreeMap key, otherwise a peer with SendMessages
+        // permission can broadcast a multi-MB string and force every
+        // receiver to clone it on every replay.
+        let admin = Identity::generate();
+        let mut dag = test_dag(&admin);
+        let msg = emit(
+            &mut dag,
+            &admin,
+            EventKind::Message {
+                channel_id: "general".into(),
+                body: "react to me".into(),
+                reply_to: None,
+            },
+        );
+
+        // 33 bytes of ASCII — one byte over the 32-byte cap.
+        let bad_emoji: String = "a".repeat(MAX_REACTION_EMOJI_BYTES + 1);
+        assert_eq!(bad_emoji.len(), MAX_REACTION_EMOJI_BYTES + 1);
+        emit(
+            &mut dag,
+            &admin,
+            EventKind::Reaction {
+                message_id: msg.hash,
+                emoji: bad_emoji.clone(),
+            },
+        );
+
+        let state = materialize(&dag);
+        assert!(
+            !state.messages[0].reactions.contains_key(&bad_emoji),
+            "oversized emoji must not appear as a reaction key",
+        );
+        assert!(
+            state.messages[0].reactions.is_empty(),
+            "no reactions should land when the only Reaction is rejected",
+        );
+    }
+
+    #[test]
+    fn reaction_cardinality_over_32_per_message_rejected() {
+        // Issue #615: distinct reaction keys per message are capped at
+        // MAX_REACTIONS_PER_MESSAGE. A 33rd distinct emoji must be
+        // rejected; the first 32 must remain.
+        let admin = Identity::generate();
+        let mut dag = test_dag(&admin);
+        let msg = emit(
+            &mut dag,
+            &admin,
+            EventKind::Message {
+                channel_id: "general".into(),
+                body: "react to me".into(),
+                reply_to: None,
+            },
+        );
+
+        // 32 distinct ASCII emojis (use 2-char strings so they're
+        // unambiguously distinct keys, well under 32 bytes each).
+        for i in 0..MAX_REACTIONS_PER_MESSAGE {
+            let emoji = format!("e{i:02}");
+            emit(
+                &mut dag,
+                &admin,
+                EventKind::Reaction {
+                    message_id: msg.hash,
+                    emoji,
+                },
+            );
+        }
+
+        // 33rd distinct key — must be rejected.
+        let overflow_emoji = "EXTRA".to_string();
+        emit(
+            &mut dag,
+            &admin,
+            EventKind::Reaction {
+                message_id: msg.hash,
+                emoji: overflow_emoji.clone(),
+            },
+        );
+
+        let state = materialize(&dag);
+        assert_eq!(
+            state.messages[0].reactions.len(),
+            MAX_REACTIONS_PER_MESSAGE,
+            "exactly MAX_REACTIONS_PER_MESSAGE distinct keys must remain",
+        );
+        assert!(
+            !state.messages[0].reactions.contains_key(&overflow_emoji),
+            "33rd distinct reaction must not be added",
+        );
+    }
+
+    #[test]
+    fn reaction_existing_key_not_blocked_by_cardinality_cap() {
+        // Issue #615: at the cap, applying a Reaction with an emoji
+        // *already* present must still succeed — it only adds an author
+        // to the existing set; cardinality does not grow.
+        let admin = Identity::generate();
+        let bob = Identity::generate();
+        let mut dag = test_dag(&admin);
+
+        // Trust bob so he can react.
+        let grant = emit(
+            &mut dag,
+            &admin,
+            EventKind::GrantPermission {
+                peer_id: bob.endpoint_id(),
+                permission: crate::event::Permission::SendMessages,
+            },
+        );
+        let msg = emit(
+            &mut dag,
+            &admin,
+            EventKind::Message {
+                channel_id: "general".into(),
+                body: "react to me".into(),
+                reply_to: None,
+            },
+        );
+
+        // Fill to the cap with admin's reactions.
+        for i in 0..MAX_REACTIONS_PER_MESSAGE {
+            let emoji = format!("e{i:02}");
+            emit(
+                &mut dag,
+                &admin,
+                EventKind::Reaction {
+                    message_id: msg.hash,
+                    emoji,
+                },
+            );
+        }
+
+        // Bob reacts with an *existing* emoji key — must apply, even
+        // though the message is at MAX_REACTIONS_PER_MESSAGE distinct
+        // reactions, because cardinality does not grow. Bob's event
+        // must causally depend on the grant + message so the topo sort
+        // places it after both, otherwise his reaction may be processed
+        // before he has SendMessages.
+        let existing_emoji = "e00".to_string();
+        emit_with_deps(
+            &mut dag,
+            &bob,
+            EventKind::Reaction {
+                message_id: msg.hash,
+                emoji: existing_emoji.clone(),
+            },
+            vec![grant.hash, msg.hash],
+        );
+
+        let state = materialize(&dag);
+        assert_eq!(
+            state.messages[0].reactions.len(),
+            MAX_REACTIONS_PER_MESSAGE,
+            "cardinality unchanged",
+        );
+        let authors = state.messages[0]
+            .reactions
+            .get(&existing_emoji)
+            .expect("existing emoji key must still be present");
+        assert!(
+            authors.contains(&admin.endpoint_id()),
+            "admin's original reaction must remain",
+        );
+        assert!(
+            authors.contains(&bob.endpoint_id()),
+            "bob's reaction with existing emoji must be added",
+        );
     }
 }
