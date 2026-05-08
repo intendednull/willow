@@ -13,10 +13,19 @@ fn main() {
         }
     }
 
-    // Register the service worker for PWA support.
-    let _ = js_sys::eval(
-        "if ('serviceWorker' in navigator) { navigator.serviceWorker.register('/sw.js').catch(function() {}); }",
-    );
+    // Register the service worker for PWA support. Logs failures (HTTPS
+    // misconfiguration, MIME mismatch, parse errors, scope violations) so
+    // they surface instead of being silently swallowed (issue #606).
+    if let Some(window) = web_sys::window() {
+        let sw_container = window.navigator().service_worker();
+        let promise = sw_container.register("/sw.js");
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Err(e) = wasm_bindgen_futures::JsFuture::from(promise).await {
+                let msg = e.as_string().unwrap_or_else(|| format!("{e:?}"));
+                tracing::warn!("service worker registration failed: {msg}");
+            }
+        });
+    }
 
     // Wire navigator.serviceWorker.onmessage so pushes forwarded by the
     // service worker (focused-client path) reach the in-app Notifier.
