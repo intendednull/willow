@@ -158,11 +158,16 @@
 
   **Browser test:** AG-11 lands alongside the deferred surfaces so a single browser-tier audit can sweep them all together. Today the FileShareButton + FileCard ARIA is verified by code inspection against the spec table. **Verify:** `cargo check --workspace --all-targets`.
 
-- [ ] **T14.** Verify reduced-motion participation for the drag overlay + progress bars. **Browser test:** AG-12. **Verify:** `just test-browser`.
+- [x] **T14.** Verify reduced-motion participation for the surfaces that ship in this PR. By construction:
+  - `<AttachmentImage>` paints a static `<img>` with `loading="lazy"` and `decoding="async"`. No CSS transitions, no keyframes — reduced-motion is a no-op (no animation to suppress).
+  - `<AttachmentFileCard>` paints a static card. The download button has `:hover` / `:focus-visible` border-color changes but no transitions on the property itself.
+  - The drag overlay (`<DragOverlay>`, T10) and upload-progress bars (`<UploadDialog>`, T8) are the surfaces the spec calls out for reduced-motion gating; both are deferred. Their AG-12 browser test lands with their respective tasks.
+
+  No code change needed for the surfaces that ship today. **Verify:** code inspection of `crates/web/style.css` `.attachment*` rules — no `transition` / `animation` properties present.
 
 ### Phase H — close-out
 
-- [ ] **T15.** Tick the spec acceptance criteria in `docs/specs/2026-04-19-ui-design/files-inline.md`. Tick this plan's checkboxes. Update spec status from `draft` → `implementing` (or directly to `landed` on the merge commit if the plan author and reviewer agree). Resolve the spec's "Open questions" — `width / height` lands in T1, max file size stays at 25 MB pending real-usage data. **Verify:** spec + plan diff inspected; `just check` clean.
+- [ ] **T15.** Tick the spec acceptance criteria in `docs/specs/2026-04-19-ui-design/files-inline.md` for the items that ship in this PR (file-card render, image render, image > 4 MB degradation, file > 10 MB warning, ARIA `download {filename}`). Stamp spec status `draft → implementing` with a note pointing back at this plan + PR. The spec's "Open questions" (`width` / `height` schema extension, 25 MB max-file size) get resolved-with-pointers comments. The status moves `implementing → landed` in a follow-up close-out commit on main once T6 / T8 / T9 / T10 / T11 / T12 ship — they're necessary for the full spec checkbox sweep. **Verify:** spec + plan diff inspected; `just check` clean on the close-out commit.
 
 ## Ambiguity decisions
 

@@ -1,7 +1,7 @@
 # Files and inline attachments — file cards, images, voice notes, upload
 
 **Parent:** [README.md](README.md)
-**Status:** draft
+**Status:** implementing (phase 3b PR #633 — `docs/plans/2026-05-08-ui-phase-3b-files-inline.md`)
 **Dependencies:** [`foundation.md`](foundation.md),
 [`layout-primitives.md`](layout-primitives.md),
 [`message-row.md`](message-row.md),
@@ -205,28 +205,44 @@ easing. Drag overlay crossfades in under reduced motion.
 
 ## Acceptance criteria
 
-- [ ] Inline images render at `max-width: 380 / 280 px` with
+- [x] Inline images render at `max-width: 380 / 280 px` with
       `loading="lazy"` and caption `filename · size · e2e encrypted`.
-- [ ] Images above 4 MB degrade to a file card; files above 10 MB
+      *(`<AttachmentImage>` — phase 3b T5.)*
+- [x] Images above 4 MB degrade to a file card; files above 10 MB
       show the `large · downloads on click` warning badge.
-- [ ] File cards render with mime icon, filename, size, download
+      *(`attachment::pick` decision table + `<AttachmentFileCard>` —
+      phase 3b T3 + T4.)*
+- [x] File cards render with mime icon, filename, size, download
       IconBtn, and respect `max-width: 420px` desktop / `100%` mobile.
+      *(`<AttachmentFileCard>` — phase 3b T4.)*
 - [ ] Voice notes render the waveform + play / pause + mm:ss timer
-      card, and starting one pauses any other.
+      card, and starting one pauses any other. *(Placeholder ships in
+      phase 3b; full surface in T6.)*
 - [ ] Upload dialog opens from the composer attach button with a
       picker row, per-file progress + cancel, and the footer actions
-      in §Copy.
+      in §Copy. *(Phase 3b ships a single-file direct upload via the
+      paperclip; full dialog is T8.)*
 - [ ] Drag-and-drop anywhere in the desktop window opens the upload
       dialog with dropped files enqueued; the overlay uses the copy
-      in §Copy.
+      in §Copy. *(T10.)*
 - [ ] Pasting files or an image into the composer routes them to the
-      upload dialog instead of inserting text.
+      upload dialog instead of inserting text. *(T12.)*
 - [ ] Every interactive element has an ARIA label per §Accessibility.
+      *(`download {filename}` + `attach file` shipped in phase 3b;
+      voice-note + upload-cancel + drag-overlay labels land with
+      T6 / T8 / T10.)*
 
 ## Open questions
 
-- **Image dimensions in the envelope.** To render a correct-ratio
-  placeholder while bytes stream, we need `width` and `height` in
-  file attachment metadata. Propose extending the messaging schema.
-- **Max file size.** 25 MB in v1. Revisit once we see real usage and
+- ~~**Image dimensions in the envelope.**~~ **Resolved (phase 3b T1).**
+  `Content::File` gained optional `width: Option<u32>` /
+  `height: Option<u32>` (`#[serde(default)]`, capped at
+  `MAX_DIMENSION_PX = 16384` with a render-clamp warning). The web
+  layer extracts dimensions via the browser `Image` API at upload
+  time and stamps them onto the wire; receivers use them to reserve
+  correct-aspect layout space while bytes stream.
+- **Max file size.** 25 MB in v1 (enforced in `<FileShareButton>`).
+  The blob transport itself can handle larger payloads — the cap is
+  a protect-from-accidents guard until the upload dialog (T8) lands
+  with real progress UI. Revisit once we see real usage and
   blob-transport cost.
