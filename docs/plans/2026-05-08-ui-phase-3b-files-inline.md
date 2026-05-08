@@ -104,7 +104,7 @@
 
 ### Phase C — inline rendering
 
-- [ ] **T3.** Create `crates/web/src/components/attachment/` module skeleton + `pick(content) -> AttachmentKind`. Pure function, 5 unit tests covering image / file / voice / image-over-4mb-falls-to-card / unknown-mime-falls-to-card. Wire into `components/mod.rs`. **Verify:** `cargo test -p willow-web`.
+- [x] **T3.** Create `crates/web/src/components/attachment/` module skeleton + `pick(mime_type, size_bytes) -> AttachmentKind`. Pure function, 6 unit tests covering image / file / voice / image-over-4mb-falls-to-card / unknown-mime-falls-to-card / case-insensitive mime / boundary inclusivity. Stub `AttachmentImage` / `AttachmentFileCard` / `AttachmentVoiceNote` components shipped alongside so the module's public surface compiles before T4–T6 land the full visuals. Wire into `components/mod.rs`. **Verify:** `cargo test -p willow-web --lib attachment`.
 
 - [ ] **T4.** Implement `<AttachmentFileCard>` per spec (mime icon, filename, size, download IconBtn, large-file badge above 10 MB). **Browser tests:** AG-3, AG-4 (file > 10 MB warning leg). **Verify:** `just test-browser`.
 

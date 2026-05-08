@@ -114,6 +114,15 @@ pub const MAX_MIME_BYTES: usize = 255;
 /// huge dimensions to force the renderer to reserve gigantic layout
 /// space. Peer-supplied dimensions above this are rejected by
 /// [`Content::validate`].
+///
+/// **Sub-cap values are still attacker-declared.** A peer can declare
+/// 16383 × 16383 (≈ 268 MP, ≈ 1 GB RGBA at 4 bytes / pixel) without
+/// hitting the cap. Renderers MUST NOT pass these values directly to
+/// allocation APIs (`canvas.width = …`, `Vec::with_capacity`, GPU
+/// texture creation, …) — clamp to a viewport-relative safe bound at
+/// the render layer first. The schema cap only protects against the
+/// extreme abuse case (e.g. 100 000 × 100 000); the realistic abuse
+/// vector lives entirely below it.
 pub const MAX_DIMENSION_PX: u32 = 16_384;
 
 /// Errors returned by [`Content::validate`] / [`Message::validate`] when a
