@@ -346,7 +346,7 @@ pub enum ServerMessageAction {
 pub fn parse_server_message(data: &[u8]) -> ServerMessageAction {
     if let Some((wire_msg, _signer)) = willow_common::unpack_wire(data) {
         match wire_msg {
-            willow_common::WireMessage::Event(event) => ServerMessageAction::Events(vec![event]),
+            willow_common::WireMessage::Event(event) => ServerMessageAction::Events(vec![*event]),
             willow_common::WireMessage::SyncBatch { events } => ServerMessageAction::Events(events),
             _ => ServerMessageAction::Ignore,
         }
@@ -601,7 +601,8 @@ mod tests {
             1000,
         );
         let data =
-            willow_common::pack_wire(&willow_common::WireMessage::Event(event), &id).unwrap();
+            willow_common::pack_wire(&willow_common::WireMessage::Event(Box::new(event)), &id)
+                .unwrap();
         assert!(matches!(
             parse_worker_message(&data, &my_id),
             WorkerMessageAction::Ignore
@@ -644,7 +645,8 @@ mod tests {
         let expected_hash = event.hash;
 
         let data =
-            willow_common::pack_wire(&willow_common::WireMessage::Event(event), &id).unwrap();
+            willow_common::pack_wire(&willow_common::WireMessage::Event(Box::new(event)), &id)
+                .unwrap();
 
         match parse_server_message(&data) {
             ServerMessageAction::Events(events) => {

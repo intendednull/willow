@@ -1919,3 +1919,121 @@ fn apply_rotate_channel_key_accepts_at_member_count_plus_epsilon() {
         Some(cap),
     );
 }
+
+// ── FileMessage (phase 3b) ──────────────────────────────────────────────
+
+#[test]
+fn file_message_apply_attaches_file_attachment() {
+    use crate::types::FileAttachment;
+
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::FileMessage {
+            channel_id: "ch-1".to_string(),
+            hash: "deadbeef".to_string(),
+            filename: "photo.jpg".to_string(),
+            mime_type: "image/jpeg".to_string(),
+            size_bytes: 2_048,
+            width: Some(1920),
+            height: Some(1080),
+            body: "look at this!".to_string(),
+            reply_to: None,
+        },
+    );
+
+    let state = materialize(&dag);
+    assert_eq!(state.messages.len(), 1);
+    let msg = &state.messages[0];
+    assert_eq!(msg.body, "look at this!");
+    assert_eq!(
+        msg.attachment,
+        Some(FileAttachment {
+            hash: "deadbeef".to_string(),
+            filename: "photo.jpg".to_string(),
+            mime_type: "image/jpeg".to_string(),
+            size_bytes: 2_048,
+            width: Some(1920),
+            height: Some(1080),
+        }),
+        "FileMessage materialize must populate the attachment field with all six \
+         struct fields preserved end-to-end"
+    );
+}
+
+#[test]
+fn message_apply_keeps_attachment_none() {
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+
+    do_emit(
+        &mut dag,
+        &admin,
+        EventKind::Message {
+            channel_id: "ch-1".to_string(),
+            body: "hello".to_string(),
+            reply_to: None,
+        },
+    );
+
+    let state = materialize(&dag);
+    assert_eq!(state.messages.len(), 1);
+    assert!(
+        state.messages[0].attachment.is_none(),
+        "plain Message must produce ChatMessage with attachment = None so the \
+         renderer's text-vs-attachment branch can rely on Some/None as the \
+         discriminator"
+    );
+}
+
+#[test]
+fn file_message_apply_rejects_oversize_dimensions() {
+    use crate::materialize::{apply_incremental, ApplyResult};
+    use crate::types::FileAttachment;
+
+    let admin = Identity::generate();
+    let mut dag = test_dag(&admin);
+    let bad = dag.create_event(
+        &admin,
+        EventKind::FileMessage {
+            channel_id: "ch-1".to_string(),
+            hash: "h".to_string(),
+            filename: "x.png".to_string(),
+            mime_type: "image/png".to_string(),
+            size_bytes: 1,
+            width: Some(FileAttachment::MAX_DIMENSION_PX + 1),
+            height: Some(100),
+            body: String::new(),
+            reply_to: None,
+        },
+        vec![],
+        0,
+    );
+    dag.insert(bad.clone()).unwrap();
+    let mut state = materialize(&dag);
+    // The materialize() call above will have applied genesis only —
+    // FileMessage is not in DAG-topological order yet because materialize
+    // walks via insert order. Re-run apply_incremental on the bad event
+    // explicitly so we observe the Rejected outcome cleanly.
+    let result = apply_incremental(&mut state, &bad);
+    match result {
+        ApplyResult::Rejected(reason) => {
+            assert!(
+                reason.contains("width"),
+                "rejection reason should name the offending field, got: {reason}"
+            );
+        }
+        ApplyResult::AlreadyApplied => {
+            // materialize already swept the event in topo order and
+            // skipped it; verify state is empty.
+            assert!(
+                state.messages.is_empty(),
+                "rejected FileMessage must not appear in materialized state"
+            );
+        }
+        other => panic!("expected Rejected or AlreadyApplied (already-rejected), got {other:?}"),
+    }
+}

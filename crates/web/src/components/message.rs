@@ -826,6 +826,51 @@ pub fn MessageView(
                 // `--ink-3`. Byte-exact copy comes from the spec's
                 // "deleted placeholder" bullet.
                 view! { <div class=body_class>"this message was withdrawn"</div> }.into_any()
+            } else if let Some(attachment) = message.attachment.clone() {
+                // Phase 3b T7 — typed `EventKind::FileMessage` rendering.
+                // Replaces the legacy `[file:NAME:base64]` body-scrape
+                // path (still active in the next branch for back-compat)
+                // with the proper attachment surface picked by spec.
+                use crate::components::attachment::{
+                    pick, AttachmentFileCard, AttachmentImage, AttachmentKind,
+                    AttachmentVoiceNote,
+                };
+                let kind = pick(&attachment.mime_type, attachment.size_bytes);
+                let caption = if body_is_empty {
+                    None
+                } else {
+                    Some(message.body.clone())
+                };
+                let inner = match kind {
+                    AttachmentKind::Image => view! {
+                        <AttachmentImage
+                            hash=attachment.hash.clone()
+                            filename=attachment.filename.clone()
+                            size_bytes=attachment.size_bytes
+                            mime_type=attachment.mime_type.clone()
+                        />
+                    }
+                    .into_any(),
+                    AttachmentKind::FileCard => view! {
+                        <AttachmentFileCard
+                            hash=attachment.hash.clone()
+                            filename=attachment.filename.clone()
+                            size_bytes=attachment.size_bytes
+                        />
+                    }
+                    .into_any(),
+                    AttachmentKind::VoiceNote => view! {
+                        <AttachmentVoiceNote filename=attachment.filename.clone() />
+                    }
+                    .into_any(),
+                };
+                view! {
+                    <div class="message-embeds">
+                        {inner}
+                        {caption.map(|c| view! { <div class=body_class>{c}</div> })}
+                    </div>
+                }
+                .into_any()
             } else if body_is_empty {
                 // Phase 2a Task 14 — spec §Edge cases: empty /
                 // whitespace-only bodies (migration edge case) render

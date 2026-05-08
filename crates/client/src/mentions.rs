@@ -377,6 +377,7 @@ mod tests {
             pinned: false,
             queue_note: crate::state::QueueNote::None,
             whisper: false,
+            attachment: None,
         }
     }
 

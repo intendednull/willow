@@ -6608,3 +6608,138 @@ select:focus-visible {
     align-items: center;
     gap: 4px;
 }
+
+/* ── Phase 3b inline attachments ─────────────────────────────────────────
+ *
+ * Spec: docs/specs/2026-04-19-ui-design/files-inline.md.
+ * Foundation tokens only — no new hex.
+ */
+
+.attachment {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    color: var(--ink-0);
+    font-family: var(--font-ui);
+    font-size: 14px;
+    max-width: 420px;
+}
+
+@media (max-width: 720px) {
+    .attachment {
+        max-width: 100%;
+    }
+}
+
+.attachment__icon {
+    flex: 0 0 auto;
+    width: 24px;
+    height: 24px;
+    color: var(--ink-2);
+}
+
+.attachment__icon svg {
+    width: 100%;
+    height: 100%;
+}
+
+.attachment__meta {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.attachment__filename {
+    color: var(--ink-0);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.attachment__size {
+    color: var(--ink-3);
+    font-size: 12px;
+}
+
+.attachment__warning {
+    color: var(--amber);
+    font-size: 12px;
+    margin-top: 2px;
+}
+
+.attachment__download {
+    flex: 0 0 auto;
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--ink-2);
+    cursor: pointer;
+    padding: 6px;
+    width: 32px;
+    height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.attachment__download:hover,
+.attachment__download:focus-visible {
+    color: var(--ink-0);
+    border-color: var(--moss-2);
+    outline: none;
+}
+
+.attachment__download svg {
+    width: 16px;
+    height: 16px;
+}
+
+/* ── Image variant ─────────────────────────────────────────────────────── */
+
+.attachment--image {
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 0;
+    background: transparent;
+    border: none;
+    max-width: 380px;
+    gap: 6px;
+}
+
+@media (max-width: 720px) {
+    .attachment--image {
+        max-width: 280px;
+    }
+}
+
+.attachment__image-link {
+    display: block;
+    line-height: 0;
+}
+
+.attachment__image {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-width: 380px;
+    border-radius: 10px;
+}
+
+@media (max-width: 720px) {
+    .attachment__image {
+        max-width: 280px;
+    }
+}
+
+.attachment__caption {
+    color: var(--ink-3);
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 12px;
+    line-height: 1.4;
+}

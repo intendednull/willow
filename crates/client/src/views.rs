@@ -734,6 +734,7 @@ pub fn compute_messages_view(
                 pinned,
                 queue_note,
                 whisper,
+                attachment: m.attachment.clone(),
             }
         })
         .collect();
@@ -1211,6 +1212,7 @@ mod tests {
             deleted: false,
             reactions: BTreeMap::new(),
             reply_to: None,
+            attachment: None,
         });
         id
     }

@@ -1,3 +1,10 @@
+// `share_file_inline` is `#[deprecated]` in favour of
+// `upload_attachment` + `send_attachment_message`. The legacy tests in
+// this module specifically pin the inline-base64 reader contract that
+// stays alive for back-compat — silence the deprecation warning so
+// `just check` remains zero-warning.
+#![allow(deprecated)]
+
 //! Tests for `crates/client/src/actions.rs`.
 //!
 //! `actions.rs` is mostly a thin pass-through layer that forwards UI

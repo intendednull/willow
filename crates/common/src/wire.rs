@@ -12,7 +12,16 @@ use willow_identity::EndpointId;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WireMessage {
     /// A single event.
-    Event(willow_state::Event),
+    ///
+    /// `Box`ed so the enum stays under clippy's `large_enum_variant`
+    /// 200-byte threshold. Phase 3b's `EventKind::FileMessage` pushed
+    /// the inline `Event` variant over the cap (8 fields, ~280 bytes
+    /// inline), and most `WireMessage` instances on the wire are NOT
+    /// `Event` — they are `SyncRequest` / `TypingIndicator` / voice
+    /// signalling — so the heap indirection only costs the message-
+    /// sending path and pays back on every other variant by keeping
+    /// the enum compact.
+    Event(Box<willow_state::Event>),
     /// Request events since a given state.
     SyncRequest {
         /// The event hash the sender's state is at — the responder
@@ -268,7 +277,7 @@ mod tests {
         );
         let event_hash = event.hash;
 
-        let msg = WireMessage::Event(event);
+        let msg = WireMessage::Event(Box::new(event));
         let data = pack_wire(&msg, &id).unwrap();
         let (decoded, signer) = unpack_wire(&data).unwrap();
 
@@ -331,7 +340,7 @@ mod tests {
                 channel_id: "c".to_string(),
             },
         );
-        let msg = WireMessage::Event(event);
+        let msg = WireMessage::Event(Box::new(event));
 
         let mut data = pack_wire(&msg, &id).unwrap();
         if let Some(b) = data.last_mut() {
@@ -567,14 +576,14 @@ mod tests {
         }
         .max_size();
         let id = Identity::generate();
-        let event = WireMessage::Event(make_event(
+        let event = WireMessage::Event(Box::new(make_event(
             &id,
             EventKind::Message {
                 channel_id: "c".into(),
                 body: "b".into(),
                 reply_to: None,
             },
-        ));
+        )));
         let event_cap = event.max_size();
 
         assert!(signaling < profile, "signaling cap < profile cap");

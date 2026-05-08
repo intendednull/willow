@@ -72,6 +72,47 @@ pub struct Member {
     pub display_name: Option<String>,
 }
 
+/// A file attachment carried by a chat message.
+///
+/// Mirrors `willow_messaging::Content::File` for the materialize branch
+/// — `willow-state` doesn't depend on `willow-messaging` (the dep flows
+/// the other way) so we keep a parallel type rather than a re-export.
+/// Field-for-field equivalent so the projection in `willow-client::views`
+/// can copy directly.
+///
+/// Spec: `docs/specs/2026-04-19-ui-design/files-inline.md`.
+/// Plan: `docs/plans/2026-05-08-ui-phase-3b-files-inline.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileAttachment {
+    /// Content-addressed blob hash; receivers fetch via the iroh blob
+    /// store. The hash is the authoritative source for both bytes and
+    /// size; the declared `size_bytes` field is sender-asserted only.
+    pub hash: String,
+    /// Original filename. Bounded at
+    /// `crate::event::MAX_ATTACHMENT_FILENAME_BYTES` in apply.
+    pub filename: String,
+    /// MIME type. Bounded at `crate::event::MAX_ATTACHMENT_MIME_BYTES`.
+    pub mime_type: String,
+    /// Sender-declared size in bytes. **Attacker-declared.**
+    pub size_bytes: u64,
+    /// Image width in pixels when known. Bounded at
+    /// [`FileAttachment::MAX_DIMENSION_PX`] in apply.
+    #[serde(default)]
+    pub width: Option<u32>,
+    /// Image height in pixels when known. Bounded at
+    /// [`FileAttachment::MAX_DIMENSION_PX`] in apply.
+    #[serde(default)]
+    pub height: Option<u32>,
+}
+
+impl FileAttachment {
+    /// Maximum allowed pixel dimension. Aligned with
+    /// `willow_messaging::MAX_DIMENSION_PX`. Sub-cap values are still
+    /// attacker-declared — see the messaging crate's doc for the
+    /// renderer-side mitigation requirement.
+    pub const MAX_DIMENSION_PX: u32 = 16_384;
+}
+
 /// A single chat message with metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -81,7 +122,9 @@ pub struct ChatMessage {
     pub channel_id: String,
     /// Author's endpoint ID.
     pub author: EndpointId,
-    /// Message body text.
+    /// Message body text. For [`crate::event::EventKind::FileMessage`]
+    /// this is the optional caption (often empty); the attachment
+    /// metadata lives in [`Self::attachment`].
     pub body: String,
     /// Wall-clock timestamp hint in milliseconds (display only).
     pub timestamp_ms: u64,
@@ -95,6 +138,12 @@ pub struct ChatMessage {
     pub reactions: BTreeMap<String, BTreeSet<EndpointId>>,
     /// If this is a reply, the EventHash of the parent message.
     pub reply_to: Option<EventHash>,
+    /// `Some(_)` for messages produced by
+    /// [`crate::event::EventKind::FileMessage`]; `None` for plain text
+    /// messages. `#[serde(default)]` so events serialized before this
+    /// field existed still deserialize cleanly into `None`.
+    #[serde(default)]
+    pub attachment: Option<FileAttachment>,
 }
 
 /// A peer's display profile.

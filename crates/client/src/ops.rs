@@ -111,7 +111,7 @@ mod tests {
             },
         );
 
-        let msg = WireMessage::Event(event.clone());
+        let msg = WireMessage::Event(Box::new(event.clone()));
         let data = pack_wire(&msg, &id).unwrap();
         let (decoded, signer) = unpack_wire(&data).unwrap();
 
@@ -200,7 +200,7 @@ mod tests {
             },
         );
 
-        let mut data = pack_wire(&WireMessage::Event(event), &id).unwrap();
+        let mut data = pack_wire(&WireMessage::Event(Box::new(event)), &id).unwrap();
         if let Some(byte) = data.last_mut() {
             *byte ^= 0xFF;
         }

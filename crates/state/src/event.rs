@@ -34,6 +34,14 @@ pub const MAX_ENCRYPTED_KEY_BYTES: usize = 128;
 /// membership changes and key-rotation construction.
 pub const MAX_ENCRYPTED_KEYS_OVER_MEMBERS: usize = 4;
 
+/// Maximum byte length of an [`EventKind::FileMessage`] filename. POSIX
+/// `NAME_MAX` aligned with `willow_messaging::MAX_FILENAME_BYTES`.
+pub const MAX_ATTACHMENT_FILENAME_BYTES: usize = 255;
+
+/// Maximum byte length of an [`EventKind::FileMessage`] MIME type.
+/// Aligned with `willow_messaging::MAX_MIME_BYTES`.
+pub const MAX_ATTACHMENT_MIME_BYTES: usize = 255;
+
 // ───── Permission ──────────────────────────────────────────────────────────
 
 /// Permission types that can be granted directly by any admin.
@@ -341,6 +349,45 @@ pub enum EventKind {
     Message {
         channel_id: String,
         body: String,
+        reply_to: Option<EventHash>,
+    },
+    /// Send a chat message that carries a file attachment.
+    ///
+    /// Distinct variant rather than an extra optional field on
+    /// [`EventKind::Message`] so the wire format stays positional /
+    /// bincode-friendly. The materialize branch builds a [`ChatMessage`]
+    /// with `attachment: Some(_)`; the existing `EventKind::Message`
+    /// path keeps producing `attachment: None`.
+    ///
+    /// `body` carries an optional caption (often empty). `width` /
+    /// `height` are `Some(_)` for image attachments whose dimensions
+    /// were extracted at send time and `None` otherwise. Bounded to
+    /// [`crate::types::FileAttachment::MAX_DIMENSION_PX`] in the
+    /// materialize branch to keep the layout-bombing surface in sync
+    /// with `willow_messaging::Content::File`.
+    ///
+    /// Spec: `docs/specs/2026-04-19-ui-design/files-inline.md`.
+    /// Plan: `docs/plans/2026-05-08-ui-phase-3b-files-inline.md`.
+    FileMessage {
+        channel_id: String,
+        /// Content-addressed blob hash; receivers fetch via the
+        /// [`willow_network::BlobStore`] trait.
+        hash: String,
+        /// Original filename, capped at [`MAX_ATTACHMENT_FILENAME_BYTES`].
+        filename: String,
+        /// MIME type (`image/png`, `application/pdf`, …), capped at
+        /// [`MAX_ATTACHMENT_MIME_BYTES`].
+        mime_type: String,
+        /// Sender-declared file size. Attacker-declared — the renderer
+        /// MUST treat this as a hint, not a trust value.
+        size_bytes: u64,
+        /// Image width in pixels, when known. `None` for non-images.
+        width: Option<u32>,
+        /// Image height in pixels, when known. `None` for non-images.
+        height: Option<u32>,
+        /// Optional caption / comment displayed alongside the attachment.
+        body: String,
+        /// If this is a reply, the parent message hash.
         reply_to: Option<EventHash>,
     },
     /// Edit a previously sent message.

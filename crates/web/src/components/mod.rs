@@ -87,6 +87,7 @@ mod peer_color_tests {
 mod add_friend;
 mod add_server;
 mod archives_view;
+pub mod attachment;
 mod bottom_sheet;
 mod call_page;
 mod channel_sidebar;

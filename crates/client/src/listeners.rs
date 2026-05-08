@@ -353,6 +353,7 @@ async fn process_received_message<T: TopicHandle>(
 
     match wire_msg {
         crate::ops::WireMessage::Event(event) => {
+            let event = *event;
             // Verify the event author matches the signer.
             if event.author != signer {
                 return;
@@ -720,7 +721,7 @@ async fn process_received_message<T: TopicHandle>(
                         );
                         // Broadcast to other peers.
                         if let Some(data) = crate::ops::pack_wire(
-                            &crate::ops::WireMessage::Event(event),
+                            &crate::ops::WireMessage::Event(Box::new(event)),
                             &ctx.identity,
                         ) {
                             warn_if_err(

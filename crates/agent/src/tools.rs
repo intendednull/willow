@@ -418,6 +418,14 @@ impl<N: Network> WillowToolRouter<N> {
                 let data = base64_decode(&p.data).map_err(|e| {
                     ErrorData::invalid_params(format!("invalid base64 data: {e}"), None)
                 })?;
+                // Legacy inline-base64 path. Kept routed through the
+                // deprecated `share_file_inline` so existing MCP
+                // integrations don't break; a follow-up will migrate
+                // the agent surface to `upload_attachment` +
+                // `send_attachment_message` once the receive-side
+                // projection of `EventKind::FileMessage` is wired
+                // through the agent's view of `DisplayMessage`.
+                #[allow(deprecated)]
                 match self
                     .client
                     .share_file_inline(&p.channel, &p.filename, &data)
