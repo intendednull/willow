@@ -140,12 +140,18 @@ pub fn FileShareButton(channel: ReadSignal<String>) -> impl IntoView {
     };
 
     view! {
-        <button class="file-share-btn" title="Attach file" on:click=on_click>
+        <button
+            class="file-share-btn"
+            aria-label="attach file"
+            title="Attach file"
+            on:click=on_click
+        >
             {icons::icon_paperclip()}
         </button>
         <input
             node_ref=input_ref
             type="file"
+            aria-label="attach file"
             style="display:none"
             on:change=on_change
         />

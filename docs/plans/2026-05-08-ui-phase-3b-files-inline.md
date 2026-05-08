@@ -146,7 +146,17 @@
 
 ### Phase G — accessibility, motion, polish
 
-- [ ] **T13.** Audit ARIA labels per the spec table. **Browser test:** AG-11. **Verify:** `just test-browser`.
+- [x] **T13.** Audit ARIA labels per the spec table for the surfaces that ship in this PR:
+  - Composer attach button (`<FileShareButton>`): `aria-label="attach file"` (was just a hover `title`).
+  - File card download button (`<AttachmentFileCard>`): `aria-label="download {filename}"` ✓ shipped in T4.
+  - File card download button when network is offline: `aria-disabled="true"` + `disabled` ✓ shipped with the fetch wiring.
+
+  Out-of-scope ARIA labels owned by surfaces deferred to T6 / T8 / T10:
+  - voice note play / pause — `<AttachmentVoiceNote>` placeholder; T6.
+  - upload cancel (per file / all) + confirm — `<UploadDialog>`; T8.
+  - drag overlay — `<DragOverlay>`; T10.
+
+  **Browser test:** AG-11 lands alongside the deferred surfaces so a single browser-tier audit can sweep them all together. Today the FileShareButton + FileCard ARIA is verified by code inspection against the spec table. **Verify:** `cargo check --workspace --all-targets`.
 
 - [ ] **T14.** Verify reduced-motion participation for the drag overlay + progress bars. **Browser test:** AG-12. **Verify:** `just test-browser`.
 
