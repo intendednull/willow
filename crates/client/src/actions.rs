@@ -109,14 +109,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let hash_hex = blob_hash_to_hex(hash);
         self.mutation_handle
             .send_file_message(
-                channel,
-                &hash_hex,
-                filename,
-                mime_type,
-                size_bytes,
-                width,
-                height,
-                caption,
+                channel, &hash_hex, filename, mime_type, size_bytes, width, height, caption,
                 reply_to,
             )
             .await

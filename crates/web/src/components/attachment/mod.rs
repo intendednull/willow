@@ -76,7 +76,7 @@ mod tests {
     fn image_under_threshold_is_inline() {
         // 1 MB JPEG: well under the 4 MB image-inline cap.
         assert_eq!(
-            pick("image/jpeg", 1 * 1024 * 1024),
+            pick("image/jpeg", 1024 * 1024),
             AttachmentKind::Image,
             "small image should render inline"
         );
@@ -115,7 +115,10 @@ mod tests {
         // Unknown / non-image / non-audio mime falls back to the file
         // card per spec §Inline rendering rules.
         assert_eq!(pick("application/pdf", 1024), AttachmentKind::FileCard);
-        assert_eq!(pick("application/octet-stream", 1024), AttachmentKind::FileCard);
+        assert_eq!(
+            pick("application/octet-stream", 1024),
+            AttachmentKind::FileCard
+        );
         assert_eq!(pick("", 1024), AttachmentKind::FileCard);
         assert_eq!(pick("text/plain", 1024), AttachmentKind::FileCard);
     }
@@ -133,7 +136,10 @@ mod tests {
     #[test]
     fn image_inline_cap_boundary_is_inclusive() {
         // Exactly 4 MB is allowed inline; one byte over degrades.
-        assert_eq!(pick("image/png", IMAGE_INLINE_MAX_BYTES), AttachmentKind::Image);
+        assert_eq!(
+            pick("image/png", IMAGE_INLINE_MAX_BYTES),
+            AttachmentKind::Image
+        );
         assert_eq!(
             pick("image/png", IMAGE_INLINE_MAX_BYTES + 1),
             AttachmentKind::FileCard

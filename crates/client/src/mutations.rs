@@ -214,8 +214,10 @@ impl<N: willow_network::Network> ClientMutations<N> {
 
     /// Broadcast a signed event to peers via the server ops topic.
     pub(crate) fn broadcast_event(&self, event: &willow_state::Event) {
-        if let Some(data) = ops::pack_wire(&ops::WireMessage::Event(event.clone()), &self.identity)
-        {
+        if let Some(data) = ops::pack_wire(
+            &ops::WireMessage::Event(Box::new(event.clone())),
+            &self.identity,
+        ) {
             self.broadcast_on_topic(ops::SERVER_OPS_TOPIC, data);
         }
     }
@@ -962,8 +964,7 @@ impl<N: willow_network::Network> ClientMutations<N> {
 pub(crate) fn derive_client_events(event: &willow_state::Event) -> Vec<ClientEvent> {
     let mut out = Vec::new();
     match &event.kind {
-        EventKind::Message { channel_id, .. }
-        | EventKind::FileMessage { channel_id, .. } => {
+        EventKind::Message { channel_id, .. } | EventKind::FileMessage { channel_id, .. } => {
             // Both text + file messages produce a `MessageReceived`
             // notification on the client event bus. Without the
             // `FileMessage` arm here, attachments would land silently:

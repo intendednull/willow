@@ -571,7 +571,7 @@ async fn server_ops_events_forwarded_to_state() {
     );
 
     let data = willow_common::pack_wire(
-        &willow_common::WireMessage::Event(event.clone()),
+        &willow_common::WireMessage::Event(Box::new(event.clone())),
         &sender_id,
     )
     .unwrap();
@@ -640,8 +640,11 @@ async fn pre_buffered_events_wait_for_state_ready_signal() {
     );
     let mut prev_hash = genesis.hash;
 
-    let genesis_data =
-        willow_common::pack_wire(&willow_common::WireMessage::Event(genesis), &sender_id).unwrap();
+    let genesis_data = willow_common::pack_wire(
+        &willow_common::WireMessage::Event(Box::new(genesis)),
+        &sender_id,
+    )
+    .unwrap();
     ops_tx
         .send(GossipEvent::Received(GossipMessage {
             content: bytes::Bytes::from(genesis_data),
@@ -666,8 +669,11 @@ async fn pre_buffered_events_wait_for_state_ready_signal() {
         );
         prev_hash = event.hash;
 
-        let data = willow_common::pack_wire(&willow_common::WireMessage::Event(event), &sender_id)
-            .unwrap();
+        let data = willow_common::pack_wire(
+            &willow_common::WireMessage::Event(Box::new(event)),
+            &sender_id,
+        )
+        .unwrap();
 
         ops_tx
             .send(GossipEvent::Received(GossipMessage {
@@ -747,8 +753,11 @@ async fn network_actor_drains_immediately_without_ready_signal() {
         },
         0,
     );
-    let data =
-        willow_common::pack_wire(&willow_common::WireMessage::Event(event), &sender_id).unwrap();
+    let data = willow_common::pack_wire(
+        &willow_common::WireMessage::Event(Box::new(event)),
+        &sender_id,
+    )
+    .unwrap();
     ops_tx
         .send(GossipEvent::Received(GossipMessage {
             content: bytes::Bytes::from(data),

@@ -76,8 +76,7 @@ pub fn AttachmentFileCard(
         // path; this stub keeps the visual card shipping ahead of
         // that work without silently dropping clicks.
         web_sys::console::warn_1(
-            &"AttachmentFileCard download: blob-fetch wiring lands in T8/T9 — no bytes yet"
-                .into(),
+            &"AttachmentFileCard download: blob-fetch wiring lands in T8/T9 — no bytes yet".into(),
         );
     };
 

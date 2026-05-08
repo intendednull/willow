@@ -96,9 +96,9 @@ mod tests_sync_reply_cache;
 pub const TYPING_INDICATOR_TTL_MS: u64 = 5_000;
 
 // Re-export key types at crate root for convenience.
+pub use actions::{blob_hash_to_hex, hex_to_blob_hash};
 pub use event_receiver::EventReceiver;
 pub use events::ClientEvent;
-pub use actions::{blob_hash_to_hex, hex_to_blob_hash};
 pub use mentions::{mentions_me, Suggestions};
 pub use nickname::{MemNicknameStore, NicknameStore, NicknameStoreHandle, NICKNAME_CAP};
 pub use ops::{pack_wire, unpack_wire, VoiceSignalPayload, WireMessage};

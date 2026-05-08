@@ -78,10 +78,7 @@ mod tests {
             caption("photo.jpg", 1_536),
             "photo.jpg · 1.5 KB · e2e encrypted"
         );
-        assert_eq!(
-            caption("a", 0),
-            "a · 0 B · e2e encrypted"
-        );
+        assert_eq!(caption("a", 0), "a · 0 B · e2e encrypted");
         assert_eq!(
             caption("scan.png", 1_048_576),
             "scan.png · 1.0 MB · e2e encrypted"
