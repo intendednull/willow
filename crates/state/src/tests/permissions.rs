@@ -594,6 +594,66 @@ fn check_permission_rejects_without_send_messages() {
     assert!(crate::materialize::check_permission(&state, &peer.endpoint_id(), &kind).is_err());
 }
 
+// ── FileMessage permission gate (phase 3b) ──────────────────────────────
+
+#[test]
+fn check_permission_allows_file_message_with_send_messages() {
+    let owner = Identity::generate();
+    let peer = Identity::generate();
+    let mut dag = test_dag(&owner);
+
+    do_emit(
+        &mut dag,
+        &owner,
+        EventKind::GrantPermission {
+            peer_id: peer.endpoint_id(),
+            permission: Permission::SendMessages,
+        },
+    );
+    let state = materialize(&dag);
+
+    let kind = EventKind::FileMessage {
+        channel_id: "ch1".into(),
+        hash: "deadbeef".into(),
+        filename: "photo.jpg".into(),
+        mime_type: "image/jpeg".into(),
+        size_bytes: 1024,
+        width: Some(100),
+        height: Some(100),
+        body: String::new(),
+        reply_to: None,
+    };
+    assert!(
+        crate::materialize::check_permission(&state, &peer.endpoint_id(), &kind).is_ok(),
+        "FileMessage must be allowed when peer has SendMessages — same gate as text Message"
+    );
+}
+
+#[test]
+fn check_permission_rejects_file_message_without_send_messages() {
+    let owner = Identity::generate();
+    let peer = Identity::generate();
+    let dag = test_dag(&owner);
+    let state = materialize(&dag);
+
+    let kind = EventKind::FileMessage {
+        channel_id: "ch1".into(),
+        hash: "deadbeef".into(),
+        filename: "photo.jpg".into(),
+        mime_type: "image/jpeg".into(),
+        size_bytes: 1024,
+        width: None,
+        height: None,
+        body: String::new(),
+        reply_to: None,
+    };
+    assert!(
+        crate::materialize::check_permission(&state, &peer.endpoint_id(), &kind).is_err(),
+        "FileMessage from a non-member peer must be rejected — \
+         no implicit upload right just because the data is in the blob store"
+    );
+}
+
 #[test]
 fn check_permission_admin_implicitly_has_all() {
     let owner = Identity::generate();
