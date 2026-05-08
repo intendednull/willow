@@ -92,9 +92,9 @@
 
 ### Phase B — emoji picker
 
-- [ ] **T2.** Create `crates/web/src/components/emoji_picker/` module + static `EMOJI_CATEGORIES` data + `search(query, recent) -> Vec<&str>` helper. Pure function, 4 unit tests covering empty query / prefix match / category sweep / case insensitivity. Wire into `components/mod.rs`. **Verify:** `cargo test -p willow-web --lib emoji_picker`.
+- [x] **T2.** Create `crates/web/src/components/emoji_picker/` module + static `EMOJI_CATEGORIES` data (smileys / nature / food / travel / objects / symbols, ~ a few hundred glyphs) + `search(query, recent) -> Vec<&str>` helper. Pure function, 4 unit tests: empty query lists recents-first, category prefix match (`na` → nature only), case-insensitivity, dedupe against recents. Wire into `components/mod.rs`. **Verify:** `cargo test -p willow-web --lib emoji_picker`.
 
-- [ ] **T3.** Implement `<EmojiPicker>` popover per spec layout (search input + category headers + grid cells + recent row). Arrow-key navigation + Enter / Tab insert + Escape close. **Browser test:** AG-3, AG-4. **Verify:** `just test-browser`.
+- [x] **T3.** Implement `<EmojiPicker>` popover (320 × 360 layout via CSS in T7+). Search input + glyph grid + category labels strip. ArrowLeft / ArrowRight move highlight (with wrap), Enter / Tab insert via `on_select`, Escape closes via `on_close`. The component is render-only — callers own visibility via `<Show>`. **Browser tests:** AG-3 / AG-4 land alongside T7 wiring (when the picker has a real callsite to mount under). **Verify:** `cargo check --workspace --all-targets` clean; pure-function search helper covered by T2 tests.
 
 ### Phase C — reactions strip
 

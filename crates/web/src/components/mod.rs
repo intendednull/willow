@@ -89,6 +89,7 @@ mod add_server;
 mod archives_view;
 pub mod attachment;
 mod bottom_sheet;
+pub mod emoji_picker;
 mod call_page;
 mod channel_sidebar;
 mod chat;
