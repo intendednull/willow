@@ -166,9 +166,9 @@ test.describe('Mobile action sheet', () => {
     await row.waitFor({ timeout: 5_000 });
     await swipeLeft(page, row);
 
-    // Reply-preview bar (see `crates/web/src/components/input.rs`) is
-    // the source-of-truth for "composer is replying_to Some(..)".
-    await expect(page.locator(`${visibleShell(page)} .reply-bar`))
+    // Reply-preview bar (see `crates/web/src/components/composer/reply_bar.rs`)
+    // is the source-of-truth for "composer is replying_to Some(..)".
+    await expect(page.locator(`${visibleShell(page)} .composer__reply-bar`))
       .toBeVisible({ timeout: 3_000 });
   });
 });

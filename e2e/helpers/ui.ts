@@ -288,10 +288,11 @@ export async function editMessage(page: Page, originalText: string, newText: str
   const input = page.locator('.input-area input, .input-area textarea').first();
   await input.fill(newText);
   await input.press('Enter');
-  // Submitting clears the editing signal — the `.edit-bar` (rendered
-  // only while editing in input.rs) unmounts. Gate on that instead of
-  // a fixed sleep.
-  await page.locator(`${visibleShell(page)} .edit-bar`).waitFor({ state: 'hidden', timeout: 5_000 });
+  // Submitting clears the editing signal — the `.composer__edit-bar`
+  // (rendered only while editing, see
+  // `crates/web/src/components/composer/edit_bar.rs`) unmounts. Gate on
+  // that instead of a fixed sleep.
+  await page.locator(`${visibleShell(page)} .composer__edit-bar`).waitFor({ state: 'hidden', timeout: 5_000 });
 }
 
 /** Deletes a message (desktop or mobile). */

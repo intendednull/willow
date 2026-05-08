@@ -21,9 +21,10 @@ use leptos::ev::TransitionEvent;
 use leptos::html::Div;
 use leptos::prelude::*;
 
+use crate::app::WebClientHandle;
 use crate::components::lifecycle::{advance, is_zero_duration, LifecycleState};
 use crate::components::{
-    BottomSheet, ChannelSidebar, ChatInput, FileShareButton, GroveDrawer, MainPaneHeader,
+    BottomSheet, ChannelSidebar, Composer, FileShareButton, GroveDrawer, MainPaneHeader,
     MessageList, RightRailWhich, TabBar,
 };
 use crate::icons;
@@ -106,6 +107,8 @@ where
 {
     let app_state = use_context::<AppState>().expect("AppState context");
     let write = use_context::<AppWriteSignals>().expect("AppWriteSignals context");
+    let client_handle =
+        use_context::<WebClientHandle>().expect("WebClientHandle context (provided in app.rs)");
 
     // Local shell signals — mobile navigation is entirely client-side.
     let (active_tab, set_active_tab) = signal(MobileTab::Home);
@@ -439,7 +442,7 @@ where
                                         </div>
                                         <div class="input-row">
                                             <FileShareButton channel=current_channel />
-                                            <ChatInput
+                                            <Composer
                                                 on_send=send
                                                 replying_to=replying_to
                                                 on_cancel_reply=Callback::new(move |_| {
@@ -453,6 +456,22 @@ where
                                                     write.chat.set_editing.set(None);
                                                 })
                                                 on_typing=Callback::new(|_| ())
+                                                on_arrow_up_edit={
+                                                    let h = client_handle.clone();
+                                                    let ch = current_channel;
+                                                    Callback::new(move |_: ()| {
+                                                        let h = h.clone();
+                                                        let channel = ch.get_untracked();
+                                                        wasm_bindgen_futures::spawn_local(async move {
+                                                            if let Some(msg) = h.last_own_message(&channel).await {
+                                                                write.chat.set_editing.set(Some(msg));
+                                                            }
+                                                        });
+                                                    })
+                                                }
+                                                on_jump_to_parent=Callback::new(|parent_id: String| {
+                                                    crate::util::scroll_to_message_and_flash(&parent_id);
+                                                })
                                             />
                                         </div>
                                     </div>

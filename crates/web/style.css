@@ -5946,6 +5946,543 @@ select:focus-visible {
     border-radius: 4px;
 }
 
+/* ── Composer (Phase 3a, T5 shell) ───────────────────────────────────
+ *
+ * Minimal style approximation of `docs/specs/2026-04-19-ui-design/composer.md`
+ * §Desktop compose surface; later tasks (T9–T15) refine to spec
+ * (mobile-pill variant, meta row, offline tint, mention popover, …).
+ */
+
+.composer {
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    box-shadow: var(--shadow-1);
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* Phase 3a, T10 — offline tint per `composer.md` §Offline state.
+ * Background softens to a 10 % `--amber` mix over `--bg-2`. The amber
+ * meta row owns the icon + copy colour swap; the wrapper just shifts
+ * the surface tone so the user can feel the queue without losing the
+ * pill silhouette. Reconnecting reuses the same tint because the queue
+ * is still the truthful destination for sent messages. */
+.composer--offline {
+    background: color-mix(in oklab, var(--amber) 10%, var(--bg-2));
+}
+
+.composer__row {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+}
+
+.composer__textarea {
+    flex: 1;
+    width: 100%;
+    background: transparent;
+    border: 0;
+    color: var(--ink-0);
+    font-size: 14px;
+    line-height: 1.45em;
+    min-height: 1.45em;
+    outline: none;
+    resize: none;
+    overflow-y: auto;
+    font-family: inherit;
+}
+
+.composer__textarea::placeholder {
+    color: var(--ink-3);
+}
+
+.composer__send {
+    background: var(--moss-1);
+    color: var(--moss-4);
+    border: 0;
+    border-radius: 8px;
+    padding: 6px 10px;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: opacity var(--motion-fast, 120ms) ease;
+}
+
+.composer__send:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Attach + emoji buttons (Phase 3a, T15 — spec §Desktop compose
+ * surface upper row). Stub clicks in v1; the real file dialog and
+ * emoji picker drop in via Phases 3b / 3c. Visually unobtrusive so
+ * they don't fight the textarea for attention — `--ink-3` like the
+ * meta-row icons. The buttons live before / after the textarea in
+ * the row so the spec's "Attach → textarea → emoji → send" order
+ * holds. */
+.composer__attach,
+.composer__emoji {
+    background: transparent;
+    border: 0;
+    color: var(--ink-3);
+    padding: 4px;
+    cursor: pointer;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    line-height: 0;
+    transition: color var(--motion-fast, 120ms) ease;
+}
+
+.composer__attach:hover,
+.composer__emoji:hover {
+    color: var(--ink-1);
+}
+
+/* ── Composer reply bar (Phase 3a, T7) ────────────────────────────────
+ *
+ * Spec: `docs/specs/2026-04-19-ui-design/composer.md` §Reply preview.
+ * Lives above the composer, top-radius only so the bottom edge fuses
+ * visually with the composer pill below. 2 px `--moss-2` left rule,
+ * `replying to` label, parent author italic, single-line body
+ * preview, flex spacer, `cancel` text button.
+ */
+.composer__reply-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-bottom: 0;
+    border-radius: 10px 10px 0 0;
+}
+
+.composer__reply-bar-rule {
+    flex-shrink: 0;
+    width: 2px;
+    align-self: stretch;
+    background: var(--moss-2);
+    border-radius: 1px;
+}
+
+/* The preview body is a button so it's keyboard-focusable; we strip
+ * the UA chrome and lay its children inline instead. */
+.composer__reply-bar-preview {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    overflow: hidden;
+}
+
+.composer__reply-bar-label {
+    color: var(--ink-3);
+    font-size: 12px;
+    flex-shrink: 0;
+}
+
+.composer__reply-bar-author {
+    color: var(--ink-1);
+    font-style: italic;
+    font-size: 13px;
+    flex-shrink: 0;
+}
+
+.composer__reply-bar-body {
+    color: var(--ink-2);
+    font-size: 13px;
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.composer__reply-bar-cancel {
+    flex-shrink: 0;
+    background: transparent;
+    border: 0;
+    padding: 2px 4px;
+    color: var(--ink-2);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition: color var(--motion-fast, 120ms) ease;
+}
+
+.composer__reply-bar-cancel:hover,
+.composer__reply-bar-cancel:focus-visible {
+    color: var(--ink-0);
+}
+
+/* Reply-bar lives directly above the composer pill — drop the
+ * pill's top corners + top border so the two surfaces fuse. */
+.composer__reply-bar + .composer {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+}
+
+/* ── Composer edit bar (Phase 3a, T8) ────────────────────────────────
+ *
+ * Spec: `docs/specs/2026-04-19-ui-design/composer.md` §Edit mode.
+ * Slim hint above the composer: `editing message · esc to cancel`
+ * (12 px, `--ink-3`) plus a small `cancel` text button. Send-button
+ * label flip to `save` is owned by the parent `<Composer>`.
+ */
+.composer__edit-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 12px;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-bottom: 0;
+    border-radius: 10px 10px 0 0;
+    color: var(--ink-3);
+    font-size: 12px;
+}
+
+.composer__edit-bar-text {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.composer__edit-bar-cancel {
+    flex-shrink: 0;
+    background: transparent;
+    border: 0;
+    padding: 2px 4px;
+    color: var(--ink-2);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition: color var(--motion-fast, 120ms) ease;
+}
+
+.composer__edit-bar-cancel:hover,
+.composer__edit-bar-cancel:focus-visible {
+    color: var(--ink-0);
+}
+
+/* Edit bar fuses with the composer pill below the same way the
+ * reply bar does. */
+.composer__edit-bar + .composer {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+}
+
+/* ── Composer meta row (Phase 3a, T9) ────────────────────────────────
+ *
+ * Spec: `docs/specs/2026-04-19-ui-design/composer.md` §Desktop compose
+ * surface — Meta row, §Mobile compose surface, §Offline state.
+ * Renders beneath the textarea+button row. Three forms:
+ *
+ *   Desktop online — `lock · sealed with grove-keys · ear · hold shift
+ *                     to whisper` (with `shift` in mono `--whisper`).
+ *   Mobile online  — `lock · sealed to {N} peers in grove · ear · tap
+ *                     ear to whisper`.
+ *   Offline        — `hourglass · offline · queuing messages` in
+ *                     `--amber` (replaces both online forms).
+ */
+.composer__meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--ink-3);
+    /* Hint-size copy — matches the reply/edit bar's 12 px convention,
+     * which is the project's de-facto "hint" size until the
+     * foundation pins a `--text-hint` token. */
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.composer__meta-icon {
+    display: inline-flex;
+    align-items: center;
+    color: var(--ink-3);
+    flex-shrink: 0;
+}
+
+.composer__meta-icon .icon {
+    width: 12px;
+    height: 12px;
+}
+
+.composer__meta-text {
+    color: var(--ink-3);
+    white-space: nowrap;
+}
+
+.composer__meta-sep {
+    color: var(--ink-4);
+    flex-shrink: 0;
+}
+
+.composer__meta-spacer {
+    flex: 1;
+}
+
+/* `shift` keycap in the desktop whisper hint — mono, `--whisper`,
+ * borderless to keep the row visually quiet (spec §Composer meta:
+ * "shift in mono `--whisper`"). */
+.composer__kbd {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    color: var(--whisper);
+    font-size: inherit;
+    padding: 0;
+    background: transparent;
+    border: 0;
+}
+
+.composer__meta--offline {
+    color: var(--amber);
+}
+
+.composer__meta--offline .composer__meta-icon,
+.composer__meta--offline .composer__meta-text {
+    color: var(--amber);
+}
+
+/* ── Composer typing indicator (Phase 3a, T11) ──────────────────────────
+ *
+ * Spec: `composer.md` §Typing indicator. Sits at the very top of the
+ * composer wrapper. Padding is 4px/24px on desktop and 8px/14px on
+ * mobile (selector below `data-shell="mobile"` overrides the desktop
+ * defaults — same pattern used by the meta row). The 3-dot
+ * `willowPulse` cluster is staggered 0 / 200 / 400 ms via the
+ * `:nth-child` rules. The `--empty` modifier collapses the row so it
+ * doesn't claim layout when no peers are typing.
+ *
+ * Foundation tokens only: `--ink-2` for the label, `--ink-3` for the
+ * dots. The italic font matches the spec's `font-display` italic
+ * affordance — `--font-display` is a foundation variable that falls
+ * back to the system serif stack on platforms without the custom
+ * face. */
+.composer__typing-indicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 24px;
+    font-family: var(--font-display, serif);
+    font-style: italic;
+    font-size: 12px;
+    color: var(--ink-2);
+    min-height: 20px;
+}
+
+[data-shell="mobile"] .composer__typing-indicator {
+    padding: 8px 14px;
+}
+
+.composer__typing-indicator--empty {
+    /* Collapse to zero height so the composer doesn't shift on each
+     * typing-ping update. The pluralisation label stays in the DOM
+     * (rendered as the empty string) so reactive subscriptions don't
+     * tear down and rebuild on every transition. */
+    display: none;
+}
+
+.composer__typing-dots {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    /* Match the dot block height so the row's vertical centre aligns
+     * with the label baseline. */
+    line-height: 0;
+}
+
+.composer__typing-dot {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--ink-3);
+    animation: willowPulse 1.4s infinite ease-in-out;
+    /* `display: inline-block` so width/height take effect on the
+     * empty `<span>` we render. */
+    display: inline-block;
+}
+
+.composer__typing-dot:nth-child(2) {
+    animation-delay: 200ms;
+}
+
+.composer__typing-dot:nth-child(3) {
+    animation-delay: 400ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    /* Spec §Motion: `willowPulse` becomes a static opacity dot.
+     * Foundation already gates other `willowPulse` consumers via the
+     * same media query — this rule mirrors them so the typing dots
+     * participate without copying the foundation logic. */
+    .composer__typing-dot {
+        animation: none;
+        opacity: 1;
+    }
+}
+
+.composer__typing-label {
+    color: var(--ink-2);
+}
+
+/* Screen-reader-only aria-live region for the typing indicator
+ * (Phase 3a, T12). Visually hidden but still announced by AT —
+ * standard SR-only pattern (1px box clipped out of view). The
+ * companion `.composer__typing-label` span carries `aria-hidden`
+ * so screen readers only consume this throttled region. Spec
+ * `composer.md` §Screen reader flow: "at most once per 5 s". */
+.composer__typing-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* ── Message-row flash (T7 — scroll-to-parent affordance) ──────────────
+ *
+ * Triggered by the chat view after `on_jump_to_parent` fires from the
+ * reply bar. The class is added for ~180 ms and then removed; the
+ * keyframe is `--moss-2`-tinted so it reads as the same accent the
+ * left rule on the reply bar uses.
+ */
+@keyframes willow-row-flash {
+    0%   { background-color: color-mix(in oklab, var(--moss-2) 22%, transparent); }
+    100% { background-color: transparent; }
+}
+
+.message-row--flash,
+.message.flash {
+    animation: willow-row-flash 180ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .message-row--flash,
+    .message.flash {
+        animation: none;
+        background-color: color-mix(in oklab, var(--moss-2) 12%, transparent);
+        transition: background-color 180ms ease;
+    }
+}
+
+/* ── Mention autocomplete popover (Phase 3a — T13/T14) ─────────────────
+ *
+ * Anchored above the composer at the position computed by the parent
+ * (textarea bounding rect + spec offset). The popover floats — we use
+ * `position: fixed` so it doesn't get clipped by the chat scroll
+ * container, and rely on the inline `top` / `left` written by
+ * `<MentionAutocomplete>` for placement.
+ *
+ * Spec `composer.md` §Mention autocomplete:
+ *   - `--bg-1` background, `--line` border, radius 10 px, `--shadow-2`.
+ *   - Max 8 rows visible; scrolls above when the list overflows.
+ */
+.mention-popover {
+    position: fixed;
+    z-index: 60;
+    min-width: 220px;
+    max-width: 320px;
+    max-height: 200px;
+    overflow-y: auto;
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: var(--shadow-2);
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.mention-popover__row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    color: var(--ink-1);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color var(--motion-fast) ease;
+}
+
+.mention-popover__row:hover,
+.mention-popover__row--selected {
+    background: var(--bg-2);
+}
+
+.mention-popover__row--channel {
+    /* Distinguish the synthetic `@channel` row with the moss accent
+     * the rest of the composer already uses for "addresses everyone".
+     * Lit up by T14. */
+    color: var(--moss-2);
+}
+
+.mention-popover__avatar {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--bg-2);
+    flex: 0 0 auto;
+}
+
+.mention-popover__display {
+    color: var(--ink-1);
+    flex: 0 1 auto;
+}
+
+.mention-popover__handle {
+    color: var(--ink-3);
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 0.85em;
+    flex: 0 1 auto;
+}
+
+.mention-popover__presence-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ink-3);
+    margin-left: auto;
+    flex: 0 0 auto;
+}
+
+.mention-popover__presence-dot--here {
+    background: var(--moss-2);
+}
+
+.mention-popover__presence-dot--away,
+.mention-popover__presence-dot--queued,
+.mention-popover__presence-dot--gone {
+    background: var(--ink-3);
+}
+
 /* ── Phase 2d ephemeral kind chip ───────────────────────────────────── */
 
 .kind-chip {

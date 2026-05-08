@@ -6833,8 +6833,8 @@ mod mobile_actions {
         simulate_click(reply);
         tick().await;
         assert!(
-            wait_for(&container, ".shell-mobile .reply-bar", 5_000).await,
-            "reply-bar did not appear after tapping Reply"
+            wait_for(&container, ".shell-mobile .composer__reply-bar", 5_000).await,
+            "reply bar did not appear after tapping Reply"
         );
     }
 
@@ -12991,6 +12991,2034 @@ mod data_state_lifecycle {
             drawer.get_attribute("data-state").as_deref(),
             Some("open"),
             "transitionend on `transform` should advance opening → open"
+        );
+    }
+}
+
+// ── Phase 3a — Composer ─────────────────────────────────────────────────
+//
+// Tests for the new `<Composer>` shell that supersedes `<ChatInput>`.
+// Spec: `docs/specs/2026-04-19-ui-design/composer.md`. T5 covers just
+// the shell + autogrow textarea; the rest of the AGs land in T6+.
+
+mod phase_3a_composer {
+    use super::*;
+    use willow_client::DisplayMessage;
+    use willow_web::components::Composer;
+    use willow_web::state::ConnectionState;
+
+    /// Mounts a bare `<Composer>` and asserts the textarea is present
+    /// and autogrows: a single line stays inside one line-height, while
+    /// 12 lines of content cap at 8 line-heights of visible height and
+    /// then scrolls (`scroll_height > client_height`).
+    #[wasm_bindgen_test]
+    async fn composer_mounts_with_autogrow_textarea() {
+        let container = mount_test(|| {
+            view! {
+                <Composer on_send=|_msg: String| {} />
+            }
+        });
+        tick().await;
+
+        let textarea_el = query(&container, ".composer__textarea")
+            .expect(".composer__textarea must render under <Composer>");
+        let textarea: web_sys::HtmlTextAreaElement = textarea_el
+            .dyn_into()
+            .expect(".composer__textarea must be a <textarea>");
+
+        // Single short line: visible height stays close to one
+        // line-height. We don't pin an exact pixel value because
+        // `font-size: 14px; line-height: 1.45em` resolves slightly
+        // differently across browsers / DPRs; we only assert that the
+        // textarea has not grown to multi-line height.
+        textarea.set_value("hi");
+        let event = web_sys::InputEvent::new("input").unwrap();
+        textarea
+            .dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&event)
+            .unwrap();
+        tick().await;
+        let one_line_client = textarea.client_height();
+        let one_line_scroll = textarea.scroll_height();
+        assert!(
+            one_line_scroll <= one_line_client + 4,
+            "single-line input must not overflow: scroll_height={one_line_scroll}, \
+             client_height={one_line_client}"
+        );
+
+        // 12 lines of content: visible height caps at 8 lines, content
+        // overflows so `scrollHeight > clientHeight`.
+        let twelve_lines = "hi\n".repeat(12);
+        textarea.set_value(&twelve_lines);
+        let event = web_sys::InputEvent::new("input").unwrap();
+        textarea
+            .dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&event)
+            .unwrap();
+        tick().await;
+        let many_client = textarea.client_height();
+        let many_scroll = textarea.scroll_height();
+        assert!(
+            many_scroll > many_client,
+            "12-line input must overflow when capped at 8 visible lines: \
+             scroll_height={many_scroll}, client_height={many_client}"
+        );
+        // Capped client height should not exceed roughly 8 ×
+        // line-height. We use a generous upper bound (≈ 9 ×
+        // line-height) to allow per-browser metrics drift; the load-
+        // bearing assertion is `scroll_height > client_height` above.
+        assert!(
+            many_client <= 200,
+            "client_height should remain bounded by the 8-line cap, \
+             got {many_client}"
+        );
+    }
+
+    // ── T6 — full keydown handler ───────────────────────────────────────
+    //
+    // AGs covered by this group:
+    //   AG-2: Enter sends, Shift+Enter inserts newline,
+    //         Ctrl/⌘+Enter force-sends.
+    //   AG-3: Tab inserts two spaces (no focus move).
+    //   AG-4: ArrowUp on empty textarea fires the edit-last callback.
+    //   AG-5: Escape unwinds in order edit → reply → blur.
+    //
+    // Spec: `composer.md` §Keyboard (desktop) + §Keyboard (mobile).
+    // Plan: `2026-04-26-ui-phase-3a-composer.md` Task T6.
+    //
+    // We dispatch synthetic `KeyboardEvent`s onto the rendered
+    // textarea instead of relying on the OS layer because wasm-pack's
+    // headless browser harness does not raise hardware key events.
+    // Each synthetic event sets `bubbles` + `cancelable` so the
+    // composer's `on:keydown` listener observes it as it would a real
+    // user keypress, including `prevent_default()` semantics.
+    //
+    // Test scratch state lives in `Arc<Mutex<…>>` because Leptos
+    // `Callback::new` requires `Send + Sync` even though wasm-pack's
+    // browser harness is single-threaded.
+    use std::sync::{Arc, Mutex};
+
+    /// Reset the `<html data-shell>` attribute so a stale value from
+    /// a previous test (e.g. mobile) doesn't leak into desktop tests.
+    fn reset_shell() {
+        let doc = web_sys::window().unwrap().document().unwrap();
+        let root = doc.document_element().unwrap();
+        let _ = root.remove_attribute("data-shell");
+    }
+
+    /// Build a `KeyboardEvent` that bubbles + can be cancelled, with
+    /// optional modifier keys. Mirrors the plain `press_key` helper
+    /// elsewhere in this file but adds the modifier bits T6 needs.
+    fn make_key_event(
+        kind: &str,
+        key: &str,
+        shift: bool,
+        ctrl: bool,
+        meta: bool,
+    ) -> web_sys::KeyboardEvent {
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_key(key);
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        init.set_shift_key(shift);
+        init.set_ctrl_key(ctrl);
+        init.set_meta_key(meta);
+        web_sys::KeyboardEvent::new_with_keyboard_event_init_dict(kind, &init).unwrap()
+    }
+
+    /// Dispatch the event on `target` and return whether
+    /// `prevent_default()` was called (i.e. the event was consumed).
+    fn dispatch(target: &web_sys::EventTarget, ev: &web_sys::KeyboardEvent) -> bool {
+        target.dispatch_event(ev).unwrap();
+        ev.default_prevented()
+    }
+
+    /// Type `value` into a textarea and dispatch an `input` event so
+    /// the composer's `on:input` handler updates `input_text`.
+    fn type_into(textarea: &web_sys::HtmlTextAreaElement, value: &str) {
+        textarea.set_value(value);
+        let ev = web_sys::InputEvent::new("input").unwrap();
+        textarea
+            .dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&ev)
+            .unwrap();
+    }
+
+    fn composer_textarea(container: &web_sys::HtmlElement) -> web_sys::HtmlTextAreaElement {
+        query(container, ".composer__textarea")
+            .expect(".composer__textarea must exist")
+            .dyn_into::<web_sys::HtmlTextAreaElement>()
+            .expect(".composer__textarea must be a <textarea>")
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_enter_sends() {
+        reset_shell();
+        let sent: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured = sent.clone();
+        let container = mount_test(move || {
+            let captured = captured.clone();
+            view! {
+                <Composer on_send=move |msg: String| captured.lock().unwrap().push(msg) />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_into(&ta, "hi");
+        tick().await;
+
+        let target = ta.dyn_ref::<web_sys::EventTarget>().unwrap();
+        let ev = make_key_event("keydown", "Enter", false, false, false);
+        let prevented = dispatch(target, &ev);
+        tick().await;
+
+        assert!(
+            prevented,
+            "Enter must call prevent_default to suppress newline"
+        );
+        assert_eq!(
+            sent.lock().unwrap().as_slice(),
+            &["hi".to_string()],
+            "on_send must fire exactly once with the typed body"
+        );
+        assert_eq!(
+            ta.value(),
+            "",
+            "textarea must be cleared after a successful send"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_shift_enter_inserts_newline() {
+        reset_shell();
+        let sent: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured = sent.clone();
+        let container = mount_test(move || {
+            let captured = captured.clone();
+            view! {
+                <Composer on_send=move |msg: String| captured.lock().unwrap().push(msg) />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_into(&ta, "hi");
+        tick().await;
+
+        let target = ta.dyn_ref::<web_sys::EventTarget>().unwrap();
+        let ev = make_key_event("keydown", "Enter", true, false, false);
+        let prevented = dispatch(target, &ev);
+        tick().await;
+
+        // Shift+Enter must NOT call preventDefault (browser is allowed
+        // to insert the newline) and must NOT fire `on_send`.
+        // Synthesised KeyboardEvents do not actually splice a newline
+        // into the textarea, so we assert via the consumption signal.
+        assert!(
+            !prevented,
+            "Shift+Enter must not call prevent_default — browser inserts the newline"
+        );
+        assert!(
+            sent.lock().unwrap().is_empty(),
+            "on_send must not fire on Shift+Enter"
+        );
+        assert_eq!(
+            ta.value(),
+            "hi",
+            "textarea body must remain unchanged after Shift+Enter"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_enter_sends_on_mobile() {
+        // Plain Enter, Ctrl+Enter, and Cmd+Enter all submit on mobile.
+        // Mobile users on physical keyboards (iPad + Magic Keyboard,
+        // foldables, Bluetooth) expect the desktop convention; the
+        // modifier paths are kept so users with Enter-as-newline muscle
+        // memory still have an explicit force-send chord. Spec
+        // `composer.md` §Keyboard (mobile).
+        let sent: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured = sent.clone();
+        let container = mount_test_with_shell(TestShell::Mobile, move || {
+            let captured = captured.clone();
+            view! {
+                <Composer on_send=move |msg: String| captured.lock().unwrap().push(msg) />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_into(&ta, "hi");
+        tick().await;
+
+        // Plain Enter on mobile sends.
+        let target = ta.dyn_ref::<web_sys::EventTarget>().unwrap();
+        let plain = make_key_event("keydown", "Enter", false, false, false);
+        let plain_prevented = dispatch(target, &plain);
+        tick().await;
+        assert!(
+            plain_prevented,
+            "plain Enter on mobile must call prevent_default (submit path)"
+        );
+        assert_eq!(
+            sent.lock().unwrap().as_slice(),
+            &["hi".to_string()],
+            "plain Enter on mobile must fire on_send once"
+        );
+
+        // Ctrl+Enter — force-send regardless of shell.
+        type_into(&ta, "ho");
+        tick().await;
+        let ctrl = make_key_event("keydown", "Enter", false, true, false);
+        let ctrl_prevented = dispatch(target, &ctrl);
+        tick().await;
+        assert!(
+            ctrl_prevented,
+            "Ctrl+Enter must call prevent_default (force-send path)"
+        );
+        assert_eq!(
+            sent.lock().unwrap().len(),
+            2,
+            "Ctrl+Enter must fire on_send a second time"
+        );
+
+        // And Cmd+Enter (meta) — same effect, exercised in a single
+        // test so we cover both modifier flags.
+        type_into(&ta, "hum");
+        tick().await;
+        let meta = make_key_event("keydown", "Enter", false, false, true);
+        let meta_prevented = dispatch(target, &meta);
+        tick().await;
+        assert!(
+            meta_prevented,
+            "Cmd+Enter must also force-send via prevent_default"
+        );
+        assert_eq!(
+            sent.lock().unwrap().len(),
+            3,
+            "Cmd+Enter must fire on_send a third time"
+        );
+
+        reset_shell();
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_tab_inserts_two_spaces() {
+        reset_shell();
+        let container = mount_test(|| {
+            view! { <Composer on_send=|_msg: String| {} /> }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_into(&ta, "ab");
+        tick().await;
+        // Caret at position 2 (end of "ab").
+        ta.set_selection_range(2, 2).unwrap();
+
+        let target = ta.dyn_ref::<web_sys::EventTarget>().unwrap();
+        let ev = make_key_event("keydown", "Tab", false, false, false);
+        let prevented = dispatch(target, &ev);
+        tick().await;
+
+        assert!(prevented, "Tab inside textarea must call prevent_default");
+        assert_eq!(
+            ta.value(),
+            "ab  ",
+            "Tab must insert exactly two spaces at the caret"
+        );
+        let caret = ta.selection_start().unwrap().unwrap_or(0);
+        assert_eq!(caret, 4, "caret must advance past the inserted two spaces");
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_escape_unwinds_edit_then_reply_then_blur() {
+        reset_shell();
+        let editing_msg = make_msg("you", "draft body", 1_700_000_000_000);
+        let reply_msg = make_msg("them", "parent body", 1_700_000_000_000);
+
+        let (editing_sig, set_editing) = signal(Some(editing_msg.clone()));
+        let (reply_sig, set_reply) = signal(Some(reply_msg.clone()));
+
+        let cancel_edit_count: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+        let cancel_reply_count: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+        let edit_ctr = cancel_edit_count.clone();
+        let reply_ctr = cancel_reply_count.clone();
+
+        let container = mount_test(move || {
+            let edit_ctr = edit_ctr.clone();
+            let reply_ctr = reply_ctr.clone();
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    replying_to=reply_sig
+                    on_cancel_reply=Callback::new(move |_| {
+                        *reply_ctr.lock().unwrap() += 1;
+                        set_reply.set(None);
+                    })
+                    editing=editing_sig
+                    on_cancel_edit=Callback::new(move |_| {
+                        *edit_ctr.lock().unwrap() += 1;
+                        set_editing.set(None);
+                    })
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        ta.focus().unwrap();
+        let target = ta.dyn_ref::<web_sys::EventTarget>().unwrap();
+
+        // Press 1: must fire cancel_edit (only).
+        let ev1 = make_key_event("keydown", "Escape", false, false, false);
+        dispatch(target, &ev1);
+        tick().await;
+        assert_eq!(
+            *cancel_edit_count.lock().unwrap(),
+            1,
+            "first Escape must cancel edit"
+        );
+        assert_eq!(
+            *cancel_reply_count.lock().unwrap(),
+            0,
+            "first Escape must not cancel reply yet"
+        );
+
+        // Press 2: must fire cancel_reply (only).
+        let ev2 = make_key_event("keydown", "Escape", false, false, false);
+        dispatch(target, &ev2);
+        tick().await;
+        assert_eq!(
+            *cancel_edit_count.lock().unwrap(),
+            1,
+            "second Escape must not re-fire edit cancel"
+        );
+        assert_eq!(
+            *cancel_reply_count.lock().unwrap(),
+            1,
+            "second Escape must cancel reply"
+        );
+
+        // Press 3: nothing else to unwind — must blur the textarea.
+        // We assert via `document.active_element` because `blur()`
+        // is the contract here, not a callback.
+        let ev3 = make_key_event("keydown", "Escape", false, false, false);
+        dispatch(target, &ev3);
+        tick().await;
+        let doc = web_sys::window().unwrap().document().unwrap();
+        let active = doc.active_element();
+        let still_focused = active
+            .as_ref()
+            .map(|el| el.is_same_node(Some(ta.as_ref())))
+            .unwrap_or(false);
+        assert!(
+            !still_focused,
+            "third Escape must blur the textarea (active element changed)"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_arrow_up_on_empty_fires_edit_callback() {
+        reset_shell();
+        let count: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+        let captured = count.clone();
+        let container = mount_test(move || {
+            let captured = captured.clone();
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    on_arrow_up_edit=Callback::new(move |_| {
+                        *captured.lock().unwrap() += 1;
+                    })
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        // Textarea is empty by default — no `type_into` needed.
+        let target = ta.dyn_ref::<web_sys::EventTarget>().unwrap();
+        let ev = make_key_event("keydown", "ArrowUp", false, false, false);
+        let prevented = dispatch(target, &ev);
+        tick().await;
+
+        assert!(
+            prevented,
+            "ArrowUp on empty composer must call prevent_default \
+             (suppresses caret move)"
+        );
+        assert_eq!(
+            *count.lock().unwrap(),
+            1,
+            "on_arrow_up_edit must fire exactly once on empty ArrowUp"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_arrow_up_on_nonempty_does_not_fire() {
+        reset_shell();
+        let count: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+        let captured = count.clone();
+        let container = mount_test(move || {
+            let captured = captured.clone();
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    on_arrow_up_edit=Callback::new(move |_| {
+                        *captured.lock().unwrap() += 1;
+                    })
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_into(&ta, "x");
+        tick().await;
+
+        let target = ta.dyn_ref::<web_sys::EventTarget>().unwrap();
+        let ev = make_key_event("keydown", "ArrowUp", false, false, false);
+        let prevented = dispatch(target, &ev);
+        tick().await;
+
+        assert!(
+            !prevented,
+            "ArrowUp on a non-empty draft must NOT prevent_default \
+             — the user is moving the caret within the buffer"
+        );
+        assert_eq!(
+            *count.lock().unwrap(),
+            0,
+            "on_arrow_up_edit must not fire when textarea has content"
+        );
+    }
+
+    // ── T7 — styled reply bar with scroll-to-parent ────────────────────
+    //
+    // AGs covered by this group:
+    //   AG-6: Reply preview bar renders with the spec layout (left
+    //         rule + author + preview + cancel) and clicking the
+    //         preview body fires `on_jump_to_parent` with the
+    //         parent message id.
+    //
+    // Spec: `composer.md` §Reply preview (above composer).
+    // Plan: `2026-04-26-ui-phase-3a-composer.md` Task T7.
+
+    #[wasm_bindgen_test]
+    async fn composer_reply_bar_renders_with_left_rule_and_cancel() {
+        reset_shell();
+        let parent = make_msg("mira", "the parent body", 1_700_000_000_000);
+        let (reply_sig, _set_reply) = signal(Some(parent.clone()));
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    replying_to=reply_sig
+                    on_cancel_reply=Callback::new(|_| ())
+                />
+            }
+        });
+        tick().await;
+
+        let bar = query(&container, ".composer__reply-bar")
+            .expect(".composer__reply-bar must render when replying_to is Some");
+
+        // Left accent rule.
+        assert!(
+            bar.query_selector(".composer__reply-bar-rule")
+                .unwrap()
+                .is_some(),
+            "reply bar must include the 2 px left rule element"
+        );
+
+        // Label, author, body preview.
+        let label = bar
+            .query_selector(".composer__reply-bar-label")
+            .unwrap()
+            .expect("reply bar must include the 'replying to' label");
+        assert_eq!(
+            text(&label).trim(),
+            "replying to",
+            "reply bar label text must match the spec copy"
+        );
+        let author = bar
+            .query_selector(".composer__reply-bar-author")
+            .unwrap()
+            .expect("reply bar must include the parent author span");
+        assert!(
+            text(&author).contains("mira"),
+            "reply bar author must show the parent's display name, got {:?}",
+            text(&author)
+        );
+        let body = bar
+            .query_selector(".composer__reply-bar-body")
+            .unwrap()
+            .expect("reply bar must include the body preview span");
+        assert!(
+            text(&body).contains("the parent body"),
+            "reply bar body must include the parent body preview, got {:?}",
+            text(&body)
+        );
+
+        // Cancel button — text content `cancel`, ARIA label `cancel reply`.
+        let cancel = bar
+            .query_selector(".composer__reply-bar-cancel")
+            .unwrap()
+            .expect("reply bar must include a cancel button");
+        assert_eq!(
+            text(&cancel).trim(),
+            "cancel",
+            "cancel button text must be the spec 'cancel' string"
+        );
+        assert_eq!(
+            cancel.get_attribute("aria-label").as_deref(),
+            Some("cancel reply"),
+            "cancel button ARIA label must match the spec accessibility table"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_reply_bar_click_preview_fires_on_jump_to_parent() {
+        reset_shell();
+        let parent = make_msg("mira", "preview body", 1_700_000_000_000);
+        let parent_id = parent.id.clone();
+        let (reply_sig, _set_reply) = signal(Some(parent.clone()));
+        let jumps: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured = jumps.clone();
+        let container = mount_test(move || {
+            let captured = captured.clone();
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    replying_to=reply_sig
+                    on_cancel_reply=Callback::new(|_| ())
+                    on_jump_to_parent=Callback::new(move |id: String| {
+                        captured.lock().unwrap().push(id);
+                    })
+                />
+            }
+        });
+        tick().await;
+
+        let preview = query(&container, ".composer__reply-bar-preview")
+            .expect("reply bar preview button must exist");
+        let html_btn: web_sys::HtmlElement =
+            preview.dyn_into().expect("preview must be an HtmlElement");
+        html_btn.click();
+        tick().await;
+
+        assert_eq!(
+            jumps.lock().unwrap().as_slice(),
+            &[parent_id],
+            "clicking the preview body must fire on_jump_to_parent with the parent id"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_reply_bar_cancel_does_not_fire_on_jump() {
+        reset_shell();
+        let parent = make_msg("mira", "preview body", 1_700_000_000_000);
+        let (reply_sig, _set_reply) = signal(Some(parent.clone()));
+        let cancels: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+        let jumps: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let cancels_ctr = cancels.clone();
+        let jumps_ctr = jumps.clone();
+        let container = mount_test(move || {
+            let cancels_ctr = cancels_ctr.clone();
+            let jumps_ctr = jumps_ctr.clone();
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    replying_to=reply_sig
+                    on_cancel_reply=Callback::new(move |_| {
+                        *cancels_ctr.lock().unwrap() += 1;
+                    })
+                    on_jump_to_parent=Callback::new(move |id: String| {
+                        jumps_ctr.lock().unwrap().push(id);
+                    })
+                />
+            }
+        });
+        tick().await;
+
+        let cancel = query(&container, ".composer__reply-bar-cancel")
+            .expect("reply bar cancel button must exist");
+        let html_btn: web_sys::HtmlElement =
+            cancel.dyn_into().expect("cancel must be an HtmlElement");
+        html_btn.click();
+        tick().await;
+
+        assert_eq!(
+            *cancels.lock().unwrap(),
+            1,
+            "cancel must fire on_cancel_reply exactly once"
+        );
+        assert!(
+            jumps.lock().unwrap().is_empty(),
+            "cancel click must not bubble into on_jump_to_parent"
+        );
+    }
+
+    // ── T8 — styled edit bar + send-button label flip ──────────────────
+    //
+    // AGs covered by this group:
+    //   AG-7: Edit bar shows `editing message · esc to cancel` and the
+    //         send button label flips to `save` while editing.
+    //
+    // Spec: `composer.md` §Edit mode + §ARIA labels (`cancel edit`).
+    // Plan: `2026-04-26-ui-phase-3a-composer.md` Task T8.
+
+    #[wasm_bindgen_test]
+    async fn composer_edit_bar_renders_hint() {
+        reset_shell();
+        let msg = make_msg("you", "draft body", 1_700_000_000_000);
+        let (editing_sig, _set_editing) = signal(Some(msg.clone()));
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    editing=editing_sig
+                    on_cancel_edit=Callback::new(|_| ())
+                />
+            }
+        });
+        tick().await;
+
+        let bar = query(&container, ".composer__edit-bar")
+            .expect(".composer__edit-bar must render when editing is Some");
+        let bar_text = text(&bar);
+        assert!(
+            bar_text.contains("editing message"),
+            "edit bar text must include 'editing message', got {bar_text:?}"
+        );
+        assert!(
+            bar_text.contains("esc to cancel"),
+            "edit bar text must include 'esc to cancel', got {bar_text:?}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_edit_bar_send_button_says_save() {
+        reset_shell();
+        let msg = make_msg("you", "draft body", 1_700_000_000_000);
+        let (editing_sig, _set_editing) = signal(Some(msg.clone()));
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    editing=editing_sig
+                    on_cancel_edit=Callback::new(|_| ())
+                />
+            }
+        });
+        tick().await;
+
+        let send =
+            query(&container, ".composer__send").expect(".composer__send must exist while editing");
+        assert_eq!(
+            text(&send).trim(),
+            "save",
+            "send button text must flip to 'save' while editing"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_edit_bar_cancel_button_aria_label() {
+        reset_shell();
+        let msg = make_msg("you", "draft body", 1_700_000_000_000);
+        let (editing_sig, _set_editing) = signal(Some(msg.clone()));
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    editing=editing_sig
+                    on_cancel_edit=Callback::new(|_| ())
+                />
+            }
+        });
+        tick().await;
+
+        let cancel = query(&container, ".composer__edit-bar-cancel")
+            .expect(".composer__edit-bar-cancel must exist when editing");
+        assert_eq!(
+            cancel.get_attribute("aria-label").as_deref(),
+            Some("cancel edit"),
+            "edit bar cancel ARIA label must match the spec accessibility table"
+        );
+        assert_eq!(
+            text(&cancel).trim(),
+            "cancel",
+            "edit bar cancel button text must be 'cancel'"
+        );
+    }
+
+    // ── T9 — meta row (desktop / mobile / offline variants) ────────────
+    //
+    // Spec: `composer.md` §Desktop compose surface — Meta row,
+    // §Mobile compose surface, §Offline state.
+    // Plan: `2026-04-26-ui-phase-3a-composer.md` Task T9.
+
+    #[wasm_bindgen_test]
+    async fn composer_meta_row_desktop_shows_grove_keys_and_whisper_hint() {
+        let (connection_sig, _set_connection) = signal(ConnectionState::Connected);
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    connection=connection_sig
+                />
+            }
+        });
+        tick().await;
+
+        let meta = query(&container, ".composer__meta")
+            .expect(".composer__meta must render under <Composer> on desktop");
+        let meta_text = text(&meta);
+        assert!(
+            meta_text.contains("sealed with grove-keys"),
+            "desktop meta row must include 'sealed with grove-keys', got {meta_text:?}"
+        );
+        assert!(
+            meta_text.contains("hold"),
+            "desktop meta row must include the whisper hint, got {meta_text:?}"
+        );
+        assert!(
+            meta_text.contains("shift"),
+            "desktop meta row must render the literal `shift` keycap, got {meta_text:?}"
+        );
+        assert!(
+            meta_text.contains("to whisper"),
+            "desktop meta row must end with 'to whisper', got {meta_text:?}"
+        );
+
+        // Lock + ear icons are rendered through the shared icon helpers.
+        assert!(
+            meta.query_selector(".icon-lock").unwrap().is_some(),
+            "desktop meta row must render the lock icon"
+        );
+        assert!(
+            meta.query_selector(".icon-ear").unwrap().is_some(),
+            "desktop meta row must render the ear icon"
+        );
+        // Offline class must be absent while connected.
+        assert!(
+            !meta.class_list().contains("composer__meta--offline"),
+            "desktop online meta must not carry the offline modifier"
+        );
+        reset_shell();
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_meta_row_mobile_shows_peer_count_and_tap_ear() {
+        let (connection_sig, _set_connection) = signal(ConnectionState::Connected);
+        let peer_count_sig: Signal<usize> = Signal::derive(|| 5);
+        let container = mount_test_with_shell(TestShell::Mobile, move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    connection=connection_sig
+                    peer_count=peer_count_sig
+                />
+            }
+        });
+        tick().await;
+
+        let meta = query(&container, ".composer__meta")
+            .expect(".composer__meta must render under <Composer> on mobile");
+        let meta_text = text(&meta);
+        assert!(
+            meta_text.contains("sealed to 5 peers in grove"),
+            "mobile meta row must include 'sealed to 5 peers in grove', got {meta_text:?}"
+        );
+        assert!(
+            meta_text.contains("tap ear to whisper"),
+            "mobile meta row must include 'tap ear to whisper', got {meta_text:?}"
+        );
+        assert!(
+            meta.query_selector(".icon-lock").unwrap().is_some(),
+            "mobile meta row must render the lock icon"
+        );
+        assert!(
+            meta.query_selector(".icon-ear").unwrap().is_some(),
+            "mobile meta row must render the ear icon"
+        );
+        reset_shell();
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_meta_row_offline_replaces_with_queuing_message() {
+        let (connection_sig, _set_connection) = signal(ConnectionState::Offline);
+        let container = mount_test_with_shell(TestShell::Desktop, move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    connection=connection_sig
+                />
+            }
+        });
+        tick().await;
+
+        let meta = query(&container, ".composer__meta")
+            .expect(".composer__meta must render in the offline form");
+        assert!(
+            meta.class_list().contains("composer__meta--offline"),
+            "offline meta must carry the `composer__meta--offline` modifier"
+        );
+        let meta_text = text(&meta);
+        assert!(
+            meta_text.contains("offline · queuing messages"),
+            "offline meta must include 'offline · queuing messages', got {meta_text:?}"
+        );
+        assert!(
+            meta.query_selector(".icon-hourglass").unwrap().is_some(),
+            "offline meta must render the hourglass icon"
+        );
+        // Online copy must not leak through when offline.
+        assert!(
+            !meta_text.contains("sealed with grove-keys"),
+            "offline meta must replace the online copy entirely, got {meta_text:?}"
+        );
+        reset_shell();
+    }
+
+    // ── T10 — offline tint + per-channel-kind placeholder wiring ──────
+    //
+    // Spec: `composer.md` §Offline state, §Composer placeholders.
+    // Plan: `2026-04-26-ui-phase-3a-composer.md` Task T10.
+
+    #[wasm_bindgen_test]
+    async fn composer_offline_class_applied_when_connection_offline() {
+        reset_shell();
+        let (connection_sig, _set_connection) = signal(ConnectionState::Offline);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    connection=connection_sig
+                />
+            }
+        });
+        tick().await;
+
+        let composer =
+            query(&container, ".composer").expect(".composer wrapper must render under <Composer>");
+        assert!(
+            composer.class_list().contains("composer--offline"),
+            "outer `.composer` element must carry the `composer--offline` modifier when offline"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_placeholder_uses_channel_form_when_connected() {
+        reset_shell();
+        let (connection_sig, _set_connection) = signal(ConnectionState::Connected);
+        let peer_count_sig: Signal<usize> = Signal::derive(|| 3);
+        let channel_name_sig: Signal<String> = Signal::derive(|| "general".to_string());
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    connection=connection_sig
+                    peer_count=peer_count_sig
+                    channel_name=channel_name_sig
+                />
+            }
+        });
+        tick().await;
+
+        let textarea = composer_textarea(&container);
+        assert_eq!(
+            textarea.placeholder(),
+            "message #general — encrypted to 3 peers",
+            "online + named channel must render the channel placeholder form"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_placeholder_uses_offline_form_when_offline() {
+        reset_shell();
+        let (connection_sig, _set_connection) = signal(ConnectionState::Offline);
+        let channel_name_sig: Signal<String> = Signal::derive(|| "general".to_string());
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    connection=connection_sig
+                    channel_name=channel_name_sig
+                />
+            }
+        });
+        tick().await;
+
+        let textarea = composer_textarea(&container);
+        assert_eq!(
+            textarea.placeholder(),
+            "offline — messages queue until reconnect",
+            "offline overrides the channel placeholder form"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_placeholder_no_channel_form() {
+        reset_shell();
+        let (connection_sig, _set_connection) = signal(ConnectionState::Connected);
+        let channel_name_sig: Signal<String> = Signal::derive(String::new);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    connection=connection_sig
+                    channel_name=channel_name_sig
+                />
+            }
+        });
+        tick().await;
+
+        let textarea = composer_textarea(&container);
+        assert_eq!(
+            textarea.placeholder(),
+            "choose a channel to start",
+            "empty channel name + no recipient must render the no-channel form"
+        );
+    }
+
+    // ── T11 — typing indicator row (visible label + 3-dot cluster) ─────
+    //
+    // AGs covered by this group:
+    //   AG-12: 1 / 2 / 3 / 4+ peer pluralisation forms render the
+    //          spec's exact copy.
+    //   Plus: hidden when no peers are typing.
+    //
+    // Spec: `composer.md` §Typing indicator (lines 145–159).
+    // Plan: `2026-04-26-ui-phase-3a-composer.md` Task T11.
+    //
+    // The `peers` prop accepts a `Signal<Vec<String>>` so tests can
+    // drive each pluralisation case directly without standing up a
+    // real `ClientHandle`. Production wiring in `app.rs` derives the
+    // signal from the existing `channel_views` map (filled by the
+    // typing-expiry timer at app start).
+
+    /// Resolve the typing-indicator label text — the row is always
+    /// in the DOM, but `--empty` styling collapses it visually when
+    /// the peers list is empty.
+    fn typing_label_text(container: &web_sys::HtmlElement) -> String {
+        let row = query(container, ".composer__typing-indicator")
+            .expect(".composer__typing-indicator must render under <Composer>");
+        let label = row
+            .query_selector(".composer__typing-label")
+            .unwrap()
+            .expect(".composer__typing-label must render inside the indicator");
+        text(&label)
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_typing_indicator_renders_one_typist() {
+        reset_shell();
+        let peers: Signal<Vec<String>> = Signal::derive(|| vec!["alex".to_string()]);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    typing_peers=peers
+                />
+            }
+        });
+        tick().await;
+
+        // Spec copy: `{name} is writing…` (Unicode horizontal ellipsis).
+        assert_eq!(typing_label_text(&container), "alex is writing\u{2026}");
+
+        // Three dots must be present so the visual affordance matches
+        // the spec; arity is asserted via `query_selector_all`.
+        let row = query(&container, ".composer__typing-indicator").unwrap();
+        let dots = row
+            .query_selector_all(".composer__typing-dot")
+            .unwrap()
+            .length();
+        assert_eq!(
+            dots, 3,
+            "indicator must render 3 dots for the staggered pulse animation"
+        );
+
+        // Not hidden — `data-empty="false"` and the modifier class is
+        // absent.
+        let html: web_sys::HtmlElement = row.dyn_into().unwrap();
+        assert_eq!(
+            html.dataset().get("empty").as_deref(),
+            Some("false"),
+            "data-empty must be `false` while peers are typing"
+        );
+        assert!(
+            !html
+                .class_list()
+                .contains("composer__typing-indicator--empty"),
+            "indicator must not carry --empty modifier when peers are typing"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_typing_indicator_renders_two_typists() {
+        reset_shell();
+        let peers: Signal<Vec<String>> =
+            Signal::derive(|| vec!["alex".to_string(), "bo".to_string()]);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    typing_peers=peers
+                />
+            }
+        });
+        tick().await;
+
+        assert_eq!(
+            typing_label_text(&container),
+            "alex and bo are writing\u{2026}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_typing_indicator_renders_three_typists() {
+        reset_shell();
+        let peers: Signal<Vec<String>> =
+            Signal::derive(|| vec!["alex".to_string(), "bo".to_string(), "cy".to_string()]);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    typing_peers=peers
+                />
+            }
+        });
+        tick().await;
+
+        // Spec copy: `{name}, {name}, and {name} are writing…` —
+        // serial Oxford comma form per `composer.md` line 155.
+        assert_eq!(
+            typing_label_text(&container),
+            "alex, bo, and cy are writing\u{2026}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_typing_indicator_renders_count_for_four_plus() {
+        reset_shell();
+        let peers: Signal<Vec<String>> = Signal::derive(|| {
+            vec![
+                "alex".to_string(),
+                "bo".to_string(),
+                "cy".to_string(),
+                "dee".to_string(),
+                "el".to_string(),
+            ]
+        });
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    typing_peers=peers
+                />
+            }
+        });
+        tick().await;
+
+        // Spec copy: `{count} people are writing…` — used for any
+        // count >= 4 so the row stays bounded.
+        assert_eq!(
+            typing_label_text(&container),
+            "5 people are writing\u{2026}"
+        );
+    }
+
+    // ── T12 — aria-live polite + 5 s debounce ──────────────────────────
+    //
+    // AGs covered:
+    //   AG-13: Typing indicator announces via `aria-live="polite"`
+    //          and debounces to at most once per 5 s.
+    //
+    // Spec: `composer.md` §Screen reader flow (line 257-259).
+    // Plan: `2026-04-26-ui-phase-3a-composer.md` Task T12.
+    //
+    // Pure-function unit tests for the debounce gate
+    // (`should_announce`) live in
+    // `crates/web/src/components/composer/typing_indicator.rs::tests`.
+    // The browser tests below verify the wiring — that the visible
+    // label updates on each peers change while the aria-live span
+    // stays pinned to the *first* announcement until 5 s elapses
+    // (`Date::now()` does not advance by 5 000 ms inside a single
+    // wasm-bindgen-test, so three rapid updates yield exactly one
+    // announcement).
+
+    #[wasm_bindgen_test]
+    async fn composer_typing_indicator_has_aria_live_polite() {
+        reset_shell();
+        let peers: Signal<Vec<String>> = Signal::derive(|| vec!["alex".to_string()]);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    typing_peers=peers
+                />
+            }
+        });
+        tick().await;
+
+        let row = query(&container, ".composer__typing-indicator")
+            .expect(".composer__typing-indicator must render under <Composer>");
+
+        // The SR-only span is the *only* aria-live region in the
+        // indicator. The visible label carries `aria-hidden="true"`
+        // so screen readers consume the throttled span only.
+        let sr = row
+            .query_selector(".composer__typing-sr-only")
+            .unwrap()
+            .expect(".composer__typing-sr-only must render for screen-reader announcements");
+        assert_eq!(
+            sr.get_attribute("aria-live").as_deref(),
+            Some("polite"),
+            "screen-reader span must declare aria-live=\"polite\""
+        );
+        assert_eq!(
+            sr.get_attribute("aria-atomic").as_deref(),
+            Some("true"),
+            "screen-reader span must declare aria-atomic=\"true\" so partial updates aren't read"
+        );
+
+        // The visible label and dot cluster must be hidden from AT
+        // so the aria-live throttle isn't bypassed by the visible
+        // text node updating on every signal change.
+        let label = row
+            .query_selector(".composer__typing-label")
+            .unwrap()
+            .expect(".composer__typing-label must render");
+        assert_eq!(
+            label.get_attribute("aria-hidden").as_deref(),
+            Some("true"),
+            "visible label must be aria-hidden so it doesn't bypass the debounced live region"
+        );
+        let dots = row
+            .query_selector(".composer__typing-dots")
+            .unwrap()
+            .expect(".composer__typing-dots must render");
+        assert_eq!(
+            dots.get_attribute("aria-hidden").as_deref(),
+            Some("true"),
+            "dot cluster must be aria-hidden — pure decorative animation"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_typing_indicator_aria_throttled_to_5s() {
+        reset_shell();
+
+        // RwSignal so the test can drive multiple updates within a
+        // single render tree.
+        let peers_rw = RwSignal::new(vec!["alex".to_string()]);
+        let peers: Signal<Vec<String>> = Signal::derive(move || peers_rw.get());
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    typing_peers=peers
+                />
+            }
+        });
+        tick().await;
+
+        let row = query(&container, ".composer__typing-indicator").unwrap();
+        let label = row
+            .query_selector(".composer__typing-label")
+            .unwrap()
+            .unwrap();
+        let sr = row
+            .query_selector(".composer__typing-sr-only")
+            .unwrap()
+            .unwrap();
+
+        // First non-empty change announces — both visible label and
+        // aria-live region read `alex is writing…`.
+        assert_eq!(text(&label), "alex is writing\u{2026}");
+        assert_eq!(
+            text(&sr),
+            "alex is writing\u{2026}",
+            "first non-empty change must announce immediately"
+        );
+
+        // Drive two more rapid changes within the same test tick.
+        // `Date::now()` does not advance by 5 000 ms inside a single
+        // wasm-bindgen-test, so the gate must keep the aria-live
+        // text pinned to the first announcement while the visible
+        // label updates each time.
+        peers_rw.set(vec!["alex".to_string(), "bo".to_string()]);
+        tick().await;
+        assert_eq!(
+            text(&label),
+            "alex and bo are writing\u{2026}",
+            "visible label must update on every peers change"
+        );
+        assert_eq!(
+            text(&sr),
+            "alex is writing\u{2026}",
+            "aria-live must stay pinned to the first announcement \
+             during the 5 s debounce window"
+        );
+
+        peers_rw.set(vec!["alex".to_string(), "bo".to_string(), "cy".to_string()]);
+        tick().await;
+        assert_eq!(
+            text(&label),
+            "alex, bo, and cy are writing\u{2026}",
+            "visible label must continue to update freely"
+        );
+        assert_eq!(
+            text(&sr),
+            "alex is writing\u{2026}",
+            "aria-live must still be throttled — only one announcement per 5 s"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_typing_indicator_hidden_when_no_typists() {
+        reset_shell();
+        let peers: Signal<Vec<String>> = Signal::derive(Vec::new);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    typing_peers=peers
+                />
+            }
+        });
+        tick().await;
+
+        // Row stays in the DOM (so reactive bindings don't tear down)
+        // but is hidden via `--empty` modifier so the composer
+        // doesn't shift on every transition.
+        let row = query(&container, ".composer__typing-indicator")
+            .expect(".composer__typing-indicator must render even when empty");
+        let html: web_sys::HtmlElement = row.dyn_into().unwrap();
+        assert!(
+            html.class_list()
+                .contains("composer__typing-indicator--empty"),
+            "indicator must carry --empty modifier when peers list is empty"
+        );
+        assert_eq!(
+            html.dataset().get("empty").as_deref(),
+            Some("true"),
+            "data-empty must be `true` when peers list is empty"
+        );
+
+        // Label resolves to the empty string so screen readers don't
+        // pick up stale text.
+        let label = html
+            .query_selector(".composer__typing-label")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            text(&label),
+            "",
+            "typing label must be empty when no peers are typing"
+        );
+    }
+
+    // ── T13 — mention autocomplete popover ─────────────────────────────
+    //
+    // AGs covered:
+    //   AG-8: popover opens on `@` at a word boundary, filters by
+    //         prefix on handle / display name, supports arrow + Enter
+    //         to insert, Esc dismisses.
+    //
+    // Spec: `composer.md` §Mention autocomplete (lines 93–105).
+    // Plan: `2026-04-26-ui-phase-3a-composer.md` Task T13.
+    //
+    // The popover is purely presentational; filtering, anchoring and
+    // keyboard navigation live in the parent `<Composer>`. These tests
+    // mount the parent with a synthetic `mention_candidates` signal so
+    // we can drive the open / filter / select / dismiss flow without
+    // standing up a `ClientHandle`.
+    use willow_client::presence::PresenceState;
+    use willow_client::views::MentionCandidate;
+
+    fn make_candidate(handle: &str, display: &str) -> MentionCandidate {
+        MentionCandidate {
+            peer_id: willow_identity::Identity::generate().endpoint_id(),
+            display_name: display.to_string(),
+            handle: handle.to_string(),
+            presence: PresenceState::Here,
+        }
+    }
+
+    /// Set the textarea value, position the caret at end-of-value, and
+    /// dispatch an `input` event so the composer's `on:input` handler
+    /// observes the caret + value pair the same way a real keypress
+    /// would deliver.
+    fn type_at_end(textarea: &web_sys::HtmlTextAreaElement, value: &str) {
+        textarea.set_value(value);
+        let len = value.chars().count() as u32;
+        let _ = textarea.set_selection_range(len, len);
+        let ev = web_sys::InputEvent::new("input").unwrap();
+        textarea
+            .dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&ev)
+            .unwrap();
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_mention_popover_opens_on_at_at_word_boundary() {
+        reset_shell();
+        let candidates: Signal<Vec<MentionCandidate>> = Signal::derive(|| {
+            vec![
+                make_candidate("alice.forest.1", "Alice"),
+                make_candidate("bob.river.2", "Bob"),
+            ]
+        });
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    mention_candidates=candidates
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_at_end(&ta, "@a");
+        tick().await;
+
+        let popover = query(&container, ".mention-popover")
+            .expect(".mention-popover must render when @ is typed at word boundary");
+        let rows = popover.query_selector_all(".mention-popover__row").unwrap();
+        assert!(
+            rows.length() >= 1,
+            "popover must list at least the matching candidate, got {}",
+            rows.length()
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_mention_popover_closed_when_at_inside_word() {
+        reset_shell();
+        let candidates: Signal<Vec<MentionCandidate>> =
+            Signal::derive(|| vec![make_candidate("alice.forest.1", "Alice")]);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    mention_candidates=candidates
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        // `@` after `foo` (no whitespace before) is an email-like
+        // fragment, not a mention — popover must stay closed.
+        type_at_end(&ta, "foo@a");
+        tick().await;
+
+        assert!(
+            query(&container, ".mention-popover").is_none(),
+            ".mention-popover must NOT render when @ is preceded by a non-whitespace glyph"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_mention_popover_filters_on_query() {
+        reset_shell();
+        let candidates: Signal<Vec<MentionCandidate>> = Signal::derive(|| {
+            vec![
+                make_candidate("alice.forest.1", "Alice"),
+                make_candidate("bob.river.2", "Bob"),
+            ]
+        });
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    mention_candidates=candidates
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_at_end(&ta, "@a");
+        tick().await;
+
+        let popover = query(&container, ".mention-popover").expect(".mention-popover must render");
+        let rows = popover.query_selector_all(".mention-popover__row").unwrap();
+        assert_eq!(
+            rows.length(),
+            1,
+            "prefix `a` must filter to only `alice`, got {}",
+            rows.length()
+        );
+        let row = rows.item(0).unwrap();
+        let text_content = row.text_content().unwrap_or_default();
+        assert!(
+            text_content.contains("Alice") && text_content.contains("@alice.forest.1"),
+            "filtered row must show alice's display name + handle, got {text_content:?}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_mention_popover_arrow_navigation_wraps() {
+        reset_shell();
+        let candidates: Signal<Vec<MentionCandidate>> = Signal::derive(|| {
+            vec![
+                make_candidate("alice", "Alice"),
+                make_candidate("bob", "Bob"),
+                make_candidate("cy", "Cy"),
+            ]
+        });
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    mention_candidates=candidates
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        // Empty query — popover lists all candidates alphabetical by
+        // handle (alice, bob, cy).
+        type_at_end(&ta, "@");
+        tick().await;
+
+        let popover = query(&container, ".mention-popover").expect(".mention-popover must render");
+        let rows = popover.query_selector_all(".mention-popover__row").unwrap();
+        assert_eq!(rows.length(), 3, "all three candidates must be listed");
+
+        let target = ta.dyn_ref::<web_sys::EventTarget>().unwrap();
+
+        // Initial selection is index 0 (alice).
+        let row0 = rows.item(0).unwrap();
+        assert!(
+            row0.dyn_ref::<web_sys::Element>()
+                .unwrap()
+                .class_list()
+                .contains("mention-popover__row--selected"),
+            "initial selected row must be index 0"
+        );
+
+        // Two ArrowDowns → index 2 (cy).
+        let down1 = make_key_event("keydown", "ArrowDown", false, false, false);
+        dispatch(target, &down1);
+        tick().await;
+        let down2 = make_key_event("keydown", "ArrowDown", false, false, false);
+        dispatch(target, &down2);
+        tick().await;
+        let popover_now = query(&container, ".mention-popover").unwrap();
+        let rows_now = popover_now
+            .query_selector_all(".mention-popover__row")
+            .unwrap();
+        let row2 = rows_now.item(2).unwrap();
+        assert!(
+            row2.dyn_ref::<web_sys::Element>()
+                .unwrap()
+                .class_list()
+                .contains("mention-popover__row--selected"),
+            "after two ArrowDowns selection must be at index 2"
+        );
+
+        // One more ArrowDown wraps back to 0.
+        let down3 = make_key_event("keydown", "ArrowDown", false, false, false);
+        dispatch(target, &down3);
+        tick().await;
+        let row0_now = query(&container, ".mention-popover")
+            .unwrap()
+            .query_selector_all(".mention-popover__row")
+            .unwrap()
+            .item(0)
+            .unwrap();
+        assert!(
+            row0_now
+                .dyn_ref::<web_sys::Element>()
+                .unwrap()
+                .class_list()
+                .contains("mention-popover__row--selected"),
+            "ArrowDown past the end must wrap selection back to index 0"
+        );
+
+        // ArrowUp from 0 wraps to last (index 2 = cy).
+        let up = make_key_event("keydown", "ArrowUp", false, false, false);
+        dispatch(target, &up);
+        tick().await;
+        let last = query(&container, ".mention-popover")
+            .unwrap()
+            .query_selector_all(".mention-popover__row")
+            .unwrap()
+            .item(2)
+            .unwrap();
+        assert!(
+            last.dyn_ref::<web_sys::Element>()
+                .unwrap()
+                .class_list()
+                .contains("mention-popover__row--selected"),
+            "ArrowUp from index 0 must wrap to the last row"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_mention_popover_enter_inserts_handle() {
+        reset_shell();
+        let candidates: Signal<Vec<MentionCandidate>> = Signal::derive(|| {
+            vec![
+                make_candidate("alice", "Alice"),
+                make_candidate("bob", "Bob"),
+            ]
+        });
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    mention_candidates=candidates
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_at_end(&ta, "@a");
+        tick().await;
+
+        // Selection defaults to index 0 (alice). Enter must consume
+        // the original `@` and splice `@alice ` into the buffer.
+        let target = ta.dyn_ref::<web_sys::EventTarget>().unwrap();
+        let enter = make_key_event("keydown", "Enter", false, false, false);
+        let prevented = dispatch(target, &enter);
+        tick().await;
+
+        assert!(
+            prevented,
+            "Enter while popover is open must call prevent_default \
+             so it doesn't fall through to the send path"
+        );
+        assert_eq!(
+            ta.value(),
+            "@alice ",
+            "selecting alice must replace `@a` with `@alice ` (handle + space)"
+        );
+        assert!(
+            query(&container, ".mention-popover").is_none(),
+            "popover must close after a successful selection"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_mention_popover_tab_inserts_handle() {
+        reset_shell();
+        let candidates: Signal<Vec<MentionCandidate>> =
+            Signal::derive(|| vec![make_candidate("bob", "Bob")]);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    mention_candidates=candidates
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_at_end(&ta, "hi @b");
+        tick().await;
+
+        let target = ta.dyn_ref::<web_sys::EventTarget>().unwrap();
+        let tab = make_key_event("keydown", "Tab", false, false, false);
+        let prevented = dispatch(target, &tab);
+        tick().await;
+
+        assert!(
+            prevented,
+            "Tab while popover is open must consume the keypress \
+             instead of inserting two spaces"
+        );
+        assert_eq!(
+            ta.value(),
+            "hi @bob ",
+            "Tab must commit the selected handle in place of `@b`"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_mention_popover_escape_closes_without_inserting() {
+        reset_shell();
+        let candidates: Signal<Vec<MentionCandidate>> =
+            Signal::derive(|| vec![make_candidate("alice", "Alice")]);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    mention_candidates=candidates
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_at_end(&ta, "@a");
+        tick().await;
+        assert!(
+            query(&container, ".mention-popover").is_some(),
+            "popover must be open before pressing Escape"
+        );
+
+        let target = ta.dyn_ref::<web_sys::EventTarget>().unwrap();
+        let esc = make_key_event("keydown", "Escape", false, false, false);
+        let prevented = dispatch(target, &esc);
+        tick().await;
+
+        assert!(
+            prevented,
+            "Escape while popover is open must call prevent_default \
+             — must NOT fall through to the edit/reply unwind path"
+        );
+        assert!(
+            query(&container, ".mention-popover").is_none(),
+            "Escape must dismiss the popover"
+        );
+        assert_eq!(
+            ta.value(),
+            "@a",
+            "Escape must leave the textarea content unchanged"
+        );
+    }
+
+    // ── T14 — `@channel` row gated on `ManageChannels` ────────────────
+    //
+    // AGs covered:
+    //   AG-9: `@channel` row appears only when local peer has
+    //         `ManageChannels`.
+    //
+    // Spec: `composer.md` line 104-105 — "Special row `@channel`
+    // (mentions all members) visible only with `ManageChannels`."
+    // Plan: `2026-04-26-ui-phase-3a-composer.md` Task T14.
+
+    #[wasm_bindgen_test]
+    async fn composer_mention_popover_includes_at_channel_when_permitted() {
+        reset_shell();
+        let candidates: Signal<Vec<MentionCandidate>> =
+            Signal::derive(|| vec![make_candidate("alice.forest.1", "Alice")]);
+        let allow: Signal<bool> = Signal::derive(|| true);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    mention_candidates=candidates
+                    allow_channel_mention=allow
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_at_end(&ta, "@");
+        tick().await;
+
+        let popover = query(&container, ".mention-popover")
+            .expect(".mention-popover must render when @ is typed");
+        let channel_row = popover
+            .query_selector(".mention-popover__row--channel")
+            .unwrap()
+            .expect("with allow_channel_mention=true the popover must include the @channel row");
+        let row_text = text(&channel_row);
+        assert!(
+            row_text.contains("everyone in this channel"),
+            "@channel row must show the spec display name, got {row_text:?}"
+        );
+        assert!(
+            row_text.contains("@channel"),
+            "@channel row must show the `@channel` handle, got {row_text:?}"
+        );
+        assert_eq!(
+            channel_row.get_attribute("aria-label").as_deref(),
+            Some("everyone in this channel · notifies all members"),
+            "@channel row aria-label must match the spec accessibility table"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_mention_popover_omits_at_channel_when_not_permitted() {
+        reset_shell();
+        let candidates: Signal<Vec<MentionCandidate>> =
+            Signal::derive(|| vec![make_candidate("alice.forest.1", "Alice")]);
+        let allow: Signal<bool> = Signal::derive(|| false);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    mention_candidates=candidates
+                    allow_channel_mention=allow
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_at_end(&ta, "@");
+        tick().await;
+
+        let popover = query(&container, ".mention-popover")
+            .expect(".mention-popover must render when @ is typed");
+        assert!(
+            popover
+                .query_selector(".mention-popover__row--channel")
+                .unwrap()
+                .is_none(),
+            "without ManageChannels the @channel row must NOT appear"
+        );
+        // The per-peer row must still be there so the popover isn't
+        // empty.
+        let rows = popover.query_selector_all(".mention-popover__row").unwrap();
+        assert_eq!(
+            rows.length(),
+            1,
+            "popover must still list the single per-peer candidate, got {}",
+            rows.length()
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_mention_popover_at_channel_filters_by_prefix() {
+        // Even with permission, the @channel row must obey the
+        // prefix-match contract — typing `@a` (which doesn't prefix
+        // `channel`) must NOT surface the synthetic row.
+        reset_shell();
+        let candidates: Signal<Vec<MentionCandidate>> =
+            Signal::derive(|| vec![make_candidate("alice.forest.1", "Alice")]);
+        let allow: Signal<bool> = Signal::derive(|| true);
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    mention_candidates=candidates
+                    allow_channel_mention=allow
+                />
+            }
+        });
+        tick().await;
+
+        let ta = composer_textarea(&container);
+        type_at_end(&ta, "@a");
+        tick().await;
+
+        let popover = query(&container, ".mention-popover").unwrap();
+        assert!(
+            popover
+                .query_selector(".mention-popover__row--channel")
+                .unwrap()
+                .is_none(),
+            "query `a` does not prefix `channel` — synthetic row must drop out"
+        );
+
+        // And `@c` does prefix `channel` — the row must reappear.
+        type_at_end(&ta, "@c");
+        tick().await;
+        let popover = query(&container, ".mention-popover").unwrap();
+        assert!(
+            popover
+                .query_selector(".mention-popover__row--channel")
+                .unwrap()
+                .is_some(),
+            "query `c` prefixes `channel` — synthetic row must surface"
+        );
+    }
+
+    // ── T15 — ARIA labels audit ───────────────────────────────────────────
+    //
+    // AGs covered:
+    //   AG-14: Every interactive element has the ARIA label the spec
+    //          dictates.
+    //
+    // Spec: `composer.md` §Accessibility, table at lines 235-241:
+    //   | reply bar cancel | `cancel reply`        |
+    //   | edit bar cancel  | `cancel edit`         |
+    //   | send button      | `send`                |
+    //   | attach button    | `attach file`         |
+    //   | emoji button     | `open emoji picker`   |
+    //
+    // Plus the spec-extension we elected for the send button: the
+    // aria-label flips to `save` while editing so AT users hear the
+    // same state sighted users see (the visible label flips too —
+    // see `send_aria_label` in `composer.rs`).
+    //
+    // Decorative meta-row icons (lock, ear, hourglass) carry
+    // `aria-hidden="true"` on their wrapping span — they are visual
+    // sugar, not affordances.
+
+    #[wasm_bindgen_test]
+    async fn composer_aria_labels_match_spec_table() {
+        reset_shell();
+        let (replying_to, _set_replying_to) =
+            signal::<Option<DisplayMessage>>(Some(make_msg("alex", "the parent message", 1_000)));
+        // We deliberately leave `editing` unset for this assertion so
+        // the reply bar renders (the composer suppresses the reply bar
+        // while edit mode is active). The edit-mode bar + label flip
+        // get their own assertions below.
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    replying_to=replying_to
+                    on_cancel_reply=Callback::new(|_| ())
+                />
+            }
+        });
+        tick().await;
+
+        // ── Send button (default state — `send`).
+        let send =
+            query(&container, ".composer__send").expect("send button must render under <Composer>");
+        assert_eq!(
+            send.get_attribute("aria-label").as_deref(),
+            Some("send"),
+            "send button must carry aria-label=`send` per spec accessibility table"
+        );
+        // ── Attach button (`attach file`).
+        let attach = query(&container, ".composer__attach")
+            .expect("attach button must render under <Composer>");
+        assert_eq!(
+            attach.get_attribute("aria-label").as_deref(),
+            Some("attach file"),
+            "attach button must carry aria-label=`attach file` per spec accessibility table"
+        );
+        // ── Emoji button (`open emoji picker`).
+        let emoji = query(&container, ".composer__emoji")
+            .expect("emoji button must render under <Composer>");
+        assert_eq!(
+            emoji.get_attribute("aria-label").as_deref(),
+            Some("open emoji picker"),
+            "emoji button must carry aria-label=`open emoji picker` per spec accessibility table"
+        );
+        // ── Reply bar cancel (`cancel reply`).
+        let reply_cancel = query(&container, ".composer__reply-bar-cancel")
+            .expect("reply-bar cancel must render when replying_to is Some");
+        assert_eq!(
+            reply_cancel.get_attribute("aria-label").as_deref(),
+            Some("cancel reply"),
+            "reply-bar cancel must carry aria-label=`cancel reply` per spec accessibility table"
+        );
+
+        // ── Decorative meta-row icons must be aria-hidden so screen
+        //    readers don't announce the SVG glyphs separately from the
+        //    meta-text label that already conveys the affordance.
+        let meta_icons = container
+            .query_selector_all(".composer__meta-icon")
+            .unwrap();
+        assert!(
+            meta_icons.length() > 0,
+            "meta-row must render at least one icon span"
+        );
+        for i in 0..meta_icons.length() {
+            let node = meta_icons.item(i).unwrap();
+            let el: web_sys::Element = node.dyn_into().unwrap();
+            assert_eq!(
+                el.get_attribute("aria-hidden").as_deref(),
+                Some("true"),
+                ".composer__meta-icon[{i}] must carry aria-hidden=true; \
+                 decorative SVGs would otherwise be announced redundantly"
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    async fn composer_edit_bar_cancel_aria_label_matches_spec() {
+        // The reply-bar test above can't also exercise edit mode
+        // because the composer suppresses the reply bar when editing
+        // is active. Mount a second composer with `editing = Some(_)`
+        // so the edit-bar branch renders, then assert the cancel
+        // control's aria-label.
+        reset_shell();
+        let (editing, _set_editing) =
+            signal::<Option<DisplayMessage>>(Some(make_msg("self", "draft body", 2_000)));
+        let container = mount_test(move || {
+            view! {
+                <Composer
+                    on_send=|_msg: String| {}
+                    editing=editing
+                    on_cancel_edit=Callback::new(|_| ())
+                />
+            }
+        });
+        tick().await;
+
+        let edit_cancel = query(&container, ".composer__edit-bar-cancel")
+            .expect("edit-bar cancel must render when editing is Some");
+        assert_eq!(
+            edit_cancel.get_attribute("aria-label").as_deref(),
+            Some("cancel edit"),
+            "edit-bar cancel must carry aria-label=`cancel edit` per spec accessibility table"
+        );
+
+        // Send button label + aria-label both flip to `save` while
+        // editing — the visible text (covered in T8 tests) and the
+        // aria-label must agree so screen-reader users hear the same
+        // state sighted users see.
+        let send = query(&container, ".composer__send").unwrap();
+        assert_eq!(
+            send.get_attribute("aria-label").as_deref(),
+            Some("save"),
+            "send button aria-label must flip to `save` while editing so it \
+             matches the visible label"
+        );
+    }
+
+    // ── T16 — reduced-motion compliance ───────────────────────────────────
+    //
+    // AG-15: `prefers-reduced-motion: reduce` collapses `willowPulse` to
+    // a static dot; `willow-row-flash` (reply scroll-to-parent flash)
+    // also disables its keyframe.
+    //
+    // wasm-pack's headless harness doesn't expose a way to flip the OS
+    // preference at test time, so we verify the CSS contract by string-
+    // matching the published stylesheet content. This is a brittler
+    // assertion than enumerating the live `CSSRule` list (which would
+    // collapse cleanly into a structural test) — but for `style.css`
+    // the harness inlines the file at compile time, so the content
+    // *is* the stylesheet. If a future CSS pipeline tokenises this we
+    // can switch to walking `document.styleSheets[0].cssRules` and
+    // looking for a media-query condition match.
+
+    #[wasm_bindgen_test]
+    async fn composer_reduced_motion_disables_typing_pulse() {
+        let css = include_str!("../style.css");
+        // The block must mention the media query at least once.
+        assert!(
+            css.contains("@media (prefers-reduced-motion: reduce)"),
+            "style.css must contain a `@media (prefers-reduced-motion: reduce)` block"
+        );
+        // Spec §Motion: `willowPulse` becomes a static dot. The rule
+        // we ship lives in `composer__typing-dot { animation: none; … }`.
+        // We assert both halves are present *inside the same source*
+        // — exact ordering is enforced by a substring match on the
+        // canonical block (the `composer__typing-dot` ruleset is the
+        // only one in `style.css` that pairs the selector with
+        // `animation: none`).
+        let needle = ".composer__typing-dot {\n        animation: none;";
+        assert!(
+            css.contains(needle),
+            "style.css must disable `willowPulse` on `.composer__typing-dot` \
+             under `prefers-reduced-motion: reduce`. Looked for substring:\n{needle}"
+        );
+        // Reply-bar scroll-to-parent flash also respects the
+        // preference. Spec §Motion lists `willow-row-flash` on the
+        // reduced-motion path (T7 added the rule).
+        let row_flash_needle =
+            ".message-row--flash,\n    .message.flash {\n        animation: none;";
+        assert!(
+            css.contains(row_flash_needle),
+            "style.css must disable `willow-row-flash` under \
+             `prefers-reduced-motion: reduce`. Looked for substring:\n{row_flash_needle}"
         );
     }
 }

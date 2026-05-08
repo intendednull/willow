@@ -65,6 +65,10 @@ mod tests_queue;
 mod tests_profile_view;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "tests/composer_views.rs"]
+mod tests_composer_views;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/ephemeral.rs"]
 mod tests_ephemeral;
 
@@ -94,7 +98,7 @@ pub const TYPING_INDICATOR_TTL_MS: u64 = 5_000;
 // Re-export key types at crate root for convenience.
 pub use event_receiver::EventReceiver;
 pub use events::ClientEvent;
-pub use mentions::mentions_me;
+pub use mentions::{mentions_me, Suggestions};
 pub use nickname::{MemNicknameStore, NicknameStore, NicknameStoreHandle, NICKNAME_CAP};
 pub use ops::{pack_wire, unpack_wire, VoiceSignalPayload, WireMessage};
 pub use queue::{ArrivedSummary, QueueSummary, RelayStatus};
@@ -105,6 +109,7 @@ pub use search::{
 pub use trust::{
     ComparePreview, InMemoryTrustStore, PeerTrust, TrustStore, TrustStoreHandle, UnverifiedReason,
 };
+pub use views::MentionCandidate;
 
 /// Errors returned by client API entry points.
 ///

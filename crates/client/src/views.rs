@@ -201,6 +201,38 @@ pub struct MemberInfo {
     pub is_online: bool,
 }
 
+/// One peer that the composer's `@`-autocomplete can suggest.
+///
+/// Spec: `docs/specs/2026-04-19-ui-design/composer.md` §Mention
+/// autocomplete — the list of peers in the current channel, each row
+/// rendering avatar + display name + handle (mono) + status dot.
+///
+/// Plan: `docs/plans/2026-04-26-ui-phase-3a-composer.md` Task T1.
+/// Built from the existing event-state member roster (filtered to the
+/// active channel — every channel inside a Willow grove is visible to
+/// every member today) and decorated with the live presence derivation
+/// so the popover row's status dot lights up the same way as the member
+/// rail.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MentionCandidate {
+    /// Stable peer identity used to dedupe and to splice into the body
+    /// once the row is selected.
+    pub peer_id: EndpointId,
+    /// Resolved display name (`Mira`, `unknown peer`, etc.). Routed
+    /// through [`resolve_display_name`] so the fallback chain matches
+    /// the message rows.
+    pub display_name: String,
+    /// Short handle the popover renders in mono. Resolved from the
+    /// peer's profile when `Profile.handle` lands (TODO: profile-card.md);
+    /// today we fall back to a 4-char hex prefix of the peer id. Stored
+    /// lowercase to match the prefix-match contract in
+    /// [`crate::mentions::Suggestions::filter`].
+    pub handle: String,
+    /// Live presence — drives the status dot colour. Falls back to
+    /// [`PresenceState::Unknown`] when the peer has never been seen.
+    pub presence: PresenceState,
+}
+
 /// Identifier for a surface that can carry unread state.
 ///
 /// Phase 1f introduces per-surface `UnreadStats` keyed by `SurfaceId`.
@@ -468,6 +500,85 @@ impl ClientViewHandle {
             is_self: pid == local_pid,
         }
     }
+
+    /// Build the [`MentionCandidate`] list the composer's `@`-autocomplete
+    /// renders for the channel named `channel_id`.
+    ///
+    /// Spec: `docs/specs/2026-04-19-ui-design/composer.md`
+    /// §Mention autocomplete — "list of peers in the current channel".
+    /// Plan: `docs/plans/2026-04-26-ui-phase-3a-composer.md` Task T1.
+    ///
+    /// Willow's grove model exposes every channel to every grove
+    /// member, so the candidate set is "every member in the active
+    /// server, except `local_peer`". The local peer is filtered out
+    /// because mentioning yourself in your own composer is a no-op —
+    /// the spec already routes `@you` self-mentions through the
+    /// renderer, not the popover.
+    ///
+    /// `channel_id` is the channel *name* (e.g. `general`); kept named
+    /// `channel_id` to match the spec's data-dependency table. When
+    /// the named channel doesn't exist in the active server the helper
+    /// returns an empty list rather than every grove member, which
+    /// keeps the contract honest for the future "private channel"
+    /// world where members will be a strict subset.
+    pub async fn mention_candidates(
+        &self,
+        channel_id: &str,
+        local_peer: EndpointId,
+    ) -> Vec<MentionCandidate> {
+        let events = self.event_state.get().await;
+        let profiles = self.profiles.get().await;
+        let presence = self.presence.get().await;
+
+        if !events.channels.values().any(|c| c.name == channel_id) {
+            return Vec::new();
+        }
+
+        let mut out: Vec<MentionCandidate> = Vec::with_capacity(events.members.len());
+        for (pid, _member) in events.members.iter() {
+            if *pid == local_peer {
+                continue;
+            }
+            let display = resolve_display_name(&events, &profiles, pid);
+            let handle = mention_handle_for(&events, pid);
+            let state = presence
+                .per_peer
+                .get(pid)
+                .copied()
+                .unwrap_or(PresenceState::Unknown);
+            out.push(MentionCandidate {
+                peer_id: *pid,
+                display_name: display,
+                handle,
+                presence: state,
+            });
+        }
+        out
+    }
+}
+
+/// Resolve the short handle Willow renders in the mention popover.
+///
+/// Spec: `docs/specs/2026-04-19-ui-design/composer.md`
+/// §Mention autocomplete — each row shows `handle (mono)`. The grove
+/// data model does not yet carry a dedicated `Profile.handle` field
+/// (TODO: `docs/specs/2026-04-19-ui-design/profile-card.md` — once that
+/// lands, swap this branch to read it directly). Until then we fall
+/// back to the first 4 hex characters of the peer id, which matches
+/// the convention used by tooling and CLI peers.
+pub fn mention_handle_for(events: &willow_state::ServerState, peer_id: &EndpointId) -> String {
+    // Sanity check: if the profile carried a `handle` field today we
+    // would prefer it. Profile is currently devoid of the field — see
+    // the type definition in `crates/state/src/types.rs` — so we
+    // unconditionally fall back to the truncated hex form. The block
+    // is structured so the future plumb-through is a single `if let`.
+    if let Some(_profile) = events.profiles.get(peer_id) {
+        // TODO(profile-card.md): return profile.handle.clone() when the
+        // field lands. Today there's no such field.
+    }
+    let hex = peer_id.to_string();
+    let take = hex.chars().take(4).collect::<String>();
+    take.to_lowercase()
 }
 
 // ───── Compute functions (pure) ─────────────────────────────────────────

@@ -21,6 +21,7 @@ use std::sync::OnceLock;
 use willow_identity::EndpointId;
 
 use crate::state::DisplayMessage;
+use crate::views::MentionCandidate;
 
 /// One chunk of a parsed message body.
 #[derive(Debug, Clone, PartialEq)]
@@ -243,6 +244,105 @@ fn resolve_mention(
     }
 
     None
+}
+
+// ───── Composer mention autocomplete (phase 3a) ─────────────────────────
+
+/// Pure mention-suggestion filter for the composer's `@`-autocomplete.
+///
+/// Spec: `docs/specs/2026-04-19-ui-design/composer.md`
+/// §Mention autocomplete — "list of peers in the current channel,
+/// filtered by prefix match on handle / first segment / display name".
+/// Plan: `docs/plans/2026-04-26-ui-phase-3a-composer.md` Task T3.
+///
+/// The struct itself carries no state — it's a namespace so callers
+/// write `Suggestions::filter(query, candidates)`.
+pub struct Suggestions;
+
+/// Internal ranking tier. Lower is better (tighter match).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SuggestionTier {
+    /// Query is a prefix of the candidate's `handle`.
+    Handle = 0,
+    /// Query is a prefix of the first whitespace-separated segment of
+    /// the candidate's display name.
+    FirstSegment = 1,
+    /// Query is a prefix of the candidate's full display name.
+    DisplayName = 2,
+}
+
+impl Suggestions {
+    /// Filter and rank `candidates` against `query`.
+    ///
+    /// Matching: case-insensitive prefix match against handle, first
+    /// whitespace segment of display name, and the full display name.
+    /// Ranking: handle-prefix > first-segment-prefix > display-name-prefix,
+    /// then alphabetical by handle within a tier.
+    /// Dedupe: by `peer_id`, keeping the highest-tier match.
+    /// Cap: 8 results.
+    /// Empty query: returns the first 8 candidates, alphabetical by
+    /// handle (the popover's "no query yet" surface).
+    pub fn filter(query: &str, candidates: &[MentionCandidate]) -> Vec<MentionCandidate> {
+        const MAX_RESULTS: usize = 8;
+
+        if query.is_empty() {
+            // Sort a clone alphabetically by handle, dedupe by peer id
+            // (defensive — candidate lists are usually peer-id-unique
+            // already), and cap at 8.
+            let mut sorted: Vec<MentionCandidate> = candidates.to_vec();
+            sorted.sort_by(|a, b| a.handle.cmp(&b.handle));
+            let mut seen = std::collections::HashSet::new();
+            sorted.retain(|c| seen.insert(c.peer_id));
+            sorted.truncate(MAX_RESULTS);
+            return sorted;
+        }
+
+        let q = query.to_lowercase();
+        // Best (lowest) tier seen for each peer id, plus the candidate.
+        let mut best: std::collections::HashMap<EndpointId, (SuggestionTier, MentionCandidate)> =
+            std::collections::HashMap::new();
+
+        for c in candidates {
+            let handle_lower = c.handle.to_lowercase();
+            let display_lower = c.display_name.to_lowercase();
+            let first_seg_lower: Option<String> = display_lower
+                .split_whitespace()
+                .next()
+                .map(|s| s.to_string());
+
+            let tier = if handle_lower.starts_with(&q) {
+                Some(SuggestionTier::Handle)
+            } else if first_seg_lower
+                .as_deref()
+                .map(|s| s.starts_with(&q))
+                .unwrap_or(false)
+            {
+                Some(SuggestionTier::FirstSegment)
+            } else if display_lower.starts_with(&q) {
+                Some(SuggestionTier::DisplayName)
+            } else {
+                None
+            };
+
+            if let Some(t) = tier {
+                match best.get(&c.peer_id) {
+                    Some((existing, _)) if *existing <= t => {
+                        // Already have a tighter (or equal) match for
+                        // this peer — keep the existing entry.
+                    }
+                    _ => {
+                        best.insert(c.peer_id, (t, c.clone()));
+                    }
+                }
+            }
+        }
+
+        // Sort by (tier, handle).
+        let mut ranked: Vec<(SuggestionTier, MentionCandidate)> = best.into_values().collect();
+        ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.handle.cmp(&b.1.handle)));
+        ranked.truncate(MAX_RESULTS);
+        ranked.into_iter().map(|(_, c)| c).collect()
+    }
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

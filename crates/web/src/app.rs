@@ -6,9 +6,9 @@ use send_wrapper::SendWrapper;
 use willow_client::{ClientConfig, ClientEvent, ClientHandle, DisplayMessage, VoiceSignalPayload};
 
 use crate::components::{
-    AddServerPanel, CallPage, ChannelSidebar, ChatInput, CommandPalette, FileShareButton,
-    GroveRail, JoinPage, MainPaneHeader, MessageList, MobileShell, ReadOnlyBanner, RightRail,
-    RightRailWhich, SettingsPanel, ToastStackView, WelcomeScreen,
+    AddServerPanel, CallPage, ChannelSidebar, CommandPalette, Composer, FileShareButton, GroveRail,
+    JoinPage, MainPaneHeader, MessageList, MobileShell, ReadOnlyBanner, RightRail, RightRailWhich,
+    SettingsPanel, ToastStackView, WelcomeScreen,
 };
 use crate::event_processing::process_event_batch;
 use crate::handlers;
@@ -1024,12 +1024,42 @@ pub fn App() -> impl IntoView {
                                             });
                                         })
                                     };
+                                    // ArrowUp on an empty composer enters edit
+                                    // mode on the most recent own message in
+                                    // the current channel. Spec
+                                    // `composer.md` §Keyboard (desktop). The
+                                    // composer fires `on_arrow_up_edit` and
+                                    // the parent owns the lookup + signal
+                                    // write so the component stays unaware
+                                    // of the client handle.
+                                    let on_arrow_up_edit_cb = {
+                                        let h = handle_ty.clone();
+                                        let ch = current_channel;
+                                        Callback::new(move |_: ()| {
+                                            let h = h.clone();
+                                            let channel = ch.get_untracked();
+                                            wasm_bindgen_futures::spawn_local(async move {
+                                                if let Some(msg) =
+                                                    h.last_own_message(&channel).await
+                                                {
+                                                    write.chat.set_editing.set(Some(msg));
+                                                }
+                                            });
+                                        })
+                                    };
                                     let on_pin_cb = {
                                         let pin_handler = pin.clone();
                                         Callback::new(move |msg: DisplayMessage| {
                                             pin_handler(msg);
                                         })
                                     };
+                                    // Phase 3a T7 — clicking the composer's reply-bar
+                                    // body scrolls + flashes the parent message in
+                                    // the list. Re-uses the `msg-{id}` DOM ids set by
+                                    // `MessageRow`.
+                                    let on_jump_to_parent_cb = Callback::new(|parent_id: String| {
+                                        crate::util::scroll_to_message_and_flash(&parent_id);
+                                    });
                                     // Derive one-of-four right-rail state from existing UI signals.
                                     // Phase 2b — sync queue takes precedence over members/pinned
                                     // when `app.queue.open == true` (mounted desktop right-pane).
@@ -1147,30 +1177,17 @@ pub fn App() -> impl IntoView {
                                                     js_sys::eval("var i=document.querySelector('.input-area input,.input-area textarea');if(i)i.focus();").ok();
                                                 })
                                             />
-                                            <div class="typing-indicator">
-                                                {move || {
-                                                    let ch = current_channel.get();
-                                                    let views = channel_views.get();
-                                                    let names = views
-                                                        .get(&ch)
-                                                        .map(|v| v.typing.clone())
-                                                        .unwrap_or_default();
-                                                    match names.len() {
-                                                        0 => String::new(),
-                                                        1 => format!("{} is typing...", names[0]),
-                                                        2 => format!("{} and {} are typing...", names[0], names[1]),
-                                                        3 => format!("{}, {}, and {} are typing...", names[0], names[1], names[2]),
-                                                        _ => "Multiple people are typing...".to_string(),
-                                                    }
-                                                }}
-                                            </div>
                                             // Phase 2d: hide the composer entirely
                                             // for archived ephemerals until the
                                             // user taps `post` from the banner.
                                             // Uses a class toggle (CSS
                                             // `.input-row--hidden`) rather than
                                             // unmounting so the FileShareButton
-                                            // and ChatInput state stays.
+                                            // and Composer state stays. The
+                                            // typing indicator is owned by
+                                            // <Composer> per phase-3a §T11/T12,
+                                            // so no separate row is rendered
+                                            // here.
                                             <div
                                                 class=move || {
                                                     if archived_band.get() && !composer_revealed.get() {
@@ -1183,7 +1200,7 @@ pub fn App() -> impl IntoView {
                                                 <FileShareButton
                                                     channel=current_channel
                                                 />
-                                                <ChatInput
+                                                <Composer
                                                     on_send=send2
                                                     replying_to=replying_to
                                                     on_cancel_reply=Callback::new(move |_| {
@@ -1195,6 +1212,21 @@ pub fn App() -> impl IntoView {
                                                         write.chat.set_editing.set(None);
                                                     })
                                                     on_typing=on_typing_cb
+                                                    on_arrow_up_edit=on_arrow_up_edit_cb
+                                                    on_jump_to_parent=on_jump_to_parent_cb
+                                                    // Typing peers come off the `channel_views`
+                                                    // map (filled by the typing-expiry timer
+                                                    // spawned at app start). The composer
+                                                    // collapses the row itself when the list
+                                                    // is empty per spec §Typing indicator.
+                                                    typing_peers=Signal::derive(move || {
+                                                        let ch = current_channel.get();
+                                                        channel_views
+                                                            .get()
+                                                            .get(&ch)
+                                                            .map(|v| v.typing.clone())
+                                                            .unwrap_or_default()
+                                                    })
                                                 />
                                             </div>
                                         </main>
