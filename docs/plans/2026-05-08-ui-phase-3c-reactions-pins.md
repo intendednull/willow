@@ -88,7 +88,7 @@
 
 - [x] **T0.** Stamp `files-inline.md` and the phase-3b plan as `landed (e98ed26, 2026-05-08)` (carry-over the dropped main commit). Commit `docs(phase-3b): mark files-inline spec + plan as landed (carry-over)`. **Verify:** spec/plan diffs inspected.
 
-- [ ] **T1.** Add `state_actors::ReactionRecency` + `client.recent_reactions(channel_id) -> Vec<String>` (cap 5). Hook `note(channel_id, emoji)` into the existing `react()` mutation path so every successful reaction feeds the LRU. **Tests:** `recent_reactions_starts_with_spec_default`, `recent_reactions_lru_caps_at_5`, `recent_reactions_per_channel_isolation`. **Verify:** `cargo test -p willow-client recent_reactions`.
+- [x] **T1.** Add per-channel reaction recency LRU + `ClientHandle::recent_reactions(channel) -> Vec<String>` (cap 5, falls back to spec default `👍 ❤️ 🍃 💚 👀`). Implemented as a new `reaction_recency: HashMap<String, VecDeque<String>>` field on the existing `state_actors::ChatMeta` (rather than spinning up a fresh actor) — keeps the wiring footprint to two functions on `ChatMeta` (`note_reaction` + `recent_reactions`) instead of threading a new `StateActor` through `SourceState`. `ClientHandle::react` now calls `note_reaction` after the underlying mutation succeeds; existing callers (`(&channel, &message_id, &emoji)`) keep working. **Tests:** `recent_reactions_starts_with_spec_default`, `recent_reactions_lru_caps_at_5`, `recent_reactions_per_channel_isolation`. **Verify:** `cargo test -p willow-client recent_reactions`.
 
 ### Phase B — emoji picker
 

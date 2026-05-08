@@ -1009,6 +1009,7 @@ pub fn compute_messages_view_for_channel(
     let chat = Arc::new(ChatMeta {
         current_channel: channel.to_string(),
         peers: Vec::new(),
+        reaction_recency: Default::default(),
     });
     let queue_meta = Arc::new(QueueMeta::default());
     compute_messages_view(
@@ -1235,6 +1236,7 @@ mod tests {
         let chat = Arc::new(ChatMeta {
             current_channel: "general".into(),
             peers: Vec::new(),
+        reaction_recency: Default::default(),
         });
         let profiles = Arc::new(ProfileState::default());
         let queue_meta = Arc::new(QueueMeta::default());
@@ -1261,6 +1263,7 @@ mod tests {
         let chat = Arc::new(ChatMeta {
             current_channel: "general".into(),
             peers: Vec::new(),
+        reaction_recency: Default::default(),
         });
         let profiles = Arc::new(ProfileState::default());
         let queue_meta = Arc::new(QueueMeta::default());
@@ -1343,6 +1346,7 @@ mod tests {
         let chat = Arc::new(ChatMeta {
             current_channel: "general".into(),
             peers: Vec::new(),
+        reaction_recency: Default::default(),
         });
         let profiles = Arc::new(ProfileState::default());
         let queue_meta = Arc::new(QueueMeta::default());
@@ -1377,6 +1381,7 @@ mod tests {
         let chat = Arc::new(ChatMeta {
             current_channel: "general".into(),
             peers: Vec::new(),
+        reaction_recency: Default::default(),
         });
         let profiles = Arc::new(ProfileState::default());
         let queue_meta = Arc::new(QueueMeta::default());
@@ -1406,6 +1411,7 @@ mod tests {
         let chat = Arc::new(ChatMeta {
             current_channel: "general".into(),
             peers: Vec::new(),
+        reaction_recency: Default::default(),
         });
         let profiles = Arc::new(ProfileState::default());
         let queue_meta = Arc::new(QueueMeta::default());
@@ -1437,6 +1443,7 @@ mod tests {
         let chat = Arc::new(ChatMeta {
             current_channel: "general".into(),
             peers: Vec::new(),
+        reaction_recency: Default::default(),
         });
         let profiles = Arc::new(ProfileState::default());
 
@@ -1504,6 +1511,7 @@ mod tests {
         let chat = Arc::new(ChatMeta {
             current_channel: "general".into(),
             peers: Vec::new(),
+        reaction_recency: Default::default(),
         });
         let profiles = Arc::new(ProfileState::default());
         let queue_meta = Arc::new(QueueMeta::default());
@@ -1535,6 +1543,7 @@ mod tests {
         let chat = Arc::new(ChatMeta {
             current_channel: "general".into(),
             peers: Vec::new(),
+        reaction_recency: Default::default(),
         });
         let profiles = Arc::new(ProfileState::default());
 
@@ -1637,6 +1646,7 @@ mod tests {
         let chat = Arc::new(ChatMeta {
             current_channel: "general".into(),
             peers: Vec::new(),
+        reaction_recency: Default::default(),
         });
         let profiles = Arc::new(ProfileState::default());
 
@@ -1679,6 +1689,7 @@ mod tests {
         let chat = Arc::new(ChatMeta {
             current_channel: "general".into(),
             peers: Vec::new(),
+        reaction_recency: Default::default(),
         });
         let profiles = Arc::new(ProfileState::default());
         let queue_meta = Arc::new(QueueMeta::default());
@@ -1733,6 +1744,7 @@ mod tests {
         let chat = Arc::new(ChatMeta {
             current_channel: "general".into(),
             peers: Vec::new(),
+        reaction_recency: Default::default(),
         });
         let profiles = Arc::new(ProfileState::default());
         let queue_meta = Arc::new(QueueMeta::default());
