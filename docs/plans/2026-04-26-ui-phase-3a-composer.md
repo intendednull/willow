@@ -1,5 +1,7 @@
 # UI Phase 3a — Composer Implementation Plan
 
+**Status:** landed (e46e4b3, 2026-05-08)
+
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development + superpowers:test-driven-development. Every task = one commit; tick the checkbox in the same commit.
 
 **Goal:** Ship `docs/specs/2026-04-19-ui-design/composer.md` in full — replace the legacy single-line `<input>` ChatInput with the spec'd compose surface (desktop pill + mobile pill), reply preview bar, edit bar, autogrow textarea, full keybinding set (⌘↵, Shift+Enter, Esc unwind, ↑ to edit last own message), mention autocomplete on `@`, offline tinting, per-channel-kind placeholder copy, typing indicator row above the composer, and ARIA labels for every interactive element.

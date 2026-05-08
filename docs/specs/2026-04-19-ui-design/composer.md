@@ -1,7 +1,7 @@
 # Composer — textarea, reply / edit bars, mentions, typing indicator
 
 **Parent:** [README.md](README.md)
-**Status:** implementing
+**Status:** landed (e46e4b3, 2026-05-08)
 **Dependencies:** [`foundation.md`](foundation.md),
 [`layout-primitives.md`](layout-primitives.md),
 [`message-row.md`](message-row.md)

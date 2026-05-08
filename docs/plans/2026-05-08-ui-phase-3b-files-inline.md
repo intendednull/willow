@@ -92,7 +92,7 @@
 
 ### Phase A — schema + carry-over stamp
 
-- [ ] **T0.** Stamp `composer.md` and the phase-3a plan as `landed (e46e4b3, 2026-05-08)` (carry-over the dropped main commit). Commit `docs(phase-3a): mark composer spec + plan as landed (carry-over)`. **Verify:** spec/plan diffs inspected.
+- [x] **T0.** Stamp `composer.md` and the phase-3a plan as `landed (e46e4b3, 2026-05-08)` (carry-over the dropped main commit). Commit `docs(phase-3a): mark composer spec + plan as landed (carry-over)`. **Verify:** spec/plan diffs inspected.
 
 - [ ] **T1.** Extend `Content::File` with `width: Option<u32>` + `height: Option<u32>`, both `#[serde(default)]`. Bound dimensions in `Content::validate` (reject > 16384 px). Add `Message::file_with_dimensions()` constructor. **Tests:** `content_file_round_trips_with_dimensions`, `content_file_round_trips_without_dimensions_back_compat`, `content_validate_rejects_oversize_dimensions`. **Verify:** `just test-state` (messaging tests live in willow-state via the round-trip suite — adjust if not).
 
